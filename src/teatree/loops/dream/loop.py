@@ -148,21 +148,18 @@ def decay_enabled() -> bool:
     return _phase_enabled(*_DECAY)
 
 
-#: Pass-2 memory promotion (#2426) FILES backlog tickets, so it is default OFF —
-#: opt in with ``T3_DREAM_MEMORY_PROMOTE=1`` / the DB ``loops.dream memory_promote =
-#: true`` key. Absent, the dream pass never triages the ledger or files a ticket (no
-#: behaviour change).
+#: Pass-2 memory promotion (#2426) FILES backlog tickets — it was default OFF while the
+#: ledger's own promotion rail sat inert (2133 candidate rows, 0 promoted, #4685). #4776
+#: is the missing safety mechanism that decision needed: a pass's promotions now batch
+#: into ONE ticket, so turning this on can no longer dump an unbounded backlog. Default
+#: ON; opt out with ``T3_DREAM_MEMORY_PROMOTE=0`` / the DB ``loops.dream memory_promote =
+#: false`` key.
 _MEMORY_PROMOTE = ("memory_promote", "T3_DREAM_MEMORY_PROMOTE")
 
 
 def memory_promote_enabled() -> bool:
-    """Whether Pass-2 memory→fix promotion runs (default OFF, #2426)."""
-    raw_env = os.environ.get(_MEMORY_PROMOTE[1], "").strip().lower()
-    if raw_env in _TRUTHY:
-        return True
-    if raw_env in _FALSY:
-        return False
-    return _dream_phase_default_off(_MEMORY_PROMOTE[0])
+    """Whether Pass-2 memory→fix promotion runs (default ON, #2426, #4685, #4776)."""
+    return _phase_enabled(*_MEMORY_PROMOTE)
 
 
 #: The LLM-backed full-scenario derivation (#2447) is the one dream phase that is

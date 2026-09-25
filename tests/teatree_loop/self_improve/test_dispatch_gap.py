@@ -1,10 +1,12 @@
 """``DispatchGapDetector`` per-detector tests (BLUEPRINT § 5.7 / plan §8)."""
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import SelfImproveFiring, Session, Task, Ticket
 from teatree.loop.self_improve.actions import run_action_ladder
@@ -81,3 +83,24 @@ class DispatchGapDetectorTests(TestCase):
     def test_auto_fix_false(self) -> None:
         """Smell-only detector: never self-heals."""
         assert DispatchGapDetector.auto_fix is False
+
+    def test_does_not_fire_when_pending_task_is_deferred(self) -> None:
+        # A not_before-parked task (Directive #3 usage-window park) is expected to
+        # sit undispatched — that is not the "nothing is picking this up" smell.
+        ticket = self._ticket(5)
+        task = self._pending_task(ticket)
+        task.not_before = timezone.now() + timedelta(hours=1)
+        task.save(update_fields=["not_before"])
+        with patch.dict("os.environ", {"T3_LOOP_REGISTRY_DIR": "/tmp/__nonexistent_registry__"}):
+            assert DispatchGapDetector().detect() == []
+
+    def test_pending_count_excludes_deferred_task(self) -> None:
+        ticket = self._ticket(6)
+        deferred = self._pending_task(ticket)
+        deferred.not_before = timezone.now() + timedelta(hours=1)
+        deferred.save(update_fields=["not_before"])
+        self._pending_task(ticket)
+        with patch.dict("os.environ", {"T3_LOOP_REGISTRY_DIR": "/tmp/__nonexistent_registry__"}):
+            reports = DispatchGapDetector().detect()
+        assert len(reports) == 1
+        assert reports[0].payload["pending_count"] == 1

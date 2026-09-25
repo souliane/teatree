@@ -33,6 +33,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import CodeHostBackend
@@ -42,12 +43,12 @@ from teatree.core.review.review_findings import find_bare_references, neutralize
 from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.hooks import banned_terms_scanner
 from teatree.loops.dream.destination import classify_destination
-from teatree.loops.dream.pass_config import PromotionBudget
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from teatree.loops.dream.batch_promote import PromotionBatch
     from teatree.loops.dream.merge import BindingConflict
 
 logger = logging.getLogger(__name__)
@@ -81,15 +82,18 @@ def triage_disposition(row: ConsolidatedMemory) -> MemoryDisposition:
 
     Reads the ``durable_destination`` hint the distiller already computed via the
     shared :func:`~teatree.loops.dream.destination.classify_destination` grounding: a
-    home the core checkout has a real place for is core-generic doctrine to fix in
-    code; any other home — or no home — is user-specific and stays a memory.
-    Conservative on the empty case: an unclassifiable row is kept as memory, never
-    auto-ticketed. A destination that LOOKS like core but grounds nowhere in the tree
-    takes that same conservative path, loudly — the alternative, leaving it untriaged,
-    re-warns every pass forever and never drains.
+    home the core checkout has a real place for, OR a curated memory file
+    (``memory/<slug>.md`` — ``verdict.groundable``), is core-generic doctrine to fix;
+    any other home — or no home — is user-specific and stays a memory. A memory-shaped
+    destination promotes rather than being kept as memory forever, because that WAS
+    the pipeline's whole output: 49 of 49 gaps measured withheld this exact shape
+    (#4776). Conservative on the empty case: an unclassifiable row is kept as memory,
+    never auto-ticketed. A destination that LOOKS like core but grounds nowhere in the
+    tree takes that same conservative path, loudly — the alternative, leaving it
+    untriaged, re-warns every pass forever and never drains.
     """
     verdict = classify_destination(row.durable_destination)
-    if verdict.in_core_tree:
+    if verdict.groundable:
         return MemoryDisposition.CORE_GAP
     if verdict.reason and row.durable_destination.strip():
         logger.warning(
@@ -120,39 +124,34 @@ class TicketOutcome:
 
 
 def file_core_gap_tickets(
-    host: CodeHostBackend,
     *,
     umbrella_url: str = UMBRELLA_ISSUE_URL,
     classifier: MemoryClassifier | None = None,
     dry_run: bool = False,
-    budget: PromotionBudget | None = None,
+    batch: "PromotionBatch",
 ) -> list[TicketOutcome]:
-    """Triage every untriaged row; drive each core gap to a fix-and-merge (#2663).
+    """Triage every untriaged row; queue each core gap into this pass's batch (#2663, #4776).
 
     Each untriaged row is classified (via the injected *classifier*, default the
     ``durable_destination``-hint one). A user-specific row advances to
     ``USER_SPECIFIC_KEEP`` and does nothing further. A core-gap row advances to
-    ``CORE_GAP_NEEDS_TICKET`` and is PROMOTED to a fix in the SAME pass — a checkbox
-    is upserted under the standing umbrella issue (*umbrella_url*, deduped by the row's
-    ``cluster_key``) and a coding task is scheduled for the fix. The gap no longer files
-    a fresh ``needs-triage`` issue that the scanner skips. A rendered title that would
-    leak a banned term / bare reference is withheld — never written.
+    ``CORE_GAP_NEEDS_TICKET`` and is QUEUED into *batch* in the SAME pass (the checkbox
+    + coding task are minted once, for the whole pass, after every promoting phase has
+    run). The gap no longer files a fresh ``needs-triage`` issue that the scanner
+    skips. A rendered title that would leak a banned term / bare reference is withheld
+    — never queued.
 
-    Under *dry_run* NOTHING is written — no disposition advance, no umbrella edit, no
-    scheduled task — so a preview never STRANDS a detected gap: the disposition write
-    used to land BEFORE the dry-run guard, moving the row out of ``untriaged()`` while
-    its promotion was skipped, so the gap sat in ``CORE_GAP_NEEDS_TICKET`` with no drain
-    and was silently detected but never fixed.
+    Under *dry_run* NOTHING is written — no disposition advance, no queueing — so a
+    preview never STRANDS a detected gap: the disposition write used to land BEFORE the
+    dry-run guard, moving the row out of ``untriaged()`` while its promotion was
+    skipped, so the gap sat in ``CORE_GAP_NEEDS_TICKET`` with no drain and was silently
+    detected but never fixed.
 
     Before the untriaged queue, any core-gap row a prior pass classified but never
     promoted (:meth:`ConsolidatedMemory.objects.needs_ticket` — no ticket recorded) is
-    drained first, so such a stranded gap is picked up and promoted rather than left
-    forever. Returns one outcome per promoted core-gap row (user-specific rows and a
+    drained first, so such a stranded gap is picked up and queued rather than left
+    forever. Returns one outcome per queued core-gap row (user-specific rows and a
     dry-run yield no outcome).
-
-    *budget* bounds how many gaps THIS pass promotes (``None`` ⇒ unbounded, #4176).
-    Triage still runs to completion — it is cheap and durable — so a gap the cap defers
-    stays classified in the ``needs_ticket`` queue and the next pass drains it.
     """
     classify = classifier or triage_disposition
     outcomes: list[TicketOutcome] = []
@@ -164,7 +163,7 @@ def file_core_gap_tickets(
     # dry-run) FIRST, before this pass classifies any new core gap — reading the queue
     # up front means a row classified below is never re-drained in the same pass.
     outcomes.extend(
-        _promote_one_gap(host, stranded, umbrella_url=umbrella_url, budget=budget)
+        _promote_one_gap(stranded, umbrella_url=umbrella_url, batch=batch)
         for stranded in ConsolidatedMemory.objects.needs_ticket()
     )
     for row in ConsolidatedMemory.objects.untriaged():
@@ -172,35 +171,29 @@ def file_core_gap_tickets(
             row.classify_user_specific()
             continue
         row.classify_core_gap()
-        outcomes.append(_promote_one_gap(host, row, umbrella_url=umbrella_url, budget=budget))
+        outcomes.append(_promote_one_gap(row, umbrella_url=umbrella_url, batch=batch))
     return outcomes
 
 
-def _promote_one_gap(
-    host: CodeHostBackend, row: ConsolidatedMemory, *, umbrella_url: str, budget: PromotionBudget | None = None
-) -> TicketOutcome:
-    """Drive one core-gap row to a fix-and-merge via the umbrella ledger (#2663).
+def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "PromotionBatch") -> TicketOutcome:
+    """Queue one core-gap row into this pass's promotion batch (#2663, #4776).
 
-    Reuses :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a checkbox is
-    upserted under the umbrella (deduped by ``cluster_key``) and a coding task is
-    scheduled for the fix (deduped by the same key). The banned-term / bare-reference
-    withholding is enforced inside ``promote_gap`` against the rendered title.
+    Reuses :meth:`~teatree.loops.dream.batch_promote.PromotionBatch.consider`: the gap
+    is deduped (by ``cluster_key``) against every in-flight/delivered batch and queued
+    for the SINGLE ticket the pass mints once every phase has run. The banned-term /
+    bare-reference withholding is enforced inside ``consider`` against the rendered
+    title.
 
     The destination is re-grounded HERE and not only at triage, because the
     ``needs_ticket()`` drain promotes rows a PRIOR pass classified without re-running
     the classifier — so this is the one chokepoint every promoted gap passes through.
-
-    A durable promotion (fresh, already riding the umbrella, or already-present under
-    a spent budget) stamps the row TICKETED with a per-gap anchor URL, so it leaves
-    ``needs_ticket()`` for good instead of being re-classified and re-promoted every
-    pass forever. A withheld or budget-deferred gap is left unstamped so it is
-    retried. The anchor URL is a placeholder :func:`~umbrella_ledger._stamp_memory_merged`
-    replaces with the real merged PR URL once the fix lands.
+    ``groundable`` (core tree OR a memory file) is the test, not ``in_core_tree``
+    alone — a memory-destined gap promotes rather than being withheld (#4776).
     """
-    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loops.dream.umbrella_ledger import GapSpec  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     verdict = classify_destination(row.durable_destination)
-    if not verdict.in_core_tree:
+    if not verdict.groundable:
         logger.warning(
             "dream: refusing to promote cluster %s — its destination %r is ungrounded: %s.",
             row.cluster_key,
@@ -214,17 +207,12 @@ def _promote_one_gap(
             reason=f"ungrounded destination: {verdict.reason}",
         )
 
-    outcome = umbrella_ledger.promote_gap(
-        host,
-        umbrella_url=umbrella_url,
-        gap=umbrella_ledger.GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key),
-        budget=budget,
+    outcome = batch.consider(
+        gap=GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key)
     )
-    if not outcome.withheld and not outcome.deferred:
-        row.mark_ticketed(umbrella_ledger.gap_anchor_url(umbrella_url, row.cluster_key))
     return TicketOutcome(
         cluster_key=row.cluster_key,
-        filed=outcome.scheduled or outcome.checkbox_added,
+        filed=outcome.queued or outcome.already_covered,
         ticket_url=umbrella_url,
         withheld=outcome.withheld,
         reason=outcome.reason,
@@ -328,16 +316,23 @@ def retire_resolved_memories(
 
     For every row awaiting ticket-close, the linked ticket's resolved state is read
     via *is_resolved* (default: the linked issue's closed/merged state read from
-    *host*); a resolved ticket retires the row (the prose is archived, the gap it
-    confessed is fixed in code). A BINDING row is never retired (binding feedback is
-    load-bearing user doctrine). An unresolved/unreadable ticket keeps the memory — a
+    *host*); a resolved ticket first has its source memory FILE(s) deleted
+    (:func:`delete_source_memory_files` — "memory tends to zero": a promoted gap whose
+    fix merged has nothing left to remember once its source is gone) and only THEN
+    retires the DB row (the prose is archived, the gap it confessed is fixed in code).
+    A row whose source file could not be confirmed deleted stays TICKETED and is
+    retried next pass — never retired with a dangling file. A BINDING row is
+    PERMANENTLY exempt from both file deletion and DB retirement (binding feedback is
+    hand-flagged, load-bearing user doctrine — the one class this pipeline does not
+    unilaterally judge "done"). An unresolved/unreadable ticket keeps the memory — a
     forge hiccup must never retire a memory whose fix may not have landed.
 
     The *is_resolved* seam lets the umbrella reconcile path
-    (:func:`teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps`) retire off the
-    gap-fix Ticket's authoritative MERGED state instead of a fragile forge re-read of
-    a PR URL (a ``/pull/<n>`` URL the issue endpoint does not serve). Returns the rows
-    retired this pass.
+    (:func:`teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps`,
+    :func:`teatree.loops.dream.batch_promote.reconcile_batches`) retire off the gap-fix
+    Ticket's authoritative MERGED state instead of a fragile forge re-read of a PR URL
+    (a ``/pull/<n>`` URL the issue endpoint does not serve). Returns the rows retired
+    this pass.
     """
     resolved = is_resolved or (lambda url: _issue_is_closed(host, url))
     retired: list[ConsolidatedMemory] = []
@@ -346,9 +341,59 @@ def retire_resolved_memories(
             continue
         if not resolved(row.ticket_url):
             continue
+        if not delete_source_memory_files(row):
+            logger.warning(
+                "dream: deferring retirement of cluster %s — a source memory file "
+                "could not be confirmed deleted, retrying next pass",
+                row.cluster_key,
+            )
+            continue
         row.retire(archive_path=row.ticket_url)
         retired.append(row)
     return retired
+
+
+def delete_source_memory_files(row: ConsolidatedMemory) -> bool:
+    """Delete *row*'s source files that live under a discovered memory dir, verified.
+
+    "Memory must tend to zero": a promoted gap's source memory file is DELETED on
+    retirement, not merely archived-by-budget-decay, so the personal-memory corpus
+    actually shrinks as gaps get fixed in code. Only ``source_files`` entries that
+    resolve inside a :func:`~teatree.memory_audit.discover_memory_dirs` root with a
+    ``.md`` suffix are candidates — a row's sources may also carry non-memory
+    references (e.g. a transcript path), which are never touched. Each delete is
+    VERIFIED by re-reading the path afterward, not trusted from the ``unlink()`` call
+    alone. Returns True iff every candidate is confirmed gone — vacuously True when
+    there are no memory-dir candidates, so a core-code-only gap's retirement is never
+    blocked by a check that has nothing to confirm.
+    """
+    from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415 — deferred: stdlib-only, loaded at tick time
+
+    roots = discover_memory_dirs()
+    if not roots:
+        return True
+    all_confirmed = True
+    for raw_path in row.source_files:
+        path = Path(str(raw_path))
+        if path.suffix.lower() != ".md" or not any(_resolves_within(path, root) for root in roots):
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("dream: could not delete source memory file %s (cluster %s): %s", path, row.cluster_key, exc)
+            all_confirmed = False
+            continue
+        if path.exists():
+            logger.warning("dream: source memory file %s (cluster %s) still exists after delete", path, row.cluster_key)
+            all_confirmed = False
+    return all_confirmed
+
+
+def _resolves_within(path: Path, root: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except OSError:
+        return False
 
 
 def _issue_is_closed(host: CodeHostBackend, issue_url: str) -> bool:
@@ -373,6 +418,7 @@ __all__ = [
     "MemoryClassifier",
     "MemoryDisposition",
     "TicketOutcome",
+    "delete_source_memory_files",
     "file_binding_reconciliation_tickets",
     "file_core_gap_tickets",
     "retire_resolved_memories",

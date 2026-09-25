@@ -198,37 +198,48 @@ class ProposeEvalsKillSwitchTestCase(TestCase):
 
 
 class MemoryPromoteToggleTestCase(TestCase):
-    """Pass-2 memory→fix promotion files tickets, so it is default OFF (#2426)."""
+    """Pass-2 memory→fix promotion is default ON (#2426, #4685, #4776).
+
+    Flipped from default OFF: the inert-rail decision (#4685 — 2133 candidates, 0
+    promoted) needed the missing safety mechanism #4776 supplies (batching bounds
+    the fan-out a promoting toggle can dump in one night), so turning this on by
+    default can no longer flood the backlog.
+    """
 
     def setUp(self) -> None:
         self.db = Path(self.enterContext(tempfile.TemporaryDirectory())) / "config.sqlite3"
 
-    def test_default_is_off_with_no_env_no_db(self) -> None:
+    def test_default_is_on_with_no_env_no_db(self) -> None:
         with patch.dict("os.environ", {}, clear=False):
             os.environ.pop("T3_DREAM_MEMORY_PROMOTE", None)
-            assert memory_promote_enabled() is False
+            assert memory_promote_enabled() is True
+
+    def test_falsy_env_disables(self) -> None:
+        for value in ("0", "false", "no", "off", "FALSE"):
+            with patch.dict("os.environ", {"T3_DREAM_MEMORY_PROMOTE": value}):
+                assert memory_promote_enabled() is False, value
 
     def test_truthy_env_enables(self) -> None:
-        for value in ("1", "true", "yes", "on"):
-            with patch.dict("os.environ", {"T3_DREAM_MEMORY_PROMOTE": value}):
-                assert memory_promote_enabled() is True, value
+        with patch.dict("os.environ", {"T3_DREAM_MEMORY_PROMOTE": "1"}):
+            assert memory_promote_enabled() is True
 
-    def test_db_true_enables_when_env_absent(self) -> None:
-        _seed_dream(self.db, memory_promote=True)
+    def test_db_false_disables_when_env_absent(self) -> None:
+        _seed_dream(self.db, memory_promote=False)
         with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db)}):
             os.environ.pop("T3_DREAM_MEMORY_PROMOTE", None)
-            assert memory_promote_enabled() is True
+            assert memory_promote_enabled() is False
 
     def test_env_falsy_wins_over_db_true(self) -> None:
         _seed_dream(self.db, memory_promote=True)
         with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db), "T3_DREAM_MEMORY_PROMOTE": "0"}):
             assert memory_promote_enabled() is False
 
-    def test_corrupt_config_falls_back_to_default_off_never_raises(self) -> None:
+    def test_corrupt_config_falls_back_to_default_on_never_raises(self) -> None:
+        # A malformed stored value must not take down the nightly cron — default ON.
         _seed_setting(self.db, "loops", "{not valid json")
         with patch.dict("os.environ", {"T3_CONFIG_DB": str(self.db)}):
             os.environ.pop("T3_DREAM_MEMORY_PROMOTE", None)
-            assert memory_promote_enabled() is False
+            assert memory_promote_enabled() is True
 
 
 class AutomationAsksToggleTestCase(TestCase):

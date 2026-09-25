@@ -1,6 +1,6 @@
 """The IMPLEMENT phase — synthetic ticket + normal maker pipeline (T4-PR-3).
 
-Cloned from :func:`teatree.loops.dream.umbrella_ledger.schedule_gap_fix`: an
+Cloned from :func:`teatree.loops.dream.batch_promote._schedule_batch_fix`: an
 admitted experiment anchors an ``AUTHOR`` ``Ticket`` on a unique synthetic issue
 URL and rides :meth:`Ticket.schedule_coding` — the SAME isolated-worktree → plan
 gate → phase agents → review → critic-gated merge keystone every ticket uses. The

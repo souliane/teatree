@@ -119,6 +119,14 @@ When the active overlay has `require_ticket = True` in its configuration, a trac
 - **Use the overlay** for worktree creation and lifecycle management.
 - **Exception:** changes from `/t3:retro` are exempt. Retro findings are small tactical fixes committed directly on the current branch by design.
 
+### 0d. Dream Gap-Batch Tickets — Claim Only What You Delivered (Non-Negotiable)
+
+A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): `ticket.context` lists every gap the pass queued, each with its `gap_key`. A pass with 300 pending gaps mints ONE such ticket, not 300 — fix each gap in the manifest independently.
+
+- **Drop, never stretch.** A gap you cannot deliver in this change is OMITTED from the PR, not padded in with a thin/partial fix. It stays unchecked on the umbrella and the next pass re-offers it — dropping it costs nothing; claiming it falsely is a review HOLD.
+- **Record exactly what you delivered, before shipping:** `ticket.merge_extra(set_keys={'dream_gap_claimed_delivered': [<gap_key>, ...]})` — only the keys you actually fixed. The reconcile step checks off and retires ONLY the gaps in this list, intersected with the manifest; an out-of-manifest key is ignored.
+- **A batched PR that claims 9 of 10 gaps but delivers fewer is worse than one that delivers 1 honestly** — the unfixed gap's checkbox would get ticked and vanish from the ledger. Never claim a gap the diff does not actually address.
+
 ### 1. Plan First
 
 **Always make a plan before writing code.** Never jump straight to coding.

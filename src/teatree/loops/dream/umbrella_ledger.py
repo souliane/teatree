@@ -1,26 +1,22 @@
-"""Dream promote = fix-and-merge: drive each grounded gap to a MERGED fix (#2663).
+"""Dream promote = fix-and-merge: the durable umbrella-checkbox ledger (#2663, #4776).
 
 The promote/compliance phases used to file a fresh ``needs-triage`` GitHub issue
-per gap. Those piled up, because the issue scanner SKIPs ``needs-triage``. The new
-behaviour drives each grounded gap to a MERGED fix instead, tracked under ONE
-standing umbrella issue (souliane/teatree#2663) that is reused daily and never
-closed:
+per gap. Those piled up, because the issue scanner SKIPs ``needs-triage``. The
+umbrella-checkbox ledger replaces that: every grounded gap gets a checkbox under ONE
+standing umbrella issue (souliane/teatree#2663) that is reused daily and never closed,
+keyed on a stable gap key so the same gap never double-adds
+(:func:`upsert_gap_checkbox`). The umbrella body is plain markdown — a task-list whose
+lines each carry an invisible ``<!-- dream-gap <key> -->`` marker for stable dedup,
+mirroring the fingerprint markers the Pass-2/compliance filers already embed.
 
-1.  **Upsert a checkbox** under the umbrella, keyed on a stable gap key, so the
-    same gap never double-adds (:func:`upsert_gap_checkbox`). The umbrella body is
-    plain markdown — a task-list whose lines each carry an invisible
-    ``<!-- dream-gap <key> -->`` marker for stable dedup, mirroring the
-    fingerprint markers the Pass-2/compliance filers already embed.
-2.  **Schedule the fix** for each NEW gap by reusing the existing
-    :meth:`~teatree.core.models.ticket.Ticket.schedule_coding` + the orchestrator's
-    issue-implementer path (:func:`schedule_gap_fix`): a coder implements the fix
-    TDD in a worktree, opens a PR, and the PR merges through the SAME single
-    keystone flow gated by the overlay's autonomy setting. No new model — an
-    in-flight gap is an existing ``Ticket`` row + its ``ConsolidatedMemory`` ledger
-    entry; the umbrella checkbox is the durable cross-night state.
-3.  **Reconcile on merge** (:func:`reconcile_merged_gaps`): when a gap's fix Ticket
-    reaches MERGED, CHECK its umbrella checkbox and retire the corresponding memory
-    through the existing :func:`~teatree.loops.dream.promote_memory.retire_resolved_memories`.
+Scheduling the fix used to happen HERE too, one gap at a time
+(:func:`~teatree.core.models.ticket.Ticket.schedule_coding` per gap) — one gap, one
+ticket, one PR. #4776 deleted that fan-out: every promoting phase now COLLECTS its
+gaps into one :class:`~teatree.loops.dream.batch_promote.PromotionBatch` and
+:mod:`teatree.loops.dream.batch_promote` mints AT MOST ONE ticket per pass, reusing
+the checkbox primitives below. This module stays the durable ledger + the
+:func:`reconcile_merged_gaps` drain for gap-fix tickets scheduled under the OLD
+per-gap scheme, so a ticket already in flight when this shipped keeps draining.
 
 The forge writes go through a passed-in
 :class:`~teatree.core.backend_protocols.CodeHostBackend`, so the whole flow is
@@ -37,12 +33,10 @@ from django.utils import timezone
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
-from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
-from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
+from teatree.core.review.review_findings import find_bare_references
 from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.hooks import banned_terms_scanner
-from teatree.loops.dream.pass_config import PromotionBudget
 
 logger = logging.getLogger(__name__)
 
@@ -79,28 +73,6 @@ class GapSpec:
     gap_key: str
     title: str
     cluster_key: str
-
-
-@dataclass(frozen=True, slots=True)
-class PromoteGapOutcome:
-    """The result of promoting one grounded gap to a fix-and-merge.
-
-    ``checkbox_added`` is True only when a NEW checkbox was appended to the
-    umbrella; ``scheduled`` is True only when a NEW coding task was scheduled;
-    ``withheld`` is True when the rendered title would leak a banned term / bare
-    reference and nothing was written or scheduled; ``deferred`` is True when the
-    pass's promotion cap was already spent, so the gap waits for the next pass;
-    ``already_present`` is True when a short-circuiting pass DISCOVERED the gap
-    riding the umbrella, so it turned away no work and nothing waits (#4176).
-    """
-
-    gap_key: str
-    checkbox_added: bool
-    scheduled: bool
-    withheld: bool = False
-    deferred: bool = False
-    already_present: bool = False
-    reason: str = ""
 
 
 def _marker(gap_key: str) -> str:
@@ -245,43 +217,13 @@ def check_gap_checkbox(host: CodeHostBackend, *, umbrella_url: str, gap_key: str
     return _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key) is _GapCheckState.NEWLY_CHECKED
 
 
-def gap_anchor_url(umbrella_url: str, gap_key: str) -> str:
-    """A unique, valid synthetic issue URL anchoring this gap's fix Ticket.
-
-    The umbrella URL with a ``#dream-gap=<key>`` fragment is unique per gap (so the
-    Ticket's non-empty-``issue_url`` unique constraint dedups re-runs) and still
-    resolves the ``souliane/teatree`` overlay via ``infer_overlay_for_url``. Also used
-    by :func:`~teatree.loops.dream.promote_memory._promote_one_gap` to stamp a
-    promoted row's ``ticket_url`` before its fix ever merges (#2663).
-    """
-    return f"{umbrella_url}#{_GAP_MARKER_PREFIX}={gap_key}"
-
-
-def schedule_gap_fix(*, umbrella_url: str, gap_key: str, title: str, cluster_key: str) -> Task | None:
-    """Schedule a headless coding task to fix *gap_key*, reusing ``schedule_coding``.
-
-    Idempotently creates (or finds) an ``AUTHOR`` Ticket anchored on a synthetic
-    per-gap issue URL, records the gap/memory/umbrella linkage in ``extra``, and —
-    only when the gap is NOT already scheduled — calls
-    :meth:`Ticket.schedule_coding`. The resulting PR merges through the SAME keystone
-    flow gated by the overlay's autonomy setting. Returns the scheduled ``Task``, or
-    ``None`` when this gap already has an open/scheduled coding task.
-    """
-    issue_url = gap_anchor_url(umbrella_url, gap_key)
-    ticket, _ = Ticket.objects.get_or_create(
-        issue_url=issue_url,
-        defaults={"role": Ticket.Role.AUTHOR, "short_description": title.strip()[:80]},
-    )
-    ticket.merge_extra(set_keys={_GAP_KEY: gap_key, _CLUSTER_KEY: cluster_key, _UMBRELLA_KEY: umbrella_url})
-    if Task.objects.pending_in_phase("coding").filter(ticket=ticket).exists():
-        return None
-    if ticket.state != Ticket.State.NOT_STARTED:
-        return None
-    return ticket.schedule_coding()
-
-
 def _withholding_reason(safe_title: str) -> str:
-    """Why *safe_title* must never be written to the umbrella, or ``""`` when it may be."""
+    """Why *safe_title* must never be written to the umbrella, or ``""`` when it may be.
+
+    Shared with :mod:`teatree.loops.dream.batch_promote`'s ``consider()`` — the
+    banned-term / bare-reference gate every promoted title passes through, whichever
+    scheduling path is minting the ticket.
+    """
     banned = banned_terms_scanner.scan_text(safe_title)
     if banned is not None:
         return f"contains banned term '{banned}'"
@@ -289,76 +231,6 @@ def _withholding_reason(safe_title: str) -> str:
     if leaked:
         return f"contains bare reference(s): {', '.join(leaked)}"
     return ""
-
-
-def promote_gap(
-    host: CodeHostBackend,
-    *,
-    umbrella_url: str,
-    gap: GapSpec,
-    dry_run: bool = False,
-    budget: PromotionBudget | None = None,
-) -> PromoteGapOutcome:
-    """Drive one grounded gap to a fix-and-merge: upsert checkbox + schedule the fix.
-
-    The rendered title is neutralised and re-scanned; a surviving banned term / bare
-    reference WITHHOLDS the gap (nothing written or scheduled). Otherwise the gap's
-    checkbox is upserted under the umbrella (deduped by *gap.gap_key*) and a coding
-    task is scheduled for a NEW gap (reusing ``schedule_coding``). Under *dry_run*
-    nothing is written or scheduled — the gap is reported as it would be promoted.
-
-    This is the ONE place a gap becomes a scheduled fix, so it is where the pass's
-    *budget* is spent (``None`` ⇒ unbounded, #4176). An exhausted budget DEFERS the gap
-    — nothing written, nothing scheduled, and the gap stays in its phase's drain queue
-    for the next pass. Budget is charged only when this call did NEW work, so an
-    already-promoted gap costs nothing and cannot starve fresh gaps.
-
-    Every branch that short-circuits before the upsert — a withheld title, a spent cap —
-    first DISCOVERS whether the gap already rides the umbrella (:func:`gap_present`) and
-    reports ``already_present``, so a caller stamping durable state off this outcome
-    describes the world rather than what this pass happened to do. An already-present gap
-    is turned away by nothing: no ``defer()``, no write, no schedule (#4176).
-    """
-    safe_title = neutralize_bare_references(gap.title.strip())
-    withheld_reason = _withholding_reason(safe_title)
-    if withheld_reason:
-        return PromoteGapOutcome(
-            gap_key=gap.gap_key,
-            checkbox_added=False,
-            scheduled=False,
-            withheld=True,
-            already_present=gap_present(host, umbrella_url=umbrella_url, gap_key=gap.gap_key) is True,
-            reason=withheld_reason,
-        )
-
-    if dry_run:
-        return PromoteGapOutcome(gap_key=gap.gap_key, checkbox_added=False, scheduled=False, reason="DRY (no writes)")
-
-    if budget is not None and budget.exhausted:
-        if gap_present(host, umbrella_url=umbrella_url, gap_key=gap.gap_key) is True:
-            return PromoteGapOutcome(
-                gap_key=gap.gap_key,
-                checkbox_added=False,
-                scheduled=False,
-                already_present=True,
-                reason="already promoted — rides the umbrella",
-            )
-        budget.defer()
-        return PromoteGapOutcome(
-            gap_key=gap.gap_key,
-            checkbox_added=False,
-            scheduled=False,
-            deferred=True,
-            reason="deferred — per-pass promotion cap reached",
-        )
-
-    added = upsert_gap_checkbox(host, umbrella_url=umbrella_url, gap_key=gap.gap_key, title=safe_title)
-    task = schedule_gap_fix(
-        umbrella_url=umbrella_url, gap_key=gap.gap_key, title=safe_title, cluster_key=gap.cluster_key
-    )
-    if budget is not None and (added or task is not None):
-        budget.spend()
-    return PromoteGapOutcome(gap_key=gap.gap_key, checkbox_added=added, scheduled=task is not None, reason="promoted")
 
 
 def _in_flight_gap_tickets() -> list[Ticket]:
@@ -461,11 +333,8 @@ def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:
 
     The memory is advanced to TICKETED with the merged PR as its ``ticket_url`` (the
     reconcile then drives ``retire_resolved_memories`` off the authoritative MERGED
-    signal). A row already TICKETED — stamped with the per-gap anchor URL at
-    promotion time (:func:`gap_anchor_url`) — is RE-stamped here with the real merged
-    URL, so that promotion-time stamp never strands the row short of retirement. A
-    row already RESOLVED_RETIRED or USER_SPECIFIC_KEEP, or with no merged URL, is left
-    untouched. Returns True iff this stamped a row TICKETED with *merged_url*.
+    signal). A row already TICKETED/retired or with no merged URL is left untouched.
+    Returns True iff this stamped a row TICKETED with *merged_url*.
     """
     if not cluster_key or not merged_url:
         return False
@@ -475,7 +344,6 @@ def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:
     if row.disposition not in {
         ConsolidatedMemory.Disposition.UNTRIAGED,
         ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
-        ConsolidatedMemory.Disposition.TICKETED,
     }:
         return False
     if row.disposition == ConsolidatedMemory.Disposition.UNTRIAGED:
@@ -486,13 +354,9 @@ def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:
 
 __all__ = [
     "GapSpec",
-    "PromoteGapOutcome",
     "check_gap_checkbox",
-    "gap_anchor_url",
     "gap_present",
-    "promote_gap",
     "reconcile_merged_gaps",
     "render_checkbox_line",
-    "schedule_gap_fix",
     "upsert_gap_checkbox",
 ]
