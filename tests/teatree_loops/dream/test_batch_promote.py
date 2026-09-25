@@ -9,10 +9,12 @@ rows, mirroring ``test_umbrella_ledger.py``'s fixtures.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
+from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import batch_promote as bp
 from teatree.loops.dream.promote_memory import file_core_gap_tickets
@@ -395,13 +397,16 @@ class StampedBatchReconcileTestCase(TestCase):
 
     PR_URL = "https://github.com/souliane/teatree/pull/9100"
 
-    def _stamped_merged_ticket(self, *, delivered: list[str]) -> Ticket:
-        for key in ("gap-a", "gap-b"):
+    def _stamped_merged_ticket(
+        self, *, delivered: list[str], keys: tuple[str, ...] = ("gap-a", "gap-b"), with_pr: bool = True
+    ) -> Ticket:
+        for key in keys:
             _memory(key=key).classify_core_gap()
-        batch = bp.PromotionBatch(pending=[_gap("gap-a"), _gap("gap-b")])
+        batch = bp.PromotionBatch(pending=[_gap(key) for key in keys])
         bp.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
         ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
-        ticket.pull_requests.create(url=self.PR_URL, repo=REPO, iid="9100", state="merged")
+        if with_pr:
+            ticket.pull_requests.create(url=self.PR_URL, repo=REPO, iid="9100", state="merged")
         ticket.state = Ticket.State.MERGED
         ticket.save()
         ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": delivered})
@@ -439,3 +444,55 @@ class StampedBatchReconcileTestCase(TestCase):
         row = ConsolidatedMemory.objects.get(cluster_key="gap-b")
         assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
         assert row.ticket_url == newer
+
+    def _re_promote(self) -> bp.BatchOutcome:
+        batch = bp.PromotionBatch()
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=batch)
+        return bp.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+
+    def _assert_rides_a_fresh_ticket(self, old: Ticket, keys: tuple[str, ...]) -> None:
+        fresh = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).exclude(pk=old.pk).get()
+        assert Task.objects.filter(ticket=fresh, phase="coding").exists()
+        for key in keys:
+            row = ConsolidatedMemory.objects.get(cluster_key=key)
+            assert row.ticket_url == fresh.issue_url
+            assert bp.covering_ticket(key) == fresh
+
+    def test_a_dropped_single_gap_is_re_promoted_into_a_fresh_ticket(self) -> None:
+        old = self._stamped_merged_ticket(delivered=[], keys=("gap-a",))
+        bp.reconcile_batches(_host_with_gap_a_and_b(), umbrella_url=UMBRELLA)
+
+        outcome = self._re_promote()
+
+        assert outcome.scheduled is True
+        self._assert_rides_a_fresh_ticket(old, ("gap-a",))
+
+    def test_a_wholly_dropped_batch_is_re_promoted_into_a_fresh_ticket(self) -> None:
+        old = self._stamped_merged_ticket(delivered=[])
+        bp.reconcile_batches(_host_with_gap_a_and_b(), umbrella_url=UMBRELLA)
+
+        outcome = self._re_promote()
+
+        assert outcome.scheduled is True
+        self._assert_rides_a_fresh_ticket(old, ("gap-a", "gap-b"))
+        assert not ConsolidatedMemory.objects.needs_ticket().exists()
+
+    def test_a_delivered_gap_on_a_merged_ticket_without_a_pr_row_retires_against_the_ticket(self) -> None:
+        ticket = self._stamped_merged_ticket(delivered=["gap-a"], with_pr=False)
+
+        bp.reconcile_batches(_host_with_gap_a_and_b(), umbrella_url=UMBRELLA)
+
+        row = ConsolidatedMemory.objects.get(cluster_key="gap-a")
+        assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+        assert row.archive_path == ticket.issue_url
+
+    def test_a_failed_stamp_rolls_the_batch_ticket_back(self) -> None:
+        _memory(key="gap-a").classify_core_gap()
+        batch = bp.PromotionBatch(pending=[_gap("gap-a")])
+        with (
+            patch.object(ConsolidatedMemory, "mark_ticketed", side_effect=RuntimeError("db down")),
+            pytest.raises(RuntimeError),
+        ):
+            bp.promote_batch(_fake_host(), umbrella_url=UMBRELLA, batch=batch)
+        assert not Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).exists()
+        assert not Task.objects.filter(phase="coding").exists()

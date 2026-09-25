@@ -388,3 +388,28 @@ class StampMemoryMergedTestCase(TestCase):
         assert ul._stamp_memory_merged("gap-1", merged_url=self.PR_URL) is False
         row.refresh_from_db()
         assert row.ticket_url == earlier
+
+
+class ReconcileMergedGapWithoutPrTestCase(TestCase):
+    """A merged legacy gap ticket with no merged PR row still retires its back-filled memory."""
+
+    def test_the_anchor_stamped_row_retires_against_the_ticket(self) -> None:
+        row = _memory()
+        row.classify_core_gap()
+        ticket = Ticket.objects.create(
+            issue_url=f"{UMBRELLA}#dream-gap=gap-1",
+            role=Ticket.Role.AUTHOR,
+            short_description="Fix the gate",
+            extra={"dream_gap_key": "gap-1", "dream_memory_cluster_key": "gap-1", "dream_umbrella_url": UMBRELLA},
+        )
+        row.mark_ticketed(ticket.issue_url)
+        ticket.state = Ticket.State.MERGED
+        ticket.save()
+        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
+        host = _fake_host(body=existing)
+
+        ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
+
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+        assert row.archive_path == ticket.issue_url

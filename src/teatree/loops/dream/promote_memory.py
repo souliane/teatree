@@ -192,10 +192,10 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
     ``groundable`` (core tree OR a memory file) is the test, not ``in_core_tree``
     alone — a memory-destined gap promotes rather than being withheld (#4776).
 
-    A gap already riding a ticket is stamped with that ticket here, so it leaves the
-    queue; a newly queued gap is stamped when :func:`promote_batch` mints its ticket.
+    A gap already riding an unreconciled ticket is stamped with it here, so it leaves
+    the queue; a newly queued gap is stamped when :func:`promote_batch` mints its ticket.
     """
-    from teatree.loops.dream.batch_promote import covering_ticket  # noqa: PLC0415 — tick-time import
+    from teatree.loops.dream.batch_promote import covering_ticket, is_reconciled  # noqa: PLC0415 — tick-time import
     from teatree.loops.dream.umbrella_ledger import GapSpec  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
     verdict = classify_destination(row.durable_destination)
@@ -216,7 +216,8 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
     outcome = batch.consider(
         gap=GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key)
     )
-    if outcome.already_covered and not outcome.withheld and (ticket := covering_ticket(row.cluster_key)):
+    ticket = covering_ticket(row.cluster_key) if outcome.already_covered and not outcome.withheld else None
+    if ticket is not None and not is_reconciled(ticket):
         row.mark_ticketed(ticket.issue_url)
     return TicketOutcome(
         cluster_key=row.cluster_key,

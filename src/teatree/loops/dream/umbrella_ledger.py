@@ -253,12 +253,12 @@ def _in_flight_gap_tickets() -> list[Ticket]:
     )
 
 
-def _merged_pr_url(ticket: Ticket) -> str:
-    """The merged PR URL backing this gap-fix ticket, or ``""`` when none merged."""
+def _merge_evidence_url(ticket: Ticket) -> str:
+    """The merged PR backing this MERGED gap-fix ticket, else the ticket's own url."""
     from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415 — deferred: ORM/app-registry
 
     pr = PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED).first()
-    return pr.url if pr is not None else ""
+    return pr.url if pr is not None else ticket.issue_url
 
 
 def _merge_bearing_ticket(ticket: Ticket) -> Ticket | None:
@@ -303,7 +303,7 @@ def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[T
             continue
         gap_key = str((ticket.extra or {}).get(_GAP_KEY) or "")
         cluster_key = str((ticket.extra or {}).get(_CLUSTER_KEY) or "")
-        merged_url = _merged_pr_url(merge_bearer)
+        merged_url = _merge_evidence_url(merge_bearer)
         if not _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key).is_checked:
             logger.warning("dream reconcile: could not check umbrella box for gap %r — retrying next pass", gap_key)
             continue

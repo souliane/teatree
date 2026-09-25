@@ -239,6 +239,35 @@ class FileCoreGapTicketsTestCase(TestCase):
         assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
         assert row.ticket_url == legacy.issue_url
 
+    def _batch_ticket_covering_k1(self, **extra: object) -> Ticket:
+        return Ticket.objects.create(
+            issue_url=f"{UMBRELLA}#dream-batch=covering",
+            role=Ticket.Role.AUTHOR,
+            short_description="Dream batch",
+            extra={"dream_gap_batch": [{"gap_key": "k1", "cluster_key": "k1"}], **extra},
+        )
+
+    def test_a_row_is_never_attached_to_a_reconciled_ticket(self) -> None:
+        row = _row()
+        row.classify_core_gap()
+        self._batch_ticket_covering_k1(
+            dream_gap_reconciled_at="2026-01-01T00:00:00", dream_gap_claimed_delivered=["k1"]
+        )
+
+        file_core_gap_tickets(umbrella_url=UMBRELLA, batch=PromotionBatch())
+
+        self._assert_still_queued(row)
+
+    def test_a_withheld_row_is_never_back_filled_onto_its_covering_ticket(self) -> None:
+        row = _row()
+        row.classify_core_gap()
+        self._batch_ticket_covering_k1()
+
+        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
+            file_core_gap_tickets(umbrella_url=UMBRELLA, batch=PromotionBatch())
+
+        self._assert_still_queued(row)
+
     def _assert_still_queued(self, row: ConsolidatedMemory) -> None:
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
