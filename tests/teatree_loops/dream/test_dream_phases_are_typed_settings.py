@@ -110,3 +110,13 @@ class TestAReadFailureNeverStopsThePass:
                 lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db blip")),
             )
             assert dream_loop.memory_promote_enabled() is False
+
+    def test_a_memory_rewriting_phase_fails_closed_when_the_read_fails(self) -> None:
+        """Decay archives and merge rewrites memory files, so an unreadable stored ``false`` must not run them."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "teatree.config.get_effective_settings",
+                lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db blip")),
+            )
+            assert dream_loop.decay_enabled() is False
+            assert dream_loop.merge_enabled() is False

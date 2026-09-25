@@ -30,8 +30,9 @@ logger = logging.getLogger(__name__)
 def dream_settings() -> UserSettings:
     """The effective settings; a read failure falls back to the shipped defaults, loudly.
 
-    The fallback never files a ticket: a stored ``dream_memory_promote = false`` is as
-    unreadable as everything else, so the shipped ``true`` must not act in its place.
+    A stored ``false`` is as unreadable as everything else, so the phases that file a
+    ticket (memory promotion) or rewrite memory files (decay, merge) fall back OFF rather
+    than let a shipped ``true`` act in its place.
     """
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: ORM-backed read
 
@@ -39,10 +40,10 @@ def dream_settings() -> UserSettings:
         return get_effective_settings()
     except Exception:
         logger.warning(
-            "dream settings read failed — falling back to the shipped defaults with memory promotion OFF",
+            "dream settings read failed — shipped defaults with memory promotion, decay and merge OFF",
             exc_info=True,
         )
-        return replace(UserSettings(), dream_memory_promote=False)
+        return replace(UserSettings(), dream_memory_promote=False, dream_decay=False, dream_merge=False)
 
 
 def validate_live_enabled() -> bool:
