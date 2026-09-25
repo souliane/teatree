@@ -666,6 +666,14 @@ class TestAShellShapeCannotHideThePush:
         assert "$b" in reason
         assert "fails closed" in reason
 
+    def test_a_current_branch_substitution_is_pointed_at_head(self, work: Path) -> None:
+        """`$(git branch --show-current)` is the common spelling of HEAD; the refusal must say so."""
+        _ours_checked_out_theirs_on_the_remote(work)
+        blocked, payload = _run("git push origin $(git branch --show-current)", work)
+        assert blocked is True
+        assert payload is not None
+        assert "git push origin HEAD" in payload["permissionDecisionReason"]
+
 
 class TestARedirectionIsNotARefspec:
     """A redirection's fd and its target are not push operands."""

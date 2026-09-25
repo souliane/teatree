@@ -258,7 +258,14 @@ def _branches_of(refspecs: tuple[str, ...], spec: PushSpec) -> tuple[tuple[str, 
     branches: list[str] = []
     for refspec in refspecs:
         if _SUBSTITUTION_RE.search(refspec):
-            return (), f"the refspec `{refspec}` (a shell substitution this gate cannot expand)", None
+            return (
+                (),
+                (
+                    f"the refspec `{refspec}` (a shell substitution this gate cannot expand; "
+                    f"to push the checked-out branch, name it as `git push {spec.remote} HEAD`)"
+                ),
+                None,
+            )
         branch, failed = _refspec_branch(refspec, spec)
         if branch is None:
             return (), f"the refspec `{refspec}`", failed
