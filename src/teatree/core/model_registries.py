@@ -16,6 +16,8 @@ overwrites the same key), so a second ``ready()`` (test re-entry, in-process
 
 from typing import TYPE_CHECKING
 
+from teatree.core.review import pr_open_state as _pr_open_state
+
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import PrOpenState
     from teatree.core.models.ticket import Ticket
@@ -37,9 +39,7 @@ def _resolve_overlay_name(name: str) -> str | None:
 
 
 def _read_pr_open_state(ticket: "Ticket") -> "PrOpenState":
-    from teatree.core.review.pr_open_state import read_pr_open_state  # noqa: PLC0415 — deferred: call-time import
-
-    return read_pr_open_state(ticket)
+    return _pr_open_state.read_pr_open_state(ticket)
 
 
 def populate_model_registries() -> None:
