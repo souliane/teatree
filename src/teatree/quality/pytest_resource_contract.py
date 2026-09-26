@@ -25,17 +25,19 @@ def bounded_auto_workers(*, cores: int, memory_mib: int | None, explicit: str | 
     return max(1, min(_LOCAL_MAX_WORKERS, max(1, cores), memory_workers))
 
 
-def whole_tree_refusal(args: list[str], *, root: Path, sharded: bool, tach_scoped: bool = False) -> str:
+def whole_tree_refusal(args: list[str], *, root: Path, sharded: bool, tach_active: bool = False) -> str:
     """Explain an unsharded whole-tree selection before pytest begins collection.
 
-    ``tach_scoped`` deselects at COLLECTION time, so a SCOPED run's explicit
-    ``tests`` root — added alongside ``--doctest-modules`` targets so positionals
-    don't clobber ``testpaths`` (``affected_tests.py::pytest_args``) — is bounded,
-    not a whole-tree request. ``pytest.Config.args`` holds only the leftover
-    positionals, never ``--tach`` itself, so the caller reads that flag off
-    ``config.getoption`` and passes it in rather than it being inferred here (#4856).
+    ``tach_active`` is the impact-analysis plugin's own parsed ``--tach`` option.
+    ``SelectionResult.pytest_args`` emits two SCOPED shapes and neither passes an
+    explicit test id: a flags-only invocation (no changed src modules — ``config.args``
+    is empty) and a ``--doctest-modules`` one that passes the literal ``tests`` root
+    (so the positionals do not clobber ``testpaths``) alongside the changed modules.
+    Read by positional args alone, both look like the accidental bare whole-tree call
+    this guards against; ``--tach`` deselects at collection time regardless of what
+    positionals are given, so it is scoped independently of them.
     """
-    if sharded or tach_scoped:
+    if sharded or tach_active:
         return ""
     tests_root = (root / "tests").resolve()
     selected = [Path(arg) for arg in args if not arg.startswith("-")]
