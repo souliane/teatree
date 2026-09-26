@@ -35,7 +35,7 @@ class TestExternalTicketsScannerScan:
             rows=[
                 (1, "scoped", "https://example.com/1", "foo"),
                 (2, "delivered", "https://example.com/2", "foo"),
-                (3, "started", "https://example.com/3", "foo"),
+                (3, "work_started", "https://example.com/3", "foo"),
             ],
         )
         signals = ExternalTicketsScanner(overlay_name="foo", db_path=db).scan()

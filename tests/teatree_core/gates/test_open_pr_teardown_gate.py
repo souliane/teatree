@@ -89,7 +89,7 @@ class _TeardownHarness(TestCase):
         self.ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/acme-org/backend/-/work_items/1701",
-            state=Ticket.State.SHIPPED,
+            state=Ticket.State.PR_OPENED,
         )
         self.clone = _make_clone(self.tmp, remote=self.remote)
         self.done_dir = self._add_worktree("backend-lint-debt", _DONE_BRANCH)

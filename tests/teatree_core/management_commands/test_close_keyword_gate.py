@@ -38,7 +38,7 @@ pytestmark = pytest.mark.filterwarnings(
 def _shippable_ticket(*, repo: str = "/tmp/wt", branch: str = "feature-x") -> Ticket:
     ticket = Ticket.objects.create(
         overlay="test",
-        state=Ticket.State.REVIEWED,
+        state=Ticket.State.SELF_REVIEWED,
         issue_url="https://example.com/issues/70",
     )
     session = Session.objects.create(overlay="test", ticket=ticket)
@@ -102,7 +102,7 @@ class TestCloseKeywordGateForbiddenOverlay(TestCase):
             call_command("pr", "create", str(ticket.pk))
         assert ctx.value.code != 0
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     @_patch_overlays(FORBID_CLOSE_KEYWORDS_OVERLAY)
     @override_settings(**SETTINGS)
@@ -118,7 +118,7 @@ class TestCloseKeywordGateForbiddenOverlay(TestCase):
             call_command("pr", "create", str(ticket.pk))
         assert ctx.value.code != 0
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     @_patch_overlays(FORBID_CLOSE_KEYWORDS_OVERLAY)
     @override_settings(**SETTINGS)
@@ -144,7 +144,7 @@ class TestCloseKeywordGateForbiddenOverlay(TestCase):
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
 
     @_patch_overlays(FORBID_CLOSE_KEYWORDS_OVERLAY)
@@ -188,7 +188,7 @@ class TestCloseKeywordGateNonForbiddenOverlay(TestCase):
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
 
 

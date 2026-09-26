@@ -79,7 +79,7 @@ class TestSelectForAgentLaunchEmitsCompanionSkills:
         result = policy.select_for_agent_launch(
             cwd=tmp_path,
             overlay_skill_metadata=_IN_SCOPE_OVERLAY_META,
-            ticket_status="started",
+            ticket_status="work_started",
             explicit_phase="",
             explicit_skills=[],
             overlay_active=False,
@@ -107,7 +107,7 @@ class TestSelectForAgentLaunchEmitsCompanionSkills:
         result = policy.select_for_agent_launch(
             cwd=tmp_path,
             overlay_skill_metadata=_IN_SCOPE_OVERLAY_META,
-            ticket_status="started",
+            ticket_status="work_started",
             explicit_phase="",
             explicit_skills=[],
             overlay_active=False,

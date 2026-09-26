@@ -265,7 +265,7 @@ def _subject_coverage(*, text: str, overlay: str) -> Coverage | None:
     for url in urls:
         ticket = (
             Ticket.objects.filter(overlay=overlay, issue_url=url)
-            .exclude(state__in=Ticket._TERMINAL_STATES)  # noqa: SLF001 — the model's SSOT terminal set
+            .exclude(state__in=Ticket._SETTLED_STATES)  # noqa: SLF001 — the model's SSOT terminal set
             .order_by("-pk")
             .first()
         )

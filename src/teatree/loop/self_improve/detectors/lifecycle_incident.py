@@ -195,7 +195,7 @@ class LifecycleIncidentDetector:
     def _failed_tasks(self, now: datetime) -> list[DetectorReport]:
         by_cause: dict[str, list[int]] = defaultdict(list)
         repair_by_cause: dict[str, list[int]] = defaultdict(list)
-        settled = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
+        settled = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
         tasks = (
             Task.objects.filter(status=Task.Status.FAILED)
             .exclude(failure_kind__in=_RECOVERED_KINDS)

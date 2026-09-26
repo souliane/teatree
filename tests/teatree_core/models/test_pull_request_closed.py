@@ -26,7 +26,7 @@ _URL = "https://github.com/acme-org/backend/pull/77"
 
 def _row(state: str = PullRequest.State.OPEN) -> PullRequest:
     return PullRequest.objects.create(
-        ticket=TicketFactory(state=State.SHIPPED),
+        ticket=TicketFactory(state=State.PR_OPENED),
         url=_URL,
         repo="acme-org/backend",
         iid="77",

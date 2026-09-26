@@ -250,13 +250,13 @@ def refresh_followup_snapshot() -> dict[str, int]:
 
 @task()
 def execute_retrospect(ticket_id: int) -> TransitionResult:
-    """Stamp the retro-phase marker for a ticket in the RETROSPECTED state.
+    """Stamp the retro-phase marker for a ticket in the RETRO_RECORDED state.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
     for the same transition — a lost update or a redelivered job must be safe.
 
-    On success, advances ``RETROSPECTED → DELIVERED`` via ``mark_delivered()``.
+    On success, advances ``RETRO_RECORDED → DELIVERED`` via ``mark_delivered()``.
 
     ``RetroPhaseMarker.run()`` runs OUTSIDE the FSM-advance transaction (#1522
     shape, mirroring ``execute_ship``): a short atomic state-check, the runner as
@@ -275,9 +275,9 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.RETROSPECTED:
+        if ticket.state != Ticket.State.RETRO_RECORDED:
             logger.info(
-                "execute_retrospect skipped for ticket %s: state=%s (not RETROSPECTED)",
+                "execute_retrospect skipped for ticket %s: state=%s (not RETRO_RECORDED)",
                 ticket_id,
                 ticket.state,
             )
@@ -291,7 +291,7 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
     try:
         with transaction.atomic():
             ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-            if ticket.state != Ticket.State.RETROSPECTED:
+            if ticket.state != Ticket.State.RETRO_RECORDED:
                 logger.info(
                     "execute_retrospect FSM advance skipped for ticket %s: state=%s (already delivered)",
                     ticket_id,
@@ -330,7 +330,7 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
     for the same transition — a lost update or a redelivered job must be safe.
 
     Runs for any ticket in ``_DONE_TICKET_STATES`` (MERGED / DELIVERED / IGNORED —
-    SHIPPED is excluded because its PR is still open), so an abandoned, delivered,
+    PR_OPENED is excluded because its PR is still open), so an abandoned, delivered,
     or merged ticket purges its worktrees the moment it is done, not only the merge
     paths. Teardown is best-effort: per-worktree errors are reported in the result
     detail but do not advance the ticket. The ticket stays in its terminal state
@@ -479,7 +479,7 @@ class TeardownDispatch:
 
 @task()
 def execute_provision(ticket_id: int) -> TransitionResult:
-    """Provision worktrees for a STARTED ticket and schedule the planning task.
+    """Provision worktrees for a WORK_STARTED ticket and schedule the planning task.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
@@ -508,9 +508,9 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.STARTED:
+        if ticket.state != Ticket.State.WORK_STARTED:
             logger.info(
-                "execute_provision skipped for ticket %s: state=%s (not STARTED)",
+                "execute_provision skipped for ticket %s: state=%s (not WORK_STARTED)",
                 ticket_id,
                 ticket.state,
             )
@@ -526,9 +526,9 @@ def execute_provision(ticket_id: int) -> TransitionResult:
 
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.STARTED:
+        if ticket.state != Ticket.State.WORK_STARTED:
             logger.info(
-                "execute_provision FSM advance skipped for ticket %s: state=%s (already advanced, not STARTED)",
+                "execute_provision FSM advance skipped for ticket %s: state=%s (already advanced, not WORK_STARTED)",
                 ticket_id,
                 ticket.state,
             )
@@ -541,7 +541,7 @@ def execute_provision(ticket_id: int) -> TransitionResult:
         else:
             refusal = _attachment_gate_refusal(ticket)
             if refusal is not None:
-                # Attachments un-fetched: hold at STARTED (like the delivery /
+                # Attachments un-fetched: hold at WORK_STARTED (like the delivery /
                 # trivial skips, but transient). Record a deduped DeferredQuestion
                 # so the hold is a SURFACED escalation, not a silent freeze behind
                 # a gate that reports ok. Running `ticket attachments --fetch`
@@ -587,7 +587,7 @@ def _record_provision_failure_question(ticket: Ticket, detail: str) -> None:
 def _record_attachment_hold_question(ticket: Ticket, refusal: str) -> None:
     """Surface an attachment-gate hold as a durable, deduped ``DeferredQuestion``.
 
-    The intake gate holds a ticket at STARTED when referenced attachments are
+    The intake gate holds a ticket at WORK_STARTED when referenced attachments are
     un-fetched. Without an escalation the ticket silently freezes behind a gate
     that returns ``ok=True``. Deduped per ticket on ``dedupe_marker`` so a
     redelivered/re-run provision collapses to one queued question.
@@ -604,13 +604,13 @@ def _record_attachment_hold_question(ticket: Ticket, refusal: str) -> None:
 
 @task()
 def execute_ship(ticket_id: int) -> TransitionResult:
-    """Push the worktree branch and open the pull request for a SHIPPED ticket.
+    """Push the worktree branch and open the pull request for a PR_OPENED ticket.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
     for the same transition — a lost update or a redelivered job must be safe.
 
-    On success, advances ``SHIPPED → IN_REVIEW`` via ``request_review()``.
+    On success, advances ``PR_OPENED → REVIEW_REQUESTED`` via ``request_review()``.
 
     ``ShipExecutor.run()`` runs OUTSIDE the FSM-advance transaction (#1522):
     it calls ``host.create_pr()``, whose live forge PR is an external side
@@ -623,9 +623,9 @@ def execute_ship(ticket_id: int) -> TransitionResult:
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.SHIPPED:
+        if ticket.state != Ticket.State.PR_OPENED:
             logger.info(
-                "execute_ship skipped for ticket %s: state=%s (not SHIPPED)",
+                "execute_ship skipped for ticket %s: state=%s (not PR_OPENED)",
                 ticket_id,
                 ticket.state,
             )
@@ -638,9 +638,9 @@ def execute_ship(ticket_id: int) -> TransitionResult:
 
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.SHIPPED:
+        if ticket.state != Ticket.State.PR_OPENED:
             logger.info(
-                "execute_ship FSM advance skipped for ticket %s: state=%s (PR already recorded, not SHIPPED)",
+                "execute_ship FSM advance skipped for ticket %s: state=%s (PR already recorded, not PR_OPENED)",
                 ticket_id,
                 ticket.state,
             )

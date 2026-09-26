@@ -201,7 +201,7 @@ class Command(TyperCommand):
             )
 
         # PR-08 review-state gate: refuse a broadcast unless the ticket is
-        # REVIEWED with a recorded review-evidence artifact. NO-OP when
+        # SELF_REVIEWED with a recorded review-evidence artifact. NO-OP when
         # ``require_reviewed_state_for_review_request`` is off (opt-in default),
         # so a normal reviewed-and-cleared flow is never blocked.
         reviewed_state_block = self._reviewed_state_block(ticket_id)
@@ -467,7 +467,7 @@ class Command(TyperCommand):
                 return ""
             return (
                 "request review refused (require_reviewed_state_for_review_request): pass --ticket-id so "
-                "the gate can verify the ticket is REVIEWED with a recorded review-evidence artifact."
+                "the gate can verify the ticket is SELF_REVIEWED with a recorded review-evidence artifact."
             )
         try:
             ticket = Ticket.objects.resolve(ticket_id)

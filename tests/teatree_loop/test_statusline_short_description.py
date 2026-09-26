@@ -20,7 +20,7 @@ def _ticket_active_action(*, number: str, title: str, url: str = "") -> Dispatch
         detail=f"#{number} started",
         payload={
             "ticket_number": number,
-            "state": "started",
+            "state": "work_started",
             "issue_url": url or f"https://example.com/issues/{number}",
             "title": title,
             "overlay": "teatree",
@@ -48,7 +48,7 @@ class TestShortDescriptionInScanner:
         Ticket.objects.create(
             overlay="teatree",
             issue_url="https://example.com/issues/541",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             short_description="fix t3-master hijack",
             extra={"issue_title": "Loop owner ownership hijack — original tracker title"},
         )
@@ -65,7 +65,7 @@ class TestShortDescriptionInScanner:
         Ticket.objects.create(
             overlay="teatree",
             issue_url="https://example.com/issues/542",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             short_description="",
             extra={"issue_title": "Cached tracker title"},
         )
@@ -101,13 +101,13 @@ class TestEveryActiveTicketHasDescriptionChunk:
         Ticket.objects.create(
             overlay="teatree",
             issue_url="https://example.com/issues/1001",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             short_description="multi-loop anchor",
         )
         Ticket.objects.create(
             overlay="teatree",
             issue_url="https://example.com/issues/1002",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             short_description="AI short descriptions",
         )
 

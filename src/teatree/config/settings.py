@@ -579,7 +579,7 @@ class _ReviewGateSettings:
     require_anti_vacuity_attestation: bool = False
     # PR-08 Opt-in review-state gate on the review-request broadcast
     # (``review_request_state_gate``): a broadcast is refused unless the ticket
-    # is REVIEWED with a recorded review-evidence artifact (a ``ReviewEvidence``
+    # is SELF_REVIEWED with a recorded review-evidence artifact (a ``ReviewEvidence``
     # cold-review row or a ``ReviewVerdict`` from the cold-review step). Default
     # false = NO-OP so a normal reviewed-and-cleared flow is never blocked.
     # Per-overlay overridable.
@@ -676,7 +676,7 @@ class _CriticGateSettings:
     # arm the async critic + record ``CriticVerdict`` rows, never raise (the mode that
     # accumulates critic-liveness evidence pre-enablement). ``blocking`` = arm + refuse
     # the delivery on a blocking deterministic finding (fail-closed, the ticket stays
-    # RETROSPECTED). Setting it back to ``advisory`` (recording continues) is the
+    # RETRO_RECORDED). Setting it back to ``advisory`` (recording continues) is the
     # audited never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
     # Per-overlay overridable.
     critic_gate_mode: CriticGateMode = CriticGateMode.OFF

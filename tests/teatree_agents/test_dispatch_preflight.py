@@ -170,7 +170,7 @@ def _reviewing_task_for_pr(*, pr_id: int = _PR_ID) -> Task:
 
 
 def _delivering_ticket(*, criteria: list[str] | None, pr_id: int = _PR_ID) -> Ticket:
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
     PullRequest.objects.create(
         ticket=ticket,
         overlay="t3-teatree",

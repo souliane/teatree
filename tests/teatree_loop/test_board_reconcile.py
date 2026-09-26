@@ -1,6 +1,6 @@
 """Board reconcile — forge truth drives the ticket FSM, on a cadence (#3841, #3840).
 
-The measured wedge: 205 tickets in ``review_posted``, 55 in ``not_started`` and
+The measured wedge: 205 tickets in ``review_delivered``, 55 in ``not_started`` and
 exactly ONE in ``merged`` across 328 rows, with merged PRs rendering in the board's
 NOT STARTED column. Nothing reconciled the FSM against the forge — the only merge
 driver was the keystone (which never sees an out-of-band merge) and the linked-
@@ -110,13 +110,13 @@ class TestMergedPrRowRule(TestCase):
         pre_merged = [
             Ticket.State.NOT_STARTED,
             Ticket.State.SCOPED,
-            Ticket.State.STARTED,
-            Ticket.State.PLANNED,
+            Ticket.State.WORK_STARTED,
+            Ticket.State.PLAN_RECORDED,
             Ticket.State.CODED,
             Ticket.State.TESTED,
-            Ticket.State.REVIEWED,
-            Ticket.State.SHIPPED,
-            Ticket.State.IN_REVIEW,
+            Ticket.State.SELF_REVIEWED,
+            Ticket.State.PR_OPENED,
+            Ticket.State.REVIEW_REQUESTED,
         ]
         for state in pre_merged:
             _merged_pr(Ticket.objects.create(overlay="test", state=state))
@@ -142,13 +142,13 @@ class TestMergedPrRowRule(TestCase):
         assert ticket.state == Ticket.State.NOT_STARTED
 
     def test_post_merged_states_are_never_dragged_backward(self) -> None:
-        for state in (Ticket.State.MERGED, Ticket.State.RETROSPECTED, Ticket.State.DELIVERED, Ticket.State.IGNORED):
+        for state in (Ticket.State.MERGED, Ticket.State.RETRO_RECORDED, Ticket.State.DELIVERED, Ticket.State.IGNORED):
             _merged_pr(Ticket.objects.create(overlay="test", state=state))
 
         assert reconcile_board(probe_forge=False).applied == ()
         assert set(Ticket.objects.values_list("state", flat=True)) == {
             Ticket.State.MERGED,
-            Ticket.State.RETROSPECTED,
+            Ticket.State.RETRO_RECORDED,
             Ticket.State.DELIVERED,
             Ticket.State.IGNORED,
         }
@@ -187,7 +187,7 @@ class TestMergedPrRowRule(TestCase):
     def test_one_poison_ticket_does_not_abort_the_sweep(self) -> None:
         good = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
         _merged_pr(good)
-        bad = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        bad = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         _merged_pr(bad)
 
         real = board_reconcile._advance_to_merged
@@ -205,9 +205,9 @@ class TestMergedPrRowRule(TestCase):
 
 
 class TestReviewerTicketsNeverBecomeAuthoredMerges(TestCase):
-    """A reviewer ticket lands REVIEW_POSTED — never MERGED, on any rule.
+    """A reviewer ticket lands REVIEW_DELIVERED — never MERGED, on any rule.
 
-    ``REVIEW_POSTED`` is excluded from the reconcile sources because driving a
+    ``REVIEW_DELIVERED`` is excluded from the reconcile sources because driving a
     reviewer ticket to MERGED claims teatree authored work it only reviewed. That
     same argument applies to a reviewer ticket sitting in NOT_STARTED, which the
     state-based exclusion does not reach: measured on the live board, 21 of 32
@@ -228,7 +228,7 @@ class TestReviewerTicketsNeverBecomeAuthoredMerges(TestCase):
             report = reconcile_board()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert [t.action for t in report.applied] == [BoardAction.REVIEW_CLOSED]
 
     def test_closed_pr_closes_the_review_instead_of_ignoring(self) -> None:
@@ -238,7 +238,7 @@ class TestReviewerTicketsNeverBecomeAuthoredMerges(TestCase):
             reconcile_board()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
 
     def test_a_merged_pr_row_also_closes_the_review(self) -> None:
         """Rule A carries the identical hazard — a reviewer ticket must not reach MERGED."""
@@ -248,14 +248,14 @@ class TestReviewerTicketsNeverBecomeAuthoredMerges(TestCase):
         report = reconcile_board(probe_forge=False)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert [t.action for t in report.applied] == [BoardAction.REVIEW_CLOSED]
 
     def test_the_merged_pr_row_lane_is_idempotent(self) -> None:
         """The first CORRECT application is what creates the loop, so run 2 is the test.
 
-        Rule A excludes MERGED from its candidates but not REVIEW_POSTED — the state its
-        own reviewer branch targets — and ``mark_review_no_action`` accepts REVIEW_POSTED
+        Rule A excludes MERGED from its candidates but not REVIEW_DELIVERED — the state its
+        own reviewer branch targets — and ``mark_review_no_action`` accepts REVIEW_DELIVERED
         as a source (the #1431 self-transition). Every later pass would re-emit an
         `applied` transition with `from_state == to_state`, claiming a change that did
         not happen, and re-run the transition body's pending-reviewing-task consumption.
@@ -267,7 +267,7 @@ class TestReviewerTicketsNeverBecomeAuthoredMerges(TestCase):
         assert len(reconcile_board(probe_forge=False).applied) == 1
         assert reconcile_board(probe_forge=False).applied == ()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
 
     def test_an_author_ticket_still_reaches_merged(self) -> None:
         """The role branch must not disarm the rule for its real target."""
@@ -390,7 +390,7 @@ class TestForgeMergedRule(TestCase):
         rule E's issue reads — and rule E deliberately DOES read a delivered ticket's
         issue, that being the whole release valve (#4152).
         """
-        for state in (Ticket.State.DELIVERED, Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED):
+        for state in (Ticket.State.DELIVERED, Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED):
             Ticket.objects.create(
                 overlay="t3-teatree",
                 state=state,
@@ -438,28 +438,28 @@ class TestIssueDoneRule(TestCase):
     URL = "https://github.com/souliane/teatree/issues/3841"
 
     def test_completable_ticket_with_a_done_issue_advances(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SHIPPED, issue_url=self.URL)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PR_OPENED, issue_url=self.URL)
 
         with patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}):
             report = reconcile_board()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
         assert [t.action for t in report.applied] == [BoardAction.ADVANCED_DELIVERED]
 
     def test_a_pre_ship_ticket_is_not_advanced_by_a_done_issue(self) -> None:
         """Rule D's walk IS the author ladder, so a pre-ship row must never enter it."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED, issue_url=self.URL)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED, issue_url=self.URL)
 
         with patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}), _rule_f_inert():
             assert reconcile_board().applied == ()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_a_pre_ship_ticket_behind_a_closed_issue_is_retired_by_rule_f_not_advanced(self) -> None:
         """The successor outcome (#4711): the row leaves the board as IGNORED, never DELIVERED."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED, issue_url=self.URL)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED, issue_url=self.URL)
 
         with (
             _forge({}),
@@ -477,25 +477,25 @@ class TestIssueDoneRule(TestCase):
         assert [t.action for t in report.applied] == [BoardAction.IGNORED_ISSUE_CLOSED]
 
     def test_the_issue_done_lane_is_idempotent(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SHIPPED, issue_url=self.URL)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PR_OPENED, issue_url=self.URL)
 
         with patch.object(board_reconcile, "_issue_done_urls", return_value={self.URL}):
             assert len(reconcile_board().applied) == 1
             assert reconcile_board().applied == ()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
 
     def test_a_reviewer_ticket_is_never_walked_through_merged(self) -> None:
         """The third path to the ghost: ``advance_to_delivered`` is the AUTHOR ladder.
 
-        Its walk goes ``shipped → in_review → merged → retrospected``, so a reviewer
+        Its walk goes ``pr_opened → review_requested → merged → retro_recorded``, so a reviewer
         ticket admitted here transits MERGED exactly like rules A/B/C would have —
         equally irreversible. Reachability is currently zero only because GitHub's
         issue parser rejects a ``/pull/`` URL, which is a URL-shape coincidence in a
         GitHub-only install, not a role boundary.
         """
-        for state in (Ticket.State.SHIPPED, Ticket.State.IN_REVIEW, Ticket.State.MERGED):
+        for state in (Ticket.State.PR_OPENED, Ticket.State.REVIEW_REQUESTED, Ticket.State.MERGED):
             reviewer = Ticket.objects.create(
                 overlay="t3-teatree",
                 role=Ticket.Role.REVIEWER,
@@ -527,7 +527,7 @@ class TestReopenedIssueRule(TestCase):
             report = reconcile_board()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert [t.action for t in report.applied] == [BoardAction.REVIVED_REOPENED]
 
     def test_a_delivered_ticket_whose_issue_is_not_reopened_is_left_alone(self) -> None:
@@ -548,7 +548,7 @@ class TestReopenedIssueRule(TestCase):
             assert reconcile_board().applied == ()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_a_reviewer_ticket_is_never_revived(self) -> None:
         """A reviewer ticket's ``issue_url`` IS a PR — rules B/C own it, not this one."""
@@ -568,7 +568,7 @@ class TestReopenedIssueRule(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.DELIVERED
-        assert [t.to_state for t in report.transitions] == [Ticket.State.STARTED]
+        assert [t.to_state for t in report.transitions] == [Ticket.State.WORK_STARTED]
         assert report.applied == ()
 
     def _walk_back_to_delivered(self, ticket: Ticket) -> None:
@@ -639,7 +639,7 @@ class TestReopenedIssueRule(TestCase):
 
         assert probe.call_args.args[1] == self.URL
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert [t.action for t in report.applied] == [BoardAction.REVIVED_REOPENED]
 
     def test_an_unknown_verdict_never_revives(self) -> None:

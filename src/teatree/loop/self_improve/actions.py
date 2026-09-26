@@ -193,7 +193,7 @@ def _record_ticket_followup(report: DetectorReport, *, overlay_name: str) -> Sel
         existing_ticket = firing.ticket
         if existing_ticket is not None:
             _require_ticket_owner(existing_ticket, overlay_name)
-        settled = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
+        settled = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
         if existing_ticket is not None and existing_ticket.state not in settled:
             if not existing_ticket.tasks.exists():
                 create_phase_task(

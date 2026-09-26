@@ -23,7 +23,7 @@ dispatch chokepoint ``loop.phases.orchestrate._dispatchable_filter`` — the sin
 ``Q`` that gates EVERY task dispatch — which excludes tickets under a live lease
 at the DB layer via :func:`live_external_delivery_q`, so NO phase on a
 hand-delivered ticket is ever claimed (the #2217 gap: once the external owner
-hand-advances STARTED -> PLANNED, any non-planning phase was dispatchable despite
+hand-advances WORK_STARTED -> PLAN_RECORDED, any non-planning phase was dispatchable despite
 a live lease). Together they generalise the per-head review dedup
 (``AutoReviewDispatch``) from "is this PR-head already being reviewed?" to the
 unit-level "is this unit already being delivered by someone else?".

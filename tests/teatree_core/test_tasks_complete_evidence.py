@@ -21,7 +21,7 @@ class TestTasksCompleteEvidenceGate(TestCase):
     """
 
     def _claimed_task(self) -> Task:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(
             ticket=ticket,
@@ -32,7 +32,7 @@ class TestTasksCompleteEvidenceGate(TestCase):
         return task
 
     def _failed_task(self) -> Task:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         return Task.objects.create(
             ticket=ticket,

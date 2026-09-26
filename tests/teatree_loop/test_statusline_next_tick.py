@@ -6,7 +6,7 @@ Three behaviours regression-locked here:
     per-loop dump (``loop:owner``, ``loop:self-improve``, ``loop:tick``).
     The user explicitly asked for "time to next tick" on the first line.
 *   Anchor state groups render in priority order — actively-shipping work
-    first (``started``, ``in_review``, ``ready``) before the long
+    first (``work_started``, ``review_requested``, ``ready``) before the long
     ``not_started`` backlog. A 41-deep ``not_started`` no longer pushes
     the actionable rows off-screen.
 *   The ``not_started`` cap tightens to 3 with a clear ``(+N more)``
@@ -514,12 +514,12 @@ class TestAnchorStatePriorityOrder:
     """Anchor state groups render in priority order, not insertion order."""
 
     def test_started_renders_before_coded(self, tmp_path: Path) -> None:
-        # With ``not_started`` and ``in_review`` filtered out of the anchor
+        # With ``not_started`` and ``review_requested`` filtered out of the anchor
         # row (#1377), priority is asserted on the surviving
-        # actively-shipping states: ``started`` before ``coded``.
+        # actively-shipping states: ``work_started`` before ``coded``.
         actions = [
             _active_ticket("100", "coded", overlay="ov"),
-            _active_ticket("200", "started", overlay="ov"),
+            _active_ticket("200", "work_started", overlay="ov"),
         ]
         with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
@@ -536,7 +536,7 @@ class TestActiveStateOverflowCap:
     """Active-state items cap at 5 with ``(+N more)`` overflow phrasing."""
 
     def test_started_caps_at_five(self, tmp_path: Path) -> None:
-        actions = [_active_ticket(str(i), "started", overlay="ov") for i in range(1, 11)]
+        actions = [_active_ticket(str(i), "work_started", overlay="ov") for i in range(1, 11)]
         with patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"

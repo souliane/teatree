@@ -248,7 +248,7 @@ class TestStepTwoUnreadableHeadCarriesTheSameAdvisory(TestCase):
     """The sibling unreadable-head site: the §17.4.3 step-2 re-read after reconciliation."""
 
     def test_unresolved_live_head_names_the_venue_cause(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=_PR_ID,

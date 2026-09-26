@@ -60,7 +60,7 @@ plus the phase artifact ONLY for a lease-loss failure — an unrelated PR, or a 
 other reviewer recorded, must not excuse a deterministic defect) — is NOT escalated: it is
 a dead artifact of an earlier interrupted run while the ticket advanced on its own, retired
 COMPLETED silently (fixes 3366/3336/3352 and the shipping task that opened its PR, reached
-IN_REVIEW, then lost its lease — #3982).
+REVIEW_REQUESTED, then lost its lease — #3982).
 
 A FAILED task WITH A LIVE SUCCESSOR — a newer, still-active (PENDING/CLAIMED) sibling
 Task on the same ``(ticket, phase)`` — is PARKED (left FAILED, stamped out of every
@@ -352,7 +352,7 @@ def _non_terminal_failed_tasks() -> list[Task]:
     """
     return list(
         Task.objects.filter(status=Task.Status.FAILED)
-        .exclude(ticket__state__in=Ticket._TERMINAL_STATES)  # noqa: SLF001 — the model's SSOT terminal set
+        .exclude(ticket__state__in=Ticket._SETTLED_STATES)  # noqa: SLF001 — the model's SSOT terminal set
         .exclude(execution_reason__contains=HALT_STAMP)
         .exclude(execution_reason__contains=LIVE_SUCCESSOR_STAMP)
         .exclude(execution_reason__contains=SUPERSEDED_HEAD_STAMP)

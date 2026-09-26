@@ -4,7 +4,7 @@ Codex finding (umbrella #1282 item 3, high blast): the shipping gate
 consumes ``Ticket.aggregate_phase_records()`` — the UNION of
 ``visited_phases`` across every session attached to the ticket. When a
 ticket is reused for a second workstream (the FSM ``reopen()`` from
-SHIPPED/MERGED/IN_REVIEW/RETROSPECTED, or the idempotent
+PR_OPENED/MERGED/REVIEW_REQUESTED/RETRO_RECORDED, or the idempotent
 ``workspace ticket <url>`` on a previously-shipped ticket), the prior
 workstream's ``testing``/``reviewing`` attestations remain in the union
 and false-pass the new workstream's gate. ``AGENTS.md`` § "Reused-ticket
@@ -37,7 +37,7 @@ class TestReopenClearsPhaseLedger(TestCase):
     """
 
     def test_reopen_clears_prior_workstream_visited_phases(self) -> None:
-        ticket = _ticket(state=Ticket.State.SHIPPED)
+        ticket = _ticket(state=Ticket.State.PR_OPENED)
         prior = Session.objects.create(ticket=ticket, agent_id="prior-loop")
         prior.visit_phase("coding", agent_id="prior-loop")
         prior.visit_phase("testing", agent_id="prior-loop")
@@ -72,7 +72,7 @@ class TestReopenClearsPhaseLedger(TestCase):
         )
 
     def test_reopen_clears_every_session_across_the_ticket(self) -> None:
-        ticket = _ticket(state=Ticket.State.SHIPPED)
+        ticket = _ticket(state=Ticket.State.PR_OPENED)
         s1 = Session.objects.create(ticket=ticket, agent_id="coding")
         s1.visit_phase("coding", agent_id="coding")
         s2 = Session.objects.create(ticket=ticket, agent_id="testing")
@@ -96,7 +96,7 @@ class TestReopenClearsPhaseLedger(TestCase):
         coding-only session for the next workstream must **not** false-pass
         the shipping gate on the prior workstream's testing/reviewing.
         """
-        ticket = _ticket(state=Ticket.State.SHIPPED)
+        ticket = _ticket(state=Ticket.State.PR_OPENED)
         prior = Session.objects.create(ticket=ticket, agent_id="prior-loop")
         prior.visit_phase("coding", agent_id="prior-loop")
         prior.visit_phase("testing", agent_id="prior-loop")

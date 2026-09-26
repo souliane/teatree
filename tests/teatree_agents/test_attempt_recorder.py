@@ -69,7 +69,7 @@ class TestValidateResultKeys(TestCase):
 
 class TestRecordResultEnvelope(TestCase):
     def _claimed(self, *, phase: str = "coding") -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         task.claim(claimed_by="loop-slot")
@@ -82,7 +82,7 @@ class TestRecordResultEnvelope(TestCase):
         task.refresh_from_db()
         task.ticket.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert task.ticket.state == Ticket.State.STARTED
+        assert task.ticket.state == Ticket.State.WORK_STARTED
         # The offending blob is persisted on the FAILED attempt for debuggability,
         # not discarded (PR-3): a failure the operator cannot inspect is a dead end.
         assert attempt.result == blob
@@ -175,7 +175,7 @@ class TestLandingVerifiedCompletion(TestCase):
         self._tmp_path = tmp_path
 
     def _claimed(self, *, phase: str = "coding") -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         task.claim(claimed_by="loop-slot")
@@ -244,7 +244,7 @@ class TestLandingVerifiedCompletion(TestCase):
         task.ticket.refresh_from_db()
         latest = task.attempts.order_by("-pk").first()
         assert task.status == Task.Status.FAILED
-        assert task.ticket.state == Ticket.State.STARTED  # FSM did NOT advance
+        assert task.ticket.state == Ticket.State.WORK_STARTED  # FSM did NOT advance
         assert latest is not None
         assert latest.error.startswith("landing_unverified:")
 
@@ -315,7 +315,7 @@ class TestScanningNewsEnvelopeChannel(TestCase):
     """A shell-denied scanning_news agent hands candidates back through the envelope (#9)."""
 
     def _claimed(self) -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="acme")
         session = Session.objects.create(ticket=ticket, agent_id="scanning_news")
         task = Task.objects.create(ticket=ticket, session=session, phase="scanning_news")
         task.claim(claimed_by="loop-slot")
@@ -393,7 +393,7 @@ class TestTriageAssessingEnvelopeChannel(TestCase):
     """A shell-denied triage_assessing agent hands recommendations back through the envelope (#9)."""
 
     def _claimed(self) -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="acme")
         session = Session.objects.create(ticket=ticket, agent_id="triage_assessing")
         task = Task.objects.create(ticket=ticket, session=session, phase="triage_assessing")
         task.claim(claimed_by="loop-slot")
@@ -456,7 +456,7 @@ class TestAnsweringEnvelopeChannel(TestCase):
     """A shell-denied answering agent hands its draft back for approval-gated posting (#9)."""
 
     def _claimed(self) -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="acme")
         session = Session.objects.create(ticket=ticket, agent_id="answering")
         task = Task.objects.create(ticket=ticket, session=session, phase="answering")
         task.claim(claimed_by="loop-slot")
@@ -506,7 +506,7 @@ class TestOwnerDmAnsweringRepliesInThread(TestCase):
     def _owner_dm_task(self, *, channel: str = "D0OWNER", slack_ts: str = "1784474278.074869") -> Task:
         ticket = Ticket.objects.create(
             role=Ticket.Role.AUTHOR,
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             overlay="acme",
             extra={"slack_answer": {"channel": channel, "slack_ts": slack_ts, "question": "test"}},
         )
@@ -553,7 +553,7 @@ class TestOwnerDmAnsweringRepliesInThread(TestCase):
     def test_non_owner_answering_still_uses_the_approval_gate(self) -> None:
         # No slack_answer context (an on-behalf colleague/channel reply): the
         # approval gate is unchanged.
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="acme")
         session = Session.objects.create(ticket=ticket, agent_id="answering")
         task = Task.objects.create(ticket=ticket, session=session, phase="answering")
         task.claim(claimed_by="loop-slot")

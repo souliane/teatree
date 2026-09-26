@@ -36,7 +36,7 @@ Both are pure functions over the durable rubric row, mirroring
 :class:`RubricNotSatisfiedError`, which the merge precondition gate re-wraps as a
 ``MergePreconditionError``; the delivery block raises :class:`RubricNotVerifiedError`,
 an ``InvalidTransitionError`` so the loop's outer atomic rolls the advance back and the
-ticket stays RETROSPECTED — merged on the forge, not yet *done*.
+ticket stays RETRO_RECORDED — merged on the forge, not yet *done*.
 """
 
 from typing import TYPE_CHECKING

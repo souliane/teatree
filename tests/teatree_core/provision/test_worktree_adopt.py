@@ -127,7 +127,7 @@ class TestReopenTicketForFollowup(TestCase):
         reopen_ticket_for_followup(ticket)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_delivered_reopens_to_reviewed(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.DELIVERED)
@@ -135,17 +135,17 @@ class TestReopenTicketForFollowup(TestCase):
         reopen_ticket_for_followup(ticket)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_shipped_is_left_untouched(self) -> None:
-        # SHIPPED is already a legal ship() source — the edge must not fire and
-        # drag it backward to REVIEWED.
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SHIPPED)
+        # PR_OPENED is already a legal ship() source — the edge must not fire and
+        # drag it backward to SELF_REVIEWED.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PR_OPENED)
 
         reopen_ticket_for_followup(ticket)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_ignored_is_left_untouched(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IGNORED)

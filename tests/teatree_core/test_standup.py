@@ -63,39 +63,39 @@ class GenerateStandupTests(TestCase):
 
     def test_transition_within_window_is_reported(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=3)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=3)
         report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
         assert len(report.yesterday) == 1
         line = report.yesterday[0]
         assert line.ticket_number == "42"
-        assert line.from_state == Ticket.State.STARTED
+        assert line.from_state == Ticket.State.WORK_STARTED
         assert line.to_state == Ticket.State.CODED
 
     def test_multiple_transitions_collapse_to_latest(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.SCOPED, to=Ticket.State.STARTED, hours_ago=6)
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+        self._transition(ticket, frm=Ticket.State.SCOPED, to=Ticket.State.WORK_STARTED, hours_ago=6)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
         report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
         assert len(report.yesterday) == 1
-        assert report.yesterday[0].from_state == Ticket.State.STARTED
+        assert report.yesterday[0].from_state == Ticket.State.WORK_STARTED
         assert report.yesterday[0].to_state == Ticket.State.CODED
 
     def test_transition_outside_window_excluded(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=48)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=48)
         report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
         assert report.yesterday == []
 
     def test_attempt_counts_aggregated_per_ticket(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=3)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=3)
         self._attempt(ticket, hours_ago=2)
         self._attempt(ticket, hours_ago=1)
         report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
         assert report.yesterday[0].attempt_count == 2
 
     def test_failed_attempt_surfaces_blocker(self) -> None:
-        ticket = self._ticket(state=Ticket.State.STARTED)
+        ticket = self._ticket(state=Ticket.State.WORK_STARTED)
         self._attempt(ticket, hours_ago=2, exit_code=1)
         report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
         assert len(report.blockers) == 1
@@ -103,19 +103,19 @@ class GenerateStandupTests(TestCase):
 
     def test_overlay_isolation(self) -> None:
         mine = self._ticket(number=1)
-        self._transition(mine, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=2)
+        self._transition(mine, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=2)
         other = Ticket.objects.create(
             overlay="other",
             issue_url="https://example.com/issues/2",
             state=Ticket.State.CODED,
         )
-        self._transition(other, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=2)
+        self._transition(other, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=2)
         report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
         assert [line.ticket_number for line in report.yesterday] == ["1"]
 
     def test_git_log_collector_is_injected_and_optional(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=2)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=2)
 
         def fake_commits(_ticket: Ticket) -> list[str]:
             return ["abc123 fix the thing"]
@@ -129,7 +129,7 @@ class GenerateStandupTests(TestCase):
 
     def test_render_markdown_is_pure_string(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=2)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=2)
         report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
         md = report.to_markdown()
         assert md.startswith("## Yesterday")
@@ -138,7 +138,7 @@ class GenerateStandupTests(TestCase):
 
     def test_to_dict_is_json_safe(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=2)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=2)
         report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
         payload = report.to_dict()
         yesterday = cast("list[dict[str, object]]", payload["yesterday"])
@@ -147,15 +147,15 @@ class GenerateStandupTests(TestCase):
 
     def test_generator_does_not_mutate_state(self) -> None:
         ticket = self._ticket()
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=2)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=2)
         generate_standup(since=self.since, overlay_name=self.OVERLAY)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.CODED
         assert TicketTransition.objects.count() == 1
 
     def test_markdown_renders_blockers_and_commits(self) -> None:
-        ticket = self._ticket(state=Ticket.State.STARTED)
-        self._transition(ticket, frm=Ticket.State.NOT_STARTED, to=Ticket.State.STARTED, hours_ago=2)
+        ticket = self._ticket(state=Ticket.State.WORK_STARTED)
+        self._transition(ticket, frm=Ticket.State.NOT_STARTED, to=Ticket.State.WORK_STARTED, hours_ago=2)
         self._attempt(ticket, hours_ago=1, exit_code=1)
         report = generate_standup(
             since=self.since,
@@ -164,7 +164,7 @@ class GenerateStandupTests(TestCase):
         )
         md = report.to_markdown()
         assert "  abc1234 wip" in md
-        assert "failed agent run(s) in started" in md
+        assert "failed agent run(s) in work_started" in md
         payload = report.to_dict()
         blockers = cast("list[dict[str, object]]", payload["blockers"])
         assert blockers[0]["failure_count"] == 1
@@ -179,15 +179,15 @@ class GenerateStandupTests(TestCase):
         line = StandupLine(
             ticket_number="1",
             ticket_state="coded",
-            from_state="started",
+            from_state="work_started",
             to_state="coded",
             attempt_count=1,
         )
         assert "1 agent run)" in line.render()
 
     def test_standup_blocker_render(self) -> None:
-        blocker = StandupBlocker(ticket_number="9", ticket_state="started", failure_count=2)
-        assert blocker.render() == "- TICKET-9: 2 failed agent run(s) in started"
+        blocker = StandupBlocker(ticket_number="9", ticket_state="work_started", failure_count=2)
+        assert blocker.render() == "- TICKET-9: 2 failed agent run(s) in work_started"
 
     def test_standup_line_renders_title_inline(self) -> None:
         # #2092: the recap line carries the ticket title inline next to the id,
@@ -196,7 +196,7 @@ class GenerateStandupTests(TestCase):
         line = StandupLine(
             ticket_number="1",
             ticket_state="coded",
-            from_state="started",
+            from_state="work_started",
             to_state="coded",
             attempt_count=1,
             title="fix the broken widget",
@@ -205,14 +205,14 @@ class GenerateStandupTests(TestCase):
         assert "TICKET-1 (fix the broken widget)" in line.render()
 
     def test_standup_blocker_renders_title_inline(self) -> None:
-        blocker = StandupBlocker(ticket_number="9", ticket_state="started", failure_count=2, title="land the eval")
+        blocker = StandupBlocker(ticket_number="9", ticket_state="work_started", failure_count=2, title="land the eval")
         assert "TICKET-9 (land the eval)" in blocker.render()
 
     def test_generated_standup_carries_ticket_title(self) -> None:
         ticket = self._ticket()
         ticket.short_description = "fix the broken widget"
         ticket.save(update_fields=["short_description"])
-        self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=2)
+        self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=2)
         report = generate_standup(since=self.since, overlay_name=self.OVERLAY)
         assert report.yesterday[0].title == "fix the broken widget"
         assert "fix the broken widget" in report.to_markdown()
@@ -232,7 +232,7 @@ class GenerateStandupTests(TestCase):
             git.run_strict(repo=rp, args=["commit", "-q", "-m", "standup test commit"])
 
             ticket = self._ticket(number=321)
-            self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+            self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
             # An empty-path worktree is skipped; the real repo is read.
             Worktree.objects.create(
                 ticket=ticket,
@@ -260,7 +260,7 @@ class GenerateStandupTests(TestCase):
             not_a_repo = Path(tmp) / "plain"
             not_a_repo.mkdir()
             ticket = self._ticket(number=654)
-            self._transition(ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+            self._transition(ticket, frm=Ticket.State.WORK_STARTED, to=Ticket.State.CODED, hours_ago=1)
             Worktree.objects.create(
                 ticket=ticket,
                 overlay=self.OVERLAY,

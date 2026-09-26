@@ -82,8 +82,8 @@ def _capture_block(data: dict) -> tuple[bool, dict | None]:
 
 
 def _started_ticket_in_repo(toplevel: str, repo_path: str = "backend") -> None:
-    """Seed a STARTED ticket + Worktree row for *toplevel*."""
-    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+    """Seed a WORK_STARTED ticket + Worktree row for *toplevel*."""
+    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
     Worktree.objects.create(
         overlay="test",
         ticket=ticket,

@@ -295,7 +295,7 @@ class TestNoResultEnvelopeGuard(TestCase):
     """
 
     def _task(self, *, phase: str) -> Task:
-        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")
         return Task.objects.create(ticket=ticket, session=session, phase=phase)
 
@@ -388,7 +388,7 @@ class TestNoResultEnvelopeGuardLeavesEvidenceGatedPhasesAlone(TestCase):
         self._tmp_path = tmp_path
 
     def test_coding_prose_only_with_a_landed_commit_is_still_salvaged(self) -> None:
-        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         repo_dir = self._tmp_path / f"repo-{ticket.pk}"

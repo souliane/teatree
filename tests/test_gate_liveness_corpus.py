@@ -297,13 +297,13 @@ def _arrange_skill_loading(ctx: GateContext) -> None:
 
 
 # block-edit-before-planned (PreToolUse Edit/Write): deny Edit/Write when the
-# worktree's ticket is still in STARTED state (no PlanArtifact yet).
+# worktree's ticket is still in WORK_STARTED state (no PlanArtifact yet).
 # _ticket_state_for_cwd() resolves via Django/DB, so the corpus monkeypatches it
 # directly rather than spinning up Django.
 
 
 def _arrange_block_edit_before_planned(ctx: GateContext) -> None:
-    ctx.monkeypatch.setattr(router, "_ticket_state_for_cwd", lambda _cwd: "started")
+    ctx.monkeypatch.setattr(router, "_ticket_state_for_cwd", lambda _cwd: "work_started")
 
 
 def _block_edit_before_planned_deny(ctx: GateContext) -> dict:
@@ -316,7 +316,7 @@ def _block_edit_before_planned_deny(ctx: GateContext) -> dict:
 
 
 def _block_edit_before_planned_allow(ctx: GateContext) -> dict:
-    ctx.monkeypatch.setattr(router, "_ticket_state_for_cwd", lambda _cwd: "planned")
+    ctx.monkeypatch.setattr(router, "_ticket_state_for_cwd", lambda _cwd: "plan_recorded")
     return {
         "session_id": ctx.session_id,
         "tool_name": "Edit",

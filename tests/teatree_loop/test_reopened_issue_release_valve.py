@@ -62,7 +62,7 @@ class TestDeliveredIsNotTheEndOfEveryPath(TestCase):
             reconcile_board()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
         _age_activity(ticket)
         assert redispatch_stuck_tickets() == 1

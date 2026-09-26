@@ -26,9 +26,9 @@ from teatree.utils import git
 from teatree.utils.git_worktree_query import canonical_repo_root
 
 # The terminal states a follow-up adoption must reopen to reach a shippable FSM
-# state. Only MERGED/DELIVERED need the dedicated edge: SHIPPED is already a
-# legal ``ship()`` source and IN_REVIEW/RETROSPECTED are legal
-# ``reconcile_reviewed`` sources (the shipping gate walks them to REVIEWED).
+# state. Only MERGED/DELIVERED need the dedicated edge: PR_OPENED is already a
+# legal ``ship()`` source and REVIEW_REQUESTED/RETRO_RECORDED are legal
+# ``reconcile_reviewed`` sources (the shipping gate walks them to SELF_REVIEWED).
 # IGNORED (abandoned) is deliberately absent — an abandoned ticket is not
 # reopened for a new PR.
 _FOLLOWUP_REOPEN_STATES: frozenset[str] = frozenset(
@@ -150,7 +150,7 @@ def adopt_worktree_for_ticket(ticket: Ticket, *, cwd: str) -> Worktree:
 
 
 def reopen_ticket_for_followup(ticket: Ticket) -> None:
-    """Reopen a terminally-shipped *ticket* to REVIEWED so a follow-up ``ship()`` is legal.
+    """Reopen a terminally-shipped *ticket* to SELF_REVIEWED so a follow-up ``ship()`` is legal.
 
     A no-op unless the ticket sits in a state with no path back to a shippable
     one (:data:`_FOLLOWUP_REOPEN_STATES` — MERGED/DELIVERED). Fired by

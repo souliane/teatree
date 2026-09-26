@@ -13,7 +13,7 @@ The other two only **report** — the dispatcher sends them to the statusline
 ``action_needed`` zone, because whether a reassignment or a pulled label should
 cancel the work is the operator's call.
 
-The walked set is ``Ticket.pre_ship_states()``, every state before SHIPPED.
+The walked set is ``Ticket.pre_ship_states()``, every state before PR_OPENED.
 Past that a PR exists and the question is completion rather than
 cancellation — ``TicketCompletionScanner`` and ``MyPrsScanner`` own it.
 """

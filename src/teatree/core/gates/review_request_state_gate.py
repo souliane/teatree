@@ -1,17 +1,17 @@
 """Review-state gate on the review-request broadcast (PR-08).
 
 The hole this forecloses: a review-request broadcast goes out for a ticket
-whose FSM never reached REVIEWED (no cold review ran) — colleagues are pinged
+whose FSM never reached SELF_REVIEWED (no cold review ran) — colleagues are pinged
 to review work that was not itself reviewed first. Skill prose says "review
 before you request review", but nothing mechanically refuses the broadcast.
 
 This is the structural gate. A broadcast is refused unless BOTH hold:
 
-* the ticket's FSM has passed the ``REVIEWED`` milestone — it is REVIEWED or a
-    later maker state (SHIPPED/IN_REVIEW/…). The broadcast fires at
-    ``request_review`` time (SHIPPED → IN_REVIEW), so a canonically-progressed
-    ticket is in SHIPPED/IN_REVIEW, not the momentary REVIEWED, when its request
-    goes out — a strict ``state == REVIEWED`` check over-blocked every such
+* the ticket's FSM has passed the ``SELF_REVIEWED`` milestone — it is SELF_REVIEWED or a
+    later maker state (PR_OPENED/REVIEW_REQUESTED/…). The broadcast fires at
+    ``request_review`` time (PR_OPENED → REVIEW_REQUESTED), so a canonically-progressed
+    ticket is in PR_OPENED/REVIEW_REQUESTED, not the momentary SELF_REVIEWED, when its request
+    goes out — a strict ``state == SELF_REVIEWED`` check over-blocked every such
     ticket (PR-08b). :func:`~teatree.core.models.ticket_review_state.has_passed_review`
     is the canonical predicate; pre-review states are still refused.
 * a recorded review-evidence artifact exists — a
@@ -79,10 +79,10 @@ def check_reviewed_state(ticket: "Ticket") -> str:
 
     NO-OP (returns ``""``) when ``require_reviewed_state_for_review_request``
     is off. Otherwise refuses — naming the missing precondition — unless the
-    ticket has passed the ``REVIEWED`` milestone AND a review-evidence artifact
-    exists. "Passed review" accepts REVIEWED or any later maker state
+    ticket has passed the ``SELF_REVIEWED`` milestone AND a review-evidence artifact
+    exists. "Passed review" accepts SELF_REVIEWED or any later maker state
     (see :func:`~teatree.core.models.ticket_review_state.has_passed_review`), so a
-    ticket already advanced to SHIPPED/IN_REVIEW by the time its broadcast fires
+    ticket already advanced to PR_OPENED/REVIEW_REQUESTED by the time its broadcast fires
     is not over-blocked (PR-08b).
     """
     if not reviewed_state_required(ticket.overlay or None):
@@ -91,8 +91,8 @@ def check_reviewed_state(ticket: "Ticket") -> str:
     if not has_passed_review(ticket):
         return (
             f"request review refused (require_reviewed_state_for_review_request): ticket {ticket.pk} is "
-            f"in state {ticket.state!r}, before the REVIEWED milestone — a cold review must run and the "
-            f"ticket reach REVIEWED before its review request broadcasts. Advance it through review first."
+            f"in state {ticket.state!r}, before the SELF_REVIEWED milestone — a cold review must run and the "
+            f"ticket reach SELF_REVIEWED before its review request broadcasts. Advance it through review first."
         )
     if not has_review_evidence(ticket):
         return (

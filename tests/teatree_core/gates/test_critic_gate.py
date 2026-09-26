@@ -7,7 +7,7 @@ self-declared key — a verdict flagging one is mirrored to a CriticFinding but 
 blocks. On mark_delivered the async LLM critic is ENQUEUED when no fresh verdict covers
 the head. The tri-state ``critic_gate_mode`` (#104): OFF records advisory findings and
 reaches DELIVERED (no async dispatch); ADVISORY arms the async critic but never blocks;
-BLOCKING blocks on a deterministic finding and stays RETROSPECTED. The blocking mode's findings
+BLOCKING blocks on a deterministic finding and stays RETRO_RECORDED. The blocking mode's findings
 SURVIVE the delivery atomic's rollback (execute_retrospect's after-the-block re-record).
 Anti-vacuity: with the critic gate neutralised the flawed delivery advances even under
 enforcement. No fixture injects an ``extra['critic']`` key — every producer is real
@@ -84,12 +84,12 @@ def _merge_audit(ticket: Ticket) -> None:
 
 
 def _clean_delivered_ticket() -> Ticket:
-    """A RETROSPECTED ticket clean on all 3 deterministic items: adequate plan + merge audit + no open ACs.
+    """A RETRO_RECORDED ticket clean on all 3 deterministic items: adequate plan + merge audit + no open ACs.
 
     The all-negated manifest declares no acceptance criteria, which is the plan-recorded
     waiver ``completeness`` honours — so the twin is clean without a graded rubric.
     """
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
     PlanArtifact.objects.create(
         ticket=ticket,
         plan_text="plan body",
@@ -316,7 +316,7 @@ class TestCriticFsmGate(TestCase):
         _strip_merge_evidence(ticket)
         with _mode(CriticGateMode.BLOCKING), pytest.raises(CriticGateError):
             ticket.mark_delivered()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
 
     def test_gate_is_load_bearing(self) -> None:
         ticket = _clean_delivered_ticket()
@@ -350,7 +350,7 @@ class TestEnforcingBlockFindingsSurviveRollback(TestCase):
             result = core_tasks.execute_retrospect.func(ticket.pk)
         ticket.refresh_from_db()
         assert result["ok"] is False
-        assert ticket.state == Ticket.State.RETROSPECTED  # the delivery was refused
+        assert ticket.state == Ticket.State.RETRO_RECORDED  # the delivery was refused
         assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()  # survived rollback
 
     def test_retro_phase_marker_survives_the_enforcing_block(self) -> None:
@@ -366,7 +366,7 @@ class TestEnforcingBlockFindingsSurviveRollback(TestCase):
             result = core_tasks.execute_retrospect.func(ticket.pk)
         ticket.refresh_from_db()
         assert result["ok"] is False
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
         assert ticket.extra.get("retro_scheduled") is True
 
 
@@ -420,7 +420,7 @@ class TestTransitionScoping(TestCase):
     """
 
     def test_run_critic_ignores_a_foreign_transition_item(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         foreign = CriticRubricItem(
             slug="plan_transition_probe",
             adversarial_question="a plan-transition item must not run at mark_delivered",

@@ -23,7 +23,7 @@ from teatree.loop.scanners.stale_tickets import StaleTicketsScanner
 class StaleTicketsScannerTests(TestCase):
     OVERLAY = "acme"
 
-    def _ticket(self, *, state: str = Ticket.State.STARTED, number: int = 42) -> Ticket:
+    def _ticket(self, *, state: str = Ticket.State.WORK_STARTED, number: int = 42) -> Ticket:
         return Ticket.objects.create(
             overlay=self.OVERLAY,
             issue_url=f"https://example.com/issues/{number}",
@@ -67,7 +67,7 @@ class StaleTicketsScannerTests(TestCase):
         assert signals[0].kind == "ticket.stale"
         assert signals[0].payload["ticket_id"] == ticket.pk
         assert signals[0].payload["age_days"] == 5
-        assert signals[0].payload["ticket_state"] == Ticket.State.STARTED
+        assert signals[0].payload["ticket_state"] == Ticket.State.WORK_STARTED
         # Concise summary (no "stale in <state>" filler) — the statusline
         # collapses these into one linked line per overlay.
         assert signals[0].summary == f"#{ticket.ticket_number} stale (5d)"
@@ -123,7 +123,7 @@ class StaleTicketsScannerTests(TestCase):
         other = Ticket.objects.create(
             overlay="other",
             issue_url="https://example.com/issues/2",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
         )
         self._backdate_attempt(other, days=8)
         signals = self._scanner().scan()
@@ -134,4 +134,4 @@ class StaleTicketsScannerTests(TestCase):
         self._backdate_attempt(ticket, days=12)
         self._scanner().scan()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED

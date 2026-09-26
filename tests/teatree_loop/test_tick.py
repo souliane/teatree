@@ -650,7 +650,7 @@ def test_active_tickets_shown_in_anchors() -> None:
             kind="statusline",
             zone="anchors",
             detail="#123 started",
-            payload={"overlay": "acme", "ticket_number": "123", "state": "started"},
+            payload={"overlay": "acme", "ticket_number": "123", "state": "work_started"},
         ),
         DispatchAction(
             kind="statusline",
@@ -727,7 +727,7 @@ class TestTickReapsStaleClaims(django.test.TestCase):
 
         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         stale = Task.objects.create(
             ticket=ticket,
@@ -830,7 +830,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
         """#883: a tick recovers a ticket left half-advanced by a crash.
 
         A coding task COMPLETED but the FSM ``code()`` transition was
-        lost to a mid-transition crash, so the ticket is still PLANNED.
+        lost to a mid-transition crash, so the ticket is still PLAN_RECORDED.
         The task is COMPLETED (not CLAIMED) — the claim sweeps cannot see
         it. A fresh tick must run ``replay_orphaned_transitions`` from
         the same boot/tick recovery hook and advance the ticket so the
@@ -840,7 +840,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
 
         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         Task.objects.create(
             ticket=ticket,
@@ -858,7 +858,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
     def test_valueerror_in_one_ticket_does_not_abort_sweep_or_tick(self) -> None:
         """A ValueError-family error from _apply_phase_transition must not crash the whole tick.
 
-        Regression for the factory-wedge class: a shipping task on a REVIEWED ticket
+        Regression for the factory-wedge class: a shipping task on a SELF_REVIEWED ticket
         whose session has no testing/reviewing attestations raises QualityGateError
         (a ValueError subclass) during replay. The old suppress(RuntimeError) does not
         catch it, so the entire _reap_stale_task_claims call — and with it
@@ -878,9 +878,9 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
 
         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
 
-        # Stuck ticket: REVIEWED + shipping task COMPLETED but session has no
+        # Stuck ticket: SELF_REVIEWED + shipping task COMPLETED but session has no
         # testing/reviewing attestations → _apply_phase_transition raises QualityGateError.
-        stuck_ticket = Ticket.objects.create(state=Ticket.State.REVIEWED)
+        stuck_ticket = Ticket.objects.create(state=Ticket.State.SELF_REVIEWED)
         stuck_session = Session.objects.create(ticket=stuck_ticket, agent_id="ship-agent")
         Task.objects.create(
             ticket=stuck_ticket,
@@ -890,7 +890,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
         )
 
         # Healthy ticket: half-advanced coding task that replay should recover.
-        healthy_ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+        healthy_ticket = Ticket.objects.create(state=Ticket.State.PLAN_RECORDED)
         healthy_session = Session.objects.create(ticket=healthy_ticket, agent_id="code-agent")
         Task.objects.create(
             ticket=healthy_ticket,
@@ -904,7 +904,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
         # ticket. reclaim_orphaned_claims runs before reap_stale_claims in the same
         # _reap_stale_task_claims call, so returning this task to PENDING confirms
         # that the claim sweeps were not skipped by the replay error.
-        orphan_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        orphan_ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         orphan_session = Session.objects.create(ticket=orphan_ticket, agent_id="stale-agent")
         orphan_task = Task.objects.create(
             ticket=orphan_ticket,
@@ -924,9 +924,9 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
             f"healthy ticket not advanced — replay aborted early (state={healthy_ticket.state!r})"
         )
 
-        # The stuck ticket stays at REVIEWED — the error was non-fatal and no bad advance happened.
+        # The stuck ticket stays at SELF_REVIEWED — the error was non-fatal and no bad advance happened.
         stuck_ticket.refresh_from_db()
-        assert stuck_ticket.state == Ticket.State.REVIEWED, (
+        assert stuck_ticket.state == Ticket.State.SELF_REVIEWED, (
             f"stuck ticket unexpectedly advanced to {stuck_ticket.state!r}"
         )
 

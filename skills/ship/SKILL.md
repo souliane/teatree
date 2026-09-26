@@ -282,7 +282,7 @@ The numbered path — locate the reviewing task, acquire the per-MR review-dispa
 
 - **Record a phase** with `t3 <overlay> lifecycle visit-phase <ticket_id> <phase>`. Do **NOT** use `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing` to *skip* an independent review: since #694 the gate reconciles `Ticket.state` from `Session.visited_phases`, so a manual visit *will* let `pr create` proceed — which is exactly why recording `reviewing` without a reviewer having actually read the diff defeats the quality gate. Earn the phase, then record it.
 - **Transition directly** with `t3 <overlay> ticket transition <ticket_id> review` when the task id isn't to hand. The FSM still requires a completed `reviewing` task as a `conditions=` predicate, so this only works once one exists.
-- **Verify before pushing** with `t3 <overlay> ticket list --state reviewed` (the `mcp__teatree__ticket_search` tool is preferred; this is the fallback when the MCP server isn't connected). It filters on `--state`/`--overlay` only — there is no `--id` flag.
+- **Verify before pushing** with `t3 <overlay> ticket list --state self_reviewed` (the `mcp__teatree__ticket_search` tool is preferred; this is the fallback when the MCP server isn't connected). It filters on `--state`/`--overlay` only — there is no `--id` flag.
 
 The reviewer dispatch itself likewise stays here:
 

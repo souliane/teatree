@@ -1,8 +1,8 @@
 """``manage.py ticket sync-completions`` must survive a per-ticket gate refusal.
 
 CFG-2: the whole-table completion sweep advances each post-ship ticket whose
-upstream issue is done through the FSM walk. That walk can be *gate-refused* — an
-``in_review`` ticket with no merged-SHA evidence raises
+upstream issue is done through the FSM walk. That walk can be *gate-refused* — a
+``review_requested`` ticket with no merged-SHA evidence raises
 :class:`~teatree.core.gates.merge_evidence_gate.NoMergeEvidenceError` at
 ``mark_merged()``. The uncaught call aborted the ENTIRE sweep on the first such
 ticket, so every later completable ticket was silently skipped. The sweep must
@@ -53,7 +53,7 @@ class TestSyncCompletionsSurvivesGateRefusal(TestCase):
     """A gate-refused first ticket must not abort the sweep for the rest."""
 
     def setUp(self) -> None:
-        # The merge-evidence gate must bite so the ``in_review`` ticket is genuinely refused.
+        # The merge-evidence gate must bite so the ``review_requested`` ticket is genuinely refused.
         ConfigSetting.objects.set_value("require_merge_evidence", value=True)
 
     def test_first_ticket_gate_refused_still_advances_the_second(self) -> None:
@@ -61,7 +61,7 @@ class TestSyncCompletionsSurvivesGateRefusal(TestCase):
         # `mark_merged()` refuses. Before the fix its uncaught raise aborted the sweep.
         refused = Ticket.objects.create(
             overlay="fake-overlay",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             issue_url="https://gitlab.com/acme/widgets/-/issues/1",
         )
         # A `merged` ticket only walks `retrospect()` (no gate) → advances cleanly.
@@ -76,9 +76,9 @@ class TestSyncCompletionsSurvivesGateRefusal(TestCase):
         refused.refresh_from_db()
         advancing.refresh_from_db()
         # The sweep CONTINUED past the refusal: the second ticket advanced.
-        assert advancing.state == Ticket.State.RETROSPECTED
+        assert advancing.state == Ticket.State.RETRO_RECORDED
         # The refused ticket was NOT advanced and is reported, not swallowed.
-        assert refused.state == Ticket.State.IN_REVIEW
+        assert refused.state == Ticket.State.REVIEW_REQUESTED
         refused_rows = [r for r in results if r.action is BoardAction.REFUSED]
         assert [r.ticket_id for r in refused_rows] == [refused.pk]
         assert "merged-SHA evidence" in refused_rows[0].error
@@ -86,45 +86,45 @@ class TestSyncCompletionsSurvivesGateRefusal(TestCase):
         assert [r.ticket_id for r in advanced_rows] == [advancing.pk]
 
     def test_mid_chain_refusal_reports_the_persisted_partial_state(self) -> None:
-        # A ``shipped`` ticket walks ``request_review()`` (ungated → commits, so it
-        # lands at ``in_review``) then ``mark_merged()`` (merge-evidence gate refuses).
-        # The refusal must report the persisted ``in_review`` landing, not the stale
-        # ``shipped`` starting state, so the operator sees the partial progress.
+        # A ``pr_opened`` ticket walks ``request_review()`` (ungated → commits, so it
+        # lands at ``review_requested``) then ``mark_merged()`` (merge-evidence gate refuses).
+        # The refusal must report the persisted ``review_requested`` landing, not the stale
+        # ``pr_opened`` starting state, so the operator sees the partial progress.
         partial = Ticket.objects.create(
             overlay="fake-overlay",
-            state=Ticket.State.SHIPPED,
+            state=Ticket.State.PR_OPENED,
             issue_url="https://gitlab.com/acme/widgets/-/issues/3",
         )
 
         results = _run()
 
         partial.refresh_from_db()
-        assert partial.state == Ticket.State.IN_REVIEW  # the first transition persisted
+        assert partial.state == Ticket.State.REVIEW_REQUESTED  # the first transition persisted
         refused_rows = [r for r in results if r.action is BoardAction.REFUSED]
         assert [r.ticket_id for r in refused_rows] == [partial.pk]
-        assert refused_rows[0].from_state == "shipped"
-        assert refused_rows[0].to_state == "in_review"
+        assert refused_rows[0].from_state == "pr_opened"
+        assert refused_rows[0].to_state == "review_requested"
 
     def test_refusal_line_shows_the_partial_state_only_when_it_diverges(self) -> None:
         diverged = BoardTransition(
             ticket_id=7,
             issue_url="u",
-            from_state="shipped",
-            to_state="in_review",
+            from_state="pr_opened",
+            to_state="review_requested",
             action=BoardAction.REFUSED,
             reason="upstream issue done",
             applied=True,
             error="boom",
         )
-        assert diverged.line() == "  #7 shipped → in_review refused: boom"
+        assert diverged.line() == "  #7 pr_opened → review_requested refused: boom"
         stalled = BoardTransition(
             ticket_id=8,
             issue_url="u",
-            from_state="in_review",
-            to_state="in_review",
+            from_state="review_requested",
+            to_state="review_requested",
             action=BoardAction.REFUSED,
             reason="upstream issue done",
             applied=False,
             error="boom",
         )
-        assert stalled.line() == "  #8 in_review → refused: boom"
+        assert stalled.line() == "  #8 review_requested → refused: boom"

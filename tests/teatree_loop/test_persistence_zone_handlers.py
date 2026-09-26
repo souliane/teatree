@@ -298,7 +298,7 @@ class TestAutoStartOrchestratorMarksAutoImplement(TestCase):
 
     Kept after #4578 moved the scheduled phase to ``planning``: ``code_direct`` is
     conditioned on the marker and is still the only edge that can advance a coding
-    completion landing before the ladder reached PLANNED.
+    completion landing before the ladder reached PLAN_RECORDED.
     """
 
     def _signal(self, *, url: str = "https://x/issue/900") -> ScanSignal:

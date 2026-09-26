@@ -73,7 +73,7 @@ def _conforming_manifest() -> dict:
 
 
 def _directive_ticket(*, with_sketch: bool = True, with_plan: bool = True) -> Ticket:
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLANNED)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED)
     directive = Directive.objects.capture("max 1 open PR per repo per ticket", source=Directive.Source.CLI)
     if with_sketch:
         directive.mechanism_sketch = _sketch().to_dict()
@@ -236,7 +236,7 @@ class TestNoOpConditions(TestCase):
         assert not CriticDispatch.objects.filter(ticket=ticket).exists()
 
     def test_ordinary_ticket_is_a_noop(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED)
         with _live():
             check_design_critic(ticket)
         assert not CriticDispatch.objects.filter(ticket=ticket).exists()
@@ -287,7 +287,7 @@ class TestPlanTransitionWiring(TestCase):
     """``Ticket.plan()`` runs the advisory design critic for a directive ticket when live."""
 
     def _planned_directive_ticket(self) -> Ticket:
-        ticket = Ticket.objects.create(overlay="t3-teatree", role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         directive = Directive.objects.capture("cap the PRs", source=Directive.Source.CLI)
         directive.mechanism_sketch = _sketch().to_dict()
         directive.ticket = ticket

@@ -42,7 +42,7 @@ class _LivenessFixture(TestCase):
         self.commit_instant = datetime(2020, 1, 1, tzinfo=UTC)
 
     def _worktree(self) -> Worktree:
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/1", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/1", state=Ticket.State.WORK_STARTED)
         return Worktree.objects.create(
             overlay="test",
             ticket=ticket,
@@ -282,7 +282,7 @@ class TestCwdScanSeesOtherProcesses(TestCase):
     def test_worktree_liveness_marks_active_on_foreign_process_cwd(self) -> None:
         wt = self._tmp_path / "wt"
         wt.mkdir()
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/cwd", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/cwd", state=Ticket.State.WORK_STARTED)
         worktree = Worktree.objects.create(
             overlay="test", ticket=ticket, repo_path="repo", branch="feature", extra={"worktree_path": str(wt)}
         )
@@ -322,7 +322,7 @@ class TestBlindGuardIsUnverifiableNotSettled(TestCase):
         return proc
 
     def _worktree(self, wt: Path, slug: str) -> Worktree:
-        ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{slug}", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(issue_url=f"https://example.com/issues/{slug}", state=Ticket.State.WORK_STARTED)
         return Worktree.objects.create(
             overlay="test", ticket=ticket, repo_path="repo", branch="feature", extra={"worktree_path": str(wt)}
         )

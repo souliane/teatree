@@ -785,7 +785,7 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
     branch behind. ``git worktree add`` then REFUSES both the path (it exists) and
     the branch (it is "already checked out"), so ``_create`` logged "Failed to
     create worktree" and every retry failed identically — the ticket sat at
-    ``started`` forever with no way out but a manual ``git worktree remove``.
+    ``work_started`` forever with no way out but a manual ``git worktree remove``.
 
     Provisioning is now idempotent: a healthy leftover for the scope is ADOPTED, a
     broken one (registered-but-missing dir, wrong branch, non-git partial) is

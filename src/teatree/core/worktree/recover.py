@@ -223,7 +223,7 @@ def _classify_orphans(report: RecoverReport) -> None:
 
 def _collect_requeue_candidates(report: RecoverReport) -> None:
     for task in Task.objects.filter(status=Task.Status.FAILED).select_related("ticket").order_by("pk"):
-        if task.ticket.is_terminal:
+        if task.ticket.is_settled:
             continue
         # An unknown-overlay task can never be dispatched — reopening it would
         # re-crash on every drain (souliane/teatree#1959 poison pill).

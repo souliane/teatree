@@ -86,28 +86,19 @@ class Ticket(
     class State(models.TextChoices):
         NOT_STARTED = "not_started", "Not started"
         SCOPED = "scoped", "Scoped"
-        # Work begins BEFORE the plan is recorded — `plan()` is the
-        # STARTED -> PLANNED transition and it requires a PlanArtifact. Labelled
-        # "Started"/"Planned" the pair reads as though planning should come
-        # first; naming the milestone rather than the status makes the real
-        # order self-evident on the board.
-        STARTED = "started", "Work started"
-        PLANNED = "planned", "Plan recorded"
+        WORK_STARTED = "work_started", "Work started"
+        PLAN_RECORDED = "plan_recorded", "Plan recorded"
         CODED = "coded", "Coded"
         TESTED = "tested", "Tested"
-        # "Self-reviewed", not "Reviewed": this is the author's own pre-ship pass,
-        # which the FSM places BEFORE shipping. Peer review is IN_REVIEW, two
-        # columns later. Labelled "Reviewed" the two read as one phase in the
-        # wrong order, and the board looks mis-sequenced when it matches the FSM.
-        REVIEWED = "reviewed", "Self-reviewed"
-        SHIPPED = "shipped", "Shipped"
-        IN_REVIEW = "in_review", "In peer review"
+        SELF_REVIEWED = "self_reviewed", "Self-reviewed"
+        PR_OPENED = "pr_opened", "PR opened"
+        REVIEW_REQUESTED = "review_requested", "In peer review"
         MERGED = "merged", "Merged"
-        RETROSPECTED = "retrospected", "Retrospected"
+        RETRO_RECORDED = "retro_recorded", "Retro recorded"
         DELIVERED = "delivered", "Delivered"
         # Reviewer terminal — a posted external review is done, NOT author-merged
         # (DELIVERED); keeps a reviewer ticket off the board's "Landed" group.
-        REVIEW_POSTED = "review_posted", "Review posted"
+        REVIEW_DELIVERED = "review_delivered", "Review delivered"
         IGNORED = "ignored", "Ignored"
 
     class Role(models.TextChoices):
@@ -128,33 +119,33 @@ class Ticket(
     # genuinely terminal/abandoned states are non-recoverable; EVERY other
     # state is a legal reconcile source, derived (not enumerated) so a
     # future added state cannot silently re-introduce the bug.
-    _TERMINAL_STATES: ClassVar[frozenset[str]] = frozenset(
-        {State.SHIPPED, State.MERGED, State.DELIVERED, State.REVIEW_POSTED, State.IGNORED},
+    _SETTLED_STATES: ClassVar[frozenset[str]] = frozenset(
+        {State.PR_OPENED, State.MERGED, State.DELIVERED, State.REVIEW_DELIVERED, State.IGNORED},
     )
     # The linear author work-state progression (excludes the terminal set and the
-    # off-ladder IN_REVIEW/RETROSPECTED branch states). A ticket at index i has
+    # off-ladder REVIEW_REQUESTED/RETRO_RECORDED branch states). A ticket at index i has
     # produced every phase output up to and including index i — the ordering
     # ``has_completed_phase`` reads to tell a live phase apart from a superseded one.
     _WORK_STATE_ORDER: ClassVar[tuple[str, ...]] = (
         State.NOT_STARTED,
         State.SCOPED,
-        State.STARTED,
-        State.PLANNED,
+        State.WORK_STARTED,
+        State.PLAN_RECORDED,
         State.CODED,
         State.TESTED,
-        State.REVIEWED,
-        State.SHIPPED,
+        State.SELF_REVIEWED,
+        State.PR_OPENED,
     )
     # The work-state each author phase PRODUCES on success. A FAILED task whose
     # phase output the ticket's FSM already reached is SUPERSEDED — an earlier
     # interrupted run left the dead row while the ticket advanced on its own — so
     # re-dispatching or escalating that task only floods the away-mode queue.
     _PHASE_PRODUCES_STATE: ClassVar[dict[str, str]] = {
-        "planning": State.PLANNED,
+        "planning": State.PLAN_RECORDED,
         "coding": State.CODED,
         "testing": State.TESTED,
-        "reviewing": State.REVIEWED,
-        "shipping": State.SHIPPED,
+        "reviewing": State.SELF_REVIEWED,
+        "shipping": State.PR_OPENED,
     }
     # NOTE: a class-body comprehension cannot see the enclosing ``State``
     # (Python scoping); enumerate explicitly and assert completeness in a
@@ -162,31 +153,31 @@ class Ticket(
     _RECONCILE_SOURCE_STATES: ClassVar[list[str]] = [
         State.NOT_STARTED,
         State.SCOPED,
-        State.STARTED,
-        State.PLANNED,
+        State.WORK_STARTED,
+        State.PLAN_RECORDED,
         State.CODED,
         State.TESTED,
-        State.REVIEWED,
-        State.IN_REVIEW,
-        State.RETROSPECTED,
+        State.SELF_REVIEWED,
+        State.REVIEW_REQUESTED,
+        State.RETRO_RECORDED,
     ]
     # #1343: PR-merge reconcile catches every PRE-MERGED state. The
-    # original guard only fired ``mark_merged()`` from IN_REVIEW/MERGED,
-    # so tickets whose PR landed while the FSM still read STARTED stayed
+    # original guard only fired ``mark_merged()`` from REVIEW_REQUESTED/MERGED,
+    # so tickets whose PR landed while the FSM still read WORK_STARTED stayed
     # stuck on the statusline. The merge keystone calls
     # ``reconcile_merged()``, which targets MERGED from every pre-merged
-    # state (and is idempotent at MERGED). RETROSPECTED/DELIVERED are
+    # state (and is idempotent at MERGED). RETRO_RECORDED/DELIVERED are
     # past MERGED and must not be dragged backward; IGNORED is abandoned.
     _MERGED_RECONCILE_SOURCE_STATES: ClassVar[list[str]] = [
         State.NOT_STARTED,
         State.SCOPED,
-        State.STARTED,
-        State.PLANNED,
+        State.WORK_STARTED,
+        State.PLAN_RECORDED,
         State.CODED,
         State.TESTED,
-        State.REVIEWED,
-        State.SHIPPED,
-        State.IN_REVIEW,
+        State.SELF_REVIEWED,
+        State.PR_OPENED,
+        State.REVIEW_REQUESTED,
         State.MERGED,
     ]
 
@@ -300,22 +291,22 @@ class Ticket(
         if repos is not None:
             self.repos = repos
 
-    @transition(field="state", source=[State.SCOPED, State.STARTED], target=State.STARTED)
+    @transition(field="state", source=[State.SCOPED, State.WORK_STARTED], target=State.WORK_STARTED)
     def start(self) -> None:
         """Schedule worktree provisioning + planning task."""
 
     @transition(
         field="state",
-        source=State.STARTED,
-        target=State.PLANNED,
+        source=State.WORK_STARTED,
+        target=State.PLAN_RECORDED,
         conditions=[_check_plan_artifact],
     )
     def plan(self, *, parent_task: "Task | None" = None) -> None:
-        """Advance STARTED → PLANNED after a PlanArtifact record exists."""
+        """Advance WORK_STARTED → PLAN_RECORDED after a PlanArtifact record exists."""
         self._consume_pending_phase_tasks("planning")
         self.schedule_coding(parent_task=parent_task)
 
-    @transition(field="state", source=State.PLANNED, target=State.CODED)
+    @transition(field="state", source=State.PLAN_RECORDED, target=State.CODED)
     def code(self, *, parent_task: "Task | None" = None) -> None:
         get_gate("plan_currency")(self)  # SELFCATCH-3: refuse a thin/stale plan (NO-OP unless flag on).
         self._refuse_if_worktree_dirty("coding")
@@ -324,7 +315,7 @@ class Ticket(
 
     @transition(
         field="state",
-        source=[State.NOT_STARTED, State.SCOPED, State.STARTED],
+        source=[State.NOT_STARTED, State.SCOPED, State.WORK_STARTED],
         target=State.CODED,
         conditions=[is_auto_implement],
     )
@@ -346,7 +337,7 @@ class Ticket(
     @transition(
         field="state",
         source=State.TESTED,
-        target=State.REVIEWED,
+        target=State.SELF_REVIEWED,
         conditions=[
             _reviewing_task_completed,
             _review_context_satisfied,
@@ -369,41 +360,41 @@ class Ticket(
     @transition(
         field="state",
         source=_RECONCILE_SOURCE_STATES,
-        target=State.REVIEWED,
+        target=State.SELF_REVIEWED,
     )
     def reconcile_reviewed(self) -> None:
-        """Phase-driven, state-complete FSM catch-up to REVIEWED (#694, #798, #799, #808)."""
+        """Phase-driven, state-complete FSM catch-up to SELF_REVIEWED (#694, #798, #799, #808)."""
 
     @transition(
         field="state",
         source=[
             State.NOT_STARTED,
             State.SCOPED,
-            State.STARTED,
-            State.PLANNED,
+            State.WORK_STARTED,
+            State.PLAN_RECORDED,
             State.CODED,
             State.TESTED,
-            State.REVIEWED,
+            State.SELF_REVIEWED,
             # A re-review on a NEW head SHA (``ReviewedPrHeadScanner`` →
             # ``reviewer_pr.new_sha``) schedules its task on a ticket that is
-            # already REVIEW_POSTED from the previous pass. Without this
+            # already REVIEW_DELIVERED from the previous pass. Without this
             # self-transition ``Task.complete()``'s derived-source guard skips
             # the FSM advance and ``last_review_state`` is never re-stamped, so
             # the reviewed-at record stays half-written and the ticket drops out
             # of the re-review watch set after the first push. Same shape and
             # same rationale as #1431's self-transition on the sibling
-            # ``mark_review_no_action`` below; SHIPPED/MERGED/IGNORED stay out
-            # for the same reason (an IGNORED→REVIEW_POSTED move would resurrect).
-            State.REVIEW_POSTED,
+            # ``mark_review_no_action`` below; PR_OPENED/MERGED/IGNORED stay out
+            # for the same reason (an IGNORED→REVIEW_DELIVERED move would resurrect).
+            State.REVIEW_DELIVERED,
         ],
-        target=State.REVIEW_POSTED,
+        target=State.REVIEW_DELIVERED,
         conditions=[
             _reviewer_with_completed_review,
             _review_context_satisfied,
         ],
     )
     def mark_reviewed_externally(self) -> None:
-        """Reviewer-role short-circuit: any pre-shipped state → REVIEW_POSTED."""
+        """Reviewer-role short-circuit: any pre-shipped state → REVIEW_DELIVERED."""
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:
             # #800 N3: canonical locked RMW — a concurrent pr_urls /
@@ -416,18 +407,18 @@ class Ticket(
         source=[
             State.NOT_STARTED,
             State.SCOPED,
-            State.STARTED,
-            State.PLANNED,
+            State.WORK_STARTED,
+            State.PLAN_RECORDED,
             State.CODED,
             State.TESTED,
-            State.REVIEWED,
-            # #1431: REVIEW_POSTED self-transition (this transition's own target)
+            State.SELF_REVIEWED,
+            # #1431: REVIEW_DELIVERED self-transition (this transition's own target)
             # makes a re-dispatched orphan's no-action path a no-op instead of
-            # a TransitionNotAllowed crash. SHIPPED/MERGED/IGNORED stay out —
-            # an IGNORED→REVIEW_POSTED move would resurrect; Gap B reaps those.
-            State.REVIEW_POSTED,
+            # a TransitionNotAllowed crash. PR_OPENED/MERGED/IGNORED stay out —
+            # an IGNORED→REVIEW_DELIVERED move would resurrect; Gap B reaps those.
+            State.REVIEW_DELIVERED,
         ],
-        target=State.REVIEW_POSTED,
+        target=State.REVIEW_DELIVERED,
         conditions=[_is_reviewer],
     )
     def mark_review_no_action(self) -> None:
@@ -446,7 +437,7 @@ class Ticket(
             )
         self._consume_pending_phase_tasks("reviewing")
 
-    @transition(field="state", source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
+    @transition(field="state", source=[State.SELF_REVIEWED, State.PR_OPENED], target=State.PR_OPENED)
     def ship(self) -> None:
         """Schedule push + PR creation."""
         self._refuse_if_worktree_dirty("shipping")
@@ -454,11 +445,11 @@ class Ticket(
         get_gate("forced_repro")(self)
         self._consume_pending_phase_tasks("shipping")
 
-    @transition(field="state", source=State.SHIPPED, target=State.IN_REVIEW)
+    @transition(field="state", source=State.PR_OPENED, target=State.REVIEW_REQUESTED)
     def request_review(self) -> None:
         pass
 
-    @transition(field="state", source=[State.IN_REVIEW, State.MERGED], target=State.MERGED)
+    @transition(field="state", source=[State.REVIEW_REQUESTED, State.MERGED], target=State.MERGED)
     def mark_merged(self) -> None:
         """Schedule worktree teardown."""
         get_gate("merge_evidence")(self)
@@ -472,11 +463,11 @@ class Ticket(
         """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343)."""
         get_gate("merge_evidence")(self)
 
-    @transition(field="state", source=[State.MERGED, State.RETROSPECTED], target=State.RETROSPECTED)
+    @transition(field="state", source=[State.MERGED, State.RETRO_RECORDED], target=State.RETRO_RECORDED)
     def retrospect(self) -> None:
         """Schedule retrospection I/O."""
 
-    @transition(field="state", source=State.RETROSPECTED, target=State.DELIVERED)
+    @transition(field="state", source=State.RETRO_RECORDED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
         """Reach DELIVERED past the Definition-of-Done gates (the rubric one always applies)."""
         get_gate("fix_record_dod")(self)
@@ -484,11 +475,11 @@ class Ticket(
         get_gate("integration_review")(self)
         get_gate("critic")(self)
 
-    @transition(field="state", source=[State.MERGED, State.DELIVERED], target=State.REVIEWED)
+    @transition(field="state", source=[State.MERGED, State.DELIVERED], target=State.SELF_REVIEWED)
     def reopen_for_followup(self) -> None:
-        """Reopen a terminally-shipped ticket to REVIEWED for a follow-up PR (#3327)."""
+        """Reopen a terminally-shipped ticket to SELF_REVIEWED for a follow-up PR (#3327)."""
 
-    @transition(field="state", source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
+    @transition(field="state", source=[State.CODED, State.TESTED, State.SELF_REVIEWED], target=State.WORK_STARTED)
     def rework(self) -> None:
         extra = self._extra()
         extra.pop("tests_passed", None)
@@ -497,16 +488,16 @@ class Ticket(
 
     @transition(
         field="state",
-        source=[State.SHIPPED, State.IN_REVIEW, State.MERGED, State.RETROSPECTED, State.DELIVERED],
-        target=State.STARTED,
+        source=[State.PR_OPENED, State.REVIEW_REQUESTED, State.MERGED, State.RETRO_RECORDED, State.DELIVERED],
+        target=State.WORK_STARTED,
     )
     def reopen(self) -> None:
-        """Reopen a post-ship ticket back to STARTED.
+        """Reopen a post-ship ticket back to WORK_STARTED.
 
         DELIVERED is a source because it is otherwise the end of every path: a ticket
         owns its issue URL in each state but IGNORED, so a reopened issue behind a
         delivered ticket was invisible to intake and to every reconcile rule (#4152).
-        REVIEW_POSTED stays out — a reviewer ticket's ``issue_url`` IS a PR, which the
+        REVIEW_DELIVERED stays out — a reviewer ticket's ``issue_url`` IS a PR, which the
         board reconcile's PR rules already resolve.
         """
         extra = self._extra()
@@ -521,15 +512,15 @@ class Ticket(
         source=[
             State.NOT_STARTED,
             State.SCOPED,
-            State.STARTED,
-            State.PLANNED,
+            State.WORK_STARTED,
+            State.PLAN_RECORDED,
             State.CODED,
             State.TESTED,
-            State.REVIEWED,
-            State.SHIPPED,
-            State.IN_REVIEW,
+            State.SELF_REVIEWED,
+            State.PR_OPENED,
+            State.REVIEW_REQUESTED,
             State.MERGED,
-            State.RETROSPECTED,
+            State.RETRO_RECORDED,
         ],
         target=State.IGNORED,
     )

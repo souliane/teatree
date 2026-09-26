@@ -26,7 +26,7 @@ class TestSerializeTicket(TestCase):
     def test_json_safe_primitives(self) -> None:
         data = serializers.serialize_ticket(TicketFactory(issue_url="https://x/issues/1"))
         assert isinstance(data["repos"], list)
-        assert isinstance(data["is_terminal"], bool)
+        assert isinstance(data["is_settled"], bool)
 
 
 class TestSerializeWorktree(TestCase):

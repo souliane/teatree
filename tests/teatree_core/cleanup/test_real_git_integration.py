@@ -47,7 +47,7 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
     def _make_worktree(self, *, with_extras: bool) -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/99",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         extras = {"worktree_path": str(self.wt_path)} if with_extras else {}
         return Worktree.objects.create(
@@ -122,7 +122,7 @@ class TestCleanupWorktreeNamespacedClone(TestCase):
     def test_resolves_namespaced_clone_via_extra(self) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/491",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         wt = Worktree.objects.create(
             overlay="test",
@@ -178,7 +178,7 @@ class TestCleanupCapturesUnshippedWorkBeforeDestroying(TestCase):
         _run_git("worktree", "add", "-q", "-b", self.branch, str(self.wt_path), cwd=self.repo_main)
 
     def _cleanup_forced(self) -> None:
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/706", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/706", state=Ticket.State.REVIEW_REQUESTED)
         wt = Worktree.objects.create(
             overlay="test",
             ticket=ticket,
@@ -272,7 +272,7 @@ class TestCleanupReapsStalePrekHook(TestCase):
     def _worktree(self) -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/1462",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",

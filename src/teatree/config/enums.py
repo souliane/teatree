@@ -175,7 +175,7 @@ class CriticGateMode(StrEnum):
         ``CriticVerdict``/``CriticFinding`` rows, but a blocking finding never
         raises. The mode that accumulates critic-liveness evidence pre-enablement.
     *   :attr:`BLOCKING` — armed and enforcing: a blocking deterministic finding
-        refuses the delivery (``CriticGateError``), the ticket stays RETROSPECTED.
+        refuses the delivery (``CriticGateError``), the ticket stays RETRO_RECORDED.
     """
 
     OFF = "off"

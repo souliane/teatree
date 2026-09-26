@@ -84,9 +84,9 @@ class TestTaskAttemptPrunable(TestCase):
     def test_never_prunes_live_ticket_or_active_task_or_recent_attempt(self) -> None:
         old = timezone.now() - dt.timedelta(days=60)
         recent = timezone.now() - dt.timedelta(days=2)
-        self._attempt(ticket_state=Ticket.State.STARTED, task_status=Task.Status.COMPLETED, started_at=old)
+        self._attempt(ticket_state=Ticket.State.WORK_STARTED, task_status=Task.Status.COMPLETED, started_at=old)
         self._attempt(ticket_state=Ticket.State.MERGED, task_status=Task.Status.PENDING, started_at=old)
-        self._attempt(ticket_state=Ticket.State.SHIPPED, task_status=Task.Status.COMPLETED, started_at=old)
+        self._attempt(ticket_state=Ticket.State.PR_OPENED, task_status=Task.Status.COMPLETED, started_at=old)
         self._attempt(ticket_state=Ticket.State.MERGED, task_status=Task.Status.COMPLETED, started_at=recent)
         assert TaskAttempt.objects.prunable(timezone.now() - dt.timedelta(days=30)).count() == 0
 

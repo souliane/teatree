@@ -134,7 +134,7 @@ def _park_live_successor(task: Task) -> None:
     mid-flight — so marking it COMPLETED (the :func:`_retire_superseded` shape) would make
     it the ticket's newest completed task and ``Task.objects.replay_orphaned_transitions``
     would fire its phase transition on the next tick, advancing the ticket past work
-    nobody landed (a PLANNED ticket to CODED, a TESTED one through ``review()``).
+    nobody landed (a PLAN_RECORDED ticket to CODED, a TESTED one through ``review()``).
     """
     if LIVE_SUCCESSOR_STAMP in task.execution_reason:
         return

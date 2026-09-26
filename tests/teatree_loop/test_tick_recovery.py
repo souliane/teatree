@@ -114,7 +114,7 @@ class TestReapStaleTaskClaims(TestCase):
         return ticket
 
     def _transient_failed_task(self) -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.FAILED)
         TaskAttempt.objects.create(
@@ -126,8 +126,8 @@ class TestReapStaleTaskClaims(TestCase):
         return task
 
     def _stuck_started_ticket(self) -> Ticket:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
-        transition = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="started")
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+        transition = TicketTransition.objects.create(ticket=ticket, from_state="scoped", to_state="work_started")
         TicketTransition.objects.filter(pk=transition.pk).update(created_at=timezone.now() - timedelta(hours=48))
         return ticket
 
@@ -147,10 +147,10 @@ class TestReapStaleTaskClaims(TestCase):
 class TestTheOffPostureAcrossTicks(TestCase):
     def test_ten_ticks_under_off_queue_nothing_then_lifting_re_admits_the_backlog(self) -> None:
         ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         queued = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
-        stuck = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
-        transition = TicketTransition.objects.create(ticket=stuck, from_state="scoped", to_state="started")
+        stuck = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
+        transition = TicketTransition.objects.create(ticket=stuck, from_state="scoped", to_state="work_started")
         TicketTransition.objects.filter(pk=transition.pk).update(created_at=timezone.now() - timedelta(hours=48))
 
         for _ in range(10):
@@ -169,7 +169,7 @@ class TestTheOffPostureAcrossTicks(TestCase):
 
 class TestAnUnreadableAdmissionVerdictHoldsReDispatch(TestCase):
     def test_re_dispatch_waits_and_the_read_failure_is_recorded(self) -> None:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         transient = Task.objects.create(
             ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding", status=Task.Status.FAILED
         )

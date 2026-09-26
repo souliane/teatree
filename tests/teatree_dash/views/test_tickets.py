@@ -82,19 +82,21 @@ def _transaction_committing(write: Callable[[], None]) -> SimpleNamespace:
 class TicketTransitionRaceTestCase(TestCase):
     def test_a_state_change_committed_before_the_write_is_not_overwritten(self) -> None:
         ticket = TicketFactory(state=State.NOT_STARTED)
-        competitor = _transaction_committing(lambda: Ticket.objects.filter(pk=ticket.pk).update(state=State.STARTED))
+        competitor = _transaction_committing(
+            lambda: Ticket.objects.filter(pk=ticket.pk).update(state=State.WORK_STARTED)
+        )
         with patch("teatree.dash.views.tickets.transaction", competitor):
             response = self.client.post(reverse("dash:ticket_transition", args=[ticket.pk]), {"action": "scope"})
         ticket.refresh_from_db()
-        assert ticket.state == State.STARTED
+        assert ticket.state == State.WORK_STARTED
         assert response.status_code == 400
 
 
 class TicketDrawerGetTestCase(TestCase):
     def test_drawer_renders_history_mermaid_and_actions(self) -> None:
-        ticket = TicketFactory(state=State.STARTED, short_description="drawer subject")
+        ticket = TicketFactory(state=State.WORK_STARTED, short_description="drawer subject")
         TicketTransition.objects.create(
-            ticket=ticket, from_state=State.SCOPED, to_state=State.STARTED, triggered_by="start"
+            ticket=ticket, from_state=State.SCOPED, to_state=State.WORK_STARTED, triggered_by="start"
         )
         resp = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk]))
         assert resp.status_code == 200
@@ -116,7 +118,7 @@ class TicketDrawerGetTestCase(TestCase):
         assert f"Transition #{ticket.ticket_number} to scope?" in body
 
     def test_debug_session_button_carries_confirmation(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         body = self.client.get(reverse("dash:ticket_drawer", args=[ticket.pk])).content.decode()
         assert "hx-confirm=" in body
         assert "Start a loopback debug session?" in body
@@ -191,12 +193,12 @@ class DrawerPayloadIsBoundedTestCase(TestCase):
 
     @classmethod
     def setUpTestData(cls) -> None:
-        cls.ticket = TicketFactory(state=State.STARTED, short_description="long lived ticket")
+        cls.ticket = TicketFactory(state=State.WORK_STARTED, short_description="long lived ticket")
         TicketTransition.objects.bulk_create(
             TicketTransition(
                 ticket=cls.ticket,
                 from_state=State.SCOPED,
-                to_state=State.STARTED,
+                to_state=State.WORK_STARTED,
                 triggered_by="start",
             )
             for _ in range(cls.TRANSITIONS)
@@ -235,7 +237,7 @@ class TaskEnqueuePostTestCase(TestCase):
     """The drawer's "Review now" / "Ship now" buttons — prioritise work, never record an outcome (#4085)."""
 
     def setUp(self) -> None:
-        self.ticket = TicketFactory(state=State.STARTED)
+        self.ticket = TicketFactory(state=State.WORK_STARTED)
         self.url = reverse("dash:task_action", args=[self.ticket.pk])
 
     def _post(self, phase: str, *, htmx: bool = True, **extra: str) -> HttpResponse:
@@ -305,7 +307,7 @@ class TaskEnqueuePostTestCase(TestCase):
 
 class TaskEnqueueButtonsRenderTestCase(TestCase):
     def setUp(self) -> None:
-        self.ticket = TicketFactory(state=State.STARTED)
+        self.ticket = TicketFactory(state=State.WORK_STARTED)
 
     def _drawer(self) -> str:
         return self.client.get(reverse("dash:ticket_drawer", args=[self.ticket.pk])).content.decode()

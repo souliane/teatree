@@ -58,8 +58,8 @@ class TestPrCreateE2EMandatory(TestCase):
         assert result.get("allowed") is False
         assert "record-e2e-run" in str(result.get("error"))
         assert "e2e-bypass" in str(result.get("error"))
-        # FSM must NOT advance to SHIPPED on a block.
-        assert ticket.state != Ticket.State.SHIPPED
+        # FSM must NOT advance to PR_OPENED on a block.
+        assert ticket.state != Ticket.State.PR_OPENED
 
     def test_allows_impacting_change_with_green_posted_evidence_at_sha(self) -> None:
         ticket = _shippable_ticket()
@@ -73,7 +73,7 @@ class TestPrCreateE2EMandatory(TestCase):
         result = self._create(ticket)
         ticket.refresh_from_db()
         assert result.get("allowed") is not False
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_blocks_impacting_change_with_green_but_unposted_evidence(self) -> None:
         ticket = _shippable_ticket()
@@ -81,4 +81,4 @@ class TestPrCreateE2EMandatory(TestCase):
         result = self._create(ticket)
         ticket.refresh_from_db()
         assert result.get("allowed") is False
-        assert ticket.state != Ticket.State.SHIPPED
+        assert ticket.state != Ticket.State.PR_OPENED

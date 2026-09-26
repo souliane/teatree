@@ -5,7 +5,7 @@ PRE-SHIP ticket behind a closed ISSUE reached none of them: B/C read an ``/issue
 as ``PrOpenState.UNKNOWN``, D polls only ``completable_states()`` and asks a COMPLETION
 predicate a ``not_planned`` close never satisfies, and E filters DELIVERED. The measured
 cost of that gap was a backlog prune the board never learned about — twelve rows left
-``planned`` behind closed issues, each a permanent coding-dispatch source, one of them
+``plan_recorded`` behind closed issues, each a permanent coding-dispatch source, one of them
 re-dispatched eleven times.
 
 The retirement lands on IGNORED rather than DELIVERED because nothing shipped, and IGNORED
@@ -16,7 +16,7 @@ A COMPLETED close and a NOT_PLANNED close both retire the row; which one it was 
 
 Unshipped work is surfaced, never used as a veto: the teardown a terminal state enqueues
 keeps unsynced changes (the reaper's analyze-before-wipe, #706), while leaving the row
-``planned`` to protect that work is what re-dispatched it forever. So a retired ticket whose
+``plan_recorded`` to protect that work is what re-dispatched it forever. So a retired ticket whose
 worktree holds uncommitted tracked changes raises ONE durable question naming the paths.
 """
 
@@ -52,7 +52,7 @@ def closed_issue_transitions(
     which rules B/C own.
 
     *already_moved* holds the rows an earlier rule moved in THIS run. Rule F runs last
-    and reads live state, so without it a ticket rule E had just revived to STARTED —
+    and reads live state, so without it a ticket rule E had just revived to WORK_STARTED —
     a pre-ship state — would be re-probed and could be retired in the same tick that
     resurrected it. One rule per row per run.
     """

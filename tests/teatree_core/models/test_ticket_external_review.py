@@ -48,7 +48,7 @@ class TestFinishedPrMintsNothing(TestCase):
         assert ticket.state == Ticket.State.IGNORED
 
     def test_a_settled_pr_on_a_ticket_that_cannot_be_ignored_is_not_reported_retired(self) -> None:
-        ticket = _reviewer(state=Ticket.State.REVIEW_POSTED)
+        ticket = _reviewer(state=Ticket.State.REVIEW_DELIVERED)
 
         with pr_open_state(PrOpenState.MERGED), self.assertLogs(_LOGGER, level="INFO") as logs:
             result = schedule_external_review(ticket)
@@ -57,7 +57,7 @@ class TestFinishedPrMintsNothing(TestCase):
         assert not Task.objects.filter(ticket=ticket).exists()
         assert not Session.objects.filter(ticket=ticket).exists()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert not any("Retired reviewer ticket" in line for line in logs.output)
         assert sum("Not retiring" in line for line in logs.output) == 1
 

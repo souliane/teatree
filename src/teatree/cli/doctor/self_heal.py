@@ -431,7 +431,7 @@ def _check_failed_tasks_on_live_tickets() -> bool:
         )
         from teatree.core.models import Task, Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-        terminal = set(Ticket._TERMINAL_STATES) | {Ticket.State.RETROSPECTED}  # noqa: SLF001 — the model's SSOT terminal set
+        terminal = set(Ticket._SETTLED_STATES) | {Ticket.State.RETRO_RECORDED}  # noqa: SLF001 — the model's SSOT terminal set
         newest_status = Subquery(Task.objects.filter(ticket=OuterRef("pk")).order_by("-pk").values("status")[:1])
         frozen = (
             Ticket.objects.exclude(state__in=terminal)

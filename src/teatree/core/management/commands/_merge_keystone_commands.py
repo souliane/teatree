@@ -1,6 +1,6 @@
 """The ``ticket merge`` keystone command, factored out of ``ticket.py``.
 
-The sole sanctioned ``IN_REVIEW`` → ``MERGED`` transition (§17.4) lives here as a
+The sole sanctioned ``REVIEW_REQUESTED`` → ``MERGED`` transition (§17.4) lives here as a
 :class:`MergeKeystoneCommands` mixin the ``ticket``
 :class:`~django_typer.management.TyperCommand` inherits from, so ``t3 <overlay>
 ticket merge`` mounts unchanged while its LOC stays out of the (cap-bound)
@@ -59,7 +59,7 @@ class MergeKeystoneCommands(TyperCommand):
             ),
         ] = False,
     ) -> MergeKeystoneResult:
-        """Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4).
+        """Execute the missing REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4).
 
         The ONLY sanctioned merge path. Raw ``gh pr merge`` / ``glab mr
         merge`` is mechanically refused on teatree-managed tickets (the

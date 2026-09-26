@@ -38,7 +38,7 @@ class TestEnqueueTeardownBacklogDrain(TestCase):
         # A terminal ticket with NO worktree: nothing to reap.
         Ticket.objects.create(overlay="test", state=Ticket.State.DELIVERED)
         # A non-terminal ticket with a worktree: not eligible.
-        non_terminal = self._terminal_ticket_with_worktree(Ticket.State.IN_REVIEW)
+        non_terminal = self._terminal_ticket_with_worktree(Ticket.State.REVIEW_REQUESTED)
 
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415 - deferred: the module object the seam looks up
 
@@ -227,7 +227,7 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
         # that runs before the worker gets to it.
         from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
 
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(
             ticket=ticket, overlay="test", repo_path="r", branch="b", extra={"worktree_path": "/tmp/wt"}
         )

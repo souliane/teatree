@@ -129,7 +129,7 @@ class FrontierIsReachedTests(_IntakeTestCase):
         decided = [_issue(n, created_at=f"2026-01-01T00:{n:02d}:00Z") for n in range(1, self.DECIDED + 1)]
         fresh = _issue(500, created_at="2026-08-14T21:45:00Z")
         for issue in decided:
-            Ticket.objects.create(issue_url=str(issue["web_url"]), overlay=OVERLAY, state=Ticket.State.STARTED)
+            Ticket.objects.create(issue_url=str(issue["web_url"]), overlay=OVERLAY, state=Ticket.State.WORK_STARTED)
         host = _Host(authored={OWNER: [*decided, fresh]})
 
         admitted: list[str] = []

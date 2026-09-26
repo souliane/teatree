@@ -4,11 +4,11 @@ These are the load-bearing regressions for the cleanup redesign:
 
 - a MERGED ticket whose local branch ref was deleted is DONE via the FSM state
 (no git probe), so it is wiped — the rc=128 fix that stranded ~76 worktrees;
-- a STARTED ticket with a unique unpushed commit is NOT done, so it is KEPT, and
+- a WORK_STARTED ticket with a unique unpushed commit is NOT done, so it is KEPT, and
 the removed snapshot path means NO ``t3-recover-*`` artifact is created anywhere;
 - a done ticket whose worktree has a real uncommitted change is KEPT and reported
 (the per-change analyze-before-wipe primary safety);
-- a SHIPPED ticket (PR still open) is NOT done; the #706 guard keeps genuinely-ahead
+- a PR_OPENED ticket (PR still open) is NOT done; the #706 guard keeps genuinely-ahead
 unpushed work even on a done ticket; and the done-wipe tears the docker volumes down.
 """
 
@@ -162,10 +162,10 @@ class TestMergedDeletedRefWiped(_ReaperFixture):
 
 
 class TestNotDoneUnpushedKeptNoSnapshot(_ReaperFixture):
-    """A STARTED ticket with unique unpushed work is NOT done — KEPT, no snapshot."""
+    """A WORK_STARTED ticket with unique unpushed work is NOT done — KEPT, no snapshot."""
 
     def test_started_with_unique_unpushed_commit_is_kept(self) -> None:
-        worktree = self._make_worktree(Ticket.State.STARTED)  # never pushed
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)  # never pushed
 
         outcome = self._reap(worktree)
 
@@ -175,7 +175,7 @@ class TestNotDoneUnpushedKeptNoSnapshot(_ReaperFixture):
         assert Worktree.objects.filter(pk=worktree.pk).exists()
 
     def test_no_recovery_snapshot_artifact_is_created_anywhere(self) -> None:
-        self._reap(self._make_worktree(Ticket.State.STARTED))
+        self._reap(self._make_worktree(Ticket.State.WORK_STARTED))
         assert list(self.tmp_path.rglob("t3-recover-*")) == [], "the snapshot path is gone — no t3-recover-* dir"
 
 
@@ -250,17 +250,17 @@ class TestReapTocTouGuard(_ReaperFixture):
 
 
 class TestShippedIsNotDone(_ReaperFixture):
-    """SHIPPED (PR still open) is NOT a done state — the worktree is kept."""
+    """PR_OPENED (PR still open) is NOT a done state — the worktree is kept."""
 
     def test_shipped_ticket_is_not_done(self) -> None:
         self._push_branch()
-        worktree = self._make_worktree(Ticket.State.SHIPPED)
+        worktree = self._make_worktree(Ticket.State.PR_OPENED)
 
         signal = worktree_is_done(worktree)
         outcome = self._reap(worktree)
 
         assert signal.done is False
-        assert signal.source == "not-done:shipped"
+        assert signal.source == "not-done:pr_opened"
         assert outcome.action == "kept"
         assert self.wt_path.exists()
 
@@ -284,7 +284,7 @@ class TestOpenPrRefusesSquashMergedDone(_ReaperFixture):
 
     def test_open_pr_refuses_squash_merged_done(self) -> None:
         self._land_branch_content_on_main()  # tip is now patch-id present on origin/main
-        worktree = self._make_worktree(Ticket.State.STARTED)  # FSM not terminal → squash path decides
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)  # FSM not terminal → squash path decides
 
         # Sanity: with no open-PR signal the content heuristic DOES classify it done.
         assert worktree_is_done(worktree).source == "squash-merged"
@@ -518,7 +518,7 @@ class TestReaperGatesAndEmit(_ReaperFixture):
     """The ownership/liveness pre-gates route correctly, and kept items carry an emit record."""
 
     def test_kept_item_carries_an_emit_record(self) -> None:
-        worktree = self._make_worktree(Ticket.State.STARTED)  # not done → kept
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)  # not done → kept
 
         outcome = self._reap(worktree)
 
@@ -661,7 +661,7 @@ class TestEmitVerdictProvenance(_ReaperFixture):
         return worktree
 
     def test_an_unresolvable_clone_emits_an_unverified_record(self) -> None:
-        outcome = self._reap(self._make_unresolvable_clone(Ticket.State.STARTED))
+        outcome = self._reap(self._make_unresolvable_clone(Ticket.State.WORK_STARTED))
 
         assert outcome.action == "kept", outcome.label
         assert outcome.emit is not None
@@ -677,7 +677,7 @@ class TestEmitVerdictProvenance(_ReaperFixture):
         there. It emitted an empty commit list with ``content_verified: false``,
         which reads identically to a branch proven to hold nothing.
         """
-        worktree = self._make_worktree(Ticket.State.STARTED)
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
         worktree.repo_path = "ghostrepo"
         worktree.extra = {**worktree.extra, "clone_path": str(self.tmp_path / "moved-away" / "ghostrepo")}
         worktree.save(update_fields=["repo_path", "extra"])
@@ -809,7 +809,7 @@ class TestCaptureCoversEveryDisposition(_ReaperFixture):
 
     def test_a_kept_open_ticket_row_is_captured_so_the_doctor_can_age_it(self) -> None:
         (self.wt_path / "stranded.txt").write_text("exists on one disk and nowhere else\n", encoding="utf-8")
-        worktree = self._make_worktree(Ticket.State.STARTED)
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
 
         outcome = self._reap(worktree)
 
@@ -819,7 +819,7 @@ class TestCaptureCoversEveryDisposition(_ReaperFixture):
 
     def test_an_active_row_the_pre_gate_skips_is_captured_before_the_gate_decides(self) -> None:
         (self.wt_path / "stranded.txt").write_text("live, and still unshipped\n", encoding="utf-8")
-        worktree = self._make_worktree(Ticket.State.STARTED)
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
 
         with patch(
             "teatree.core.cleanup.reap_pre_gates.worktree_liveness",
@@ -832,7 +832,7 @@ class TestCaptureCoversEveryDisposition(_ReaperFixture):
 
     def test_a_dry_run_preview_records_nothing(self) -> None:
         (self.wt_path / "stranded.txt").write_text("preview must stay side-effect free\n", encoding="utf-8")
-        worktree = self._make_worktree(Ticket.State.STARTED)
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
 
         self._reap(worktree, dry_run=True)
 

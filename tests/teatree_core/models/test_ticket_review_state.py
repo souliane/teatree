@@ -6,23 +6,23 @@ from teatree.core.models import Ticket
 from teatree.core.models.ticket_review_state import POST_REVIEW_STATES, has_passed_review
 
 _POST_REVIEW = (
-    Ticket.State.REVIEWED,
-    Ticket.State.SHIPPED,
-    Ticket.State.IN_REVIEW,
+    Ticket.State.SELF_REVIEWED,
+    Ticket.State.PR_OPENED,
+    Ticket.State.REVIEW_REQUESTED,
     Ticket.State.MERGED,
-    Ticket.State.RETROSPECTED,
+    Ticket.State.RETRO_RECORDED,
     Ticket.State.DELIVERED,
 )
 _PRE_REVIEW_OR_ABANDONED = (
     Ticket.State.NOT_STARTED,
     Ticket.State.SCOPED,
-    Ticket.State.STARTED,
-    Ticket.State.PLANNED,
+    Ticket.State.WORK_STARTED,
+    Ticket.State.PLAN_RECORDED,
     Ticket.State.CODED,
     Ticket.State.TESTED,
-    # REVIEW_POSTED is a reviewer terminal, not the author "passed review"
+    # REVIEW_DELIVERED is a reviewer terminal, not the author "passed review"
     # milestone — a reviewer ticket is never a review-request candidate.
-    Ticket.State.REVIEW_POSTED,
+    Ticket.State.REVIEW_DELIVERED,
     Ticket.State.IGNORED,
 )
 

@@ -143,7 +143,7 @@ def build_merge_quality_contract(ticket: "Ticket", head_sha: str) -> str:
     item_slugs = ", ".join(item.slug for item in llm_items(_MERGE_TRANSITION))
     strategy = ratified_test_strategy(ticket)
     return (
-        f"You are the merge-quality CRITIC deciding whether the SHIPPED change on ticket {ticket.pk} at head "
+        f"You are the merge-quality CRITIC deciding whether the shipped change on ticket {ticket.pk} at head "
         f"{head_sha[:8] or '<unknown>'} is not merely green but WELL-ENGINEERED — clean and tested-enough WITHOUT "
         f"bloat. Read the diff and the touched modules, then answer each item against the ARTIFACTS.\n\n"
         f"Anchor for `test_value` — {strategy}\n\n"

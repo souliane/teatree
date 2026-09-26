@@ -21,7 +21,7 @@ _HX_GET_RE = re.compile(r'id="board"[^>]*\shx-get="([^"]*)"', re.DOTALL)
 
 class BoardPageTestCase(TestCase):
     def test_board_renders_and_lists_tickets(self) -> None:
-        ticket = TicketFactory(state=State.STARTED, short_description="a board ticket")
+        ticket = TicketFactory(state=State.WORK_STARTED, short_description="a board ticket")
         resp = self.client.get(reverse("dash:board"))
         assert resp.status_code == 200
         body = resp.content.decode()
@@ -43,8 +43,8 @@ class BoardPageTestCase(TestCase):
         assert f'data-ticket="{ignored.pk}"' in toggled.content.decode()
 
     def test_overlay_filter(self) -> None:
-        keep = TicketFactory(state=State.STARTED, overlay="ovA", short_description="keep me")
-        TicketFactory(state=State.STARTED, overlay="ovB", short_description="drop me")
+        keep = TicketFactory(state=State.WORK_STARTED, overlay="ovA", short_description="keep me")
+        TicketFactory(state=State.WORK_STARTED, overlay="ovB", short_description="drop me")
         resp = self.client.get(reverse("dash:board_columns"), {"overlay": "ovA"})
         body = resp.content.decode()
         assert f'data-ticket="{keep.pk}"' in body
@@ -55,7 +55,7 @@ class BoardCardIssueLinkTestCase(TestCase):
     """The card's id IS the forge link (#3624); a sentinel renders plain text."""
 
     def test_forge_ticket_renders_the_number_as_a_clickable_anchor(self) -> None:
-        ticket = TicketFactory(state=State.STARTED, issue_url="https://github.com/souliane/teatree/issues/3205")
+        ticket = TicketFactory(state=State.WORK_STARTED, issue_url="https://github.com/souliane/teatree/issues/3205")
         body = self.client.get(reverse("dash:board_columns")).content.decode()
         card = _card_fragment(body, ticket.pk)
         assert 'class="card-num mono"' in card
@@ -134,7 +134,7 @@ class CardEnqueueButtonsTestCase(TestCase):
     """#4085: prioritising a PR is a click on its card, not a raw DB query plus a CLI call."""
 
     def setUp(self) -> None:
-        self.ticket = TicketFactory(state=State.STARTED)
+        self.ticket = TicketFactory(state=State.WORK_STARTED)
         self.action = reverse("dash:task_action", args=[self.ticket.pk])
 
     def _card(self) -> str:

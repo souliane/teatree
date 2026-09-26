@@ -244,7 +244,9 @@ class TestReconcileStalledTicket(TestCase):
     nothing.
     """
 
-    def _stalled(self, url: str, *, state: str = Ticket.State.PLANNED, age_hours: int = 72) -> ImplementedIssueMarker:
+    def _stalled(
+        self, url: str, *, state: str = Ticket.State.PLAN_RECORDED, age_hours: int = 72
+    ) -> ImplementedIssueMarker:
         ticket = TicketFactory(overlay="acme", issue_url=url, state=state)
         task = TaskFactory(ticket=ticket, status=Task.Status.FAILED)
         Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(hours=age_hours))
@@ -302,7 +304,7 @@ class TestReconcileStalledTicket(TestCase):
 
     def test_keeps_a_taskless_ticket_within_the_dispatch_grace(self) -> None:
         url = "https://github.com/o/r/issues/205"
-        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.WORK_STARTED)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url)
 
         result = ImplementedIssueMarker.objects.reconcile_stale("acme")
@@ -324,14 +326,14 @@ class TestReconcileStalledTicket(TestCase):
 class TestReleaseOnMergedPr(TestCase):
     """A claim whose PR has LANDED must not wait out a grace for a step the ticket will never take.
 
-    SHIPPED is deliberately not a ``marker_release_states()`` member — it means "PR open,
-    not yet landed" — so a ticket frozen at SHIPPED after its PR merged satisfies no
+    PR_OPENED is deliberately not a ``marker_release_states()`` member — it means "PR open,
+    not yet landed" — so a ticket frozen at PR_OPENED after its PR merged satisfies no
     release condition and holds its slot for the full 24h stall grace. At the shipped
     budget two of those close intake for a day.
     """
 
     def _shipped_with_merged_pr(self, url: str) -> ImplementedIssueMarker:
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.SHIPPED)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.PR_OPENED)
         PullRequestFactory(ticket=ticket, overlay="acme", state=PullRequest.State.MERGED)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
         return ImplementedIssueMarker.objects.get(pk=marker.pk)
@@ -366,7 +368,7 @@ class TestReleaseOnMergedPr(TestCase):
 
     def test_open_pr_does_not_release(self) -> None:
         url = "https://github.com/o/r/issues/303"
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.SHIPPED)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.PR_OPENED)
         PullRequestFactory(ticket=ticket, overlay="acme", state=PullRequest.State.OPEN)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
 
@@ -459,7 +461,7 @@ class TestHollowClaim(TestCase):
 
     def _hollow(self, url: str) -> ImplementedIssueMarker:
         """A marker linked to a ticket that has since been deleted, claimed just now."""
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.WORK_STARTED)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)
         ticket.delete()
         return ImplementedIssueMarker.objects.get(pk=marker.pk)
@@ -520,7 +522,7 @@ class TestFailureIsNotProgress(TestCase):
 
     def _crash_looping(self, url: str, *, newest: str, minutes_ago: int = 10) -> ImplementedIssueMarker:
         """A 12h-old claim whose newest task landed *minutes_ago* with status *newest*."""
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.WORK_STARTED)
         for status, age in ((Task.Status.FAILED, timedelta(hours=6)), (newest, timedelta(minutes=minutes_ago))):
             task = TaskFactory(ticket=ticket, status=status)
             Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - age)
@@ -581,7 +583,7 @@ class TestOperatorCancelledClaim(TestCase):
     """
 
     def _cancelled(self, url: str, *, kind: str = FailureKind.CANCELLED, age_hours: int = 0) -> ImplementedIssueMarker:
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.WORK_STARTED)
         task = TaskFactory(ticket=ticket, status=Task.Status.FAILED, failure_kind=kind)
         Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(hours=age_hours))
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True, ticket=ticket)

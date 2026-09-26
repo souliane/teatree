@@ -12,7 +12,9 @@ from teatree.core.models import Session, Task, Ticket
 class TestStrandedTicketCount(TestCase):
     def _queued(self, n: int, *, status: str = Task.Status.FAILED, age: timedelta = timedelta(hours=3)) -> None:
         for i in range(n):
-            ticket = Ticket.objects.create(issue_url=f"https://example.com/s/{status}/{i}", state=Ticket.State.STARTED)
+            ticket = Ticket.objects.create(
+                issue_url=f"https://example.com/s/{status}/{i}", state=Ticket.State.WORK_STARTED
+            )
             session = Session.objects.create(overlay="test", ticket=ticket)
             task = Task.objects.create(ticket=ticket, session=session, status=status)
             Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - age)
@@ -35,14 +37,14 @@ class TestStrandedTicketCount(TestCase):
         # discount these — a fresh one would be discounted by the window instead and the
         # exclusion would go untested. A wedged queue is `_stale_tick_signals`' signal.
         self._queued(2)
-        for ticket in Ticket.objects.filter(state=Ticket.State.STARTED):
+        for ticket in Ticket.objects.filter(state=Ticket.State.WORK_STARTED):
             retry = Task.objects.create(ticket=ticket, session=ticket.sessions.first(), status=Task.Status.PENDING)
             Task.objects.filter(pk=retry.pk).update(created_at=timezone.now() - STALLED_BACKLOG_WINDOW * 2)
         assert stranded_ticket_count() == 0
 
     def test_a_ticket_that_was_never_queued_is_not_stranded(self) -> None:
         for i in range(2):
-            Ticket.objects.create(issue_url=f"https://example.com/nq/{i}", state=Ticket.State.STARTED)
+            Ticket.objects.create(issue_url=f"https://example.com/nq/{i}", state=Ticket.State.WORK_STARTED)
         assert stranded_ticket_count() == 0
 
     def test_a_ticket_past_started_is_making_progress(self) -> None:
@@ -54,7 +56,7 @@ class TestStrandedTicketCount(TestCase):
         # The tell is the NEWEST task having failed. An older failure that a later
         # completed task superseded is not a ticket without an execution path.
         self._queued(2)
-        for ticket in Ticket.objects.filter(state=Ticket.State.STARTED):
+        for ticket in Ticket.objects.filter(state=Ticket.State.WORK_STARTED):
             done = Task.objects.create(ticket=ticket, session=ticket.sessions.first(), status=Task.Status.COMPLETED)
             Task.objects.filter(pk=done.pk).update(created_at=timezone.now() - timedelta(hours=2, minutes=30))
         assert stranded_ticket_count() == 0

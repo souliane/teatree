@@ -71,14 +71,14 @@ class TestResolvePlan:
         assert plan["intake"] is StepStatus.RUN
 
     def test_started_unprovisioned_runs_intake(self) -> None:
-        """STARTED with no worktree is exactly where an intake ticket lands with ``repos=[]``.
+        """WORK_STARTED with no worktree is exactly where an intake ticket lands with ``repos=[]``.
 
         ``workspace ticket <ref>`` is the only automated step that populates them, so
-        scoring intake DONE off the shared STARTED target skips the operator's whole
+        scoring intake DONE off the shared WORK_STARTED target skips the operator's whole
         repair path (souliane/teatree#4578).
         """
         plan = _status_by_name(
-            list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.STARTED, provisioned=False))))
+            list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.WORK_STARTED, provisioned=False))))
         )
         assert plan["intake"] is StepStatus.RUN
         assert plan["provision"] is StepStatus.WAITING
@@ -86,7 +86,7 @@ class TestResolvePlan:
 
     def test_started_provisioned_is_pending_on_the_plan_agent(self) -> None:
         plan = _status_by_name(
-            list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.STARTED, provisioned=True))))
+            list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.WORK_STARTED, provisioned=True))))
         )
         assert plan["intake"] is StepStatus.DONE
         assert plan["provision"] is StepStatus.DONE
@@ -102,12 +102,12 @@ class TestResolvePlan:
         assert plan["ship"] is StepStatus.WAITING
 
     def test_reviewed_runs_ship(self) -> None:
-        plan = _status_by_name(list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.REVIEWED)))))
+        plan = _status_by_name(list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.SELF_REVIEWED)))))
         assert plan["review"] is StepStatus.DONE
         assert plan["ship"] is StepStatus.RUN
 
     def test_shipped_is_all_done(self) -> None:
-        plan = _status_by_name(list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.SHIPPED)))))
+        plan = _status_by_name(list(starmap(StepReport, resolve_plan(_snapshot(Ticket.State.PR_OPENED)))))
         assert all(status is StepStatus.DONE for status in plan.values())
 
     def test_merged_is_all_done(self) -> None:
@@ -151,7 +151,7 @@ class TestDrive:
     def test_fresh_ticket_runs_intake_then_stops_pending_at_plan(self) -> None:
         world = _FakeWorld(_snapshot(None), ticket_id=None).when(
             "intake",
-            becomes=_snapshot(Ticket.State.STARTED, provisioned=True),
+            becomes=_snapshot(Ticket.State.WORK_STARTED, provisioned=True),
         )
         report = world.drive()
         statuses = _status_by_name(report.steps)
@@ -164,9 +164,9 @@ class TestDrive:
         assert world.calls == ["intake"]  # never invokes an agent step's chokepoint
 
     def test_started_unprovisioned_reruns_intake_then_stops_pending(self) -> None:
-        world = _FakeWorld(_snapshot(Ticket.State.STARTED, provisioned=False)).when(
+        world = _FakeWorld(_snapshot(Ticket.State.WORK_STARTED, provisioned=False)).when(
             "intake",
-            becomes=_snapshot(Ticket.State.STARTED, provisioned=True),
+            becomes=_snapshot(Ticket.State.WORK_STARTED, provisioned=True),
         )
         report = world.drive()
         statuses = _status_by_name(report.steps)
@@ -177,26 +177,26 @@ class TestDrive:
 
     def test_intake_that_leaves_the_ticket_unprovisioned_is_blocked_not_done(self) -> None:
         """The repos-population wall (souliane/teatree#4602) must READ as blocked, not as done."""
-        world = _FakeWorld(_snapshot(Ticket.State.STARTED, provisioned=False))
+        world = _FakeWorld(_snapshot(Ticket.State.WORK_STARTED, provisioned=False))
         report = world.drive()
         intake = next(r for r in report.steps if r.step.name == "intake")
         assert intake.status is StepStatus.BLOCKED
         assert report.stopped_at == "intake"
 
     def test_reviewed_ships_and_completes(self) -> None:
-        world = _FakeWorld(_snapshot(Ticket.State.REVIEWED)).when(
+        world = _FakeWorld(_snapshot(Ticket.State.SELF_REVIEWED)).when(
             "ship",
-            becomes=_snapshot(Ticket.State.IN_REVIEW),
+            becomes=_snapshot(Ticket.State.REVIEW_REQUESTED),
         )
         report = world.drive()
         statuses = _status_by_name(report.steps)
         assert statuses["ship"] is StepStatus.RAN
         assert report.stopped_at is None
         assert report.stopped_reason == "completed"
-        assert report.final_state == Ticket.State.IN_REVIEW
+        assert report.final_state == Ticket.State.REVIEW_REQUESTED
 
     def test_ship_that_does_not_advance_is_blocked_with_the_detail(self) -> None:
-        world = _FakeWorld(_snapshot(Ticket.State.REVIEWED)).when(
+        world = _FakeWorld(_snapshot(Ticket.State.SELF_REVIEWED)).when(
             "ship",
             detail="Refusing the 'shipping' transition — uncommitted tracked changes",
         )
@@ -208,7 +208,7 @@ class TestDrive:
         assert report.stopped_reason == "blocked"
 
     def test_ship_that_does_not_advance_and_is_silent_gets_a_default_blocker(self) -> None:
-        world = _FakeWorld(_snapshot(Ticket.State.REVIEWED))  # ship runs, snapshot unchanged, no detail
+        world = _FakeWorld(_snapshot(Ticket.State.SELF_REVIEWED))  # ship runs, snapshot unchanged, no detail
         report = world.drive()
         ship = next(r for r in report.steps if r.step.name == "ship")
         assert ship.status is StepStatus.BLOCKED
@@ -228,7 +228,7 @@ class TestDrive:
         assert world.calls == []
 
     def test_plan_only_never_calls_the_chokepoint_runner(self) -> None:
-        world = _FakeWorld(_snapshot(Ticket.State.REVIEWED))
+        world = _FakeWorld(_snapshot(Ticket.State.SELF_REVIEWED))
         report = world.drive(plan_only=True)
         assert report.plan_only is True
         assert world.calls == []

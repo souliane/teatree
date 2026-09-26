@@ -99,10 +99,10 @@ class TestOriginalBugEndToEndThroughTheOperatorRemedies(TestCase):
     """Reproduce PR #4521's HOLD end-to-end, then prove the fix (#4409).
 
     Both named remedies drove `ticket.plan()`, whose FSM source is ONLY
-    STARTED — so on the 91/92 surveyed dispatch targets that are NOT in
-    STARTED, the remedy itself raised inside the same atomic() block and
+    WORK_STARTED — so on the 91/92 surveyed dispatch targets that are NOT in
+    WORK_STARTED, the remedy itself raised inside the same atomic() block and
     rolled back, leaving the dispatch refused with no working path forward
-    (the #4449 class). The fix records the signal off STARTED too, so the
+    (the #4449 class). The fix records the signal off WORK_STARTED too, so the
     SAME dispatch that was refused before now proceeds.
     """
 

@@ -31,7 +31,7 @@ pytestmark = pytest.mark.filterwarnings(
 
 class TasksCompleteFsmAdvanceFailureTest(TestCase):
     def _claimed_planning_task_no_artifact(self) -> Task:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(
             ticket=ticket,
@@ -52,7 +52,7 @@ class TasksCompleteFsmAdvanceFailureTest(TestCase):
         assert task.status == Task.Status.COMPLETED  # task is NOT wedged claimed
 
         task.ticket.refresh_from_db()
-        assert task.ticket.state == Ticket.State.STARTED  # ticket did NOT advance
+        assert task.ticket.state == Ticket.State.WORK_STARTED  # ticket did NOT advance
 
         # The refusal is surfaced LOUDLY, not swallowed.
         out = stderr.getvalue().lower()
@@ -68,14 +68,14 @@ class TasksCompleteFsmAdvanceFailureTest(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
         task.ticket.refresh_from_db()
-        assert task.ticket.state == Ticket.State.PLANNED
+        assert task.ticket.state == Ticket.State.PLAN_RECORDED
 
 
 class CompleteSurfacingAdvanceFailureModelTest(TestCase):
     """The model method itself: completion persists, refusal reason returned."""
 
     def _claimed_planning_task(self) -> Task:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(
             ticket=ticket,
@@ -92,7 +92,7 @@ class CompleteSurfacingAdvanceFailureModelTest(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
         task.ticket.refresh_from_db()
-        assert task.ticket.state == Ticket.State.STARTED
+        assert task.ticket.state == Ticket.State.WORK_STARTED
 
     def test_empty_message_refusal_falls_back_to_class_name(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
@@ -112,4 +112,4 @@ class CompleteSurfacingAdvanceFailureModelTest(TestCase):
         reason = task.complete_surfacing_advance_failure()
         assert reason == ""
         task.ticket.refresh_from_db()
-        assert task.ticket.state == Ticket.State.PLANNED
+        assert task.ticket.state == Ticket.State.PLAN_RECORDED

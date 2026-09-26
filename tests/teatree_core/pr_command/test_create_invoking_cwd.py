@@ -179,7 +179,7 @@ class TestSharedBranchNameShipsTheInvokingRepo(TestCase):
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://example.test/-/issues/9001",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
         )
         _attest_shipping_phases(ticket)
         for checkout in (backend, frontend):
@@ -225,7 +225,7 @@ class TestGatesSurviveTheBranchReconcile(TestCase):
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://example.test/-/issues/9001",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             extra={"ship_invoking_branch": "9001-ticket"},
         )
         _attest_shipping_phases(ticket)

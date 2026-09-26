@@ -97,7 +97,9 @@ class SkillAssuranceGapTests(TestCase):
         firing = record_firing(detector.detect()[0], action=ActionRung.TICKET)
         ticket = TicketFactory(overlay="t3-teatree")
         Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
-        TicketTransition.objects.create(ticket=ticket, from_state=Ticket.State.IN_REVIEW, to_state=Ticket.State.MERGED)
+        TicketTransition.objects.create(
+            ticket=ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
+        )
         SelfImproveFiring.objects.filter(pk=firing.pk).update(ticket=ticket)
         TaskAttempt.objects.update(started_at=timezone.now() - timedelta(hours=7))
 
@@ -124,7 +126,9 @@ class SkillAssuranceGapTests(TestCase):
         firing = record_firing(detector.detect()[0], action=ActionRung.TICKET)
         ticket = TicketFactory(overlay="t3-teatree")
         Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.MERGED)
-        TicketTransition.objects.create(ticket=ticket, from_state=Ticket.State.IN_REVIEW, to_state=Ticket.State.MERGED)
+        TicketTransition.objects.create(
+            ticket=ticket, from_state=Ticket.State.REVIEW_REQUESTED, to_state=Ticket.State.MERGED
+        )
         SelfImproveFiring.objects.filter(pk=firing.pk).update(ticket=ticket)
         _attempt(overlay="t3-teatree", status="missing", missing=["code"])
 

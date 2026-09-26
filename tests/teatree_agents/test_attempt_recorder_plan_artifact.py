@@ -2,7 +2,7 @@
 
 Two things are pinned here. The phase-alias regression (integration audit #20): a task
 stored with the accepted short verb ``"plan"`` recorded no ``PlanArtifact``, so the plan
-gate refused ``STARTED -> PLANNED`` and the ticket wedged at ``STARTED``.
+gate refused ``WORK_STARTED -> PLAN_RECORDED`` and the ticket wedged at ``WORK_STARTED``.
 
 And the functional contract this file exists for: a REAL planning envelope, carrying the
 five-section manifest a planner emits, driven through ``record_result_envelope`` produces
@@ -44,7 +44,7 @@ def _envelope(**overrides: object) -> dict:
 
 
 def _planning_task(*, phase: str = "planning") -> Task:
-    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, overlay="acme")
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     task = Task.objects.create(ticket=ticket, session=session, phase=phase)
     task.claim(claimed_by="loop-slot")
@@ -58,7 +58,7 @@ class TestPlanArtifactPhaseAlias(TestCase):
         task.refresh_from_db()
         task.ticket.refresh_from_db()
         assert PlanArtifact.objects.filter(ticket=task.ticket).exists()
-        assert task.ticket.state == Ticket.State.PLANNED
+        assert task.ticket.state == Ticket.State.PLAN_RECORDED
         assert task.status == Task.Status.COMPLETED
 
     def test_canonical_planning_records_artifact_and_advances(self) -> None:
@@ -66,13 +66,13 @@ class TestPlanArtifactPhaseAlias(TestCase):
         record_result_envelope(task, _envelope(), phase="planning")
         task.ticket.refresh_from_db()
         assert PlanArtifact.objects.filter(ticket=task.ticket).exists()
-        assert task.ticket.state == Ticket.State.PLANNED
+        assert task.ticket.state == Ticket.State.PLAN_RECORDED
 
     def test_ticket_is_not_stranded_at_started(self) -> None:
         task = _planning_task(phase="plan")
         record_result_envelope(task, _envelope(), phase="plan")
         task.ticket.refresh_from_db()
-        assert task.ticket.state != Ticket.State.STARTED
+        assert task.ticket.state != Ticket.State.WORK_STARTED
 
     def test_phase_from_task_field_when_envelope_phase_blank(self) -> None:
         task = _planning_task(phase="plan")
@@ -80,7 +80,7 @@ class TestPlanArtifactPhaseAlias(TestCase):
         assert PlanArtifact.objects.filter(ticket=task.ticket).exists()
 
     def test_non_planning_phase_records_no_artifact(self) -> None:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="code")
         task = Task.objects.create(ticket=ticket, session=session, phase="code")
         task.claim(claimed_by="loop-slot")
@@ -115,7 +115,7 @@ class TestAPlanningEnvelopeProducesTheRubric(TestCase):
         assert rubric is not None
         assert set(_CRITERIA) <= {c.text for c in rubric.criteria.all()}
 
-        assert task.ticket.state == Ticket.State.PLANNED
+        assert task.ticket.state == Ticket.State.PLAN_RECORDED
         assert task.status == Task.Status.COMPLETED
 
     def test_the_plans_criteria_are_added_beside_the_seeded_phase_criterion(self) -> None:

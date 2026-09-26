@@ -8,7 +8,7 @@ every re-run still fired the audit receiver.
 
 A caller re-running one per pass therefore wrote one row per ticket per pass forever.
 Measured on the live box: 3,240,987 of 3,241,397 rows (99.99%) were
-``review_posted → review_posted``, all from ``mark_reviewed_externally``, still growing
+``review_delivered → review_delivered``, all from ``mark_reviewed_externally``, still growing
 at ~410/min — ~85% of the control DB, and the control DB is the seed copied into every
 per-worktree env dir.
 
@@ -26,11 +26,11 @@ class SelfTransitionIsNotAnAuditEvent(TestCase):
     """The audit table records state EDGES; a self-transition has none."""
 
     def _reviewed_ticket(self) -> Ticket:
-        """A reviewer ticket already at REVIEW_POSTED, as the scanner finds it each pass."""
+        """A reviewer ticket already at REVIEW_DELIVERED, as the scanner finds it each pass."""
         ticket = Ticket.objects.create(
             overlay="test",
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.REVIEW_POSTED,
+            state=Ticket.State.REVIEW_DELIVERED,
         )
         session = Session.objects.create(ticket=ticket, agent_id="t")
         Task.objects.create(
@@ -63,7 +63,7 @@ class SelfTransitionIsNotAnAuditEvent(TestCase):
         """
         ticket = self._reviewed_ticket()
         ticket.mark_reviewed_externally()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
 
     def test_no_audit_row_anywhere_has_equal_from_and_to(self) -> None:
         """Stated as the invariant, so a future self-transition is covered without edits."""

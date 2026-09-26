@@ -14,7 +14,7 @@ def _new_ticket_autostart_q() -> Q:
     from teatree.core.models import Ticket  # noqa: PLC0415 — FSM state is the fact the rank needs
 
     autostart_phases = phase_spellings("planning") + phase_spellings("scoping")
-    initial_states = (Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.STARTED)
+    initial_states = (Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.WORK_STARTED)
     return Q(parent_task__isnull=True) & Q(phase__in=autostart_phases) & Q(ticket__state__in=initial_states)
 
 

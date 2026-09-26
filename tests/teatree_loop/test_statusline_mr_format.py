@@ -138,7 +138,7 @@ class TestTracker404StripsClickableUrl:
         Ticket.objects.create(
             overlay="teatree",
             issue_url="https://example.com/issues/404",
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             short_description="orphaned tracker",
             extra={"tracker_404": True},
         )

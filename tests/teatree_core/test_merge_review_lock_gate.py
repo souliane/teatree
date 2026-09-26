@@ -90,7 +90,7 @@ def _merge(clear: MergeClear) -> MergeOutcome:
 
 class TestMergeRefusedWhileReviewLockHeld(TestCase):
     def test_refused_while_lock_is_review_dispatched(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _seed_merge_safe_verdict()
         lock = MRReviewLock.acquire(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-b")
@@ -102,14 +102,14 @@ class TestMergeRefusedWhileReviewLockHeld(TestCase):
         assert "t3:reviewer-agent-b" in str(excinfo.value)
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
 
 class TestMergeProceedsWhenLockIsNotHeld(TestCase):
     def test_proceeds_with_no_lock_row_at_all(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _seed_merge_safe_verdict()
         assert MRReviewLock.objects.count() == 0
@@ -121,7 +121,7 @@ class TestMergeProceedsWhenLockIsNotHeld(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_proceeds_once_the_lock_has_resolved(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _seed_merge_safe_verdict()
         MRReviewLock.acquire(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-b")
@@ -140,7 +140,7 @@ class TestMergeProceedsWhenLockIsNotHeld(TestCase):
         # reconciles; a subsequent attempt proceeds (bounded, never a lockout).
         import datetime as dt  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket=ticket)
         _seed_merge_safe_verdict()
         MRReviewLock.acquire(slug=_SLUG, pr_id=_PR, holder="t3:reviewer-agent-b", ttl=dt.timedelta(seconds=-1))
@@ -148,7 +148,7 @@ class TestMergeProceedsWhenLockIsNotHeld(TestCase):
         with pytest.raises(MergePreconditionError, match="expired without recording a verdict"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         # The escalation reconciled the stale row → the next attempt proceeds.
         assert MRReviewLock.expired_unresolved_lock_for(slug=_SLUG, pr_id=_PR) is None
 

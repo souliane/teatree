@@ -16,7 +16,7 @@ behind them, so the reaction path was never entered — upstream of any Slack
 transport problem.
 
 ``ReviewDoneAckScanner`` rebinds the ack to the durable fact: a reviewer-role
-ticket at ``REVIEW_POSTED`` has had its review posted. These tests drive the real
+ticket at ``REVIEW_DELIVERED`` has had its review posted. These tests drive the real
 scanner and the real ``emit_review_done_reactions`` chokepoint with a fake
 messaging backend — no colleague surface is touched.
 """
@@ -63,7 +63,7 @@ class FakeMessaging:
 
 
 def _seed_reviewed_ticket(*, url: str = MR_URL, overlay: str = "team-overlay") -> Ticket:
-    """A reviewer ticket whose reviewing task completed and which reached REVIEW_POSTED."""
+    """A reviewer ticket whose reviewing task completed and which reached REVIEW_DELIVERED."""
     ticket = Ticket.objects.create(issue_url=url, overlay=overlay, role=Ticket.Role.REVIEWER)
     session = Session.objects.create(ticket=ticket, agent_id="external-review")
     Task.objects.create(
@@ -72,7 +72,7 @@ def _seed_reviewed_ticket(*, url: str = MR_URL, overlay: str = "team-overlay") -
         phase="reviewing",
         status=Task.Status.COMPLETED,
     )
-    Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_POSTED)
+    Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_DELIVERED)
     ticket.refresh_from_db()
     return ticket
 
@@ -144,7 +144,7 @@ class TestReviewDoneAckScanner(TestCase):
         assert messaging.reactions == []
 
     def test_review_still_in_flight_is_not_acked(self) -> None:
-        """The ack is a review-DONE signal — a ticket short of REVIEW_POSTED has not finished."""
+        """The ack is a review-DONE signal — a ticket short of REVIEW_DELIVERED has not finished."""
         ticket = _seed_reviewed_ticket()
         Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.NOT_STARTED)
         _seed_broadcast_post()

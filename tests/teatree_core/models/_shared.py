@@ -28,7 +28,7 @@ def _start_with_provision(test_case: TestCase, ticket: Ticket) -> None:
 
     def fake_enqueue(ticket_id: int) -> None:
         target = Ticket.objects.get(pk=ticket_id)
-        if target.state == Ticket.State.STARTED:
+        if target.state == Ticket.State.WORK_STARTED:
             target.schedule_planning()
 
     fake_task = MagicMock()
@@ -42,7 +42,7 @@ def _start_with_provision(test_case: TestCase, ticket: Ticket) -> None:
 
 
 def _advance_ticket_to_tested(ticket: Ticket, test_case: TestCase | None = None) -> None:
-    """Advance a ticket through scoped, started, coded, tested.
+    """Advance a ticket through scoped, work_started, coded, tested.
 
     When ``test_case`` is provided, the start transition fires its on_commit
     callback so the coding task gets scheduled. Tests that don't care about
@@ -55,15 +55,15 @@ def _advance_ticket_to_tested(ticket: Ticket, test_case: TestCase | None = None)
     else:
         ticket.start()
         ticket.save()
-    _advance_started_to_planned(ticket)
+    _advance_work_started_to_plan_recorded(ticket)
     ticket.code()
     ticket.save()
     ticket.test(passed=True)
     ticket.save()
 
 
-def _advance_started_to_planned(ticket: Ticket) -> None:
-    """Record a PlanArtifact and drive STARTED → PLANNED so code() can run."""
+def _advance_work_started_to_plan_recorded(ticket: Ticket) -> None:
+    """Record a PlanArtifact and drive WORK_STARTED → PLAN_RECORDED so code() can run."""
     record_test_plan(ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
     ticket.plan()
     ticket.save()

@@ -186,7 +186,7 @@ def _substrate_clear() -> MergeClear:
     ticket = Ticket.objects.create(
         overlay=OVERLAY,
         issue_url=f"https://github.com/{SLUG}/pull/{PR_ID}",
-        state=Ticket.State.IN_REVIEW,
+        state=Ticket.State.REVIEW_REQUESTED,
     )
     waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
     return MergeClear.objects.create(

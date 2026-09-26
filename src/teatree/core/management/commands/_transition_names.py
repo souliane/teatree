@@ -31,10 +31,10 @@ ALLOWED_TRANSITION_NAMES: tuple[str, ...] = (
     # approvable action — terminal disposition for the reviewing task.
     "mark_review_no_action",
     "mark_reviewed_externally",
-    # #1118: phase-driven catch-up to REVIEWED. The FSM exposes it via
+    # #1118: phase-driven catch-up to SELF_REVIEWED. The FSM exposes it via
     # ``get_available_FIELD_transitions`` from every non-terminal state
     # (#808); the CLI must mirror the FSM-table surface so a ticket
-    # stranded at ``in_review`` after a failed ship can be reconciled
+    # stranded at ``review_requested`` after a failed ship can be reconciled
     # without a code-level workaround.
     "reconcile_reviewed",
     "reconcile_merged",

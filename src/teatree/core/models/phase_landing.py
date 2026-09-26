@@ -1,7 +1,7 @@
 """Did a phase's work LAND? — the evidence a lost lease may not overrule (#3982).
 
 Losing a lease is evidence about the LEASE, never about the WORK. A shipping task that
-pushed its branch, opened its pull request and advanced its ticket to ``in_review`` had
+pushed its branch, opened its pull request and advanced its ticket to ``review_requested`` had
 completed the phase's entire purpose; recording it ``failed`` / ``lease_lost`` because the
 heartbeat lapsed feeds the auto-repair sweep a "needs re-doing" signal for work that is
 already done, and inflates the environmental-failure rate capacity decisions read from.
@@ -17,10 +17,10 @@ path that is already recording an outcome. Three sources, most-authoritative fir
     :class:`~teatree.core.models.review_verdict.ReviewVerdict` at the head the task
     reviewed (#4100). Reviewing is where the false failures concentrate, and the author
     ladder can say nothing about a reviewer ticket — it is minted at ``not_started`` and
-    held there until ``review_posted`` — so without this the guard structurally could not
+    held there until ``review_delivered`` — so without this the guard structurally could not
     reach the phase that needs it most.
 
-Everything else answers ``""``. An off-ladder state (``review_posted`` / ``ignored``) and a
+Everything else answers ``""``. An off-ladder state (``review_delivered`` / ``ignored``) and a
 free-form phase hold no author-ladder position, and a conservative "no evidence" leaves the
 caller's existing failure path untouched.
 """
@@ -70,7 +70,7 @@ def phase_landing_evidence(task: "Task", *, trust_phase_artifact: bool) -> str:
     if ticket.role != Ticket.Role.AUTHOR:
         return ""
     if phase_output_reached(ticket, task.phase):
-        # str() before !r: a TextChoices member reprs as ``Ticket.State.IN_REVIEW``,
+        # str() before !r: a TextChoices member reprs as ``Ticket.State.REVIEW_REQUESTED``,
         # which is not the token the operator reads everywhere else.
         return f"ticket state {str(ticket.state)!r} is at or past the state {task.phase!r} produces"
     if not trust_phase_artifact:
@@ -83,7 +83,7 @@ def _shipping_artifact_evidence(task: "Task") -> str:
 
     The FSM check above misses the case where the phase's work landed but its transition
     did not: the branch is pushed and the pull request is open while the ticket still reads
-    ``reviewed``. That is precisely the state a re-dispatch would duplicate.
+    ``self_reviewed``. That is precisely the state a re-dispatch would duplicate.
     """
     if normalize_phase(task.phase) != "shipping":
         return ""

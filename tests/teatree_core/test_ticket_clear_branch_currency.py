@@ -141,7 +141,7 @@ class TestTicketClearBranchCurrency(TestCase):
         monkeypatch.setattr("teatree.core.gates.e2e_mandatory_gate.get_overlay", lambda *_a, **_k: _SafeOverlay())
 
     def _attach_ticket(self, clone: Path, branch: str) -> Ticket:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -199,7 +199,7 @@ class TestTicketClearBranchCurrency(TestCase):
 
     def test_no_worktree_skips_currency_check(self) -> None:
         """Without a worktree to verify against, the check is skipped (do-not-block)."""
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         # No Worktree attached.
 
         result = cast(
@@ -234,7 +234,7 @@ class TestCheckClearBranchCurrencyTargetResolution(TestCase):
     _INTEGRATION = "chore/long-lived-integration"
 
     def _ticket_with_worktree(self, **extra: object) -> Ticket:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra=dict(extra))
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED, extra=dict(extra))
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",

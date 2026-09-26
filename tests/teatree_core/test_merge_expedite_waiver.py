@@ -97,7 +97,7 @@ def _failed_stub() -> _GhStub:
 
 
 def _expedited_ticket() -> Ticket:
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, expedited=True)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, expedited=True)
     waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
     return ticket
 
@@ -188,7 +188,7 @@ class TestExpediteIssuance(TestCase):
             )
 
     def test_expedite_fields_refused_on_unflagged_ticket(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, expedited=False)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, expedited=False)
         waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         with pytest.raises(ClearIssuanceError, match="flagged expedited"):
             MergeClear.issue(
@@ -330,14 +330,14 @@ class TestExpediteMergeTime(TestCase):
 
     def test_expedite_never_waives_failed_checks(self) -> None:
         # ANTI-VACUITY (merge): a fully-authorized expedite CLEAR with live FAILED
-        # required checks is STILL refused — no MergeAudit, FSM stays IN_REVIEW.
+        # required checks is STILL refused — no MergeAudit, FSM stays REVIEW_REQUESTED.
         ticket = _expedited_ticket()
         clear = _issue_expedite_clear(ticket, pr_id=300)
         with pytest.raises(MergePreconditionError, match="FAILED or UNREADABLE required check"):
             _run(clear, _failed_stub(), expedite_authorized="owner-x")
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert not MergeAudit.objects.filter(clear=clear).exists()
         assert clear.consumed_at is None
 
@@ -362,7 +362,7 @@ class TestExpediteMergeTime(TestCase):
         with pytest.raises(MergePreconditionError, match="expedite waiver"):
             _run(clear, _pending_stub(), expedite_authorized="")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
     def test_expedite_waiver_requires_attestation_bound_to_reviewed_sha(self) -> None:

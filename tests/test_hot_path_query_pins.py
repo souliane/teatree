@@ -71,7 +71,7 @@ RECONCILE_ALL_BOARD_QUERIES = 1
 
 _RECONCILE_TICKET_COSTS = (
     (Ticket.State.NOT_STARTED, RECONCILE_WORKTREELESS_TICKET_QUERIES),
-    (Ticket.State.STARTED, RECONCILE_TICKET_QUERIES),
+    (Ticket.State.WORK_STARTED, RECONCILE_TICKET_QUERIES),
     (Ticket.State.MERGED, RECONCILE_DONE_CLAIMING_TICKET_QUERIES),
 )
 
@@ -85,7 +85,7 @@ def _populate(scale: int) -> None:
     """A board's worth of rows across the models these paths read."""
     stale_at = dt.datetime.now(dt.UTC) - _LONG_AGO
     for _ in range(scale):
-        ticket = TicketFactory(state=Ticket.State.STARTED, overlay="t3-teatree")
+        ticket = TicketFactory(state=Ticket.State.WORK_STARTED, overlay="t3-teatree")
         session = SessionFactory(ticket=ticket)
         task = TaskFactory(ticket=ticket, session=session, phase="coding")
         attempt = TaskAttemptFactory(task=task, ended_at=dt.datetime.now(dt.UTC))
@@ -93,7 +93,7 @@ def _populate(scale: int) -> None:
         WorktreeFactory(ticket=ticket)
         PullRequestFactory(ticket=ticket)
         TicketTransition.objects.create(
-            ticket=ticket, from_state=Ticket.State.SCOPED, to_state=Ticket.State.STARTED, triggered_by="start"
+            ticket=ticket, from_state=Ticket.State.SCOPED, to_state=Ticket.State.WORK_STARTED, triggered_by="start"
         )
         WorktreeFactory(ticket=TicketFactory(state=Ticket.State.MERGED, overlay="t3-teatree"))
         # A ticket no worktree was ever cut for: the shape whose reconcile must

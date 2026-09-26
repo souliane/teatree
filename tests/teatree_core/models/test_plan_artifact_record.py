@@ -36,7 +36,7 @@ def _full_adequacy() -> dict:
 
 
 def _ticket() -> Ticket:
-    return Ticket.objects.create(overlay="acme", state=Ticket.State.STARTED)
+    return Ticket.objects.create(overlay="acme", state=Ticket.State.WORK_STARTED)
 
 
 class TestEnforcementIsUnconditional(TestCase):

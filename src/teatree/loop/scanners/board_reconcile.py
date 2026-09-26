@@ -2,7 +2,7 @@
 
 The FSM is teatree's model of the world; the forge is the world. Nothing drove the
 model back toward the world, so the board degraded monotonically — measured live at
-205 tickets in ``review_posted``, 55 in ``not_started`` and exactly ONE in ``merged``
+205 tickets in ``review_delivered``, 55 in ``not_started`` and exactly ONE in ``merged``
 across 328 rows, with six PRs merged in one minute and not a single card moving.
 
 The FSM was NOT the blocker. ``Ticket.reconcile_merged`` already accepts every
@@ -12,7 +12,7 @@ both structurally starved: the merge keystone advances ``clear.ticket``, and 469
 does not is the single ``merged`` ticket); the per-tick sweep keys on a linked
 ``PullRequest`` row in MERGED, and the box has ten PR rows, all OPEN. So the missing
 piece is a driver that asks the FORGE about the ticket's own item — which is what
-rule B below is. (The 205 ``review_posted`` rows are all ``role = reviewer``: that
+rule B below is. (The 205 ``review_delivered`` rows are all ``role = reviewer``: that
 state is the reviewer terminal, so they are correctly not merge candidates.)
 
 Six rules, one path, applied in cheapest-first order:
@@ -27,19 +27,19 @@ Rule B — the ticket's OWN ``issue_url`` names a PR the forge says MERGED. The
 Rule C — that same PR is CLOSED unmerged: abandoned, so the ticket resolves to
     ``IGNORED`` rather than sitting on the board forever.
 Rule D — the upstream ISSUE is done for a post-ship ticket. The NARROW walk
-    ``t3 <overlay> ticket sync-completions`` already carried (shipped/in_review/
+    ``t3 <overlay> ticket sync-completions`` already carried (pr_opened/review_requested/
     merged only, which is why it reported "No tickets to advance" against this
     board). Preserved verbatim as one rule so there is a single reconciliation path
     rather than a sibling — it is not the rule that drains the backlog.
 Rule E — the upstream ISSUE behind a DELIVERED ticket was REOPENED. DELIVERED is
     terminal and a ticket owns its issue URL in every state but IGNORED, so intake
     could never re-admit that issue and no other rule could reach the ticket — the
-    issue was stranded silently, forever (#4152). The revived ticket lands on STARTED
+    issue was stranded silently, forever (#4152). The revived ticket lands on WORK_STARTED
     and the hard-bounded ``stuck_ticket_redispatch`` sweep schedules its planning.
 Rule F — a PRE-SHIP ticket whose own ISSUE the forge says CLOSED. The shape no
     other rule can reach, because B/C read an issue URL as an unknown PR, D polls
     only the post-ship states, and E only DELIVERED — so a backlog prune left twelve
-    rows ``planned`` behind closed issues, each a permanent dispatch source (#4711).
+    rows ``plan_recorded`` behind closed issues, each a permanent dispatch source (#4711).
     It lives in the sibling ``board_reconcile_issue_close`` module; both call the
     shared application machinery in ``board_reconcile_apply``.
 
@@ -157,9 +157,9 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTran
     """Rule A — every ticket with a MERGED ``PullRequest`` row not yet at its own terminal.
 
     Both target states are excluded, one per role branch: ``MERGED`` for the author
-    branch and ``REVIEW_POSTED`` for the reviewer branch. Excluding only the former
+    branch and ``REVIEW_DELIVERED`` for the reviewer branch. Excluding only the former
     left the reviewer lane non-idempotent — ``mark_review_no_action`` accepts
-    ``REVIEW_POSTED`` as a source (the #1431 self-transition), so a reviewer ticket
+    ``REVIEW_DELIVERED`` as a source (the #1431 self-transition), so a reviewer ticket
     this rule had already correctly closed stayed a candidate forever, re-emitting an
     applied transition with ``from_state == to_state`` on every tick. The rest of each
     transition's source membership — which pointedly refuses the post-merged /
@@ -170,7 +170,7 @@ def _merged_pr_row_transitions(*, overlay: str, dry_run: bool) -> list[BoardTran
 
     candidates = scoped(
         Ticket.objects.filter(pull_requests__state=PullRequest.State.MERGED).exclude(
-            state__in=(Ticket.State.MERGED, Ticket.State.REVIEW_POSTED)
+            state__in=(Ticket.State.MERGED, Ticket.State.REVIEW_DELIVERED)
         ),
         overlay,
     ).distinct()
@@ -252,7 +252,7 @@ def _settled_states() -> frozenset[str]:
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
-    return Ticket.merged_states() | {Ticket.State.REVIEW_POSTED, Ticket.State.IGNORED}
+    return Ticket.merged_states() | {Ticket.State.REVIEW_DELIVERED, Ticket.State.IGNORED}
 
 
 def _from_pr_state(
@@ -286,7 +286,7 @@ def _on_merge_signal(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTr
 
     A reviewer ticket tracks teatree's review of SOMEONE ELSE's PR, so landing it on
     MERGED would claim authorship of work teatree never wrote and would enqueue a
-    spurious worktree teardown. ``REVIEW_POSTED`` is the reviewer terminal (and the
+    spurious worktree teardown. ``REVIEW_DELIVERED`` is the reviewer terminal (and the
     board hides it) — the same reason that state is absent from the reconcile sources.
     """
     if _is_reviewer(ticket):
@@ -315,10 +315,10 @@ def _close_review(ticket: "Ticket", *, reason: str, dry_run: bool) -> BoardTrans
         return None
     from_state = ticket.state
     if dry_run:
-        return planned(ticket, Ticket.State.REVIEW_POSTED, BoardAction.REVIEW_CLOSED, reason)
+        return planned(ticket, Ticket.State.REVIEW_DELIVERED, BoardAction.REVIEW_CLOSED, reason)
     ticket.mark_review_no_action()
     ticket.save()
-    logger.info("Board reconcile closed review ticket %s %s → review_posted (%s)", ticket.pk, from_state, reason)
+    logger.info("Board reconcile closed review ticket %s %s → review_delivered (%s)", ticket.pk, from_state, reason)
     return BoardTransition(
         ticket_id=int(ticket.pk),
         issue_url=ticket.issue_url,
@@ -337,7 +337,7 @@ def _issue_done_transitions(*, overlay: str, dry_run: bool) -> list[BoardTransit
     ``advance_to_delivered`` IS the author ladder: its walk transits MERGED, so a
     reviewer ticket admitted here becomes the same irreversible ghost rules A/B/C
     guard against. No reviewer terminal is reachable from the completable states
-    either — ``mark_review_no_action`` does not accept SHIPPED/IN_REVIEW/MERGED — so
+    either — ``mark_review_no_action`` does not accept PR_OPENED/REVIEW_REQUESTED/MERGED — so
     skipping is the whole correct action, not a deferral.
     """
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
@@ -382,7 +382,7 @@ def _reopened_issue_transitions(*, overlay: str, dry_run: bool, probe_budget: in
     the row to IGNORED instead would be worse than the gap: intake re-admits, the
     persistence handler finds the same row past NOT_STARTED and returns early, and the
     #4133 every-tick re-admission is back. Reviving the ticket is what actually restores
-    a path, and the sweep is idempotent because STARTED is not a candidate.
+    a path, and the sweep is idempotent because WORK_STARTED is not a candidate.
 
     Reviewer tickets are excluded: their ``issue_url`` IS a PR, which rules B/C own.
     """
@@ -438,7 +438,7 @@ def _reopened_issue_urls(tickets: "list[Ticket]") -> tuple[set[str], int]:
 
 
 def _revive_reopened(ticket: "Ticket", *, dry_run: bool) -> BoardTransition | None:
-    """Revive one delivered ticket to STARTED, or halt it loudly at the revival cap."""
+    """Revive one delivered ticket to WORK_STARTED, or halt it loudly at the revival cap."""
     from teatree.core.models import Ticket  # noqa: PLC0415 — ORM import needs the app registry
 
     if not can_proceed(ticket.reopen):
@@ -449,7 +449,7 @@ def _revive_reopened(ticket: "Ticket", *, dry_run: bool) -> BoardTransition | No
         return None
     reason = "forge says the issue was reopened"
     if dry_run:
-        return planned(ticket, Ticket.State.STARTED, BoardAction.REVIVED_REOPENED, reason)
+        return planned(ticket, Ticket.State.WORK_STARTED, BoardAction.REVIVED_REOPENED, reason)
     from_state = ticket.state
     ticket.reopen()
     extra = ticket.extra or {}

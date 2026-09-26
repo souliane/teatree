@@ -103,7 +103,7 @@ MERGE_KEYSTONE = GuardedChokepoint(
     name="merge_keystone",
     callable_path="teatree.core.merge.execution.merge_ticket_pr",
     verification_contract=(
-        "The sole IN_REVIEW→MERGED path (§17.4). Every gate below passes, in order, "
+        "The sole REVIEW_REQUESTED→MERGED path (§17.4). Every gate below passes, in order, "
         "against the EXACT live head SHA the review clearance was recorded at, before "
         "the irreversible forge squash-merge. Execution binds to that SHA "
         "(expected_head_oid) and fails closed on head drift; a new push invalidates "

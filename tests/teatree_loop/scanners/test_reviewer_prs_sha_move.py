@@ -78,7 +78,7 @@ def _seed_approved_reviewer_ticket() -> Ticket:
         role=Ticket.Role.REVIEWER,
         extra={"reviewed_sha": OLD_SHA, "last_review_state": ReviewState.APPROVED.value},
     )
-    Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_POSTED)
+    Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.REVIEW_DELIVERED)
     ticket.refresh_from_db()
     return ticket
 

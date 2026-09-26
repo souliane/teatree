@@ -635,7 +635,7 @@ class HighChurnTableSizeTestCase(TestCase):
         """The 3.2M-row table the check was blind to until it had a lane (#3871)."""
         ticket = Ticket.objects.create()
         for _ in range(2):
-            TicketTransition(ticket=ticket, from_state="started", to_state="coded").save()
+            TicketTransition(ticket=ticket, from_state="work_started", to_state="coded").save()
         with patch.object(recon, "MAX_TICKET_TRANSITION_ROWS", 1):
             finding = recon._check_high_churn_table_size()
         assert finding.is_alarm

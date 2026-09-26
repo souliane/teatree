@@ -138,7 +138,7 @@ WORKFLOW_SETTINGS: dict[str, object] = {}
 
 
 def _plan_ticket(ticket: Ticket) -> None:
-    """Record a PlanArtifact and drive STARTED → PLANNED so code() can run."""
+    """Record a PlanArtifact and drive WORK_STARTED → PLAN_RECORDED so code() can run."""
     record_test_plan(ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
     ticket.plan()
     ticket.save()
@@ -493,7 +493,7 @@ class TestTaskWorkflow(TestCase):
         review_task.complete_with_attempt(artifact_path="/tmp/review.md", exit_code=0)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
         ship_task = Task.objects.filter(ticket=ticket, phase="shipping").first()
         assert ship_task is not None
@@ -527,7 +527,7 @@ class TestTaskWorkflow(TestCase):
         ticket.rework()
         ticket.save()
 
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
         pending_task.refresh_from_db()
         claimed_task.refresh_from_db()
@@ -664,7 +664,7 @@ class TestRunBackend(TestCase):
         ticket = Ticket.objects.get(pk=ticket_id)
         # Stage 3 of #140: workspace ticket advances scope() then start() so the
         # provisioning runner can materialise the worktrees in the same call.
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert ticket.variant == "testclient"
         assert ticket.repos == ["backend", "frontend"]
         assert ticket.issue_url == "https://gitlab.com/org/repo/-/issues/999"

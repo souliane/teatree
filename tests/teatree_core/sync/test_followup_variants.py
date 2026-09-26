@@ -165,7 +165,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={
                 "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": {
@@ -197,7 +197,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={
                 "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": {
@@ -224,7 +224,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={
                 "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": {
@@ -250,7 +250,7 @@ class TestSyncFollowupMergedMrs(TestCase):
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         # Merged MR's discussions removed, open MR's discussions preserved
         assert "discussions" not in ticket.extra["prs"]["https://gitlab.com/org/repo/-/merge_requests/42"]
         assert "discussions" in ticket.extra["prs"]["https://gitlab.com/org/repo/-/merge_requests/99"]
@@ -271,7 +271,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/300",
             repos=["repo"],
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"prs": {}},
         )
 
@@ -288,7 +288,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/301",
             repos=["repo"],
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={
                 "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": "not-a-dict",
@@ -314,7 +314,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/77",
             repos=["repo"],
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={
                 "prs": {
                     _CLOSED_MR["web_url"]: {
@@ -352,7 +352,7 @@ class TestSyncFollowupMergedMrs(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/302",
             repos=["repo"],
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={
                 "prs": {
                     "https://gitlab.com/org/repo/-/merge_requests/42": {
@@ -389,7 +389,7 @@ class TestSyncFollowupLabels(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/weird-url/-/issues/999",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={},
         )
 
@@ -407,7 +407,7 @@ class TestSyncFollowupLabels(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/0",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={},
         )
 
@@ -424,7 +424,7 @@ class TestSyncFollowupLabels(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/50",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={},
         )
 
@@ -442,7 +442,7 @@ class TestSyncFollowupLabels(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/50",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={},
         )
 
@@ -465,7 +465,7 @@ class TestSyncFollowupLabels(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/50",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             short_description="Issue title",
             extra={"tracker_status": "Process::Doing", "issue_title": "Issue title"},
         )
@@ -490,7 +490,7 @@ class TestSyncFollowupLabels(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/50",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={},
         )
 
@@ -508,7 +508,7 @@ class TestSyncFollowupLabels(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/50",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             short_description="my own words",
             extra={},
         )
@@ -528,7 +528,7 @@ class TestSyncFollowupLabels(TestCase):
             overlay="test",
             issue_url="https://github.com/org/repo/issues/5",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={},
         )
 
@@ -546,7 +546,7 @@ class TestSyncFollowupLabels(TestCase):
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/600",
             repos=["repo"],
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             extra={},
         )
 

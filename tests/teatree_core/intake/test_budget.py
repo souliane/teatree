@@ -56,7 +56,7 @@ class TestBudgetOccupancy(TestCase):
 class TestProgressPredicate(TestCase):
     """Only a claim showing NO sign of progress makes a full budget a deadlock."""
 
-    def _held(self, url: str, *, state: str = Ticket.State.STARTED, hours: int = 6) -> ImplementedIssueMarker:
+    def _held(self, url: str, *, state: str = Ticket.State.WORK_STARTED, hours: int = 6) -> ImplementedIssueMarker:
         ticket = TicketFactory(overlay="acme", issue_url=url, state=state)
         return _aged_marker(url, hours=hours, ticket=ticket)
 
@@ -70,7 +70,7 @@ class TestProgressPredicate(TestCase):
         assert budget.deadlocked is False
 
     def test_an_open_pr_is_progress(self) -> None:
-        marker = self._held("https://github.com/o/r/issues/11", state=Ticket.State.SHIPPED)
+        marker = self._held("https://github.com/o/r/issues/11", state=Ticket.State.PR_OPENED)
         PullRequestFactory(ticket=marker.ticket, overlay="acme", state=PullRequest.State.REVIEW_REQUESTED)
 
         assert read_intake_budget("acme", 1).deadlocked is False
@@ -85,8 +85,8 @@ class TestProgressPredicate(TestCase):
         assert budget.holders[0].ticket_state == Ticket.State.NOT_STARTED
 
     def test_a_merged_pr_is_not_progress(self) -> None:
-        # The observed jam: SHIPPED with a landed PR holds a slot it no longer owns.
-        marker = self._held("https://github.com/o/r/issues/13", state=Ticket.State.SHIPPED)
+        # The observed jam: PR_OPENED with a landed PR holds a slot it no longer owns.
+        marker = self._held("https://github.com/o/r/issues/13", state=Ticket.State.PR_OPENED)
         PullRequestFactory(ticket=marker.ticket, overlay="acme", state=PullRequest.State.MERGED)
 
         assert read_intake_budget("acme", 1).deadlocked is True
@@ -120,7 +120,7 @@ class TestProgressPredicate(TestCase):
 class TestReport(TestCase):
     def test_names_the_overlay_occupancy_and_every_holder(self) -> None:
         url = "https://github.com/o/r/issues/20"
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.SHIPPED)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.PR_OPENED)
         _aged_marker(url, ticket=ticket)
 
         report = read_intake_budget("acme", 1).report()
@@ -128,7 +128,7 @@ class TestReport(TestCase):
         assert "acme" in report
         assert "1/1" in report
         assert url in report
-        assert Ticket.State.SHIPPED in report
+        assert Ticket.State.PR_OPENED in report
 
     def test_names_the_static_ceiling_the_live_limit_overrode(self) -> None:
         # The hour-losing trap: `issue_implementer_max_concurrent` reads authoritative

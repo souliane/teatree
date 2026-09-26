@@ -52,7 +52,7 @@ class TestExpediteCommand(TestCase):
         rendered = render_ticket_show(
             TicketShowResult(
                 ticket_id=1,
-                state="in_review",
+                state="review_requested",
                 overlay="t3-teatree",
                 issue_url="",
                 expedited=False,

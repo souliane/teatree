@@ -62,7 +62,7 @@ def _pull_request(ticket: Ticket, *, slug: str, pr_id: int) -> PullRequest:
 
 class TestKeystoneRecordsTheForgeMerge(TestCase):
     def test_merge_marks_the_pull_request_row_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         pr = _pull_request(ticket, slug="acme/widget", pr_id=42)
 
         state = record_merge_and_advance(
@@ -78,7 +78,7 @@ class TestKeystoneRecordsTheForgeMerge(TestCase):
         assert state == Ticket.State.MERGED
 
     def test_ticketless_clear_adopts_the_pull_request_owning_ticket(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         pr = _pull_request(ticket, slug="acme/widget", pr_id=43)
         clear = MergeClear.objects.create(
             pr_id=43,
@@ -117,7 +117,7 @@ class TestKeystoneRecordsTheForgeMerge(TestCase):
         assert state == ""
 
     def test_replayed_merge_leaves_an_already_merged_pull_request_row_alone(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         pr = _pull_request(ticket, slug="acme/widget", pr_id=45)
         pr.mark_merged()
         pr.save()
@@ -139,7 +139,7 @@ class TestKeystoneRecordsTheForgeMerge(TestCase):
         marks 0 rows and adopts no ticket, so the keystone returns nothing and
         the real merge moves no card.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         pr = _pull_request(ticket, slug="acme/widget", pr_id=46)
         clear = MergeClear.objects.create(
             pr_id=46,
@@ -163,7 +163,7 @@ class TestKeystoneRecordsTheForgeMerge(TestCase):
 
 class TestSiblingSupersedeCaseInsensitive(TestCase):
     def test_differently_cased_sibling_clear_is_superseded(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         primary = _clear(ticket, slug="acme/Widget", pr_id=42)
         sibling = _clear(ticket, slug="acme/widget", pr_id=42, reviewed_sha="b" * 40)
 
@@ -179,7 +179,7 @@ class TestSiblingSupersedeCaseInsensitive(TestCase):
     def test_same_case_different_pr_is_not_superseded(self) -> None:
         # The supersede is scoped to the SAME PR — a different PR number (even a
         # case-matching slug) must be left untouched.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         primary = _clear(ticket, slug="acme/widget", pr_id=42)
         other_pr = _clear(ticket, slug="acme/widget", pr_id=43, reviewed_sha="b" * 40)
 
@@ -191,7 +191,7 @@ class TestSiblingSupersedeCaseInsensitive(TestCase):
     def test_different_slug_same_pr_is_not_superseded(self) -> None:
         # A genuinely different repo slug (not merely a case variant) sharing the PR
         # number is a distinct PR and must not be superseded.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         primary = _clear(ticket, slug="acme/widget", pr_id=42)
         unrelated = _clear(ticket, slug="acme/gadget", pr_id=42, reviewed_sha="b" * 40)
 
@@ -227,7 +227,7 @@ class TestKeystoneReportsAnUnresolvableTicket(TestCase):
         assert any("acme/widget#42" in line for line in captured.output), captured.output
 
     def test_a_resolvable_ticket_logs_no_warning(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pull_request(ticket, slug="acme/widget", pr_id=42)
         clear = _clear(ticket, slug="acme/widget", pr_id=42)
 

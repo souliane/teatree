@@ -62,7 +62,7 @@ class TestShortDescribeEnqueueIsAtomic(TestCase):
         return Ticket.objects.create(
             overlay=OVERLAY,
             issue_url="https://x/1",
-            state="started",
+            state="work_started",
             extra={"issue_title": "Cached tracker title"},
         )
 

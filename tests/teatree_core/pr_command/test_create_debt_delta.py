@@ -68,7 +68,7 @@ class TestRunDebtDeltaGate(TestCase):
         )
 
     def test_blocks_net_new_debt_when_flag_on(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         with (
             patch.object(debt_gate_mod, "get_effective_settings", return_value=_enabled()),
@@ -80,7 +80,7 @@ class TestRunDebtDeltaGate(TestCase):
         assert "noqa" in result["error"]
 
     def test_inert_when_flag_off_even_with_net_new_debt(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         with (
             patch.object(debt_gate_mod, "get_effective_settings", return_value=_disabled()),
@@ -89,7 +89,7 @@ class TestRunDebtDeltaGate(TestCase):
             assert run_debt_delta_gate(ticket, worktree) is None
 
     def test_passes_a_clean_diff_when_flag_on(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         with (
             patch.object(debt_gate_mod, "get_effective_settings", return_value=_enabled()),
@@ -98,7 +98,7 @@ class TestRunDebtDeltaGate(TestCase):
             assert run_debt_delta_gate(ticket, worktree) is None
 
     def test_passes_when_manifest_waives_the_debt(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         PlanArtifact.objects.create(
             ticket=ticket,
@@ -113,7 +113,7 @@ class TestRunDebtDeltaGate(TestCase):
             assert run_debt_delta_gate(ticket, worktree) is None
 
     def test_no_op_when_diff_unresolvable(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         with (
             patch.object(debt_gate_mod, "get_effective_settings", return_value=_enabled()),
@@ -140,7 +140,7 @@ class TestPrCreateDebtDeltaWiring(TestCase):
         ticket.refresh_from_db()
         assert result.get("allowed") is False
         assert "debt_delta_gate" in str(result.get("error"))
-        assert ticket.state != Ticket.State.SHIPPED
+        assert ticket.state != Ticket.State.PR_OPENED
 
     def test_pr_create_not_blocked_when_flag_off(self) -> None:
         # The DARK default: the wired gate never blocks a ship even with net-new debt.

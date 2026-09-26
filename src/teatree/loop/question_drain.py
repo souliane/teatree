@@ -132,7 +132,7 @@ def _subject_terminal(question: DeferredQuestion, context: SweepContext) -> Deci
     states = context.index.states_for(question)
     if not states:
         return None
-    if all(state in Ticket._TERMINAL_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
+    if all(state in Ticket._SETTLED_STATES for state in states):  # noqa: SLF001 — model SSOT terminal set
         return Decision(Verdict.DRAIN, f"every subject ticket is terminal ({', '.join(sorted(set(states)))})")
     return Decision(Verdict.KEEP, "a subject ticket is still live")
 
@@ -199,7 +199,7 @@ def _pr_terminal(question: DeferredQuestion, context: SweepContext) -> Decision 
     """Every pull request the subject produced is settled — DRAIN; anything else, no decision.
 
     A narrower fact than :func:`_subject_terminal` and a strictly later one: a ticket
-    can sit at ``reviewed`` for weeks with its PR already merged, so the FSM state says
+    can sit at ``self_reviewed`` for weeks with its PR already merged, so the FSM state says
     "live" about work that has landed. Where the PRs are all merged or closed, the
     question that guarded them can no longer change anything.
 

@@ -99,9 +99,9 @@ def _seed_task_without_dispatch(ticket: Ticket) -> Task:
 
 def _populate(scale: int) -> Ticket:
     """A dashboard's worth of rows across every model the pages read."""
-    ticket = Ticket.objects.create(state=State.STARTED)
+    ticket = Ticket.objects.create(state=State.WORK_STARTED)
     for index in range(scale):
-        each = TicketFactory(state=State.STARTED)
+        each = TicketFactory(state=State.WORK_STARTED)
         task = _seed_task_without_dispatch(each)
         TaskAttempt.objects.create(
             task=task,
@@ -110,7 +110,7 @@ def _populate(scale: int) -> Ticket:
         )
         PullRequest.objects.create(ticket=each, url=f"https://example.test/{each.pk}", repo="r", iid=str(each.pk))
         TicketTransition.objects.create(
-            ticket=each, from_state=State.SCOPED, to_state=State.STARTED, triggered_by="start"
+            ticket=each, from_state=State.SCOPED, to_state=State.WORK_STARTED, triggered_by="start"
         )
         unique = f"{index}-{scale}-{uuid4().hex[:8]}"
         Loop.objects.create(name=f"loop-{unique}", delay_seconds=60, script="run.py")
@@ -151,7 +151,9 @@ class DashboardPageQueryPlansTestCase(TestCase):
             task = _seed_task_without_dispatch(ticket)
             TaskAttempt.objects.bulk_create(TaskAttempt(task=task) for _ in range(scale))
             TicketTransition.objects.bulk_create(
-                TicketTransition(ticket=ticket, from_state=State.SCOPED, to_state=State.STARTED, triggered_by="start")
+                TicketTransition(
+                    ticket=ticket, from_state=State.SCOPED, to_state=State.WORK_STARTED, triggered_by="start"
+                )
                 for _ in range(scale)
             )
             url = reverse("dash:ticket_drawer", args=[ticket.pk])

@@ -48,7 +48,7 @@ class PollsCannotOverlapTestCase(TestCase):
 
 class MorphedCardsKeepTheirIdentityTestCase(TestCase):
     def test_every_board_card_carries_a_stable_id(self) -> None:
-        tickets = [TicketFactory(state=Ticket.State.STARTED) for _ in range(3)]
+        tickets = [TicketFactory(state=Ticket.State.WORK_STARTED) for _ in range(3)]
         body = self.client.get(reverse("dash:board")).content.decode()
         for ticket in tickets:
             assert f'id="card-{ticket.pk}"' in body, f"card for ticket {ticket.pk} has no stable id to morph onto"

@@ -18,7 +18,7 @@ def _spec(rubric_item: str, detail: str, **kwargs: str) -> CriticFindingSpec:
 
 class TestCriticFindingRecord(TestCase):
     def test_record_creates_a_fail_finding(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         row = CriticFinding.record(
             ticket=ticket,
             transition="mark_delivered",
@@ -29,7 +29,7 @@ class TestCriticFindingRecord(TestCase):
         assert row.adversarial_question == "Is this actually done?"
 
     def test_record_upserts_the_same_key(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         first = CriticFinding.record(ticket=ticket, transition="mark_delivered", spec=_spec("done_not_done", "first"))
         second = CriticFinding.record(ticket=ticket, transition="mark_delivered", spec=_spec("done_not_done", "second"))
         assert first.pk == second.pk
@@ -37,7 +37,7 @@ class TestCriticFindingRecord(TestCase):
         assert CriticFinding.objects.get(pk=first.pk).detail == "second"
 
     def test_record_can_mark_instrumentation_gap(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         row = CriticFinding.record(
             ticket=ticket,
             transition="mark_delivered",
@@ -46,13 +46,13 @@ class TestCriticFindingRecord(TestCase):
         assert row.status == CriticFinding.Status.INSTRUMENTATION_GAP
 
     def test_unique_constraint_blocks_a_manual_duplicate(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         CriticFinding.objects.create(ticket=ticket, transition="mark_delivered", rubric_item="deferred", detail="a")
         with pytest.raises(IntegrityError), transaction.atomic():
             CriticFinding.objects.create(ticket=ticket, transition="mark_delivered", rubric_item="deferred", detail="b")
 
     def test_distinct_items_coexist(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETRO_RECORDED)
         CriticFinding.record(ticket=ticket, transition="mark_delivered", spec=_spec("deferred", "a"))
         CriticFinding.record(ticket=ticket, transition="mark_delivered", spec=_spec("coherence", "b"))
         assert CriticFinding.objects.filter(ticket=ticket).count() == 2

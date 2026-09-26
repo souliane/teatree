@@ -270,7 +270,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
 
     This is the branch that actually stalled the factory. ``pr_sweep`` arms its
     cold review on the reviewer-role ticket for the PR — and that ticket is
-    routinely ALREADY terminal (``review_posted``) from an earlier review of the
+    routinely ALREADY terminal (``review_delivered``) from an earlier review of the
     same PR. ``_orphaned_task_signals`` reaps a non-terminal reviewing task on a
     terminal ticket *regardless of forge state*, so the freshly-armed review died
     on the next tick while the PR was still open and still needed a verdict.
@@ -298,7 +298,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
         rare one and this is the shape the factory actually deadlocked in.
         """
         url = "https://github.com/souliane/teatree/pull/402"
-        ticket, task = self._armed(url, Ticket.State.REVIEW_POSTED)
+        ticket, task = self._armed(url, Ticket.State.REVIEW_DELIVERED)
         mint_open_pr_review(ticket)
         host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.OPEN})
         scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
@@ -314,7 +314,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
 
     def test_armed_review_on_a_terminal_ticket_survives_while_the_pr_is_open(self) -> None:
         url = "https://github.com/souliane/teatree/pull/400"
-        _ticket, task = self._armed(url, Ticket.State.REVIEW_POSTED)
+        _ticket, task = self._armed(url, Ticket.State.REVIEW_DELIVERED)
         host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.OPEN})
         scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
 
@@ -330,7 +330,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
     def test_forge_truth_still_reaps_an_armed_review_on_a_merged_pr(self) -> None:
         """The control: forge state remains authoritative, so real orphans still die."""
         url = "https://github.com/souliane/teatree/pull/401"
-        ticket, _task = self._armed(url, Ticket.State.STARTED)
+        ticket, _task = self._armed(url, Ticket.State.WORK_STARTED)
         host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.MERGED})
         scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
 

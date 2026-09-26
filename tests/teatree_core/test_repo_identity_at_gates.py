@@ -54,7 +54,7 @@ class _FakeHost:
 class TestShipResolvesTheSlugFromTheCheckout:
     def test_a_checkout_path_in_a_banned_namespace_strips_the_trailer(self, tmp_path: Path) -> None:
         ticket = Ticket.objects.create(
-            overlay="", state=Ticket.State.REVIEWED, issue_url="https://example.com/issues/1"
+            overlay="", state=Ticket.State.SELF_REVIEWED, issue_url="https://example.com/issues/1"
         )
         Worktree.objects.create(
             overlay="",
@@ -78,7 +78,7 @@ class TestShipResolvesTheSlugFromTheCheckout:
 
     def test_an_unbanned_slug_keeps_the_trailer(self, tmp_path: Path) -> None:
         ticket = Ticket.objects.create(
-            overlay="", state=Ticket.State.REVIEWED, issue_url="https://example.com/issues/2"
+            overlay="", state=Ticket.State.SELF_REVIEWED, issue_url="https://example.com/issues/2"
         )
         Worktree.objects.create(
             overlay="",
@@ -119,7 +119,7 @@ class _MirrorHost:
 class TestCreatedPrUrlMustNameTheExpectedRepoExactly(TestCase):
     def _ship(self, host: object) -> object:
         ticket = Ticket.objects.create(
-            overlay="", state=Ticket.State.REVIEWED, issue_url="https://example.com/issues/3"
+            overlay="", state=Ticket.State.SELF_REVIEWED, issue_url="https://example.com/issues/3"
         )
         spec = PullRequestSpec(
             repo="/tmp/checkout",

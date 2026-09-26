@@ -58,13 +58,13 @@ class _GitHubBoardSync(TestCase):
 
 class TestGitHubBoardStatusIsMonotonic(_GitHubBoardSync):
     def test_unmapped_column_leaves_the_ticket_state_untouched(self) -> None:
-        ticket = Ticket.objects.create(issue_url=_ISSUE_URL, state=Ticket.State.SHIPPED)
+        ticket = Ticket.objects.create(issue_url=_ISSUE_URL, state=Ticket.State.PR_OPENED)
 
         with self.assertLogs("teatree.backends.github.sync", level="WARNING") as logs:
             self._sync(_board_item("In Review"))
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "In Review" in "\n".join(logs.output)
         # The rest of the board payload still lands — only ``state`` is withheld.
         assert ticket.extra["board_status"] == "In Review"
@@ -81,7 +81,7 @@ class TestGitHubBoardStatusIsMonotonic(_GitHubBoardSync):
         self._sync(_board_item("In Progress"))
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_mapped_column_that_would_regress_is_withheld(self) -> None:
         ticket = Ticket.objects.create(issue_url=_ISSUE_URL, state=Ticket.State.DELIVERED)
@@ -96,18 +96,18 @@ class TestBothBackendsShareOneMonotonicContract(_GitHubBoardSync):
     """Same lagging signal, same verdict — whichever code host reports it."""
 
     def test_github_board_does_not_rewind_a_shipped_ticket(self) -> None:
-        ticket = Ticket.objects.create(issue_url=_ISSUE_URL, state=Ticket.State.SHIPPED)
+        ticket = Ticket.objects.create(issue_url=_ISSUE_URL, state=Ticket.State.PR_OPENED)
 
         self._sync(_board_item("Todo"))
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_gitlab_pr_inference_does_not_rewind_a_shipped_ticket(self) -> None:
         pr_url = "https://gitlab.com/org/repo/-/merge_requests/60"
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/60",
-            state=Ticket.State.SHIPPED,
+            state=Ticket.State.PR_OPENED,
             repos=["repo"],
         )
 
@@ -120,10 +120,10 @@ class TestBothBackendsShareOneMonotonicContract(_GitHubBoardSync):
         )
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert pr_url in ticket.extra["prs"]
 
     def test_state_advances_orders_the_lifecycle(self) -> None:
-        assert Ticket.state_advances(Ticket.State.NOT_STARTED, Ticket.State.SHIPPED)
-        assert not Ticket.state_advances(Ticket.State.SHIPPED, Ticket.State.NOT_STARTED)
-        assert not Ticket.state_advances(Ticket.State.SHIPPED, Ticket.State.SHIPPED)
+        assert Ticket.state_advances(Ticket.State.NOT_STARTED, Ticket.State.PR_OPENED)
+        assert not Ticket.state_advances(Ticket.State.PR_OPENED, Ticket.State.NOT_STARTED)
+        assert not Ticket.state_advances(Ticket.State.PR_OPENED, Ticket.State.PR_OPENED)

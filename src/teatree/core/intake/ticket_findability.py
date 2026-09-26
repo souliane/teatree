@@ -34,7 +34,7 @@ def unfindable_tickets(tickets: QuerySet) -> list["Ticket"]:
     ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
     rows = (
-        tickets.exclude(state__in=ticket_model._TERMINAL_STATES)  # noqa: SLF001 — the model's SSOT terminal set
+        tickets.exclude(state__in=ticket_model._SETTLED_STATES)  # noqa: SLF001 — the model's SSOT terminal set
         .annotate(oldest_task=Min("tasks__created_at"))
         .order_by("pk")
     )

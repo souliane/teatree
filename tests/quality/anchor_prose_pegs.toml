@@ -24,7 +24,7 @@ radius = 400
 "BLUEPRINT.md" = ["b7bf92da3aa32c32"]
 # 1: the skill-loading kill-switch has no TaskCreated counterpart.
 # 2: the task-list quote gate is opt-in (default off), and its setting name predates the correction.
-"docs/blueprint/configuration.md" = ["7ded7302a35ac27e", "31e9d6dd45e43556"]
+"docs/blueprint/configuration.md" = ["6d462c54f2a5c6b8", "31e9d6dd45e43556"]
 # ultracode's gate enforces skill-loading only and has no task-list arm.
 "docs/blueprint/factory-architecture.md" = ["273cc5934f99908a"]
 # 1: the harness's 27-event constant list.

@@ -851,7 +851,7 @@ class TestReviewingSystemContextCarriesTheAssignedIdentity(TestCase):
     _PR_ID = 4658
 
     def _system_context(self, *, issue_url: str) -> str:
-        ticket = Ticket.objects.create(issue_url=issue_url, role=Ticket.Role.REVIEWER, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(issue_url=issue_url, role=Ticket.Role.REVIEWER, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
         return build_system_context(task, skills=[])

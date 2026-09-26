@@ -245,7 +245,7 @@ class TicketEvidenceModel(TicketFacet):
     def review_context_satisfied(self) -> bool:
         """Whether the ``-> reviewing`` deep-retrieval precondition is met.
 
-        An FSM ``condition`` on ``review()``: the ``TESTED -> REVIEWED``
+        An FSM ``condition`` on ``review()``: the ``TESTED -> SELF_REVIEWED``
         transition is mechanically refused (``TransitionNotAllowed``) when
         ``require_review_context`` is on and no complete ``review_context``
         artifact is recorded — so a verdict from the diff alone cannot advance

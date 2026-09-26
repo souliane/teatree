@@ -200,7 +200,7 @@ class TestATurnCeilingKeepsFinishedWork(_Dispatch):
         assert "turn ceiling" in self._last_attempt(task).error
 
     def test_a_phase_that_landed_before_the_run_is_not_credited_to_it(self) -> None:
-        task = self._task(role=Ticket.Role.AUTHOR, state=Ticket.State.IN_REVIEW)
+        task = self._task(role=Ticket.Role.AUTHOR, state=Ticket.State.REVIEW_REQUESTED)
 
         self._dispatch(task, [assistant_tool_use(), _max_turns()])
 
@@ -210,19 +210,19 @@ class TestATurnCeilingKeepsFinishedWork(_Dispatch):
     def test_another_actor_advancing_the_ticket_mid_run_is_not_credited_to_it(self) -> None:
         task = self._task(role=Ticket.Role.AUTHOR)
 
-        self._dispatch(task, [assistant_tool_use(), _max_turns()], moved_to=Ticket.State.IN_REVIEW)
+        self._dispatch(task, [assistant_tool_use(), _max_turns()], moved_to=Ticket.State.REVIEW_REQUESTED)
 
         assert task.status == Task.Status.FAILED
 
     def test_a_stale_cached_ticket_is_not_credited(self) -> None:
-        task = self._task(role=Ticket.Role.AUTHOR, state=Ticket.State.IN_REVIEW)
+        task = self._task(role=Ticket.Role.AUTHOR, state=Ticket.State.REVIEW_REQUESTED)
 
-        self._dispatch(task, [assistant_tool_use(), _max_turns()], moved_to=Ticket.State.STARTED)
+        self._dispatch(task, [assistant_tool_use(), _max_turns()], moved_to=Ticket.State.WORK_STARTED)
 
         assert task.status == Task.Status.FAILED
 
     def test_a_review_with_no_recorded_verdict_is_not_credited(self) -> None:
-        task = self._task(phase="reviewing", role=Ticket.Role.AUTHOR, state=Ticket.State.REVIEWED)
+        task = self._task(phase="reviewing", role=Ticket.Role.AUTHOR, state=Ticket.State.SELF_REVIEWED)
 
         with TemporaryDirectory() as directory:
             for name in (
@@ -257,7 +257,7 @@ class TestATurnCeilingKeepsFinishedWork(_Dispatch):
         assert "half the migration is written" in str(attempt.result.get("summary", ""))
 
     def test_a_side_effect_without_the_phase_landing_is_still_a_failure(self) -> None:
-        task = self._task(phase="shipping", role=Ticket.Role.AUTHOR, state=Ticket.State.REVIEWED)
+        task = self._task(phase="shipping", role=Ticket.Role.AUTHOR, state=Ticket.State.SELF_REVIEWED)
         PullRequest.objects.create(
             ticket=task.ticket, url="https://github.com/o/r/pull/7", repo="o/r", iid="7", state=PullRequest.State.OPEN
         )

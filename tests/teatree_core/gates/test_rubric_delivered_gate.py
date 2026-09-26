@@ -39,7 +39,7 @@ _END_TO_END_CRITERION = "the CLI producer records a criterion the verifier can g
 
 
 def _retrospected() -> Ticket:
-    return Ticket.objects.create(overlay="acme", state=Ticket.State.RETROSPECTED)
+    return Ticket.objects.create(overlay="acme", state=Ticket.State.RETRO_RECORDED)
 
 
 def _plan(ticket: Ticket, acceptance: dict) -> None:
@@ -187,7 +187,7 @@ class TestFsmWiring(TestCase):
         with pytest.raises(RubricNotVerifiedError):
             ticket.mark_delivered()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
 
     def test_mark_delivered_passes_a_graded_rubric(self) -> None:
         ticket = _retrospected()

@@ -30,7 +30,7 @@ class TransitionDistributionTestCase(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
         for minutes in (10, 20, 30, 40, 100):
-            ticket_with_edge(source=State.PLANNED, target=State.CODED, start=0, minutes=minutes)
+            ticket_with_edge(source=State.PLAN_RECORDED, target=State.CODED, start=0, minutes=minutes)
         for minutes in (2, 4):
             ticket_with_edge(source=State.CODED, target=State.TESTED, start=0, minutes=minutes)
 
@@ -39,13 +39,13 @@ class TransitionDistributionTestCase(TestCase):
         return {(stat.from_state, stat.to_state): stat for stat in window}
 
     def test_each_edge_reports_how_many_samples_back_it(self) -> None:
-        assert self._stats()[State.PLANNED, State.CODED].samples == 5
+        assert self._stats()[State.PLAN_RECORDED, State.CODED].samples == 5
 
     def test_the_median_is_the_middle_sample(self) -> None:
-        assert self._stats()[State.PLANNED, State.CODED].median_seconds == 30 * MINUTE
+        assert self._stats()[State.PLAN_RECORDED, State.CODED].median_seconds == 30 * MINUTE
 
     def test_the_p90_exposes_the_tail_the_median_hides(self) -> None:
-        assert self._stats()[State.PLANNED, State.CODED].p90_seconds == 76 * MINUTE
+        assert self._stats()[State.PLAN_RECORDED, State.CODED].p90_seconds == 76 * MINUTE
 
     def test_a_two_sample_edge_still_reports_both_figures(self) -> None:
         stat = self._stats()[State.CODED, State.TESTED]
@@ -56,7 +56,7 @@ class TransitionDistributionTestCase(TestCase):
         """#3994's shape: the whale is the first row, so nobody has to think to look."""
         rows = transition_distribution(since=ORIGIN - timedelta(days=1))
         assert [(row.from_state, row.to_state) for row in rows] == [
-            (State.PLANNED, State.CODED),
+            (State.PLAN_RECORDED, State.CODED),
             (State.CODED, State.TESTED),
         ]
 
@@ -66,12 +66,12 @@ class TransitionDistributionTestCase(TestCase):
 
 class WindowBoundsTestCase(TestCase):
     def test_a_span_that_ended_before_the_window_is_excluded(self) -> None:
-        ticket_with_edge(source=State.PLANNED, target=State.CODED, start=0, minutes=10)
+        ticket_with_edge(source=State.PLAN_RECORDED, target=State.CODED, start=0, minutes=10)
         assert transition_distribution(since=at(60)) == ()
 
     def test_a_span_that_ended_inside_the_window_is_included_even_when_it_started_before(self) -> None:
         """The whale spans are long — dropping one for starting early is how a tail vanishes."""
-        ticket_with_edge(source=State.PLANNED, target=State.CODED, start=0, minutes=120)
+        ticket_with_edge(source=State.PLAN_RECORDED, target=State.CODED, start=0, minutes=120)
         stats = transition_distribution(since=at(60))
         assert [stat.median_seconds for stat in stats] == [120 * MINUTE]
 
@@ -83,17 +83,17 @@ class TransitionTrendTestCase(TestCase):
     def setUpTestData(cls) -> None:
         day = 24 * 60
         for minutes in (10, 20):
-            ticket_with_edge(source=State.PLANNED, target=State.CODED, start=0, minutes=minutes)
+            ticket_with_edge(source=State.PLAN_RECORDED, target=State.CODED, start=0, minutes=minutes)
         for minutes in (60, 80):
-            ticket_with_edge(source=State.PLANNED, target=State.CODED, start=day, minutes=minutes)
+            ticket_with_edge(source=State.PLAN_RECORDED, target=State.CODED, start=day, minutes=minutes)
 
     def test_the_edge_carries_one_point_per_bucket_in_chronological_order(self) -> None:
         series = transition_trend(since=ORIGIN - timedelta(days=1), bucket=timedelta(days=1))
-        coding = next(row for row in series if (row.from_state, row.to_state) == (State.PLANNED, State.CODED))
+        coding = next(row for row in series if (row.from_state, row.to_state) == (State.PLAN_RECORDED, State.CODED))
         assert [point.median_seconds for point in coding.points] == [15 * MINUTE, 70 * MINUTE]
         assert [point.bucket_start for point in coding.points] == sorted(p.bucket_start for p in coding.points)
 
     def test_a_bucket_reports_the_sample_count_behind_its_point(self) -> None:
         series = transition_trend(since=ORIGIN - timedelta(days=1), bucket=timedelta(days=1))
-        coding = next(row for row in series if (row.from_state, row.to_state) == (State.PLANNED, State.CODED))
+        coding = next(row for row in series if (row.from_state, row.to_state) == (State.PLAN_RECORDED, State.CODED))
         assert [point.samples for point in coding.points] == [2, 2]

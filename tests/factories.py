@@ -90,7 +90,7 @@ class TicketFactory(DjangoModelFactory[Ticket]):
         model = Ticket
 
     overlay = "t3-teatree"
-    state = Ticket.State.IN_REVIEW
+    state = Ticket.State.REVIEW_REQUESTED
 
 
 class MergeClearFactory(DjangoModelFactory[MergeClear]):
@@ -137,7 +137,7 @@ class TicketTransitionFactory(DjangoModelFactory[TicketTransition]):
         model = TicketTransition
 
     ticket = factory.SubFactory(TicketFactory)
-    from_state = Ticket.State.STARTED
+    from_state = Ticket.State.WORK_STARTED
     to_state = Ticket.State.CODED
 
 

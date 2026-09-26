@@ -35,7 +35,7 @@ class TestNotifyAcceptsKwargs(TestCase):
 
 class TestTicketGateCommandsAcceptKwargs(TestCase):
     def _ticket(self) -> Ticket:
-        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
 
     def test_dod_override_refuses_a_blank_reason_via_kwargs(self) -> None:
         with pytest.raises(SystemExit) as exit_info:

@@ -29,11 +29,11 @@ def test_skill_selection_result_defaults():
     ("status", "expected"),
     [
         ("not_started", "ticket"),
-        ("started", "code"),
+        ("work_started", "code"),
         ("coded", "test"),
         ("tested", "review"),
-        ("reviewed", "ship"),
-        ("shipped", "debug"),
+        ("self_reviewed", "ship"),
+        ("pr_opened", "debug"),
         ("unknown_status", ""),
     ],
 )
@@ -369,7 +369,7 @@ def test_companion_skills_required_when_remote_matches_overlay(tmp_path: Path, m
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
         overlay_skill_metadata=_OVERLAY_META,
-        ticket_status="started",
+        ticket_status="work_started",
         explicit_phase="",
         explicit_skills=[],
         overlay_active=False,
@@ -392,7 +392,7 @@ def test_companion_skills_not_required_for_core_only_work(tmp_path: Path, monkey
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
         overlay_skill_metadata=_OVERLAY_META,
-        ticket_status="started",
+        ticket_status="work_started",
         explicit_phase="",
         explicit_skills=[],
         overlay_active=False,
@@ -459,7 +459,7 @@ def test_framework_detection_independent_of_overlay_scope(tmp_path: Path, monkey
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
         overlay_skill_metadata=_OVERLAY_META,
-        ticket_status="started",
+        ticket_status="work_started",
         explicit_phase="",
         explicit_skills=[],
         overlay_active=False,

@@ -74,30 +74,30 @@ def _pr_for(ticket: Ticket) -> PullRequest:
 
 class TestHasMergeAuditEvidence(TestCase):
     def test_true_with_a_real_merged_sha(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _audit_for(ticket)
         assert has_merge_audit_evidence(ticket) is True
 
     def test_false_without_any_audit_row(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         assert has_merge_audit_evidence(ticket) is False
 
     def test_false_for_a_blank_merged_sha(self) -> None:
         """A row whose ``merged_sha`` is blank/whitespace is NOT real evidence."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _audit_for(ticket, merged_sha="   ")
         assert has_merge_audit_evidence(ticket) is False
 
     def test_false_for_another_tickets_audit(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        other = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        other = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _audit_for(other)
         assert has_merge_audit_evidence(ticket) is False
 
 
 class TestForgeConfirmsMerged(TestCase):
     def test_true_when_probe_reports_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr_for(ticket)
         with patch(
             "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=True)
@@ -105,7 +105,7 @@ class TestForgeConfirmsMerged(TestCase):
             assert forge_confirms_merged(ticket) is True
 
     def test_false_when_probe_reports_not_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr_for(ticket)
         with patch(
             "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=False)
@@ -114,17 +114,17 @@ class TestForgeConfirmsMerged(TestCase):
 
     def test_fail_closed_when_probe_raises(self) -> None:
         """An unreachable / erroring probe is inconclusive → no evidence (never mistaken for merged)."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr_for(ticket)
         with patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", side_effect=RuntimeError("forge down")):
             assert forge_confirms_merged(ticket) is False
 
     def test_false_without_any_pr_rows(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         assert forge_confirms_merged(ticket) is False
 
     def test_gitlab_pr_url_probes_gitlab_host(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         PullRequest.objects.create(
             ticket=ticket,
             url="https://gitlab.com/acme/app/-/merge_requests/7",
@@ -155,14 +155,14 @@ class TestForgeConfirmsThroughTheTicketsOwnPr(TestCase):
     URL = "https://github.com/souliane/teatree/pull/42"
 
     def test_true_when_the_probe_reports_the_tickets_own_pr_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, issue_url=self.URL)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, issue_url=self.URL)
         with patch(
             "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=True)
         ):
             assert forge_confirms_merged(ticket) is True
 
     def test_false_when_the_probe_reports_it_not_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, issue_url=self.URL)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, issue_url=self.URL)
         with patch(
             "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state", return_value=_pr_merge_state(merged=False)
         ):
@@ -172,7 +172,7 @@ class TestForgeConfirmsThroughTheTicketsOwnPr(TestCase):
         """An ``/issues/N`` url names no PR — probing it would invent evidence."""
         ticket = Ticket.objects.create(
             overlay="t3-teatree",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             issue_url="https://github.com/souliane/teatree/issues/42",
         )
         with patch(
@@ -183,7 +183,7 @@ class TestForgeConfirmsThroughTheTicketsOwnPr(TestCase):
 
     def test_a_ticket_with_its_own_rows_does_not_fall_back(self) -> None:
         """The rows are the evidence when they exist; the ``issue_url`` is the gap-filler."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, issue_url=self.URL)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, issue_url=self.URL)
         _pr_for(ticket)
         with patch(
             "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state",
@@ -196,26 +196,26 @@ class TestForgeConfirmsThroughTheTicketsOwnPr(TestCase):
 
 class TestCheckMergeEvidence(TestCase):
     def test_gate_off_passes_without_any_evidence(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         with _gate(required=False):
             check_merge_evidence(ticket)  # no raise
 
     def test_gate_on_refuses_without_evidence(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         with _gate(required=True), pytest.raises(NoMergeEvidenceError) as exc:
             check_merge_evidence(ticket)
         assert "no merged-SHA evidence" in str(exc.value)
         assert "require_merge_evidence false" in str(exc.value)  # names the never-wedge escape
 
     def test_gate_on_passes_with_a_keystone_merge_audit(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _audit_for(ticket)
         with _gate(required=True):
             check_merge_evidence(ticket)  # no raise
 
     def test_gate_on_passes_when_the_forge_confirms_merged(self) -> None:
         """Never-wedge: a genuinely-merged PR with no MergeAudit row still passes."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr_for(ticket)
         with (
             _gate(required=True),
@@ -226,7 +226,7 @@ class TestCheckMergeEvidence(TestCase):
             check_merge_evidence(ticket)  # no raise
 
     def test_gate_on_fail_closed_when_probe_raises_and_no_audit(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr_for(ticket)
         with (
             _gate(required=True),
@@ -236,7 +236,7 @@ class TestCheckMergeEvidence(TestCase):
             check_merge_evidence(ticket)
 
     def test_has_merge_evidence_is_audit_or_forge(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         assert has_merge_evidence(ticket) is False
         _audit_for(ticket)
         assert has_merge_evidence(ticket) is True
@@ -246,20 +246,20 @@ class TestMergeEvidenceFsmGate(TestCase):
     """The anti-vacuity core: a terminal transition without a MergeAudit MUST refuse."""
 
     def test_mark_merged_refused_without_evidence(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         with _gate(required=True), pytest.raises(NoMergeEvidenceError):
             ticket.mark_merged()
-        assert ticket.state == Ticket.State.IN_REVIEW  # the transition did NOT advance
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED  # the transition did NOT advance
 
     def test_reconcile_merged_refused_without_evidence(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         with _gate(required=True), pytest.raises(NoMergeEvidenceError):
             ticket.reconcile_merged()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_reconcile_merged_allowed_with_a_merge_audit(self) -> None:
         """The keystone shape: a MergeAudit written before reconcile → MERGED reached."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         _audit_for(ticket)
         with _gate(required=True), self.captureOnCommitCallbacks(execute=False):
             ticket.reconcile_merged()
@@ -268,7 +268,7 @@ class TestMergeEvidenceFsmGate(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_mark_merged_allowed_when_forge_confirms_merged(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _pr_for(ticket)
         with (
             _gate(required=True),
@@ -288,7 +288,7 @@ class TestMergeEvidenceFsmGate(TestCase):
         If this passes while ``test_mark_merged_refused_without_evidence`` also
         passes, the gate is genuinely the thing blocking believe-done-not-done.
         """
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         neutralised = {**gate_registry._REGISTRY, ("gate", "merge_evidence"): lambda _ticket: None}
         with (
             _gate(required=True),

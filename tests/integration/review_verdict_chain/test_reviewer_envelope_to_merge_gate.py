@@ -278,7 +278,7 @@ def _delivering_ticket() -> Ticket:
     is a different row entirely — the one `core.merge.ticket_gates` resolves from the PR
     identity and grades at merge time.
     """
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
     PullRequest.objects.create(ticket=ticket, overlay="t3-teatree", url=_PR_URL, repo=_SLUG, iid=str(_PR_ID))
     PlanArtifact.record(
         ticket=ticket,

@@ -155,7 +155,7 @@ class TestRefusalNamesThePositivePath(TestCase):
 
 class TestMarkDeliveredFsmGate(TestCase):
     def _retrospected(self, **kwargs: object) -> Ticket:
-        return Ticket.objects.create(overlay="acme", state=Ticket.State.RETROSPECTED, **kwargs)
+        return Ticket.objects.create(overlay="acme", state=Ticket.State.RETRO_RECORDED, **kwargs)
 
     def test_feature_ticket_delivers(self) -> None:
         ticket = self._retrospected(kind=Ticket.Kind.FEATURE)
@@ -174,7 +174,7 @@ class TestMarkDeliveredFsmGate(TestCase):
         with pytest.raises(FixRecordDodError):
             ticket.mark_delivered()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
 
     def test_fix_with_override_delivers(self) -> None:
         ticket = self._retrospected(kind=Ticket.Kind.FIX, extra={"fix_record_override": {"reason": "exempt"}})
@@ -208,7 +208,7 @@ class TestFixRecordDodLivePath(TestCase):
 
     def _at_retrospected(self, ticket: Ticket, **extra_overrides: object) -> Ticket:
         extra = {**(ticket.extra or {}), **extra_overrides}
-        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETROSPECTED, extra=extra)
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETRO_RECORDED, extra=extra)
         ticket.refresh_from_db()
         return ticket
 
@@ -217,7 +217,7 @@ class TestFixRecordDodLivePath(TestCase):
         with pytest.raises(FixRecordDodError):
             ticket.mark_delivered()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.RETROSPECTED
+        assert ticket.state == Ticket.State.RETRO_RECORDED
 
     def test_correction_ticket_with_record_delivers(self) -> None:
         ticket = self._at_retrospected(self._correction_ticket(), fix_record=_COMPLETE_RECORD)

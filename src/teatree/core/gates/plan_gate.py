@@ -1,4 +1,4 @@
-"""Plan-before-code gate: single chokepoint for the PLANNED FSM state.
+"""Plan-before-code gate: single chokepoint for the PLAN_RECORDED FSM state.
 
 ``check_plan_artifact`` is the ONE function called by ``Ticket.plan()`` via
 ``@transition(..., conditions=[check_plan_artifact])``.  No other code path
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 def check_plan_artifact(ticket: "Ticket") -> bool:
-    """Return True iff *ticket* may legitimately leave STARTED for PLANNED.
+    """Return True iff *ticket* may legitimately leave WORK_STARTED for PLAN_RECORDED.
 
     Used as a django-fsm ``@transition`` condition — must return a bool.
     Raises NoPlanArtifactError (an InvalidTransitionError subclass) on
@@ -56,7 +56,7 @@ def check_plan_artifact(ticket: "Ticket") -> bool:
         return True
     msg = (
         f"Ticket {ticket.pk} has no PlanArtifact and no trivial-skip marker — "
-        f"plan() requires one before the STARTED→PLANNED transition can fire. "
+        f"plan() requires one before the WORK_STARTED→PLAN_RECORDED transition can fire. "
         f'Record a plan with `t3 <overlay> ticket plan <id> "<text>"`, let the '
         f"planner agent complete its task, or — for a trivial mechanical edit — "
         f'mark it with `t3 <overlay> ticket skip-planning <id> --reason "<why>"`.'

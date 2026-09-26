@@ -1,7 +1,7 @@
 """``Ticket.begin_planning`` — the ladder walk that makes a planning task consumable (#4578).
 
 Scheduling planning is not enough on its own: ``Ticket.plan``'s FSM source is exclusively
-STARTED and ``Task._apply_phase_transition``'s planning branch is guarded on the same
+WORK_STARTED and ``Task._apply_phase_transition``'s planning branch is guarded on the same
 state, so a planning task minted on a NOT_STARTED ticket completes into nothing. These
 tests pin the walk, its idempotence, and its refusals.
 """
@@ -26,7 +26,7 @@ class TestTheLadderWalk(TestCase):
         task = ticket.begin_planning()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert task.phase == "planning"
         assert task.ticket_id == ticket.pk
 
@@ -36,15 +36,15 @@ class TestTheLadderWalk(TestCase):
         ticket.begin_planning()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_an_already_started_ticket_stays_started(self) -> None:
-        ticket = _author(Ticket.State.STARTED)
+        ticket = _author(Ticket.State.WORK_STARTED)
 
         ticket.begin_planning()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_the_planning_completion_now_advances_the_ticket_to_coding(self) -> None:
         """The whole point of the walk: the ladder must actually continue past planning."""
@@ -55,7 +55,7 @@ class TestTheLadderWalk(TestCase):
         task.complete()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
         assert Task.objects.filter(ticket=ticket, phase="coding").exists()
 
 
@@ -68,7 +68,7 @@ class TestIdempotenceAndRefusals(TestCase):
         assert Task.objects.filter(ticket=ticket, phase="planning").count() == 1
 
     def test_a_ticket_past_the_early_states_is_refused(self) -> None:
-        ticket = _author(Ticket.State.PLANNED)
+        ticket = _author(Ticket.State.PLAN_RECORDED)
 
         with pytest.raises(InvalidTransitionError):
             ticket.begin_planning()
@@ -85,7 +85,7 @@ class TestIdempotenceAndRefusals(TestCase):
         assert not Task.objects.filter(ticket=ticket).exists()
 
     def test_a_parent_task_is_threaded_onto_the_scheduled_task(self) -> None:
-        parent_ticket = _author(Ticket.State.STARTED)
+        parent_ticket = _author(Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=parent_ticket, agent_id="planning")
         parent = Task.objects.create(ticket=parent_ticket, session=session, phase="planning", subject="parent")
         ticket = _author()
@@ -102,12 +102,12 @@ class TestAStaleCandidateCannotClobberTheRow(TestCase):
 
     def test_a_concurrently_advanced_ticket_is_refused_not_walked_back(self) -> None:
         ticket = _author()
-        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.PLANNED)
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.PLAN_RECORDED)
 
         with pytest.raises(InvalidTransitionError):
             ticket.begin_planning()
 
-        assert Ticket.objects.get(pk=ticket.pk).state == Ticket.State.PLANNED
+        assert Ticket.objects.get(pk=ticket.pk).state == Ticket.State.PLAN_RECORDED
 
     def test_a_concurrently_written_extra_key_survives_the_walk(self) -> None:
         ticket = _author()
@@ -116,4 +116,4 @@ class TestAStaleCandidateCannotClobberTheRow(TestCase):
         ticket.begin_planning()
 
         assert is_trivial_plan_skip(Ticket.objects.get(pk=ticket.pk))
-        assert Ticket.objects.get(pk=ticket.pk).state == Ticket.State.STARTED
+        assert Ticket.objects.get(pk=ticket.pk).state == Ticket.State.WORK_STARTED

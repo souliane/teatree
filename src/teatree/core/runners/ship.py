@@ -256,8 +256,8 @@ def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree |
 class ShipExecutor(RunnerBase):
     """Push the worktree branch and open the pull request.
 
-    Runs inside ``execute_ship`` after the FSM advances to ``SHIPPED``. The
-    worker calls ``request_review()`` on success to advance to ``IN_REVIEW``.
+    Runs inside ``execute_ship`` after the FSM advances to ``PR_OPENED``. The
+    worker calls ``request_review()`` on success to advance to ``REVIEW_REQUESTED``.
     """
 
     def __init__(self, ticket: "Ticket") -> None:
@@ -445,7 +445,7 @@ class ShipExecutor(RunnerBase):
 
         #1222 / #1226 verify-by-re-read: a backend that returns a payload
         without a URL (or with the wrong field name) MUST surface as
-        ``ok=False`` — otherwise the FSM advances to SHIPPED with an empty
+        ``ok=False`` — otherwise the FSM advances to PR_OPENED with an empty
         ``pr_urls`` entry and downstream gates think no PR exists.
         ``web_url`` is the cross-host canonical key; ``html_url`` is kept
         for raw GitHub API payloads piped through other producers.
@@ -460,7 +460,7 @@ class ShipExecutor(RunnerBase):
             )
         # #1120 (a): verify the PR URL targets the expected repo.  A valid URL
         # for the *wrong* repo (e.g. a cross-project CI mirror mis-resolved by
-        # the overlay) must not silently advance the FSM to ``in_review``. The
+        # the overlay) must not silently advance the FSM to ``review_requested``. The
         # slug is matched on ``/``-delimited boundaries — a bare substring test
         # accepted a ``<slug>-mirror`` repo's URL — and both forges put a route
         # segment after the repo (``/pull/N``, ``/-/merge_requests/N``), so the

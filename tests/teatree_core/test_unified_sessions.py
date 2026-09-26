@@ -16,7 +16,7 @@ class TestBuildUnifiedSessions(TestCase):
         assert rows == []
 
     def test_includes_queued_tasks(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="test")
         Task.objects.create(
             ticket=ticket,
@@ -34,7 +34,7 @@ class TestBuildUnifiedSessions(TestCase):
 
     def test_queued_task_exposes_issue_url(self) -> None:
         ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             issue_url="https://example.com/issues/42",
         )
         session = Session.objects.create(ticket=ticket, agent_id="test")
@@ -51,7 +51,7 @@ class TestBuildUnifiedSessions(TestCase):
         assert rows[0].issue_url == "https://example.com/issues/42"
 
     def test_includes_completed_activity(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="test")
         task = Task.objects.create(
             ticket=ticket,
@@ -71,7 +71,7 @@ class TestBuildUnifiedSessions(TestCase):
         assert completed.result_summary == "Done"
 
     def test_includes_failed_activity(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="test")
         task = Task.objects.create(
             ticket=ticket,
@@ -89,7 +89,7 @@ class TestBuildUnifiedSessions(TestCase):
 
     def test_claimed_headless_task_keeps_headless_label_with_unrelated_agent_id(self) -> None:
         """Regression for #500: the row must reflect the Task, not the linked Session.agent_id."""
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="claude-some-id")
         # ``architectural_review`` has no registered agent → genuinely HEADLESS.
         task = Task.objects.create(
@@ -107,7 +107,7 @@ class TestBuildUnifiedSessions(TestCase):
 
     def test_deduplicates_by_task_id(self) -> None:
         """Tasks that appear in both queued and activity should only appear once."""
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="test")
         task = Task.objects.create(
             ticket=ticket,

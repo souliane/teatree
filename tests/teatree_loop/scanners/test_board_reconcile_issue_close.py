@@ -1,7 +1,7 @@
 """Board reconcile rule F — a pre-ship ticket whose own ISSUE the forge closed (#4711).
 
 The measured wedge: the 2026-08-31 prune retired 226 issues NOT_PLANNED and the board
-never learned. Twelve ``Ticket`` rows stayed ``planned`` behind closed issues and the
+never learned. Twelve ``Ticket`` rows stayed ``plan_recorded`` behind closed issues and the
 coding dispatcher re-offered each forever — one was dispatched eleven times, every cycle
 spending a full agent run to re-derive "the owner closed this" and stop. Rules A-E cannot
 reach that shape: B/C resolve the URL as a PR (an ``/issues/`` URL is UNKNOWN), D polls
@@ -63,7 +63,7 @@ def _forge(payload: object) -> Iterator[None]:
 
 
 class TestClosedIssueRetiresPreShipTicket(TestCase):
-    def _ticket(self, *, state: str = Ticket.State.PLANNED, url: str = "", **kwargs: object) -> Ticket:
+    def _ticket(self, *, state: str = Ticket.State.PLAN_RECORDED, url: str = "", **kwargs: object) -> Ticket:
         return Ticket.objects.create(overlay="t3-teatree", state=state, issue_url=url or _ISSUE, **kwargs)
 
     def test_the_pk632_shape_is_retired_carrying_the_close_reason(self) -> None:
@@ -77,7 +77,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
         assert ticket.state == Ticket.State.IGNORED
         assert ticket.extra["issue_close_reason"] == "not_planned"
         assert [(t.from_state, t.action) for t in report.applied] == [
-            (Ticket.State.PLANNED, BoardAction.IGNORED_ISSUE_CLOSED)
+            (Ticket.State.PLAN_RECORDED, BoardAction.IGNORED_ISSUE_CLOSED)
         ]
 
     def test_a_completed_close_retires_the_row_too_and_stays_distinguishable(self) -> None:
@@ -109,7 +109,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
             assert reconcile_board().applied == ()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
 
     def test_an_unreadable_payload_never_retires(self) -> None:
         ticket = self._ticket()
@@ -118,7 +118,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
             assert reconcile_board().applied == ()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
 
     def test_a_failed_fetch_never_retires(self) -> None:
         """An unreachable forge must read as UNKNOWN, never as "the owner closed it"."""
@@ -128,7 +128,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
             assert reconcile_board().applied == ()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
 
     def test_the_lane_is_idempotent(self) -> None:
         ticket = self._ticket()
@@ -151,8 +151,8 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
         assert reviewer.state != Ticket.State.IGNORED
 
     def test_a_post_ship_ticket_stays_with_the_completion_rule(self) -> None:
-        """Rule D owns a SHIPPED ticket whose issue is done; rule F must not steal it."""
-        ticket = self._ticket(state=Ticket.State.SHIPPED)
+        """Rule D owns a PR_OPENED ticket whose issue is done; rule F must not steal it."""
+        ticket = self._ticket(state=Ticket.State.PR_OPENED)
 
         with _forge(_COMPLETED):
             actions = [t.action for t in reconcile_board().transitions]
@@ -168,7 +168,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
             report = reconcile_board(dry_run=True)
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
         assert [t.to_state for t in report.transitions] == [Ticket.State.IGNORED]
         assert report.applied == ()
 
@@ -189,7 +189,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
         assert len(report.applied) == 1
         assert report.probes == 1
         assert newest.state == Ticket.State.IGNORED
-        assert older.state == Ticket.State.PLANNED
+        assert older.state == Ticket.State.PLAN_RECORDED
 
     def test_remaining_of_one_lets_rule_e_take_the_only_probe(self) -> None:
         """#4808 FINDING 2: the reservation floor is ``remaining // 2``, which is 0 at remaining==1.
@@ -213,7 +213,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
 
         ticket.refresh_from_db()
         delivered.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
         assert delivered.state == Ticket.State.DELIVERED
         assert report.probes == 1
 
@@ -234,7 +234,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
             reconcile_board()
 
         ticket.refresh_from_db()
-        assert ticket.is_terminal
+        assert ticket.is_settled
         assert ticket.state not in stuck_ticket_redispatch._STATE_PHASE
 
     def test_a_ticket_the_fsm_refuses_is_skipped_not_crashed(self) -> None:
@@ -244,7 +244,7 @@ class TestClosedIssueRetiresPreShipTicket(TestCase):
             assert reconcile_board().applied == ()
 
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
 
     def test_rule_f_still_gets_probes_when_rule_e_candidates_exceed_the_remaining_budget(self) -> None:
         """The starvation this pins (#4711 follow-up): E's DELIVERED pool must not eat F's whole share.
@@ -279,7 +279,7 @@ class TestUnshippedWorkIsSurfacedNotVetoed(TestCase):
     """Uncommitted work never blocks the retire — leaving the row planned is the defect."""
 
     def test_a_dirty_worktree_still_retires_and_raises_exactly_one_question(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLANNED, issue_url=_ISSUE)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED, issue_url=_ISSUE)
 
         with _forge(_NOT_PLANNED), _dirty(["/checkouts/4084/teatree"]):
             reconcile_board()
@@ -292,7 +292,7 @@ class TestUnshippedWorkIsSurfacedNotVetoed(TestCase):
         assert "/checkouts/4084/teatree" in questions.get().question
 
     def test_a_clean_worktree_raises_no_question(self) -> None:
-        Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLANNED, issue_url=_ISSUE)
+        Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED, issue_url=_ISSUE)
 
         with _forge(_NOT_PLANNED), _dirty([]):
             reconcile_board()
@@ -301,7 +301,7 @@ class TestUnshippedWorkIsSurfacedNotVetoed(TestCase):
 
     def test_an_unreadable_checkout_never_blocks_the_retirement(self) -> None:
         """A probe this venue cannot complete must not leave the row as a dispatch source."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLANNED, issue_url=_ISSUE)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED, issue_url=_ISSUE)
         with _forge(_NOT_PLANNED), patch(_DIRTY_PROBE, side_effect=OSError("checkout unreadable")):
             assert len(reconcile_board().applied) == 1
 

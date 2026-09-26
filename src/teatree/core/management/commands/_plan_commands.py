@@ -61,7 +61,7 @@ class PlanCommands(TyperCommand):
             ),
         ] = "",
     ) -> PlanResult:
-        """Record a PlanArtifact and advance the ticket STARTED → PLANNED.
+        """Record a PlanArtifact and advance the ticket WORK_STARTED → PLAN_RECORDED.
 
         The operator-facing plan recorder named by the ``NoPlanArtifactError``
         message: a planning task that finished out-of-band, or a ticket the
@@ -122,12 +122,12 @@ class PlanCommands(TyperCommand):
             typer.Option(help="Documented reason for bypassing the plan gate (required)."),
         ],
     ) -> PlanResult:
-        """Record an audited PlanArtifact bypass and advance the ticket to PLANNED.
+        """Record an audited PlanArtifact bypass and advance the ticket to PLAN_RECORDED.
 
         The ONLY escape from the plan gate outside the normal planner flow.
         Both --human-authorize and --reason are required; a silent bypass is
         not allowed. Records a PlanArtifact with bypass_reason set, then
-        drives ticket.plan() → STARTED→PLANNED.
+        drives ticket.plan() → WORK_STARTED→PLAN_RECORDED.
         """
         cleaned_reason = reason.strip()
         cleaned_authorizer = human_authorize.strip()
@@ -168,7 +168,7 @@ class PlanCommands(TyperCommand):
             typer.Option(help="Who recorded the skip (audit trail)."),
         ] = "operator",
     ) -> PlanResult:
-        """Mark a trivial ticket to skip planning and advance STARTED → PLANNED.
+        """Mark a trivial ticket to skip planning and advance WORK_STARTED → PLAN_RECORDED.
 
         The LIGHTWEIGHT, audited sibling of ``plan-bypass`` for a trivial
         mechanical edit (a typo, a one-line bump): records a durable
@@ -203,7 +203,7 @@ class PlanCommands(TyperCommand):
             str,
             typer.Option(
                 "--human-authorize",
-                help="Human/operator authorising retroactive plan bypass for in-flight STARTED tickets.",
+                help="Human/operator authorising retroactive plan bypass for in-flight WORK_STARTED tickets.",
             ),
         ],
         issue_ref: Annotated[
@@ -214,7 +214,7 @@ class PlanCommands(TyperCommand):
             bool, typer.Option("--dry-run", help="List affected tickets without modifying them.")
         ] = False,
     ) -> PlanReconcileResult:
-        """Retroactively advance STARTED tickets to PLANNED after the gate was added.
+        """Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was added.
 
         One-time operator command (a data migration would fabricate an authorizer
         it cannot name): see ``_plan_gate_commands.reconcile_inflight``. Requires

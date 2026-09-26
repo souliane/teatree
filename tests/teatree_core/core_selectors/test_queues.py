@@ -14,7 +14,7 @@ from teatree.core.selectors import build_automation_summary, build_task_queue
 
 class TestBuildInteractiveQueue(TestCase):
     def test_returns_non_completed_manual_tasks(self) -> None:
-        first_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        first_ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         second_ticket = Ticket.objects.create(state=Ticket.State.CODED)
         session = Session.objects.create(ticket=first_ticket, agent_id="codex")
         other_session = Session.objects.create(ticket=second_ticket, agent_id="claude")
@@ -45,7 +45,7 @@ class TestBuildInteractiveQueue(TestCase):
         assert pending == build_task_queue(pending_only=True)
 
     def test_includes_last_error_from_attempts(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="codex")
         task = Task.objects.create(
             ticket=ticket,
@@ -61,7 +61,7 @@ class TestBuildInteractiveQueue(TestCase):
         assert queue[0].last_error == "ttyd not found"
 
     def test_excludes_failed_tasks(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         pending = Task.objects.create(
             ticket=ticket,
@@ -80,7 +80,7 @@ class TestBuildInteractiveQueue(TestCase):
 
 class TestBuildHeadlessQueue(TestCase):
     def test_excludes_failed_tasks(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         pending = Task.objects.create(
             ticket=ticket,
@@ -97,7 +97,7 @@ class TestBuildHeadlessQueue(TestCase):
         assert [row.task_id for row in queue] == [pending.pk]
 
     def test_includes_result_summary(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -116,7 +116,7 @@ class TestBuildHeadlessQueue(TestCase):
         assert queue[0].result_summary == "Fixed 3 files"
 
     def test_includes_session_and_phase(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="claude-headless")
         # A free-form phase with no registered agent stays genuinely HEADLESS
         # (a loop-dispatched phase like ``testing`` is routed to INTERACTIVE by
@@ -136,7 +136,7 @@ class TestBuildHeadlessQueue(TestCase):
 
     def test_includes_ticket_issue_url(self) -> None:
         ticket = Ticket.objects.create(
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             issue_url="https://example.com/issues/555",
         )
         session = Session.objects.create(ticket=ticket, agent_id="agent")
@@ -152,7 +152,7 @@ class TestBuildHeadlessQueue(TestCase):
 
     def test_include_dismissed(self) -> None:
         """include_dismissed=True should include FAILED tasks but not COMPLETED."""
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         failed = Task.objects.create(
             ticket=ticket,
@@ -178,7 +178,7 @@ class TestBuildHeadlessQueue(TestCase):
 
 class TestReapStaleClaims(TestCase):
     def test_reaps_claimed_tasks_with_expired_lease(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         now = timezone.now()
         stale = Task.objects.create(
@@ -213,7 +213,7 @@ class TestReapStaleClaims(TestCase):
         stale CLAIMED task therefore stays CLAIMED and appears in the queue
         (``heartbeat_age`` reveals its staleness) rather than being failed.
         """
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         now = timezone.now()
         stale = Task.objects.create(
@@ -233,7 +233,7 @@ class TestReapStaleClaims(TestCase):
 
 class TestHeadlessQueueElapsedTime(TestCase):
     def test_claimed_task_shows_elapsed_and_heartbeat(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         now = timezone.now()
         Task.objects.create(
@@ -255,7 +255,7 @@ class TestHeadlessQueueElapsedTime(TestCase):
         assert "30s" in queue[0].heartbeat_age
 
     def test_pending_task_has_empty_elapsed(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         Task.objects.create(
             ticket=ticket,

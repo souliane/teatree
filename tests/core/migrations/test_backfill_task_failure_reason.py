@@ -22,7 +22,7 @@ def _run_backfill() -> None:
 
 
 def _task(*, status: str, reason: str = "", kind: str = "") -> Task:
-    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
     session = Session.objects.create(ticket=ticket, agent_id="coding")
     return Task.objects.create(
         ticket=ticket, session=session, phase="coding", status=status, failure_reason=reason, failure_kind=kind

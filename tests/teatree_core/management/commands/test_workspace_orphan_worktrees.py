@@ -38,7 +38,7 @@ class TestRawWorktreeDiscovery(OrphanWorktreeFixture):
         assert worktrees[str(wt_path)] == "HEAD"
 
     def test_db_tracked_paths_are_absolute(self) -> None:
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/1", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/1", state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(
             overlay="test",
             ticket=ticket,
@@ -144,7 +144,7 @@ class TestTrackedWorktreeNeverReapedAsOrphan(OrphanWorktreeFixture):
     def test_db_tracked_worktree_is_excluded_from_orphan_reaping(self) -> None:
         """A worktree WITH a DB row is not an orphan — the row-driven reaper owns it."""
         wt_path = self._add_orphan("tracked-feat", files={"t.txt": "tracked work"})
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/7", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/7", state=Ticket.State.REVIEW_REQUESTED)
         Worktree.objects.create(
             overlay="test",
             ticket=ticket,

@@ -22,9 +22,9 @@ def test_every_state_appears_exactly_once() -> None:
 
 
 def test_ignored_and_review_posted_are_the_hidden_states() -> None:
-    assert HIDDEN_STATES == (Ticket.State.IGNORED, Ticket.State.REVIEW_POSTED)
+    assert HIDDEN_STATES == (Ticket.State.IGNORED, Ticket.State.REVIEW_DELIVERED)
     assert Ticket.State.IGNORED not in BOARD_COLUMNS
-    assert Ticket.State.REVIEW_POSTED not in BOARD_COLUMNS
+    assert Ticket.State.REVIEW_DELIVERED not in BOARD_COLUMNS
 
 
 def test_board_columns_are_grouped_in_lifecycle_order() -> None:
@@ -36,7 +36,7 @@ def test_board_columns_are_grouped_in_lifecycle_order() -> None:
 def test_review_posted_is_hidden_not_in_any_column_group() -> None:
     """The reviewer terminal is hidden behind the toggle, not stacked in an active column."""
     grouped = {state for _name, states in COLUMN_GROUPS for state in states}
-    assert Ticket.State.REVIEW_POSTED not in grouped
-    assert Ticket.State.REVIEW_POSTED in HIDDEN_STATES
+    assert Ticket.State.REVIEW_DELIVERED not in grouped
+    assert Ticket.State.REVIEW_DELIVERED in HIDDEN_STATES
     # DELIVERED stays the author-merged terminal — a visible "Landed" column.
     assert Ticket.State.DELIVERED in dict(COLUMN_GROUPS)["Landed"]

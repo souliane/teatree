@@ -14,7 +14,7 @@ class TestBuildTaskDetail(TestCase):
         assert build_task_detail(999999) is None
 
     def test_with_parent_and_children(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         parent_task = Task.objects.create(
             ticket=ticket,
@@ -52,7 +52,7 @@ class TestBuildTaskDetail(TestCase):
         assert detail.session_agent_id == "agent"
 
     def test_child_has_parent(self) -> None:
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         parent_task = Task.objects.create(
             ticket=ticket,
@@ -76,7 +76,7 @@ class TestBuildTaskDetail(TestCase):
 
     def test_attempt_with_non_dict_result(self) -> None:
         """TaskAttempt with non-dict result should yield empty dict."""
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,
@@ -94,7 +94,7 @@ class TestBuildTaskDetail(TestCase):
 
     def test_no_session_id(self) -> None:
         """Task without session_id should have empty session_agent_id."""
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         task = Task.objects.create(
             ticket=ticket,

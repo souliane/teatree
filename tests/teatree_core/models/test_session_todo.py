@@ -21,7 +21,7 @@ from teatree.core.models.session_todo import SessionTodoManager
 
 class SessionTodoModelTest(TestCase):
     def _session(self, agent_id: str = "entrypoint-abc") -> Session:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         return Session.objects.create(ticket=ticket, agent_id=agent_id)
 
     def test_items_append_in_working_order(self) -> None:
@@ -69,7 +69,7 @@ class SessionTodoModelTest(TestCase):
 
 class SessionTodoCommandTest(TestCase):
     def _session(self) -> Session:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         return Session.objects.create(ticket=ticket, agent_id="entrypoint-abc")
 
     def test_add_list_and_set_round_trip(self) -> None:

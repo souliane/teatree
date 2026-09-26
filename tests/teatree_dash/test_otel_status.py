@@ -51,7 +51,7 @@ class DashboardTelemetryTestCase(TestCase):
     def test_live_page_shows_active_runtime_cause_age_and_recorded_action(self) -> None:
         key = "task-failed:42"
         incident_id = self._factory_row(kind="task_failed", cause="harness_crash", age=timedelta(minutes=3), key=key)
-        ticket = TicketFactory(state=Ticket.State.STARTED)
+        ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
         SelfImproveFiring.objects.create(
             detector="task_failure",
             dedup_key=key,
@@ -213,7 +213,7 @@ class DashboardTelemetryTestCase(TestCase):
     def test_reopened_incident_does_not_reuse_closed_generation_age_or_action(self) -> None:
         key = "reopened-task"
         incident_id = self._factory_row(kind="task_failed", cause="harness_crash", age=timedelta(minutes=2), key=key)
-        old_ticket = TicketFactory(state=Ticket.State.STARTED)
+        old_ticket = TicketFactory(state=Ticket.State.WORK_STARTED)
         SelfImproveFiring.objects.create(
             detector="task_failure",
             dedup_key=key,
@@ -289,7 +289,7 @@ class AttemptSkillAssuranceTestCase(TestCase):
         assert assurance.status == "unverified"
 
     def _attempt(self, *, status: str, evidence: list[dict[str, str]]) -> TaskAttempt:
-        task = TaskFactory(ticket=TicketFactory(state=Ticket.State.STARTED), phase="coding")
+        task = TaskFactory(ticket=TicketFactory(state=Ticket.State.WORK_STARTED), phase="coding")
         return TaskAttempt.objects.create(
             task=task,
             agent_session_id="skill-session",

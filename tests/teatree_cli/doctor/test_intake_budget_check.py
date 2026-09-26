@@ -44,20 +44,20 @@ class TestIntakeBudgetDoctorCheck(django.test.TestCase):
             assert _check_intake_budget_deadlock() is True
 
     def test_full_budget_with_live_work_passes(self) -> None:
-        marker = _held("https://github.com/o/r/issues/2", state=Ticket.State.STARTED)
+        marker = _held("https://github.com/o/r/issues/2", state=Ticket.State.WORK_STARTED)
         TaskFactory(ticket=marker.ticket, status=Task.Status.CLAIMED)
         with patch(_SETTINGS_TARGET, return_value=_settings(limit=1)):
             assert _check_intake_budget_deadlock() is True
 
     def test_full_budget_with_open_prs_passes(self) -> None:
-        marker = _held("https://github.com/o/r/issues/3", state=Ticket.State.SHIPPED)
+        marker = _held("https://github.com/o/r/issues/3", state=Ticket.State.PR_OPENED)
         PullRequestFactory(ticket=marker.ticket, overlay="acme", state=PullRequest.State.OPEN)
         with patch(_SETTINGS_TARGET, return_value=_settings(limit=1)):
             assert _check_intake_budget_deadlock() is True
 
     def test_two_stalled_claims_at_a_budget_of_two_fail(self) -> None:
         # The reported deadlock, verbatim: both slots held, nothing progressing.
-        merged = _held("https://github.com/o/r/issues/4", state=Ticket.State.SHIPPED)
+        merged = _held("https://github.com/o/r/issues/4", state=Ticket.State.PR_OPENED)
         PullRequestFactory(ticket=merged.ticket, overlay="acme", state=PullRequest.State.MERGED)
         dead = _held("https://github.com/o/r/issues/5")
         TaskFactory(ticket=dead.ticket, status=Task.Status.FAILED)

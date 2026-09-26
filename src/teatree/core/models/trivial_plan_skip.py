@@ -17,7 +17,7 @@ allowed (a blank reason raises before any row is written).
 The marker is consumed at the same two seams the external-delivery predicate
 uses, mirroring that precedent. ``check_plan_artifact`` (the single ``plan()``
 gate) accepts the recorded marker as a satisfying signal, so a trivial-marked
-ticket advances STARTED → PLANNED with no ``PlanArtifact`` and no
+ticket advances WORK_STARTED → PLAN_RECORDED with no ``PlanArtifact`` and no
 ``--human-authorize``. ``execute_provision`` skips ``schedule_planning`` so the
 auto-planner is never scheduled for a trivial-marked AUTHOR ticket. A third
 consumer, ``plan_dispatch_gate.unplanned_dispatch_refusal`` (#4409), accepts it so

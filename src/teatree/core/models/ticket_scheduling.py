@@ -42,18 +42,18 @@ class TicketSchedulingModel(TicketFacet):
         )
 
     def begin_planning(self: "Ticket", *, parent_task: "Task | None" = None) -> "Task":
-        """Walk an early-state author ticket up to STARTED and schedule its planning task.
+        """Walk an early-state author ticket up to WORK_STARTED and schedule its planning task.
 
         The transitions are load-bearing, not decoration: ``Ticket.plan``'s FSM source is
-        exclusively STARTED, and ``Task._apply_phase_transition``'s planning branch is
+        exclusively WORK_STARTED, and ``Task._apply_phase_transition``'s planning branch is
         guarded on the same state — so a planning task scheduled on a NOT_STARTED ticket
         completes into ``escalate_unmatched_phase_transition`` and never reaches
         ``plan()`` -> ``schedule_coding()``. Scheduling planning WITHOUT them is the shape
         of the hourly wedge this replaces (souliane/teatree#4578).
 
-        Idempotent: past STARTED the ladder walk is skipped and ``schedule_planning``'s
+        Idempotent: past WORK_STARTED the ladder walk is skipped and ``schedule_planning``'s
         CAS returns the in-flight sibling, so a repeated call mints nothing. A ticket
-        already past PLANNED has no planning left to begin and is refused, so a
+        already past PLAN_RECORDED has no planning left to begin and is refused, so a
         mis-routed caller fails loudly rather than minting a phase task the FSM will
         never consume.
 
@@ -65,7 +65,7 @@ class TicketSchedulingModel(TicketFacet):
         the snapshot's ``extra`` back over a key another writer has since recorded —
         hence ``merge_extra``, whose own locked re-read carries the state.
         """
-        early = (self.State.NOT_STARTED, self.State.SCOPED, self.State.STARTED)
+        early = (self.State.NOT_STARTED, self.State.SCOPED, self.State.WORK_STARTED)
         with transaction.atomic():
             locked = type(self).objects.select_for_update().get(pk=self.pk)
             if locked.state not in early:
@@ -81,7 +81,7 @@ class TicketSchedulingModel(TicketFacet):
     def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless coding task after planning completes.
 
-        Gated by ``plan_currency`` (SELFCATCH-3) on the normal author PLANNED→CODED flow
+        Gated by ``plan_currency`` (SELFCATCH-3) on the normal author PLAN_RECORDED→CODED flow
         (the same gate ``code()`` runs): no coding task for a thin/legacy or seam-stale
         plan. Synthetic corrective re-entries that mint a coding task directly are
         exempt (they carry no plan).

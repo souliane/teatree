@@ -198,23 +198,23 @@ _DOD_VIOLATION_KEY = "dod_e2e_violation"
 
 
 def _is_post_ship_state(state: str) -> bool:
-    """True iff *state* is at or past SHIPPED on the lifecycle.
+    """True iff *state* is at or past PR_OPENED on the lifecycle.
 
-    Every such state is downstream of a successful ship: SHIPPED, the higher
-    IN_REVIEW (reached via ``ship() → request_review()``), and the terminal
+    Every such state is downstream of a successful ship: PR_OPENED, the higher
+    REVIEW_REQUESTED (reached via ``ship() → request_review()``), and the terminal
     MERGED / DELIVERED. A sync writer that grants any of these on a
     UI-visible ticket with no local E2E bypasses the ``ship()`` DoD gate.
     """
     from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    return Ticket.state_index(state) >= Ticket.state_index(Ticket.State.SHIPPED)
+    return Ticket.state_index(state) >= Ticket.state_index(Ticket.State.PR_OPENED)
 
 
 def sync_gate_allows(ticket: "Ticket", inferred_state: str) -> bool:
     """True iff automated sync may grant *inferred_state* on *ticket*.
 
     The single DoD decision every sync writer shares (#1426): a pre-ship
-    state is always allowed; a post-ship state (>= SHIPPED) is allowed only
+    state is always allowed; a post-ship state (>= PR_OPENED) is allowed only
     when the gate's own decision (:func:`check_local_e2e_dod`) passes — the
     same UI-visible / override / green-artifact policy the ``ship()``
     transition enforces. This is what stops automated PR sync from advancing
@@ -230,11 +230,11 @@ def sync_gate_allows(ticket: "Ticket", inferred_state: str) -> bool:
 
 
 def workflow_capped_state(ticket: "Ticket", inferred_state: str) -> str:
-    """Cap a NON-terminal sync-inferred state at the DoD gate, demoting to STARTED.
+    """Cap a NON-terminal sync-inferred state at the DoD gate, demoting to WORK_STARTED.
 
-    For workflow states inferred from a live, still-open PR (SHIPPED:
-    non-draft no-approvals, IN_REVIEW: non-draft with approvals / a requested
-    reviewer). When the gate refuses, the sync demotes to STARTED — "an open
+    For workflow states inferred from a live, still-open PR (PR_OPENED:
+    non-draft no-approvals, REVIEW_REQUESTED: non-draft with approvals / a requested
+    reviewer). When the gate refuses, the sync demotes to WORK_STARTED — "an open
     non-draft PR exists, but the DoD is not yet met" — and leaves the ship
     transition for the ``ship()`` path to own once the local E2E lands.
     Pre-ship states and a gate-allowed post-ship state pass through unchanged,
@@ -255,14 +255,14 @@ def workflow_capped_state(ticket: "Ticket", inferred_state: str) -> str:
         inferred_state,
         ticket.pk,
     )
-    return Ticket.State.STARTED
+    return Ticket.State.WORK_STARTED
 
 
 def record_terminal_dod_violation(ticket: "Ticket", terminal_state: str) -> None:
     """Surface a DoD violation on a TERMINAL state that reflects external reality.
 
     A genuinely merged/deployed PR is a fact the sync must follow — demoting
-    the ticket to STARTED would make it lie about reality (its own bug, and
+    the ticket to WORK_STARTED would make it lie about reality (its own bug, and
     inconsistent with how the ``reconcile_merged`` FSM keystone follows an
     authorised post-hoc merge). The gate's purpose is to stop ADVANCING to a
     post-ship state without a local E2E, not to rewrite terminal reality.

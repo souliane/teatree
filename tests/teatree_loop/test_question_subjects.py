@@ -19,7 +19,7 @@ from teatree.loop.transient_requeue import HALT_STAMP, requeue_transient_failed
 
 
 def _failed_task(*, phase: str = "coding") -> Task:
-    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.FAILED)
 
@@ -91,7 +91,7 @@ class TestRepairMarkerOwnsItsSubject(TestCase):
 
         assert drain_pending_questions().drained == 0
         assert _halt_question().status == DeferredQuestion.STATUS_PENDING
-        assert live.ticket.state == Ticket.State.STARTED
+        assert live.ticket.state == Ticket.State.WORK_STARTED
 
     def test_ticket_keyed_marker_naming_no_ticket_is_kept(self) -> None:
         # repair-stall carries its subject pk. An unresolvable pk is undeterminable, not an

@@ -14,8 +14,8 @@ _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 
 def _shippable_ticket() -> Ticket:
-    """Build a ticket pre-advanced to REVIEWED with the shipping gate satisfied."""
-    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+    """Build a ticket pre-advanced to SELF_REVIEWED with the shipping gate satisfied."""
+    ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
     session = Session.objects.create(ticket=ticket, overlay="test")
     session.visit_phase("testing")
     session.visit_phase("reviewing")

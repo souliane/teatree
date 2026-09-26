@@ -1,6 +1,6 @@
 """Detect tickets whose upstream issue indicates all work is complete.
 
-Walks tickets in post-ship states (``shipped``, ``in_review``, ``merged``)
+Walks tickets in post-ship states (``pr_opened``, ``review_requested``, ``merged``)
 and checks whether the upstream issue/ticket is done via the overlay's
 ``is_issue_done()`` hook.  This covers the gap where ``MyPrsScanner``
 only sees open PRs and ``TicketDispositionScanner`` only covers pre-PR

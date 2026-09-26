@@ -7,7 +7,7 @@ decides. A ticket carrying an open, unmerged PR/MR is not done, so none of its
 workspaces are reclaimable.
 
 The FSM-automatic path carries the same rule by state: ``execute_teardown``
-fires only for :meth:`Ticket.marker_release_states`, which excludes ``SHIPPED``
+fires only for :meth:`Ticket.marker_release_states`, which excludes ``PR_OPENED``
 precisely because its PR is still open. This gate is that condition expressed
 against the forge, so the operator-driven path cannot reclaim tickets the
 automatic path refuses.

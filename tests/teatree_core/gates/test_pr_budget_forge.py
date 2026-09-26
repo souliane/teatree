@@ -68,7 +68,7 @@ class _ForgeBudgetTestCase(TestCase):
         return Ticket.objects.create(
             overlay=overlay,
             issue_url=f"https://github.com/{repo}/issues/{number}",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
 
 

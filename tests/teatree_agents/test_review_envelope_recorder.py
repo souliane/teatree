@@ -66,7 +66,7 @@ def _author_ticket(*, criteria: list[str] | None = _AC, pr_id: int = _PR_ID) -> 
     rubric lives on the ticket the PR delivers, so the recorder must resolve it the way
     the merge gate does rather than reach for the task's own ticket.
     """
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
     Session.objects.create(overlay="t3-teatree", ticket=ticket, agent_id=_AGENT)
     PullRequest.objects.create(
         ticket=ticket, overlay="t3-teatree", url=f"https://github.com/{_SLUG}/pull/{pr_id}", repo=_SLUG, iid=str(pr_id)

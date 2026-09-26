@@ -273,24 +273,24 @@ class TestSyncFollowup(TestCase):
         assert cache.get(LAST_SYNC_CACHE_KEY) is not None
 
     def test_creates_ticket_with_inferred_state(self) -> None:
-        """New ticket from a non-draft MR should be SHIPPED, not NOT_STARTED."""
+        """New ticket from a non-draft MR should be PR_OPENED, not NOT_STARTED."""
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_creates_draft_ticket_as_started(self) -> None:
-        """New ticket from a draft MR should be STARTED."""
+        """New ticket from a draft MR should be WORK_STARTED."""
         mock_client = _make_mock_client([_MR_WITHOUT_ISSUE])
         self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url=_MR_WITHOUT_ISSUE["web_url"])
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
 
     def test_advances_existing_ticket_state(self) -> None:
         """Existing ticket at NOT_STARTED should advance when MR data implies a later state."""
@@ -307,18 +307,18 @@ class TestSyncFollowup(TestCase):
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_does_not_regress_ticket_state(self) -> None:
-        """Ticket already at IN_REVIEW should not regress to SHIPPED on sync."""
+        """Ticket already at REVIEW_REQUESTED should not regress to PR_OPENED on sync."""
         Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
             extra={"prs": {}},
         )
-        # MR with no approvals -> inferred SHIPPED, but ticket is already at IN_REVIEW
+        # MR with no approvals -> inferred PR_OPENED, but ticket is already at REVIEW_REQUESTED
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         mock_client.get_mr_approvals.return_value = {"count": 0, "required": 1}
         self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
@@ -326,7 +326,7 @@ class TestSyncFollowup(TestCase):
         sync_followup()
 
         ticket = Ticket.objects.get(issue_url="https://gitlab.com/org/repo/-/issues/100")
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_handles_non_list_reviewers(self) -> None:
         """When reviewers is not a list (e.g. None), reviewer fields are omitted."""
@@ -352,7 +352,7 @@ class TestSyncFollowup(TestCase):
             issue_url="https://gitlab.com/org/repo/-/issues/100",
             repos=["repo"],
             extra={"prs": {"https://mr/old": {"title": "old"}}},
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
         )
         dup_b = Ticket.objects.create(
             overlay="test",

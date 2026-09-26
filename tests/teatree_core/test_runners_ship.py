@@ -2,7 +2,7 @@
 
 Stage 2 of #140: ``Ticket.ship()`` becomes a thin transition that enqueues
 the heavy I/O (push, MR creation) onto a ``@task`` worker. The worker runs
-``ShipExecutor`` and on success advances ``SHIPPED → IN_REVIEW``.
+``ShipExecutor`` and on success advances ``PR_OPENED → REVIEW_REQUESTED``.
 """
 
 import shutil
@@ -239,7 +239,7 @@ class TestShipExecutor(TestCase):
         (covered in the GitHub backend tests). This consumer-side guard is
         belt-and-braces: even if a backend mis-returns ``{}`` or a dict with
         only ``url=""`` / ``web_url=""``, the ship runner must NOT advance
-        the FSM to ``SHIPPED`` with an empty ``pr_urls`` entry.
+        the FSM to ``PR_OPENED`` with an empty ``pr_urls`` entry.
         """
         ticket = self._ticket_with_worktree()
         host = MagicMock()
@@ -564,7 +564,7 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
     different branch. The legacy short-circuit returned the first
     workstream's URL on truthiness alone — the new branch was never
     pushed and no PR was opened, yet ``pr create --sync`` reported
-    success and the FSM advanced to ``IN_REVIEW``.
+    success and the FSM advanced to ``REVIEW_REQUESTED``.
 
     The guard: when ``ship_invoking_branch`` names a branch whose URL is
     not the one recorded for that branch, the runner must proceed to
@@ -1392,7 +1392,7 @@ class TestShipPrUrlRepoMismatch(TestCase):
 
     ``host.create_pr`` returning a syntactically-valid URL for the *wrong*
     repo (e.g. a cross-project CI mirror) must surface as ``ok=False`` and
-    must NOT advance the FSM to ``in_review`` or record a ``pr_urls`` entry.
+    must NOT advance the FSM to ``review_requested`` or record a ``pr_urls`` entry.
     """
 
     _EXPECTED_SLUG = "expected-org/expected-repo"

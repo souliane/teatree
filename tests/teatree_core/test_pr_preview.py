@@ -84,7 +84,7 @@ class TestShipPreviewTitleDescriptionInvariant(TestCase):
     def _ticket_with_worktree(self) -> Ticket:
         ticket = Ticket.objects.create(
             overlay="test",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             issue_url="https://github.com/souliane/teatree/issues/119",
         )
         Worktree.objects.create(
@@ -161,7 +161,7 @@ class TestShipPreviewUsesOverlayGeneratedTitle(TestCase):
     def _ticket_with_worktree(self) -> Ticket:
         ticket = Ticket.objects.create(
             overlay="gen",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             issue_url="https://github.com/souliane/teatree/issues/119",
         )
         Worktree.objects.create(
@@ -202,7 +202,7 @@ class TestShipPreviewHonorsTitleOverride(TestCase):
     def _ticket_with_worktree(self, *, extra: dict[str, str] | None = None) -> Ticket:
         ticket = Ticket.objects.create(
             overlay="test",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             issue_url="https://github.com/souliane/teatree/issues/298",
             extra=extra or {},
         )
@@ -273,7 +273,7 @@ class TestValidatePrMetadataHonorsTitleOverride(TestCase):
     def _ticket_with_worktree(self, *, extra: dict[str, str] | None = None) -> Ticket:
         ticket = Ticket.objects.create(
             overlay="test",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             issue_url="https://gitlab.example.com/group/repo/-/issues/298",
             extra=extra or {},
         )
@@ -351,7 +351,7 @@ class TestShipPreviewEmitsRequiredSections(TestCase):
     def _ticket_with_worktree(self) -> Ticket:
         ticket = Ticket.objects.create(
             overlay="reqsec",
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             issue_url="https://github.com/souliane/teatree/issues/312",
         )
         Worktree.objects.create(

@@ -59,13 +59,13 @@ class TaskAttemptQuerySet(models.QuerySet):
         """Attempts safe to delete (#3693): the conservative double guard.
 
         An attempt is prunable ONLY when it started before *cutoff* AND its owning task
-        is terminal AND that task's ticket is definitively finished. SHIPPED is NOT
+        is terminal AND that task's ticket is definitively finished. PR_OPENED is NOT
         finished (its PR is still open, so the ticket may take review comments and
-        re-work), so ``marker_release_states()`` plus RETROSPECTED is the terminal set.
+        re-work), so ``marker_release_states()`` plus RETRO_RECORDED is the terminal set.
         An attempt of an active task, or of a live ticket, is NEVER prunable — deleting
         a referenced/in-flight row is far worse than a bloated DB.
         """
-        finished = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
+        finished = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
         return self.filter(
             started_at__lt=cutoff,
             task__status__in=Task.Status.terminal(),

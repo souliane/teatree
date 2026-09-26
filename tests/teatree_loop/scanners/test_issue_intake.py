@@ -731,7 +731,7 @@ class IssueIntakeExistingWorkTests(_PublicRepoTestCase):
         assert not ImplementedIssueMarker.objects.exists()
 
     def test_a_planned_ticket_blocks_re_admission(self) -> None:
-        self._ticket_at(Ticket.State.PLANNED)
+        self._ticket_at(Ticket.State.PLAN_RECORDED)
         host = _Host(authored={OWNER: [_issue(self.URL_A, author=OWNER)]})
 
         assert self._scanner(host).scan() == []

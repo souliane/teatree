@@ -60,7 +60,7 @@ class TestDoneSignalJudgesTheCheckedOutBranch(_DriftedBranchFixture):
         _run_git("push", "-q", "origin", "real-work", cwd=self.wt_path)
         _run_git("fetch", "-q", "origin", cwd=self.repo_main)
 
-        outcome = self._reap(self._make_worktree(Ticket.State.STARTED))
+        outcome = self._reap(self._make_worktree(Ticket.State.WORK_STARTED))
 
         assert outcome.action == "kept", outcome.label
         assert "not done" in outcome.label
@@ -69,14 +69,14 @@ class TestDoneSignalJudgesTheCheckedOutBranch(_DriftedBranchFixture):
         self._checkout_new_branch("real-work", "real.txt", "real work\n")
         self._land_on_main("real.txt", "real work\n")
 
-        outcome = self._reap(self._make_worktree(Ticket.State.STARTED), dry_run=True)
+        outcome = self._reap(self._make_worktree(Ticket.State.WORK_STARTED), dry_run=True)
 
         assert outcome.action == "would-wipe", outcome.label
 
     def test_the_done_signal_reads_the_branch_it_is_handed(self) -> None:
         self._land_on_main("feat.txt", "feature work\n")
         self._checkout_new_branch("real-work", "real.txt", "in flight\n")
-        worktree = self._make_worktree(Ticket.State.STARTED)
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
 
         assert worktree_is_done(worktree, branch="feat-x").done
         assert not worktree_is_done(worktree, branch="real-work").done
@@ -89,7 +89,7 @@ class TestPureGhostRelease(_ReaperFixture):
     """
 
     def _make_ghost(self) -> Worktree:
-        worktree = self._make_worktree(Ticket.State.STARTED)
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
         _run_git("worktree", "remove", "--force", str(self.wt_path), cwd=self.repo_main)
         _run_git("update-ref", "-d", f"refs/heads/{self.slug}", cwd=self.repo_main)
         return worktree
@@ -105,7 +105,7 @@ class TestPureGhostRelease(_ReaperFixture):
         assert Worktree.objects.filter(pk=worktree.pk).exists()
 
     def test_a_surviving_branch_ref_keeps_the_row(self) -> None:
-        worktree = self._make_worktree(Ticket.State.STARTED)
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
         _run_git("worktree", "remove", "--force", str(self.wt_path), cwd=self.repo_main)
 
         assert not is_pure_ghost(worktree, workspace=self.workspace)
@@ -132,7 +132,7 @@ class TestPureGhostRelease(_ReaperFixture):
                 _run_git("branch", "live-work", cwd=clone)
         ghost = Worktree.objects.create(
             overlay="test",
-            ticket=Ticket.objects.create(issue_url="https://example.com/issues/1", state=Ticket.State.STARTED),
+            ticket=Ticket.objects.create(issue_url="https://example.com/issues/1", state=Ticket.State.WORK_STARTED),
             repo_path="tool",
             branch="live-work",
             extra={"worktree_path": str(self.workspace / "live-work" / "tool")},
@@ -153,7 +153,7 @@ class TestPureGhostRelease(_ReaperFixture):
             assert not is_pure_ghost(worktree, workspace=self.workspace)
 
     def test_a_still_registered_checkout_is_not_a_ghost(self) -> None:
-        worktree = self._make_worktree(Ticket.State.STARTED)
+        worktree = self._make_worktree(Ticket.State.WORK_STARTED)
         _run_git("update-ref", "-d", f"refs/heads/{self.slug}", cwd=self.repo_main)
         subprocess.run(  # the dir, not the registration, is what goes
             ["/bin/rm", "-rf", str(self.wt_path)], check=True, capture_output=True, env=_clean_env()
@@ -214,7 +214,7 @@ class TestSquashMergedIsReaped(_WipeSpyFixture):
     def test_a_two_commit_branch_squashed_onto_main_is_wiped(self) -> None:
         self._squash_onto_main()
 
-        outcome, wipes = self._reap_watching_the_wipe(self._make_worktree(Ticket.State.STARTED))
+        outcome, wipes = self._reap_watching_the_wipe(self._make_worktree(Ticket.State.WORK_STARTED))
 
         assert outcome.action == "wiped", outcome.label
         assert len(wipes) == 1
@@ -335,7 +335,7 @@ class TestLadderRunsOncePerRow(_ReaperFixture):
         return len(runs)
 
     def test_a_kept_row_runs_the_ladder_once(self) -> None:
-        ladder_runs = self._count_ladder_runs(self._make_worktree(Ticket.State.STARTED))
+        ladder_runs = self._count_ladder_runs(self._make_worktree(Ticket.State.WORK_STARTED))
 
         assert ladder_runs == 1, f"the ladder ran {ladder_runs} times for one row"
 
@@ -377,7 +377,7 @@ class TestOneRaisingRowDoesNotAbortTheSweep(_ReaperFixture):
     """
 
     def _second_row(self) -> Worktree:
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/2762", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/2762", state=Ticket.State.WORK_STARTED)
         return Worktree.objects.create(
             overlay="test",
             ticket=ticket,
@@ -387,7 +387,7 @@ class TestOneRaisingRowDoesNotAbortTheSweep(_ReaperFixture):
         )
 
     def test_a_raising_row_is_isolated_from_its_siblings(self) -> None:
-        self._make_worktree(Ticket.State.STARTED)
+        self._make_worktree(Ticket.State.WORK_STARTED)
         self._second_row()
         calls: list[Worktree] = []
 

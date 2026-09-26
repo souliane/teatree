@@ -137,7 +137,7 @@ class TestReviewingContextEmbedsOverlayReviewSkillInFull(TestCase):
     @pytest.mark.usefixtures("skills_dir")
     def test_non_reviewing_phase_unchanged(self) -> None:
         """A coding-phase context does NOT embed the overlay review skill in full."""
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="maker:coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         overlay = MagicMock()

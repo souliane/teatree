@@ -26,9 +26,9 @@ _EXTRA = 20
 def heavy_ticket(request: pytest.FixtureRequest) -> Ticket:
     """One ticket carrying more history than every drawer cap admits."""
     request.getfixturevalue("transactional_db")
-    ticket = Ticket.objects.create(state=State.STARTED, short_description="worked for weeks")
+    ticket = Ticket.objects.create(state=State.WORK_STARTED, short_description="worked for weeks")
     for _ in range(TRANSITION_ROWS + _EXTRA):
-        TicketTransitionFactory(ticket=ticket, from_state=State.SCOPED, to_state=State.STARTED)
+        TicketTransitionFactory(ticket=ticket, from_state=State.SCOPED, to_state=State.WORK_STARTED)
     for _ in range(TASK_ROWS + _EXTRA):
         task = TaskFactory(ticket=ticket, phase="coding")
         TaskAttempt.objects.bulk_create(

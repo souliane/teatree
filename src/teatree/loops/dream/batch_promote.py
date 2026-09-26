@@ -295,7 +295,7 @@ def _live_batch_ticket(*, umbrella_url: str, gaps: "list[GapSpec]") -> Ticket:
                 "context": _batch_context(umbrella_url, gaps),
             },
         )
-        if not is_reconciled(ticket) and not ticket.is_terminal:
+        if not is_reconciled(ticket) and not ticket.is_settled:
             return ticket
         generation += 1
 

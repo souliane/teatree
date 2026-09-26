@@ -15,7 +15,7 @@ colleague MRs got real inline notes (and one an approval) with no
 implicated: with no verdict recorded the reaction path was never entered.
 
 This scanner rebinds the ack to the durable fact instead of the optional
-command: a reviewer-role ticket that reached ``REVIEW_POSTED`` HAS had its review
+command: a reviewer-role ticket that reached ``REVIEW_DELIVERED`` HAS had its review
 posted. The verdict emoji still comes from a recorded ``ReviewVerdict`` when
 one exists; with none, ``:eyes:`` alone is the honest signal — "this was
 picked up and reviewed" — which is the thing colleagues had no way to see.
@@ -79,7 +79,7 @@ class ReviewDoneAckScanner:
         cutoff: dt.datetime = timezone.now() - dt.timedelta(hours=self.max_age_hours)
         candidates = ticket_model.objects.filter(
             role="reviewer",
-            state=ticket_model.State.REVIEW_POSTED,
+            state=ticket_model.State.REVIEW_DELIVERED,
             tasks__phase="reviewing",
             tasks__status=task_model.Status.COMPLETED,
             tasks__created_at__gte=cutoff,

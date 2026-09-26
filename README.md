@@ -215,9 +215,10 @@ in `src/teatree/core/models/` (`ticket.py`, `worktree.py`, `task.py`,
 
 **Ticket** — tracks a unit of work from intake to delivery. The lifecycle phases
 (ticket → code → test → review → ship) drive corresponding ticket states. The
-full `Ticket.State` set is `not_started → scoped → started → planned → coded → tested →
-reviewed → shipped → in_review → merged → retrospected → delivered`, plus
-`ignored` for work that is consciously skipped. This diagram is generated from
+full `Ticket.State` set is `not_started → scoped → work_started → plan_recorded → coded →
+tested → self_reviewed → pr_opened → review_requested → merged → retro_recorded →
+delivered`, plus `review_delivered` (the reviewer-role terminal) and `ignored` for work
+that is consciously skipped. This diagram is generated from
 the `Ticket` model's `@transition` decorators; edit the model, not the diagram
 (`scripts/hooks/generate_fsm_diagrams.py`).
 
@@ -227,78 +228,78 @@ stateDiagram-v2
     [*] --> not_started
     not_started --> scoped : scope
     not_started --> coded : code_direct
-    not_started --> reviewed : reconcile_reviewed
+    not_started --> self_reviewed : reconcile_reviewed
     not_started --> merged : reconcile_merged
-    not_started --> review_posted : mark_review_no_action
-    not_started --> review_posted : mark_reviewed_externally
+    not_started --> review_delivered : mark_review_no_action
+    not_started --> review_delivered : mark_reviewed_externally
     not_started --> ignored : ignore
-    scoped --> started : start
+    scoped --> work_started : start
     scoped --> coded : code_direct
-    scoped --> reviewed : reconcile_reviewed
+    scoped --> self_reviewed : reconcile_reviewed
     scoped --> merged : reconcile_merged
-    scoped --> review_posted : mark_review_no_action
-    scoped --> review_posted : mark_reviewed_externally
+    scoped --> review_delivered : mark_review_no_action
+    scoped --> review_delivered : mark_reviewed_externally
     scoped --> ignored : ignore
-    started --> started : start
-    started --> planned : plan
-    started --> coded : code_direct
-    started --> reviewed : reconcile_reviewed
-    started --> merged : reconcile_merged
-    started --> review_posted : mark_review_no_action
-    started --> review_posted : mark_reviewed_externally
-    started --> ignored : ignore
-    planned --> coded : code
-    planned --> reviewed : reconcile_reviewed
-    planned --> merged : reconcile_merged
-    planned --> review_posted : mark_review_no_action
-    planned --> review_posted : mark_reviewed_externally
-    planned --> ignored : ignore
-    coded --> started : rework
+    work_started --> work_started : start
+    work_started --> plan_recorded : plan
+    work_started --> coded : code_direct
+    work_started --> self_reviewed : reconcile_reviewed
+    work_started --> merged : reconcile_merged
+    work_started --> review_delivered : mark_review_no_action
+    work_started --> review_delivered : mark_reviewed_externally
+    work_started --> ignored : ignore
+    plan_recorded --> coded : code
+    plan_recorded --> self_reviewed : reconcile_reviewed
+    plan_recorded --> merged : reconcile_merged
+    plan_recorded --> review_delivered : mark_review_no_action
+    plan_recorded --> review_delivered : mark_reviewed_externally
+    plan_recorded --> ignored : ignore
+    coded --> work_started : rework
     coded --> tested : test
-    coded --> reviewed : reconcile_reviewed
+    coded --> self_reviewed : reconcile_reviewed
     coded --> merged : reconcile_merged
-    coded --> review_posted : mark_review_no_action
-    coded --> review_posted : mark_reviewed_externally
+    coded --> review_delivered : mark_review_no_action
+    coded --> review_delivered : mark_reviewed_externally
     coded --> ignored : ignore
-    tested --> started : rework
-    tested --> reviewed : reconcile_reviewed
-    tested --> reviewed : review
+    tested --> work_started : rework
+    tested --> self_reviewed : reconcile_reviewed
+    tested --> self_reviewed : review
     tested --> merged : reconcile_merged
-    tested --> review_posted : mark_review_no_action
-    tested --> review_posted : mark_reviewed_externally
+    tested --> review_delivered : mark_review_no_action
+    tested --> review_delivered : mark_reviewed_externally
     tested --> ignored : ignore
-    reviewed --> started : rework
-    reviewed --> reviewed : reconcile_reviewed
-    reviewed --> shipped : ship
-    reviewed --> merged : reconcile_merged
-    reviewed --> review_posted : mark_review_no_action
-    reviewed --> review_posted : mark_reviewed_externally
-    reviewed --> ignored : ignore
-    shipped --> started : reopen
-    shipped --> shipped : ship
-    shipped --> in_review : request_review
-    shipped --> merged : reconcile_merged
-    shipped --> ignored : ignore
-    in_review --> started : reopen
-    in_review --> reviewed : reconcile_reviewed
-    in_review --> merged : mark_merged
-    in_review --> merged : reconcile_merged
-    in_review --> ignored : ignore
-    merged --> started : reopen
-    merged --> reviewed : reopen_for_followup
+    self_reviewed --> work_started : rework
+    self_reviewed --> self_reviewed : reconcile_reviewed
+    self_reviewed --> pr_opened : ship
+    self_reviewed --> merged : reconcile_merged
+    self_reviewed --> review_delivered : mark_review_no_action
+    self_reviewed --> review_delivered : mark_reviewed_externally
+    self_reviewed --> ignored : ignore
+    pr_opened --> work_started : reopen
+    pr_opened --> pr_opened : ship
+    pr_opened --> review_requested : request_review
+    pr_opened --> merged : reconcile_merged
+    pr_opened --> ignored : ignore
+    review_requested --> work_started : reopen
+    review_requested --> self_reviewed : reconcile_reviewed
+    review_requested --> merged : mark_merged
+    review_requested --> merged : reconcile_merged
+    review_requested --> ignored : ignore
+    merged --> work_started : reopen
+    merged --> self_reviewed : reopen_for_followup
     merged --> merged : mark_merged
     merged --> merged : reconcile_merged
-    merged --> retrospected : retrospect
+    merged --> retro_recorded : retrospect
     merged --> ignored : ignore
-    retrospected --> started : reopen
-    retrospected --> reviewed : reconcile_reviewed
-    retrospected --> retrospected : retrospect
-    retrospected --> delivered : mark_delivered
-    retrospected --> ignored : ignore
-    delivered --> started : reopen
-    delivered --> reviewed : reopen_for_followup
-    review_posted --> review_posted : mark_review_no_action
-    review_posted --> review_posted : mark_reviewed_externally
+    retro_recorded --> work_started : reopen
+    retro_recorded --> self_reviewed : reconcile_reviewed
+    retro_recorded --> retro_recorded : retrospect
+    retro_recorded --> delivered : mark_delivered
+    retro_recorded --> ignored : ignore
+    delivered --> work_started : reopen
+    delivered --> self_reviewed : reopen_for_followup
+    review_delivered --> review_delivered : mark_review_no_action
+    review_delivered --> review_delivered : mark_reviewed_externally
 ```
 <!-- END GENERATED: ticket-fsm -->
 
@@ -379,7 +380,7 @@ reference:
 Every state change goes through a method with code behind it. `Ticket`,
 `Worktree`, and `PullRequest` use `django-fsm`-style `@transition` decorators
 that declare the legal source and target states; `Ticket.code()` requires
-`state == STARTED`, `Ticket.ship()` requires `state == REVIEWED`, and so on.
+`state == PLAN_RECORDED`, `Ticket.ship()` requires `state == SELF_REVIEWED`, and so on.
 `Task` status moves through guarded methods (`claim`, `complete`, `fail`,
 `reopen`) that take a row lock and a lease, raising `InvalidTransitionError`
 on an illegal move. Agents do not write to these fields directly; they call

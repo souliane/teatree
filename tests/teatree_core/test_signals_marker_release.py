@@ -23,7 +23,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
 
     def test_merge_releases_the_marker_and_frees_the_budget(self) -> None:
         """THE budget-releases-on-completion pin (the recorded #3205 stuck-marker bug)."""
-        marker = self._ticket_with_marker(state=Ticket.State.IN_REVIEW)
+        marker = self._ticket_with_marker(state=Ticket.State.REVIEW_REQUESTED)
         assert ImplementedIssueMarker.objects.in_flight_count("t3-teatree") == 1
 
         marker.ticket.reconcile_merged()
@@ -34,7 +34,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
         assert ImplementedIssueMarker.objects.in_flight_count("t3-teatree") == 0
 
     def test_mark_merged_from_in_review_releases_the_marker(self) -> None:
-        marker = self._ticket_with_marker(state=Ticket.State.IN_REVIEW)
+        marker = self._ticket_with_marker(state=Ticket.State.REVIEW_REQUESTED)
 
         marker.ticket.mark_merged()
         marker.ticket.save()
@@ -43,7 +43,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
         assert marker.state == ImplementedIssueMarker.State.COMPLETED
 
     def test_delivered_releases_the_marker(self) -> None:
-        marker = self._ticket_with_marker(state=Ticket.State.RETROSPECTED)
+        marker = self._ticket_with_marker(state=Ticket.State.RETRO_RECORDED)
         waive_rubric(marker.ticket)
 
         marker.ticket.mark_delivered()
@@ -53,7 +53,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
         assert marker.state == ImplementedIssueMarker.State.COMPLETED
 
     def test_ignored_releases_the_marker(self) -> None:
-        marker = self._ticket_with_marker(state=Ticket.State.STARTED)
+        marker = self._ticket_with_marker(state=Ticket.State.WORK_STARTED)
 
         marker.ticket.ignore()
         marker.ticket.save()
@@ -74,7 +74,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
 
     def test_abandoned_marker_is_not_resurrected_to_completed(self) -> None:
         """ABANDONED (give-up / fleet-steal) is terminal — completion must not overwrite it."""
-        ticket = TicketFactory(overlay="t3-teatree", issue_url=URL, state=Ticket.State.IN_REVIEW)
+        ticket = TicketFactory(overlay="t3-teatree", issue_url=URL, state=Ticket.State.REVIEW_REQUESTED)
         marker = ImplementedIssueMarkerFactory(overlay="t3-teatree", issue_url=URL, ticket=ticket, abandoned=True)
 
         ticket.reconcile_merged()
@@ -85,7 +85,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
 
     def test_declined_marker_is_not_resurrected_to_completed(self) -> None:
         """DECLINED records WHY the attempt ended — a blanket rewrite would erase it (#4105)."""
-        ticket = TicketFactory(overlay="t3-teatree", issue_url=URL, state=Ticket.State.IN_REVIEW)
+        ticket = TicketFactory(overlay="t3-teatree", issue_url=URL, state=Ticket.State.REVIEW_REQUESTED)
         marker = ImplementedIssueMarkerFactory(
             overlay="t3-teatree",
             issue_url=URL,
@@ -111,7 +111,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
         ticket = TicketFactory(
             overlay="t3-teatree",
             issue_url=URL,
-            state=Ticket.State.REVIEW_POSTED,
+            state=Ticket.State.REVIEW_DELIVERED,
             role=Ticket.Role.REVIEWER,
         )
         marker = ImplementedIssueMarkerFactory(overlay="t3-teatree", issue_url=URL, ticket=ticket, ticket_created=True)
@@ -120,7 +120,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
         ticket.save()
 
         marker.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert marker.state == ImplementedIssueMarker.State.TICKET_CREATED
 
         ImplementedIssueMarker.objects.reconcile_stale("t3-teatree")
@@ -133,7 +133,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
         ticket = TicketFactory(
             overlay="t3-teatree",
             issue_url=URL,
-            state=Ticket.State.REVIEWED,
+            state=Ticket.State.SELF_REVIEWED,
             role=Ticket.Role.REVIEWER,
         )
         marker = ImplementedIssueMarkerFactory(overlay="t3-teatree", issue_url=URL, ticket=ticket, ticket_created=True)
@@ -145,7 +145,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
         assert marker.state == ImplementedIssueMarker.State.COMPLETED
 
     def test_only_matching_issue_url_markers_are_released(self) -> None:
-        released = self._ticket_with_marker(state=Ticket.State.IN_REVIEW)
+        released = self._ticket_with_marker(state=Ticket.State.REVIEW_REQUESTED)
         other = ImplementedIssueMarkerFactory(
             overlay="t3-teatree",
             issue_url="https://github.com/souliane/teatree/issues/9999",

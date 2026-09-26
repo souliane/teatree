@@ -60,7 +60,7 @@ def _history(output: str) -> list[ModelMessage]:
 
 class _Lanes(TestCase):
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        self.ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
 
     def _task(self, phase: str = "coding", *, parent: Task | None = None, **kwargs: object) -> Task:
         session = Session.objects.create(ticket=self.ticket, agent_id=phase)
@@ -158,7 +158,7 @@ class TestAPydanticRunReopenedInPlaceContinuesItsOwnConversation(TestCase):
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        self.ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         Worktree.objects.create(
             ticket=self.ticket, repo_path=str(root), branch="feature", extra={"worktree_path": str(root)}
         )

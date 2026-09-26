@@ -23,7 +23,7 @@ _MISSING_CREDENTIAL = (
 
 
 def _failed_task(*, reason: str, kind: str) -> Task:
-    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+    ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
     session = Session.objects.create(ticket=ticket, agent_id="coding")
     return Task.objects.create(
         ticket=ticket,

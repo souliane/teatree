@@ -188,7 +188,7 @@ class TestStageSkillEmbeddedInFullConformance(TestCase):
     @pytest.mark.usefixtures("skills_dir")
     def test_coding_phase_embeds_stage_skill_in_full(self) -> None:
         overlay = _overlay_with_stage_map({"coding": [_STAGE_SKILL_NAME]})
-        task = self._task("coding", Ticket.State.STARTED)
+        task = self._task("coding", Ticket.State.WORK_STARTED)
         with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
             context = prompt.build_system_context(
                 task,
@@ -201,7 +201,7 @@ class TestStageSkillEmbeddedInFullConformance(TestCase):
     @pytest.mark.usefixtures("skills_dir")
     def test_coding_phase_carries_additive_precedence_line(self) -> None:
         overlay = _overlay_with_stage_map({"coding": [_STAGE_SKILL_NAME]})
-        task = self._task("coding", Ticket.State.STARTED)
+        task = self._task("coding", Ticket.State.WORK_STARTED)
         with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
             context = prompt.build_system_context(
                 task,
@@ -217,7 +217,7 @@ class TestStageSkillEmbeddedInFullConformance(TestCase):
     @pytest.mark.usefixtures("skills_dir")
     def test_base_lifecycle_skill_still_present(self) -> None:
         overlay = _overlay_with_stage_map({"coding": [_STAGE_SKILL_NAME]})
-        task = self._task("coding", Ticket.State.STARTED)
+        task = self._task("coding", Ticket.State.WORK_STARTED)
         with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
             context = prompt.build_system_context(
                 task,

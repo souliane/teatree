@@ -112,7 +112,7 @@ class TestPublicRepoMustAllow(TestCase):
         _seed_known()
 
     def test_seeded_github_author_merges(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         stub = _GhStub(author="souliane")
         outcome = _run(_clear(ticket), stub, internal=False)
         ticket.refresh_from_db()
@@ -121,7 +121,7 @@ class TestPublicRepoMustAllow(TestCase):
         assert outcome.merged_sha
 
     def test_second_github_login_merges(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         stub = _GhStub(author="trusted-bot")
         _run(_clear(ticket), stub, internal=False)
         ticket.refresh_from_db()
@@ -133,16 +133,16 @@ class TestPublicRepoMustDeny(TestCase):
         _seed_known()
 
     def test_external_author_refused_and_never_merges(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         stub = _GhStub(author="evilhacker")
         with pytest.raises(MergePreconditionError, match="not trusted to auto-merge"):
             _run(_clear(ticket), stub, internal=False)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert stub.attempted_merge is False
 
     def test_unknown_empty_author_refused_fail_closed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         stub = _GhStub(author="")
         with pytest.raises(MergePreconditionError, match="not trusted to auto-merge"):
             _run(_clear(ticket), stub, internal=False)
@@ -154,7 +154,7 @@ class TestPrivateRepoSkipsAuthorCheck(TestCase):
         # No trust seeding: a private/internal repo must skip the author check
         # entirely (the user owns access control).
         TrustedIdentity.objects.all().delete()
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         stub = _GhStub(author="evilhacker")
         _run(_clear(ticket), stub, internal=True)
         ticket.refresh_from_db()
@@ -173,16 +173,16 @@ class TestForkAlwaysHoldsAtKeystone(TestCase):
         _seed_known()
 
     def test_trusted_author_fork_refused_and_never_merges(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         stub = _GhStub(author="souliane", cross_repo=True)
         with pytest.raises(MergePreconditionError, match="fork / cross-repo"):
             _run(_clear(ticket), stub, internal=False)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert stub.attempted_merge is False
 
     def test_trusted_author_same_repo_merges(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         stub = _GhStub(author="souliane", cross_repo=False)
         _run(_clear(ticket), stub, internal=False)
         ticket.refresh_from_db()

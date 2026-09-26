@@ -1,7 +1,7 @@
 """Re-open a discharged colleague review when the author pushes a new head.
 
 The gap this closes (2026-07-22 incident): the factory reviewed a colleague
-MR once, the reviewer ticket short-circuited to ``REVIEW_POSTED``, and the MR was
+MR once, the reviewer ticket short-circuited to ``REVIEW_DELIVERED``, and the MR was
 never looked at again. Four hours after the review landed on one such MR the
 author pushed 146 commits and GitLab reset the approvals — nothing happened,
 because no live ticket was left and nothing watches a discharged review.
@@ -9,11 +9,11 @@ because no live ticket was left and nothing watches a discharged review.
 Why a scanner over a terminal ticket, and not a new non-terminal state
 ---------------------------------------------------------------------
 
-``REVIEW_POSTED`` is the honest state for a reviewer ticket: the obligation IS
+``REVIEW_DELIVERED`` is the honest state for a reviewer ticket: the obligation IS
 discharged — at the SHA that was reviewed. There is genuinely nothing to do
 until the author pushes. A new ``watching`` state would keep every reviewed
 MR permanently in-flight on the statusline and would force edits to
-``_TERMINAL_STATES``, ``_WORK_STATE_ORDER``, ``POST_REVIEW_STATES``, the
+``_SETTLED_STATES``, ``_WORK_STATE_ORDER``, ``POST_REVIEW_STATES``, the
 orphan sweep and every state-completeness partition test — a large blast
 radius for a reviewer-only concern.
 
@@ -29,7 +29,7 @@ Instead this scanner leans on machinery the FSM already has:
 * ``persistence._handle_reviewer`` — already re-stamps ``reviewed_sha``,
     drops the stale ``last_review_state``, short-circuits on an open reviewing
     task, and dedups via ``_already_reviewed_at_head``.
-* ``mark_reviewed_externally``'s ``REVIEW_POSTED`` self-transition — so the
+* ``mark_reviewed_externally``'s ``REVIEW_DELIVERED`` self-transition — so the
     second review can actually complete.
 
 So this module adds one thing only: the observation that the head moved.

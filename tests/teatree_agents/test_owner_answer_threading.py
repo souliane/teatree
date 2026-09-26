@@ -20,7 +20,7 @@ class TestOwnerAnswerThreading(TestCase):
     def _owner_dm_task(self, *, channel: str, slack_ts: str) -> Task:
         ticket = Ticket.objects.create(
             role=Ticket.Role.AUTHOR,
-            state=Ticket.State.STARTED,
+            state=Ticket.State.WORK_STARTED,
             overlay="acme",
             extra={"slack_answer": {"channel": channel, "slack_ts": slack_ts, "question": "hi"}},
         )

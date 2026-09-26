@@ -25,7 +25,7 @@ class _BackfillCase(TestCase):
         self.ticket = Ticket.objects.create(
             overlay="",
             issue_url="https://example.invalid/org/repo/issues/7",
-            state=Ticket.State.SHIPPED,
+            state=Ticket.State.PR_OPENED,
         )
         PullRequest.objects.create(
             overlay="",

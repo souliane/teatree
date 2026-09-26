@@ -1,9 +1,9 @@
 """``Ticket.reconcile_reviewed`` — gate-driven FSM catch-up (#694).
 
 The shipping gate verifies the required phases on ``Session.visited_phases``
-(the single source of truth) and then advances the FSM to REVIEWED so
+(the single source of truth) and then advances the FSM to SELF_REVIEWED so
 ``ship()`` is legal. This transition is the FSM-level expression of that
-reconciliation: any pre-REVIEWED state -> REVIEWED, no task conditions
+reconciliation: any pre-SELF_REVIEWED state -> SELF_REVIEWED, no task conditions
 (the gate already attested the work via the session record).
 """
 
@@ -16,66 +16,66 @@ from teatree.core.models import Ticket
 
 class TestReconcileReviewed(TestCase):
     def test_started_reconciles_to_reviewed(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         ticket.reconcile_reviewed()
         ticket.save()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_not_started_reconciles_to_reviewed(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.NOT_STARTED)
         ticket.reconcile_reviewed()
         ticket.save()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_reviewed_is_idempotent(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         ticket.reconcile_reviewed()
         ticket.save()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_post_ship_state_cannot_reconcile_backwards(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SHIPPED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PR_OPENED)
         with pytest.raises(TransitionNotAllowed):
             ticket.reconcile_reviewed()
 
     def test_in_review_reconciles_to_reviewed(self) -> None:
-        """IN_REVIEW reconciles back to REVIEWED so a stranded ticket can re-ship (#798).
+        """REVIEW_REQUESTED reconciles back to REVIEWED so a stranded ticket can re-ship (#798).
 
-        A failed/incomplete prior ship leaves the ticket at IN_REVIEW with
-        no PR; reconciling it lets the gate-passing ticket re-ship. SHIPPED
+        A failed/incomplete prior ship leaves the ticket at REVIEW_REQUESTED with
+        no PR; reconciling it lets the gate-passing ticket re-ship. PR_OPENED
         stays terminal (genuine post-ship success).
         """
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
         ticket.reconcile_reviewed()
         ticket.save()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_retrospected_reconciles_to_reviewed(self) -> None:
-        """#808: RETROSPECTED is non-terminal and must reconcile to REVIEWED.
+        """#808: RETRO_RECORDED is non-terminal and must reconcile to REVIEWED.
 
-        The enumerated source list (pre-#808) omitted RETROSPECTED, so a
+        The enumerated source list (pre-#808) omitted RETRO_RECORDED, so a
         re-provisioned ticket whose FSM lingered there denied ``pr create``
         with ``{'allowed': False, 'missing': []}`` even though its phase
         ledger satisfied the gate. Phase-driven reconcile: any non-terminal
         state reconciles.
         """
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETROSPECTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETRO_RECORDED)
         ticket.reconcile_reviewed()
         ticket.save()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_every_non_terminal_state_reconciles_to_reviewed(self) -> None:
         """State-complete: EVERY non-terminal state reconciles (#808).
 
         Pins the contract so a future added state cannot silently re-break
-        the gate (the recurring #798/#799/#808 class). Only SHIPPED /
-        MERGED / DELIVERED / REVIEW_POSTED / IGNORED are terminal.
+        the gate (the recurring #798/#799/#808 class). Only PR_OPENED /
+        MERGED / DELIVERED / REVIEW_DELIVERED / IGNORED are terminal.
         """
         terminal = {
-            Ticket.State.SHIPPED,
+            Ticket.State.PR_OPENED,
             Ticket.State.MERGED,
             Ticket.State.DELIVERED,
-            Ticket.State.REVIEW_POSTED,
+            Ticket.State.REVIEW_DELIVERED,
             Ticket.State.IGNORED,
         }
         non_terminal = [s for s in Ticket.State if s not in terminal]
@@ -83,14 +83,14 @@ class TestReconcileReviewed(TestCase):
             ticket = Ticket.objects.create(overlay="test", state=state)
             ticket.reconcile_reviewed()
             ticket.save()
-            assert ticket.state == Ticket.State.REVIEWED, f"{state} did not reconcile"
+            assert ticket.state == Ticket.State.SELF_REVIEWED, f"{state} did not reconcile"
 
     def test_terminal_states_cannot_reconcile_backwards(self) -> None:
-        """MERGED / DELIVERED / REVIEW_POSTED / IGNORED stay terminal alongside SHIPPED."""
+        """MERGED / DELIVERED / REVIEW_DELIVERED / IGNORED stay terminal alongside PR_OPENED."""
         for state in (
             Ticket.State.MERGED,
             Ticket.State.DELIVERED,
-            Ticket.State.REVIEW_POSTED,
+            Ticket.State.REVIEW_DELIVERED,
             Ticket.State.IGNORED,
         ):
             ticket = Ticket.objects.create(overlay="test", state=state)
@@ -108,7 +108,7 @@ class TestReconcileReviewed(TestCase):
         """
         all_states = set(Ticket.State)
         source = set(Ticket._RECONCILE_SOURCE_STATES)
-        terminal = set(Ticket._TERMINAL_STATES)
+        terminal = set(Ticket._SETTLED_STATES)
         assert source.isdisjoint(terminal), "a state is both reconcilable and terminal"
         assert source | terminal == all_states, (
             f"State partition incomplete — unclassified: {all_states - source - terminal}"

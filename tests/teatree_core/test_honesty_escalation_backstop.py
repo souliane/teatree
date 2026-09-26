@@ -31,7 +31,7 @@ class TestRubricRefusalBackstop(TestCase):
     """The #4 backstop: a rubric-gate refusal writes the ``shipped_incomplete`` row."""
 
     def _ticket_with_session(self) -> Ticket:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         Session.objects.create(overlay="t3-teatree", ticket=ticket, agent_id=_AGENT)
         return ticket
 
@@ -58,7 +58,7 @@ class TestRubricGradeClearsEscalation(TestCase):
     """The CLEAR landing: a fully-passed ``rubric-grade`` clears the escalation."""
 
     def test_fully_passed_grade_clears_active_escalation(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         Session.objects.create(overlay="t3-teatree", ticket=ticket, agent_id=_AGENT)
         HonestyEscalation.record(HonestyEscalation.Reason.SHIPPED_INCOMPLETE, session_id=_AGENT)
         Rubric.populate(ticket, ["AC1"])
@@ -78,7 +78,7 @@ class TestRubricGradeClearsEscalation(TestCase):
         assert HonestyEscalation.is_active(_AGENT) is False
 
     def test_failed_grade_leaves_escalation_active(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         Session.objects.create(overlay="t3-teatree", ticket=ticket, agent_id=_AGENT)
         HonestyEscalation.record(HonestyEscalation.Reason.SHIPPED_INCOMPLETE, session_id=_AGENT)
         Rubric.populate(ticket, ["AC1", "AC2"])

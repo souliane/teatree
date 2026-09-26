@@ -1,7 +1,7 @@
 """Append-only plan artifact — the DB record that gates plan() (BLUEPRINT §5.2).
 
-``PlanArtifact`` is the PLANNED state's single source of truth: the only path
-from STARTED to CODED passes through plan() → PLANNED → code() → CODED.
+``PlanArtifact`` is the PLAN_RECORDED state's single source of truth: the only path
+from WORK_STARTED to CODED passes through plan() → PLAN_RECORDED → code() → CODED.
 plan() is guarded by check_plan_artifact() which requires at least one
 PlanArtifact row for the ticket.  No plan text in the DB → TransitionNotAllowed.
 
@@ -45,7 +45,7 @@ from teatree.core.models.types import PlanAdequacy
 
 
 class PlanArtifact(models.Model):
-    """One immutable plan record authorising the STARTED → PLANNED transition.
+    """One immutable plan record authorising the WORK_STARTED → PLAN_RECORDED transition.
 
     Written by the planner agent (via headless._record_success) or by the
     ``ticket plan`` management command.  The guarded factory

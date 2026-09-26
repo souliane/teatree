@@ -6,7 +6,7 @@ volumes), so the bar is two independent gates, both of which must pass:
 
 1. ``worktree_is_done`` — the NECESSARY gate. A worktree is done only when its
 ticket reached a genuinely-terminal state (``MERGED`` / ``DELIVERED`` /
-``IGNORED`` — ``SHIPPED`` is excluded: a PR is still open, the work is
+``IGNORED`` — ``PR_OPENED`` is excluded: a PR is still open, the work is
 unfinished) OR the forge reports the branch squash-merged. It reads the FSM
 state first, so it SURVIVES a deleted local branch ref — the rc=128 probe
 failure that left ~76 merged worktrees stranded when teardown relied on git alone.
@@ -65,9 +65,9 @@ from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
 
-# Terminal ticket states that authorise teardown. SHIPPED is excluded on purpose
+# Terminal ticket states that authorise teardown. PR_OPENED is excluded on purpose
 # — a shipped ticket still has an OPEN PR, so the work is not finished.
-# REVIEW_POSTED (reviewer terminal) is included so a reviewer worktree is reaped.
+# REVIEW_DELIVERED (reviewer terminal) is included so a reviewer worktree is reaped.
 # The canonical set lives on the model so the teardown signal (``core.signals``)
 # and this reaper can never diverge on which states are terminal.
 _DONE_TICKET_STATES = Ticket.marker_release_states()

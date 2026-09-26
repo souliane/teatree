@@ -135,17 +135,17 @@ class TestShipTransitionReproGate(TestCase):
         _advance_ticket_to_tested(ticket)
         _complete_phase_task(ticket, "reviewing")
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
         return ticket
 
     def test_ship_refused_for_fix_without_repro_under_flag(self) -> None:
-        # RED-1 (FSM): the block rolls back — ticket stays REVIEWED.
+        # RED-1 (FSM): the block rolls back — ticket stays SELF_REVIEWED.
         _enable_flag()
         ticket = self._reviewed_fix_ticket()
         with patch.object(dod_gate, "frontend_repos_for_overlay", return_value=[]), pytest.raises(ForcedReproGateError):
             ticket.ship()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_ship_proceeds_when_flag_off(self) -> None:
         # GREEN-8 (FSM): the dark default is a total no-op — the same FIX ship advances.
@@ -157,7 +157,7 @@ class TestShipTransitionReproGate(TestCase):
             ticket.ship()
             ticket.save()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
 
     def test_ship_proceeds_with_valid_repro_under_flag(self) -> None:
         # GREEN-10 (FSM): a provenance-verified pair lets the FIX ship.
@@ -171,4 +171,4 @@ class TestShipTransitionReproGate(TestCase):
             ticket.ship()
             ticket.save()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED

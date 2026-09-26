@@ -28,7 +28,7 @@ It mirrors ``anti_vacuity_gate`` file-for-file:
     anti-vacuity/rubric SHA-binds. On a block it raises :class:`NoCurrentPlanError`
     naming the ``plan-reaffirm`` remediation — never a hard lock.
 
-Wired as a SECOND condition on ``Ticket.code()`` (PLANNED→CODED) AND called at the
+Wired as a SECOND condition on ``Ticket.code()`` (PLAN_RECORDED→CODED) AND called at the
 top of ``Ticket.schedule_coding()`` — closing the coder-dispatch leak where a
 coding task is minted outside the ``code()`` transition. There is no setting that
 relaxes it; the audited escapes are ``skip-planning``, ``plan-bypass`` and
@@ -76,7 +76,7 @@ def is_bound_to(artifact: "PlanArtifact", head_sha: str) -> bool:
 
 
 def check_plan_current(ticket: "Ticket") -> bool:
-    """Return True iff *ticket* may leave PLANNED for CODED (or mint a coding task).
+    """Return True iff *ticket* may leave PLAN_RECORDED for CODED (or mint a coding task).
 
     A django-fsm ``@transition`` condition — returns a bool, and raises
     :class:`NoCurrentPlanError` (an ``InvalidTransitionError`` subclass) on a block

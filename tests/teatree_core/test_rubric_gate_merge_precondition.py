@@ -78,7 +78,7 @@ def _passing_rubric(ticket: Ticket, *, sha: str = _SHA, grader: str = _GRADER) -
 
 class TestRubricGateMergePrecondition(TestCase):
     def test_merge_allowed_when_all_pass_at_head(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _passing_rubric(ticket)
         clear = _clear(ticket)
         _merge(clear)
@@ -86,7 +86,7 @@ class TestRubricGateMergePrecondition(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_merge_refused_on_failed_criterion(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         rubric = _passing_rubric(ticket)
         rubric.criteria.get(ordinal=0).record_grade(status="fail", grader_identity=_GRADER, reviewed_sha=_SHA)
         clear = _clear(ticket)
@@ -94,11 +94,11 @@ class TestRubricGateMergePrecondition(TestCase):
             _merge(clear)
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
 
     def test_merge_refused_on_ungraded_criterion(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         rubric = Rubric.populate(ticket, ["AC1", "AC2"])
         rubric.criteria.get(ordinal=0).record_grade(
             status="pass", grader_identity=_GRADER, reviewed_sha=_SHA, rationale=_CITATION
@@ -107,10 +107,10 @@ class TestRubricGateMergePrecondition(TestCase):
         with pytest.raises(MergePreconditionError, match="ungraded"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_merge_refused_when_grader_is_maker(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         rubric = Rubric.populate(ticket, ["AC1"])
         # A maker-graded row bypasses the guarded factory (which refuses it) so the
         # done-gate is proven to refuse a self-attested rubric independently.
@@ -123,38 +123,38 @@ class TestRubricGateMergePrecondition(TestCase):
         with pytest.raises(MergePreconditionError, match="maker"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_merge_refused_on_stale_sha_grade(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         _passing_rubric(ticket, sha=_OTHER_SHA)
         clear = _clear(ticket)
         with pytest.raises(MergePreconditionError, match="stale"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_merge_refused_on_empty_rubric(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         Rubric.objects.create(ticket=ticket)
         clear = _clear(ticket)
         with pytest.raises(MergePreconditionError, match="no criteria"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_merge_refused_when_no_rubric_recorded(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
         with pytest.raises(MergePreconditionError, match="no rubric"):
             _merge(clear)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
     def test_a_bypassed_ticket_merges_over_pending_phase_criteria(self) -> None:
         # A phase visit seeds a standing criterion onto every ticket's rubric, so an
         # audited bypass that must merge would be blocked by content it never declared.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         Rubric.populate(ticket, [PHASE_CRITERIA["coding"]])
         _bypass(ticket)
         _merge(_clear(ticket))
@@ -162,7 +162,7 @@ class TestRubricGateMergePrecondition(TestCase):
         assert ticket.state == Ticket.State.MERGED
 
     def test_a_bypass_never_merges_over_a_recorded_fail(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         rubric = _passing_rubric(ticket)
         rubric.criteria.get(ordinal=0).record_grade(status="fail", grader_identity=_GRADER, reviewed_sha=_SHA)
         _bypass(ticket)
@@ -171,7 +171,7 @@ class TestRubricGateMergePrecondition(TestCase):
             _merge(clear)
         ticket.refresh_from_db()
         clear.refresh_from_db()
-        assert ticket.state == Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
 
     def test_a_ticketless_clear_has_no_rubric_subject_and_merges(self) -> None:

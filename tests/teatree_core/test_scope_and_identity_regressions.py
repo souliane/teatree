@@ -11,7 +11,7 @@ Four small defects of the same family:
 *   ``waiting`` published a question's pk in ``entry_id``, the field the CLI
     ``resolve`` command acts on — so ``waiting resolve 1`` closed an unrelated
     manual item;
-*   the lifecycle plan scored a reviewer terminal state (``REVIEW_POSTED``) at
+*   the lifecycle plan scored a reviewer terminal state (``REVIEW_DELIVERED``) at
     the same order as a ticket that does not exist, reporting intake as its
     current step.
 """
@@ -108,9 +108,9 @@ class TestLifecyclePlanTreatsAnUnrankedStateAsOffPath:
         return drive("1", seams, plan_only=True)
 
     def test_a_reviewer_terminal_state_is_off_path_not_absent(self) -> None:
-        report = self._drive(Ticket.State.REVIEW_POSTED)
+        report = self._drive(Ticket.State.REVIEW_DELIVERED)
         assert report.stopped_reason == "off_path"
         assert report.stopped_at is None
 
     def test_a_golden_path_state_still_plans_normally(self) -> None:
-        assert self._drive(Ticket.State.STARTED).stopped_reason == "pending"
+        assert self._drive(Ticket.State.WORK_STARTED).stopped_reason == "pending"

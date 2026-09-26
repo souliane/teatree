@@ -42,7 +42,7 @@ def _discharged_reviewer_ticket(*, url: str = _URL, sha: str = _SHA) -> Ticket:
     ticket = Ticket.objects.create(
         overlay="test",
         role=Ticket.Role.REVIEWER,
-        state=Ticket.State.REVIEW_POSTED,
+        state=Ticket.State.REVIEW_DELIVERED,
         issue_url=url,
         extra={"reviewed_sha": sha},
     )

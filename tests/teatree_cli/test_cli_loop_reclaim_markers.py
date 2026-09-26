@@ -77,7 +77,7 @@ class TestReclaimMarkersCommand(TestCase):
 
     def test_an_explicit_stall_grace_frees_a_ticket_that_stopped_moving(self) -> None:
         url = "https://github.com/o/r/issues/5"
-        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.PLANNED)
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.PLAN_RECORDED)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
 
         result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--stall-grace-hours", "0"])
@@ -97,7 +97,7 @@ class TestDeadGraceOption(TestCase):
 
     def test_a_zero_dead_grace_frees_a_pr_less_claim_stranded_moments_ago(self) -> None:
         url = "https://github.com/o/r/issues/8"
-        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.PLANNED)
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.PLAN_RECORDED)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
 
         result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--dead-grace-hours", "0"])
@@ -108,7 +108,7 @@ class TestDeadGraceOption(TestCase):
 
     def test_a_negative_dead_grace_is_refused(self) -> None:
         url = "https://github.com/o/r/issues/9"
-        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.WORK_STARTED)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
 
         result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--dead-grace-hours", "-48"])
@@ -128,7 +128,7 @@ class TestForgeSyncBeforeRelease(TestCase):
 
     def _claim_with_open_row(self, issue_number: int):
         url = f"https://github.com/o/r/issues/{issue_number}"
-        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.IN_REVIEW)
+        ticket = TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.REVIEW_REQUESTED)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
         row = PullRequest.objects.create(
             ticket=ticket,
@@ -192,7 +192,7 @@ class TestNegativeGraceIsRejected(TestCase):
 
     def test_a_negative_stall_grace_is_refused(self) -> None:
         url = "https://github.com/o/r/issues/6"
-        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.STARTED)
+        TicketFactory(overlay="acme", issue_url=url, state=Ticket.State.WORK_STARTED)
         marker = ImplementedIssueMarkerFactory(overlay="acme", issue_url=url, ticket_created=True)
 
         result = runner.invoke(loop_app, ["reclaim-markers", "--overlay", "acme", "--stall-grace-hours", "-48"])

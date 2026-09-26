@@ -92,7 +92,7 @@ def _adequacy(seams: list[str]) -> dict:
 
 
 def _planned_ticket_with_worktree(clone: Path, *, base_sha: str, seams: list[str]) -> Ticket:
-    ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+    ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
     Worktree.objects.create(
         ticket=ticket,
         repo_path=str(clone),
@@ -125,23 +125,23 @@ class TestIsBoundTo(TestCase):
 
 class TestCheckPlanCurrent(TestCase):
     def test_inadequate_legacy_plan_is_refused(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         PlanArtifact.objects.create(ticket=ticket, plan_text="p", recorded_by="op")  # blank sha, empty adequacy
         with pytest.raises(NoCurrentPlanError, match="not adequate"):
             check_plan_current(ticket)
 
     def test_no_plan_at_all_passes_absence_is_the_plan_first_gates_job(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         assert check_plan_current(ticket) is True
 
     def test_trivial_skip_marker_passes(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         mark_trivial_plan_skip(ticket, reason="typo fix", by="op")
         ticket.save()
         assert check_plan_current(ticket) is True
 
     def test_no_worktree_fails_open(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         PlanArtifact.objects.create(
             ticket=ticket, plan_text="p", recorded_by="op", base_sha="a" * 40, adequacy=_adequacy([_SEAM])
         )
@@ -198,14 +198,14 @@ class TestFsmIntegration(TestCase):
         with pytest.raises(NoCurrentPlanError):
             self.ticket.code()
         self.ticket.refresh_from_db()
-        assert self.ticket.state == Ticket.State.PLANNED  # did NOT advance
+        assert self.ticket.state == Ticket.State.PLAN_RECORDED  # did NOT advance
 
     def test_schedule_coding_refused_when_stale(self) -> None:
         with pytest.raises(NoCurrentPlanError):
             self.ticket.schedule_coding()
 
     def test_gate_is_load_bearing(self) -> None:
-        """Neutralise the gate → the SAME stale plan advances PLANNED → CODED."""
+        """Neutralise the gate → the SAME stale plan advances PLAN_RECORDED → CODED."""
         neutralised = {**gate_registry._REGISTRY, ("gate", "plan_currency"): lambda _t: True}
         with (
             patch.object(gate_registry, "_REGISTRY", neutralised),
@@ -254,8 +254,8 @@ def _directive_manifest(section: dict | None) -> dict:
 
 
 def _directive_ticket(*, placement: dict | None) -> Ticket:
-    """A PLANNED directive-implementation ticket (no worktree → staleness fails open) + a linked sketch."""
-    ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+    """A PLAN_RECORDED directive-implementation ticket (no worktree → staleness fails open) + a linked sketch."""
+    ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
     directive = Directive.objects.capture("max 1 open PR per repo per ticket", source=Directive.Source.CLI)
     directive.mechanism_sketch = _sketch().to_dict()
     directive.ticket = ticket
@@ -290,7 +290,7 @@ class TestMechanismPlacement(TestCase):
 
     def test_an_ordinary_ticket_is_unaffected(self) -> None:
         # No linked directive → the mechanism check is a no-op (only the base 4-section gate applies).
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         PlanArtifact.objects.create(
             ticket=ticket, plan_text="p", recorded_by="op", base_sha="a" * 40, adequacy=_adequacy([])
         )
@@ -304,7 +304,7 @@ class TestMechanismPlacement(TestCase):
             assert check_plan_current(ticket) is True
 
     def test_a_directive_not_yet_interpreted_fails_open(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         directive = Directive.objects.capture("no sketch yet", source=Directive.Source.CLI)
         directive.ticket = ticket
         directive.save(update_fields=["ticket"])  # sketch is None
@@ -346,7 +346,7 @@ class TestMechanismPlacementFsmIntegration(TestCase):
         with pytest.raises(NoCurrentPlanError, match="not a core seam"):
             ticket.code()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED  # did NOT advance to CODED
+        assert ticket.state == Ticket.State.PLAN_RECORDED  # did NOT advance to CODED
 
     def test_schedule_coding_refused_on_a_hack_plan(self) -> None:
         ticket = self._hack_ticket()

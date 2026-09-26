@@ -367,7 +367,7 @@ class TestWorkspaceTicketOnATerminalTicket(_TicketIntakeCase):
         self.provisioner.assert_not_called()
 
     def test_a_started_ticket_still_proceeds_with_take_over(self) -> None:
-        ticket = Ticket.objects.create(issue_url="https://example.com/issues/3", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/3", state=Ticket.State.WORK_STARTED)
         assert call_command("workspace", "ticket", "https://example.com/issues/3", take_over=True) == ticket.pk
 
 
@@ -665,7 +665,7 @@ class TestWorkspaceTicket(TestCase):
         assert ticket.issue_url == "https://example.com/issues/42"
         # Stage 3 of #140: workspace ticket advances scope() then start() so the
         # provisioning runner can materialise the worktrees in the same call.
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert ticket.repos == ["backend", "frontend"]
         assert ticket.worktrees.count() == 2
 

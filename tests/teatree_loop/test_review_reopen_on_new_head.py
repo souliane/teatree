@@ -1,7 +1,7 @@
 """A reviewed colleague MR is re-reviewed when the author pushes a new head.
 
 The incident (2026-07-22): the factory reviewed five colleague MRs, each
-reviewer-role ticket short-circuited to REVIEW_POSTED, and the MRs were never
+reviewer-role ticket short-circuited to REVIEW_DELIVERED, and the MRs were never
 looked at again. On one such MR the author pushed 146 commits and GitLab reset
 the approvals four hours later; nothing happened, because there was no live
 ticket left and nothing watches a discharged review.
@@ -31,12 +31,12 @@ HAVE a recorded ``reviewed_sha`` and emits the existing
 
 Gap 3 — the FSM cannot complete a SECOND review. ``mark_reviewed_externally``
 had no terminal state in its ``source=[...]``, so a re-review task on a
-REVIEW_POSTED ticket completes without firing the transition and
+REVIEW_DELIVERED ticket completes without firing the transition and
 ``last_review_state`` is never re-stamped. ``_handle_reviewer`` has already
 dropped the stale value by then, so the ticket falls out of the watch set for
 good: the FIRST re-push would be reviewed and every later one silently
 ignored — the same defect one push further along. The transition now
-self-loops on REVIEW_POSTED, mirroring the #1431 fix to its sibling
+self-loops on REVIEW_DELIVERED, mirroring the #1431 fix to its sibling
 ``mark_review_no_action`` in the same file.
 
 These tests drive the real scanner, the real dispatcher, the real
@@ -134,7 +134,7 @@ def _build_broadcast_scanner(*, head_sha: str) -> SlackBroadcastsScanner:
 
 def _seed_reviewed_ticket(
     *,
-    state: str = Ticket.State.REVIEW_POSTED,
+    state: str = Ticket.State.REVIEW_DELIVERED,
     reviewed_sha: str = OLD_SHA,
     last_review_state: str = ReviewState.APPROVED.value,
     url: str = MR_URL,
@@ -275,7 +275,7 @@ class TestGap3ReReviewCompletesOnADeliveredTicket(TestCase):
         """RED before the fix: ``last_review_state`` is never re-stamped.
 
         ``Task.complete()`` guards the FSM advance on the transition's DERIVED
-        source states. With REVIEW_POSTED absent the second review completes but
+        source states. With REVIEW_DELIVERED absent the second review completes but
         the transition is skipped, so the reviewed-at record is left
         half-written and the ticket is never watched again — one more push and
         the factory is silent exactly as before.
@@ -295,7 +295,7 @@ class TestGap3ReReviewCompletesOnADeliveredTicket(TestCase):
         created[0].complete()
         ticket.refresh_from_db()
 
-        assert ticket.state == Ticket.State.REVIEW_POSTED
+        assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert (ticket.extra or {}).get("discharged_sha") == NEW_SHA
         assert _already_reviewed_at_head(ticket, NEW_SHA) is True
 

@@ -110,11 +110,11 @@ class TicketCompletionScannerTests(TestCase):
             return_value=host,
         )
 
-    def _ticket(self, *, state: str = Ticket.State.SHIPPED, url: str | None = None) -> Ticket:
+    def _ticket(self, *, state: str = Ticket.State.PR_OPENED, url: str | None = None) -> Ticket:
         return Ticket.objects.create(overlay=self.OVERLAY, issue_url=url or self.URL, state=state)
 
     def test_detects_closed_github_issue(self) -> None:
-        self._ticket(state=Ticket.State.SHIPPED)
+        self._ticket(state=Ticket.State.PR_OPENED)
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
         with self._patch_host(host):
             signals = self._scanner(host).scan()
@@ -122,14 +122,14 @@ class TicketCompletionScannerTests(TestCase):
         assert signals[0].kind == "ticket.completion_detected"
 
     def test_detects_completed_github_issue(self) -> None:
-        self._ticket(state=Ticket.State.IN_REVIEW)
+        self._ticket(state=Ticket.State.REVIEW_REQUESTED)
         host = _Host(issues_by_url={self.URL: {"state": "completed"}})
         with self._patch_host(host):
             signals = self._scanner(host).scan()
         assert len(signals) == 1
 
     def test_no_signal_for_open_issue(self) -> None:
-        self._ticket(state=Ticket.State.SHIPPED)
+        self._ticket(state=Ticket.State.PR_OPENED)
         host = _Host(issues_by_url={self.URL: {"state": "open"}})
         with self._patch_host(host):
             assert self._scanner(host).scan() == []
@@ -137,10 +137,10 @@ class TicketCompletionScannerTests(TestCase):
     def test_only_scans_post_ship_states(self) -> None:
         for state in (
             Ticket.State.NOT_STARTED,
-            Ticket.State.STARTED,
+            Ticket.State.WORK_STARTED,
             Ticket.State.CODED,
             Ticket.State.TESTED,
-            Ticket.State.REVIEWED,
+            Ticket.State.SELF_REVIEWED,
             Ticket.State.DELIVERED,
         ):
             Ticket.objects.create(overlay=self.OVERLAY, issue_url=f"{self.URL}/{state}", state=state)
@@ -150,7 +150,7 @@ class TicketCompletionScannerTests(TestCase):
         assert host.get_issue_calls == []
 
     def test_scans_shipped_in_review_merged(self) -> None:
-        for state in (Ticket.State.SHIPPED, Ticket.State.IN_REVIEW, Ticket.State.MERGED):
+        for state in (Ticket.State.PR_OPENED, Ticket.State.REVIEW_REQUESTED, Ticket.State.MERGED):
             Ticket.objects.create(
                 overlay=self.OVERLAY,
                 issue_url=f"{self.URL}/{state}",
@@ -158,8 +158,8 @@ class TicketCompletionScannerTests(TestCase):
             )
         host = _Host(
             issues_by_url={
-                f"{self.URL}/{Ticket.State.SHIPPED}": {"state": "closed"},
-                f"{self.URL}/{Ticket.State.IN_REVIEW}": {"state": "closed"},
+                f"{self.URL}/{Ticket.State.PR_OPENED}": {"state": "closed"},
+                f"{self.URL}/{Ticket.State.REVIEW_REQUESTED}": {"state": "closed"},
                 f"{self.URL}/{Ticket.State.MERGED}": {"state": "closed"},
             }
         )
@@ -168,19 +168,19 @@ class TicketCompletionScannerTests(TestCase):
         assert len(signals) == 3
 
     def test_skips_empty_url(self) -> None:
-        Ticket.objects.create(overlay=self.OVERLAY, issue_url="", state=Ticket.State.SHIPPED)
+        Ticket.objects.create(overlay=self.OVERLAY, issue_url="", state=Ticket.State.PR_OPENED)
         host = _Host()
         with self._patch_host(host):
             assert self._scanner(host).scan() == []
 
     def test_handles_error_response(self) -> None:
-        self._ticket(state=Ticket.State.SHIPPED)
+        self._ticket(state=Ticket.State.PR_OPENED)
         host = _Host(issues_by_url={})
         with self._patch_host(host):
             assert self._scanner(host).scan() == []
 
     def test_gitlab_overlay_label_based_done(self) -> None:
-        self._ticket(state=Ticket.State.IN_REVIEW)
+        self._ticket(state=Ticket.State.REVIEW_REQUESTED)
         host = _Host(
             issues_by_url={
                 self.URL: {
@@ -194,7 +194,7 @@ class TicketCompletionScannerTests(TestCase):
         assert len(signals) == 1
 
     def test_gitlab_overlay_not_done_without_label(self) -> None:
-        self._ticket(state=Ticket.State.IN_REVIEW)
+        self._ticket(state=Ticket.State.REVIEW_REQUESTED)
         host = _Host(
             issues_by_url={
                 self.URL: {
@@ -207,7 +207,7 @@ class TicketCompletionScannerTests(TestCase):
             assert self._scanner(host, overlay=_GitLabOverlay()).scan() == []
 
     def test_filters_by_overlay_name(self) -> None:
-        Ticket.objects.create(overlay="other-overlay", issue_url=self.URL, state=Ticket.State.SHIPPED)
+        Ticket.objects.create(overlay="other-overlay", issue_url=self.URL, state=Ticket.State.PR_OPENED)
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
         with self._patch_host(host):
             assert self._scanner(host).scan() == []
@@ -224,7 +224,7 @@ class TicketCompletionScannerTests(TestCase):
     def test_draft_pr_reopens_instead_of_completing(self) -> None:
         # A completable ticket whose recorded PR is still a DRAFT must reopen,
         # not walk to terminal DELIVERED — even when the upstream issue is done.
-        ticket = self._ticket(state=Ticket.State.SHIPPED)
+        ticket = self._ticket(state=Ticket.State.PR_OPENED)
         ticket.extra = {"prs": {"https://example.com/prs/1": {"draft": True}}}
         ticket.save(update_fields=["extra"])
         host = _Host(issues_by_url={self.URL: {"state": "closed"}})
@@ -236,7 +236,7 @@ class TicketCompletionScannerTests(TestCase):
 
     def test_non_draft_pr_completes(self) -> None:
         # A recorded PR that is NOT a draft leaves the completion path intact.
-        self._ticket(state=Ticket.State.SHIPPED)
+        self._ticket(state=Ticket.State.PR_OPENED)
         ticket = Ticket.objects.get(issue_url=self.URL)
         ticket.extra = {"prs": {"https://example.com/prs/1": {"draft": False}}}
         ticket.save(update_fields=["extra"])
@@ -252,7 +252,7 @@ class DispatchCompletionTests(TestCase):
         signal = ScanSignal(
             kind="ticket.completion_detected",
             summary="Ticket 100 — issue done",
-            payload={"ticket_id": 1, "ticket_state": "shipped"},
+            payload={"ticket_id": 1, "ticket_state": "pr_opened"},
         )
         actions = dispatch([signal])
         assert len(actions) == 1
@@ -260,6 +260,6 @@ class DispatchCompletionTests(TestCase):
         assert actions[0].zone == "ticket_completion"
 
     def test_completion_payload_propagated(self) -> None:
-        payload: dict[str, object] = {"ticket_id": 42, "ticket_state": "in_review", "issue_url": "http://x"}
+        payload: dict[str, object] = {"ticket_id": 42, "ticket_state": "review_requested", "issue_url": "http://x"}
         actions = dispatch([ScanSignal(kind="ticket.completion_detected", summary="x", payload=payload)])
         assert actions[0].payload == payload

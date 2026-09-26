@@ -989,14 +989,14 @@ class TestTicketCommand(TestCase):
         # surfaces the reason; the FSM stays put.
         from teatree.core.gates.dod_gate import DodLocalE2EError  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         reason = "UI-visible ticket has no local-stack E2E"
         with patch.object(Ticket, "ship", side_effect=DodLocalE2EError(reason)):
             refusal = _refused_transition(ticket.pk, "ship")
         assert "refused" in refusal
         assert reason in refusal
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     def test_ignore_and_unignore_are_cli_allowed_and_never_ship(self) -> None:
         """#2275 cleanup: abandon (ignore) is CLI-reachable and never drives a forge post.
@@ -1023,7 +1023,7 @@ class TestTicketCommand(TestCase):
         assert Ticket.State.IGNORED in _TERMINAL_TARGET_STATES
 
     def test_transition_ignore_reaches_ignored_state(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         result = cast(
             "dict[str, object]",
             call_command("ticket", "transition", ticket.pk, "ignore"),
@@ -1031,18 +1031,18 @@ class TestTicketCommand(TestCase):
         assert result["state"] == Ticket.State.IGNORED
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IGNORED
-        assert ticket.extra["ignored_from"] == Ticket.State.STARTED
+        assert ticket.extra["ignored_from"] == Ticket.State.WORK_STARTED
 
     def test_transition_unignore_restores_prior_state(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
         call_command("ticket", "transition", ticket.pk, "ignore")
         result = cast(
             "dict[str, object]",
             call_command("ticket", "transition", ticket.pk, "unignore"),
         )
-        assert result["state"] == Ticket.State.STARTED
+        assert result["state"] == Ticket.State.WORK_STARTED
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert "ignored_from" not in (ticket.extra or {})
 
     def test_transition_mark_review_no_action_closes_reviewer_ticket(self) -> None:
@@ -1058,7 +1058,7 @@ class TestTicketCommand(TestCase):
             "dict[str, object]",
             call_command("ticket", "transition", ticket.pk, "mark_review_no_action"),
         )
-        assert result["state"] == Ticket.State.REVIEW_POSTED
+        assert result["state"] == Ticket.State.REVIEW_DELIVERED
         ticket.refresh_from_db()
         assert ticket.extra["last_review_state"] == "reviewed_no_action"
 
@@ -1297,7 +1297,7 @@ class TestTasksCompleteCommand(TestCase):
     """
 
     def _claimed_task(self) -> Task:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PLANNED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(
             ticket=ticket,

@@ -154,7 +154,7 @@ def _check_no_code_edit_before_planned(events: list[SessionEvent]) -> InvariantR
 
     Keyed STRICTLY on the ``plan_gate`` deny marker: a ``gate_id == "plan_gate"``
     hook attachment is the record that the agent attempted a code edit while the
-    worktree ticket was still ``STARTED`` (unplanned) — a sequence the plan-gate
+    worktree ticket was still ``WORK_STARTED`` (unplanned) — a sequence the plan-gate
     is built to forbid. It is NEVER keyed on "any PreToolUse deny on a worktree
     edit" (a deny by a DIFFERENT gate carries a different / absent ``gate_id`` and
     is ignored — the deny-then-retry false positive stays GREEN) nor on the

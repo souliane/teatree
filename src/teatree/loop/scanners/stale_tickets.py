@@ -8,8 +8,8 @@ agent run); when a ticket has no recorded attempts the fallback is
 
 Staleness is measured on *activity*, not phase duration: a ticket worked
 on every day stays fresh even after a week in ``coding``. Tickets in
-``not_started`` (no work expected yet) or a terminal state (``shipped``,
-``merged``, ``retrospected``, ``delivered``, ``ignored`` — nothing left
+``not_started`` (no work expected yet) or a terminal state (``pr_opened``,
+``merged``, ``retro_recorded``, ``delivered``, ``ignored`` — nothing left
 to do) are excluded.
 
 This scanner only **reports**. It never transitions the :class:`Ticket`.
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # the ticket has not yet reached a terminal state. ``not_started`` is
 # excluded (no work scheduled yet); the terminal set has nothing left to do.
 _STALE_CANDIDATE_STATES: frozenset[str] = frozenset(
-    {"scoped", "started", "coded", "tested", "reviewed", "in_review"},
+    {"scoped", "work_started", "coded", "tested", "self_reviewed", "review_requested"},
 )
 
 DEFAULT_STALE_THRESHOLD_DAYS = 3

@@ -26,7 +26,7 @@ from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
 from teatree.loop.tick_recovery import _reap_stale_task_claims
 
 
-def _ticket(state: str = Ticket.State.STARTED) -> Ticket:
+def _ticket(state: str = Ticket.State.WORK_STARTED) -> Ticket:
     return Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
 
 
@@ -71,7 +71,7 @@ class TestSubjectDerivedDrain(TestCase):
         assert question.resolved_via == DeferredQuestion.ResolvedVia.STALE
 
     def test_markerless_parked_question_kept_on_live_subject(self) -> None:
-        question = _parked_question(ticket_state=Ticket.State.STARTED)
+        question = _parked_question(ticket_state=Ticket.State.WORK_STARTED)
 
         report = drain_pending_questions()
 
@@ -139,8 +139,8 @@ class TestReachability(TestCase):
     def test_a_derivable_subject_is_reachable_by_a_subject_resolver(self) -> None:
         # On main a marker-less row was reachable by NO resolver; the reachability
         # report is what makes that measurable instead of anecdotal.
-        parked = _parked_question(ticket_state=Ticket.State.STARTED)
-        session_keyed = _session_keyed_question(ticket_state=Ticket.State.STARTED)
+        parked = _parked_question(ticket_state=Ticket.State.WORK_STARTED)
+        session_keyed = _session_keyed_question(ticket_state=Ticket.State.WORK_STARTED)
 
         by_id = {reach.question_id: reach for reach in question_reachability()}
 
@@ -161,7 +161,7 @@ class TestReachability(TestCase):
 
     def test_every_pending_row_is_reachable_by_some_resolver(self) -> None:
         _parked_question(ticket_state=Ticket.State.MERGED)
-        _session_keyed_question(ticket_state=Ticket.State.STARTED)
+        _session_keyed_question(ticket_state=Ticket.State.WORK_STARTED)
         _age(DeferredQuestion.record("A stale owner decision"), days=30)
 
         unreachable = [reach.question_id for reach in question_reachability() if not reach.decisions]
@@ -234,7 +234,7 @@ class TestAgeBackstop(TestCase):
     def test_a_live_subject_past_the_ceiling_is_still_escalated(self) -> None:
         # KEEP is not an excuse to sit forever: the backstop runs on every row the
         # subject stage did not drain, including one it explicitly kept.
-        question = _parked_question(ticket_state=Ticket.State.STARTED)
+        question = _parked_question(ticket_state=Ticket.State.WORK_STARTED)
         _age(question, days=5)
 
         report = drain_pending_questions()
@@ -283,7 +283,7 @@ def _completed(ticket: Ticket, *, phase: str, parent: Task | None = None) -> Tas
     )
 
 
-def _parked_on_a_completed_task(*, ticket_state: str = Ticket.State.STARTED) -> tuple[DeferredQuestion, Task]:
+def _parked_on_a_completed_task(*, ticket_state: str = Ticket.State.WORK_STARTED) -> tuple[DeferredQuestion, Task]:
     """The real shape of a headless park: the task is ALREADY completed when it asks.
 
     ``Task._advance_ticket`` — where ``park_for_user_input`` runs — is reached only
@@ -367,13 +367,13 @@ class TestParkedLaneSupersession(TestCase):
 class TestSettledPullRequestsDrain(TestCase):
     """A subject whose pull requests have all settled, on a ticket still reading live.
 
-    A ticket sits at ``reviewed`` for weeks with its PR already merged, so the FSM
+    A ticket sits at ``self_reviewed`` for weeks with its PR already merged, so the FSM
     state cannot prove what the PR can. This reads the narrower fact — and only ever
     adds a drain: an open PR, or no PR at all, decides nothing.
     """
 
     def test_a_merged_pr_on_a_non_terminal_ticket_drains_the_question(self) -> None:
-        ticket = _ticket(Ticket.State.REVIEWED)
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         question = DeferredQuestion.record("Ship it?", session_id=str(session.pk))
         _pull_request(ticket, state=PullRequest.State.MERGED)
@@ -385,7 +385,7 @@ class TestSettledPullRequestsDrain(TestCase):
         assert "settled" in DeferredQuestionAudit.objects.get(question=question).dismissed_reason
 
     def test_one_open_pull_request_keeps_the_question(self) -> None:
-        ticket = _ticket(Ticket.State.REVIEWED)
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         question = DeferredQuestion.record("Ship it?", session_id=str(session.pk))
         _pull_request(ticket, state=PullRequest.State.MERGED, iid="1")
@@ -397,7 +397,7 @@ class TestSettledPullRequestsDrain(TestCase):
 
     def test_a_subject_with_no_pull_request_decides_nothing(self) -> None:
         # No PR row proves nothing about whether the work landed — the #3692 guard.
-        ticket = _ticket(Ticket.State.REVIEWED)
+        ticket = _ticket(Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         question = DeferredQuestion.record("Ship it?", session_id=str(session.pk))
 
@@ -506,7 +506,7 @@ class TestHaltTriggerCleared(TestCase):
     """
 
     def test_a_halt_question_drains_once_its_ticket_runs_a_phase_to_success(self) -> None:
-        ticket = _ticket(Ticket.State.STARTED)
+        ticket = _ticket(Ticket.State.WORK_STARTED)
         question = _halt_question(ticket.pk)
         _attempt(ticket, phase="coding", exit_code=0)
 
@@ -517,7 +517,7 @@ class TestHaltTriggerCleared(TestCase):
         assert "success" in DeferredQuestionAudit.objects.get(question=question).dismissed_reason
 
     def test_a_halt_question_whose_ticket_only_failed_since_is_kept(self) -> None:
-        ticket = _ticket(Ticket.State.STARTED)
+        ticket = _ticket(Ticket.State.WORK_STARTED)
         question = _halt_question(ticket.pk)
         _attempt(ticket, phase="coding", exit_code=1)
 
@@ -527,7 +527,7 @@ class TestHaltTriggerCleared(TestCase):
 
     def test_a_success_predating_the_question_is_not_the_trigger_clearing(self) -> None:
         # The halt was raised AFTER that success, so it says nothing about the failure.
-        ticket = _ticket(Ticket.State.STARTED)
+        ticket = _ticket(Ticket.State.WORK_STARTED)
         _attempt(ticket, phase="coding", exit_code=0)
         question = _halt_question(ticket.pk)
 
@@ -544,7 +544,7 @@ class TestHaltTriggerCleared(TestCase):
         assert "terminal" in DeferredQuestionAudit.objects.get(question=question).dismissed_reason
 
     def test_a_halt_question_on_a_live_ticket_that_never_recovered_is_kept(self) -> None:
-        ticket = _ticket(Ticket.State.STARTED)
+        ticket = _ticket(Ticket.State.WORK_STARTED)
         question = _halt_question(ticket.pk)
 
         assert drain_pending_questions().drained == 0
@@ -560,7 +560,7 @@ class TestHaltTriggerCleared(TestCase):
         assert question.is_pending
 
     def test_the_halt_resolver_reports_its_verdict_in_the_reachability_map(self) -> None:
-        ticket = _ticket(Ticket.State.STARTED)
+        ticket = _ticket(Ticket.State.WORK_STARTED)
         question = _halt_question(ticket.pk)
         _attempt(ticket, phase="coding", exit_code=0)
 

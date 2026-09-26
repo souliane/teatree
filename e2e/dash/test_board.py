@@ -29,8 +29,8 @@ def test_seeded_tickets_land_in_their_state_columns(
     board = BoardPage(page, live_server.url)
     board.open()
     expect(board.card_in_column(State.NOT_STARTED, seeded_board.backlog.pk)).to_be_visible()
-    expect(board.card_in_column(State.STARTED, seeded_board.building.pk)).to_be_visible()
-    expect(board.card_in_column(State.IN_REVIEW, seeded_board.reviewing.pk)).to_be_visible()
+    expect(board.card_in_column(State.WORK_STARTED, seeded_board.building.pk)).to_be_visible()
+    expect(board.card_in_column(State.REVIEW_REQUESTED, seeded_board.reviewing.pk)).to_be_visible()
     expect(board.card_in_column(State.MERGED, seeded_board.landed.pk)).to_be_visible()
 
 

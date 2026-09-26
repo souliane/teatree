@@ -7,7 +7,7 @@ contract change split across repos) ships unseen. Per-PR cold review does not
 cover the seam between the repos.
 
 This is the structural gate. When a ticket's ``repos`` name ≥ 2 distinct repos,
-``mark_delivered`` (RETROSPECTED -> DELIVERED — the "done"/close transition)
+``mark_delivered`` (RETRO_RECORDED -> DELIVERED — the "done"/close transition)
 refuses unless an integration-review
 :class:`~teatree.core.models.review_evidence.ReviewEvidence` row covers every
 repo in the combined changeset. A single-repo ticket has no seam, so the gate

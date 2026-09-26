@@ -25,7 +25,7 @@ pytestmark = pytest.mark.filterwarnings(
 
 
 def _started_ticket() -> Ticket:
-    return Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+    return Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
 
 
 def _manifest_json() -> str:
@@ -54,9 +54,9 @@ class TicketPlanCommandTest(TestCase):
             call_command(*_plan_args(ticket, "Step 1: do X. Step 2: do Y.")),
         )
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
         assert PlanArtifact.objects.filter(ticket=ticket).count() == 1
-        assert result["state"] == Ticket.State.PLANNED
+        assert result["state"] == Ticket.State.PLAN_RECORDED
         assert result["artifact_id"]
 
     def test_plan_with_blank_text_is_refused_and_records_nothing(self) -> None:
@@ -66,7 +66,7 @@ class TicketPlanCommandTest(TestCase):
             call_command(*_plan_args(ticket, "   "), stderr=stderr)
         assert "plan_text is required" in stderr.getvalue()
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.WORK_STARTED
         assert not PlanArtifact.objects.filter(ticket=ticket).exists()
 
     def test_plan_unknown_ticket_exits_nonzero(self) -> None:
@@ -105,8 +105,8 @@ class TicketPlanCommandTest(TestCase):
         assert artifact.recorded_by == "souliane"
 
     def test_plan_on_non_started_ticket_still_records_the_signal(self) -> None:
-        # plan() (the STARTED -> PLANNED FSM transition) is sourced only from
-        # STARTED; for an already-in-flight ticket (#4449 class), the gate's
+        # plan() (the WORK_STARTED -> PLAN_RECORDED FSM transition) is sourced only from
+        # WORK_STARTED; for an already-in-flight ticket (#4449 class), the gate's
         # satisfying signal is the PlanArtifact's EXISTENCE, not the transition
         # -- so the artifact is still recorded, with no transition attempted
         # and no error surfaced, and the ticket's state is left untouched.
@@ -134,14 +134,14 @@ class TicketPlanBypassCommandTest(TestCase):
             ),
         )
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
         artifact = PlanArtifact.objects.filter(ticket=ticket).first()
         assert artifact is not None
         assert "souliane" in artifact.recorded_by or artifact.recorded_by == "souliane"
-        assert result["state"] == Ticket.State.PLANNED
+        assert result["state"] == Ticket.State.PLAN_RECORDED
 
     def test_plan_bypass_on_non_started_ticket_still_records_the_signal(self) -> None:
-        # Same #4449-class fix as `plan`: an already-in-flight (non-STARTED)
+        # Same #4449-class fix as `plan`: an already-in-flight (non-WORK_STARTED)
         # ticket still gets its audited bypass artifact recorded -- no
         # transition attempted, no error, state unchanged.
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.CODED)

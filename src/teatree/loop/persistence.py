@@ -170,7 +170,7 @@ def _handle_orchestrator(action: DispatchAction) -> Task | None:
     if has_open_task(ticket, phase="coding") or ticket.state != Ticket.State.NOT_STARTED:
         return None
     # Kept as the fallback edge: ``code_direct`` is conditioned on this marker and is the
-    # only transition advancing a coding completion that lands before PLANNED (#10).
+    # only transition advancing a coding completion that lands before PLAN_RECORDED (#10).
     mark_auto_implement(ticket)
     return ticket.begin_planning()
 

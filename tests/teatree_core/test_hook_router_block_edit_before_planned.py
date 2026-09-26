@@ -1,7 +1,7 @@
 """Anti-vacuous proof the plan-before-code edit-block gate is LIVE (#1957).
 
 The gate (``handle_block_edit_before_planned``) denies Edit/Write when the
-worktree's ticket is still STARTED. It resolves the ticket through the REAL
+worktree's ticket is still WORK_STARTED. It resolves the ticket through the REAL
 ``_ticket_state_for_cwd`` → git toplevel → ``Worktree`` row → ``Ticket.state``
 path. The gate-liveness corpus monkeypatches ``_ticket_state_for_cwd`` away, so
 it never exercised that real lookup — and the lookup queried ``path=`` (a field
@@ -53,7 +53,7 @@ class TestBlockEditBeforePlannedIsLive(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             toplevel = _git_repo(Path(tmp))
-            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
             Worktree.objects.create(
                 overlay="test",
                 ticket=ticket,
@@ -70,7 +70,7 @@ class TestBlockEditBeforePlannedIsLive(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             toplevel = _git_repo(Path(tmp))
-            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PLANNED)
+            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PLAN_RECORDED)
             Worktree.objects.create(
                 overlay="test",
                 ticket=ticket,
@@ -86,7 +86,7 @@ class TestBlockEditBeforePlannedIsLive(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             toplevel = _git_repo(Path(tmp))
-            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+            ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
             Worktree.objects.create(
                 overlay="test",
                 ticket=ticket,
@@ -94,7 +94,7 @@ class TestBlockEditBeforePlannedIsLive(TestCase):
                 branch="42-x",
                 extra={"worktree_path": toplevel},
             )
-            assert router._ticket_state_for_cwd(toplevel) == "started"
+            assert router._ticket_state_for_cwd(toplevel) == "work_started"
 
     def test_programming_error_in_resolver_logs_loudly_not_silently(self) -> None:
         """A programming-error class bug must be LOUD, not silently → ALLOW.

@@ -26,7 +26,7 @@ from django.test import override_settings
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
-from teatree.core.models import Loop, LoopLease
+from teatree.core.models import Loop, LoopLease, Ticket
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loop.queue_drain import (
     drain_ready_batch,
@@ -574,10 +574,18 @@ class TestAdmissionPriorityAnnotation:
         assert self._rank(self._task(phase="plan")) == 1
 
     def test_parentless_replan_on_shipped_ticket_drains_first(self) -> None:
-        from teatree.core.models import Ticket  # noqa: PLC0415
-
         replan = self._task(phase="planning")
-        Ticket.objects.filter(pk=replan.ticket_id).update(state=Ticket.State.SHIPPED)
+        Ticket.objects.filter(pk=replan.ticket_id).update(state=Ticket.State.PR_OPENED)
+        assert self._rank(replan) == 0
+
+    def test_planning_on_a_work_started_ticket_ranks_last(self) -> None:
+        planning = self._task(phase="planning")
+        Ticket.objects.filter(pk=planning.ticket_id).update(state=Ticket.State.WORK_STARTED)
+        assert self._rank(planning) == 1
+
+    def test_planning_on_a_plan_recorded_ticket_drains_first(self) -> None:
+        replan = self._task(phase="planning")
+        Ticket.objects.filter(pk=replan.ticket_id).update(state=Ticket.State.PLAN_RECORDED)
         assert self._rank(replan) == 0
 
     def test_downstream_phase_ranks_first(self) -> None:

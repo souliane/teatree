@@ -3,7 +3,7 @@
 Reviewer-role tickets represent PRs the user is requested to review in someone
 else's repo — they have no implementation/test/ship phases. After the review
 task completes, the ticket short-circuits to the reviewer terminal
-``REVIEW_POSTED`` via ``mark_reviewed_externally`` (never ``DELIVERED``, which
+``REVIEW_DELIVERED`` via ``mark_reviewed_externally`` (never ``DELIVERED``, which
 means author work merged to main).
 
 Lives in its own module (not on ``Ticket``) to keep the model's public-method

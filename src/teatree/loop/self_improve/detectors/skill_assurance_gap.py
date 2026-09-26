@@ -53,7 +53,7 @@ class SkillAssuranceGapDetector:
         )
 
     def _terminal_ticket_times(self) -> dict[str, datetime]:
-        terminal = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
+        terminal = Ticket.marker_release_states() | {Ticket.State.RETRO_RECORDED}
         terminal_edge = (
             TicketTransition.objects.filter(ticket_id=OuterRef("ticket_id"), to_state=OuterRef("ticket__state"))
             .exclude(from_state=F("to_state"))

@@ -114,7 +114,7 @@ class RetentionPruneCommandTestCase(TestCase):
         assert IncomingEvent.objects.count() == 0
 
     def test_apply_spares_live_ticket_rows(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.COMPLETED)
         live = TaskAttempt.objects.create(task=task)

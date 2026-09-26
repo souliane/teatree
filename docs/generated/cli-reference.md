@@ -11890,14 +11890,14 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ transition                   Transition a ticket to a new state.             │
-│ plan                         Record a PlanArtifact and advance STARTED →     │
-│                              PLANNED (`plan <id> "<text>"`).                 │
+│ plan                         Record a PlanArtifact and advance WORK_STARTED  │
+│                              → PLAN_RECORDED (`plan <id> "<text>"`).         │
 │ plan-bypass                  Record an audited PlanArtifact bypass and       │
-│                              advance to PLANNED (--human-authorize).         │
-│ skip-planning                Mark a trivial ticket to skip planning and      │
-│                              advance to PLANNED (--reason, no artifact).     │
-│ plan-reconcile-inflight      Retroactively advance STARTED tickets to        │
-│                              PLANNED after the gate was added.               │
+│                              advance to PLAN_RECORDED (--human-authorize).   │
+│ skip-planning                Skip planning on a trivial ticket, advancing to │
+│                              PLAN_RECORDED (--reason, no artifact).          │
+│ plan-reconcile-inflight      Retroactively advance WORK_STARTED tickets to   │
+│                              PLAN_RECORDED.                                  │
 │ plan-reaffirm                Re-bind a plan to a new base — the              │
 │                              plan-currency gate's never-lockout escape.      │
 │ e2e-bypass                   Record a single-use user bypass of the          │
@@ -11918,7 +11918,7 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              tagged live / superseded / incomplete.          │
 │ reconcile-clears             Consume every standing merge authorisation      │
 │                              whose PR already merged or closed.              │
-│ merge                        Execute the IN_REVIEW → MERGED keystone         │
+│ merge                        Execute the REVIEW_REQUESTED → MERGED keystone  │
 │                              transition (BLUEPRINT §17.4).                   │
 │ list                         List tickets, optionally filtered by state      │
 │                              and/or overlay.                                 │
@@ -11977,7 +11977,7 @@ Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 ```
 Usage: t3 teatree ticket plan [OPTIONS] TICKET_ID PLAN_TEXT
 
- Record a PlanArtifact and advance the ticket STARTED → PLANNED.
+ Record a PlanArtifact and advance the ticket WORK_STARTED → PLAN_RECORDED.
 
  The operator-facing plan recorder named by the ``NoPlanArtifactError``
  message: a planning task that finished out-of-band, or a ticket the
@@ -12010,12 +12010,12 @@ Usage: t3 teatree ticket plan [OPTIONS] TICKET_ID PLAN_TEXT
 ```
 Usage: t3 teatree ticket plan-bypass [OPTIONS] TICKET_ID
 
- Record an audited PlanArtifact bypass and advance the ticket to PLANNED.
+ Record an audited PlanArtifact bypass and advance the ticket to PLAN_RECORDED.
 
  The ONLY escape from the plan gate outside the normal planner flow.
  Both --human-authorize and --reason are required; a silent bypass is
  not allowed. Records a PlanArtifact with bypass_reason set, then
- drives ticket.plan() → STARTED→PLANNED.
+ drives ticket.plan() → WORK_STARTED→PLAN_RECORDED.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
@@ -12036,7 +12036,8 @@ Usage: t3 teatree ticket plan-bypass [OPTIONS] TICKET_ID
 ```
 Usage: t3 teatree ticket skip-planning [OPTIONS] TICKET_ID
 
- Mark a trivial ticket to skip planning and advance STARTED → PLANNED.
+ Mark a trivial ticket to skip planning and advance WORK_STARTED →
+ PLAN_RECORDED.
 
  The LIGHTWEIGHT, audited sibling of ``plan-bypass`` for a trivial
  mechanical edit (a typo, a one-line bump): records a durable
@@ -12065,7 +12066,8 @@ Usage: t3 teatree ticket skip-planning [OPTIONS] TICKET_ID
 ```
 Usage: t3 teatree ticket plan-reconcile-inflight [OPTIONS]
 
- Retroactively advance STARTED tickets to PLANNED after the gate was added.
+ Retroactively advance WORK_STARTED tickets to PLAN_RECORDED after the gate was
+ added.
 
  One-time operator command (a data migration would fabricate an authorizer
  it cannot name): see ``_plan_gate_commands.reconcile_inflight``. Requires
@@ -12073,7 +12075,8 @@ Usage: t3 teatree ticket plan-reconcile-inflight [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --human-authorize        TEXT  Human/operator authorising retroactive     │
-│                                   plan bypass for in-flight STARTED tickets. │
+│                                   plan bypass for in-flight WORK_STARTED     │
+│                                   tickets.                                   │
 │                                   [required]                                 │
 │    --issue-ref              TEXT  Issue/PR reference identifying why this    │
 │                                   reconcile is necessary.                    │
@@ -12391,7 +12394,8 @@ Usage: t3 teatree ticket reconcile-clears [OPTIONS]
 ```
 Usage: t3 teatree ticket merge [OPTIONS] CLEAR_ID
 
- Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4).
+ Execute the missing REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT
+ §17.4).
 
  The ONLY sanctioned merge path. Raw ``gh pr merge`` / ``glab mr
  merge`` is mechanically refused on teatree-managed tickets (the

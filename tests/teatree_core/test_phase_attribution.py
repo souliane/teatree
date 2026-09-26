@@ -32,7 +32,7 @@ class TestNoAgentIdInference(TestCase):
         # The realistic same-session-sub-agent case: coding and reviewing
         # recorded under the same agent_id. Pre-#833 this raised
         # "Maker≠checker violation"; now phases-present ⇒ pass.
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="loop")
         session.visit_phase("coding", agent_id="loop")
         session.visit_phase("testing", agent_id="loop")
@@ -44,7 +44,7 @@ class TestNoAgentIdInference(TestCase):
     def test_blank_agent_id_unattributed_phases_do_not_raise(self) -> None:
         # Pre-#833 the blank-agent_id path failed CLOSED ("unverifiable").
         # Now an empty phase_visits audit trail does not block the gate.
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket)  # agent_id=""
         session.visited_phases = ["testing", "coding", "reviewing", "retro"]
         session.phase_visits = {}
@@ -53,7 +53,7 @@ class TestNoAgentIdInference(TestCase):
         session.check_gate_across_ticket("shipping")
 
     def test_same_agent_reviewing_gate_on_own_session_does_not_raise(self) -> None:
-        ticket = _ticket(state=Ticket.State.REVIEWED)
+        ticket = _ticket(state=Ticket.State.SELF_REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="same")
         session.visit_phase("testing", agent_id="same")
         session.visit_phase("coding", agent_id="same")
@@ -64,7 +64,7 @@ class TestNoAgentIdInference(TestCase):
 
 class TestPhasePresenceStillEnforced(TestCase):
     def test_missing_reviewing_phase_still_raises(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="loop")
         session.visit_phase("testing", agent_id="loop")
         session.visit_phase("retro", agent_id="loop")
@@ -73,14 +73,14 @@ class TestPhasePresenceStillEnforced(TestCase):
             session.check_gate_across_ticket("shipping")
 
     def test_missing_testing_for_reviewing_still_raises(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="loop")
 
         with pytest.raises(QualityGateError, match="testing"):
             session.check_gate("reviewing")
 
     def test_present_phases_scattered_across_sessions_pass(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         s1 = Session.objects.create(ticket=ticket, agent_id="a")
         s1.visit_phase("testing", agent_id="a")
         s2 = Session.objects.create(ticket=ticket, agent_id="a")
@@ -91,7 +91,7 @@ class TestPhasePresenceStillEnforced(TestCase):
         s3.check_gate_across_ticket("shipping")
 
     def test_force_bypasses_phase_presence(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket)
 
         session.check_gate("shipping", force=True)
@@ -102,7 +102,7 @@ class TestPhaseVisitsRemainsAuditTrail(TestCase):
         # Generic session-derived attribution (a non-`reviewing` phase — the
         # `reviewing` visit requires an explicit reviewer id per §17.6
         # candidate 13, covered separately).
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="cli-actor")
 
         call_command("lifecycle", "visit-phase", str(ticket.pk), "brainstorm")
@@ -112,7 +112,7 @@ class TestPhaseVisitsRemainsAuditTrail(TestCase):
         assert session.phase_visits["brainstorm"]["agent_id"] == "cli-actor"
 
     def test_explicit_agent_id_recorded_verbatim(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         Session.objects.create(ticket=ticket)
 
         call_command("lifecycle", "visit-phase", str(ticket.pk), "review", "--agent-id", "cold-reviewer@cli")
@@ -122,7 +122,7 @@ class TestPhaseVisitsRemainsAuditTrail(TestCase):
         assert session.phase_visits["reviewing"]["agent_id"] == "cold-reviewer@cli"
 
     def test_blank_session_still_attributes_non_empty(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         Session.objects.create(ticket=ticket)  # agent_id=""
 
         call_command("lifecycle", "visit-phase", str(ticket.pk), "brainstorm")
@@ -144,7 +144,7 @@ class TestVisitPhaseConcurrentWriteDoesNotLoseUpdate(TestCase):
     """
 
     def test_concurrent_writers_both_phases_survive(self) -> None:
-        ticket = _ticket(state=Ticket.State.STARTED)
+        ticket = _ticket(state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="maker")
         session.visit_phase("coding", agent_id="maker")
 

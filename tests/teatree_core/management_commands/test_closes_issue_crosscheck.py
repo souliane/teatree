@@ -53,7 +53,7 @@ def _shippable_ticket(
 ) -> Ticket:
     ticket = Ticket.objects.create(
         overlay="test",
-        state=Ticket.State.REVIEWED,
+        state=Ticket.State.SELF_REVIEWED,
         issue_url=issue_url,
     )
     session = Session.objects.create(overlay="test", ticket=ticket)
@@ -133,7 +133,7 @@ class TestClosesIssueCrosscheckBlocks(TestCase):
         assert ctx.value.code != 0
         assert "#70" in str(ctx.value)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     @_patch_overlays(CLOSE_TICKET_OVERLAY)
     @override_settings(**SETTINGS)
@@ -148,7 +148,7 @@ class TestClosesIssueCrosscheckBlocks(TestCase):
         assert ctx.value.code != 0
         assert "#999" in str(ctx.value)
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEWED
+        assert ticket.state == Ticket.State.SELF_REVIEWED
 
     @_patch_overlays(CLOSE_TICKET_OVERLAY)
     @override_settings(**SETTINGS)
@@ -160,7 +160,7 @@ class TestClosesIssueCrosscheckBlocks(TestCase):
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
 
     @_patch_overlays(CLOSE_TICKET_OVERLAY)
@@ -174,7 +174,7 @@ class TestClosesIssueCrosscheckBlocks(TestCase):
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
         assert any("#70" in line for line in logs.output)
 
@@ -202,7 +202,7 @@ class TestClosesIssueCrosscheckScope(TestCase):
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
         assert called == []
 
@@ -223,7 +223,7 @@ class TestClosesIssueCrosscheckScope(TestCase):
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
         assert called == []
 
@@ -241,7 +241,7 @@ class TestClosesIssueCrosscheckFailOpen(TestCase):
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
 
     @_patch_overlays(CLOSE_TICKET_OVERLAY)
@@ -261,7 +261,7 @@ class TestClosesIssueCrosscheckFailOpen(TestCase):
         ):
             result = cast("dict[str, object]", call_command("pr", "create", str(ticket.pk)))
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.PR_OPENED
         assert "error" not in result
         assert called == []
 

@@ -119,7 +119,7 @@ class TestTicketSearch(TestCase):
         assert ids == {by_url.pk, by_desc.pk, by_ctx.pk}
 
     def test_in_flight_excludes_delivered_and_ignored(self) -> None:
-        live = TicketFactory(state=Ticket.State.STARTED, issue_url="https://x/issues/40")
+        live = TicketFactory(state=Ticket.State.WORK_STARTED, issue_url="https://x/issues/40")
         TicketFactory(state=Ticket.State.DELIVERED, issue_url="https://x/issues/41")
         TicketFactory(state=Ticket.State.IGNORED, issue_url="https://x/issues/42")
 
@@ -158,7 +158,7 @@ class TestWorktreeStatus(TestCase):
         assert search.worktree_status(ticket="999999") == []
 
     def test_active_only_excludes_delivered_ticket_worktrees(self) -> None:
-        live = WorktreeFactory(ticket=TicketFactory(state=Ticket.State.STARTED, issue_url="https://x/issues/70"))
+        live = WorktreeFactory(ticket=TicketFactory(state=Ticket.State.WORK_STARTED, issue_url="https://x/issues/70"))
         WorktreeFactory(ticket=TicketFactory(state=Ticket.State.DELIVERED, issue_url="https://x/issues/71"))
 
         ids = {row["id"] for row in search.worktree_status(active_only=True)}
@@ -286,7 +286,7 @@ class TestTicketList(TestCase):
         assert [row["id"] for row in rows] == [coded.pk]
 
     def test_in_flight_excludes_delivered(self) -> None:
-        live = TicketFactory(state=Ticket.State.STARTED, issue_url="https://x/issues/512")
+        live = TicketFactory(state=Ticket.State.WORK_STARTED, issue_url="https://x/issues/512")
         TicketFactory(state=Ticket.State.DELIVERED, issue_url="https://x/issues/513")
 
         ids = {row["id"] for row in search.ticket_list(in_flight=True)}

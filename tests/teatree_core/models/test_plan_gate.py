@@ -1,7 +1,7 @@
-"""Plan-before-code gate: PLANNED FSM state + PlanArtifact DB record.
+"""Plan-before-code gate: PLAN_RECORDED FSM state + PlanArtifact DB record.
 
-Structural invariant: the only path from STARTED to CODED passes through PLANNED.
-``code()`` is sourced from PLANNED (not STARTED) so skipping ``plan()`` raises
+Structural invariant: the only path from WORK_STARTED to CODED passes through PLAN_RECORDED.
+``code()`` is sourced from PLAN_RECORDED (not WORK_STARTED) so skipping ``plan()`` raises
 ``TransitionNotAllowed`` — a STATE-GRAPH IMPOSSIBILITY, not a prose rule.
 
 ``plan()`` is itself guarded by ``check_plan_artifact()`` which requires a
@@ -38,7 +38,7 @@ def _planning_envelope(plan_text: str) -> dict[str, object]:
 
 def _started_ticket() -> Ticket:
     t = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR)
-    t.state = Ticket.State.STARTED
+    t.state = Ticket.State.WORK_STARTED
     t.save()
     return t
 
@@ -52,13 +52,13 @@ def _planned_ticket() -> Ticket:
 
 
 class TestCannotReachCodedDirectlyFromStarted(TestCase):
-    """Structural: STARTED → CODED must raise TransitionNotAllowed.
+    """Structural: WORK_STARTED → CODED must raise TransitionNotAllowed.
 
     This test is the anti-vacuous proof that the FSM gate is load-bearing.
-    With ``code()`` sourced from STARTED, this test passes → gate is broken.
-    With ``code()`` sourced from PLANNED, this test passes → gate works.
-    Proven RED on the pre-implementation source (code() source=STARTED) then
-    GREEN after retargeting to PLANNED.
+    With ``code()`` sourced from WORK_STARTED, this test passes → gate is broken.
+    With ``code()`` sourced from PLAN_RECORDED, this test passes → gate works.
+    Proven RED on the pre-implementation source (code() source=WORK_STARTED) then
+    GREEN after retargeting to PLAN_RECORDED.
     """
 
     def test_cannot_reach_coded_directly_from_started(self) -> None:
@@ -80,7 +80,7 @@ class TestPlanTransitionRequiresPlanArtifact(TestCase):
         record_test_plan(ticket, plan_text="Implement X by doing Y", recorded_by="t3:planner")
         ticket.plan()
         ticket.save()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
 
     def test_plan_from_non_started_raises(self) -> None:
         ticket = Ticket.objects.create(overlay="acme")
@@ -91,7 +91,7 @@ class TestPlanTransitionRequiresPlanArtifact(TestCase):
 
 
 class TestCodeTransitionFromPlanned(TestCase):
-    """``code()`` must accept PLANNED as source and advance to CODED."""
+    """``code()`` must accept PLAN_RECORDED as source and advance to CODED."""
 
     def test_code_from_planned_advances_to_coded(self) -> None:
         ticket = _planned_ticket()
@@ -161,7 +161,7 @@ class TestPlanArtifactModel(TestCase):
 
 
 class TestTrivialPlanSkipCarveOut(TestCase):
-    """A trivial-marked AUTHOR ticket advances STARTED→PLANNED with no artifact.
+    """A trivial-marked AUTHOR ticket advances WORK_STARTED→PLAN_RECORDED with no artifact.
 
     The lightweight, audited carve-out (Batch C). Anti-vacuous proof: a
     trivial-marked ticket's plan() advances with NO PlanArtifact and NO
@@ -180,7 +180,7 @@ class TestTrivialPlanSkipCarveOut(TestCase):
         assert not PlanArtifact.objects.filter(ticket=ticket).exists()
         ticket.plan()
         ticket.save()
-        assert ticket.state == Ticket.State.PLANNED
+        assert ticket.state == Ticket.State.PLAN_RECORDED
         assert not PlanArtifact.objects.filter(ticket=ticket).exists()
 
     def test_unmarked_ticket_still_requires_artifact(self) -> None:

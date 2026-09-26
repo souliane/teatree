@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
 
-def _failed_task(*, phase: str = "coding", state: str = Ticket.State.STARTED, issue_url: str = "") -> Task:
+def _failed_task(*, phase: str = "coding", state: str = Ticket.State.WORK_STARTED, issue_url: str = "") -> Task:
     ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state, issue_url=issue_url)
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.FAILED)
@@ -132,7 +132,7 @@ class TestTransientRequeue(TestCase):
         assert task.status == Task.Status.FAILED
 
     def test_failed_task_on_terminal_ticket_is_not_reopened(self) -> None:
-        task = _failed_task(state=Ticket.State.SHIPPED)
+        task = _failed_task(state=Ticket.State.PR_OPENED)
         _add_failed_attempt(task, error="outage_death: connection refused")
 
         assert requeue_transient_failed() == 0
@@ -337,7 +337,7 @@ class TestTransientRequeue(TestCase):
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
     def test_deterministic_failure_on_terminal_ticket_is_left_alone(self) -> None:
-        task = _failed_task(state=Ticket.State.SHIPPED)
+        task = _failed_task(state=Ticket.State.PR_OPENED)
         _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
 
         assert requeue_transient_failed() == 0
@@ -365,10 +365,10 @@ class TestTransientRequeue(TestCase):
 
     def test_a_landed_shipping_task_is_retired_not_escalated(self) -> None:
         # 3982: the shipping task pushed its branch, opened its PR and advanced the ticket
-        # to IN_REVIEW — the phase's entire purpose — then lost its lease and landed FAILED.
-        # IN_REVIEW is off the linear work ladder, so has_completed_phase alone answers
+        # to REVIEW_REQUESTED — the phase's entire purpose — then lost its lease and landed FAILED.
+        # REVIEW_REQUESTED is off the linear work ladder, so has_completed_phase alone answers
         # False and the sweep escalated a repair question about work that already shipped.
-        task = _failed_task(phase="shipping", state=Ticket.State.IN_REVIEW)
+        task = _failed_task(phase="shipping", state=Ticket.State.REVIEW_REQUESTED)
         _add_failed_attempt(task, error="stuck_loop: lease lost for task 1: re-claimed in-process")
         _add_failed_attempt(task, error="stuck_loop: lease lost for task 1: re-claimed in-process")
 
@@ -381,11 +381,11 @@ class TestTransientRequeue(TestCase):
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
 
     def test_a_stray_pr_does_not_mask_a_deterministic_shipping_failure(self) -> None:
-        # A ticket at REVIEWED can carry an OPEN pull request opened independently of
+        # A ticket at SELF_REVIEWED can carry an OPEN pull request opened independently of
         # ship() (the no-orphan pre-push gate, the PendingPullRequest drain). A shipping
         # task that fails for a genuinely DETERMINISTIC reason on that same ticket must
         # still escalate/retry — the unrelated PR is not evidence THIS failure is moot.
-        task = _failed_task(phase="shipping", state=Ticket.State.REVIEWED)
+        task = _failed_task(phase="shipping", state=Ticket.State.SELF_REVIEWED)
         PullRequest.objects.create(
             ticket=task.ticket,
             url="https://github.com/o/r/pull/1",
@@ -402,10 +402,10 @@ class TestTransientRequeue(TestCase):
 
     def test_a_stray_pr_is_still_trusted_for_a_genuine_lease_loss(self) -> None:
         # The #3982 case itself, reached through the sweep rather than through runner.py
-        # directly: a REVIEWED ticket with an attached OPEN pull request, and THIS row's
+        # directly: a SELF_REVIEWED ticket with an attached OPEN pull request, and THIS row's
         # own failure genuinely was a lost lease. The artifact is trusted here — the
         # asymmetry from the sibling test above is exactly the failure_kind gate.
-        task = _failed_task(phase="shipping", state=Ticket.State.REVIEWED)
+        task = _failed_task(phase="shipping", state=Ticket.State.SELF_REVIEWED)
         PullRequest.objects.create(
             ticket=task.ticket,
             url="https://github.com/o/r/pull/2",
@@ -422,7 +422,7 @@ class TestTransientRequeue(TestCase):
 
     def test_live_phase_not_yet_reached_still_escalates(self) -> None:
         # Boundary guard: a FAILED task for a phase the ticket has NOT reached
-        # (state TESTED, phase reviewing ⇒ produces REVIEWED, not yet reached) is a
+        # (state TESTED, phase reviewing ⇒ produces SELF_REVIEWED, not yet reached) is a
         # genuinely blocked phase — it must still escalate, never be silently retired.
         task = _failed_task(phase="reviewing", state=Ticket.State.TESTED)
         _add_failed_attempt(task, error="missing required evidence for phase 'reviewing'")
@@ -509,9 +509,9 @@ class TestTransientRequeue(TestCase):
     def test_live_successor_park_leaves_the_ticket_fsm_untouched(self) -> None:
         # The park must not advance the ticket past a phase that never completed. A row
         # marked COMPLETED becomes the newest completed task for its ticket, so the
-        # boot-sweep replay fires its phase transition and a PLANNED ticket silently
+        # boot-sweep replay fires its phase transition and a PLAN_RECORDED ticket silently
         # reaches CODED while the successor is still mid-flight.
-        predecessor = _failed_task(phase="coding", state=Ticket.State.PLANNED)
+        predecessor = _failed_task(phase="coding", state=Ticket.State.PLAN_RECORDED)
         _add_failed_attempt(
             predecessor,
             error="stuck_loop: lease lost for task 1: re-claimed by another worker",
@@ -528,7 +528,7 @@ class TestTransientRequeue(TestCase):
 
         predecessor.ticket.refresh_from_db()
         assert counts.replayed_transitions == 0
-        assert predecessor.ticket.state == Ticket.State.PLANNED
+        assert predecessor.ticket.state == Ticket.State.PLAN_RECORDED
         assert not predecessor.ticket.tasks.completed_in_phase("coding").exists()
 
     def test_live_successor_park_does_not_satisfy_the_review_completion_guard(self) -> None:
@@ -824,7 +824,7 @@ class TestDeadReviewTargetRetired(TestCase):
     def test_non_review_phase_is_not_pr_gated(self) -> None:
         # Control: a non-review phase never consults PR state — a dead PR must not
         # short-circuit an ordinary coding retry.
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.FAILED)
         _add_failed_attempt(task, error="outage_death: connection refused")
@@ -842,7 +842,7 @@ class TestLandedReviewRetired(TestCase):
     """A reviewer ticket whose verdict is recorded at the dispatch head is retired (#4100/#4126).
 
     The author ladder can say nothing about a REVIEWER-role ticket — it is minted at
-    ``not_started`` and held there until ``review_posted`` — so the recorded verdict is the
+    ``not_started`` and held there until ``review_delivered`` — so the recorded verdict is the
     only evidence the review landed. This sweep is the sibling of ``stuck_ticket_redispatch``
     and reads it through the same widened predicate; without a pin at this level, only one
     of the two consumers was covered.

@@ -108,7 +108,7 @@ class TestAssertLifecycleDbIsCanonical(TestCase):
         self.tmp_path = tmp_path
 
     def _ticket_with_worktree(self, worktree_path: str) -> Ticket:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -163,7 +163,7 @@ class TestAssertLifecycleDbIsCanonical(TestCase):
         assert_lifecycle_db_is_canonical(ticket, auto_isolated=False)
 
     def test_passes_when_ticket_has_no_worktree_on_canonical_db(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         assert_lifecycle_db_is_canonical(ticket, auto_isolated=False)
 
     def test_production_default_is_inert_under_the_test_runner(self) -> None:
@@ -181,7 +181,7 @@ class TestAssertLifecycleDbIsCanonical(TestCase):
 
     def test_error_names_unknown_when_worktree_path_unrecorded(self) -> None:
         """A Worktree row without a recorded path still refuses, degrading the name to ``<unknown>``."""
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
@@ -219,7 +219,7 @@ class TestGuardWiredThroughCommandEntrypoints(TestCase):
         monkeypatch.setattr(db_anchor, "_active_db_path", lambda: str(isolated_db))
 
     def _ticket_with_worktree(self) -> Ticket:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",

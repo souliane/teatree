@@ -1,7 +1,7 @@
 """Surface FSM state for tickets in non-terminal states.
 
 Emits one ``ticket.active`` signal per ticket with a state between
-``not_started`` and ``retrospected`` (inclusive), excluding ``delivered``
+``not_started`` and ``retro_recorded`` (inclusive), excluding ``delivered``
 and ``ignored``.  The statusline uses these to show at-a-glance
 lifecycle progress grouped by overlay.
 

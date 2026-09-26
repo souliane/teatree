@@ -56,7 +56,7 @@ class TestRunPrBudgetGate(TestCase):
         )
 
     def test_returns_failure_naming_the_url_when_at_cap(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         pr = _open_pr(ticket, iid="1")
         with (
@@ -70,7 +70,7 @@ class TestRunPrBudgetGate(TestCase):
 
     def test_inert_at_neutral_default_even_with_open_prs(self) -> None:
         # Wired but inert: default 0 -> no failure though an open PR exists.
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         _open_pr(ticket, iid="1")
         with (
@@ -80,7 +80,7 @@ class TestRunPrBudgetGate(TestCase):
             assert run_pr_budget_gate(ticket, worktree) is None
 
     def test_no_op_when_slug_unresolvable(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         _open_pr(ticket, iid="1")
         with (
@@ -90,7 +90,7 @@ class TestRunPrBudgetGate(TestCase):
             assert run_pr_budget_gate(ticket, worktree) is None
 
     def test_allows_when_the_open_pr_is_in_a_different_repo(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED)
         worktree = self._worktree(ticket)
         _open_pr(ticket, iid="1", repo="souliane/other")
         with (
@@ -116,4 +116,4 @@ class TestPrCreatePrBudgetWiring(TestCase):
         assert result.get("allowed") is False
         assert "max_open_prs_per_repo_per_ticket" in str(result.get("error"))
         assert f"{_SLUG}/pull/1" in str(result.get("error"))
-        assert ticket.state != Ticket.State.SHIPPED
+        assert ticket.state != Ticket.State.PR_OPENED

@@ -366,7 +366,7 @@ class Task(models.Model):
         # Mirror the FSM source list of mark_reviewed_externally() — guarding
         # only on ``role == REVIEWER`` is not enough (#1000): the #998/#999
         # orphan sweep can complete a second reviewing task on a ticket that
-        # already advanced to REVIEW_POSTED (or any other terminal state), and an
+        # already advanced to REVIEW_DELIVERED (or any other terminal state), and an
         # unconditional FSM call then raises TransitionNotAllowed and crashes
         # the loop tick. Sibling branches below all guard on ``ticket.state``;
         # this branch must too. The source set is DERIVED from the transition
@@ -392,20 +392,20 @@ class Task(models.Model):
             elif phase == "scoping" and ticket.state == Ticket.State.SCOPED:
                 ticket.start()
                 ticket.save()
-            elif phase == "planning" and ticket.state == Ticket.State.STARTED:
+            elif phase == "planning" and ticket.state == Ticket.State.WORK_STARTED:
                 ticket.plan(parent_task=self)
                 ticket.save()
-            elif phase == "coding" and ticket.state == Ticket.State.PLANNED:
+            elif phase == "coding" and ticket.state == Ticket.State.PLAN_RECORDED:
                 ticket.code(parent_task=self)
                 ticket.save()
             elif (
                 phase == "coding"
-                and ticket.state in {Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.STARTED}
+                and ticket.state in {Ticket.State.NOT_STARTED, Ticket.State.SCOPED, Ticket.State.WORK_STARTED}
                 and is_auto_implement(ticket)
             ):
                 # The issue-implementer auto-start path schedules coding directly
                 # on a fresh NOT_STARTED author ticket (no scope/plan phase), so
-                # the coding-completion cannot match the PLANNED-source ``code()``
+                # the coding-completion cannot match the PLAN_RECORDED-source ``code()``
                 # guard above. ``code_direct`` is the plan-skipped sibling, gated
                 # on the auto-implement marker, so the normal flow is untouched.
                 ticket.code_direct(parent_task=self)
@@ -417,12 +417,12 @@ class Task(models.Model):
                 ticket.review(parent_task=self)
                 ticket.save()
                 dispose_unshippable_review(ticket)
-            elif phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
+            elif phase == "shipping" and ticket.state == Ticket.State.SELF_REVIEWED:
                 # #1284 (codex #1282-2): the task-based completion path must
                 # enforce the same visited-phases gate the ``pr create`` path
-                # runs through ``_check_shipping_gate`` — otherwise a REVIEWED
+                # runs through ``_check_shipping_gate`` — otherwise a SELF_REVIEWED
                 # ticket with missing testing/reviewing attestations advances
-                # to SHIPPED through the task path, bypassing the gate. The
+                # to PR_OPENED through the task path, bypassing the gate. The
                 # single source of truth is ``Session.visited_phases`` union
                 # across the ticket (#694); ``check_gate_across_ticket``
                 # raises ``QualityGateError`` when phases are missing, which

@@ -53,7 +53,7 @@ class TestCheckDebtDeltaWithExplicitWaivers(TestCase):
     """The pure gate path — waivers passed in, no DB read."""
 
     def _ticket(self) -> Ticket:
-        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
 
     def test_refuses_net_new_noqa_with_no_waiver(self) -> None:
         with pytest.raises(DebtDeltaExceededError) as excinfo:
@@ -78,7 +78,7 @@ class TestCheckDebtDeltaReadsPlanManifest(TestCase):
     """The DB path — waivers resolved from the ticket's latest plan manifest."""
 
     def _ticket(self) -> Ticket:
-        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
 
     def test_refuses_when_manifest_has_no_matching_waiver(self) -> None:
         ticket = self._ticket()

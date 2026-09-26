@@ -83,7 +83,7 @@ class TicketDispositionScannerTests(TestCase):
             "labels": [{"name": "ready"}],
         }
 
-    def _ticket(self, *, state: str = Ticket.State.STARTED, url: str | None = None) -> Ticket:
+    def _ticket(self, *, state: str = Ticket.State.WORK_STARTED, url: str | None = None) -> Ticket:
         return Ticket.objects.create(overlay=self.OVERLAY, issue_url=url or self.URL, state=state)
 
     def test_no_signals_when_issue_unchanged(self) -> None:
@@ -147,13 +147,13 @@ class TicketDispositionScannerTests(TestCase):
         assert reasons == ["issue_closed", "label_removed", "unassigned"]
 
     def test_flags_closed_issue_on_a_planned_ticket(self) -> None:
-        # #2663: PLANNED was missing from the walked set, so the twelve tickets whose
+        # #2663: PLAN_RECORDED was missing from the walked set, so the twelve tickets whose
         # issue the owner closed NOT_PLANNED were re-offered to the coder forever.
-        self._ticket(state=Ticket.State.PLANNED)
+        self._ticket(state=Ticket.State.PLAN_RECORDED)
         host = _Host(issues_by_url={self.URL: {**self._open_ready_issue(), "state": "closed"}})
         signals = self._scanner(host).scan()
         assert [s.payload["reason"] for s in signals] == ["issue_closed"]
-        assert signals[0].payload["ticket_state"] == Ticket.State.PLANNED
+        assert signals[0].payload["ticket_state"] == Ticket.State.PLAN_RECORDED
 
     def test_walks_every_pre_ship_state(self) -> None:
         for state in sorted(Ticket.pre_ship_states()):
@@ -168,14 +168,19 @@ class TicketDispositionScannerTests(TestCase):
         assert sorted(s.payload["ticket_state"] for s in signals) == sorted(Ticket.pre_ship_states())
 
     def test_skips_tickets_in_post_pr_states(self) -> None:
-        for state in (Ticket.State.SHIPPED, Ticket.State.IN_REVIEW, Ticket.State.MERGED, Ticket.State.DELIVERED):
+        for state in (
+            Ticket.State.PR_OPENED,
+            Ticket.State.REVIEW_REQUESTED,
+            Ticket.State.MERGED,
+            Ticket.State.DELIVERED,
+        ):
             Ticket.objects.create(overlay=self.OVERLAY, issue_url=f"{self.URL}/{state}", state=state)
         host = _Host()  # never queried — tickets filtered out before host call
         assert self._scanner(host).scan() == []
         assert host.get_issue_calls == []
 
     def test_skips_tickets_with_empty_url(self) -> None:
-        Ticket.objects.create(overlay=self.OVERLAY, issue_url="", state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay=self.OVERLAY, issue_url="", state=Ticket.State.WORK_STARTED)
         host = _Host()
         assert self._scanner(host).scan() == []
         assert host.get_issue_calls == []
@@ -199,7 +204,7 @@ class TicketDispositionScannerTests(TestCase):
         assert signals == []
 
     def test_filters_by_overlay_name(self) -> None:
-        Ticket.objects.create(overlay="other", issue_url=self.URL, state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay="other", issue_url=self.URL, state=Ticket.State.WORK_STARTED)
         host = _Host(issues_by_url={self.URL: {**self._open_ready_issue(), "state": "closed"}})
         assert self._scanner(host).scan() == []
 
@@ -240,7 +245,7 @@ class TicketDispositionScannerAliasTests(TestCase):
         )
 
     def _ticket(self) -> Ticket:
-        return Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.STARTED)
+        return Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.WORK_STARTED)
 
     def _issue(self, *, assignees: list[dict[str, str]]) -> RawAPIDict:
         return {"state": "opened", "assignees": assignees, "labels": [{"name": "ready"}]}
@@ -378,7 +383,7 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
 
     def test_reassign_between_operator_identities_emits_no_reassigned_row(self) -> None:
         """acme-gh → souliane (both in backend.identities) → no reassigned churn."""
-        Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.WORK_STARTED)
         host = _Host(
             user="acme-gh",
             issues_by_url={
@@ -395,7 +400,7 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
 
     def test_reassign_to_real_colleague_still_renders(self) -> None:
         """acme-gh → colleague (∉ backend.identities) — still an actionable handoff."""
-        Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.STARTED)
+        Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.WORK_STARTED)
         host = _Host(
             user="acme-gh",
             issues_by_url={
@@ -459,7 +464,7 @@ class TicketDispositionRemoteMissingTests(TestCase):
 
     def test_404_sets_remote_missing_and_ticket_is_not_refetched(self) -> None:
         """A definitive 404 marks the ticket and stops future fetches."""
-        ticket = Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL_404, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL_404, state=Ticket.State.WORK_STARTED)
         host = _Host(not_found_urls={self.URL_404})
 
         # First scan — should mark the ticket remote_missing.
@@ -476,7 +481,9 @@ class TicketDispositionRemoteMissingTests(TestCase):
 
     def test_transient_error_leaves_remote_missing_false_and_ticket_is_retried(self) -> None:
         """A transient 5xx / timeout must NOT mark the ticket; it is retried next tick."""
-        ticket = Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL_TRANSIENT, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(
+            overlay=self.OVERLAY, issue_url=self.URL_TRANSIENT, state=Ticket.State.WORK_STARTED
+        )
         host = _Host(transient_error_urls={self.URL_TRANSIENT})
 
         # First scan — transient error; ticket must NOT be marked remote_missing.

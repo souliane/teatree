@@ -112,7 +112,7 @@ def reopen_ticket(payload: ActionPayload) -> None:
     ticket = ticket_model.objects.get(pk=ticket_id)
     # #1087: same re-emit hazard as ``ignore_disposed_ticket`` — a reopen
     # signal that persists across ticks would drive ``reopen`` from the
-    # already-STARTED target state, raising every-tick ``TransitionNotAllowed``.
+    # already-WORK_STARTED target state, raising every-tick ``TransitionNotAllowed``.
     if not can_proceed(ticket.reopen):
         return
     ticket.reopen()

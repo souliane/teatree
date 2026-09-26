@@ -146,7 +146,7 @@ class _GhStub:
 
 
 def _seed_ledger() -> tuple[Ticket, PullRequest]:
-    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, issue_url=ISSUE_URL)
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, issue_url=ISSUE_URL)
     waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
     row = PullRequest.objects.create(
         ticket=ticket,

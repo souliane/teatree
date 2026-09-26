@@ -78,7 +78,7 @@ class _DriftedWorktreeFixture(TestCase):
     def _make_worktree(self) -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/7415",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",
@@ -282,7 +282,7 @@ class TestPhantomSlugBranchNotAGitRef(TestCase):
     def _make_worktree(self) -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/7415",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",
@@ -398,7 +398,7 @@ class TestSquashMergedBranchNoRemoteRefPruned(TestCase):
     def _make_worktree(self) -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/8521",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",
@@ -489,7 +489,7 @@ class TestLocalOnlyMatchingTreeNotPruned(TestCase):
     def _make_worktree(self) -> Worktree:
         ticket = Ticket.objects.create(
             issue_url="https://example.com/issues/9001",
-            state=Ticket.State.IN_REVIEW,
+            state=Ticket.State.REVIEW_REQUESTED,
         )
         return Worktree.objects.create(
             overlay="test",

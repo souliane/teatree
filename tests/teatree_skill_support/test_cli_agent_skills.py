@@ -58,6 +58,6 @@ def test_agent_overlay_skill_comes_from_metadata_not_local_skill_scan(tmp_path: 
 
 
 def test_agent_ticket_status_selects_skill(tmp_path: Path) -> None:
-    result = _launch(tmp_path, ticket_status="reviewed")
+    result = _launch(tmp_path, ticket_status="self_reviewed")
     assert result.skills == ["ship"]
     assert result.lifecycle_skill == "ship"

@@ -195,7 +195,7 @@ class TestTheHandoffPointerSurvivesTheBudgetBackstop(_Handoff):
     _PR_ID = 4711
 
     def _reviewing_task_over_an_oversized_rubric(self) -> Task:
-        delivering = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        delivering = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         url = f"https://github.com/{self._SLUG}/pull/{self._PR_ID}"
         PullRequest.objects.create(
             ticket=delivering, overlay="t3-teatree", url=url, repo=self._SLUG, iid=str(self._PR_ID)

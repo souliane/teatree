@@ -1,7 +1,7 @@
 """Pre-ship gate helpers, extracted from ``pr.py`` by concern.
 
 The ``pr create`` command runs a sequence of deterministic gates before it
-advances the FSM to SHIPPED: branch-currency auto-merge (#940), the
+advances the FSM to PR_OPENED: branch-currency auto-merge (#940), the
 phase/shipping gate (#694), the overlay-scoped close-keyword gates (#1012 /
 #83), the visual-QA browser sanity gate, and the PR-metadata validator. Those
 leaf gates plus their failure payloads live here so ``pr.py`` stays within the
@@ -102,7 +102,7 @@ def assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | No
         # #788 fails OPEN on an unverifiable probe (proceed), but the previous
         # silence hid a real risk: a git-introspection failure looks exactly
         # like a clean pass on the CLI (F3.3). Log a warning so a mistaken
-        # SHIPPED whose hollowness could not be confirmed leaves a breadcrumb —
+        # PR_OPENED whose hollowness could not be confirmed leaves a breadcrumb —
         # the async ``execute_ship`` still re-checks and fails loudly if hollow.
         _log.warning(
             "assert_commits_ahead_of_base: could not verify commits ahead of base for branch %r in %r "
@@ -180,7 +180,7 @@ def check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
     """Reconcile ``ticket.state`` from the session, or block with missing phases.
 
     ``Session.visited_phases`` is the single source of truth (#694). When the
-    required phases are present this auto-walks the FSM to REVIEWED so
+    required phases are present this auto-walks the FSM to SELF_REVIEWED so
     ``ticket.ship()`` is legal — the gate and ``ticket.state`` can no longer
     disagree. When phases are missing it returns structured JSON with the
     exact ``missing`` list so the calling agent can satisfy the gate rather
@@ -195,7 +195,7 @@ def check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
     if session is None:
         # No session => no attested work; nothing to reconcile. Returning
         # ``None`` here would let ``ticket.ship()`` raise a raw
-        # ``TransitionNotAllowed`` from a non-REVIEWED state, breaking the
+        # ``TransitionNotAllowed`` from a non-SELF_REVIEWED state, breaking the
         # "pr create never raises a raw TransitionNotAllowed" invariant.
         required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001 — intentional access to a sibling's internal within the same subsystem
         return ShippingGateFailure(

@@ -179,8 +179,8 @@ class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
         own: the grace buys time for an attempt that might still be alive, and a human
         already said this one is over.
 
-        LANDED exists because SHIPPED is deliberately NOT a release state (it means
-        "PR open, not yet landed"), so a ticket frozen at SHIPPED after its PR merged
+        LANDED exists because PR_OPENED is deliberately NOT a release state (it means
+        "PR open, not yet landed"), so a ticket frozen at PR_OPENED after its PR merged
         satisfies no release condition its own FSM will ever reach, and waits out the
         stall grace for a step it will never take (#3978).
 

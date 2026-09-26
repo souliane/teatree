@@ -41,7 +41,7 @@ _PRESETS_MAX_QUERIES = 14
 
 def _seed_board(n: int) -> None:
     for _ in range(n):
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         TaskAttemptFactory(task=TaskFactory(ticket=ticket))
 
 
@@ -70,7 +70,7 @@ class HealthQueryBoundTestCase(TestCase):
             TaskAttemptFactory(task=TaskFactory(ticket=ticket), model="claude")
 
     def test_health_view_query_count_is_flat_across_attempt_count(self) -> None:
-        ticket = TicketFactory(state=State.STARTED)
+        ticket = TicketFactory(state=State.WORK_STARTED)
         self._seed_attempts(20, ticket)
         cache.clear()
         with CaptureQueriesContext(connection) as few:
