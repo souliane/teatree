@@ -58,20 +58,28 @@ class UnheldMasterLease:
 
 
 def ticking_interval_loops(now: dt.datetime) -> tuple[tuple[str, float], ...]:
-    """Every enabled interval loop that ran recently AND within its own cadence.
+    """Every ADMITTED interval loop that ran recently AND within its own cadence.
 
     Both conditions are required, because each admits a box the other rejects: the
     cadence multiple alone counts a daily loop twenty hours into its schedule (on
     cadence, but no evidence of a tick right now), and the wall-clock ceiling alone
     would count a 60 s loop ten cadences overrun.
 
+    Admission is the verdict the tick gates on, not ``Loop.enabled`` — that column is the
+    manual-override layer and is empty on a box nobody has intervened on, so reading it
+    would find the fleet idle however many loops were ticking.
+
     Returned as ``(name, seconds_since_run)`` pairs so the caller reports the evidence it
     decided on rather than re-deriving it from a second read.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.loops.enable_verdict import EnablePlanes  # noqa: PLC0415 — deferred: ORM-backed resolver
 
+    planes = EnablePlanes.resolve(now)
     fresh: list[tuple[str, float]] = []
-    for row in Loop.objects.filter(enabled=True, delay_seconds__isnull=False).exclude(last_run_at=None):
+    for row in Loop.objects.filter(delay_seconds__isnull=False).exclude(last_run_at=None):
+        if not planes.admits(row.name):
+            continue
         age = row.seconds_since_run(now)
         if age is None or age > LIVE_TICK_CEILING_SECONDS:
             continue

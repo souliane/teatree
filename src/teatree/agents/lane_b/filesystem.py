@@ -16,7 +16,9 @@ is a :class:`~teatree.agents.lane_b.tool_errors.ToolInputError`, so
 as a bounded retryable tool error instead of the run dying on it.
 """
 
+import contextlib
 from pathlib import Path
+from typing import Final
 
 from pydantic_ai.toolsets.function import FunctionToolset
 
@@ -26,6 +28,7 @@ from teatree.agents.skill_files import NO_SKILL_FILES, SkillFileIndex
 
 _MAX_READ_BYTES = 1_000_000
 _MAX_SEARCH_HITS = 200
+READ_DEFAULT_LIMIT_LINES: Final = 2000
 
 
 class PathTraversalError(ToolInputError, ValueError):
@@ -38,6 +41,10 @@ class NotASkillFileError(ToolInputError, ValueError):
 
 class SubstringNotFoundError(ToolInputError, ValueError):
     """``edit_file``'s *old* text is not in the file — nothing was written."""
+
+
+class InvalidReadWindowError(ToolInputError, ValueError):
+    """``read_file`` was handed a negative ``offset`` or ``limit``."""
 
 
 def resolve_within(root: Path, candidate: str) -> Path:
@@ -59,8 +66,21 @@ def resolve_within(root: Path, candidate: str) -> Path:
     return resolved
 
 
+def _resolve_readable(root: Path, read_roots: tuple[Path, ...], candidate: str) -> Path:
+    """Resolve a read under *root*, or an absolute *candidate* under one of the read-only *read_roots*."""
+    if Path(candidate).is_absolute():
+        for read_root in read_roots:
+            with contextlib.suppress(PathTraversalError):
+                return resolve_within(read_root, candidate)
+    return resolve_within(root, candidate)
+
+
 def build_filesystem_toolset(
-    root: Path, *, allow_write: bool = True, skill_files: SkillFileIndex = NO_SKILL_FILES
+    root: Path,
+    *,
+    allow_write: bool = True,
+    read_roots: tuple[Path, ...] = (),
+    skill_files: SkillFileIndex = NO_SKILL_FILES,
 ) -> FunctionToolset[None]:
     """Assemble the File System ``FunctionToolset`` jailed to *root*.
 
@@ -70,10 +90,16 @@ def build_filesystem_toolset(
     """
     toolset: FunctionToolset[None] = FunctionToolset()
 
-    def read_file(path: str) -> str:
-        """Read a UTF-8 text file under the worktree (or a registered skill file), returning its content."""
+    def read_file(path: str, offset: int = 0, limit: int = READ_DEFAULT_LIMIT_LINES) -> str:
+        """Read a UTF-8 text file under the worktree (or a registered skill file), returning its content.
+
+        Args:
+            path: The file to read, relative to the worktree.
+            offset: How many lines to skip before the first line returned.
+            limit: The most lines returned; a longer file ends with a trailer naming the offset to continue from.
+        """
         try:
-            target = resolve_within(root, path)
+            target = _resolve_readable(root, read_roots, path)
         except PathTraversalError:
             if (registered := skill_files.lookup(path)) is None:
                 raise
@@ -81,7 +107,7 @@ def build_filesystem_toolset(
         else:
             if not target.is_file() and (registered := skill_files.lookup(path)) is not None:
                 target = registered
-        return _read_capped(target, errors="replace")
+        return _read_window(target, offset=offset, limit=limit)
 
     def search_files(pattern: str, glob: str = "**/*") -> list[str]:
         """Return worktree file paths whose text contains *pattern* (substring)."""
@@ -97,16 +123,49 @@ def build_filesystem_toolset(
     return toolset
 
 
+def _read_window(path: Path, *, offset: int, limit: int) -> str:
+    """Stream lines ``offset`` to ``offset + limit`` of *path*, never holding more than :data:`_MAX_READ_BYTES`."""
+    if offset < 0 or limit < 0:
+        msg = f"offset and limit must be >= 0, got offset={offset} limit={limit}"
+        raise InvalidReadWindowError(msg)
+    with path.open("rb") as handle:
+        skipped = 0
+        while skipped < offset:
+            chunk = handle.readline(_MAX_READ_BYTES)
+            if not chunk:
+                return ""
+            skipped += chunk.endswith(b"\n")
+        window = bytearray()
+        lines = 0
+        while lines < limit and len(window) < _MAX_READ_BYTES:
+            chunk = handle.readline(_MAX_READ_BYTES - len(window))
+            if not chunk:
+                break
+            window += chunk
+            lines += chunk.endswith(b"\n")
+        more = limit > 0 and lines == limit and handle.read(1) != b""
+    text = window.decode("utf-8", errors="replace")
+    if more:
+        text += f"[... truncated at {limit} lines; call Read with offset={offset + limit} for the rest ...]"
+    return text
+
+
 def build_skill_file_toolset(skill_files: SkillFileIndex) -> FunctionToolset[None]:
     """A ``Read``-only toolset over exactly the registered skill files, for a dispatch with no worktree."""
     toolset: FunctionToolset[None] = FunctionToolset()
 
-    def read_file(path: str) -> str:
-        """Read a registered skill file (``skills/<skill>/SKILL.md`` or ``skills/<skill>/references/<f>.md``)."""
+    def read_file(path: str, offset: int = 0, limit: int = READ_DEFAULT_LIMIT_LINES) -> str:
+        """Read a registered skill file (``skills/<skill>/SKILL.md`` or ``skills/<skill>/references/<f>.md``).
+
+        Args:
+            path: The skill file to read.
+            offset: How many lines to skip before the first line returned.
+            limit: The most lines returned; a longer file ends with a trailer naming the offset to continue from.
+        """
         if (registered := skill_files.lookup(path)) is None:
             msg = f"{path!r} is not a skill file; this dispatch has no worktree, so Read reaches skill files only"
             raise NotASkillFileError(msg)
-        return _read_capped(registered, errors="replace")
+        return _read_window(registered, offset=offset, limit=limit)
 
     toolset.add_function(read_file, takes_ctx=False, name=TOOL_READ)
     return toolset

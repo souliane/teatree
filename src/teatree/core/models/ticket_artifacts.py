@@ -80,6 +80,7 @@ class E2eRunRef:
 
     spec: str
     result: str
+    target: str
     head_sha: str
     posted_url: str
     recorded_at: str
@@ -150,6 +151,7 @@ def collect_ticket_artifacts(ticket: "Ticket", *, port_resolver: PortResolver | 
         E2eRunRef(
             spec=run.spec,
             result=run.result,
+            target=run.target,
             head_sha=run.head_sha,
             posted_url=run.posted_url,
             recorded_at=run.recorded_at.isoformat(),

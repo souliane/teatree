@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"fixt-plan-one-target-actions-only-fail","model":"claude-sonnet-4-6"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Plan before changes: PROJ-4521 — read forms.py, remove the literal gate, then run its focused tests. PROJ-4242 — cross-user visibility filter. No edits yet."}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1}

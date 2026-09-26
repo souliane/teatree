@@ -1,21 +1,22 @@
 import logging
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypedDict, Unpack, cast
 
 from django.apps import apps
-from django.db import models, transaction
-from django.db.models import Min, Q
+from django.db import IntegrityError, models, transaction
+from django.db.models import Q
 from django.db.models.functions import Coalesce
 from django.db.models.lookups import LessThan
 from django.utils import timezone
 
 from teatree.core.claim_liveness import current_owner
+from teatree.core.intake.ticket_findability import unfindable_tickets
+from teatree.core.loop_lease_liveness import OwnershipStatus
 from teatree.core.loop_lease_manager import (
     PER_LOOP_OWNER_PREFIX,
     T3_MASTER_SLOT,
     LoopLeaseManager,
     LoopLeaseQuerySet,
-    OwnershipStatus,
     is_per_loop_owner_slot,
     per_loop_owner_slot,
 )
@@ -26,7 +27,7 @@ from teatree.core.managers_overlay import overlay_scope_q
 from teatree.core.managers_phase_cadence import in_flight_for_phase as _in_flight_for_phase
 from teatree.core.managers_phase_cadence import last_run_at_for_phase as _last_run_at_for_phase
 from teatree.core.managers_session import SessionQuerySet
-from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, claim_admission_block_reason
+from teatree.core.managers_task_claim import ClaimOrder, _claimable_now_q, claim_admission_block_reason, claim_window
 from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_claims
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
@@ -94,26 +95,27 @@ def _cheap_phase_q() -> Q:
     return Q(phase__in=cheap_phase_spellings())
 
 
-def _lane_occupancy_q(now: datetime, *, cheap: bool) -> Q:
+def _lane_occupancy_q(now: datetime, *, cheap: bool | None) -> Q:
     """The rows holding a seat in one cost class's lane at *now*.
 
     One predicate rather than two: :meth:`TaskQuerySet.cheap_lane_occupancy` reads it as a
     ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
     conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
-    bound at all. The two lanes PARTITION the queue — the expensive one is the exact
-    complement of the cheap one — so an unregistered phase lands in the braked class,
+    bound at all. ``cheap=None`` counts both classes. The two lanes PARTITION the queue —
+    the expensive one is the exact complement of the cheap one — so an unregistered
+    phase lands in the braked class,
     matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
     """
     task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
-    membership = _cheap_phase_q() if cheap else ~_cheap_phase_q()
+    membership = Q() if cheap is None else _cheap_phase_q() if cheap else ~_cheap_phase_q()
     return membership & (
         Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
         | Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
     )
 
 
-def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool) -> LessThan:
+def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool | None) -> LessThan:
     """A ``WHERE`` term true only while that lane has a free seat at *now*.
 
     ``Coalesce`` is load-bearing: the grouped ``COUNT`` yields NO row for an empty lane, and
@@ -132,6 +134,13 @@ def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool) -> LessThan
         Coalesce(models.Subquery(occupied, output_field=models.IntegerField()), models.Value(0)),
         ceiling,
     )
+
+
+class TicketCreateFields(TypedDict, total=False):
+    overlay: str
+    variant: str
+    repos: list[str]
+    kind: "Ticket.Kind"
 
 
 class TicketQuerySet(models.QuerySet):
@@ -181,6 +190,20 @@ class TicketQuerySet(models.QuerySet):
         # (#2293) lives in :func:`~teatree.core.managers_issue_match.matching_issue_q`.
         return self.filter(matching_issue_q(issue_url))
 
+    def get_or_create_for_issue(self, issue_url: str, **fields: Unpack[TicketCreateFields]) -> tuple["Ticket", bool]:
+        """``get_or_create`` keyed on the issue, so a sibling URL spelling finds the ticket stored under another."""
+        existing = self.matching_issue(issue_url).order_by("pk").first()
+        if existing is not None:
+            return existing, False
+        try:
+            with transaction.atomic():
+                return self.create(issue_url=issue_url, **fields), True
+        except IntegrityError:
+            winner = self.matching_issue(issue_url).order_by("pk").first()
+            if winner is None:
+                raise
+            return winner, False
+
     def in_flight(self, overlay: str | None = None) -> models.QuerySet:
         ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
 
@@ -192,37 +215,8 @@ class TicketQuerySet(models.QuerySet):
         )
 
     def unfindable(self, overlay: str | None = None) -> list["Ticket"]:
-        """Non-terminal rows no forge query can reach, oldest lane first (#4527).
-
-        Intake discovers candidates from forge queries, so a row failing
-        :meth:`~teatree.core.models.ticket.Ticket.is_admissible` can never be
-        admitted, claimed, or found again — it is the only surviving record of a
-        request someone was told is tracked. A row that already recorded where its
-        work went is EXCLUDED: a Slack lane's bookkeeping row is non-admissible by
-        design, so without that stamp the mechanism reports its own successes and
-        buries the genuinely dead rows under one entry per inbound DM.
-
-        The doctor WARN and ``ticket dead-rows`` share this one selector, so they
-        can never disagree about WHICH rows are unfindable; the doctor additionally
-        withholds a row younger than its grace period, which is a reporting choice
-        layered on top of this set, not a second definition of it.
-
-        ``is_admissible`` is applied in Python, not as a query: it is the single
-        predicate every promise-time surface consults, and a hand-written SQL twin
-        is how the check and the promise drift apart. ``Ticket`` carries no creation
-        stamp, so age is its oldest ``Task``'s; a row with no task at all sorts
-        FIRST — it is the most provably dead shape there is.
-        """
-        ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
-
-        rows = (
-            self.for_overlay(overlay)
-            .exclude(state__in=ticket_model._TERMINAL_STATES)  # noqa: SLF001 — the model's SSOT terminal set
-            .annotate(oldest_task=Min("tasks__created_at"))
-            .order_by("pk")
-        )
-        unfindable = [ticket for ticket in rows if not (ticket.is_admissible() or ticket.work_placed_elsewhere())]
-        return sorted(unfindable, key=lambda row: (row.oldest_task is not None, row.oldest_task))
+        """Non-terminal rows no forge query can reach, oldest lane first (#4527)."""
+        return unfindable_tickets(self.for_overlay(overlay))
 
 
 class WorktreeQuerySet(models.QuerySet):
@@ -420,7 +414,9 @@ class TaskQuerySet(models.QuerySet):
         if ordering is not None:
             candidates = candidates.annotate(**ordering.annotations)
         order_fields = ordering.order_by if ordering is not None else ("pk",)
-        with transaction.atomic():
+        with claim_window() as window:
+            if window.refusal:
+                return None
             oldest_pk = candidates.order_by(*order_fields).values_list("pk", flat=True).first()
             if oldest_pk is None:
                 return None
@@ -442,7 +438,12 @@ class TaskQuerySet(models.QuerySet):
             )
             if claimed_count != 1:
                 return None
-        return self.get(pk=oldest_pk)
+            if window.quiesce_landed():
+                transaction.set_rollback(True)
+                return None
+        task = self.get(pk=oldest_pk)
+        task.observe_transition("task.claimed")
+        return task
 
     def reclaim_orphaned_claims(self) -> int:
         """Return expired-lease CLAIMED tasks to PENDING — the rescue sweep (#652)."""
@@ -542,7 +543,9 @@ class TaskQuerySet(models.QuerySet):
             admitted_at__lte=timezone.now() - ADMITTED_INFLIGHT_WINDOW,
         ).count()
 
-    def record_admission(self, task_pk: int, *, cheap: bool, lane_ceiling: int | None = None) -> bool:
+    def record_admission(
+        self, task_pk: int, *, cheap: bool, lane_ceiling: int | None = None, total_ceiling: int | None = None
+    ) -> bool:
         """Take *task_pk*'s seat in its cost class's lane — ``True`` when this call got it.
 
         The bound is arbitrated INSIDE this write, not between the caller's probe and it
@@ -552,11 +555,12 @@ class TaskQuerySet(models.QuerySet):
         loser match no row and be refused instead. *cheap* picks which lane's occupancy is
         re-counted, so the expensive lane's reserved-slot bound is held by the same
         mechanism rather than by a probe two racers can both pass (#4374).
+        ``total_ceiling`` checks both classes, including pending seats, in the same write.
 
         A row still holding a live seat is refused too: it is already in the runner's
         hand, so a second booking is a duplicate dispatch. ``lane_ceiling`` of ``None``
-        is UNBOUNDED — the kill-switch, fail-open and zero-ceiling/zero-reservation paths,
-        where the governor has no opinion on the lane's width.
+        lifts that class's width; ``total_ceiling`` still applies unless the governor
+        kill-switch or failed probe deliberately leaves both bounds absent.
 
         A queryset ``UPDATE`` rather than ``instance.save()``: the ``post_save``
         auto-enqueue is itself a ``post_save`` receiver, so saving the instance from
@@ -568,6 +572,8 @@ class TaskQuerySet(models.QuerySet):
         seat = self.filter(unseated, pk=task_pk)
         if lane_ceiling is not None:
             seat = seat.filter(_lane_under_ceiling(now, lane_ceiling, cheap=cheap))
+        if total_ceiling is not None:
+            seat = seat.filter(_lane_under_ceiling(now, total_ceiling, cheap=None))
         return bool(seat.update(admitted_at=now))
 
     def active_claims(self) -> models.QuerySet:

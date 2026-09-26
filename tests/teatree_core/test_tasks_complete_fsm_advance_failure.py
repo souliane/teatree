@@ -22,6 +22,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
+from tests.factories import record_test_plan
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -59,10 +60,8 @@ class TasksCompleteFsmAdvanceFailureTest(TestCase):
 
     def test_complete_still_advances_ticket_when_artifact_present(self) -> None:
         # Regression guard: the happy planning path still advances the ticket.
-        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
         task = self._claimed_planning_task_no_artifact()
-        PlanArtifact.record(ticket=task.ticket, plan_text="real plan", recorded_by="t3:planner")
+        record_test_plan(task.ticket, plan_text="real plan", recorded_by="t3:planner")
 
         call_command("tasks", "complete", task.pk)
 
@@ -108,10 +107,8 @@ class CompleteSurfacingAdvanceFailureModelTest(TestCase):
         assert task.status == Task.Status.COMPLETED
 
     def test_returns_empty_string_on_clean_advance(self) -> None:
-        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
         task = self._claimed_planning_task()
-        PlanArtifact.record(ticket=task.ticket, plan_text="p", recorded_by="t3:planner")
+        record_test_plan(task.ticket, plan_text="p", recorded_by="t3:planner")
         reason = task.complete_surfacing_advance_failure()
         assert reason == ""
         task.ticket.refresh_from_db()

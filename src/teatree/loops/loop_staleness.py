@@ -1,7 +1,7 @@
 """Cadence-anchor staleness — "the worker is up, but is anything actually ticking?".
 
-``t3 worker status`` answered three questions — is a worker holding the flock, is
-``loop_runner_enabled`` ON, how many ``loop_timer`` rows are READY — and all three
+``t3 worker status`` answered three questions — is a worker holding the flock, does the
+active preset admit anything, how many ``loop_timer`` rows are READY — and all three
 can read green while ZERO work happens. Every gate they cover sits BEFORE the one
 that actually decides a tick: the unified admission verdict
 (:func:`teatree.loops.loop_table.admitted_loop_names`). A manual mode override to
@@ -146,9 +146,9 @@ class LoopHealth:
     considered: int
     #: Registered loops NO driver reaches — the structural fault staleness cannot see.
     driverless: tuple[str, ...] = ()
-    #: The ``loop_runner_enabled`` kill-switch, read from the SAME fail-safe reader every
+    #: Whether the active preset admits ANY loop, read from the SAME fail-safe reader every
     #: chain fire gates on — the gate that precedes admission, so it precedes the cause.
-    runner_enabled: bool = True
+    fleet_admits: bool = True
 
     @property
     def unexplained(self) -> tuple[StaleLoop, ...]:
@@ -167,7 +167,7 @@ class LoopHealth:
     def as_json(self) -> dict[str, Any]:
         return {
             **self.admission.as_json(),
-            "loop_runner_enabled": self.runner_enabled,
+            "fleet_admits": self.fleet_admits,
             "stale": [loop.as_json() for loop in self.stale],
             "considered": self.considered,
             "frozen_fleet": self.frozen_fleet,
@@ -222,19 +222,18 @@ class LoopHealth:
     def _cause_line(self) -> str:
         """Name the cause this reading MEASURED, so the remedy points at what actually stopped work.
 
-        The kill-switch comes first because its gate does: ``loop_timer`` step 0 returns
-        ``halted`` before the admission check, so while it is OFF the mode, the presets and
-        the per-loop planes are all untouched and none of them explains anything. Blaming
-        one of them sends the operator to ``t3 loop preset``, which stopped nothing.
+        The fleet verdict comes first because its gate does: ``loop_timer`` step 0 returns
+        ``halted`` before the per-loop admission check, so a posture admitting nothing
+        explains every stale loop at once and naming one of them instead sends the operator
+        looking for a fault that is not there.
         """
-        if not self.runner_enabled:
+        if not self.fleet_admits:
             return (
-                "FAIL the loop runner kill-switch is OFF (loop_runner_enabled=false) — every "
-                "`loop_timer` fire returns `halted` before the admission check without re-enqueueing "
-                "a successor, and the reconciler re-heads the drained chain, so the timers keep a full "
-                "RUNNING -> SUCCESSFUL heartbeat while no loop does any work. No mode, preset or worker "
-                "fault is involved. Turn it back on with "
-                "`t3 <overlay> config_setting set loop_runner_enabled true`, or confirm the stop is intended."
+                f"FAIL the active preset {self.admission.mode!r} (source={self.admission.source}) admits ZERO "
+                "loops — every `loop_timer` fire returns `halted` before the admission check without "
+                "re-enqueueing a successor, so the timers keep a full RUNNING -> SUCCESSFUL heartbeat while no "
+                "loop does any work. No worker fault is involved. Pick a posture that runs something with "
+                '`t3 loop preset use <name> --reason "<why>"`, or confirm the stop is intended.'
             )
         if self.frozen_fleet:
             return (
@@ -282,23 +281,14 @@ def driverless_loops() -> tuple[str, ...]:
     return tuple(sorted(loop.name for loop in iter_loops() if loop.off_live_tick and not loop.off_tick_command))
 
 
-def _measured_loops(now: dt.datetime) -> list[tuple["Loop", int]]:
-    """Live-tick interval rows something should be driving, UNION the ones the operator left on.
+def _measured_loops() -> list[tuple["Loop", int]]:
+    """Every live-tick interval row — the whole fleet, whatever is or is not driving it.
 
-    Each half alone loses an alarm the other keeps:
-
-    *   chain MEMBERSHIP (:func:`teatree.loops.chain_membership.timer_chain_loop_names`) —
-        the loops a timer chain is built for. A mode that forces a column-DISABLED loop ON
-        is one of these, and reading the raw ``enabled`` column alone made such a loop
-        invisible to the alarm built to catch loops that are not ticking (#4185).
-    *   the column-ENABLED live-tick rows — the loops the OPERATOR left on. An all-off mask
-        drops every one of them out of membership, so measuring membership alone reports
-        the deliberate, forgotten, TOTAL shutdown as a healthy zero-loop fleet: precisely
-        the seven-hour incident in this module's docstring (#4196).
-
-    A row in the second half but not the first is standing still ON PURPOSE, which is what
-    :func:`_is_suppressed` says of it. It is measured so the FLEET-wide reading can see it,
-    never so it can be reported as unexplained.
+    Measuring only the loops a chain is built for reports the deliberate, forgotten, TOTAL
+    shutdown as a healthy zero-loop fleet: precisely the seven-hour incident in this
+    module's docstring (#4196). So the reading covers every live-tick row and
+    :func:`_is_suppressed` says which are standing still ON PURPOSE — measured so the
+    FLEET-wide reading can see them, never so they can be reported as unexplained.
 
     A ``daily_at`` row is excluded from both halves even though it also carries
     ``delay_seconds``: the ``loop_script_requires_delay`` constraint forces every script
@@ -306,19 +296,13 @@ def _measured_loops(now: dt.datetime) -> list[tuple["Loop", int]]:
     measures a cadence the loop does not keep.
     """
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM needs the app registry
-    from teatree.loops.chain_membership import (  # noqa: PLC0415 — deferred: ORM-backed
-        live_tick_loop_names,
-        timer_chain_loop_names,
-    )
+    from teatree.loops.chain_membership import live_tick_loop_names  # noqa: PLC0415 — deferred: ORM-backed
 
-    members = timer_chain_loop_names(now)
     live_tick = live_tick_loop_names()
     return [
         (row, cadence)
         for row in Loop.objects.all()
-        if (cadence := row.delay_seconds)
-        and row.daily_at is None
-        and (row.name in members or (row.enabled and row.name in live_tick))
+        if (cadence := row.delay_seconds) and row.daily_at is None and row.name in live_tick
     ]
 
 
@@ -334,7 +318,7 @@ def _is_suppressed(row: "Loop", planes: "EnablePlanes") -> bool:
     than re-walking the planes is what stops it from naming a different set of
     deliberate arms than the verdict does (#4196).
     """
-    return not planes.admits(row.name, configured_enabled=row.enabled)
+    return not planes.admits(row.name)
 
 
 def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER) -> list[StaleLoop]:
@@ -359,7 +343,7 @@ def stale_loops(now: dt.datetime, *, multiplier: int = STALE_CADENCE_MULTIPLIER)
             ever_ran=row.last_run_at is not None,
             suppressed=_is_suppressed(row, planes),
         )
-        for row, cadence in _measured_loops(now)
+        for row, cadence in _measured_loops()
         if (age := (now - (row.last_run_at or row.created_at)).total_seconds()) > multiplier * cadence
     ]
     return sorted(stale, key=lambda loop: loop.name)
@@ -390,14 +374,14 @@ def admission(now: dt.datetime) -> Admission:
 
 def loop_health(now: dt.datetime) -> LoopHealth:
     """The one loop-health reading ``t3 worker status`` reports and exits on."""
-    from teatree.loops.timer_chains import loop_runner_enabled  # noqa: PLC0415 — deferred: ORM-backed read
+    from teatree.loops.enable_verdict import fleet_admits_work  # noqa: PLC0415 — deferred: ORM-backed read
 
     return LoopHealth(
         admission=admission(now),
         stale=tuple(stale_loops(now)),
-        considered=len(_measured_loops(now)),
+        considered=len(_measured_loops()),
         driverless=driverless_loops(),
-        runner_enabled=loop_runner_enabled(),
+        fleet_admits=fleet_admits_work(now),
     )
 
 

@@ -18,17 +18,19 @@ with a path inside that worktree, so the OTHER worktrees' pushes keep running
 the hook to completion (the acceptance criterion).
 """
 
+import ast
 import logging
 import os
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from teatree.core import prek_hook
+from teatree.core import hook_quarantine, prek_hook
 from teatree.core.provision.provision_report import StepResult
 
 
@@ -47,6 +49,12 @@ PREK="{prek_path}"
 
 exec "$PREK" hook-impl --hook-dir "$HERE" --script-version 4 --hook-type=pre-push -- "$@"
 """
+
+
+#: The hook types a prek config declaring ``pre-merge-commit`` installs. Named explicitly
+#: rather than read off the module under test, because a fixture that reads its
+#: expectations off the implementation cannot catch the implementation being short.
+_INSTALLED_HOOK_TYPES = ("commit-msg", "pre-commit", "pre-merge-commit", "pre-push")
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -85,6 +93,20 @@ def _write_stale_hook(repo: Path, name: str, prek_path: str) -> Path:
     return hook
 
 
+#: A prek-generated shim, and a gate an operator wrote by hand. Which of the two sits at
+#: ``<name>`` is what decides whether git or the shim is running ``<name>.legacy``.
+_PREK_SHIM_BYTES = _STALE_PRE_PUSH.format(prek_path="prek").encode()
+_OPERATOR_GATE = b"#!/bin/sh\n# the operator's own pre-push gate\nexit 0\n"
+
+
+def _plant(hooks_dir: Path, name: str, blob: bytes | None) -> None:
+    if blob is None:
+        return
+    hook = hooks_dir / name
+    hook.write_bytes(blob)
+    hook.chmod(0o755)
+
+
 class TestHardenHooks:
     def test_baked_absolute_path_rewritten_to_path_resolution(self, main_clone: Path) -> None:
         gone = main_clone.parent / "s-teatree-941-gone" / ".venv" / "bin" / "prek"
@@ -94,16 +116,43 @@ class TestHardenHooks:
 
         body = hook.read_text()
         assert str(gone) not in body, f"stale absolute path survived hardening:\n{body}"
-        assert 'PREK="prek"' in body, f"hook does not resolve prek via PATH:\n{body}"
+        assert "--version" in body, f"hook does not PROBE its candidates:\n{body}"
         assert "hook-impl" in body, "hardening must not destroy the dispatch line"
 
-    def test_idempotent_on_already_path_resolved_hook(self, main_clone: Path) -> None:
-        hook = _write_stale_hook(main_clone, "pre-push", "prek")
-        before = hook.read_text()
+    def test_hardening_twice_is_a_no_op(self, main_clone: Path) -> None:
+        hook = _write_stale_hook(main_clone, "pre-push", str(main_clone.parent / "gone" / "prek"))
+        prek_hook.harden_hooks(str(main_clone))
+        once = hook.read_text()
 
         prek_hook.harden_hooks(str(main_clone))
 
-        assert hook.read_text() == before
+        assert hook.read_text() == once
+
+    def test_legacy_path_resolved_hook_is_upgraded_to_the_probe(self, main_clone: Path) -> None:
+        # `PREK="prek"` execs whatever PATH resolves first without asking whether
+        # it runs here — the bind-mounted host venv on a container's PATH is the
+        # case that dies `Exec format error`.
+        hook = _write_stale_hook(main_clone, "pre-push", "prek")
+
+        prek_hook.harden_hooks(str(main_clone))
+
+        assert "--version" in hook.read_text()
+
+    def test_every_installed_hook_type_is_hardened_not_a_hard_coded_three(self, main_clone: Path) -> None:
+        """The set comes from what prek WROTE, never a tuple maintained beside the config.
+
+        The root config declares four types and the module named three. ``pre-merge-commit``
+        was the omission, so it alone kept prek's baked absolute path while every other type
+        was repaired — and in the container, where that path is absent or built for another
+        platform, ``git merge`` is refused by the one hook the hardening never reached.
+        """
+        gone = main_clone.parent / "torn-down-worktree" / "bin" / "prek"
+        hooks = {name: _write_stale_hook(main_clone, name, str(gone)) for name in _INSTALLED_HOOK_TYPES}
+
+        prek_hook.harden_hooks(str(main_clone))
+
+        kept_baked = sorted(name for name, hook in hooks.items() if str(gone) in hook.read_text())
+        assert kept_baked == [], f"these installed hook types kept their baked absolute path: {kept_baked}"
 
     def test_leaves_non_prek_hooks_untouched(self, main_clone: Path) -> None:
         hook = _hooks_dir(main_clone) / "pre-push"
@@ -113,6 +162,103 @@ class TestHardenHooks:
         prek_hook.harden_hooks(str(main_clone))
 
         assert hook.read_text() == custom
+
+
+_PREK_STUB = """#!/bin/sh
+echo "$0 $*" >> "{log}"
+exit 0
+"""
+
+# A binary this platform cannot execute refuses with a NON-ZERO status, which is
+# exactly what the hook branches on — so a stub failing `--version` reproduces the
+# measured `Exec format error` without needing a foreign-architecture binary.
+_UNRUNNABLE_STUB = """#!/bin/sh
+echo "$0 $*" >> "{log}"
+exit 126
+"""
+
+
+def _executable(path: Path, body: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _dispatch_lines(log: Path) -> list[str]:
+    return [line for line in log.read_text(encoding="utf-8").splitlines() if "hook-impl" in line]
+
+
+class TestHardenedHookResolution:
+    """The hardened hook resolves prek for THIS repository and THIS platform.
+
+    The measured failure: the shared hooks dir carried a sibling worktree's macOS
+    venv path, which inside the Linux worker passed `[ -x ]` and died
+    `Exec format error` — refusing every containerized push (exit 4, gate-refused).
+    """
+
+    def _push(self, repo: Path, remote: Path, *, path_dir: Path) -> subprocess.CompletedProcess[str]:
+        _git(repo, "remote", "add", "origin", str(remote))
+        return subprocess.run(
+            [_GIT_BIN, "-C", str(repo), "push", "origin", "main"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "PATH": f"{path_dir}:/usr/bin:/bin"},
+        )
+
+    @pytest.fixture
+    def remote(self, tmp_path: Path) -> Path:
+        bare = tmp_path / "remote.git"
+        subprocess.run([_GIT_BIN, "init", "--bare", "-q", str(bare)], check=True, capture_output=True)
+        return bare
+
+    def test_an_unrunnable_repository_environment_yields_to_path(
+        self, main_clone: Path, remote: Path, tmp_path: Path
+    ) -> None:
+        log = tmp_path / "invoked.log"
+        own = _executable(main_clone / ".venv" / "bin" / "prek", _UNRUNNABLE_STUB.format(log=log))
+        on_path = _executable(tmp_path / "pathbin" / "prek", _PREK_STUB.format(log=log))
+        _write_stale_hook(main_clone, "pre-push", str(tmp_path / "other-worktree" / "prek"))
+        prek_hook.harden_hooks(str(main_clone))
+
+        result = self._push(main_clone, remote, path_dir=on_path.parent)
+
+        assert result.returncode == 0, f"push refused:\n{result.stderr}"
+        invoked = log.read_text(encoding="utf-8")
+        assert f"{own} --version" in invoked, f"the preferred candidate was never PROBED:\n{invoked}"
+        assert [line.split(" ", 1)[0] for line in _dispatch_lines(log)] == [str(on_path)]
+
+    def test_this_repositorys_own_environment_is_preferred(
+        self, main_clone: Path, remote: Path, tmp_path: Path
+    ) -> None:
+        log = tmp_path / "invoked.log"
+        own = _executable(main_clone / ".venv" / "bin" / "prek", _PREK_STUB.format(log=log))
+        on_path = _executable(tmp_path / "pathbin" / "prek", _PREK_STUB.format(log=log))
+        _write_stale_hook(main_clone, "pre-push", str(tmp_path / "gone" / "prek"))
+        prek_hook.harden_hooks(str(main_clone))
+
+        result = self._push(main_clone, remote, path_dir=on_path.parent)
+
+        assert result.returncode == 0, f"push refused:\n{result.stderr}"
+        assert [line.split(" ", 1)[0] for line in _dispatch_lines(log)] == [str(own)]
+
+    def test_nothing_runnable_refuses_the_push_and_names_both_candidates(
+        self, main_clone: Path, remote: Path, tmp_path: Path
+    ) -> None:
+        log = tmp_path / "invoked.log"
+        log.write_text("", encoding="utf-8")
+        _executable(main_clone / ".venv" / "bin" / "prek", _UNRUNNABLE_STUB.format(log=log))
+        _write_stale_hook(main_clone, "pre-push", str(tmp_path / "gone" / "prek"))
+        prek_hook.harden_hooks(str(main_clone))
+
+        result = self._push(main_clone, remote, path_dir=tmp_path / "empty-pathbin")
+
+        assert result.returncode != 0, "a hook with no runnable prek must refuse, never pass silently"
+        assert "prek" in result.stderr
+        assert ".venv/bin/prek" in result.stderr
+        assert "PATH" in result.stderr
+        assert _dispatch_lines(log) == []
 
 
 class TestRemoveStaleHooks:
@@ -216,6 +362,50 @@ class TestInstallResolvesTheRepoRootConfig:
         )
 
 
+def _recording_prek_install(*, success: bool) -> tuple[Callable[..., StepResult], list[tuple[str, list[str]]]]:
+    """Record every dispatched step while forcing the ``prek install`` verdict without the binary."""
+    real = prek_hook.run_step
+    steps: list[tuple[str, list[str]]] = []
+
+    def _dispatch(name: str, cmd: list[str], **kwargs: object) -> StepResult:
+        steps.append((name, cmd))
+        if name == "prek-install":
+            return StepResult(name=name, success=success, error="" if success else "prek exploded")
+        return real(name, cmd, **kwargs)
+
+    return _dispatch, steps
+
+
+class TestInstallRefusesACheckoutItCannotAnchorTheQuarantineIn:
+    """A quarantine needs somewhere to put the bytes, so an unresolvable git dir refuses ``-f``.
+
+    Running ``-f`` anyway is destruction with no copy — the round-1 defect — and there is no
+    third option: ``quarantine_dir(None)`` is a ``TypeError``, not a degraded mode.
+    """
+
+    def test_install_refuses_when_the_shared_git_dir_cannot_be_resolved(self, tmp_path: Path) -> None:
+        not_a_checkout = tmp_path / "plain"
+        not_a_checkout.mkdir()
+        dispatch, steps = _recording_prek_install(success=True)
+
+        with patch.object(prek_hook, "run_step", side_effect=dispatch):
+            result = prek_hook.install(str(not_a_checkout))
+
+        assert not result.success
+        assert str(not_a_checkout) in result.error, result.error
+        assert "prek-install" not in [name for name, _cmd in steps], steps
+
+    def test_install_runs_prek_in_a_real_checkout(self, main_clone: Path) -> None:
+        """The control: a guard refusing UNCONDITIONALLY passes the test above."""
+        dispatch, steps = _recording_prek_install(success=True)
+
+        with patch.object(prek_hook, "run_step", side_effect=dispatch):
+            result = prek_hook.install(str(main_clone))
+
+        assert result.success, result.error
+        assert ("prek-install", ["prek", "install", "-f"]) in steps, steps
+
+
 @pytest.mark.skipif(shutil.which("prek") is None, reason="prek not on PATH")
 class TestInstallProducesPathResolvedHook:
     def test_install_hook_never_carries_a_stale_absolute_only_path(self, main_clone: Path) -> None:
@@ -240,18 +430,20 @@ class TestInstallProducesPathResolvedHook:
 
         hook = _hooks_dir(main_clone) / "pre-push"
         assert hook.is_file()
-        # The PRIMARY assignment must resolve via PATH. prek's own template
-        # bakes ``PREK="<abs>"`` and (in recent versions) adds a fallback that
-        # also writes ``PREK="prek"`` — so a substring check passes even on the
-        # buggy hook. Pin the primary assignment line itself.
-        primary = next(
-            (ln.strip() for ln in hook.read_text().splitlines() if re.fullmatch(r'PREK="[^"]*"', ln.strip())),
-            "",
+        # prek's own template bakes ``PREK="<abs>"`` and (in recent versions) adds a
+        # fallback that also writes ``PREK="prek"`` — so a substring check passes
+        # even on the buggy hook. Assert on EVERY assignment: none may name a path.
+        assigned = [
+            ln.strip().removeprefix('PREK="').removesuffix('"')
+            for ln in hook.read_text().splitlines()
+            if re.fullmatch(r'PREK="[^"]*"', ln.strip())
+        ]
+        assert assigned, f"installed hook carries no PREK assignment at all:\n{hook.read_text()}"
+        assert not [value for value in assigned if value.startswith("/")], (
+            "installed hook still bakes an absolute prek path — stale-path hang class "
+            f"(souliane/teatree#1462):\n{hook.read_text()}"
         )
-        assert primary == 'PREK="prek"', (
-            "installed hook's primary PREK assignment still bakes an absolute path — "
-            f"stale-path hang class (souliane/teatree#1462):\n{hook.read_text()}"
-        )
+        assert "--version" in hook.read_text(), f"installed hook does not PROBE:\n{hook.read_text()}"
 
 
 _PREK_MISSING = "prek: command not found"
@@ -302,7 +494,7 @@ class TestAFailedInstallLeavesTheGateNoWeaker:
     """
 
     def test_hooks_are_restored_when_the_install_fails(self, main_clone: Path) -> None:
-        bodies = {name: _write_foreign_hook(main_clone, name).read_text() for name in prek_hook._HOOK_NAMES}
+        bodies = {name: _write_foreign_hook(main_clone, name).read_text() for name in _INSTALLED_HOOK_TYPES}
 
         with patch.object(prek_hook, "run_step", side_effect=_prek_install_returning(success=False)):
             result = prek_hook.install(str(main_clone))
@@ -342,7 +534,7 @@ class TestAFailedInstallLeavesTheGateNoWeaker:
         entirely. Probed against the shared hooks dir, that left ``HOOKS SURVIVING:
         []``, with no log line saying so.
         """
-        bodies = {name: _write_foreign_hook(main_clone, name).read_text() for name in prek_hook._HOOK_NAMES}
+        bodies = {name: _write_foreign_hook(main_clone, name).read_text() for name in _INSTALLED_HOOK_TYPES}
 
         real = prek_hook.run_step
         missing = FileNotFoundError(_PREK_MISSING)
@@ -365,6 +557,174 @@ class TestAFailedInstallLeavesTheGateNoWeaker:
             assert os.access(hook, os.X_OK), f"{name} was restored without its executable bit"
 
 
+def _quarantine(repo: Path) -> Path:
+    return hook_quarantine.quarantine_dir((repo / ".git").resolve())
+
+
+class TestPreservationSurvivesEveryExitFromTheInstall:
+    """`prek install -f` destroys before it can fail, so preservation cannot hang off success.
+
+    The destruction window is identical on every path out: a non-zero exit after some types
+    were already overwritten, a subprocess SIGKILLed mid-write, a vanished cwd. Nothing here
+    depends on which exit is taken any more: the bytes are on disk in the quarantine BEFORE
+    `-f` runs, so the only question left is whether the slot they came from survived.
+    """
+
+    def test_a_raise_after_the_overwrite_still_preserves_the_operator_gate(self, main_clone: Path) -> None:
+        gate = _hooks_dir(main_clone) / "pre-push"
+        _plant(_hooks_dir(main_clone), "pre-push", _OPERATOR_GATE)
+        real = prek_hook.run_step
+        vanished = FileNotFoundError(2, "No such file or directory")
+
+        def _overwrite_then_raise(name: str, *args: object, **kwargs: object) -> StepResult:
+            if name == "prek-install":
+                gate.write_bytes(_PREK_SHIM_BYTES)
+                raise vanished
+            return real(name, *args, **kwargs)
+
+        with (
+            patch.object(prek_hook, "run_step", side_effect=_overwrite_then_raise),
+            pytest.raises(FileNotFoundError) as raised,
+        ):
+            prek_hook.install(str(main_clone))
+
+        assert raised.value is vanished, "the install's own failure was replaced by the preservation's"
+        assert (_hooks_dir(main_clone) / "pre-push.legacy").read_bytes() == _OPERATOR_GATE
+        assert hook_quarantine.pending(_quarantine(main_clone).parent) == ()
+
+    def test_a_raise_that_destroyed_nothing_leaves_no_copy(self, main_clone: Path) -> None:
+        """The control: preserving unconditionally leaves a duplicate behind every failed run."""
+        _plant(_hooks_dir(main_clone), "pre-push", _OPERATOR_GATE)
+        real = prek_hook.run_step
+
+        def _raise_untouched(name: str, *args: object, **kwargs: object) -> StepResult:
+            if name == "prek-install":
+                raise FileNotFoundError(_PREK_MISSING)
+            return real(name, *args, **kwargs)
+
+        with (
+            patch.object(prek_hook, "run_step", side_effect=_raise_untouched),
+            pytest.raises(FileNotFoundError),
+        ):
+            prek_hook.install(str(main_clone))
+
+        assert not list(_hooks_dir(main_clone).glob("*.legacy"))
+        assert hook_quarantine.pending(_quarantine(main_clone).parent) == (), (
+            "a run that destroyed nothing left a parked copy, which WARNs forever"
+        )
+
+
+def _write_bytes_refusing_under(directory: Path) -> Callable[..., int]:
+    """Refuse writes into ONE directory, so the park can succeed and only the reinstate fails."""
+    real = Path.write_bytes
+
+    def _write(self: Path, data: bytes) -> int:
+        if self.parent == directory:
+            raise OSError(30, "Read-only file system", str(self))
+        return real(self, data)
+
+    return _write
+
+
+@pytest.mark.skipif(shutil.which("prek") is None, reason="prek not on PATH")
+class TestAnUnreinstatableHookNeverCostsTheHardening:
+    """A hooks dir that has gone unwritable must not turn the reinstate into an install failure.
+
+    The reinstate runs between a successful `prek install -f` and `harden_hooks`, so a raise
+    there leaves every hook prek just wrote carrying its baked absolute `PREK=` — the
+    stale-path breakage the hardening exists to remove, caused by the step meant to protect
+    the operator. The bytes are not lost either way: they stay in the quarantine, which is
+    what every later run reads.
+    """
+
+    def test_a_hook_that_cannot_be_written_back_stays_parked_and_the_hardening_still_runs(
+        self, main_clone: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        (main_clone / ".pre-commit-config.yaml").write_text(_noop_config("pre-push", "gate"))
+        hooks = _hooks_dir(main_clone)
+        gate = hooks / "pre-push"
+        _plant(hooks, "pre-push", _OPERATOR_GATE)
+
+        with (
+            caplog.at_level(logging.ERROR, logger=prek_hook.__name__),
+            patch.object(Path, "write_bytes", _write_bytes_refusing_under(hooks)),
+        ):
+            result = prek_hook.install(str(main_clone))
+
+        assert result.success, result.error
+        assert hook_quarantine.pending(_quarantine(main_clone).parent) == (_quarantine(main_clone) / "pre-push",)
+        assert (_quarantine(main_clone) / "pre-push").read_bytes() == _OPERATOR_GATE
+        assert "parked" in caplog.text
+        body = gate.read_text()
+        assert "--version" in body, f"the install's own hardening was skipped by the reinstate:\n{body}"
+        assert not re.search(r'^PREK="/', body, re.MULTILINE), f"a baked absolute path survived:\n{body}"
+
+    def test_a_writable_hooks_dir_leaves_nothing_parked(self, main_clone: Path) -> None:
+        """The control: a quarantine that is always populated says nothing when it is."""
+        (main_clone / ".pre-commit-config.yaml").write_text(_noop_config("pre-push", "gate"))
+        _plant(_hooks_dir(main_clone), "pre-push", _OPERATOR_GATE)
+
+        prek_hook.install(str(main_clone))
+
+        assert hook_quarantine.pending(_quarantine(main_clone).parent) == ()
+        assert (_hooks_dir(main_clone) / "pre-push.legacy").read_bytes() == _OPERATOR_GATE
+
+
+#: Four hook types a prek config may declare. Written out rather than reused from the
+#: config fixture: this behaviour is about a loop that fails part-way, not about which
+#: types any one repo installs.
+_FOUR_FOREIGN_TYPES = ("commit-msg", "pre-commit", "pre-merge-commit", "pre-push")
+
+
+def _unlink_failing_on_call(nth: int) -> Callable[..., None]:
+    real = Path.unlink
+    calls: list[Path] = []
+
+    def _unlink(self: Path, *args: object, **kwargs: object) -> None:
+        calls.append(self)
+        if len(calls) == nth:
+            raise PermissionError(13, "Permission denied", str(self))
+        real(self, *args, **kwargs)
+
+    return _unlink
+
+
+class TestAPartialDropIsUndoneNotLost:
+    """A drop that fails part-way must put back what it already took.
+
+    The record `install` restores from is returned only when the loop finishes, and the
+    drop runs OUTSIDE that try, so a mid-loop raise used to lose it — the hooks already
+    unlinked from the clone's SHARED dir were unrecoverable, and every sibling worktree
+    committed and pushed with no gate for the rest of the machine's life.
+    """
+
+    def test_a_mid_loop_unlink_failure_restores_every_hook_already_dropped(self, main_clone: Path) -> None:
+        bodies = {name: _write_foreign_hook(main_clone, name).read_text() for name in _FOUR_FOREIGN_TYPES}
+
+        with (
+            patch.object(Path, "unlink", _unlink_failing_on_call(2)),
+            pytest.raises(PermissionError),
+        ):
+            prek_hook.drop_foreign_config_hooks(str(main_clone))
+
+        for name, body in bodies.items():
+            hook = _hooks_dir(main_clone) / name
+            assert hook.is_file(), f"{name} was unlinked by a drop that then failed, and never put back"
+            assert hook.read_text() == body
+            assert os.access(hook, os.X_OK), f"{name} was restored without its executable bit"
+
+    def test_a_clean_drop_still_removes_every_foreign_shim(self, main_clone: Path) -> None:
+        """The control: an undo that fires unconditionally would leave every shim in place."""
+        for name in _FOUR_FOREIGN_TYPES:
+            _write_foreign_hook(main_clone, name)
+
+        dropped = prek_hook.drop_foreign_config_hooks(str(main_clone))
+
+        assert sorted(hook.path.name for hook in dropped) == sorted(_FOUR_FOREIGN_TYPES)
+        for name in _FOUR_FOREIGN_TYPES:
+            assert not (_hooks_dir(main_clone) / name).exists()
+
+
 class TestDropSparesARepoRootBoundHook:
     """The destructive function's only negative control: what it must NOT delete.
 
@@ -385,3 +745,533 @@ class TestDropSparesARepoRootBoundHook:
         assert dropped == []
         assert native.is_file()
         assert native.read_text() == body
+
+
+#: What a widened enumeration now hands the reader: a macOS `.DS_Store`, a vim swapfile,
+#: a compiled third-party hook, a latin-1 legacy hook. None decodes as UTF-8, and
+#: `UnicodeDecodeError` is a `ValueError` — so it escaped a handler catching `OSError`.
+_UNDECODABLE = {
+    ".DS_Store": b"\x00\x00\x00\x01Bud1\xff\xfe",
+    "pre-commit.swp": b"b0VIM 8.2\x00\xff\xfe\x00",
+    "post-checkout": b"\x7fELF\x02\x01\x01\x00\xff\xfe",
+    "commit-msg.legacy": "#!/bin/sh\n# caf\xe9 legacy hook\n".encode("latin-1"),
+}
+
+
+class TestJunkInTheHooksDirIsSkippedNotFatal:
+    """Reading the WHOLE hooks dir puts arbitrary files in scope; none may abort the run.
+
+    The set widened from three known names to every entry, and the error handling did
+    not follow. One undecodable file — which any `.git/hooks` may hold — took down hook
+    installation for every remaining checkout, and container init with it (`set -e`).
+    """
+
+    @staticmethod
+    def _poison(repo: Path) -> None:
+        for name, blob in _UNDECODABLE.items():
+            (_hooks_dir(repo) / name).write_bytes(blob)
+
+    def test_harden_hooks_skips_undecodable_files(self, main_clone: Path) -> None:
+        gone = main_clone.parent / "torn-down" / ".venv" / "bin" / "prek"
+        hook = _write_stale_hook(main_clone, "pre-push", str(gone))
+        self._poison(main_clone)
+
+        prek_hook.harden_hooks(str(main_clone))
+
+        assert "--version" in hook.read_text(), "the real prek hook beside the junk was not hardened"
+        assert str(gone) not in hook.read_text()
+
+    def test_drop_foreign_config_hooks_skips_undecodable_files(self, main_clone: Path) -> None:
+        foreign = _write_foreign_hook(main_clone, "pre-commit")
+        self._poison(main_clone)
+
+        dropped = prek_hook.drop_foreign_config_hooks(str(main_clone))
+
+        assert [hook.path for hook in dropped] == [foreign], "the real foreign shim beside the junk was not dropped"
+        assert not foreign.exists()
+
+    def test_remove_stale_hooks_skips_undecodable_files(self, main_clone: Path) -> None:
+        torn_down = main_clone.parent / "torn-down"
+        stale = _write_stale_hook(main_clone, "pre-push", str(torn_down / ".venv" / "bin" / "prek"))
+        self._poison(main_clone)
+
+        cleaned = prek_hook.remove_stale_hooks(str(main_clone), str(torn_down))
+
+        assert cleaned == [str(stale)], "the real stale hook beside the junk was not removed"
+        assert not stale.exists()
+
+    def test_no_undecodable_file_is_rewritten_or_removed(self, main_clone: Path) -> None:
+        """Skipped means untouched: junk is not a prek hook, so nothing may write or unlink it."""
+        _write_stale_hook(main_clone, "pre-push", str(main_clone.parent / "torn-down" / "bin" / "prek"))
+        self._poison(main_clone)
+
+        prek_hook.harden_hooks(str(main_clone))
+        prek_hook.drop_foreign_config_hooks(str(main_clone))
+        prek_hook.remove_stale_hooks(str(main_clone), str(main_clone.parent / "torn-down"))
+
+        for name, blob in _UNDECODABLE.items():
+            junk = _hooks_dir(main_clone) / name
+            assert junk.is_file(), f"{name} was removed — an undecodable file is not a prek hook"
+            assert junk.read_bytes() == blob, f"{name} was rewritten — a lossy read must never reach a write"
+
+    def test_a_prek_marked_hook_that_is_not_utf8_is_skipped_never_rewritten_lossily(self, main_clone: Path) -> None:
+        """Why the read SKIPS rather than `errors="replace"`: what it reads is written back.
+
+        A replacing read would harden this hook out of its own mojibake, silently swapping
+        the undecodable byte for U+FFFD in an executable gate. Refusing to decode leaves
+        the hook exactly as found — unhardened, but not corrupted.
+        """
+        hook = _hooks_dir(main_clone) / "pre-push"
+        blob = _STALE_PRE_PUSH.format(prek_path="/gone/bin/prek").encode() + b"\n# caf\xe9\n"
+        hook.write_bytes(blob)
+        hook.chmod(0o755)
+
+        prek_hook.harden_hooks(str(main_clone))
+
+        assert hook.read_bytes() == blob, "a hook was rewritten from a lossy read of itself"
+
+
+#: Every hook name git RUNS — ``githooks(5)``, git 2.50.1. Written out here rather than
+#: imported, because a fixture reading its expectations off the module under test cannot
+#: catch that module being short.
+_NAMES_GIT_RUNS = (
+    "applypatch-msg",
+    "pre-applypatch",
+    "post-applypatch",
+    "pre-commit",
+    "pre-merge-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "pre-rebase",
+    "post-checkout",
+    "post-merge",
+    "pre-push",
+    "pre-receive",
+    "update",
+    "proc-receive",
+    "post-receive",
+    "post-update",
+    "reference-transaction",
+    "push-to-checkout",
+    "pre-auto-gc",
+    "post-rewrite",
+    "sendemail-validate",
+    "fsmonitor-watchman",
+    "p4-changelist",
+    "p4-prepare-changelist",
+    "p4-post-changelist",
+    "p4-pre-submit",
+    "post-index-change",
+)
+
+#: Names a hook sits parked under, by a developer or by the install's own preservation.
+#: Git runs none of them, so nothing here may be rewritten or unlinked.
+_PARKED_COPIES = ("pre-push.bak", "pre-push.disabled", "pre-push~", "pre-commit.orig", "pre-push.legacy")
+
+
+def _park(repo: Path, body: str) -> dict[Path, bytes]:
+    parked: dict[Path, bytes] = {}
+    for name in _PARKED_COPIES:
+        copy = _hooks_dir(repo) / name
+        copy.write_text(body)
+        copy.chmod(0o755)
+        parked[copy] = copy.read_bytes()
+    return parked
+
+
+class TestOnlyFilesGitActuallyRunsAreTouched:
+    """Enumeration bounded to the names git RUNS, because what is enumerated gets rewritten.
+
+    Widening the set from three names to every entry in the hooks dir put a developer's
+    parked copies — ``pre-push.bak``, ``pre-push.disabled``, ``pre-push~`` — in scope of
+    a rewrite and an unlink. Git executes none of them, so nothing ever recreates one:
+    the file is simply gone from the clone's SHARED hooks dir, permanently and quietly.
+    """
+
+    def test_harden_hooks_rewrites_only_the_hook_git_runs(self, main_clone: Path) -> None:
+        gone = str(main_clone.parent / "torn-down" / "bin" / "prek")
+        live = _write_stale_hook(main_clone, "pre-push", gone)
+        parked = _park(main_clone, _STALE_PRE_PUSH.format(prek_path=gone))
+
+        repaired = prek_hook.harden_hooks(str(main_clone))
+
+        assert repaired == [live]
+        for copy, blob in parked.items():
+            assert copy.read_bytes() == blob, f"{copy.name} is a parked copy git never runs — it was rewritten"
+
+    def test_drop_foreign_config_hooks_never_unlinks_a_parked_copy(self, main_clone: Path) -> None:
+        live = _write_foreign_hook(main_clone, "pre-commit")
+        parked = _park(main_clone, _FOREIGN_HOOK.format(name="pre-commit"))
+
+        dropped = prek_hook.drop_foreign_config_hooks(str(main_clone))
+
+        assert [hook.path for hook in dropped] == [live]
+        for copy, blob in parked.items():
+            assert copy.is_file(), f"{copy.name} is a parked copy git never runs — it was unlinked"
+            assert copy.read_bytes() == blob
+
+    def test_remove_stale_hooks_never_unlinks_a_parked_copy(self, main_clone: Path) -> None:
+        """The teardown path, where a wrong unlink destroys state a developer put there by hand."""
+        torn_down = main_clone.parent / "torn-down"
+        baked = str(torn_down / ".venv" / "bin" / "prek")
+        live = _write_stale_hook(main_clone, "pre-push", baked)
+        parked = _park(main_clone, _STALE_PRE_PUSH.format(prek_path=baked))
+
+        cleaned = prek_hook.remove_stale_hooks(str(main_clone), str(torn_down))
+
+        assert cleaned == [str(live)]
+        for copy, blob in parked.items():
+            assert copy.is_file(), f"{copy.name} is a parked copy git never runs — it was unlinked"
+            assert copy.read_bytes() == blob
+
+    def test_every_git_hook_name_git_runs_is_enumerated(self, main_clone: Path) -> None:
+        """Narrowing the set is the regression this MR was opened to fix, one type at a time."""
+        gone = str(main_clone.parent / "torn-down" / "bin" / "prek")
+        for name in _NAMES_GIT_RUNS:
+            _write_stale_hook(main_clone, name, gone)
+
+        repaired = prek_hook.harden_hooks(str(main_clone))
+
+        assert sorted(hook.name for hook in repaired) == sorted(_NAMES_GIT_RUNS)
+
+    def test_the_hook_name_set_is_gits_documented_set(self) -> None:
+        """``man githooks | col -bx | grep -E '^   [a-z][a-z0-9-]*$'`` — git 2.50.1, 28 names."""
+        assert frozenset(_NAMES_GIT_RUNS) == prek_hook._GIT_HOOK_NAMES
+
+
+def _read_working_once_per_path() -> tuple[Callable[[Path], str], list[Path]]:
+    """``_read`` works once per FILE and returns ``""`` for every re-read of that same file.
+
+    Keyed on the path rather than on a global call ordinal, because an ordinal budget is
+    calibrated against however many reads the enumeration happens to make: add one read
+    anywhere upstream and the stub arms in the wrong place, degrading nothing the assertion
+    looks at, so the test goes on passing over the very defect it was written to catch.
+    """
+    real = prek_hook._read
+    reads: list[Path] = []
+
+    def _read_once_per_path(path: Path) -> str:
+        already_classified = path in reads
+        reads.append(path)
+        return "" if already_classified else real(path)
+
+    return _read_once_per_path, reads
+
+
+class TestADroppedHookIsNeverRestoredEmpty:
+    """The body a ``DroppedHook`` carries must be the body that classified the file.
+
+    Reading it a third time, at construction, opens a window: anything that makes that
+    read fail stores ``""``, and ``_restore`` then writes a 0-byte executable hook —
+    a gate that exits 0 on every commit and push, and reports itself installed.
+    """
+
+    def test_a_dropped_hook_carries_the_body_that_classified_it(self, main_clone: Path) -> None:
+        foreign = _write_foreign_hook(main_clone, "pre-commit")
+        read_once_per_path, reads = _read_working_once_per_path()
+
+        with patch.object(prek_hook, "_read", read_once_per_path):
+            dropped = prek_hook.drop_foreign_config_hooks(str(main_clone))
+
+        assert reads.count(foreign) == 1, "the drop re-read a hook it had already classified"
+        assert read_once_per_path(foreign) == "", "the stub never armed, so a re-read would have succeeded"
+        assert [hook.path for hook in dropped] == [foreign]
+        assert prek_hook._PREK_MARKER in dropped[0].body
+        assert prek_hook._FOREIGN_CONFIG_FLAG in dropped[0].body
+
+    def test_restore_never_writes_an_empty_executable_hook(self, main_clone: Path) -> None:
+        foreign = _write_foreign_hook(main_clone, "pre-commit")
+        original = foreign.read_bytes()
+        read_once_per_path, _reads = _read_working_once_per_path()
+
+        with patch.object(prek_hook, "_read", read_once_per_path):
+            dropped = prek_hook.drop_foreign_config_hooks(str(main_clone))
+        prek_hook._restore(dropped)
+
+        assert foreign.read_bytes() == original
+        assert foreign.stat().st_size > 0
+
+
+class TestASkippedHookIsReportedNotSilentlyDropped:
+    """A hook the reader cannot decode is left unhardened, and silence hid that from setup.
+
+    Bounded by the name filter: only a file named exactly a hook git runs is ever opened,
+    so the noise cannot come from a `.DS_Store` or a swapfile — it can only be a real gate
+    this module declined to repair.
+    """
+
+    def test_an_undecodable_hook_name_is_reported_not_silently_skipped(
+        self, main_clone: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        hook = _hooks_dir(main_clone) / "pre-push"
+        hook.write_bytes("#!/bin/sh\n# caf\xe9 legacy hook\nexit 0\n".encode("latin-1"))
+        hook.chmod(0o755)
+
+        with caplog.at_level(logging.WARNING, logger=prek_hook.__name__):
+            prek_hook.harden_hooks(str(main_clone))
+
+        assert "pre-push" in caplog.text
+
+    def test_a_readable_hook_is_not_reported(self, main_clone: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """The control: a reader that warns unconditionally reports every hook it ever read."""
+        _write_stale_hook(main_clone, "pre-push", str(main_clone.parent / "torn-down" / "bin" / "prek"))
+
+        with caplog.at_level(logging.WARNING, logger=prek_hook.__name__):
+            prek_hook.harden_hooks(str(main_clone))
+
+        assert caplog.text == ""
+
+    def test_junk_git_never_runs_is_not_reported(self, main_clone: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """The name filter and the warning compose: junk is excluded before anything reads it."""
+        _write_stale_hook(main_clone, "pre-push", str(main_clone.parent / "torn-down" / "bin" / "prek"))
+        (_hooks_dir(main_clone) / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1\xff\xfe")
+        (_hooks_dir(main_clone) / "pre-push.swp").write_bytes(b"b0VIM 8.2\x00\xff\xfe\x00")
+
+        with caplog.at_level(logging.WARNING, logger=prek_hook.__name__):
+            prek_hook.harden_hooks(str(main_clone))
+
+        assert caplog.text == ""
+
+
+class TestHardenHooksReportsWhatItRepaired:
+    """`harden_hooks` returning `None` made a silent repair indistinguishable from a no-op."""
+
+    def test_returns_the_hooks_it_rewrote(self, main_clone: Path) -> None:
+        gone = str(main_clone.parent / "torn-down" / "bin" / "prek")
+        hooks = {name: _write_stale_hook(main_clone, name, gone) for name in ("pre-commit", "pre-push")}
+
+        repaired = prek_hook.harden_hooks(str(main_clone))
+
+        assert sorted(hook.name for hook in repaired) == sorted(hooks)
+
+    def test_returns_empty_when_nothing_needed_repair(self, main_clone: Path) -> None:
+        _write_stale_hook(main_clone, "pre-push", str(main_clone.parent / "torn-down" / "bin" / "prek"))
+        prek_hook.harden_hooks(str(main_clone))
+
+        assert prek_hook.harden_hooks(str(main_clone)) == []
+
+
+def _config_installing(*types: str) -> str:
+    body = _noop_config(types[0], "gate")
+    return body.replace(
+        f"default_install_hook_types: [{types[0]}]", f"default_install_hook_types: [{', '.join(types)}]"
+    )
+
+
+class TestOnlyTheTypesPrekWillInstallAreQuarantined:
+    """`-f` reaps only the types the config DECLARES — measured, prek 0.4.11.
+
+    A foreign `post-checkout`, a `post-checkout.legacy` and a `pre-rebase.legacy` were left
+    completely untouched beside a `[pre-commit, pre-push]` config. Parking all 28 names would
+    therefore write and delete copies of hooks nothing was going to destroy, and a run that
+    died mid-flight would leave a permanent WARN about a hook that is fine — which is how an
+    operator learns to ignore the warning that matters.
+    """
+
+    def test_the_declared_types_are_followed(self, main_clone: Path) -> None:
+        (main_clone / ".pre-commit-config.yaml").write_text(_config_installing("pre-commit", "pre-push"))
+
+        assert prek_hook._installable_hook_types(str(main_clone)) == ("pre-commit", "pre-push")
+
+    def test_a_different_declaration_is_followed_too(self, main_clone: Path) -> None:
+        """The control: a hard-coded `("pre-commit", "pre-push")` passes the test above."""
+        (main_clone / ".pre-commit-config.yaml").write_text(_config_installing("post-checkout"))
+
+        assert prek_hook._installable_hook_types(str(main_clone)) == ("post-checkout",)
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            pytest.param(None, id="no-config-at-all"),
+            pytest.param("{{{ not yaml", id="unparsable-yaml"),
+            pytest.param("default_install_hook_types: pre-push\n", id="a-scalar-where-a-list-belongs"),
+        ],
+    )
+    def test_an_unreadable_config_falls_back_to_every_name_git_runs(self, main_clone: Path, config: str | None) -> None:
+        """Over-capturing costs a no-op reinstate; under-capturing costs the operator's bytes."""
+        if config is not None:
+            (main_clone / ".pre-commit-config.yaml").write_text(config)
+
+        assert prek_hook._installable_hook_types(str(main_clone)) == tuple(sorted(_NAMES_GIT_RUNS))
+
+    def test_a_config_without_the_key_installs_pre_commit_alone(self, main_clone: Path) -> None:
+        (main_clone / ".pre-commit-config.yaml").write_text("repos: []\n")
+
+        assert prek_hook._installable_hook_types(str(main_clone)) == ("pre-commit",)
+
+    def test_only_the_declared_type_is_in_the_quarantine_while_prek_runs(self, main_clone: Path) -> None:
+        """Asserted DURING the destructive window — after it, an over-capture reinstates invisibly."""
+        (main_clone / ".pre-commit-config.yaml").write_text(_config_installing("pre-commit", "pre-push"))
+        hooks = _hooks_dir(main_clone)
+        _plant(hooks, "pre-push", _OPERATOR_GATE)
+        _plant(hooks, "post-checkout", _OPERATOR_GATE)
+        _plant(hooks, "pre-rebase.legacy", _OPERATOR_GATE)
+
+        parked_while_running = self._install_recording_the_quarantine(main_clone)
+
+        assert parked_while_running == ["pre-push"]
+        assert (hooks / "post-checkout").read_bytes() == _OPERATOR_GATE
+        assert (hooks / "pre-rebase.legacy").read_bytes() == _OPERATOR_GATE
+
+    @staticmethod
+    def _install_recording_the_quarantine(repo: Path) -> list[str]:
+        """Run the install with a `prek install -f` that destroys exactly what the real one does."""
+        real = prek_hook.run_step
+        seen: list[str] = []
+
+        def _dispatch(name: str, *args: object, **kwargs: object) -> StepResult:
+            if name != "prek-install":
+                return real(name, *args, **kwargs)
+            seen.extend(sorted(path.name for path in _quarantine(repo).iterdir()))
+            for hook_type in ("pre-commit", "pre-push"):
+                (_hooks_dir(repo) / hook_type).unlink(missing_ok=True)
+                (_hooks_dir(repo) / f"{hook_type}.legacy").unlink(missing_ok=True)
+                _plant(_hooks_dir(repo), hook_type, _PREK_SHIM_BYTES)
+            return StepResult(name=name, success=True)
+
+        with patch.object(prek_hook, "run_step", side_effect=_dispatch):
+            prek_hook.install(str(repo))
+        return seen
+
+
+def _read_bytes_refusing(path: Path) -> Callable[..., bytes]:
+    real = Path.read_bytes
+
+    def _read(self: Path, *args: object, **kwargs: object) -> bytes:
+        if self == path:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self, *args, **kwargs)
+
+    return _read
+
+
+def _recording_run_step() -> tuple[Callable[..., StepResult], list[str]]:
+    real = prek_hook.run_step
+    steps: list[str] = []
+
+    def _dispatch(name: str, *args: object, **kwargs: object) -> StepResult:
+        steps.append(name)
+        return real(name, *args, **kwargs)
+
+    return _dispatch, steps
+
+
+class TestAHookThatCannotBeMadeDurableAbortsBeforeAnythingIsDestroyed:
+    """Round 2 logged the capture failure and CONTINUED, so the bytes were destroyed unpreserved.
+
+    There is nothing to report here any more: a hook this process cannot read, or cannot park,
+    refuses the destructive call outright. The clone keeps the operator's own gate and simply
+    does not get teatree's yet — the non-destructive reading of an ambiguous filesystem.
+    """
+
+    @staticmethod
+    def _foreign_gate_and_a_droppable_shim(repo: Path) -> Path:
+        (repo / ".pre-commit-config.yaml").write_text(_config_installing("pre-commit", "pre-push"))
+        _write_foreign_hook(repo, "pre-commit")
+        _plant(_hooks_dir(repo), "pre-push", _OPERATOR_GATE)
+        return _hooks_dir(repo) / "pre-push"
+
+    def test_an_unreadable_hook_refuses_the_install_with_the_clone_as_found(self, main_clone: Path) -> None:
+        gate = self._foreign_gate_and_a_droppable_shim(main_clone)
+        dispatch, steps = _recording_run_step()
+
+        with (
+            patch.object(prek_hook, "run_step", side_effect=dispatch),
+            patch.object(Path, "read_bytes", _read_bytes_refusing(gate)),
+        ):
+            result = prek_hook.install(str(main_clone))
+
+        assert not result.success
+        assert str(gate) in result.error, result.error
+        assert gate.read_bytes() == _OPERATOR_GATE
+        assert (_hooks_dir(main_clone) / "pre-commit").is_file(), "the drop ran before the capture was proved durable"
+        assert "prek-install" not in steps
+
+    def test_an_unparkable_hook_refuses_the_install_too(self, main_clone: Path) -> None:
+        gate = self._foreign_gate_and_a_droppable_shim(main_clone)
+        dispatch, steps = _recording_run_step()
+
+        with (
+            patch.object(prek_hook, "run_step", side_effect=dispatch),
+            patch.object(Path, "write_bytes", _write_bytes_refusing_under(_quarantine(main_clone))),
+        ):
+            result = prek_hook.install(str(main_clone))
+
+        assert not result.success
+        assert str(gate) in result.error, result.error
+        assert gate.read_bytes() == _OPERATOR_GATE
+        assert (_hooks_dir(main_clone) / "pre-commit").is_file()
+        assert "prek-install" not in steps
+
+    def test_a_readable_hook_installs_normally(self, main_clone: Path) -> None:
+        """The control: an install that refuses unconditionally passes both tests above."""
+        gate = self._foreign_gate_and_a_droppable_shim(main_clone)
+        dispatch, steps = _recording_run_step()
+
+        with patch.object(prek_hook, "run_step", side_effect=_prek_install_returning(success=True)):
+            result = prek_hook.install(str(main_clone))
+        with patch.object(prek_hook, "run_step", side_effect=dispatch):
+            prek_hook.drop_foreign_config_hooks(str(main_clone))
+
+        assert result.success, result.error
+        assert gate.read_bytes() == _OPERATOR_GATE
+        assert "prek-install" not in steps
+
+
+class TestTheQuarantineNeverOverwritesAnEarlierRunsCopy:
+    """Two operator gates, one slot: overwriting the parked one loses bytes the second time."""
+
+    def test_a_differing_parked_copy_refuses_the_install(self, main_clone: Path) -> None:
+        (main_clone / ".pre-commit-config.yaml").write_text(_config_installing("pre-push"))
+        parked = _quarantine(main_clone)
+        parked.mkdir(parents=True)
+        (parked / "pre-push").write_bytes(_PREK_SHIM_BYTES)
+        _plant(_hooks_dir(main_clone), "pre-push", _OPERATOR_GATE)
+
+        result = prek_hook.install(str(main_clone))
+
+        assert not result.success
+        assert str(parked / "pre-push") in result.error, result.error
+        assert (parked / "pre-push").read_bytes() == _PREK_SHIM_BYTES
+        assert (_hooks_dir(main_clone) / "pre-push").read_bytes() == _OPERATOR_GATE
+
+    def test_an_identical_parked_copy_lets_the_install_proceed(self, main_clone: Path) -> None:
+        """The control: "refuse whenever the file exists" passes the test above and breaks every re-run."""
+        (main_clone / ".pre-commit-config.yaml").write_text(_config_installing("pre-push"))
+        parked = _quarantine(main_clone)
+        parked.mkdir(parents=True)
+        (parked / "pre-push").write_bytes(_OPERATOR_GATE)
+        _plant(_hooks_dir(main_clone), "pre-push", _OPERATOR_GATE)
+
+        with patch.object(prek_hook, "run_step", side_effect=_prek_install_returning(success=True)):
+            result = prek_hook.install(str(main_clone))
+
+        assert result.success, result.error
+        assert hook_quarantine.pending(parked.parent) == ()
+
+
+class TestInstallOutcomeNamesExactlyOneThing:
+    """The retired prek result and superseded skill-installer enum stay gone.
+
+    Asserted as a GLOBAL property rather than `not hasattr(prek_hook, "InstallOutcome")`, which
+    is what makes it a collision test instead of an attribute test.
+    """
+
+    def test_no_install_outcome_definition_remains(self) -> None:
+        src = Path(prek_hook.__file__).parents[2]
+        defined_in = sorted(
+            str(path.relative_to(src))
+            for path in src.rglob("*.py")
+            if any(_defines_install_outcome(node) for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))))
+        )
+
+        assert defined_in == []
+
+
+def _defines_install_outcome(node: ast.AST) -> bool:
+    if isinstance(node, ast.ClassDef):
+        return node.name == "InstallOutcome"
+    if isinstance(node, ast.Assign):
+        return any(isinstance(target, ast.Name) and target.id == "InstallOutcome" for target in node.targets)
+    return False

@@ -48,6 +48,7 @@ from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
 from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 
 from teatree.agents import permission_modes
+from teatree.agents.compaction_guard import with_compaction_off
 from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
@@ -67,7 +68,7 @@ from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_resolution import resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
-from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec
+from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, COST_SOURCE_REPORTED, EvalRun, EvalSpec
 from teatree.eval.production_hooks import has_hook_events, hooked_env, t3_plugin, teatree_root
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.resource_caps import resolve_watchdog_seconds
@@ -223,6 +224,11 @@ class CleanRoomConfig:
     #: (:data:`_SKILL_CATALOG_FIXTURE_RELATIVE_PATH`) so the named skills are
     #: genuinely discoverable, then filters the listing to exactly this set.
     skills: tuple[str, ...] = ()
+    #: Scenario-owned plugin roots that publish one of ``skills``. The core
+    #: fixture catalog remains the default; this supplements it for an overlay
+    #: scenario whose real skill must stay owned by the overlay rather than be
+    #: copied into core.
+    skill_catalog_plugins: tuple[SdkPluginConfig, ...] = ()
     #: Register the shipped teatree plugin (``hooks/hooks.json``) into the SDK
     #: child (``plugins=[t3_plugin(), …]`` + ``include_hook_events=True``) so the
     #: scenario measures the model+hook SYSTEM that ships. Empty (the default)
@@ -242,6 +248,29 @@ def _skill_catalog_fixture_plugin() -> SdkPluginConfig:
     """
     path = teatree_root().joinpath(*_SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
     return {"type": "local", "path": str(path)}
+
+
+def _scenario_skill_catalog_plugins(spec: EvalSpec) -> tuple[SdkPluginConfig, ...]:
+    """Return scenario-owned plugins that publish a declared available skill.
+
+    Core's synthetic catalog cannot own a real overlay skill without violating
+    the overlay-neutral boundary. An overlay eval may instead live below a
+    local-plugin root that publishes its own ``skills/<name>/SKILL.md``. Walk
+    only the scenario's ancestors and never treat the teatree core plugin as a
+    supplement: core's deliberately tiny eval fixture remains the sole catalog
+    widening for core scenarios.
+    """
+    if not spec.available_skills:
+        return ()
+
+    core_root = teatree_root().resolve()
+    plugins: list[SdkPluginConfig] = []
+    for root in spec.source_path.resolve().parents:
+        if root == core_root or not (root / ".claude-plugin" / "plugin.json").is_file():
+            continue
+        if any((root / "skills" / name / "SKILL.md").is_file() for name in spec.available_skills):
+            plugins.append({"type": "local", "path": str(root)})
+    return tuple(plugins)
 
 
 def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
@@ -288,28 +317,44 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         plugins.append(t3_plugin())
     if config.skills:
         plugins.append(_skill_catalog_fixture_plugin())
-    return ClaudeAgentOptions(
-        setting_sources=[],
-        system_prompt=spill_system_prompt(config.system_prompt, config.cwd),
-        settings=EMPTY_SETTINGS,
-        strict_mcp_config=True,
-        cwd=config.cwd,
-        env=config.env,
-        add_dirs=[str(config.workspace)],
-        tools=available,
-        allowed_tools=list(config.allowed_tools),
-        disallowed_tools=list(config.disallowed_tools),
-        agents=config.agents,
-        permission_mode=permission_modes.UNATTENDED,
-        max_turns=config.max_turns,
-        max_budget_usd=config.max_budget_usd,
-        model=config.model,
-        fallback_model=FALLBACK_MODEL,
-        effort=config.effort,
-        skills=list(config.skills) if config.skills else None,
-        plugins=plugins,
-        include_hook_events=config.production_hooks,
+        plugins.extend(config.skill_catalog_plugins)
+    return with_compaction_off(
+        ClaudeAgentOptions(
+            setting_sources=[],
+            system_prompt=spill_system_prompt(config.system_prompt, config.cwd),
+            settings=EMPTY_SETTINGS,
+            strict_mcp_config=True,
+            cwd=config.cwd,
+            env=config.env,
+            add_dirs=[str(config.workspace)],
+            tools=available,
+            allowed_tools=list(config.allowed_tools),
+            disallowed_tools=list(config.disallowed_tools),
+            agents=config.agents,
+            permission_mode=permission_modes.UNATTENDED,
+            max_turns=config.max_turns,
+            max_budget_usd=config.max_budget_usd,
+            model=config.model,
+            fallback_model=FALLBACK_MODEL,
+            effort=config.effort,
+            skills=list(config.skills) if config.skills else None,
+            plugins=plugins,
+            include_hook_events=config.production_hooks,
+        )
     )
+
+
+def resolve_agent_path(agent_path: str, spec_dir: Path | None = None) -> Path:
+    """The on-disk SKILL.md *agent_path* names, resolved the way the runner resolves it."""
+    resolved = Path(agent_path).expanduser()
+    if not resolved.is_absolute():
+        # The spec's own directory wins: a relative agent path is written relative to the spec.
+        spec_roots = (spec_dir,) if spec_dir is not None else ()
+        for root in (*spec_roots, Path.cwd(), teatree_root()):
+            candidate = root / resolved
+            if candidate.is_file():
+                return candidate
+    return resolved
 
 
 def load_agent_definition(
@@ -318,15 +363,7 @@ def load_agent_definition(
     spec_dir: Path | None = None,
 ) -> str:
     """Read the agent definition (whole file, or only the named ``## `` sections)."""
-    resolved = Path(agent_path).expanduser()
-    if not resolved.is_absolute():
-        # The spec's own directory wins: a relative agent path is written relative to the spec.
-        spec_roots = (spec_dir,) if spec_dir is not None else ()
-        for root in (*spec_roots, Path.cwd(), teatree_root()):
-            candidate = root / resolved
-            if candidate.is_file():
-                resolved = candidate
-                break
+    resolved = resolve_agent_path(agent_path, spec_dir)
     if not resolved.is_file():
         msg = f"Agent definition not found: {agent_path}"
         raise FileNotFoundError(msg)
@@ -469,7 +506,7 @@ class ApiInProcessRunner:
         # carry the retry count for the AIMD governor.
         if spec.production_hooks and not has_hook_events(messages):
             return EvalRun.terminal(spec.name, terminal_reason=HOOKS_NOT_REGISTERED_REASON)
-        run = eval_run_from_messages(spec, messages)
+        run = eval_run_from_messages(spec, messages, price_from_usage=False)
         return dataclasses.replace(run, throttle_retries=retries) if retries else run
 
     def _terminal_capped_run(self, spec: EvalSpec, terminal: TerminalResultError) -> EvalRun:
@@ -491,13 +528,14 @@ class ApiInProcessRunner:
             cost = budget_floor_from_message(str(terminal.cause), cap=effective_cap)
             empty_cost = cost if terminal.terminal_reason == BUDGET_EXCEEDED_REASON else 0.0
             return EvalRun.terminal(spec.name, terminal_reason=terminal.terminal_reason, cost_usd=empty_cost)
-        graded = eval_run_from_messages(spec, terminal.messages)
+        graded = eval_run_from_messages(spec, terminal.messages, price_from_usage=False)
         cost = message_amount if message_amount is not None else graded.cost_usd
         return dataclasses.replace(
             graded,
             terminal_reason=terminal.terminal_reason,
             is_error=False,
             cost_usd=cost,
+            cost_source=COST_SOURCE_REPORTED if message_amount is not None else graded.cost_source,
         )
 
     @staticmethod
@@ -509,7 +547,7 @@ class ApiInProcessRunner:
         not forced to FAIL on the stray flag alone — ``ScenarioResult.passed`` fails on
         ``is_error`` BEFORE consulting matchers.
         """
-        graded = eval_run_from_messages(spec, mislabel.messages)
+        graded = eval_run_from_messages(spec, mislabel.messages, price_from_usage=False)
         return dataclasses.replace(graded, is_error=False)
 
     async def _drive(self, spec: EvalSpec, *, system_prompt: str, max_turns: int) -> list[Message]:
@@ -541,6 +579,7 @@ class ApiInProcessRunner:
                     effort=effort,
                     max_budget_usd=max_budget_usd,
                     skills=spec.available_skills,
+                    skill_catalog_plugins=_scenario_skill_catalog_plugins(spec),
                     production_hooks=spec.production_hooks,
                 )
             )
@@ -568,10 +607,11 @@ class ApiInProcessRunner:
                 # registry (fires) and eval hook state never pollutes the host.
                 env = hooked_env(env, cwd)
             if spec.cli_stubs:
-                bindir = stack.enter_context(provision_cli_stubs(spec.cli_stubs))
+                bindir = stack.enter_context(provision_cli_stubs(spec.cli_stubs, source_path=spec.source_path))
                 env = prepend_to_path(env, bindir)
             if spec.fixture:
-                repo = stack.enter_context(provision_fixture(spec.fixture))
+                skill_path = resolve_agent_path(spec.agent_path, spec.source_path.parent)
+                repo = stack.enter_context(provision_fixture(spec.fixture, skill_path=skill_path))
                 yield repo, str(repo), env
                 return
             if not scenario_exposes_subagent_spawn(spec):

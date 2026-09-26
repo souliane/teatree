@@ -32,6 +32,7 @@ resolve through, so a leg's subset is identical to what its planned shard claims
 """
 
 import dataclasses
+import datetime
 import math
 
 from teatree.eval.models import PERMITTED_LANES, UNDER_LOAD_LANE, EvalSpec
@@ -127,6 +128,50 @@ def parse_shard(shard: str | None) -> tuple[int, int] | None:
     return index, total
 
 
+#: The ``index`` field that asks for a DATE-ROTATED shard instead of a fixed one.
+ROTATING_SHARD_INDEX = "rotate"
+
+
+@dataclasses.dataclass(frozen=True)
+class ShardResolution:
+    """A shard token as the run will actually use it, plus why — ``None`` when fixed."""
+
+    token: str | None
+    reason: str | None
+
+
+def resolve_rotating_shard(shard: str | None, *, today: datetime.date | None = None) -> ShardResolution:
+    """Resolve a ``rotate/<total>`` token to the concrete ``index/total`` for *today*.
+
+    A nightly lane pinned to a literal ``1/16`` meters the same sixteenth of the
+    catalog every night, so the other fifteen sixteenths are never exercised
+    nightly. ``rotate/16`` advances one shard per UTC day, covering the catalog over
+    a 16-day cycle while keeping both properties the fixed token had: DETERMINISTIC
+    (one date resolves to one shard, on every runner and on every re-run) and
+    REPRODUCIBLE (:attr:`ShardResolution.reason` states the resolved shard and the
+    date arithmetic behind it, and passing the resolved token back replays exactly
+    that subset). The day number is the proleptic ordinal rather than the
+    day-of-year, so the cycle does not jump phase at a year boundary.
+
+    A fixed or absent token is returned untouched with no reason, so every existing
+    caller and every pinned ``index/total`` behaves exactly as before.
+    """
+    if shard is None or not shard.strip():
+        return ShardResolution(shard, None)
+    index_field, _, total_field = shard.strip().partition("/")
+    if index_field.strip().lower() != ROTATING_SHARD_INDEX:
+        return ShardResolution(shard, None)
+    total_field = total_field.strip()
+    if not total_field.isdigit() or int(total_field) < 1:
+        msg = f"malformed --shard {shard!r}; expected '{ROTATING_SHARD_INDEX}/total' (total >= 1), e.g. 'rotate/16'"
+        raise ShardSpecError(msg)
+    total = int(total_field)
+    day = today or datetime.datetime.now(datetime.UTC).date()
+    index = day.toordinal() % total + 1
+    reason = f"{shard} -> {index}/{total} (UTC {day.isoformat()}, day ordinal {day.toordinal()} mod {total})"
+    return ShardResolution(f"{index}/{total}", reason)
+
+
 def _shard_slice(count: int, index: int, total: int) -> tuple[int, int]:
     """Return the ``[start, stop)`` of the *index*-th of *total* contiguous shards.
 
@@ -140,15 +185,18 @@ def _shard_slice(count: int, index: int, total: int) -> tuple[int, int]:
     return start, start + size
 
 
-def filter_specs_by_shard(specs: list[EvalSpec], shard: str | None) -> list[EvalSpec]:
+def filter_specs_by_shard(
+    specs: list[EvalSpec], shard: str | None, *, today: datetime.date | None = None
+) -> list[EvalSpec]:
     """Return the *index*-th of *total* shards of *specs* (sorted by name).
 
-    ``None``/empty shard → *specs* unchanged. The specs are sorted by their unique
-    name first, so the same shard token always selects the same scenarios. This is
-    the single chokepoint the ``--shard`` CLI flag and the CI matrix both resolve
-    through.
+    ``None``/empty shard → *specs* unchanged. A ``rotate/<total>`` token resolves
+    here too, so no caller can select a different subset than the one it reports.
+    The specs are sorted by their unique name first, so the same shard token always
+    selects the same scenarios. This is the single chokepoint the ``--shard`` CLI
+    flag and the CI matrix both resolve through.
     """
-    parsed = parse_shard(shard)
+    parsed = parse_shard(resolve_rotating_shard(shard, today=today).token)
     if parsed is None:
         return specs
     index, total = parsed

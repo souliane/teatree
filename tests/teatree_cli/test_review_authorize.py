@@ -36,11 +36,10 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.authorize import resolve_live_authorization
-from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting
 from teatree.core.models.live_post_approval import LivePostApproval
 from teatree.core.models.on_behalf_approval import OnBehalfApproval
-from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -52,12 +51,14 @@ def _write_cfg(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
-    mode: OnBehalfPostMode = OnBehalfPostMode.DRAFT_OR_ASK,
+    permitting: bool = False,
     user_id: str = "U-OPERATOR",
 ) -> None:
-    # Both settings are DB-home now — resolved only from the ``ConfigSetting`` store.
     ConfigSetting.objects.set_value("slack_user_id", user_id)
-    ConfigSetting.objects.set_value("on_behalf_post_mode", mode.value)
+    if permitting:
+        seed_permitting_posture()
+    else:
+        seed_forbidding_posture()
 
 
 class TestAuthorizeCommand:
@@ -116,8 +117,8 @@ class TestAuthorizeCommand:
         )
         assert result.exit_code == 0, result.output
 
-        error = resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment")
-        assert error == "", error
+        decision = resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment")
+        assert decision.refusal == "", decision
 
 
 class TestResolveLiveAuthorization:
@@ -132,21 +133,20 @@ class TestResolveLiveAuthorization:
         _write_cfg(self.tmp_path, self.monkeypatch)
         OnBehalfApproval.record(target=f"{OWNED_REPO}!7", action="post_comment", approver_id="U-OPERATOR")
 
-        assert resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment") == ""
+        assert resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment").refusal == ""
 
-    def test_immediate_mode_returns_ok_without_any_row(self) -> None:
-        # Under IMMEDIATE on-behalf mode no token is needed at all — the
-        # user has globally opted into autonomous posting.
-        _write_cfg(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
+    def test_a_permitting_posture_returns_ok_without_any_row(self) -> None:
+        # Under a posture that lets the owner's voice out no token is needed at all.
+        _write_cfg(self.tmp_path, self.monkeypatch, permitting=True)
 
-        assert resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment") == ""
+        assert resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment").refusal == ""
         assert LivePostApproval.objects.count() == 0
         assert OnBehalfApproval.objects.count() == 0
 
     def test_no_authorization_returns_actionable_refusal(self) -> None:
         _write_cfg(self.tmp_path, self.monkeypatch)
 
-        error = resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment")
+        error = resolve_live_authorization(scope=f"{OWNED_REPO}!7", action="post_comment").refusal
         assert error != ""
         # Refusal names the single one-step command, not the old two-step dance.
         assert "authorize" in error
@@ -155,7 +155,7 @@ class TestResolveLiveAuthorization:
         _write_cfg(self.tmp_path, self.monkeypatch)
         OnBehalfApproval.record(target=f"{OWNED_REPO}!1", action="post_comment", approver_id="U-OPERATOR")
 
-        assert resolve_live_authorization(scope=f"{OWNED_REPO}!2", action="post_comment") != ""
+        assert resolve_live_authorization(scope=f"{OWNED_REPO}!2", action="post_comment").refusal != ""
 
 
 class TestPostCommentLiveOneStep:

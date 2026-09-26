@@ -5,7 +5,7 @@
 ``teatree.config``'s package init imports ``resolution`` and the cold hook path loads that
 init. The load-bearing guard is therefore the CONTROL that importing the module never pulls
 pydantic or Django onto the cold path; the table's CONTENT (which keys ship, at which
-values) is pinned against the resolver and the registries in ``test_toml_default_tier``.
+values) is pinned against the resolver and the registries in ``test_declared_default_base``.
 """
 
 import os
@@ -18,8 +18,7 @@ import pytest
 
 from teatree.config import cold_defaults
 from teatree.config.cold_defaults import flatten_settings_table, shipped_defaults_table
-from teatree.config.schema import TeatreeSettingsSchema, setting_meta
-from teatree.config.setting_taxonomy import Category
+from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta
 
 _FIELDS = TeatreeSettingsSchema.model_fields
 _DEFAULT_KEYS = sorted(k for k in _FIELDS if setting_meta(k).category is Category.DEFAULT)
@@ -124,8 +123,7 @@ class TestMtimeKeyedCache:
 
 def test_the_module_exposes_only_what_the_resolver_consumes() -> None:
     # A reader nothing calls is the inverse-drift class this package now ratchets: the
-    # module's public surface is exactly the path constant + the table the DEFAULTS tier
-    # (``resolution._toml_default_rows``) and ``schema`` resolve the file through.
+    # public surface is exactly the path constant plus the table its callers read the file through.
     assert set(cold_defaults.__all__) == {"DEFAULTS_TOML", "flatten_settings_table", "shipped_defaults_table"}
     public = {name for name in vars(cold_defaults) if not name.startswith("_")}
     assert public - set(cold_defaults.__all__) <= {"Any", "Mapping", "Path", "threading", "tomllib"}
@@ -154,10 +152,9 @@ def test_import_does_not_load_pydantic_or_django() -> None:
 def test_the_default_path_is_resolved_at_call_time_not_bound_at_import(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Binding DEFAULTS_TOML as a default ARGUMENT made a re-pointed module constant
-    # silently invisible to every no-argument caller, while `resolution._toml_default_rows`
-    # (which passes it explicitly) honoured it — so the shipped key SET and the shipped
-    # VALUES could be read from two different files at once.
+    # Bound as a default ARGUMENT, a re-pointed DEFAULTS_TOML is invisible to no-argument
+    # callers while explicit-path callers honour it, so the shipped key SET and the shipped
+    # VALUES would come from two different files at once.
     fixture = tmp_path / "defaults.toml"
     fixture.write_text('[teatree]\nmode = "sentinel"\n', encoding="utf-8")
     monkeypatch.setattr(cold_defaults, "DEFAULTS_TOML", fixture)

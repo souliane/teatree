@@ -32,6 +32,22 @@ APPROVE_LIVE_POST_USAGE = (
     "approval phrase such as 'post live' / 'submit it' / 'go ahead')."
 )
 
+# The two paths that reach a reviewer WITHOUT an approval token. Both already
+# exist; neither was named in the refusal, so an agent whose comment is a review
+# finding on the owner's OWN MR read "record a Slack approval" as the only way
+# forward and stalled. Naming them costs nothing and relaxes nothing: the live,
+# colleague-visible post stays gated exactly as before.
+UNGATED_ALTERNATIVES = (
+    "Two paths need no approval token and may already be what you want:\n"
+    "  * drop --live — the default is a DRAFT note, colleague-invisible until "
+    "the user submits it, so a review finding can be recorded right now;\n"
+    "  * `t3 review reply-to-discussion <repo> <mr> <discussion-id> <body>` — on "
+    "an MR the OWNER AUTHORED, an author-side reply to an existing thread is the "
+    "owner's own voice on the owner's own work and carries the #1207/#960 "
+    "author-side carve-out (authorship is PROVED per call and fails closed). Use "
+    "it when the comment answers or amends a review thread on your own MR."
+)
+
 
 class LivePostBlockedError(RuntimeError):
     """No Slack-recorded approval for this MR — the ``--live`` post must NOT publish.
@@ -49,7 +65,8 @@ class LivePostBlockedError(RuntimeError):
             f"is a DRAFT (safe). To post a live, colleague-visible "
             f"comment, the user records a one-shot approval token by "
             f"DM'ing approval and then running:\n"
-            f"{APPROVE_LIVE_POST_USAGE}"
+            f"{APPROVE_LIVE_POST_USAGE}\n"
+            f"{UNGATED_ALTERNATIVES}"
         )
 
 

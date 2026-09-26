@@ -32,6 +32,7 @@ _MIGRATIONS = (
     "teatree.core.migrations.0027_generic_openai_compatible_backend",
     "teatree.core.migrations.0001_squashed_0030",
 )
+_IDLE_WINDOW_MIGRATION = "teatree.core.migrations.0099_carry_the_venv_idle_window_onto_every_artifact"
 _OLD_KEY = "orca_router_name"
 _NEW_KEY = "openai_compatible_model"
 
@@ -127,7 +128,59 @@ class TestConfigSettingDataMigrationUsesTheSchemaEditorConnection(TestCase):
 
         assert not self._canonical().filter(key__in=(_OLD_KEY, _NEW_KEY)).exists()
 
+    def test_the_idle_window_rename_uses_the_migrated_connection(self) -> None:
+        old_key = "venv_idle_days"
+        new_key = "artifact_idle_days"
+        self._migrated().all().delete()
+        self._migrated().create(scope="global", key=old_key, value="9")
+
+        self._module(_IDLE_WINDOW_MIGRATION).carry_configured_value(
+            apps,
+            _StubSchemaEditor(connection.alias),
+        )
+
+        assert self._migrated().get(key=new_key).value == "9"
+        assert not self._canonical().filter(key__in=(old_key, new_key)).exists()
+
+    def test_the_idle_window_reverse_uses_the_migrated_connection(self) -> None:
+        old_key = "venv_idle_days"
+        new_key = "artifact_idle_days"
+        self._migrated().all().delete()
+        self._migrated().create(scope="global", key=new_key, value="9")
+
+        self._module(_IDLE_WINDOW_MIGRATION).restore_the_venv_only_key(
+            apps,
+            _StubSchemaEditor(connection.alias),
+        )
+
+        assert self._migrated().get(key=old_key).value == "9"
+        assert not self._canonical().filter(key__in=(old_key, new_key)).exists()
+
     def test_a_router_selected_query_reaches_the_canonical_store(self) -> None:
         self._canonical().create(scope="global", key=_OLD_KEY, value="canonical-only")
 
         assert apps.get_model("core", "ConfigSetting").objects.get(key=_OLD_KEY).value == "canonical-only"
+
+
+def _unscoped_config_queries() -> list[str]:
+    """``module:function`` for every migration body that names ConfigSetting yet queries an unscoped manager."""
+    import ast  # noqa: PLC0415 — only this structural check parses source
+    import re  # noqa: PLC0415 — only this structural check parses source
+
+    migrations_dir = Path(importlib.import_module("teatree.core.migrations").__file__).parent
+    unscoped = re.compile(r"\.objects\.(?!using\()")
+    offenders = []
+    for path in sorted(migrations_dir.glob("*.py")):
+        source = path.read_text()
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            body = ast.get_source_segment(source, node) or ""
+            if '"ConfigSetting"' in body and unscoped.search(body):
+                offenders.append(f"{path.stem}:{node.name}")
+    return offenders
+
+
+def test_every_config_setting_data_migration_names_its_connection() -> None:
+    """The structural half of the two-alias proof, covering migrations the upgrade test never replays."""
+    assert _unscoped_config_queries() == []

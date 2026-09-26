@@ -78,7 +78,7 @@ def _patches(
         stack.enter_context(
             patch(
                 "teatree.core.on_behalf_egress.require_on_behalf_approval",
-                lambda *, target, action, publish: publish(),
+                lambda *, target, action, context, publish: publish(),
             ),
         )
         stack.enter_context(

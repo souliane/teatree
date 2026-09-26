@@ -14,7 +14,7 @@ Two gates are deliberately NOT in that set, for the same reason: how far the age
 carries work on its own is a separate concern from surrendering a distinct human
 control, and no tier may remove one as a side effect. Each is its own named opt-in
 — ``require_human_approval_to_merge = false`` for review before merge (#3630), and
-``on_behalf_post_mode = "immediate"`` for speaking to a colleague under the owner's
+a permitting posture for speaking to a colleague under the owner's
 identity (#3895).
 
 Under the #1775 DB partition, ``autonomy`` / ``mode`` / the collapsed gate / both
@@ -30,8 +30,9 @@ and is never relaxed.
 import pytest
 from django.test import TestCase
 
-from teatree.config import SAFETY_POSTURE_KEYS, Autonomy, Mode, OnBehalfPostMode, get_effective_settings
+from teatree.config import SAFETY_POSTURE_KEYS, Autonomy, Mode, get_effective_settings
 from teatree.config.resolution import _AUTONOMY_COLLAPSED_GATE_VALUES, AUTONOMY_COLLAPSED_FIELDS
+from teatree.core.mode_resolution import owner_voice_forbidden
 from teatree.core.models import ConfigSetting
 
 
@@ -68,9 +69,6 @@ class TestCollapseSetMembership:
     def test_review_before_merge_is_not_a_collapsed_gate(self) -> None:
         assert "require_human_approval_to_merge" not in _AUTONOMY_COLLAPSED_GATE_VALUES
 
-    def test_colleague_egress_is_not_a_collapsed_gate(self) -> None:
-        assert "on_behalf_post_mode" not in _AUTONOMY_COLLAPSED_GATE_VALUES
-
     def test_no_safety_posture_key_is_tier_derived(self) -> None:
         """The generalization of both exclusions, covering the fields derived outside the set too.
 
@@ -84,7 +82,7 @@ class TestCollapseSetMembership:
 class TestAutonomyDefault(TestCase):
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_MODE", "T3_ON_BEHALF_POST_MODE"):
+        for env in ("T3_OVERLAY_NAME", "T3_MODE"):
             monkeypatch.delenv(env, raising=False)
 
     def test_defaults_to_full(self) -> None:
@@ -99,16 +97,19 @@ class TestAutonomyDefault(TestCase):
         # unreviewed stays its own named opt-in.
         assert get_effective_settings().require_human_approval_to_merge is True
 
-    def test_the_default_tier_still_does_not_open_colleague_egress(self) -> None:
-        # #3895, the same argument one gate over: raising the SHIPPED default to
-        # ``full`` cannot silently hand the agent the owner's colleague-facing voice.
-        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+    def test_the_default_tier_leaves_an_unseeded_box_fail_closed(self) -> None:
+        # #3895, the same argument one gate over: no tier READS the posture, so
+        # raising the SHIPPED default to ``full`` cannot move it. What this box
+        # resolves to is the posture's own question — see
+        # ``tests/teatree_loops/test_preset_seed.py::TestTheSeededPosturesDecideTheOwnersVoice``,
+        # where a SEEDED fresh install resolves ``present`` and egress is OPEN.
+        assert owner_voice_forbidden() is True
 
 
 class _AutonomyDbBase(TestCase):
     @pytest.fixture(autouse=True)
     def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_MODE", "T3_ON_BEHALF_POST_MODE"):
+        for env in ("T3_OVERLAY_NAME", "T3_MODE"):
             monkeypatch.delenv(env, raising=False)
         self.monkeypatch = monkeypatch
 
@@ -127,23 +128,17 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         assert get_effective_settings().require_human_approval_to_merge is True
 
-    def test_full_never_opens_colleague_egress(self) -> None:
-        """#3895 — the highest tier must not silently hand over the owner's voice."""
+    def test_full_leaves_an_unseeded_box_fail_closed(self) -> None:
+        """#3895 — the highest tier does not reach the posture, so it cannot move this."""
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert owner_voice_forbidden() is True
 
     def test_merge_without_review_is_its_own_explicit_opt_in(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         ConfigSetting.objects.set_value("require_human_approval_to_merge", value=False, scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         assert get_effective_settings().require_human_approval_to_merge is False
-
-    def test_opening_colleague_egress_is_its_own_explicit_opt_in(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate", scope="trusted")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
 
     def test_full_leaves_safety_floor_untouched(self) -> None:
         # ``autoload`` / ``orchestrator_bash_gate_enabled`` are untouched by the
@@ -169,7 +164,7 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "careful")
         settings = get_effective_settings()
         assert settings.autonomy is Autonomy.BABYSIT
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert owner_voice_forbidden() is True
         assert settings.require_human_approval_to_merge is True
         assert settings.require_human_approval_to_answer is True
 
@@ -213,10 +208,10 @@ class TestAutonomyNotifyTier(_AutonomyDbBase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         assert get_effective_settings().require_human_approval_to_merge is True
 
-    def test_notify_never_opens_colleague_egress(self) -> None:
+    def test_notify_leaves_an_unseeded_box_fail_closed(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
-        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert owner_voice_forbidden() is True
 
     def test_notify_derives_notify_on_behalf_true(self) -> None:
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
@@ -254,7 +249,7 @@ class TestAutonomyReviewRequestPostDisabled(_AutonomyDbBase):
 
     * ``notify`` → True  (collaborative/customer surface: BLOCK review-request),
     * ``full``   → False (solo tooling surface: PROCEED),
-    * ``babysit``→ default False (review-request follows ``on_behalf_post_mode``).
+    * ``babysit``→ default False (review-request follows the active posture).
     """
 
     def test_notify_resolves_review_request_post_disabled_true(self) -> None:

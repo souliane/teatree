@@ -9,54 +9,78 @@ like :func:`is_squash_merged`'s tests in ``test_workspace.py``.
 """
 
 import subprocess
-from collections.abc import Callable
 from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.core.worktree import branch_classification
 from teatree.core.worktree.branch_classification import _branch_pr_is_merged
-
-
-def _dispatch(gh_stdout: str, glab_stdout: str) -> Callable[..., subprocess.CompletedProcess[str]]:
-    """Return mock stdout for ``gh`` vs ``glab`` based on the invoked binary."""
-
-    def _side_effect(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        cmd = args[0] if args else ""
-        return subprocess.CompletedProcess([], 0, stdout=gh_stdout if cmd == "gh" else glab_stdout)
-
-    return _side_effect
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 
 
 class TestBranchPrIsMerged(TestCase):
+    def setUp(self) -> None:
+        branch_classification._branch_pr_is_merged.cache_clear()
+
+        def _route(_repo: str, *, credential: str) -> ForgeTokenResolution:
+            return ForgeTokenResolution(credential, "test", ForgeTokenState.TOKEN, token="routed")
+
+        self.route = patch(
+            "teatree.core.forge_pr_probe.resolve_repo_token",
+            side_effect=_route,
+        )
+        self.route.start()
+        self.addCleanup(self.route.stop)
+        self.addCleanup(branch_classification._branch_pr_is_merged.cache_clear)
+
     def test_true_when_github_reports_merged_pr(self) -> None:
-        with patch(
-            "teatree.utils.run.subprocess.run",
-            return_value=subprocess.CompletedProcess([], 0, stdout='[{"number":7}]'),
+        with (
+            patch.object(branch_classification, "forge_for_repo", return_value="github"),
+            patch(
+                "teatree.utils.run.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, stdout='[{"number":7}]'),
+            ),
         ):
             assert _branch_pr_is_merged("/repo", "1206-feat-review-run") is True
 
     def test_true_when_gitlab_reports_merged_mr(self) -> None:
-        with patch(
-            "teatree.utils.run.subprocess.run",
-            side_effect=_dispatch(gh_stdout="[]", glab_stdout='[{"iid":5,"merge_commit_sha":"abc"}]'),
+        with (
+            patch.object(branch_classification, "forge_for_repo", return_value="gitlab"),
+            patch(
+                "teatree.utils.run.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, stdout='[{"iid":5,"merge_commit_sha":"abc"}]'),
+            ),
         ):
             assert _branch_pr_is_merged("/repo", "s-repo-99-fix") is True
 
-    def test_false_when_no_merged_pr_on_either_forge(self) -> None:
-        with patch(
-            "teatree.utils.run.subprocess.run",
-            side_effect=_dispatch(gh_stdout="[]", glab_stdout="[]"),
-        ):
-            assert _branch_pr_is_merged("/repo", "1234-feat-pending") is False
+    def test_false_when_matching_forge_has_no_merged_pr(self) -> None:
+        for forge in ("github", "gitlab"):
+            branch_classification._branch_pr_is_merged.cache_clear()
+            with (
+                self.subTest(forge=forge),
+                patch.object(branch_classification, "forge_for_repo", return_value=forge),
+                patch(
+                    "teatree.utils.run.subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout="[]"),
+                ),
+            ):
+                assert _branch_pr_is_merged("/repo", "1234-feat-pending") is False
 
     def test_false_when_host_cli_is_missing_or_blocked(self) -> None:
         for exc in (FileNotFoundError("gh"), PermissionError("blocked")):
-            with patch("teatree.utils.run.subprocess.run", side_effect=exc):
+            branch_classification._branch_pr_is_merged.cache_clear()
+            with (
+                patch.object(branch_classification, "forge_for_repo", return_value="github"),
+                patch("teatree.utils.run.subprocess.run", side_effect=exc),
+            ):
                 assert _branch_pr_is_merged("/repo", "1234-feat-pending") is False
 
     def test_false_when_payload_is_unparsable(self) -> None:
-        with patch(
-            "teatree.utils.run.subprocess.run",
-            side_effect=_dispatch(gh_stdout="not-json", glab_stdout="also-not-json"),
+        with (
+            patch.object(branch_classification, "forge_for_repo", return_value="github"),
+            patch(
+                "teatree.utils.run.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, stdout="not-json"),
+            ),
         ):
             assert _branch_pr_is_merged("/repo", "1234-feat-pending") is False

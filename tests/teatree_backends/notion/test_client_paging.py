@@ -1,11 +1,12 @@
 """The paginated Notion reads: every page is collected, a stuck walk fails loud.
 
-The three ``has_more`` walks (database query, block children, comments) share one
+The ``has_more`` walks (search, database query, block children, comments) share one
 paginator, so the contract is asserted once per surface: a cursor Notion hands
 back a second time means the walk stopped advancing, and an unattended run must
 raise rather than spin.
 """
 
+import json
 from collections.abc import Callable
 
 import httpx
@@ -13,6 +14,7 @@ import pytest
 
 from teatree.backends.notion.client import NotionClient
 from teatree.backends.notion.errors import NotionError
+from tests.teatree_backends.notion._fake_notion import install_fake_notion
 
 _RUNAWAY_PAGES = 6
 
@@ -77,6 +79,17 @@ class TestRepeatedCursor:
         assert len(calls) == 2
 
 
+def test_database_query_reaches_the_shared_notion_fake_query_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    notion = install_fake_notion(monkeypatch)
+    notion.rows = [{"id": "row-1"}]
+
+    rows = NotionClient(token="good").query_database("db-1", db_filter={"property": "Status"})
+
+    assert [row["id"] for row in rows] == ["row-1"]
+    assert notion.query_filters == [{"property": "Status"}]
+    assert notion.requests == [("POST", "/databases/db-1/query")]
+
+
 class TestAdvancingCursor:
     def test_distinct_cursors_are_followed_to_the_end(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _install(
@@ -93,3 +106,19 @@ class TestAdvancingCursor:
         children = NotionClient(token="good").list_block_children("block-1")
 
         assert [child["id"] for child in children] == ["a", "b", "c"]
+
+    def test_shared_object_search_pages_with_a_json_cursor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pages = {
+            "": {"results": [{"id": "page-a"}], "has_more": True, "next_cursor": "c1"},
+            "c1": {"results": [{"id": "database-b"}], "has_more": False, "next_cursor": None},
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            cursor = str(json.loads(request.content).get("start_cursor", ""))
+            return httpx.Response(200, json=pages[cursor])
+
+        _install(monkeypatch, handler)
+
+        objects = NotionClient(token="good").search_shared_objects()
+
+        assert [item["id"] for item in objects] == ["page-a", "database-b"]

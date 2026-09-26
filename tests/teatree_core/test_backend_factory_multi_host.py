@@ -15,6 +15,7 @@ from django.test import TestCase
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource
 from teatree.core.backend_factory import iter_overlay_backends, reset_backend_caches
 from teatree.core.models import ConfigSetting
 from teatree.core.overlay import OverlayBase, OverlayConfig
@@ -28,6 +29,11 @@ class _DualTokenConfig(OverlayConfig):
 
     def get_gitlab_token(self) -> str:
         return "gl-test-token"
+
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        entry = {"github_token": "test/github", "gitlab_token": "test/gitlab"}.get(name, "")
+        source = PassKeySource.DECLARED_DEFAULT if entry else PassKeySource.UNSET
+        return PassKeyResolution(f"{name}_pass_key", entry, source)
 
 
 class _DualTokenOverlay(OverlayBase):
@@ -51,10 +57,12 @@ def teardown_function() -> None:
 
 def test_overlay_with_both_tokens_exposes_both_hosts() -> None:
     """An overlay with both PATs must produce two CodeHostBackend entries."""
-    with patch.object(
-        overlay_loader_mod,
-        "_discover_overlays",
-        return_value={"dual": _DualTokenOverlay()},
+    with (
+        patch.object(overlay_loader_mod, "_discover_overlays", return_value={"dual": _DualTokenOverlay()}),
+        patch(
+            "teatree.core.overlays.forge_credential_provider.read_pass",
+            side_effect=lambda entry: {"test/github": "gh-test-token", "test/gitlab": "gl-test-token"}.get(entry, ""),
+        ),
     ):
         backends = iter_overlay_backends()
 
@@ -68,10 +76,12 @@ def test_overlay_with_both_tokens_exposes_both_hosts() -> None:
 
 def test_hosts_is_back_compatible_with_single_host_field() -> None:
     """``host`` keeps returning the first ``hosts`` entry — legacy callers stay green."""
-    with patch.object(
-        overlay_loader_mod,
-        "_discover_overlays",
-        return_value={"dual": _DualTokenOverlay()},
+    with (
+        patch.object(overlay_loader_mod, "_discover_overlays", return_value={"dual": _DualTokenOverlay()}),
+        patch(
+            "teatree.core.overlays.forge_credential_provider.read_pass",
+            side_effect=lambda entry: {"test/github": "gh-test-token", "test/gitlab": "gl-test-token"}.get(entry, ""),
+        ),
     ):
         backends = iter_overlay_backends()
 

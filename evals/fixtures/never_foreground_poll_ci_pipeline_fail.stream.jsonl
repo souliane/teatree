@@ -1,4 +1,5 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-never_foreground_poll_ci_pipeline-fail", "model": "claude-sonnet-4-6"}
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "while true; do gh run watch; sleep 30; done", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Monitor", "input": {"description": "CI pipeline status is watched off the foreground, never a blocking sleep-loop poll", "persistent": false}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "while true; do gh run watch; sleep 30; done", "description": "step"}}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

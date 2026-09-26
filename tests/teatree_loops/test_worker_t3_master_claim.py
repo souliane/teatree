@@ -20,7 +20,7 @@ from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import LoopDriver, LoopLease
 from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
 from teatree.loops import worker as worker_mod
-from teatree.loops.timer_chains import LoopRunnerState
+from teatree.loops.enable_verdict import FleetAdmission
 from teatree.loops.worker import LoopWorker, WorkerSeams
 
 
@@ -49,16 +49,16 @@ class _FakeHandle:
 
 
 def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopWorker:
-    """A worker that supervises for *polls* polls, then receives a stop signal while OFF."""
-    states = iter([LoopRunnerState.ON] * polls)
-    worker = None
+    """A worker that supervises for *polls* admitting polls, then a clean stop."""
+    holder: list[LoopWorker] = []
+    remaining = iter([FleetAdmission.ADMITS] * polls)
 
-    def read_state() -> LoopRunnerState:
-        try:
-            return next(states)
-        except StopIteration:
-            worker.request_stop()
-            return LoopRunnerState.OFF
+    def read_admission() -> FleetAdmission:
+        verdict = next(remaining, None)
+        if verdict is None:
+            holder[0].request_stop()
+            return FleetAdmission.NONE
+        return verdict
 
     noop: dict[str, Any] = {
         "reconcile": lambda: None,
@@ -71,7 +71,8 @@ def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopW
         "release_master": lambda: None,
     }
     seams = WorkerSeams(
-        read_state=read_state,
+        read_admission=read_admission,
+        read_pressure=lambda: None,
         make_executor=_FakeExecutor,
         spawn=lambda _executor: _FakeHandle(),
         sleep=lambda _s: None,
@@ -79,8 +80,8 @@ def _worker(*, polls: int, poll_seconds: float = 0.0, **overrides: Any) -> LoopW
         executor_queues=("loops",),
         **(noop | overrides),
     )
-    worker = LoopWorker(seams)
-    return worker
+    holder.append(LoopWorker(seams))
+    return holder[0]
 
 
 class TestClaimSeamWiring:

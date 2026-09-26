@@ -1,11 +1,14 @@
 import logging
 import pathlib
 import sys
+from functools import partial
 from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.admission_priority import ADMISSION_RANK_ALIAS, admission_priority_annotations
+from teatree.core.agent_admission import agent_admission_verdict
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
@@ -15,6 +18,8 @@ from teatree.core.management.commands.tasks_session_view import (
     render_session_view,
     render_tasks_table,
 )
+from teatree.core.managers_task_claim import claim_when_admitted
+from teatree.core.modelkit.phases import PhaseCost, cheap_phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation
@@ -363,7 +368,7 @@ class Command(TyperCommand):
         """
         if session:
             return self._list_session_todos(status=status, json_output=json_output)
-        qs = Task.objects.select_related("ticket").order_by("pk")
+        qs = Task.objects.select_related("ticket").annotate(**admission_priority_annotations()).order_by("pk")
         if status:
             qs = qs.filter(status=status)
         rows = [_task_row(task) for task in qs]
@@ -394,7 +399,11 @@ class Command(TyperCommand):
         tool instead, so this view never masquerades as the live session list.
         """
         session_id = current_session_id()
-        qs = Task.objects.for_claude_session(session_id).select_related("ticket")
+        qs = (
+            Task.objects.for_claude_session(session_id)
+            .select_related("ticket")
+            .annotate(**admission_priority_annotations())
+        )
         if status:
             qs = qs.filter(status=status)
         rows = [_task_row(task) for task in qs]
@@ -433,7 +442,10 @@ class Command(TyperCommand):
         """
         session_id = current_session_id()
         qs = (
-            Task.objects.for_claude_session(session_id).filter(status__in=Task.Status.active()).select_related("ticket")
+            Task.objects.for_claude_session(session_id)
+            .filter(status__in=Task.Status.active())
+            .select_related("ticket")
+            .annotate(**admission_priority_annotations())
         )
         rows = [_task_row(task) for task in qs]
         render_reconcile_checklist(
@@ -455,19 +467,38 @@ class Command(TyperCommand):
         return self._execute(task)
 
     def _claim_next_task(self, *, claimed_by: str) -> Task | None:
-        """Claim the next claimable task for both the ``claim`` and ``work-next`` leaves (#4464).
+        """Claim the next ADMITTED task for both the ``claim`` and ``work-next`` leaves (#4464).
 
         ``work-next`` hands the row straight to the heartbeat-renewing agent runner, so the
         claim takes the heartbeat-matched lease rather than ``Task.claim``'s 300s default —
         otherwise a starved first renewal lets the lease lapse under a live run and the sweep
         re-queues it, discarding whatever the attempt had produced. ``claim`` shares the lease
         because its caller is the same worker one step later.
+
+        Enqueue and claim are two ways to START work, so the governor's verdict decides both:
+        a box braked enough to stop the drain enqueueing kept claiming through this seam.
+        A shed EXPENSIVE lane narrows the candidates to the reserved cheap phases IN THE
+        QUERY rather than walking a backed-up queue row by row, so the review that retires
+        work is reachable behind a coding row instead of stuck behind it.
+
+        It reads the lane verdict and does NOT book a seat: the seat is per-task and the
+        enqueue that produced this row already took it, so booking again is refused as an
+        already-dispatched double-admission and the claim returns nothing.
         """
-        task = Task.objects.claimable().first()
-        if task is None:
+        admission = agent_admission_verdict()
+        admission.log_denials()
+        claimable = Task.objects.claimable()
+        if admission.denied_for(PhaseCost.EXPENSIVE) is not None:
+            if admission.denied_for(PhaseCost.CHEAP) is not None:
+                return None
+            claimable = claimable.filter(phase__in=cheap_phase_spellings())
+        task = claimable.first()
+        if task is None or admission.denied_reason(task.phase) is not None:
             return None
-        task.claim(claimed_by=claimed_by, lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)
-        return task
+        refusal = claim_when_admitted(
+            partial(task.claim, claimed_by=claimed_by, lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)
+        )
+        return None if refusal else task
 
     @staticmethod
     def _execute(task: Task) -> dict[str, str]:
@@ -516,6 +547,8 @@ def _task_row(task: Task) -> TaskRow:
         phase=task.phase,
         execution_reason=task.execution_reason,
         claimed_by=task.claimed_by,
+        admission_rank=getattr(task, ADMISSION_RANK_ALIAS),
+        parent_task_id=task.parent_task_id,  # ty: ignore[unresolved-attribute]
         failure_kind=task.failure_kind,
         failure_reason=task.failure_reason,
         failure_environmental=is_environmental(task.failure_kind),

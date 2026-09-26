@@ -51,6 +51,11 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.config.extra_headers import UNLISTED_HEADER_REFUSAL, carries_unlisted_header
+from teatree.config.setting_taxonomy import owner_only_reason
+from teatree.core.managers_task_claim import QUIESCE_SETTING_KEY, advance_quiesce_fence
+from teatree.core.session_identity import is_unattended_unauthorized_write, loop_principal
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
@@ -72,9 +77,77 @@ GLOBAL_SCOPE = ""
 ENTRYPOINT_SEEDER = "entrypoint"
 
 
+def reject_unhonourable_overlay_scope(key: str, scope: str) -> None:
+    """Refuse an overlay-scoped write of a key whose reader takes no overlay.
+
+    A cold/registry key (``agent_tier_models``, a gate kill-switch) is read at the global scope
+    alone, so its overlay row is accepted and then silently ignored.
+
+    A loop timer is one clock per box: the scanner it feeds is built with ``overlay=""``,
+    and the machine-wide tick cadence resolves through whichever overlay the process
+    happened to be running as. Writing the row is the only way one comes to exist, so
+    refusing here means the resolver never has to decide what an unhonourable row means.
+    """
+    from teatree.config.known_settings import SETTING_ENTRIES  # noqa: PLC0415 — deferred: cold-path import
+    from teatree.config.setting_registries import (  # noqa: PLC0415 — deferred: cold-path import
+        BOX_GLOBAL_SETTINGS,
+        OVERLAY_OVERRIDABLE_SETTINGS,
+    )
+
+    if scope and key in BOX_GLOBAL_SETTINGS:
+        msg = (
+            f"{key!r} is one clock per box, so it takes no overlay scope — its reader resolves no "
+            f"overlay, which makes a row scoped to {scope!r} either unreachable or decided by "
+            "whichever overlay the process happens to be. Set it globally instead."
+        )
+        raise ValueError(msg)
+    if scope and key in SETTING_ENTRIES and key not in OVERLAY_OVERRIDABLE_SETTINGS:
+        msg = (
+            f"{key!r} resolves at the global scope only — its reader (a cold/registry read) takes no "
+            f"overlay, so a row scoped to {scope!r} would never be read. Set it globally instead."
+        )
+        raise ValueError(msg)
+
+
 def scope_label(scope: str) -> str:
     """Human label for a row's scope: ``global`` for the empty scope else ``overlay '<name>'``."""
     return "global" if not scope else f"overlay {scope!r}"
+
+
+def decider(authorized_by: str) -> str:
+    """Who DECIDED a write: the named authorizer, else the principal performing it.
+
+    A ratified directive is a human's decision a machine types, so the authorizer is the
+    answer whenever one is named; otherwise the acting principal is.
+    """
+    return authorized_by or loop_principal()[0]
+
+
+def reject_unattended_governed_write(key: str, *, authorized_by: str) -> None:
+    """Refuse a governed key written by the unattended principal with nobody authorizing it.
+
+    Governance was refused on the MCP surface alone, so the same key was refusable there and
+    free from the CLI or any programmatic write. The class predicate is shared
+    (:func:`~teatree.config.setting_taxonomy.owner_only_reason`) and the refusal moves to the
+    one write seam every surface goes through.
+
+    Scoped to what teatree can actually PROVE is unattended: the loop runner declares its own
+    principal, and a process it spawned inherits it. An interactive session is not refused —
+    claiming otherwise would be a guard that names a distinction it cannot make.
+    """
+    reason = owner_only_reason(key)
+    if not reason or not is_unattended_unauthorized_write(authorized_by=authorized_by):
+        return
+    msg = (
+        f"{key!r} is not an unattended write: {reason}. Set it from a session, or pass the identity that authorized it."
+    )
+    raise ValidationError(msg)
+
+
+def reject_unlisted_extra_header(key: str, value: object) -> None:
+    """Refuse, on the seam every write reaches, a header map naming a header off its allowlist."""
+    if carries_unlisted_header(key, value):
+        raise ValidationError(UNLISTED_HEADER_REFUSAL)
 
 
 class SeedOutcome(StrEnum):
@@ -137,7 +210,9 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         if reason := validate_cross_key_write(key, value, resolve_other):
             raise ValidationError(reason)
 
-    def set_value(self, key: str, value: ConfigValue, scope: str = GLOBAL_SCOPE) -> "ConfigSetting":
+    def set_value(
+        self, key: str, value: ConfigValue, scope: str = GLOBAL_SCOPE, *, authorized_by: str = ""
+    ) -> "ConfigSetting":
         """Upsert the override row for *key* in *scope* to *value* (admin path).
 
         The unique ``(scope, key)`` pair makes this an idempotent upsert:
@@ -157,15 +232,25 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         config into one loud error, not a fleet-wide repair-halt flood on every
         later dispatch. The store is left untouched on rejection.
         """
+        reject_unhonourable_overlay_scope(key, scope)
+        reject_unattended_governed_write(key, authorized_by=authorized_by)
+        reject_unlisted_extra_header(key, value)
         self.reject_inconsistent_cross_key(key, value, scope)
         row, _ = self.update_or_create(
             scope=scope,
             key=key,
-            defaults={"value": value, "seeded_by": "", "seed_value": None},
+            defaults={
+                "value": value,
+                "seeded_by": "",
+                "seed_value": None,
+                "written_by": decider(authorized_by),
+            },
         )
+        if key == QUIESCE_SETTING_KEY:
+            advance_quiesce_fence()
         return row
 
-    def set_values(self, rows: "Sequence[tuple[str, ConfigValue, str]]") -> None:
+    def set_values(self, rows: "Sequence[tuple[str, ConfigValue, str]]", *, authorized_by: str = "") -> None:
         """Upsert every ``(key, value, scope)`` in one transaction, judged as one SET.
 
         A document moving a COUPLED pair (#3688) between two valid states has no
@@ -178,11 +263,22 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         """
         with transaction.atomic():
             for key, value, scope in rows:
+                reject_unhonourable_overlay_scope(key, scope)
+                reject_unattended_governed_write(key, authorized_by=authorized_by)
+                reject_unlisted_extra_header(key, value)
+            for key, value, scope in rows:
                 self.update_or_create(
                     scope=scope,
                     key=key,
-                    defaults={"value": value, "seeded_by": "", "seed_value": None},
+                    defaults={
+                        "value": value,
+                        "seeded_by": "",
+                        "seed_value": None,
+                        "written_by": decider(authorized_by),
+                    },
                 )
+            if any(key == QUIESCE_SETTING_KEY for key, _value, _scope in rows):
+                advance_quiesce_fence()
             for key, value, scope in rows:
                 self.reject_inconsistent_cross_key(key, value, scope)
 
@@ -222,6 +318,8 @@ class ConfigSettingManager(models.Manager["ConfigSetting"]):
         two clears the provenance, so the delete and the update match no row and
         the seed reports ``PRESERVED`` instead of overwriting a fresh pin.
         """
+        reject_unhonourable_overlay_scope(key, scope)
+        reject_unlisted_extra_header(key, value)
         row = self.filter(scope=scope, key=key).first()
         equals_default = value == code_default
         if row is None:
@@ -265,7 +363,7 @@ class ConfigSetting(models.Model):
     """One DB-backed override of a ``UserSettings`` field, keyed by ``(scope, key)``.
 
     The ``key`` is the canonical ``UserSettings`` field name (e.g.
-    ``issue_implementer_enabled``) — the same string used in
+    ``review_exempt_repos``) — the same string used in
     ``OVERLAY_OVERRIDABLE_SETTINGS``. The ``scope`` is the empty string for the
     GLOBAL tier (every overlay) or an overlay name for an overlay-scoped
     override (the same identifier as ``[overlays.<name>]``). The ``value`` is
@@ -285,6 +383,7 @@ class ConfigSetting(models.Model):
     key = models.CharField(max_length=255)
     value = models.JSONField(blank=True)
     seeded_by = models.CharField(max_length=255, default="", blank=True)
+    written_by = models.CharField(max_length=255, default="", blank=True)
     seed_value = models.JSONField(null=True, blank=True, default=None)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -310,7 +409,7 @@ class ConfigSetting(models.Model):
         return f"config-setting<{where} {self.key}>"
 
     def clean(self) -> None:
-        """Refuse a JSON ``null`` value and any inconsistent coupled pair (#3688).
+        """Refuse a JSON ``null`` value, an unhonourable overlay scope, and any inconsistent coupled pair (#3688).
 
         ``ModelForm`` validation runs this, so the Django admin refuses the same
         writes ``set_value`` refuses instead of landing them via ``Model.save()``.
@@ -331,4 +430,8 @@ class ConfigSetting(models.Model):
         """
         if self.value is None:
             raise ValidationError({"value": "Enter a JSON value — use [] or {} for an empty list or object."})
+        try:
+            reject_unhonourable_overlay_scope(self.key, self.scope)
+        except ValueError as exc:
+            raise ValidationError({"scope": str(exc)}) from exc
         ConfigSetting.objects.reject_inconsistent_cross_key(self.key, self.value, self.scope)

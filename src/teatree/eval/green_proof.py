@@ -1,36 +1,14 @@
-"""The full-suite eval GREEN PROOF — assert a merged eval-heal JSON is red-free (#3202).
+"""Verify one row per catalog scenario and version at the evaluated commit.
 
-The CI heal workflow shards the full behavioral-eval suite across a parallel
-matrix and folds every shard's publish-safe per-scenario JSON into ONE
-``eval-heal-<sha>`` payload (:mod:`teatree.eval.summary_json_merge`). That merged
-JSON is the PROOF the full suite is green: every scenario carries the derived
-``triage_class`` (:func:`teatree.eval.triage.classify_red`) the ``--summary-json``
-producer already embedded, so a red — behavioral, any ``infra_*``, ``judge``, or a
-``no_coverage`` skip — is exactly a scenario with a NON-null ``triage_class``.
-
-This is the eval-heal workflow's SECOND gating step — the shards gate on their own
-``t3 eval run`` exit code, then the combine job gates again here — so the
-interactive-surface exemption the in-process lanes apply has to hold here too, or
-a bundled-CLI rendering change reds the combine job after every shard passed
-(souliane/teatree#3855, souliane/teatree#3921). An ``advisory`` row is therefore
-reported but never withholds the proof.
-
-:func:`evaluate_green_proof` reads that one payload and decides: a proof holds iff
-the run COVERED the whole catalog (``total == expected_total`` and one row per
-counted scenario) AND carries ZERO GATING reds.
-
-Coverage is the load-bearing half. A shard whose leg died before uploading
-contributes nothing to the merge, and the combine job runs anyway
-(``if: always()``), so a payload folded from one surviving shard is internally
-consistent and reads green — 231/231 was asserted only in the CI step's NAME.
-The expected count is therefore passed in by the caller (the live catalog at the
-eval'd sha) and the proof fails when the merged run covers less than it.
-
-Pure and payload-only (no I/O, no DB), mirroring :mod:`teatree.eval.summary_json_merge`,
-so it is unit-testable and the ``t3 eval green-proof`` CLI is a thin JSON-read shell.
+The weekly and eval-heal combine jobs use this pure gate after merging shard
+summaries. A passing proof needs the exact catalog identity set, a matching SHA,
+consistent totals and no gating red. Retry recoveries are FLAKY, never PASS.
+Interactive behavioral reds remain visible but advisory; missing grading and
+infrastructure failures always block.
 """
 
 import dataclasses
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -57,19 +35,30 @@ class GreenProof:
     skipped: int
     reds: tuple[RedScenario, ...]
     advisory: tuple[RedScenario, ...] = ()
-    expected_total: int = 0
+    expected: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    expected_sha: str = ""
+    actual_sha: str = ""
+    identities: tuple[tuple[str, str], ...] = ()
+    verdict_counts: Mapping[str, int] = dataclasses.field(default_factory=dict)
     rows: int = 0
+    outcome_counts: Mapping[str, int] = dataclasses.field(default_factory=dict)
 
     @property
     def covers_the_catalog(self) -> bool:
-        """Whether the merged payload accounts for every scenario the catalog defines.
-
-        Two independent reads must agree: the summed ``totals.total`` reaches the
-        expected count, and the ``scenarios`` list carries one row per counted
-        scenario (the producer writes exactly one row per result, so a shortfall
-        means the payload was truncated after its totals were summed).
-        """
-        return self.expected_total > 0 and self.total >= self.expected_total and self.rows == self.total
+        """Whether IDs, versions, SHA, uniqueness and totals match the catalog."""
+        actual = Counter(self.identities)
+        expected = Counter((name, version) for name, version in self.expected.items())
+        return (
+            bool(expected)
+            and bool(self.expected_sha)
+            and self.expected_sha == self.actual_sha
+            and actual == expected
+            and self.rows == self.total
+            and self.total == self.passed + self.failed + self.skipped
+            and self.passed == self.verdict_counts.get("pass", 0)
+            and self.failed == self.verdict_counts.get("fail", 0)
+            and self.skipped == self.verdict_counts.get("skip", 0)
+        )
 
     @property
     def is_green(self) -> bool:
@@ -85,20 +74,29 @@ class GreenProof:
 
     @property
     def summary(self) -> str:
-        headline = f"GREEN PROOF: {self.passed}/{self.total} passed, 0 reds" if self.is_green else self._red_headline()
+        counts = self.outcome_counts
+        status = (
+            f"{counts.get('PASS', 0)} PASS, {counts.get('FLAKY', 0)} FLAKY, "
+            f"{counts.get('BEHAVIOR_FAIL', 0)} BEHAVIOR_FAIL, "
+            f"{counts.get('INFRA_BLOCKED', 0)} INFRA_BLOCKED, "
+            f"{counts.get('UNVERIFIED', 0)} UNVERIFIED over the exact selection at {self.actual_sha}"
+        )
+        headline = f"GREEN PROOF: {status}" if self.is_green else f"NOT A GREEN PROOF: {status}"
         lines = [headline]
         lines.extend(f"  RED {red.name} [{red.lane}] -> {red.triage_class}" for red in self.reds)
         if self.advisory:
             lines.append(f"  {len(self.advisory)} advisory (reported, non-gating):")
             lines.extend(f"    ADVISORY {row.name} [{row.lane}] -> {row.triage_class}" for row in self.advisory)
+        if not self.covers_the_catalog:
+            lines.append(self._red_headline())
         return "\n".join(lines)
 
     def _red_headline(self) -> str:
         if not self.covers_the_catalog:
             return (
                 f"NOT A GREEN PROOF: the merged run covered {self.total} scenario(s) "
-                f"({self.rows} row(s)) of the {self.expected_total} the catalog defines — "
-                "a shard that never uploaded proves nothing about the scenarios it carried"
+                f"({self.rows} row(s)) of {len(self.expected)} expected at {self.expected_sha}; "
+                "IDs, versions, uniqueness, SHA and totals must all match"
             )
         return (
             f"NOT A GREEN PROOF: {len(self.reds)} red scenario(s) "
@@ -109,13 +107,10 @@ class GreenProof:
 def _partition(scenarios: Sequence[Any]) -> tuple[tuple[RedScenario, ...], tuple[RedScenario, ...]]:
     """Split the non-null-``triage_class`` rows into (gating reds, advisory reds).
 
-    An ``advisory`` row is an ``interactive``-surface scenario: graded, classified
-    and REPORTED exactly like any other red, but never gating, because its verdict
-    rides a bundled claude CLI's ``AskUserQuestion`` rendering rather than the
-    question contract teatree owns (souliane/teatree#3855). Both the flag and the
-    surface are written by the ``--summary-json`` producer; a row missing the flag
-    (an artifact from before souliane/teatree#3921) reads as GATING, so an older
-    payload can never be silently exempted.
+    An interactive BEHAVIOR_FAIL remains advisory because its verdict depends on
+    the bundled Claude CLI's question rendering. INFRA_BLOCKED and UNVERIFIED
+    always gate, including for interactive scenarios. A missing advisory flag
+    also gates.
 
     A row with no ``triage_class`` KEY at all is likewise GATING: the producer
     always writes the key (``null`` for a pass), so its absence means the row was
@@ -136,15 +131,35 @@ def _partition(scenarios: Sequence[Any]) -> tuple[tuple[RedScenario, ...], tuple
                 RedScenario(name=_str(scenario, "name"), lane=_str(scenario, "lane"), triage_class=UNCLASSIFIED)
             )
             continue
-        triage_class = scenario["triage_class"]
-        if triage_class is None:
+        outcome = scenario.get("outcome")
+        if outcome not in {"PASS", "FLAKY", "BEHAVIOR_FAIL", "INFRA_BLOCKED", "UNVERIFIED"}:
+            reds.append(
+                RedScenario(name=_str(scenario, "name"), lane=_str(scenario, "lane"), triage_class=UNCLASSIFIED)
+            )
             continue
+        verdict = scenario.get("verdict")
+        if (outcome == "PASS" and verdict != "pass") or (outcome == "FLAKY" and verdict != "fail"):
+            reds.append(
+                RedScenario(name=_str(scenario, "name"), lane=_str(scenario, "lane"), triage_class=UNCLASSIFIED)
+            )
+            continue
+        if outcome == "FLAKY":
+            if scenario["triage_class"] is None:
+                reds.append(
+                    RedScenario(name=_str(scenario, "name"), lane=_str(scenario, "lane"), triage_class=UNCLASSIFIED)
+                )
+            continue
+        triage_class = scenario["triage_class"]
+        if triage_class is None and outcome == "PASS":
+            continue
+        if triage_class is None:
+            triage_class = UNCLASSIFIED
         row = RedScenario(
             name=_str(scenario, "name"),
             lane=_str(scenario, "lane"),
             triage_class=str(triage_class),
         )
-        (advisory if bool(scenario.get("advisory")) else reds).append(row)
+        (advisory if bool(scenario.get("advisory")) and outcome == "BEHAVIOR_FAIL" else reds).append(row)
     return tuple(reds), tuple(advisory)
 
 
@@ -152,18 +167,16 @@ def _str(scenario: Mapping[str, Any], key: str) -> str:
     return str(scenario.get(key, ""))
 
 
-def evaluate_green_proof(payload: Mapping[str, Any], *, expected_total: int) -> GreenProof:
-    """Read a merged §2.4 ``eval-heal`` payload and return its :class:`GreenProof`.
-
-    *expected_total* is how many scenarios the catalog at the eval'd sha defines;
-    the proof is withheld unless the merged run covers all of them, so a lost
-    shard can never shrink the suite into a green.
-    """
+def evaluate_green_proof(payload: Mapping[str, Any], *, expected: Mapping[str, str], expected_sha: str) -> GreenProof:
+    """Check a merged summary against the selected catalog at *expected_sha*."""
     totals = payload.get("totals")
     totals = totals if isinstance(totals, Mapping) else {}
     scenarios = payload.get("scenarios")
     scenarios = scenarios if isinstance(scenarios, list) else []
     reds, advisory = _partition(scenarios)
+    identities = tuple((_str(row, "name"), _str(row, "version")) for row in scenarios if isinstance(row, Mapping))
+    counts = Counter(_str(row, "outcome") for row in scenarios if isinstance(row, Mapping))
+    verdict_counts = Counter(_str(row, "verdict") for row in scenarios if isinstance(row, Mapping))
     return GreenProof(
         total=int(totals.get("total", 0)),
         passed=int(totals.get("passed", 0)),
@@ -171,6 +184,11 @@ def evaluate_green_proof(payload: Mapping[str, Any], *, expected_total: int) -> 
         skipped=int(totals.get("skipped", 0)),
         reds=reds,
         advisory=advisory,
-        expected_total=expected_total,
+        expected=expected,
+        expected_sha=expected_sha,
+        actual_sha=str(payload.get("head_sha", "")),
+        identities=identities,
+        verdict_counts=verdict_counts,
         rows=len(scenarios),
+        outcome_counts=counts,
     )

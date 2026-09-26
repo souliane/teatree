@@ -141,7 +141,7 @@ class TestNotifyPostSpeaks:
             ),
             patch(
                 "teatree.core.on_behalf_egress.require_on_behalf_approval",
-                lambda *, target, action, publish: publish(),
+                lambda *, target, action, context, publish: publish(),
             ),
             patch("teatree.core.on_behalf_egress.notify_user_on_behalf_post", lambda *_a, **_k: None),
         ):

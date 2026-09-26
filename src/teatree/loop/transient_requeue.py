@@ -47,14 +47,12 @@ lives in :mod:`teatree.core.config_self_repair`.
 An EXHAUSTION-killed FAILED task — one that died on a Claude usage-window limit (a
 subscription 5h/weekly window or a transient rate limit, recorded ``<cause>: …`` by
 ``LimitMatch.as_reason``) — is NOT a defect and must not be escalated to a human as one.
-While ``limit_autorecovery_enabled`` is ON, such a task is auto-requeued once its window
-HORIZON has elapsed since the last failed attempt (the deterministic, probe-free twin of
-``usage_window_recovery`` for tasks that ALREADY landed FAILED — a limit hit while the
-flag was off, or on a non-parking lane); before the horizon it is left FAILED and
-re-checked on a later tick, never escalated (a capacity dip is not a doomed failure).
-API-credit exhaustion is excluded (no timed reset) and stays on the escalation path. With
-the flag OFF the branch is inert — an exhaustion failure follows the deterministic path
-exactly as before, so the flag-off behaviour is byte-identical.
+Such a task is auto-requeued once its window HORIZON has elapsed since the last failed
+attempt (the deterministic, probe-free twin of ``usage_window_recovery`` for tasks that
+ALREADY landed FAILED — a limit hit on a non-parking lane); before the horizon it is left
+FAILED and re-checked on a later tick, never escalated (a capacity dip is not a doomed
+failure). API-credit exhaustion is excluded (no timed reset) and stays on the escalation
+path.
 
 A SUPERSEDED FAILED task — one whose phase output demonstrably landed
 (:func:`~teatree.core.models.phase_landing.phase_landing_evidence`, the FULL author ladder,
@@ -109,10 +107,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import corrective_instruction, is_no_envelope_refusal, is_recorder_refusal
-from teatree.agents.usage_window import autorecovery_enabled
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.config_self_repair import SELF_REPAIR_STAMP
 from teatree.core.forge_url import is_synthetic_ticket_url
+from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import (
     RecoveryStrategy,
@@ -161,14 +159,16 @@ def requeue_transient_failed() -> int:
     accumulate.
     """
     now = timezone.now()
-    autorecovery = autorecovery_enabled()
     reopened = 0
     for task in _non_terminal_failed_tasks():
         # Per-item fault isolation (#3441): a single poison row (a corrupt attempt, a
         # classifier blow-up, a scheduling error) must NOT abort the sweep and strand
         # every OTHER loop's FAILED tasks. Record the failure loudly and move on.
         try:
-            reopened += _route_failed_task(task, now=now, autorecovery=autorecovery)
+            with redispatch_window() as refusal:
+                if refusal:
+                    continue
+                reopened += _route_failed_task(task, now=now)
         except Exception:
             logger.exception(
                 "Transient-requeue skipped task %s (ticket %s) after an unexpected error",
@@ -178,7 +178,7 @@ def requeue_transient_failed() -> int:
     return reopened
 
 
-def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
+def _route_failed_task(task: Task, *, now: datetime) -> int:
     """Route ONE FAILED task to reopen / dispose / corrective-retry / escalate. Returns the reopen count.
 
     Isolated per task so :func:`requeue_transient_failed` can wrap it in a single
@@ -188,6 +188,7 @@ def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
     """
     error = _latest_error(task)
     if dispose_without_reopen(task, error=error):
+        task.ticket.pop_task_thread(int(task.pk))
         return 0
     if not error:
         # No recorded error → neither transient nor deterministic; must not freeze.
@@ -202,7 +203,7 @@ def _route_failed_task(task: Task, *, now: datetime, autorecovery: bool) -> int:
             return _reopen(task)
         _escalate_once(task, reason=halt)
         return 0
-    if (cause := recoverable_exhaustion_cause(error)) is not None and autorecovery:
+    if (cause := recoverable_exhaustion_cause(error)) is not None:
         return _requeue_on_window_reset(task, cause, now=now)
     return _handle_deterministic(task, strategy)
 
@@ -282,6 +283,7 @@ def _self_repair_reopen(task: Task) -> int | None:
     new_reason = f"{task.execution_reason}\n{repair.stamp()}".strip() if task.execution_reason else repair.stamp()
     return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
         status=Task.Status.PENDING,
+        session_continuation=task.continuation_on_requeue(),
         **RELEASED_CLAIM,
         execution_reason=new_reason,
     )
@@ -319,6 +321,7 @@ def _corrective_reopen(task: Task, note: str) -> int:
     new_reason = f"{task.execution_reason}\n{stamped}".strip() if task.execution_reason else stamped
     return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
         status=Task.Status.PENDING,
+        session_continuation=task.continuation_on_requeue(),
         **RELEASED_CLAIM,
         execution_reason=new_reason,
     )
@@ -402,9 +405,13 @@ def _reopen(task: Task) -> int:
     backend-agnostic compare-and-swap ``reclaim_orphaned_claims`` uses) so a
     concurrent tick that already reopened the row updates 0 rows and does not
     double-dispatch.
+
+    The retry runs on the SAME row, whose ``parent_task`` is unchanged, so the
+    conversation it continues is stamped here rather than inferred from that chain.
     """
     return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
         status=Task.Status.PENDING,
+        session_continuation=task.continuation_on_requeue(),
         **RELEASED_CLAIM,
     )
 
@@ -481,15 +488,18 @@ def _escalate_once(task: Task, *, reason: str) -> None:
 
     Both writes share one transaction: the stamp is permanent and the question is the
     ONLY surface the halt reaches a human on, so a stamp that outlived a failed
-    ``record`` would park the task silently, forever, with nobody told.
+    ``record`` would park the task silently, forever, with nobody told. The row's stored
+    conversation is dropped in the same transaction, since no retry will continue it.
     """
     where = task.ticket.issue_url or f"ticket {task.ticket.pk}"
     phase = normalize_phase(task.phase)
     question = _halt_question(task, where=where, phase=phase, reason=reason)
     with transaction.atomic():
         _stamp_halt(task)
+        task.ticket.pop_task_thread(int(task.pk))
         DeferredQuestion.record(
             question,
             session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
             dedupe_marker=escalation_marker(task),
+            audience=DeferredQuestion.Audience.INTERNAL,
         )

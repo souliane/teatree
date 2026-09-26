@@ -20,6 +20,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
 from teatree.core.gates.review_request_guard import GuardTarget
+from teatree.core.models import ConfigSetting
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import build_server
 from teatree.mcp.write_tool_run import _last_json_object, run_command, run_emitting_command
@@ -56,13 +57,23 @@ class _FakeMessaging:
         return {"ok": True, "channel": channel, "ts": ts}
 
 
+class _OwnerAuthoredHost:
+    def get_pr_author(self, *, pr_url: str) -> str:
+        _ = pr_url
+        return "owner"
+
+
 class TestReviewRequestCheckTool(TestCase):
     def test_returns_the_gate_decision(self) -> None:
         # Bare test env has no review channel configured, so the guard peeks
         # SUPPRESS — proving the tool reaches the real review-request guard. The
         # draft gate runs first and fails CLOSED against an unreachable forge, so
         # it is pinned postable here; it has its own suite.
-        with patch(f"{_CHECK_CMD}.draft_refusal_reason", return_value=""):
+        ConfigSetting.objects.set_value("user_identity_aliases", ["owner"])
+        with (
+            patch(f"{_CHECK_CMD}.draft_refusal_reason", return_value=""),
+            patch(f"{_CHECK_CMD}.code_host_from_overlay", return_value=_OwnerAuthoredHost()),
+        ):
             result = _call("review_request_check", {"mr_url": "https://github.com/acme/widgets/pull/9"})
 
         assert result["action"] == "suppress"
@@ -86,10 +97,12 @@ class TestReviewRequestPostTool(TestCase):
         # A postable channel + no recorded #960 approval ⇒ the on-behalf gate
         # refuses over MCP exactly as on the CLI.
         target = GuardTarget(channel_id="C123", channel_name="reviews", token="tok")
+        ConfigSetting.objects.set_value("user_identity_aliases", ["owner"])
         with (
             # Pinned postable: the draft gate precedes the on-behalf one and fails
             # CLOSED against the unreachable forge of a bare test env.
             patch(f"{_POST_CMD}.draft_refusal_reason", return_value=""),
+            patch(f"{_POST_CMD}.code_host_from_overlay", return_value=_OwnerAuthoredHost()),
             patch("teatree.core.management.commands.review_request_post.resolve_guard_target", return_value=target),
             patch(
                 "teatree.core.management.commands.review_request_post.should_post_review_request",

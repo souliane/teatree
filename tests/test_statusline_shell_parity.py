@@ -99,6 +99,10 @@ def _run_shell(
     env["HOME"] = str(sandbox / "home")
     env["XDG_DATA_HOME"] = str(sandbox / "xdg")
     env["COLUMNS"] = "1000"
+    # Parity is about CONTENT surviving the shell, not about latency: pin the
+    # enriched-tail deadline wide open so a busy CI box never drops the tail and
+    # turns "the renderer's line reached the output" into a flake.
+    env["TEATREE_STATUSLINE_BUDGET"] = "30"
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
     env["CLAUDE_CONFIG_DIR"] = str(state_dir)
     env["CLAUDE_TASKS_DIR"] = str(state_dir / "_tasks")

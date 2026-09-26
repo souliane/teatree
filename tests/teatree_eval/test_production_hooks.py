@@ -95,7 +95,8 @@ class TestHookedEnv:
 
     def test_redirects_all_state_roots_into_the_sandbox_home(self) -> None:
         env = hooked_env({"PATH": "/usr/bin", "XDG_DATA_HOME": "/real/user/data"}, "/sandbox/home")
-        assert env["XDG_DATA_HOME"] == "/sandbox/home/.local/share"
+        assert env["XDG_DATA_HOME"] == "/sandbox/home/xdg-data"
+        assert env["T3_DATA_DIR"] == "/sandbox/home/teatree-data"
         assert env["T3_LOOP_REGISTRY_DIR"] == "/sandbox/home/loop-registry"
         assert env["T3_HOOK_STATE_DIR"] == "/sandbox/home/hook-state"
         assert env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] == "/sandbox/home/statusline-state"

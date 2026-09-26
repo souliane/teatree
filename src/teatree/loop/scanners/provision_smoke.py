@@ -1,8 +1,8 @@
 """Periodic provision-smoke scanner (#1308).
 
 Companion to the ``t3 dogfood overlay-provision-smoke`` management
-command: the loop queues a ``dogfood_smoke`` task once per cadence
-window (default 24h — nightly) so latent CLI bugs in the overlay
+command: the loop queues a ``dogfood_smoke`` task once per fire of the
+daily ``dogfood`` ``Loop`` row so latent CLI bugs in the overlay
 provision path surface in the loop, not in the user's next E2E
 session. One of the periodic task-queuing family that share
 :class:`teatree.loop.scanners.phase_cadence.PhaseCadence` — a fixed-rate
@@ -12,7 +12,7 @@ The scanner only *schedules*; the dispatcher picks up the queued task
 and shells out to ``t3 dogfood overlay-provision-smoke``. Failures DM
 the user via :mod:`teatree.core.notify` from inside the management command,
 so the scanner has no responsibility for the verdict pipeline beyond
-keeping its cadence honest.
+queueing the task its row asked for.
 """
 
 from dataclasses import dataclass
@@ -27,7 +27,7 @@ from teatree.loop.scanners.phase_cadence import PhaseCadence
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from teatree.config.loader import TeaTreeConfig
+    from teatree.config.settings import UserSettings
 
 
 @dataclass(slots=True)
@@ -37,20 +37,18 @@ class ProvisionSmokeScanner:
     Configuration fields are passed explicitly (rather than read from a
     global at scan time) so test setup is deterministic and the wiring
     layer is the single place that resolves
-    :class:`teatree.config.UserSettings`. The on/off decision lives at
-    the wiring layer (``dogfood_smoke_disabled`` in core config); the
-    scanner itself always scans when invoked.
+    :class:`teatree.config.UserSettings`. The on/off decision is the ``dogfood``
+    ``Loop`` row and the active preset; the scanner itself always scans when invoked.
     """
 
     overlay_name: str
     skill: str = "dogfood-smoke"
-    cadence_hours: int = 24
     name: str = "provision_smoke"
 
     def scan(self) -> list[ScanSignal]:
         if not self.overlay_name:
             return []
-        cadence = PhaseCadence(self.overlay_name, phase=DOGFOOD_SMOKE_PHASE, cadence_hours=self.cadence_hours)
+        cadence = PhaseCadence(self.overlay_name, phase=DOGFOOD_SMOKE_PHASE)
         if cadence.in_flight_exists():
             return []
 
@@ -84,22 +82,23 @@ class ProvisionSmokeScanner:
 
 def build_provision_smoke_scanner(
     *,
-    load_config: "Callable[[], TeaTreeConfig]",
+    resolve_settings: "Callable[[], UserSettings]",
     discover_active_overlay: "Callable[[], object]",
     canonical_fallback: str,
 ) -> "ProvisionSmokeScanner | None":
     """Resolve ``UserSettings`` + active overlay into a wired scanner (#1308).
 
-    Returns ``None`` when ``dogfood_smoke_disabled = true`` (the escape
-    hatch). The overlay anchor is resolved via the injected
-    ``discover_active_overlay`` callable, with ``dogfood_smoke_overlay``
-    as the explicit pin and ``canonical_fallback`` (e.g. ``t3-teatree``)
-    as the defensive default. The callables are injected so global_scanner_factories
-    keeps wiring lean and tests can stub each layer independently.
+    The overlay anchor is resolved via the injected ``discover_active_overlay``
+    callable, with ``dogfood_smoke_overlay`` as the explicit pin and
+    ``canonical_fallback`` (e.g. ``t3-teatree``) as the defensive default. The callables
+    are injected so global_scanner_factories keeps wiring lean and tests can stub each
+    layer independently.
+
+    ``resolve_settings`` returns the EFFECTIVE settings, never a raw config: the seam
+    used to take ``load_config`` and read ``.user`` off it, which is the dataclass
+    defaults, so a stored ``dogfood_smoke_overlay`` never reached the scanner.
     """
-    settings = load_config().user
-    if settings.dogfood_smoke_disabled:
-        return None
+    settings = resolve_settings()
     overlay_name = settings.dogfood_smoke_overlay
     if not overlay_name:
         active = discover_active_overlay()
@@ -107,7 +106,6 @@ def build_provision_smoke_scanner(
     return ProvisionSmokeScanner(
         overlay_name=overlay_name,
         skill=settings.dogfood_smoke_skill,
-        cadence_hours=settings.dogfood_smoke_cadence_hours,
     )
 
 

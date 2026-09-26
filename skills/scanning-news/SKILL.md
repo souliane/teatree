@@ -170,7 +170,6 @@ The teatree main loop owns periodic dispatch. The `ScanningNewsScanner` (in `tea
 These knobs are DB-home — set them in the `ConfigSetting` store with the `mcp__teatree__config_setting_set` MCP tool (it accepts these keys; pass `overlay` for a per-overlay value), or the CLI below when the MCP server isn't connected (add `--overlay <name>` for a per-overlay value):
 
 ```bash
-t3 <overlay> config_setting set scanning_news_disabled false
 t3 <overlay> config_setting set scanning_news_skill '"scanning-news"'
 t3 <overlay> config_setting set scanning_news_cadence_hours 24
 # Ask-gate (#1391): when true (default), returned candidates are queued as

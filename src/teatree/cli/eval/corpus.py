@@ -162,8 +162,6 @@ def grade_entries(
         return
     rows = grade_corpus_rows(labels, directory=root, judge=make_grader(enabled=judge, judge_budget=judge_budget))
     Console().print(_build_grade_table(rows))
-    if any(row.verdict == "fail" for row in rows):
-        sys.exit(1)
     if judge:
         # `--judge` asked for a metered judge run. If judge-oracle entries exist
         # but every one skipped (claude absent), the judge graded nothing — a
@@ -177,6 +175,8 @@ def grade_entries(
                 err=True,
             )
             sys.exit(1)
+    if any(row.verdict == "fail" for row in rows):
+        sys.exit(1)
 
 
 def _grade_row(label: CorpusLabel, *, directory: Path, judge: JudgeGrader | None) -> CorpusGradeRow:

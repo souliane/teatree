@@ -38,63 +38,27 @@ validator refuses, and no second surface can drift into a different answer.
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from urllib.parse import quote
-
-from django.urls import reverse
 
 from teatree.config.cold_defaults import shipped_defaults_table
-from teatree.config.provenance import ResolvedSetting, ValueSource, resolve_settings
+from teatree.config.provenance import ResolvedSetting, resolve_settings
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.config.setting_groups import SettingGroupNode, group_leaves, group_slug, group_tree
+from teatree.config.settings import OverlayEntry
 from teatree.core.config_display import MASKED
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigValue
 from teatree.core.overlay_loader import get_all_overlays
-from teatree.core.setting_control import SettingChoice, SettingControl, wire
+from teatree.core.setting_cell import (
+    GLOBAL_LABEL,
+    DriftVerdict,
+    SettingCell,
+    env_pin_refusal,
+    settings_write_url,
+    verdict_for,
+)
+from teatree.core.setting_control import SettingChoice, SettingControl
 
 logger = logging.getLogger(__name__)
-
-#: The column header the global scope renders under — every other column is an overlay name.
-GLOBAL_LABEL = "global"
-
-
-@dataclass(frozen=True, slots=True)
-class ScopeCell:
-    """One scope's value for one setting — the editable unit of the grid."""
-
-    key: str
-    scope: str  # "" is global
-    value: str  # ``***`` for a secret, else the effective value as display text
-    selected: str  # the JSON literal of the effective value — what a SELECT matches its options on
-    source: str  # which tier of the resolution chain supplied it — the cell's tooltip
-    matches_default: bool  # green when true, brown when the operator has changed it
-
-    @property
-    def label(self) -> str:
-        return self.scope or GLOBAL_LABEL
-
-    @property
-    def editable(self) -> str:
-        """What a FREE-TEXT control shows — the JSON literal, except that unset renders empty.
-
-        A control holds what it would POST, which is the right contract for a value the
-        operator edits as JSON (a list, a table, a quoted string). It is the wrong thing to
-        show for ``None``: the page put the four letters ``null`` in front of a human, who
-        then had to know the wire encoding to read that the setting is simply not set (#4078).
-
-        An empty box is the honest rendering of an unset value, and it is already the page's
-        own vocabulary — emptying a cell IS the restore-to-default gesture, so an untouched
-        empty box that is never submitted changes nothing, and one that IS submitted clears a
-        row that was already resolving its default. :attr:`selected` keeps the literal, so a
-        ``<select>`` still matches its ``null`` option against the real value.
-        """
-        return "" if self.selected == wire(None) else self.selected
-
-    @property
-    def post_url(self) -> str:
-        """Where this cell's edit goes — the key in the path, its own scope in the query."""
-        url = reverse("dash:settings_set", args=[self.key])
-        return f"{url}?scope={quote(self.scope)}" if self.scope else url
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +71,7 @@ class EditableSetting:
     """
 
     control: SettingControl
-    cells: tuple[ScopeCell, ...]
+    cells: tuple[SettingCell, ...]
 
     @property
     def name(self) -> str:
@@ -135,6 +99,11 @@ class EditableSetting:
         return self.control.is_safety_posture
 
     @property
+    def governance(self) -> tuple[str, ...]:
+        """The key's governance classes, so the row says WHAT is being flipped (B12)."""
+        return self.control.governance
+
+    @property
     def choices(self) -> tuple[SettingChoice, ...]:
         """Non-empty -> the cells render as selects."""
         return self.control.choices
@@ -142,7 +111,7 @@ class EditableSetting:
     @property
     def drifts(self) -> bool:
         """Whether ANY scope differs from the shipped default — counted once per setting."""
-        return any(not cell.matches_default for cell in self.cells)
+        return any(cell.drifts for cell in self.cells)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,27 +168,28 @@ class _Grid:
             cells=tuple(self._cell(control, scope) for scope in self.scopes),
         )
 
-    def _cell(self, control: SettingControl, scope: str) -> ScopeCell:
+    def _cell(self, control: SettingControl, scope: str) -> SettingCell:
         resolved = self.resolved[scope][control.key]
         value = control.display_value(resolved.value)
-        # Compared as the operator SEES them: identical text in the cell means identical
-        # value. A key the shipped file does not carry has no shipped text to equal, so it
-        # falls back to whether an operator's own tier supplied it at all — a Secret/Personal
-        # key with no entry in defaults.toml still has a real default (its code default), and
-        # an env/DB tier outranking that IS the drift the grid exists to surface.
-        matches = not resolved.is_overridden or (control.has_shipped_default and value == control.shipped_default)
-        return ScopeCell(
+        return SettingCell(
             key=control.key,
             scope=scope,
             value=value,
             selected=control.wire_value(resolved.value),
             source=resolved.source.value,
-            matches_default=matches,
+            verdict=verdict_for(control, overridden=resolved.is_overridden, value=value),
+            unwritable_reason=env_pin_refusal(control.key, resolved.source.value),
+            post_url=settings_write_url(control.key, scope),
         )
 
 
-def _build_grid(keys: Sequence[str]) -> _Grid:
-    scopes = available_scopes()
+def _build_grid(keys: Sequence[str], columns: Sequence[str] | None = None) -> _Grid:
+    """Every column's resolution of *keys*; this box's own scopes when *columns* names none.
+
+    *columns* is the seam a grid comparing BOXES supplies its own dimension through — the row
+    half is identical, so only the columns and where their values come from differ.
+    """
+    scopes = tuple(columns) if columns is not None else available_scopes()
     return _Grid(
         scopes=scopes,
         resolved={scope: resolve_settings(keys, scope=scope) for scope in scopes},
@@ -294,26 +264,72 @@ def build_settings_editor(slug: str = "") -> SettingsEditorView:
     )
 
 
-def available_scopes() -> tuple[str, ...]:
-    """Global first, then every overlay scope the operator can edit — the grid's COLUMNS.
+def _stored_scopes() -> set[str]:
+    """Every non-global scope that already holds a row, or ``set()`` when the tier is unreadable.
 
-    The union of the registered overlays and the scopes that already hold rows, so a
-    scope written by ``config_setting set --overlay`` before its overlay was registered
-    (or after it was uninstalled) is still visible rather than stranded.
+    The rest of the page degrades rather than 500s when a tier cannot be read, and the column
+    list is no exception: global alone still renders every setting.
     """
     try:
-        stored = set(ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE).values_list("scope", flat=True).distinct())
+        return set(ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE).values_list("scope", flat=True).distinct())
     except Exception:
-        # The rest of the page degrades rather than 500s when a tier cannot be read, and the
-        # column list is no exception: global alone still renders every setting.
         logger.warning("scope read failed — offering the global column alone", exc_info=True)
-        stored = set()
+        return set()
+
+
+def _registered_overlays() -> set[str]:
     try:
-        registered = set(get_all_overlays())
+        return set(get_all_overlays())
     except Exception:
         logger.warning("overlay discovery failed — offering only the scopes holding rows", exc_info=True)
-        registered = set()
-    return (GLOBAL_SCOPE, *sorted(stored | registered))
+        return set()
+
+
+def _column_spelling(spellings: set[str], registered: set[str]) -> str:
+    """Which of one overlay's spellings names its column — the REGISTERED one wherever there is one.
+
+    Not cosmetic. A column resolves its tiers with its own name as the exact-match spelling
+    (:func:`~teatree.config.override_reader.load_overlay_rows` applies the alias group first
+    and the exact name last), and the process reads its rows under the name the overlay is
+    registered as — so the registered spelling is the column whose reading is the one actually
+    in force. Naming the column after the alias would show a value the box does not use.
+    """
+    return next(iter(sorted(spellings & registered)), min(spellings))
+
+
+def scopes_of_column(scope: str) -> tuple[str, ...]:
+    """Every stored scope the *scope* column speaks for — itself, then its other spellings.
+
+    A column is an OVERLAY, and the resolver merges every canonically-equivalent scope into
+    that overlay's tier. So a clear that removed only the exact spelling would leave an alias
+    row still supplying the value: restore-to-default would report success and change nothing.
+    The global column speaks for itself alone — it is not an overlay and folds onto nothing.
+    """
+    if not scope:
+        return (GLOBAL_SCOPE,)
+    canonical = OverlayEntry.canonical_overlay_name(scope)
+    others = (one for one in _stored_scopes() if one != scope)
+    return (scope, *sorted(one for one in others if OverlayEntry.canonical_overlay_name(one) == canonical))
+
+
+def available_scopes() -> tuple[str, ...]:
+    """Global first, then ONE column per overlay the operator can edit — the grid's COLUMNS.
+
+    The union of the registered overlays and the scopes that already hold rows, so a scope
+    written by ``config_setting set --overlay`` before its overlay was registered (or after it
+    was uninstalled) is still visible rather than stranded.
+
+    Folded onto the canonical key :func:`~teatree.config.override_reader.load_overlay_rows`
+    already merges rows by, so an overlay holding rows under BOTH its bare alias and its
+    ``t3-`` entry-point name is one column rather than two. Unfolded, the page rendered that
+    overlay twice under two names showing one merged reading — and neither column said which
+    spelling a write would land in.
+    """
+    registered = _registered_overlays()
+    spellings: dict[str, set[str]] = {}
+    for scope in _stored_scopes() | registered:
+        spellings.setdefault(OverlayEntry.canonical_overlay_name(scope), set()).add(scope)
+    return (GLOBAL_SCOPE, *sorted(_column_spelling(group, registered) for group in spellings.values()))
 
 
 def build_setting_row(key: str) -> EditableSetting:
@@ -328,16 +344,17 @@ def build_setting_row(key: str) -> EditableSetting:
 __all__ = [
     "GLOBAL_LABEL",
     "MASKED",
+    "DriftVerdict",
     "EditableSetting",
-    "ScopeCell",
+    "SettingCell",
     "SettingChoice",
     "SettingsEditorView",
     "SettingsGroupView",
     "SettingsSection",
-    "ValueSource",
     "available_scopes",
     "build_setting_row",
     "build_settings_editor",
     "build_settings_group",
     "build_settings_sections",
+    "scopes_of_column",
 ]

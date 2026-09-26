@@ -24,7 +24,8 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from teatree.eval.discovery import DEFAULT_SKILLS_DIR, discover_specs
-from teatree.eval.models import AnyOf, EvalSpec, FinalStateMatcher, Matcher
+from teatree.eval.matcher_vacuity import is_positive_anchor
+from teatree.eval.models import EvalSpec
 
 _AGENT_PATH = re.compile(r"^skills/(?P<skill>[^/]+)/SKILL\.md$")
 _EVAL_EXEMPT_LINE = re.compile(r"^eval_exempt:\s*(?P<reason>.*)$")
@@ -74,17 +75,13 @@ def _skill_of(agent_path: str) -> str | None:
 def _has_positive_teeth(spec: EvalSpec) -> bool:
     """True when *spec* carries at least one matcher that ASSERTS a behavior.
 
-    Coverage counts only scenarios with a positive-teeth matcher — a positive
-    ``tool_call``, a ``final_state``, or an ``any_of`` disjunction. A judge-only
+    Coverage counts only scenarios with a positive-teeth matcher. A judge-only
     (matcherless) spec has no deterministic teeth, and a purely negative spec only
     forbids a call; neither, alone, is real behavioral coverage a default lane can
     gate on. This composes with the report's judge-only skip (#3313): a skill
     "covered" only by a judge-only or negative-only scenario is a GAP, not green.
     """
-    return any(
-        isinstance(matcher, (FinalStateMatcher, AnyOf)) or (isinstance(matcher, Matcher) and matcher.kind == "positive")
-        for matcher in spec.matchers
-    )
+    return any(is_positive_anchor(matcher) for matcher in spec.matchers)
 
 
 def _eval_exempt_reason(skill_md: Path) -> str | None:

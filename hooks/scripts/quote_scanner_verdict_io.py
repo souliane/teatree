@@ -40,6 +40,11 @@ def quote_scanner_high_block_message(
     caller hands to the router's ``emit_pretooluse_deny`` chokepoint. Mirrors
     ``_banned_term_marker_blocks``.
 
+    ``verdict.hint`` is the read-only scope diagnostic the resolver attached —
+    it names WHY the gate scanned when the cause was the command's SHAPE (a
+    chained publish) or an unresolvable destination rather than the body, and is
+    empty whenever there is nothing to add.
+
     Detector and renderer are injected separately because they are separate modules
     (``teatree.hooks.quote_scanner`` / ``.quote_gate_messages``) and this one imports
     neither — the caller owns the ``sys.path`` bootstrap that makes them importable.
@@ -49,4 +54,4 @@ def quote_scanner_high_block_message(
         quote_scanner.log_decision(tool_name=tool_name, decision=verdict.decision, result=result, override=False)
         return None
     quote_scanner.log_decision(tool_name=tool_name, decision="deny", result=result, override=False)
-    return messages.format_block_message(result)
+    return messages.format_block_message(result) + verdict.hint

@@ -33,7 +33,9 @@ if TYPE_CHECKING:
     from teatree.backends.gitlab.api import GitLabAPI
 
 
-def publish_live_post(*, repo: str, mr: int, publish: Callable[[], tuple[str, int]]) -> tuple[str, int]:
+def publish_live_post(
+    *, repo: str, mr: int, publish: Callable[[], tuple[str, int]], token_required: bool = True
+) -> tuple[str, int]:
     """Consume the single-use live-post token in ONE transaction with *publish* (#1207).
 
     The token is the user's one authorisation for this live, colleague-visible
@@ -41,14 +43,21 @@ def publish_live_post(*, repo: str, mr: int, publish: Callable[[], tuple[str, in
     raising publish, and a publish reporting ``(message, rc != 0)`` all leave it
     unconsumed for the retry. Its own atomic is load-bearing because
     :func:`~teatree.cli.review.on_behalf.publish_on_behalf` opens one only under a
-    BLOCKING ``on_behalf_post_mode`` — under ``immediate`` the publish runs
+    forbidding posture — under a permitting one the publish runs
     untransacted, and an eager consume there burned the approval on a failed post.
 
-    The #1207 live-post token gate is orthogonal to the on-behalf mode: the
-    ``--live`` publish needs an explicit, single-use approval token regardless of
-    mode. The one-step ``t3 review authorize`` (#126) mints that token in the same
-    command that records the on-behalf authorization, so a single user action
-    satisfies both gates.
+    *token_required* is the caller's already-resolved verdict
+    (:class:`~teatree.cli.review.authorize.LiveAuthorization`), not a second opinion:
+    ``False`` only under a permitting posture, where ``resolve_live_authorization`` has
+    already declared the post authorized with no token at all. That waiver is the
+    POSTURE's and not the verdict's — a PROCEED the ``on_behalf_auto_actions`` allowlist
+    produced still arrives here with the requirement ON. Asserting the token
+    independently of that verdict made the live path declare a post authorized and
+    refuse it one call later. It defaults ON, so every caller
+    that has resolved nothing is gated exactly as before. The one-step ``t3 review
+    authorize`` (#126) mints the token in the same command that records the on-behalf
+    authorization, so a single user action still satisfies both gates under a
+    forbidding posture.
     """
     from django.db import transaction  # noqa: PLC0415 — deferred: keeps CLI startup light
 
@@ -58,10 +67,11 @@ def publish_live_post(*, repo: str, mr: int, publish: Callable[[], tuple[str, in
     )
 
     with transaction.atomic():
-        try:
-            require_live_post_approval(mr_url=f"{repo}!{mr}")
-        except LivePostBlockedError as blocked:
-            return str(blocked), 1
+        if token_required:
+            try:
+                require_live_post_approval(mr_url=f"{repo}!{mr}")
+            except LivePostBlockedError as blocked:
+                return str(blocked), 1
         result = publish()
         if result[1]:
             transaction.set_rollback(True)

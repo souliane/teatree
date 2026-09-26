@@ -11,7 +11,7 @@ BLOCKING blocks on a deterministic finding and stays RETROSPECTED. The blocking 
 SURVIVE the delivery atomic's rollback (execute_retrospect's after-the-block re-record).
 Anti-vacuity: with the critic gate neutralised the flawed delivery advances even under
 enforcement. No fixture injects an ``extra['critic']`` key — every producer is real
-(PlanArtifact, MergeAudit, the spec_coverage manifest, a recorded CriticVerdict).
+(PlanArtifact, MergeAudit, the ticket's graded Rubric, a recorded CriticVerdict).
 """
 
 import contextlib
@@ -40,6 +40,7 @@ from teatree.core.models import (
     MergeAudit,
     MergeClear,
     PlanArtifact,
+    Rubric,
     Session,
     Task,
     Ticket,
@@ -83,7 +84,11 @@ def _merge_audit(ticket: Ticket) -> None:
 
 
 def _clean_delivered_ticket() -> Ticket:
-    """A RETROSPECTED ticket clean on all 3 deterministic items: adequate plan + merge audit + covered ACs."""
+    """A RETROSPECTED ticket clean on all 3 deterministic items: adequate plan + merge audit + no open ACs.
+
+    The all-negated manifest declares no acceptance criteria, which is the plan-recorded
+    waiver ``completeness`` honours — so the twin is clean without a graded rubric.
+    """
     ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
     PlanArtifact.objects.create(
         ticket=ticket,
@@ -93,8 +98,6 @@ def _clean_delivered_ticket() -> Ticket:
         adequacy=dict(all_negated_adequacy("clean delivery")),
     )
     _merge_audit(ticket)
-    ticket.extra = {"spec_coverage": {"acceptance_criteria": [{"id": "AC-1", "tests": ["tests/test_a.py::t"]}]}}
-    ticket.save(update_fields=["extra"])
     return ticket
 
 
@@ -137,8 +140,13 @@ class TestDeterministicItemsCaught(TestCase):
 
     def test_completeness(self) -> None:
         ticket = _clean_delivered_ticket()
-        ticket.extra = {"spec_coverage": {"acceptance_criteria": [{"id": "AC-2", "tests": []}]}}
-        ticket.save(update_fields=["extra"])
+        PlanArtifact.objects.filter(ticket=ticket).update(
+            adequacy={
+                **dict(all_negated_adequacy("clean delivery")),
+                "acceptance_criteria": {"content": ["AC-2 is delivered"]},
+            }
+        )
+        Rubric.populate(ticket, ["AC-2 is delivered"])
         _record_critic(ticket)
         assert CriticFinding.objects.filter(ticket=ticket, rubric_item="completeness").exists()
 

@@ -24,7 +24,7 @@ def _prompt() -> Prompt:
 
 @django.test.override_settings(USE_TZ=True)
 class TestMiniEntriesFromLoopTable(django.test.TestCase):
-    def test_enabled_interval_loop_surfaced_from_row(self) -> None:
+    def test_an_interval_loop_is_surfaced_from_its_row(self) -> None:
         Loop.objects.filter(name="lt-a").delete()
         now = timezone.now()
         Loop.objects.create(
@@ -32,14 +32,16 @@ class TestMiniEntriesFromLoopTable(django.test.TestCase):
         )
         entry = next(e for e in build_report(now=now).mini_loops if e.name == "lt-a")
         assert entry.kind is LoopKind.MINI
-        assert entry.enabled is True
+        assert entry.enabled is None
         assert entry.cadence_seconds == 120
         # last_run + delay = next_fire
         assert entry.next_fire_at == now - dt.timedelta(seconds=30) + dt.timedelta(seconds=120)
 
-    def test_disabled_loop_row_renders_disabled(self) -> None:
+    def test_a_force_off_loop_row_renders_its_override(self) -> None:
         now = timezone.now()
-        Loop.objects.create(name="lt-off", delay_seconds=60, prompt=_prompt(), enabled=False)
+        Loop.objects.create(
+            name="lt-off", delay_seconds=60, prompt=_prompt(), enabled=False, override_reason="test override"
+        )
         entry = next(e for e in build_report(now=now).mini_loops if e.name == "lt-off")
         assert entry.enabled is False
 

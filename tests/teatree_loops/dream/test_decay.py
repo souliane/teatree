@@ -303,6 +303,61 @@ class TransferBeforePruneRailTestCase(TestCase):
         assert result.archived_count == 0
         assert stale.exists()
 
+    def test_a_gap_retired_by_its_merged_fix_homes_its_memory(self) -> None:
+        # The PRODUCTION writer: Pass 2 retires the row when the gap's fix merges, which
+        # is what makes the rail non-empty at all — no test-only mark_promoted involved.
+        stale = self._write_stale("mem_gap")
+        row = ConsolidatedMemory.record_cluster(
+            cluster_key=hashlib.sha256(b"retired-gap").hexdigest(),
+            rule="A gate must fail loud, never skip as pass.",
+            source_files=[str(stale)],
+            member_count=1,
+            max_member_weight=90,
+            is_binding=False,
+            durable_destination="src/teatree/core/gates/rubric_gate.py",
+            verified_citation="an old unreferenced lesson",
+        )
+        row.classify_core_gap()
+        row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+        row.retire(archive_path="https://github.com/souliane/teatree/issues/42")
+
+        result = decay_memories(self.dir, now=_NOW)
+
+        assert {a.name for a in result.archived} == {"mem_gap"}
+        assert not stale.exists()
+
+    def test_a_superseded_row_does_not_home_its_memory(self) -> None:
+        # Supersession replaces a cluster; it transfers nothing. Until the replacement
+        # lands, the memory it covers keeps its place in the hot corpus.
+        stale = self._write_stale("mem_superseded")
+        narrow = ConsolidatedMemory.record_cluster(
+            cluster_key=hashlib.sha256(b"narrow").hexdigest(),
+            rule="Run the gate before pushing.",
+            source_files=[str(stale)],
+            member_count=1,
+            max_member_weight=90,
+            is_binding=False,
+            durable_destination="mem_superseded.md",
+            verified_citation="an old unreferenced lesson",
+        )
+        wide = ConsolidatedMemory.record_cluster(
+            cluster_key=hashlib.sha256(b"wide").hexdigest(),
+            rule="Run the gate before pushing.",
+            source_files=[str(stale), "another/transcript.jsonl"],
+            member_count=2,
+            max_member_weight=90,
+            is_binding=False,
+            verified_citation="an old unreferenced lesson",
+        )
+        ConsolidatedMemory.objects.supersede_covered_by(wide)
+        narrow.refresh_from_db()
+        assert narrow.status == ConsolidatedMemory.Status.SUPERSEDED
+
+        result = decay_memories(self.dir, now=_NOW)
+
+        assert result.archived_count == 0
+        assert stale.exists()
+
     def test_transfer_rail_has_teeth_un_homed_archived_when_rail_off(self) -> None:
         # Teeth: with the rail bypassed (every memory treated as homed), the SAME
         # un-homed memory the real rail retains IS archived. A vacuous rail that

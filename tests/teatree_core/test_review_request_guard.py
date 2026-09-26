@@ -10,11 +10,13 @@ exercised end to end.
 
 import datetime as dt
 import os
+from functools import partial
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.utils import timezone
 
@@ -24,14 +26,13 @@ from teatree.core.gates.review_request_guard import (
     GuardDecision,
     GuardOptions,
     GuardTarget,
-    _default_options,
     _live_matches,
     overlay_for_mr_url,
-    peek_should_post_review_request,
-    reconcile_out_of_band,
     resolve_guard_target,
-    should_post_review_request,
 )
+from teatree.core.gates.review_request_guard import peek_should_post_review_request as _peek_should_post_review_request
+from teatree.core.gates.review_request_guard import reconcile_out_of_band as _reconcile_out_of_band
+from teatree.core.gates.review_request_guard import should_post_review_request as _should_post_review_request
 from teatree.core.models import PullRequest, ReviewRequestPost, Ticket
 from teatree.core.overlay import OverlayConfig
 
@@ -43,6 +44,10 @@ _CHANNEL_ID = "C0DEMOCHAN1"
 _CHANNEL_NAME = "the-review-team"
 _BOT_AUTHOR = "B_AGENT"
 _HUMAN_AUTHOR = "U_HUMAN"
+
+should_post_review_request = partial(_should_post_review_request, overlay="overlay-a")
+peek_should_post_review_request = partial(_peek_should_post_review_request, overlay="overlay-a")
+reconcile_out_of_band = partial(_reconcile_out_of_band, overlay="overlay-a")
 
 
 def _ts_now() -> str:
@@ -102,10 +107,12 @@ class TestPriorAgentPostSuppresses(TestCase):
             decision = should_post_review_request(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+                overlay="overlay-a",
             )
         assert decision.action == "suppress"
         assert decision.permalink.startswith("https://team.slack.com/archives/")
         assert decision.author == _BOT_AUTHOR
+        assert ReviewRequestPost.objects.get(mr_url=_MR_URL).overlay == "overlay-a"
 
 
 class TestUserManualPostSuppresses(TestCase):
@@ -141,6 +148,19 @@ class TestRaceAtomicClaim(TestCase):
     second invocation) independently yields SUPPRESS. Exactly one
     effective POST across the two invocations against one test DB.
     """
+
+    def test_claim_records_the_required_overlay(self) -> None:
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+                overlay="overlay-a",
+            )
+
+        assert decision.action == "post"
+        assert ReviewRequestPost.objects.get(mr_url=_MR_URL).overlay == "overlay-a"
 
     def test_two_invocations_yield_exactly_one_post(self) -> None:
         empty_page = {"ok": True, "messages": [], "has_more": False}
@@ -388,8 +408,6 @@ class TestResolveGuardTarget(TestCase):
         self._monkeypatch = monkeypatch
 
     def test_returns_none_when_no_overlay(self) -> None:
-        from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
-
         with patch(
             "teatree.core.overlay_loader.get_overlay",
             side_effect=ImproperlyConfigured("none"),
@@ -510,37 +528,48 @@ class TestResolveGuardTarget(TestCase):
         assert target is not None
         assert target.channel_id == _CHANNEL_ID
 
+    def test_a_supplied_channel_id_is_kept_when_its_name_is_not_given(self) -> None:
+        overlay = _overlay_with_channel()
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None),
+        ):
+            target = resolve_guard_target(channel_id="C0DEMOBROADCAST")
+        assert target is not None
+        assert target.channel_id == "C0DEMOBROADCAST"
+
 
 class TestReconcileOutOfBand(TestCase):
     def test_returns_empty_when_read_fails(self) -> None:
         fake = FakeClient(raises=httpx.HTTPError("down"))
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(slack_http.httpx, "get", fake.get)
-            permalink = reconcile_out_of_band(
+            result = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
             )
-        assert permalink == ""
+        assert getattr(result, "status", None) == "unreadable"
+        assert getattr(result, "permalink", None) == ""
 
     def test_returns_empty_when_api_not_ok(self) -> None:
         fake = FakeClient(pages=[{"ok": False}])
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(slack_http.httpx, "get", fake.get)
-            permalink = reconcile_out_of_band(
+            result = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
             )
-        assert permalink == ""
+        assert getattr(result, "status", None) == "unreadable"
 
     def test_returns_empty_when_nothing_in_window(self) -> None:
         fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(slack_http.httpx, "get", fake.get)
-            permalink = reconcile_out_of_band(
+            result = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
             )
-        assert permalink == ""
+        assert getattr(result, "status", None) == "absent"
 
     def test_reconciles_and_returns_permalink(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
@@ -559,11 +588,12 @@ class TestReconcileOutOfBand(TestCase):
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(slack_http.httpx, "get", fake.get)
-            permalink = reconcile_out_of_band(
+            result = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
             )
-        assert permalink.startswith("https://team.slack.com/archives/")
+        assert getattr(result, "status", None) == "reconciled"
+        assert result.permalink.startswith("https://team.slack.com/archives/")
         post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
         assert post.done_at is not None
         pr.refresh_from_db()
@@ -574,11 +604,114 @@ class TestReconcileOutOfBand(TestCase):
         fake = FakeClient(pages=[{"ok": True, "messages": [{"text": _MR_URL, "ts": old_ts}], "has_more": False}])
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(slack_http.httpx, "get", fake.get)
-            permalink = reconcile_out_of_band(
+            result = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
             )
-        assert permalink == ""
+        assert getattr(result, "status", None) == "absent"
+
+
+class TestReconcileIgnoresTheCallersOwnRoot(TestCase):
+    """The nag must not reconcile against the very post it is nagging about.
+
+    ``reconcile_out_of_band`` matches every message in the window carrying the URL —
+    including the review-request ROOT the nag's own row tracks. So the first due tick
+    set ``done_at`` and stopped the train it was supposed to run, taking the
+    ``:merge:`` reaction and the resume reply down with it.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root_ts = f"{(timezone.now() - dt.timedelta(days=3)).timestamp():.6f}"
+        self.target = GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot")
+
+    def _reconcile(self, messages: list[dict[str, object]], **kwargs: str) -> object:
+        fake = FakeClient(pages=[{"ok": True, "messages": messages, "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            return reconcile_out_of_band(mr_url=_MR_URL, target=self.target, **kwargs)
+
+    def _root_only(self) -> list[dict[str, object]]:
+        return [{"text": f"review {_MR_URL}", "ts": self.root_ts, "user": _HUMAN_AUTHOR}]
+
+    def test_a_history_holding_only_the_tracked_root_is_an_absence(self) -> None:
+        result = self._reconcile(self._root_only(), ignore_ts=self.root_ts)
+
+        assert getattr(result, "status", None) == "absent"
+        assert not ReviewRequestPost.objects.filter(mr_url=_MR_URL, done_at__isnull=False).exists()
+
+    def test_the_same_history_without_ignore_ts_still_reconciles(self) -> None:
+        # followup's discover-mrs asks whether the channel carries ANY request for this
+        # MR, and there the tracked root IS the answer. The default must not move.
+        assert getattr(self._reconcile(self._root_only()), "status", None) == "reconciled"
+
+    def test_a_genuine_out_of_band_request_still_stops_the_nag_train(self) -> None:
+        # `conversations.history` pages newest-first, so a later request precedes the root.
+        messages = [
+            {"text": f"anyone free for {_MR_URL}?", "ts": _ts_now(), "user": _HUMAN_AUTHOR},
+            *self._root_only(),
+        ]
+
+        assert getattr(self._reconcile(messages, ignore_ts=self.root_ts), "status", None) == "reconciled"
+
+
+class TestAChannelReadNeverCompletesTheRowItsOwnRootBelongsTo(TestCase):
+    """Finding a tracked root proves a request exists, not that its follow-up is done.
+
+    Discovery and the pre-post dedup peek both reconcile on any match, and reconciling sets
+    ``done_at`` — which the nag, the resume and the merge-react all read, so a check on an MR
+    that was already asked about retired all three.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root_ts = f"{(timezone.now() - dt.timedelta(days=3)).timestamp():.6f}"
+        self.target = GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot")
+        self.post = ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            overlay="overlay-a",
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts=self.root_ts,
+            created_at=timezone.now() - dt.timedelta(days=3),
+        )
+
+    def _read(self, messages: list[dict[str, object]]) -> pytest.MonkeyPatch:
+        mp = pytest.MonkeyPatch()
+        self.addCleanup(mp.undo)
+        fake = FakeClient(pages=[{"ok": True, "messages": messages, "has_more": False}])
+        mp.setattr(slack_http.httpx, "get", fake.get)
+        return mp
+
+    def _root(self) -> dict[str, object]:
+        return {"text": f"review {_MR_URL}", "ts": self.root_ts, "user": _HUMAN_AUTHOR}
+
+    def test_discovery_still_reports_the_request_without_completing_its_row(self) -> None:
+        self._read([self._root()])
+
+        result = reconcile_out_of_band(mr_url=_MR_URL, target=self.target)
+
+        assert getattr(result, "status", None) == "reconciled"
+        self.post.refresh_from_db()
+        assert self.post.done_at is None
+
+    def test_the_dedup_peek_still_suppresses_without_completing_the_row(self) -> None:
+        self._read([self._root()])
+
+        decision = _peek_should_post_review_request(mr_url=_MR_URL, target=self.target, overlay="overlay-a")
+
+        assert decision.action != "post"
+        self.post.refresh_from_db()
+        assert self.post.done_at is None
+
+    def test_a_genuine_out_of_band_request_still_completes_the_row(self) -> None:
+        # `conversations.history` pages newest-first, so a later request precedes the root.
+        later = {"text": f"anyone free for {_MR_URL}?", "ts": _ts_now(), "user": _HUMAN_AUTHOR}
+        self._read([later, self._root()])
+
+        reconcile_out_of_band(mr_url=_MR_URL, target=self.target)
+
+        self.post.refresh_from_db()
+        assert self.post.done_at is not None
 
 
 class TestReconcileIdempotent(TestCase):
@@ -607,11 +740,11 @@ class TestReconcileIdempotent(TestCase):
         fake = FakeClient(pages=[page])
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(slack_http.httpx, "get", fake.get)
-            permalink = reconcile_out_of_band(
+            result = reconcile_out_of_band(
                 mr_url=_MR_URL,
                 target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
             )
-        assert permalink != ""
+        assert getattr(result, "status", None) == "reconciled"
         assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 1
 
 
@@ -692,6 +825,29 @@ class TestStaleOrphanReclaim(TestCase):
             )
         assert decision.action == "suppress"
         assert decision.reason == "already_claimed"
+
+    def test_a_duplicate_post_on_a_live_thread_leaves_the_row_following_up(self) -> None:
+        # The live thread IS this row's own root, so a second post attempt proves nothing is done.
+        post = ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(days=40),
+        )
+        fake = FakeClient(
+            pages=[{"ok": True, "messages": [], "has_more": False}],
+            replies={"ok": True, "messages": [{"ts": "1700000000.000100", "text": f"review {_MR_URL}"}]},
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+
+        post.refresh_from_db()
+        assert post.done_at is None
 
     def test_posted_row_with_deleted_thread_reclaims_and_posts(self) -> None:
         """A posted row whose thread is GONE (deleted) is reclaimed → POST.
@@ -778,17 +934,8 @@ class TestPostedRowProbesRecordedChannel(TestCase):
         assert params["channel"] == recorded_channel
 
 
-class TestConfigurableMaxPages(TestCase):
-    """The channel-scan page cap is configurable so a ~30-day window is reachable (#3292 part 4)."""
-
-    def test_default_options_reads_the_configured_page_cap(self) -> None:
-        with patch(
-            "teatree.config.get_effective_settings",
-            return_value=type(
-                "S", (), {"review_request_dedup_window_days": 30, "review_request_dedup_max_pages": 42}
-            )(),
-        ):
-            assert _default_options().max_pages == 42
+class TestChannelScanPageCap(TestCase):
+    """The page cap reaches the scan spec, so a ~30-day window is reachable (#3292 part 4)."""
 
     def test_live_matches_passes_the_options_page_cap_to_the_scan(self) -> None:
         captured: dict[str, object] = {}
@@ -918,10 +1065,9 @@ class TestNoLoopTaskTouched(TestCase):
 class TestOverlayForMrUrl(TestCase):
     """The shared precedence rule: env pin wins, else infer from repo ownership (#1310)."""
 
-    def test_explicit_env_pin_defers_to_the_ambient_default(self) -> None:
+    def test_an_explicit_env_pin_is_the_owning_overlay(self) -> None:
         with patch.dict(os.environ, {"T3_OVERLAY_NAME": "acme"}, clear=False):
-            # an explicit T3_OVERLAY_NAME is consumed by get_overlay — return "" here
-            assert overlay_for_mr_url(_MR_URL) == ""
+            assert overlay_for_mr_url(_MR_URL) == "acme"
 
     def test_without_env_pin_infers_from_repo_ownership(self) -> None:
         with (
@@ -931,3 +1077,28 @@ class TestOverlayForMrUrl(TestCase):
             os.environ.pop("T3_OVERLAY_NAME", None)
             assert overlay_for_mr_url(_MR_URL) == "widget"
         infer.assert_called_once_with(_MR_URL)
+
+    def test_an_unattributable_url_falls_back_to_the_resolved_overlays_name(self) -> None:
+        # The nag, the resume and the merge-react all select by CONCRETE overlay name,
+        # so an unattributed row is invisible to every one of them forever.
+        resolved = MagicMock()
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("teatree.core.gates.review_request_guard.infer_overlay_for_url", return_value=""),
+            patch("teatree.core.overlay_loader.get_overlay", return_value=resolved),
+            patch("teatree.core.overlay_loader.get_all_overlays", return_value={"widget": resolved}),
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            assert overlay_for_mr_url(_MR_URL) == "widget"
+
+    def test_an_unresolvable_overlay_still_answers_empty(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch("teatree.core.gates.review_request_guard.infer_overlay_for_url", return_value=""),
+            patch(
+                "teatree.core.overlay_loader.get_overlay",
+                side_effect=ImproperlyConfigured("Multiple overlays found"),
+            ),
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            assert overlay_for_mr_url(_MR_URL) == ""

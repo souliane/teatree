@@ -8,10 +8,15 @@ An unresolvable project degrades to an empty list (list reads) or a structured
 ``{"error": ...}`` (``repo_metadata``) so an unknown repo never crashes the caller.
 """
 
-from urllib.parse import quote_plus
+import logging
+from collections.abc import Callable
+from urllib.parse import quote_plus, urlencode
 
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.types import RawAPIDict
+from teatree.utils.throttled_log import warn_throttled
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectUnresolvedError(RuntimeError):
@@ -83,3 +88,60 @@ def repo_metadata(project: ProjectInfo | None, *, repo: str) -> RawAPIDict:
         "short_name": project.short_name,
         "default_branch": project.default_branch,
     }
+
+
+def open_mr_url_for_branch(
+    client: GitLabAPI,
+    resolve_project: Callable[[str], ProjectInfo | None],
+    *,
+    repo: str,
+    branch: str,
+) -> str | None:
+    """The OPEN MR whose source is *branch*: the url, ``""`` for none, ``None`` for unknown.
+
+    Read over HTTP rather than a forge CLI because the deploy image deliberately ships
+    none for GitLab, so a CLI probe answered UNKNOWN for every repo inside the container
+    and ``pr ensure-pr`` reported a permanent ``owed`` with no merge request created.
+    Needs only the GitLab token, which that image already has.
+
+    Fails CLOSED at every step: an empty *branch* asks nothing (an unfiltered list would
+    answer with some OTHER branch's MR), an unresolvable project is UNKNOWN, and any
+    transport error is UNKNOWN — never verified absence.
+    """
+    if not branch:
+        return None
+    try:
+        project = resolve_project(repo)
+        if project is None:
+            return None
+        return _first_open_mr_url(client, project, branch=branch)
+    except Exception as exc:  # noqa: BLE001 — fail closed: an unread probe must never read as absence.
+        warn_throttled(
+            logger,
+            f"gitlab-open-mr-probe:{repo}:{branch}",
+            "GitLab open-MR probe failed for %s on %s — reporting UNKNOWN: %s",
+            repo,
+            branch,
+            exc,
+        )
+        return None
+
+
+def _first_open_mr_url(client: GitLabAPI, project: ProjectInfo, *, branch: str) -> str | None:
+    """The first OPEN MR row's ``web_url``; ``""`` when there are none, ``None`` when unreadable.
+
+    The request names an explicit field selector, so a row missing ``web_url`` is a
+    changed output schema, never an MR with no url: reporting it as found-with-``""``
+    let a fail-closed caller read an unverified open MR as verified absence (#4116).
+    """
+    query = urlencode({"state": "opened", "source_branch": branch, "per_page": 1})
+    rows = client.get_json(f"projects/{project.project_id}/merge_requests?{query}")
+    if not isinstance(rows, list):
+        return None
+    if not rows:
+        return ""
+    url = rows[0].get("web_url") if isinstance(rows[0], dict) else None
+    if not isinstance(url, str) or not url:
+        logger.warning("GitLab open-MR probe returned a row with no web_url for %s — UNKNOWN", branch)
+        return None
+    return url

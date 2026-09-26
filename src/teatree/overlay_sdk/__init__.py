@@ -74,7 +74,7 @@ from teatree.core.worktree.readiness import (
     http_probe,
 )
 from teatree.core.worktree.worktree_env import compose_project, env_cache_path
-from teatree.docker.reap import reap_compose_project
+from teatree.docker.reap import TEST_STACK_SUFFIX, reap_compose_project, sibling_test_project
 
 if TYPE_CHECKING:
     from teatree.overlay_sdk.factory import (
@@ -146,6 +146,7 @@ def __dir__() -> list[str]:
 
 __all__ = [
     "DEFAULT_TRANSITION_EMOJIS",
+    "TEST_STACK_SUFFIX",
     "AttemptUsage",
     "BaseImageConfig",
     "CacheBreakpoint",
@@ -222,5 +223,6 @@ __all__ = [
     "run_agent",
     "run_allowed_to_fail",
     "run_checked",
+    "sibling_test_project",
     "validate_result_keys",
 ]

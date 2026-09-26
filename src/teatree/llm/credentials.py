@@ -174,6 +174,16 @@ class Credential:
         """The ordered credential sources consulted by :meth:`resolve`."""
         return self._sources
 
+    @property
+    def routed_pass_path(self) -> str:
+        """The per-account ``pass`` entry the domain layer routed this credential to.
+
+        ``""`` when nothing was injected — the credential resolves from its env var (or a
+        built-in path) and names no account. A caller that must attribute a later outcome
+        to the account it signed with reads this at RESOLVE time, never re-derives it.
+        """
+        return self._pass_path_override or ""
+
     def resolve(self) -> str:
         """Return the credential value from the first source that yields one.
 

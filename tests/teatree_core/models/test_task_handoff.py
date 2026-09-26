@@ -17,7 +17,12 @@ a genuine owner question and keeps the default ``OWNER_QUESTION`` audience.
 from django.test import TestCase
 
 from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
-from teatree.core.models.task_handoff import record_deferred_question
+from teatree.core.models.task_handoff import (
+    RESUME_ANSWER_PREFIX,
+    RESUME_CONTINUATION_CLAUSE,
+    dispatch_reason,
+    record_deferred_question,
+)
 
 
 class TestRecordDeferredQuestionAudience(TestCase):
@@ -119,3 +124,32 @@ class TestRecordDeferredQuestionAudience(TestCase):
         )
         row = record_deferred_question(task)
         assert row.audience == DeferredQuestion.Audience.OWNER_QUESTION
+
+
+class TestARowStampedBeforeTheClauseMovedOutOfStorage(TestCase):
+    """The queue holds resumes whose stored reason still has the clause inline — both cases apply.
+
+    Composing onto one of those blindly would say it twice; leaving them alone would exempt the
+    very rows already in flight from the rule the change exists to enforce.
+    """
+
+    _LEGACY = f"{RESUME_ANSWER_PREFIX} postgres-1. {RESUME_CONTINUATION_CLAUSE}"
+
+    def _task(self, continuation: str) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(
+            ticket=ticket, session=session, execution_reason=self._LEGACY, session_continuation=continuation
+        )
+
+    def test_a_resumed_dispatch_is_told_to_continue_exactly_once(self) -> None:
+        reason = dispatch_reason(self._task(Task.SessionContinuation.PARENT))
+
+        assert reason.count(RESUME_CONTINUATION_CLAUSE) == 1
+        assert "postgres-1" in reason
+
+    def test_a_fresh_dispatch_has_the_stored_clause_taken_off(self) -> None:
+        reason = dispatch_reason(self._task(Task.SessionContinuation.FRESH))
+
+        assert RESUME_CONTINUATION_CLAUSE not in reason
+        assert "postgres-1" in reason

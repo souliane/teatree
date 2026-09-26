@@ -89,9 +89,8 @@ When a request is refused, the answer is to wait, work a different ticket, or �
 once you have CONFIRMED the holder is gone — `release-occupancy`. Never delete
 the checkout to clear a claim. `t3 <overlay> workspace ticket` refuses an
 occupied checkout too; `--take-over` is the explicit override. The DB-home
-`worktree_occupancy_gate_enabled` is the kill switch, and
-`worktree_occupancy_lease_seconds` (default 1800) bounds a claim whose holder
-died without releasing.
+`worktree_occupancy_gate_enabled` is the kill switch, and a fixed 30-minute
+lease bounds a claim whose holder died without releasing.
 
 ### Concurrent Local Stacks (`max_concurrent_local_stacks`, #1397)
 
@@ -151,7 +150,7 @@ All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for 
 
 Worktrees regroup under a dedicated dir PER OVERLAY. Two DISTINCT roots — conflating them breaks provisioning:
 
-- **WORKTREE root** `config.worktree_root()` (where NEW worktrees are created) resolves, first match wins: the `T3_WORKSPACE_DIR` env var / Django setting (explicit back-compat override), then a DB-home `ConfigSetting` `workspace_dir` row (overlay scope, then global — set with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`), then the sound default `~/workspace/t3-workspaces/<overlay>/`. A `[teatree] workspace_dir` TOML value is DB-home and ignored on read — it is warned about on load and migrated once with `config_setting import`.
+- **WORKTREE root** `config.worktree_root()` (where NEW worktrees are created) resolves, first match wins: the `T3_WORKSPACE_DIR` env var / Django setting (explicit back-compat override), then a DB-home `ConfigSetting` `workspace_dir` row (overlay scope, then global — set with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`), then the sound default `~/workspace/t3-workspaces/<overlay>/`. A `[teatree] workspace_dir` TOML value is DB-home and ignored on read — it is warned about on load and migrated once with `config_setting import`. The `<overlay>` segment comes from the caller when it knows one (`worktree_root(overlay=ticket.overlay or None)` — what the provisioner and the `workspace ticket` summary pass), and only otherwise from the process: resolved ambiently, the segment is present under the CLI and absent in the container, which splits one ticket's worktrees across two roots. `overlay=""` is a caller declaring itself genuinely overlay-less and is DISTINCT from omitting the argument.
 - **CLONE root** `config.clone_root()` (`~/workspace`, where main repo clones live) is what `find_clone_path` and every clone-discovery caller use. It resolves: `T3_WORKSPACE_DIR` env / Django setting, then `~/workspace`. Provisioning DISCOVERS clones under this root and CREATES the worktree under the worktree root — passing the worktree root to `find_clone_path` would scan the wrong dir and fail "No git clone found".
 
 **One canonical root, alternates drained (#3583).** `core/worktree/worktree_roots.py` is the single answer to "which roots hold teatree worktrees?". Only the canonical worktree root is ever written to; the SCANNED set additionally covers every root existing registered worktrees actually live in, so an alternate root an ad-hoc `git worktree add` created is DRAINED by `clean-all` rather than left to accumulate — and once drained it is never written to again, collapsing the split with no manual migration. `t3 doctor check` reports the state: it FAILs on a registered worktree PROVED never to have been a checkout, WARNs UNVERIFIED on one this venue simply cannot resolve, and WARNs on a namespace split across roots — all over the same three-valued `probe_checkout` the reapers use, so the reaper, the doctor and the setup-time warning can never disagree about which dirs are broken. Physically deleting an emptied alternate root directory is a deployment action, not something `clean-all` does.
@@ -238,7 +237,11 @@ Until a dir is stamped the reclaim is deliberately conservative and frees less; 
 
 **Remote-state freshness gates the whole pass.** The "is it on a remote?" probe reads local `refs/remotes/*`, which go stale when a branch is deleted upstream by anything other than this clone — the ordinary forge auto-delete-on-merge. Against a stale ref, unpushed work reads as pushed and the last copy gets reaped. So each clone's tracking refs are refreshed (`git fetch --all --prune`) before any of its orphans is classified, and a **failed refresh fails closed**: the clone is skipped whole (`SKIPPED clone <path>: could not refresh remote refs`) and nothing in it is touched. On an offline host the pass therefore reaps nothing rather than reaping wrongly.
 
-Each per-worktree teardown funnels through one resilient seam (`reap_one_worktree`), so a single bad row never aborts the whole run. A row whose `overlay` is no longer registered (a foreign/unregistered overlay, or a sibling-repo worktree whose overlay was uninstalled) is **skipped with a warning and the run continues** — the documented crash where `get_overlay_for_worktree` raised `ImproperlyConfigured` mid-loop is fixed. A sibling clone that cannot be classified (corrupt or origin-less, so `git default-branch`/squash detection raises) is likewise skipped, not fatal.
+Each per-worktree teardown funnels through one resilient seam (`reap_done_worktree`), so a single bad row never aborts the whole run. The sweep wraps every call to it (`reap_done_worktrees_detailed`), so a row that raises for any reason at all is reported as its own `ERROR wt#<pk> '<branch>': <exc> — row skipped, nothing wiped` outcome and the remaining rows are still examined; before that, one raising row ended the whole first pass and every row after it went unread, so the backlog could only grow. A row whose `overlay` is no longer registered (a foreign/unregistered overlay, or a sibling-repo worktree whose overlay was uninstalled) is **skipped with a warning and the run continues** — the documented crash where `get_overlay_for_worktree` raised `ImproperlyConfigured` mid-loop is fixed. A sibling clone that cannot be classified (corrupt or origin-less, so `git default-branch`/squash detection raises) is likewise skipped, not fatal.
+
+**A row with nothing anywhere is released by `workspace doctor --fix`, never by the sweep.** A pure ghost — the checkout dir absent here, `refs/heads/<slug>` proven absent in the row's stored clone or the single clone a name scan finds, and no surviving `git worktree` registration for the path — has no bytes for any probe to speak for, and it pins its `db_name` against the orphan-DB reaper until released. `broken_checkout.is_pure_ghost` is the predicate `--fix` tears it down on: several same-basename clones, or a ref probe that fails rather than answering "missing", keep the row. The automatic `clean-all` sweep keeps every ghost row.
+
+**`clean-all` prunes the checkout you ran it FROM, including from the container.** The branch and stash passes are cwd-gated, and they read the operator's declared invocation cwd (`TEATREE_INVOCATION_CWD`, which `deploy/t3` exports in container coordinates), not the process cwd. From inside the container the process cwd is the image's `WORKDIR` — never a checkout — so a `Path.cwd()`-gated pass was SKIPPED on literally every containerized run and the branch/stash prune never executed there at all. When neither resolves to a git repo the run still says so by name (`SKIPPED branch + stash prune: resolved invocation cwd <path> is not a git repo`). The remaining passes take their bearings from the DB and the workspace roots, so they are unaffected by cwd and need only one run per overlay.
 
 ### Free disk space — `workspace reclaim-disk` (never raw docker)
 
@@ -265,19 +268,54 @@ Refused **inside** the worker, the grant itself is missing (a stack brought up f
 ### The checkout pool's retention policy (#4244)
 
 Docker cache is not where the disk goes. The pool of checkouts is: each carries a
-`.venv` and a `.venv-hook` at roughly 1.1 GB together, and they accumulate across every
-ticket ever worked — measured at ~82 GB across two locations on a box that was 92% full,
+`.venv`, one `.venv-hook-<os>-<arch>` per platform that ran a hook in it, and — on a
+frontend checkout — a `node_modules`, an `.nx` and an `.angular`, and they accumulate
+across every ticket ever worked. Virtualenvs ALONE measured ~82 GB across two locations
+on a box that was 92% full,
 about half of it in ad-hoc session checkouts (`wt-*`, `fix<NNNN>`, `cold<NNNN>`) that
 appear in **no** ledger. `workspace emit` surfaces the ones holding work (#4579) — it
 unions the ledger with every unregistered checkout carrying uncommitted changes or commits
 on no remote — but a CLEAN one is deliberately absent, so emit is not a disk-usage census.
 
-The policy is enforced by the `resource_pressure` loop, not by a human running a command:
+The policy is enforced by the `resource_pressure` loop on its own cadence, with no flag to
+arm. Read what it would do on this host at any time:
 
-- **A venv untouched for `venv_idle_days` (default 2) is evicted as the cache it is.** `uv
-  sync` rebuilds it, so the checkout recovers with no manual step and no work is at risk —
-  the tree, the commits and every uncommitted change live outside the venv. Set the
-  retention with `t3 <overlay> config_setting set venv_idle_days <days>`.
+```bash
+t3 <overlay> retention artifacts                 # plan and print; deletes NOTHING
+t3 <overlay> retention artifacts --apply         # this operator's own eviction, now
+```
+
+**Every deletion is PROVED, and anything unprovable is kept and reported.** Four conditions must
+all hold — rebuild inputs present, no live process in the checkout, no symlink resolving at
+the artifact, and an enumeration complete enough to say so — and each is re-established
+immediately before that artifact's own deletion. A candidate that fails any of them is kept
+and named in the plan; nothing prompts. A kept artifact costs disk, a wrong deletion costs
+work, and that asymmetry is why there is no switch: a flag in front of a proof adds no
+safety, and an off-by-default one only guarantees the reclaim never happens.
+
+- **A rebuildable artifact untouched for `artifact_idle_days` (default 2) is evicted as the
+  cache it is** — `.venv`, `.venv-hook*`, `node_modules`, `.nx`, `.angular`. `uv sync` /
+  `npm ci` / `nx reset` rebuild them, so the checkout recovers with no manual step and no
+  work is at risk — the tree, the commits and every uncommitted change live outside them.
+  Set the retention with `t3 <overlay> config_setting set artifact_idle_days <days>`. The
+  delete list is enumerated in `core/cleanup/artifact_eviction` and is deliberately NOT
+  derived from `checkout_registry._NEVER_A_CHECKOUT`, which contains `.git`.
+- **A SYMLINKED artifact is skipped whole — never sized, never deleted, never unlinked.**
+  An overlay legitimately points a worktree's `node_modules`/`.venv` at its main clone's,
+  and `is_dir()` follows the link while `os.walk` descends a symlinked top, so selecting
+  one would size the clone and aim a delete at a tree every worktree shares. The link is
+  also a provisioned artifact the overlay health-checks, and removing it frees no bytes.
+- **So is what a symlink POINTS AT.** The shared directory is a real artifact at a checkout
+  root, and the clone holding it has no local evidence that anyone depends on it: a node
+  process serving a worktree has its cwd in the WORKTREE and its exe under a version
+  manager, so no liveness guard sees it, the clone's own mtimes say dormant, and being the
+  largest object on the box it is promoted first. Every artifact symlink in the scan
+  population is resolved before anything is planned, and a candidate resolving into that
+  set is excluded — no mtime, no process placement, no ordering involved.
+- **"Rebuildable" is checked against the checkout, not assumed from the name.** `npm ci`
+  refuses without a lockfile and `uv sync` needs a manifest, so an artifact in a repo
+  carrying neither is kept: there the documented recovery cannot restore it. `.nx` and
+  `.angular` are exempt — a build regenerates them unconditionally.
 - **That retention is a CEILING, decayed by how full the disk is (#4644).** It applies in
   full at or above `disk_warn_free_gb`, decays linearly between the two disk thresholds
   (at 17.5 GB free with the shipped 25/10 it is one day, not two), and below
@@ -285,8 +323,11 @@ The policy is enforced by the `resource_pressure` loop, not by a human running a
   rewrites hourly could never age into eligibility — it was immune on every pass, forever,
   however full the box got. No new setting: the shape is read from the two thresholds the
   pressure ladder already uses, and an unmeasurable reading never relaxes anything.
-- **A capped pass returns the most bytes.** Eligible venvs are ranked by size before the
-  per-pass cap applies, and the plan names what it deferred.
+- **A capped pass returns the most bytes it can afford to measure.** Sizing is an `os.walk`
+  per candidate running inline in the tick, so the pass sizes a bounded, deterministic
+  alphabetical prefix (200) and spends its 50-per-pass budget on the largest of those. The
+  plan names both what the cap deferred and what it never measured; the backlog drains
+  because what a pass evicts leaves the eligible set.
 - **A reclaim that keeps freeing nothing on a full disk goes RED.** Three consecutive passes
   below the critical floor that return zero bytes raise the `reclaim-stalled:disk` health
   signal — a pass that reclaimed nothing and a pass that never ran are otherwise
@@ -294,19 +335,40 @@ The policy is enforced by the `resource_pressure` loop, not by a human running a
 - **Nothing is evicted from a checkout a process is working in.** Idleness only narrows the
   candidate set; a live process decides. The guard reads the HOST's process table
   (bind-mounted into the container at `/host-proc`) and refuses the whole pass when it
-  cannot — a container's own PID namespace shows none of the host's agents. The same
-  refusal now governs the heuristic worktree GC, which until [#4244](https://github.com/souliane/teatree/issues/4244)
-  read an unusable table's empty answer as "nobody is inside".
-- **The guard is re-established immediately before each deletion, not at plan time.** Minutes
-  of walks and prunes separate the two, and a checkout is matched under both its written and
-  its resolved spelling — a symlinked one never matched the kernel's canonical `/proc/<pid>/cwd`.
-  What the delete-time guard stopped is named in the persisted plan.
-- **Steady state is therefore one venv per checkout worked inside the window** — on this
-  box's cadence, single-digit GB rather than tens. A pool materially above that means the
+  cannot — a PID disappearing during the read is benign, but a permission-denied link is
+  an unknown holder and refuses. A container's own PID namespace shows none of the host's
+  agents. The same refusal now governs the heuristic worktree GC, which until
+  [#4244](https://github.com/souliane/teatree/issues/4244) read an unusable table's empty
+  answer as "nobody is inside".
+- **An enumeration gap refuses the whole pass.** The symlink-target set is built from the
+  same scan, so an unreadable region can hide the only link protecting a shared target.
+  Linked and standalone `--separate-git-dir` checkouts are enumerated. A submodule records
+  a gap until its parent-process liveness and nested links can be proved by the same guard.
+- **The whole guard is re-read before EACH deletion, not once per batch.** Minutes of walks
+  and prunes separate plan from delete, and the delete loop is longer still — up to 50
+  `rmtree` calls over multi-GB trees — so a per-batch snapshot is stalest exactly where the
+  risk is highest. Both the process table and the symlink-target set are re-read per
+  candidate; a checkout is matched under both its written and its resolved spelling, since a
+  symlinked one never matched the kernel's canonical `/proc/<pid>/cwd`. What the delete-time
+  guard stopped is named in the persisted plan.
+- **The sweep is its own cadence-gated job, NOT gated on the disk-CRIT band.** The reclaim
+  loses nothing at any fullness, so pressure-gating it only delayed it; it also stamps
+  `last_artifact_sweep_at` rather than `last_freed_at`, so a loss-free pass never
+  rate-limits the destructive ladder. That ladder measures the WORKTREE ROOT, not `/` —
+  from inside the container `/` is the Docker VM's own disk and read 384.0 GB free while
+  the host volume holding the checkouts had 42.3 GB.
+- **Steady state is therefore one artifact set per checkout worked inside the window** — on
+  this box's cadence, single-digit GB rather than tens. A pool materially above that means the
   pass is being refused; read `t3 loop status`'s persisted plan, which reports
-  considered/evicting/kept counts and names what it could not see.
+  considered/evicting/kept/deferred counts and names what it could not see.
 - Worktrees whose ticket is done are swept on the same pass (the `clean-merged` predicate),
   so a merged ticket's checkout does not wait for someone to remember.
+- The disk lever is `t3 <overlay> retention artifacts`, not another checkout's `.venv`:
+  borrowing one costs its owner the environment. Aimed at it through `UV_PROJECT_ENVIRONMENT`,
+  the borrower's `uv run` re-syncs it — and deletes and rebuilds it outright when its recorded
+  interpreter does not match (`deploy/t3` warns about this at startup). Aimed at it through
+  `VIRTUAL_ENV`, `uv pip install -e` lands the borrower's editable `.pth` in it, which dangles
+  once the borrower is reaped (`t3 doctor check` names such a `.pth`).
 
 ### Single-repo cleanup
 
@@ -325,6 +387,8 @@ for repo in "$T3_REPO" ~/workspace/<overlay>/<overlay-repo> ~/workspace/<skills-
   (cd "$repo" && t3 <overlay> workspace clean-all)
 done
 ```
+
+**That `cd` does not cross the container boundary, so run the loop from a venue whose own cwd is the repo.** The branch and stash passes read the process cwd and there is no `--repo` to override it; `t3` execs into a container that starts at the image's `WORKDIR`, which is not a checkout — so a host-side `cd` leaves both passes reporting `SKIPPED branch + stash prune: cwd <path> is not a git repo`, once per iteration, having pruned nothing in any `$repo`. The worktree, database, docker and snapshot passes are unaffected — they take their bearings from the DB and the workspace roots, not from cwd, which is why they only need one run per overlay. This is the same venue split as `/t3:ship` § 4a, where `t3 push` and `pr ensure-pr` at least expose a `--repo` to name the tree explicitly.
 
 Worktree pruning, orphan databases, and DSLR snapshots are global to the overlay's DB and only need to run once. Branch and stash pruning needs to run **per repo**.
 
@@ -432,6 +496,14 @@ Use the `t3` CLI (`t3 <overlay> worktree start`, `t3 <overlay> run backend`, `t3
 - Health checks after startup
 
 Direct commands bypass these safeguards, causing subtle failures (wrong DB, port collisions, missing migrations).
+
+### Fast-Forward a Clean Checkout That Is Only Behind
+
+When an existing checkout is clean and its branch is strictly behind its upstream,
+bring it current with `git pull --ff-only` (or fetch and `git merge --ff-only`). This
+state needs only a fast-forward: never rebase or reset it. A rebase rewrites local
+branch history unnecessarily, and a hard reset is destructive even when the
+current inspection says the tree is clean.
 
 ### Cut Every Branch From Fresh `origin/main` (Non-Negotiable)
 

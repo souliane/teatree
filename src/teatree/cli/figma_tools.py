@@ -17,16 +17,17 @@ from pathlib import Path
 import typer
 
 from teatree.backends.figma import FigmaClient, FigmaTokenCredential, build_side_by_side_comparison
+from teatree.core.overlays.overlay_credentials import overlay_pass_key
 from teatree.llm.credentials import CredentialError
 
 
 def _client() -> FigmaClient:
     try:
-        token = FigmaTokenCredential().resolve()
+        token = FigmaTokenCredential(pass_path_override=overlay_pass_key("figma_token") or None).resolve()
     except CredentialError:
         typer.echo(
-            "No Figma personal access token. Set FIGMA_TOKEN in the environment "
-            "or store one with `pass insert figma/pat`.",
+            "No Figma personal access token. Set FIGMA_TOKEN in the environment, or store one in `pass` "
+            "and route it with `t3 <overlay> config_setting set figma_token_pass_key '\"<entry>\"'`.",
             err=True,
         )
         raise typer.Exit(code=1) from None

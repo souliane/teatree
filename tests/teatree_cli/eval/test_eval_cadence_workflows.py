@@ -7,6 +7,7 @@ unchanged. These guard that contract against a future edit silently removing a
 piece of it.
 """
 
+import re
 from pathlib import Path
 
 _WORKFLOWS = Path(__file__).resolve().parents[3] / ".github" / "workflows"
@@ -65,8 +66,16 @@ class TestNightlySmokeLane:
 
     def test_nightly_runs_a_bounded_cheap_smoke_slice(self) -> None:
         text = _NIGHTLY.read_text(encoding="utf-8")
-        assert "--lane clean_room --shard 1/16" in text
+        assert "--lane clean_room --shard rotate/16" in text
         assert "--require-executed" in text
+
+    def test_the_nightly_shard_rotates_rather_than_metering_one_sixteenth_forever(self) -> None:
+        # A literal `--shard 1/16` runs the SAME 16 scenarios every night, so 15/16 of
+        # the catalog is never exercised nightly. `rotate/16` walks the shards one per
+        # UTC day — still one shard per night, still deterministic, but the catalog is
+        # covered over a 16-day cycle.
+        text = _NIGHTLY.read_text(encoding="utf-8")
+        assert not re.search(r"--shard\s+\d+/\d+", text), "the nightly shard must rotate, not be pinned"
 
     def test_nightly_defaults_to_the_no_per_token_subscription_credential(self) -> None:
         # The credential knob now rides the "Select the freshest eval OAuth account"

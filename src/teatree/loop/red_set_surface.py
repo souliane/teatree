@@ -24,6 +24,7 @@ import os
 import shutil
 from collections.abc import Callable, Iterable
 
+from teatree import forge_credentials
 from teatree.loop.main_check_runs import CheckRun, check_runs_argv, parse_check_run_pages
 from teatree.loop.red_set_report import MIN_SET_SIZE, PrRedRecord, RedSetReport, SetVerdict, analyse_red_set
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
@@ -167,11 +168,20 @@ def _default_main_checks(*, slug: str, overlay: str) -> frozenset[str] | None:
     """
     gh = shutil.which("gh") or "gh"
     argv = [gh, *check_runs_argv(slug=slug, ref=_MAIN_BRANCH)]
-    token = _github_token(overlay)
-    try:
-        result = run_allowed_to_fail(
-            argv, expected_codes=None, env={**os.environ, "GH_TOKEN": token} if token else None
+    resolution = forge_credentials.resolve_named_overlay_token(overlay, credential="github_token")
+    if resolution.state is not forge_credentials.ForgeTokenState.TOKEN:
+        logger.warning(
+            "red_set: %s is %s for %s: %s; refusing ambient gh authentication",
+            resolution.setting,
+            resolution.state.value,
+            slug,
+            resolution.detail,
         )
+        return None
+    try:
+        env: dict[str, str] = {**os.environ, "GH_TOKEN": resolution.token}
+        env.pop("GITHUB_TOKEN", None)
+        result = run_allowed_to_fail(argv, expected_codes=None, env=env)
     except FileNotFoundError:
         return None
     if result.returncode != 0:
@@ -197,16 +207,6 @@ def _is_failing(run: "CheckRun") -> bool:
     if str(run.get("status") or "").upper() != "COMPLETED":
         return False
     return str(run.get("conclusion") or "").upper() not in GREEN_TERMINAL_CONCLUSIONS
-
-
-def _github_token(overlay: str) -> str:
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: overlay registry at call time
-
-    try:
-        return get_overlay(overlay or None).config.get_github_token() or ""
-    except Exception:
-        logger.exception("red_set: no GitHub token for overlay %r — falling back to ambient gh auth", overlay)
-        return ""
 
 
 def _default_notify(*, text: str, idempotency_key: str) -> None:

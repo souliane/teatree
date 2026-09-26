@@ -10,6 +10,7 @@ or out of the trailing / baseline window.
 """
 
 from datetime import timedelta
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -17,6 +18,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.factory.factory_signals import (
+    SIGNALS,
+    VISIBILITY_SIGNALS,
     FactorySignalsReport,
     SignalReading,
     SignalStatus,
@@ -25,6 +28,7 @@ from teatree.core.factory.factory_signals import (
     defect_escape_rate,
     first_try_green_rate,
     merge_latency,
+    net_hand_written_loc,
     repair_iteration_burn,
     review_catch_rate,
 )
@@ -34,6 +38,8 @@ from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
+from teatree.quality.hand_written_loc import LocDelta
+from teatree.utils.run import CommandFailedError
 from tests.factories import (
     MergeAuditFactory,
     MergeClearFactory,
@@ -57,6 +63,16 @@ class FactorySignalsTestBase(TestCase):
 
     def setUp(self) -> None:
         self.now = timezone.now()
+        # The LoC visibility row reads git, not the ledgers, so leaving it live would
+        # make every ledger assertion here depend on the ambient checkout's history
+        # (and pay a boundary diff per window). `NetHandWrittenLocSignalTests` drives
+        # the real read; the git-backed arithmetic is pinned in test_hand_written_loc.
+        self.stub_loc = mock.patch(
+            "teatree.core.factory.factory_signals.window_loc",
+            return_value=LocDelta(added=0, deleted=0, commits=0),
+        )
+        self.stub_loc.start()
+        self.addCleanup(self.stub_loc.stop)
 
     def _merge(
         self,
@@ -661,13 +677,18 @@ class ReportShapeTests(FactorySignalsTestBase):
             assert isinstance(reading, SignalReading)
             assert reading.status in set(SignalStatus)
 
-    def test_empty_factory_reports_five_signals_ok(self) -> None:
+    def test_empty_factory_reports_every_signal_ok(self) -> None:
         report = compute_factory_signals(now=self.now)
         assert isinstance(report, FactorySignalsReport)
-        assert len(report.signals) == 5
-        # Nothing bad detected on an empty ledger; all signals insufficient.
+        assert [row.provider_id for row in report.signals] == [
+            spec.provider_id for spec in (*SIGNALS, *VISIBILITY_SIGNALS)
+        ]
+        # Nothing bad detected on an empty ledger; every graded signal insufficient.
         assert report.verdict == SignalVerdict.OK
-        assert all(row.reading.status == SignalStatus.INSUFFICIENT_DATA for row in report.signals)
+        graded = {spec.provider_id for spec in SIGNALS}
+        assert all(
+            row.reading.status == SignalStatus.INSUFFICIENT_DATA for row in report.signals if row.provider_id in graded
+        )
 
     def test_to_dict_carries_the_outer_loop_contract_keys(self) -> None:
         report = compute_factory_signals(now=self.now)
@@ -779,3 +800,55 @@ class TicketlessClearScopeTests(FactorySignalsTestBase):
         row = _row(report, "merge_latency")
         assert row.evidence["stale_clear_hours"] == pytest.approx(0.0)
         assert row.tripped is False
+
+
+class NetHandWrittenLocSignalTests(FactorySignalsTestBase):
+    """The LoC direction row is reported for visibility and never grades the factory.
+
+    Owner ruling on the LoC direction: the CI leg is advisory, so the dashboard leg
+    must be too. A signal that could redden the operator's primary alarm on a git
+    read is a gate wearing a chart's clothes.
+    """
+
+    def test_the_row_is_present_and_excluded_from_the_graded_set(self) -> None:
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "net_hand_written_loc")
+        assert row.red_when is None
+        assert "net_hand_written_loc" not in {spec.provider_id for spec in SIGNALS}
+
+    def test_a_windowless_read_is_insufficient_rather_than_a_fabricated_zero(self) -> None:
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "net_hand_written_loc")
+        assert row.reading.status == SignalStatus.INSUFFICIENT_DATA
+        assert row.evidence == {"added": 0, "deleted": 0, "commits": 0}
+
+    def test_an_unreadable_tree_never_reddens_the_report(self) -> None:
+        with mock.patch("teatree.core.factory.factory_signals.find_project_root", return_value=None):
+            report = compute_factory_signals(now=self.now)
+        row = _row(report, "net_hand_written_loc")
+        assert row.reading.status == SignalStatus.INSTRUMENTATION_GAP
+        assert report.verdict == SignalVerdict.OK
+
+    def test_the_reading_is_the_net_of_the_windows_hand_written_lines(self) -> None:
+        with (
+            mock.patch("teatree.core.factory.factory_signals.find_project_root", return_value=Path("/repo")),
+            mock.patch(
+                "teatree.core.factory.factory_signals.window_loc",
+                return_value=LocDelta(added=40, deleted=100, commits=7),
+            ),
+        ):
+            reading = net_hand_written_loc(now=self.now)
+        assert reading.status == SignalStatus.OK
+        assert reading.value == pytest.approx(-60.0)
+        assert reading.sample_size == 7
+
+    def test_a_git_read_that_raises_reports_the_gap_instead_of_a_number(self) -> None:
+        with (
+            mock.patch("teatree.core.factory.factory_signals.find_project_root", return_value=Path("/repo")),
+            mock.patch(
+                "teatree.core.factory.factory_signals.window_loc",
+                side_effect=CommandFailedError(["git"], 128, "", "not a git repository"),
+            ),
+        ):
+            reading = net_hand_written_loc(now=self.now)
+        assert reading.status == SignalStatus.INSTRUMENTATION_GAP

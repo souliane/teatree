@@ -3,7 +3,8 @@ import time
 from pathlib import Path
 
 from teatree.config import get_effective_settings
-from teatree.core import prek_hook
+from teatree.core import hook_quarantine, prek_hook
+from teatree.core.gates.git_hooks_preflight import probe_git_hooks
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.git_merge_driver import install_merge_driver
 from teatree.core.models import Worktree
@@ -108,6 +109,10 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) 
     convenience, not a correctness gate. ``prek install`` is upgraded to an
     error because a missing pre-commit hook is a hard correctness regression
     (migration-scoping, banned-terms, privacy guard all rely on it firing).
+
+    A checkout whose shared git dir cannot be resolved now fails provisioning
+    outright rather than half-installing: the install refuses there, because a
+    hook it would destroy has nowhere to be parked.
     """
     if not wt_path or not Path(wt_path).is_dir():
         return None
@@ -124,10 +129,24 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) 
         logger.warning("direnv allow failed: %s", result.error)
     if (Path(wt_path) / ".pre-commit-config.yaml").is_file():
         result = prek_hook.install(wt_path)
+        _warn_on_parked_hooks(wt_path)
         if not result.success:
             logger.error("prek install failed: %s", result.error)
             return f"prek install failed: {result.error}"
     return None
+
+
+def _warn_on_parked_hooks(wt_path: str) -> None:
+    """Provisioning is the second consumer of the install, and it used to be blind to this.
+
+    Read from the same probe the installer line and ``t3 doctor check`` read, so the three
+    can never disagree about whether a pre-existing gate is still parked — and read on the
+    FAILING path too, which is exactly where a hook this run destroyed is still parked.
+    """
+    probe = probe_git_hooks(Path(wt_path))
+    finding = hook_quarantine.parked_finding(probe.parked, probe.common_dir)
+    if finding is not None:
+        logger.warning("%s Run `t3 doctor check`.", finding)
 
 
 class WorktreeProvisionRunner(RunnerBase):

@@ -29,10 +29,9 @@ from django.utils import timezone
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.config import OnBehalfPostMode
-from teatree.core.models import ConfigSetting
 from teatree.core.models.live_post_approval import LivePostApproval
 from teatree.core.models.on_behalf_approval import OnBehalfApproval
+from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -61,10 +60,10 @@ def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_
 
 def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, user_id: str = "U-OPERATOR") -> None:
     # ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it in a
-    # config-store sqlite the reader resolves via ``T3_CONFIG_DB``. ``on_behalf_post_mode``
+    # config-store sqlite the reader resolves via ``T3_CONFIG_DB``.
     # is ORM-resolved, staged in the ``ConfigSetting`` store.
     _seed_cold_slack_user(tmp_path, monkeypatch, user_id)
-    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
+    seed_permitting_posture()
 
 
 class TestLivePostApprovalAuthorizationMatrix:
@@ -220,7 +219,7 @@ class TestLivePostApprovalAuthorizationMatrix:
 
     def test_no_user_id_configured_is_refused(self) -> None:
         # A config with no slack_user_id cannot verify any authorization.
-        ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
+        seed_permitting_posture()
         self.monkeypatch.setattr("teatree.core.notify.resolve_user_id", lambda: "")
 
         result = _runner.invoke(

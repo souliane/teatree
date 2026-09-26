@@ -538,7 +538,9 @@ class TestTheBarrierNeverFastPushesTheWorktreeItRunsIn(_PinnedSessionTestCase):
         outside_any_repo = self.tmp_path / "not-a-repo"
         outside_any_repo.mkdir()
 
-        assert self._excluded_from(outside_any_repo) == (outside_any_repo,)
+        # ``Path.cwd()`` reports the physical path on macOS, where pytest's
+        # lexical ``/var`` temp path resolves through ``/private/var``.
+        assert self._excluded_from(outside_any_repo) == (outside_any_repo.resolve(),)
 
 
 class TestHandoverReportsTheIntegerRowId(_PinnedSessionTestCase):

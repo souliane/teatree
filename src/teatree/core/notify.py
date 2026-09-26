@@ -13,7 +13,7 @@ under the AUTO_DRAFT verdict #960, and :mod:`teatree.core.on_behalf_post_receipt
 for the after-receipt visibility DM, the default-ON ``notify_on_post_on_behalf``
 ``UserSettings`` field #949) import it as a core sibling with no cycle.
 
-Out of scope of the on-behalf concerns (#960 ``on_behalf_post_mode``,
+Out of scope of the on-behalf concerns (the posture gate,
 #949 ``notify_on_post_on_behalf``): those govern posts the agent makes
 *as the user* to a colleague/customer surface. ``notify_user`` itself is
 the **bot** talking to its own operator — a different concern with a
@@ -139,7 +139,9 @@ def notify_user_outcome(
     """
     kind_value = NotifyKind(kind) if not isinstance(kind, NotifyKind) else kind
 
-    early = _preflight_result(audience, idempotency_key, kind=kind_value, text=text)
+    early = _preflight_result(
+        audience, idempotency_key, kind=kind_value, text=text, requested_push=options.requested_push
+    )
     if early is not None:
         return early
 
@@ -275,6 +277,7 @@ def _preflight_result(
     *,
     kind: NotifyKind,
     text: str,
+    requested_push: bool = False,
 ) -> NotifyOutcome | None:
     """Resolve the pre-delivery short-circuits — an outcome to stop, ``None`` to proceed.
 
@@ -282,6 +285,9 @@ def _preflight_result(
     default), and a settings-disabled feature is skipped — both return a named
     not-sent outcome. ``None`` means the notification is owner-audience and
     enabled, so delivery proceeds.
+
+    ``requested_push`` carries the caller's stated intent into the push/pull
+    classifier — see :mod:`teatree.core.modelkit.dm_channel_policy`.
     """
     from teatree.core.models import BotPing  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
@@ -289,7 +295,7 @@ def _preflight_result(
         logger.info("notify_user INTERNAL (log-only, not DM'd) key=%s: %s", idempotency_key, text[:120])
         BotPing.record_logged(idempotency_key, kind=kind.value, text=text, audience=audience.value)
         return blocked(NotifyReason.INTERNAL_AUDIENCE)
-    if classify(audience=audience, idempotency_key=idempotency_key) is DmChannel.PULL:
+    if classify(audience=audience, idempotency_key=idempotency_key, requested_push=requested_push) is DmChannel.PULL:
         record_pulled(idempotency_key=idempotency_key, kind=kind, text=text, audience=audience)
         return blocked(NotifyReason.ROUTED_TO_PULL)
     if not _feature_enabled():

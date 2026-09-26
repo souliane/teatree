@@ -168,6 +168,13 @@ class TestClaudeJudgeGrade(TestCase):
         assert verdict.skipped is False
         assert "matches diff" in verdict.rationale
 
+    def test_judge_has_no_tools_and_does_not_request_root_forbidden_bypass(self) -> None:
+        spec = _spec(judge=JudgeSpec(rubric="x"))
+        _, captured = self._grade(spec, [_result(structured_output={"verdict": "PASS", "reason": "ok"})])
+        options = captured["options"]
+        assert options.tools == []
+        assert options.permission_mode == "dontAsk"
+
     def test_structured_fail_verdict_fails(self) -> None:
         spec = _spec(judge=JudgeSpec(rubric="x"))
         verdict, _ = self._grade(spec, [_result(structured_output={"verdict": "FAIL", "reason": "omitted migration"})])

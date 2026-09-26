@@ -102,7 +102,7 @@ class TestMarkReviewedExternally(TestCase):
         # ``mark_reviewed`` upserts the same reviewer ticket via the DB —
         # head sha + last review state should be persisted on ``extra``.
         assert ticket.extra["reviewed_sha"] == "deadbeef"
-        assert ticket.extra["last_review_state"] == "approved"
+        assert ticket.extra["discharged_sha"] == "deadbeef"
 
     def test_does_not_advance_author_ticket(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/6")

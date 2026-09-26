@@ -16,7 +16,10 @@ refusals in a row are reported as the failure they are, and ``t3 doctor check`` 
 on the standing streak until an acquire succeeds.
 """
 
+import os
 import signal
+from contextlib import nullcontext
+from pathlib import Path
 from types import FrameType
 
 from django_typer.management import TyperCommand
@@ -39,15 +42,25 @@ class Command(TyperCommand):
 
         try:
             with singleton(WORKER_SINGLETON):
-                clear_refusals(WORKER_SINGLETON)
-                worker = LoopWorker()
+                # The private probe sees only its dedicated health-state volume.
+                # Python's O_CLOEXEC descriptors keep this liveness lock out of
+                # spawned tick/agent children, so a dead worker cannot look live.
+                health_dir = os.environ.get("T3_WORKER_HEALTH_DIR", "")
+                health_guard = (
+                    singleton("worker-health", pid_path=Path(health_dir) / "worker.pid")
+                    if health_dir
+                    else nullcontext()
+                )
+                with health_guard:
+                    clear_refusals(WORKER_SINGLETON)
+                    worker = LoopWorker()
 
-                def _shutdown(_signum: int, _frame: FrameType | None) -> None:
-                    worker.request_stop()
+                    def _shutdown(_signum: int, _frame: FrameType | None) -> None:
+                        worker.request_stop()
 
-                signal.signal(signal.SIGTERM, _shutdown)
-                signal.signal(signal.SIGINT, _shutdown)
-                worker.run()
+                    signal.signal(signal.SIGTERM, _shutdown)
+                    signal.signal(signal.SIGINT, _shutdown)
+                    worker.run()
         except AlreadyRunningError as exc:
             raise SystemExit(self._report_refusal(exc)) from exc
 

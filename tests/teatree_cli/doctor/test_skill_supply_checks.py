@@ -54,9 +54,16 @@ def _source(clone: Path) -> SkillSourceClone:
 _OVERLAY_REGISTRY_BINDINGS = ("teatree.core.overlay_loader", "teatree.core.skill_sources")
 
 
-def _pin_overlays(monkeypatch: pytest.MonkeyPatch, overlays: dict[str, object]) -> None:
+def _pin_overlays(
+    monkeypatch: pytest.MonkeyPatch,
+    overlays: dict[str, object],
+    *,
+    settings: SimpleNamespace | None = None,
+) -> None:
     for module in _OVERLAY_REGISTRY_BINDINGS:
         monkeypatch.setattr(f"{module}.get_all_overlays", lambda: overlays)
+    effective = settings or SimpleNamespace(review_skill="", review_skill_alternates=[])
+    monkeypatch.setattr("teatree.config.get_effective_settings", lambda _overlay_name: effective)
 
 
 @pytest.fixture
@@ -134,6 +141,22 @@ class TestDispatchedSkillGaps:
         assert any("t3-alpha" in gap for gap in gaps)
         assert any("t3-beta" in gap for gap in gaps)
 
+    def test_runtime_loop_skill_uses_the_same_demand_enumeration(
+        self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        settings = SimpleNamespace(
+            review_skill="",
+            review_skill_alternates=[],
+            scanning_news_skill="scanning-news",
+        )
+        _pin_overlays(monkeypatch, {"t3-alpha": _overlay()}, settings=settings)
+
+        gaps = _dispatched_skill_gaps()
+
+        assert len(gaps) == 1
+        assert "scanning_news_skill" in gaps[0]
+        assert "scanning-news" in gaps[0]
+
 
 class TestCheckDispatchedOverlaySkills:
     def test_missing_dispatched_skill_fails_loud(
@@ -160,7 +183,7 @@ class TestCheckDispatchedOverlaySkills:
             msg = "overlay registry unreachable"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr("teatree.core.overlay_loader.get_all_overlays", _boom)
+        monkeypatch.setattr("teatree.core.skill_sources.get_all_overlays", _boom)
         assert _check_dispatched_overlay_skills() is True
         assert "WARN" in capsys.readouterr().out
 

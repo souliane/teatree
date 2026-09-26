@@ -1,10 +1,9 @@
 """DB-backup mini-loop — daily control-DB backup cadence anchor (directive #2).
 
-The scanner (:mod:`teatree.loop.scanners.db_backup`) is cadence-gated on the
-newest artifact's OWN embedded timestamp, so the loop's outer cadence is only a
-daily floor: there is no value checking more often than the ``db_backup_cadence_hours``
-window (default 24h). The scanner FLAGS a due backup; the ``run_db_backup``
-mechanical handler does the actual snapshot + retention prune off the tick.
+This row IS the cadence — a 02:00 wall-clock anchor, so the backup cannot drift later
+each day the way a daily tick chained to a 24h-since-last-backup gate did. The scanner
+FLAGS a due backup; the ``run_db_backup`` mechanical handler does the actual snapshot +
+retention prune off the tick.
 """
 
 from typing import TYPE_CHECKING

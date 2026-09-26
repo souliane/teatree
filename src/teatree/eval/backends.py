@@ -49,7 +49,7 @@ from typing import Protocol
 from teatree.eval import transcript_manifest
 from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.model_resolution import resolve_eval_model
-from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.models import COST_SOURCE_NOT_METERED, EvalRun, EvalSpec
 from teatree.eval.subagent_transcript import is_subagent_transcript, subagent_run
 from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
 
@@ -67,17 +67,17 @@ KNOWN_BACKENDS = (API_BACKEND, ANTHROPIC_API_BACKEND, TRANSCRIPT_BACKEND, PYDANT
 #: (non-Claude, the OpenAI-compatible backend) lanes are neither.
 FRESH_CLAUDE_BACKENDS = (API_BACKEND, ANTHROPIC_API_BACKEND)
 
-#: The fresh-run backends that RUN a model but record NO ``cost_usd``. Both drive the
-#: model through :class:`~teatree.eval.pydantic_ai_runner.PydanticAiRunner`, whose
-#: terminal ``ResultMessage`` carries ``total_cost_usd=_router_reported_cost(run_usage)``
-#: — ``None`` for every provider that does not surface a cost key, which is the common
-#: case and always the case for Anthropic — so ``extract_cost_usd`` floors to ``0.0`` on
-#: a run that genuinely executed. ``$0`` is therefore these lanes' NORMAL state, NOT the
-#: vacuous-green signal it is on ``api``: their equivalent signal is an EMPTY trajectory
-#: (see :func:`~teatree.eval.skip_guard.assert_fresh_run_produced_output`). Widening the
-#: ``$0`` guard (:func:`~teatree.eval.skip_guard.assert_api_run_was_metered`) to
-#: :data:`FRESH_CLAUDE_BACKENDS` looks like the obvious fix for a missed backend and
-#: would red EVERY healthy ``anthropic_api`` run — the CI eval lane's own backend.
+#: The fresh-run backends whose TRANSPORT reports no cost of its own. Both drive the model
+#: through :class:`~teatree.eval.pydantic_ai_runner.PydanticAiRunner`, whose terminal
+#: ``ResultMessage`` carries ``total_cost_usd=router_reported_cost(run_usage)`` — ``None``
+#: for every provider that does not surface a cost key, which is always the case for
+#: Anthropic. The run's own token usage IS reported, so
+#: :func:`~teatree.eval.cost_observation.observe_cost` prices it at the billed model's list
+#: rate and these lanes DO record a ``cost_usd``; what they cannot produce is a
+#: transport-reported bill, which is the input ``--gate-cost-bounds``' ceilings are
+#: calibrated against. Their vacuous-green signal is an EMPTY trajectory
+#: (:func:`~teatree.eval.skip_guard.assert_fresh_run_produced_output`), never the cost —
+#: a derived figure is positive for any run that made a call, healthy or not.
 UNMETERED_FRESH_BACKENDS = (ANTHROPIC_API_BACKEND, PYDANTIC_AI_BACKEND)
 
 #: Every backend that can produce a NEW trial: the union of the two fresh-run sets above
@@ -264,6 +264,7 @@ class TranscriptRunner:
             is_error=is_error,
             raw_stdout=raw,
             raw_stderr="",
+            cost_source=COST_SOURCE_NOT_METERED,
         )
 
     def _verify_provenance(self, spec: EvalSpec, path: Path) -> EvalRun | None:
@@ -292,4 +293,5 @@ class TranscriptRunner:
             is_error=False,
             raw_stdout="",
             raw_stderr="",
+            cost_source=COST_SOURCE_NOT_METERED,
         )

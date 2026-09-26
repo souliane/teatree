@@ -76,6 +76,7 @@ NOT_A_CROSS_TIER_MIRROR: dict[str, str] = {
     "pyproject.toml": "build metadata — authored, never written from the ORM",
     "settings.json": "the Claude Code harness's own config file, not a teatree-written mirror",
     "hooks.json": "the shipped plugin's hook manifest — authored in-repo, never written from the ORM",
+    "plugin.json": "the shipped plugin manifest — authored metadata, never derived from ORM state",
     "db.sqlite3": (
         "the canonical store ITSELF, not a mirror of it. Its cross-tier reads are the "
         "COLD_HOOK_SETTINGS registry, already pinned key-by-key by "
@@ -93,6 +94,7 @@ PARITY_LANE_ROSTER: dict[str, str] = {
     "skill-metadata.json": "tests/test_skill_metadata_cache_parity.py",
     "statusline.txt": "tests/test_statusline_shell_parity.py",
     "host-projection.json": "tests/test_statusline_shell_parity.py",
+    "host-pressure.json": "tests/teatree_utils/test_host_pressure_publisher.py",
 }
 
 #: Cross-tier artifacts with NO both-tier pin yet — the ratchet ledger.

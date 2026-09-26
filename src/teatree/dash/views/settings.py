@@ -36,21 +36,23 @@ from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
+from teatree.config.setting_registries import SAFETY_POSTURE_KEYS, env_pin
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_display import is_secret
 from teatree.core.models import ConfigSetting
+from teatree.core.settings.seed_editing import write_seed_cell
+from teatree.core.settings.settings_compare import CompareView, build_compare_view
+from teatree.core.settings.settings_files import LoadedSnapshots, LoadRefusal, load_snapshots, snapshot_filename
 from teatree.core.settings_snapshot import SnapshotError, build_snapshot
 from teatree.dash import audit
-from teatree.dash.settings_compare import CompareView, build_compare_view
 from teatree.dash.settings_editor import (
     SettingsEditorView,
     SettingsGroupView,
     build_setting_row,
     build_settings_editor,
     build_settings_group,
+    scopes_of_column,
 )
-from teatree.dash.settings_files import LoadedSnapshots, LoadRefusal, load_snapshots, snapshot_filename
 from teatree.dash.settings_readouts import ReadoutsView, build_readouts_view
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import SAFETY_CONFIRM_PHRASE, NavContext, actor, instance_label, nav_context
@@ -88,10 +90,7 @@ def _page_context(section: str = "") -> SettingsPageContext:
     """The whole settings page — nav, the selected section's rows, and the live readouts."""
     nav = nav_context("dash:settings")
     return {
-        "nav_items": nav["nav_items"],
-        "nav_active": nav["nav_active"],
-        "instance_label": nav["instance_label"],
-        "brand_logo": nav["brand_logo"],
+        **nav,
         "readouts": build_readouts_view(),
         "editor": build_settings_editor(section),
         "confirm_phrase": SAFETY_CONFIRM_PHRASE,
@@ -129,6 +128,17 @@ def _written(request: "HttpRequest", key: str) -> HttpResponse:
     if request.headers.get("HX-Request") != "true":
         return _back()
     return _row_fragment(request, key)
+
+
+def _env_pin_refusal(key: str) -> str:
+    """Why a stored write to *key* is refused, or ``""`` — the env tier outranks every store.
+
+    Accepting the write would report success and change nothing an operator can read back, so
+    the refusal is the only honest answer: a wrong-layer write is worse than a refusal.
+    """
+    if pinned := env_pin(key):
+        return f"{key} is pinned by the {pinned} environment variable — a stored write cannot take effect"
+    return ""
 
 
 def _safety_refusal(request: "HttpRequest", key: str) -> str:
@@ -197,7 +207,7 @@ def _posted_documents(request: "HttpRequest") -> list[tuple[str, bytes]]:
 def settings_compare(request: "HttpRequest") -> "HttpResponse":
     """This box beside every peer and every loaded record — what differs, and what an import could do.
 
-    The POST carries snapshot FILES, not a write: :func:`~teatree.dash.settings_files.load_snapshots`
+    The POST carries snapshot FILES, not a write: :func:`~teatree.core.settings.settings_files.load_snapshots`
     parses them into columns for this one response and touches no row, no file and no setting.
     A refused document is named with what was wrong; the whole POST answers 400 only when
     nothing loaded at all, so one bad file never hides the comparison the good ones produced.
@@ -205,10 +215,7 @@ def settings_compare(request: "HttpRequest") -> "HttpResponse":
     loaded = load_snapshots(_posted_documents(request)) if request.method == "POST" else LoadedSnapshots()
     nav = nav_context("dash:settings")
     context: SettingsCompareContext = {
-        "nav_items": nav["nav_items"],
-        "nav_active": nav["nav_active"],
-        "instance_label": nav["instance_label"],
-        "brand_logo": nav["brand_logo"],
+        **nav,
         "comparison": build_compare_view(loaded.snapshots),
         "refusals": loaded.refusals,
     }
@@ -239,7 +246,7 @@ def settings_set(request: "HttpRequest", key: str) -> "HttpResponse":
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         # No row exists to swap for a key the schema does not know — plain refusal either way.
         return HttpResponseBadRequest(f"unknown setting {key!r}")
-    if refusal := _safety_refusal(request, key):
+    if refusal := _env_pin_refusal(key) or _safety_refusal(request, key):
         return _refused(request, key, refusal)
     submitted = request.POST.get("value", "").strip()
     if not submitted:
@@ -269,14 +276,45 @@ def _stored(key: str, submitted: str, scope: str) -> tuple[str, object]:
         ConfigSetting.objects.set_value(key, canonical, scope=scope)
     except ValidationError as exc:
         return f"inconsistent config for {key}: {exc.messages[0]}", None
+    except ValueError as exc:
+        return f"refused: {exc}", None
     return "", canonical
 
 
 def _cleared(request: "HttpRequest", key: str, scope: str) -> "HttpResponse":
-    """Clear *key*'s row in *scope* — the emptied-cell half of the click-to-edit gesture."""
-    if ConfigSetting.objects.clear(key, scope=scope):
+    """Clear *key* for the *scope* COLUMN — the emptied-cell half of the click-to-edit gesture.
+
+    A column is one overlay, and an overlay's rows can be stored under either spelling of its
+    name; the resolver merges them, so deleting the exact spelling alone leaves the alias row
+    still supplying the value — a restore that reports success and changes nothing. The global
+    column is not an overlay and clears itself alone.
+    """
+    # A list, never ``any(...)``: a generator short-circuits on the first row it deletes and
+    # the alias spelling — the whole reason this sweeps — is the one left standing.
+    if [one for one in scopes_of_column(scope) if ConfigSetting.objects.clear(key, scope=one)]:
         audit.record(actor=actor(request), action="settings:restore", target=key)
     return _written(request, key)
+
+
+@require_loopback_or_staff
+@require_POST
+def settings_seed_set(request: "HttpRequest", table: str, name: str, field: str) -> "HttpResponse":
+    """POST one seed cell — a loop's, preset's or schedule's own field — through the interchange.
+
+    The comparison page listed every seed difference and could edit none of them, so the one
+    surface showing a loop's description differing between two boxes could not change it. The
+    write goes through the SAME classifier and writer ``config_setting import`` uses, so what a
+    seed field may hold has one answer rather than two.
+
+    The answer carries no fragment: the compare page's control posts with ``hx-swap="none"``
+    and stamps its own verdict from the request's outcome, because this endpoint has no row of
+    that page's shape to hand back. A refusal is its reason and a 400, exactly as a settings
+    cell's is.
+    """
+    if refusal := write_seed_cell(table, name, field, request.POST.get("value", "").strip()):
+        return HttpResponseBadRequest(refusal)
+    audit.record(actor=actor(request), action="settings:seed", target=f"{table}.{name}.{field}")
+    return HttpResponse(status=204)
 
 
 @require_loopback_or_staff
@@ -286,7 +324,7 @@ def settings_restore(request: "HttpRequest", key: str) -> "HttpResponse":
     scope = request.GET.get("scope", "").strip()
     if key not in ALL_KNOWN_CONFIG_SETTINGS:
         return HttpResponseBadRequest(f"unknown setting {key!r}")
-    if refusal := _safety_refusal(request, key):
+    if refusal := _env_pin_refusal(key) or _safety_refusal(request, key):
         return _refused(request, key, refusal)
     return _cleared(request, key, scope)
 

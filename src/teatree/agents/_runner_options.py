@@ -2,23 +2,20 @@
 
 Split out of :mod:`teatree.agents.runner` for the module-health LOC cap: the
 ``ClaudeAgentOptions`` builder plus its model-tiering glue (:func:`_build_options`),
-the worktree-cwd resolver (:func:`_resolve_task_cwd`), the resumable-session walker
-(:func:`_get_resume_session_id`), and the spawn constants they read. Re-exported
-from ``teatree.agents.runner`` so ``from teatree.agents.runner import
-_build_options`` (and the ``_PERMISSION_MODE`` / ``UUID_RE`` /
-``_resolve_task_cwd`` / ``_get_resume_session_id`` sites in
-``core.management.commands.tasks``) stays valid.
+the worktree-cwd resolver (:func:`_resolve_task_cwd`), and the spawn constants they
+read. Re-exported from ``teatree.agents.runner`` so ``from teatree.agents.runner import
+_build_options`` stays valid.
 """
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConfig
 
 from teatree.agents import permission_modes
+from teatree.agents.compaction_guard import CompactionGuard, with_compaction_off
 from teatree.agents.envelope_stop_gate import EnvelopeStopGate, envelope_stop_hooks
 from teatree.agents.model_tiering import (
     model_supports_thinking,
@@ -28,12 +25,17 @@ from teatree.agents.model_tiering import (
 )
 from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
+from teatree.agents.session_lineage import honesty_subject, resume_session_id
+from teatree.agents.skill_injection import _resolve_skill_md, harness_skills_dirs
 from teatree.agents.subagent_ceiling import SpawnCeiling, spawn_ceiling_hooks
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
+
+if TYPE_CHECKING:
+    from teatree.agents.harness import Harness
 
 _PERMISSION_MODE = permission_modes.UNATTENDED
 _READER_PERMISSION_MODE = permission_modes.READER_DEFAULT_DENY
@@ -67,8 +69,6 @@ _DISALLOWED_TOOLS = _EXTERNAL_CONTACT_BUILTINS
 # tier — which rejects the lever — never receives it.
 _ADAPTIVE_THINKING: ThinkingConfig = {"type": "adaptive"}
 
-UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-
 
 def _disallowed_tools_for_phase(phase: str) -> list[str]:
     """The full disallow list for a agent dispatch — floor plus per-phase complement.
@@ -101,17 +101,32 @@ def _disallowed_tools_for_phase(phase: str) -> list[str]:
 class SpawnOverrides:
     """Per-dispatch values the DRIVER resolves and the option builder pins verbatim.
 
-    Both depend on which backend the dispatch resolved to, which the builder cannot see:
-    *env* pins the ``agent_harness_provider`` credential on a spawned ``claude`` CLI
-    child, and *turn_ceiling* is the per-run turn cap for the lane that owns one. Their
-    defaults reproduce a builder-resolved spawn, so a caller that names neither (every
-    test that only cares about the other options) gets the ordinary dispatch shape.
+    The builder can see none of them: *env* pins the ``agent_harness_provider`` credential on a
+    spawned ``claude`` CLI child, *turn_ceiling* is the per-run turn cap for the lane that owns
+    one, *handoff* is the predecessor handoff this dispatch delivered, and *compaction_guard* is
+    named only for a dispatch that spawns that child — it switches the child's compaction off and
+    is the tripwire the driver arms on the open session and reads back. Their defaults reproduce a
+    builder-resolved spawn, so a caller that names none (every test that only cares about the
+    other options) gets the ordinary dispatch shape.
     """
 
     #: The child env for the ``claude`` CLI. ``None`` inherits the ambient env.
     env: dict[str, str] | None = field(default=None)
     #: The per-run turn cap. ``None`` defers to :func:`resolve_agent_max_turns`.
     turn_ceiling: int | None = field(default=None)
+    #: The delivered predecessor handoff; its directory is the one extra directory the spawn may read.
+    handoff: Path | None = field(default=None)
+    compaction_guard: CompactionGuard | None = field(default=None)
+    #: The route-resolved model. ``None`` is meaningful when ``model_is_resolved``:
+    #: it asks the selected backend to use its own default rather than a Claude tier id.
+    model: str | None = None
+    #: Distinguishes an explicit backend-default ``model=None`` from "resolve the
+    #: ordinary phase/skill model". Ordered routes set this with their concrete pin;
+    #: direct Codex sets it with ``None``.
+    model_is_resolved: bool = False
+    harness_name: str = ""
+    #: Route-specific reasoning effort. ``None`` resolves the phase default.
+    effort: str | None = None
 
 
 def _build_options(
@@ -130,7 +145,7 @@ def _build_options(
     else the user's default), the per-tier reasoning effort for the same phase
     (:func:`resolve_spawn_effort` — ``xhigh`` for a frontier phase, ``high`` for a
     balanced phase, unset for the cheap/Haiku phases), the worktree as ``cwd`` /
-    ``add_dirs``, and the parent session to resume. NO clean-room isolation — a
+    ``add_dirs``, and the prior session its task is typed to continue. NO clean-room isolation — a
     headless run executes a real task and needs the real environment, skills, and
     project context.
 
@@ -145,16 +160,26 @@ def _build_options(
     overrides = overrides or SpawnOverrides()
     cwd = _resolve_task_cwd(task)
     add_dirs = [cwd] if cwd else []
-    resume_session_id = _get_resume_session_id(task)
-    # session_id + task pk are threaded so a situational honesty-critical
-    # escalation (teatree#2263) can raise a verification spawn to the most-honest
-    # model; both default absent → byte-identical to today when none is active.
-    escalation_session_id = resume_session_id or (task.session.agent_id if task.session_id else "")  # ty: ignore[unresolved-attribute]
-    spawn_model = resolve_spawn_model(
-        phase,
-        skills=skills,
-        session_id=escalation_session_id or None,
-        task_id=int(task.pk),
+    if overrides.handoff is not None:
+        add_dirs.append(str(overrides.handoff.parent))
+    if overrides.harness_name == "pydantic_ai" and not is_reader_phase(phase):
+        # Lane B's add_dirs become Read-only roots; allow only requested skill
+        # directories, never a broad home or all-skills directory.
+        directories = harness_skills_dirs()
+        add_dirs.extend(
+            str(path.parent) for skill in skills if (path := _resolve_skill_md(skill, directories)) is not None
+        )
+        add_dirs = list(dict.fromkeys(add_dirs))
+    subject = honesty_subject(task)
+    spawn_model = (
+        overrides.model
+        if overrides.model_is_resolved
+        else resolve_spawn_model(
+            phase,
+            skills=skills,
+            session_id=subject.session_id if subject else None,
+            task_id=subject.task_id if subject else int(task.pk),
+        )
     )
     options = ClaudeAgentOptions(
         # APPEND to the claude_code preset, never REPLACE it: a plain-str
@@ -181,7 +206,7 @@ def _build_options(
         # parking the task (claude-agent-sdk ``fallback_model``). ``None`` when the
         # spawn model is at the cheapest rung / a pin teatree does not recognise / an
         # inherited default — byte-identical to before the field existed.
-        fallback_model=resolve_fallback_model(spawn_model),
+        fallback_model=None if overrides.model_is_resolved else resolve_fallback_model(spawn_model),
         cwd=cwd,
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,
@@ -193,7 +218,7 @@ def _build_options(
         # while the run is still in flight. Resolved per dispatch so an operator retunes
         # it without a deploy; ``0`` (the escape hatch) leaves the spawn uncapped.
         max_turns=resolve_agent_max_turns() if overrides.turn_ceiling is None else overrides.turn_ceiling,
-        resume=resume_session_id or None,
+        resume=resume_session_id(task, harness=overrides.harness_name) or None,
         # Pin adaptive thinking so the Opus-4.8 reasoning phases think (Opus 4.8
         # omits thinking by default). Guarded so the cheap/Haiku tier — which
         # rejects the lever — and an inherited-default spawn (``None``) keep the
@@ -205,13 +230,20 @@ def _build_options(
         # phase, so those spawns inherit the SDK default effort. The resolver
         # returns the domain ``str | None`` (validated to the effort scale);
         # cast it to the SDK ``EffortLevel`` literal at this boundary.
-        effort=cast("EffortLevel | None", resolve_spawn_effort(phase)),
+        effort=cast(
+            "EffortLevel | None",
+            overrides.effort
+            if overrides.effort is not None
+            else resolve_spawn_effort(phase, harness=overrides.harness_name or None),
+        ),
     )
     if overrides.env is not None:
         options.env = overrides.env
     options.hooks = spawn_ceiling_hooks(SpawnCeiling(limit=resolve_spawn_ceiling())) | envelope_stop_hooks(
         EnvelopeStopGate(phase or task.phase, limit=resolve_envelope_stop_refusals())
     )
+    if overrides.compaction_guard is not None:
+        with_compaction_off(options, overrides.compaction_guard)
     if is_reader_phase(phase):
         _apply_reader_tool_lockdown(options)
     else:
@@ -240,6 +272,11 @@ def resolve_agent_max_turns() -> int:
     place the SDK accepts it (``ClaudeAgentOptions.max_turns``).
     """
     return get_effective_settings().agent_max_turns
+
+
+def _turn_ceiling(harness: "Harness") -> int:
+    """The per-run turn cap for THIS dispatch's backend — the ``claude_sdk`` lane's, or none."""
+    return resolve_agent_max_turns() if harness.capabilities.spawns_cli_child else 0
 
 
 def resolve_envelope_stop_refusals() -> int:
@@ -353,21 +390,3 @@ def _main_clone_cwd(task: Task) -> str | None:
     except Exception:  # noqa: BLE001 — clone-discovery failure degrades to unset cwd, never a dispatch crash
         return None
     return str(found) if found is not None else None
-
-
-def _get_resume_session_id(task: Task) -> str:
-    """Walk the parent_task chain to find a resumable Claude session.
-
-    When a headless task follows an interactive one (or vice versa),
-    the session_id from the previous run lets us resume with full context.
-    """
-    current = task.parent_task
-    while current is not None:
-        last_attempt = current.attempts.order_by("-pk").first()
-        if last_attempt and last_attempt.agent_session_id and UUID_RE.match(last_attempt.agent_session_id):
-            return last_attempt.agent_session_id
-        agent_id = current.session.agent_id if current.session_id else ""
-        if agent_id and UUID_RE.match(agent_id):
-            return agent_id
-        current = current.parent_task
-    return ""

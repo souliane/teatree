@@ -6,7 +6,14 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
-from teatree.core.models import BroadcastObservation, ImplementedIssueMarker, ScannedBroadcast, Task, Ticket
+from teatree.core.models import (
+    BroadcastObservation,
+    DeferredQuestion,
+    ImplementedIssueMarker,
+    ScannedBroadcast,
+    Task,
+    Ticket,
+)
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
 from tests._pr_open_state_stub import pr_open_state
@@ -424,12 +431,12 @@ class TestReviewerCacheUpdate(TestCase):
         task = created[0]
         task.complete()
 
-        # The reviewer ticket's ``extra`` stamp doubles as the cache —
-        # ReviewerPrsScanner reads it on the next tick to decide whether
-        # to re-dispatch the reviewer agent.
+        # The discharge lands on its own key, never on ``last_review_state`` — that one is
+        # the scanner's cache of what the FORGE reported, and it is overwritten with the
+        # live value every scan.
         ticket = Ticket.objects.get(role=Ticket.Role.REVIEWER, issue_url="https://example.com/pr/7")
         assert ticket.extra["reviewed_sha"] == "zzz"
-        assert ticket.extra["last_review_state"] == "approved"
+        assert ticket.extra["discharged_sha"] == "zzz"
 
 
 class TestCrossOverlayLeak(TestCase):
@@ -524,3 +531,74 @@ class TestCrossOverlayLeak(TestCase):
             persist_agent_actions([self._reviewer_action(scan_tag="gh")])
         ticket = Ticket.objects.get(issue_url=self._URL)
         assert ticket.overlay == "gl"
+
+
+class TestAReviewWithNoRecordedHeadIsNeverMinted(TestCase):
+    """The producers re-emit every tick and ``_handle_reviewer`` has no failure memory.
+
+    53 refusals arrived on 53 DISTINCT tasks, so the recurrence was never a retry — it was a
+    brand-new task minted each tick. Refusing at the mint seam is what closes that engine;
+    refusing only at dispatch would leave a fresh FAILED task on the board every tick.
+    """
+
+    _URL = "https://example.com/owner/repo/pull/4225"
+
+    def _action(self) -> DispatchAction:
+        return DispatchAction(
+            kind="agent",
+            zone="t3:reviewer",
+            detail=f"Review needed: {self._URL}",
+            payload={"url": self._URL, "head_sha": "", "previous_sha": "", "overlay": "acme"},
+        )
+
+    def _marker(self) -> str:
+        return f"review-unrecordable:{Ticket.objects.get(issue_url=self._URL).pk}"
+
+    def test_no_reviewing_task_is_minted_for_a_pull_request_with_no_head(self) -> None:
+        assert persist_agent_actions([self._action()]) == []
+        assert Task.objects.filter(ticket__issue_url=self._URL).count() == 0
+
+    def test_the_reviewer_ticket_survives_so_a_later_head_still_mints(self) -> None:
+        persist_agent_actions([self._action()])
+
+        ticket = Ticket.objects.get(issue_url=self._URL)
+        assert ticket.role == Ticket.Role.REVIEWER
+
+    def test_a_second_emission_mints_no_second_task(self) -> None:
+        persist_agent_actions([self._action()])
+        persist_agent_actions([self._action()])
+
+        assert Task.objects.filter(ticket__issue_url=self._URL).count() == 0
+
+    def test_the_condition_is_escalated_exactly_once_across_both_emissions(self) -> None:
+        persist_agent_actions([self._action()])
+        persist_agent_actions([self._action()])
+
+        assert DeferredQuestion.objects.filter(dedupe_marker=self._marker()).count() == 1
+
+    def test_the_escalation_names_the_pull_request_and_is_internal(self) -> None:
+        persist_agent_actions([self._action()])
+
+        question = DeferredQuestion.objects.get(dedupe_marker=self._marker())
+        assert "owner/repo#4225" in question.question
+        assert "no pull request head is recorded" in question.question
+        assert question.audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_a_later_emission_carrying_the_head_mints_normally(self) -> None:
+        persist_agent_actions([self._action()])
+        head = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"
+
+        with pr_open_state(PrOpenState.OPEN):
+            created = persist_agent_actions(
+                [
+                    DispatchAction(
+                        kind="agent",
+                        zone="t3:reviewer",
+                        detail=f"Review needed: {self._URL}",
+                        payload={"url": self._URL, "head_sha": head, "previous_sha": "", "overlay": "acme"},
+                    )
+                ]
+            )
+
+        assert len(created) == 1
+        assert created[0].phase == "reviewing"

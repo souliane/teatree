@@ -16,6 +16,7 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
 from teatree.loops import timer_chains
+from teatree.loops.schedule_liveness import STUCK_GRACE_SECONDS
 from teatree.loops.seed import DEFAULT_LOOPS
 
 
@@ -31,7 +32,7 @@ def _fire(name: str, *, task_id: uuid.UUID | None = None) -> dict:
 
 #: The production DB backend so an ``enqueue`` lands a real ``django_tasks_db`` row
 #: (the suite default ``DummyBackend`` never touches the DB).
-_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:
@@ -107,12 +108,13 @@ class TestLoopTimerBody(django.test.TestCase):
     """The five-step tick body: dedup, successor-first, admission, tick, refinement."""
 
     def setUp(self) -> None:
-        from teatree.core.models import ConfigSetting  # noqa: PLC0415 — test-local deferred import
-
         Loop.objects.all().delete()
-        # A ``loop_timer`` only ever runs while a worker is alive, i.e. the kill-switch is
-        # ON; enable it so the step 0 guard does not halt these body tests (#5).
-        ConfigSetting.objects.set_value("loop_runner_enabled", value=True)
+        # Step 0 halts the chain when the FLEET admits nothing, so a second, always-admitted
+        # loop keeps the fleet live while these body tests mask the loop under test — which
+        # is also the pin that step 0 is fleet-scoped rather than per-loop.
+        Loop.objects.create(
+            name="dispatch", script="src/teatree/loops/dispatch/loop.py", delay_seconds=60, enabled=True
+        )
 
     def _enable_inbox(self, **kwargs: object) -> Loop:
         # ``inbox`` is a real registered live-tick loop, so a real enabled + due row
@@ -297,13 +299,13 @@ class TestLoopTimerBody(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
-class TestLoopTimerKillSwitch(django.test.TestCase):
-    """``loop_runner_enabled`` terminates the chain at the timer source (#5).
+class TestADedupNeverDropsTheChain(django.test.TestCase):
+    """#4140: collapsing into another fire is a BET, and a lost bet stops the loop forever.
 
-    The worker only ever runs a ``loop_timer`` row while the kill-switch is ON; a flip
-    to OFF that outlives a claimed timer must NOT let that timer re-enqueue its
-    successor, or the chain ticks forever with the worker gone. The check lives in the
-    tick body so the switch kills the chain at its source, not only at the supervisor.
+    A fire that deduped returned before enqueuing anything, on the assumption that the
+    duplicate it deferred to would carry the chain. When that duplicate is a corpse — a
+    RUNNING row whose worker died holding it — nothing ever enqueues again, and the loop
+    keeps a recent anchor so every liveness surface reads healthy while it is dead.
     """
 
     def setUp(self) -> None:
@@ -314,14 +316,63 @@ class TestLoopTimerKillSwitch(django.test.TestCase):
         defaults.update(kwargs)
         return Loop.objects.create(name="inbox", script="src/teatree/loops/inbox/loop.py", **defaults)
 
-    def _set_kill_switch(self, *, enabled: bool) -> None:
-        from teatree.core.models import ConfigSetting  # noqa: PLC0415 — test-local deferred import
+    def _running_duplicate(self, *, started_at: dt.datetime) -> uuid.UUID:
+        from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: heavy dep at call site
+        from django_tasks_db.models import DBTaskResult, normalize_uuid  # noqa: PLC0415 — deferred: heavy dep
 
-        ConfigSetting.objects.set_value("loop_runner_enabled", value=enabled)
+        timer_chains.loop_timer.enqueue("inbox")
+        row = timer_chains.pending_loop_timers("inbox")[0]
+        DBTaskResult.objects.filter(id=row.id).update(status=TaskResultStatus.RUNNING, started_at=started_at)
+        return uuid.UUID(normalize_uuid(row.id))
 
-    def test_kill_switch_off_halts_the_chain_without_a_successor(self) -> None:
-        self._enable_inbox()  # enabled + due, so admission alone would run it
-        self._set_kill_switch(enabled=False)
+    def test_deduping_to_a_live_duplicate_still_leaves_a_queued_successor(self) -> None:
+        self._enable_inbox()
+        duplicate = self._running_duplicate(started_at=timezone.now())
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(timer_chains, "run_deadlined_tick", lambda name, *, deadline: {})
+            result = _fire("inbox", task_id=uuid.UUID(int=duplicate.int + 1))
+
+        assert result["action"] == "deduped"
+        assert timer_chains.pending_loop_timers("inbox"), "a dedup that queues nothing bets the chain on the other fire"
+
+    def test_a_running_corpse_never_outranks_this_fire(self) -> None:
+        row = self._enable_inbox()
+        deadline = timer_chains.compute_tick_deadline(row) + STUCK_GRACE_SECONDS
+        corpse = self._running_duplicate(started_at=timezone.now() - dt.timedelta(seconds=deadline + 60))
+
+        ran: list[str] = []
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                timer_chains,
+                "run_deadlined_tick",
+                lambda name, *, deadline: ran.append(name) or {"timed_out": False, "returncode": 0},
+            )
+            result = _fire("inbox", task_id=uuid.UUID(int=corpse.int + 1))
+
+        assert result["action"] == "ticked"
+        assert ran == ["inbox"], "a dead worker's row is a corpse, never a duplicate that carries the chain"
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestLoopTimerFleetVerdict(django.test.TestCase):
+    """The fleet verdict terminates the chain at the timer source (C1).
+
+    A posture switch that outlives a claimed timer must NOT let that timer re-enqueue its
+    successor, or the chain ticks forever with nothing admitted. The check lives in the
+    tick body so the posture kills the chain at its source, not only at the supervisor.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+
+    def _inbox(self, **kwargs: object) -> Loop:
+        defaults: dict[str, object] = {"delay_seconds": 60, "enabled": True, "last_run_at": None}
+        defaults.update(kwargs)
+        return Loop.objects.create(name="inbox", script="src/teatree/loops/inbox/loop.py", **defaults)
+
+    def test_a_fleet_admitting_nothing_halts_the_chain_without_a_successor(self) -> None:
+        self._inbox(enabled=False)  # the only loop, forced off — the fleet admits nothing
         ran: list[str] = []
 
         def _record_tick(name: str, *, deadline: float) -> dict[str, object]:
@@ -336,10 +387,9 @@ class TestLoopTimerKillSwitch(django.test.TestCase):
         assert ran == []  # tick NOT run
         assert timer_chains.pending_loop_timers("inbox") == []  # NO successor — the chain terminates
 
-    def test_kill_switch_on_keeps_the_chain_alive(self) -> None:
-        # Anti-vacuity twin: the halt fires ONLY when the switch is OFF.
-        self._enable_inbox()
-        self._set_kill_switch(enabled=True)
+    def test_an_admitting_fleet_keeps_the_chain_alive(self) -> None:
+        # Anti-vacuity twin: the halt fires ONLY when the fleet admits nothing.
+        self._inbox()
 
         def _fake_tick(name: str, *, deadline: float) -> dict[str, object]:
             Loop.objects.mark_run(name, timezone.now())
@@ -351,25 +401,3 @@ class TestLoopTimerKillSwitch(django.test.TestCase):
 
         assert result["action"] == "ticked"
         assert len(timer_chains.pending_loop_timers("inbox")) == 1  # successor enqueued — chain lives
-
-    def test_default_config_drives_the_chain(self) -> None:
-        # PR-28 anti-vacuity: with NO ConfigSetting row and no env override, the flip
-        # makes the DEFAULT resolve ON, so an enabled+due loop ticks rather than halting.
-        # RED on pre-flip code (default OFF -> "halted"): this is the behavioural proof
-        # that the worker owns the cadence out of the box.
-        from teatree.core.models import ConfigSetting  # noqa: PLC0415 — test-local deferred import
-
-        self._enable_inbox()
-        assert not ConfigSetting.objects.filter(key="loop_runner_enabled").exists()
-
-        def _fake_tick(name: str, *, deadline: float) -> dict[str, object]:
-            Loop.objects.mark_run(name, timezone.now())
-            return {"timed_out": False, "returncode": 0}
-
-        with pytest.MonkeyPatch.context() as mp:
-            mp.delenv("T3_LOOP_RUNNER_ENABLED", raising=False)
-            mp.setattr(timer_chains, "run_deadlined_tick", _fake_tick)
-            assert timer_chains.loop_runner_enabled() is True  # default resolves ON
-            result = _fire("inbox")
-
-        assert result["action"] == "ticked"

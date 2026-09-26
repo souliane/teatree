@@ -1,4 +1,4 @@
-"""``t3 loop schedule {list,show,set-active,set-timezone,clear-active}`` — the weekly schedule surface (#3159).
+"""``t3 loop schedule`` — the weekly schedule control surface (#3159).
 
 Thin typer verbs delegating to the ``loop_schedule`` Django management command
 (the ``cli.loop.state`` pattern). :func:`register` attaches the ``schedule``
@@ -24,7 +24,7 @@ def _delegate(*args: str, json_output: bool = False) -> None:
 
 
 def register(loop_app: typer.Typer) -> None:
-    """Attach the ``schedule`` subgroup (list/show/set-active/set-timezone/clear-active) onto loop_app."""
+    """Attach the named-schedule and slot-editing verbs onto ``loop_app``."""
     schedule_app = typer.Typer(
         name="schedule", no_args_is_help=True, help="Weekly preset schedules — the L2 calendar (#3159)."
     )
@@ -62,6 +62,29 @@ def register(loop_app: typer.Typer) -> None:
     ) -> None:
         """Set a schedule's timezone so its wall-clock slots fire locally, not in the project zone."""
         _delegate("set-timezone", name, zone, json_output=json_output)
+
+    @schedule_app.command("set-slot")
+    def set_slot_command(
+        name: Annotated[str, typer.Argument()],
+        days: Annotated[str, typer.Argument(help="Comma-separated weekdays, Mon=0..Sun=6.")],
+        start_time: Annotated[str, typer.Argument(help="Local wall-clock start in HH:MM form.")],
+        preset_name: Annotated[str, typer.Argument(help="Preset selected from this start point.")],
+        *,
+        slot_id: Annotated[int | None, typer.Option("--slot-id", help="Existing slot id to update.")] = None,
+    ) -> None:
+        """Create a schedule slot, or update the slot named by ``--slot-id``."""
+        args = ["set-slot", name, days, start_time, preset_name]
+        if slot_id is not None:
+            args += ["--slot-id", str(slot_id)]
+        _delegate(*args)
+
+    @schedule_app.command("delete-slot")
+    def delete_slot_command(
+        name: Annotated[str, typer.Argument()],
+        slot_id: Annotated[int, typer.Argument(help="Slot id to delete.")],
+    ) -> None:
+        """Delete one slot owned by a schedule."""
+        _delegate("delete-slot", name, str(slot_id))
 
     @schedule_app.command("clear-active")
     def clear_active_command(*, json_output: Annotated[bool, typer.Option("--json")] = False) -> None:

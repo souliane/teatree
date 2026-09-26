@@ -34,11 +34,13 @@ _SHIPPED_MAINTENANCE = "Nights: self-maintenance + self-improvement only, no tic
 
 #: The five loops the pre-collapse ``offline`` mask left ON, read from
 #: ``git show edde5c080:src/teatree/config/defaults.toml`` → ``[modes.offline.entries]``.
-#: Set-equality against these (never a frozen 27-key literal) so a future new loop that
-#: ships OFF does not break the pin.
+#: Seeded so the mask under test is REAL — an empty one holds no opinion on any loop and
+#: resolves to base config, which reads as intake-admitting whether or not the hold
+#: survived. It is NOT asserted back: `off` now means off and admits nothing, so pinning
+#: which loops the successor still runs would pin a value the decision deliberately moved.
 _OFFLINE_ADMITS = frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"})
 
-#: The loops a holiday hold most visibly must NOT re-admit, restated for the reader.
+#: The loops a holiday hold must NOT re-admit — the invariant the successor is judged on.
 _OFFLINE_REFUSES = ("tickets", "ship", "dispatch")
 
 #: The pre-collapse ``offline`` mask over the loops these tests assert on. An EMPTY mask
@@ -179,6 +181,9 @@ class TestCollapseModesToFivePresets(TransactionTestCase):
                 settings={
                     "default_mode": "engaged",
                     "presence_upgrade_mode": "engaged",
+                    # The ERA key: 0086 renames it to `token_outage_preset_name` long
+                    # after this migration, so seeding today's spelling asks 0071 to
+                    # rewrite a row it has never heard of.
                     "low_power_preset_name": "low-power",
                     "active_loop_schedule": "always-unattended",
                 },
@@ -237,7 +242,6 @@ class TestCollapseModesToFivePresets(TransactionTestCase):
         assert successor in shipped, f"{successor} is not a shipped preset"
         mask = shipped[successor]
 
-        assert {loop for loop, on in mask.items() if on} == set(_OFFLINE_ADMITS)
         for loop in _OFFLINE_REFUSES:
             assert mask[loop] is False, f"{successor} re-admits {loop} under a holiday hold"
 
@@ -253,6 +257,10 @@ class TestCollapseModesToFivePresets(TransactionTestCase):
             refs=StoredRefs(override=("offline", "holiday hold")),
         )
         self._after()
+        # The seeder and the resolver below are PRODUCTION code, so they need the
+        # production schema — stopping the schema at 0071 leaves them writing through
+        # today's models into a table three years of migrations older.
+        self._restore_head()
         seed_default_presets_and_schedules()
 
         self._assert_hold_admits_no_intake()
@@ -272,18 +280,22 @@ class TestCollapseModesToFivePresets(TransactionTestCase):
             refs=StoredRefs(override=("offline", "holiday hold")),
         )
         self._after()
+        # The resolver below is PRODUCTION code, so it needs the production schema —
+        # stopping at 0071 leaves it reading columns three years of migrations away, and
+        # the read error resolves fail-open to the default, which is not this subject.
+        self._restore_head()
 
         self._assert_hold_admits_no_intake()
 
     def _assert_hold_admits_no_intake(self) -> None:
         planes = EnablePlanes.resolve(timezone.now())
 
+        # The override TRAVELLED: a repoint onto a name no row carries falls open to the
+        # configured default, which is what re-admits the intake the hold exists to stop.
         assert planes.resolved.source == "override"
         for loop in _OFFLINE_REFUSES:
-            admitted = planes.admits(loop, configured_enabled=True)
+            admitted = planes.admits(loop)
             assert admitted is False, f"{planes.resolved.name} admits {loop} under a holiday hold"
-        for loop in _OFFLINE_ADMITS:
-            assert planes.admits(loop, configured_enabled=True) is True, f"{planes.resolved.name} quiets {loop}"
 
     def test_the_three_posture_columns_are_gone_from_the_table(self) -> None:
         self._seed_before()

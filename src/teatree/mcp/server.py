@@ -18,6 +18,9 @@ orchestrator-decides / loop-executes topology is preserved through the seams, no
 by withholding writes. The read tools carry ``read_only_hint``; the write tools
 name their gated seam in :data:`teatree.mcp.write_tools.TOOL_SEAMS`.
 
+The live agent mailbox is a separate, room-scoped communication surface, present
+only when the runner binds this MCP child to a running TeaTree task.
+
 A registered overlay contributes its own tools through
 ``overlay.connectors.mcp_tool_group()``, which hands over an
 :class:`~teatree.core.mcp_tool_group.McpToolGroup` — the tools themselves, not a
@@ -44,6 +47,7 @@ from teatree.core.factory.factory_signals import FactorySignalsReportDict
 from teatree.core.overlay import McpToolGroup, OverlayBase
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.mcp import (
+    agent_mailbox,
     introspection,
     search,
     services_forge,
@@ -199,6 +203,8 @@ def declared_write_tool_seams(declared: frozenset[Service]) -> dict[str, str]:
     core's half, and a guard that reads it alone cannot see an overlay's tools at all.
     """
     seams = dict(write_tools.TOOL_SEAMS)
+    if agent_mailbox.MailboxClient.from_env() is not None:
+        seams |= agent_mailbox.TOOL_SEAMS
     for _, group in overlay_tool_groups(declared):
         seams |= group.seams
     return seams
@@ -546,6 +552,12 @@ def build_server() -> MCPServer:
         # service declaration is not their fail-closed lever — their seam is.
         + "\n\nTeatree write tools (gate-preserved — each wraps the seam the `t3` CLI calls):\n"
         + write_tools.INSTRUCTIONS
+        + (
+            "\n\nLive agent mailbox (messages arrive on the next inbox/wait call, not as an idle wake):\n"
+            + agent_mailbox.INSTRUCTIONS
+            if agent_mailbox.MailboxClient.from_env() is not None
+            else ""
+        )
         + "".join(f"\n\nOverlay tools ({name}):\n{group.instructions}" for name, group in overlay_groups)
     )
     server = _NoShadowServer("teatree", instructions=instructions)
@@ -555,6 +567,7 @@ def build_server() -> MCPServer:
         if service in declared:
             register_group(server)
     write_tools.register(server)
+    agent_mailbox.register(server)
     # Last, and tool by tool rather than through a registrar the overlay owns:
     # the server is what puts a contributed tool on the surface, so a name it has
     # already given out is refused here rather than silently discarded by mcp.

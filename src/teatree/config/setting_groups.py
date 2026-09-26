@@ -34,8 +34,9 @@ from typing import TYPE_CHECKING, cast
 import tomlkit
 from tomlkit import items as tomlkit_items
 
-from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS, COLD_HOOK_SETTINGS_GROUP_PATH
 from teatree.config.registries import (
+    COLD_HOOK_SETTINGS,
+    COLD_HOOK_SETTINGS_GROUP_PATH,
     COLD_SETTINGS,
     COLD_SETTINGS_GROUP_PATH,
     REGISTRY_SETTINGS,

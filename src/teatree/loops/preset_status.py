@@ -86,8 +86,8 @@ def manual_override_entries(now: dt.datetime | None = None) -> list[tuple[str, b
     """Per-loop manual FORCED overrides that DIVERGE from the mode/base verdict (#3248).
 
     Returns ``(loop_name, forced_on)`` for every loop whose live FORCED value
-    differs from what the active mode's mask (else base ``Loop.enabled``) would
-    decide - the ``forced ON:`` / ``forced OFF:`` statusline section. A force that
+    differs from what the active mode's mask would decide - the
+    ``forced ON:`` / ``forced OFF:`` statusline section. A force that
     agrees with the underlying verdict is not surfaced (it changes nothing). The
     mask comes from :class:`~teatree.loops.enable_verdict.EnablePlanes`, the same
     seam the tick gates on, so "diverges" means diverges from what actually runs.
@@ -99,12 +99,10 @@ def manual_override_entries(now: dt.datetime | None = None) -> list[tuple[str, b
     planes = EnablePlanes.resolve(now)
     entries: list[tuple[str, bool]] = []
     for loop in Loop.objects.all():
-        value = planes.forced.get(loop.name)
+        value = planes.manual.get(loop.name)
         if value is None:
             continue
-        opinion = planes.resolved.state_for(loop.name)
-        base = opinion if opinion is not None else loop.enabled
-        if value != base:
+        if value != planes.resolved.state_for(loop.name):
             entries.append((loop.name, value))
     return sorted(entries)
 

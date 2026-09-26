@@ -24,7 +24,7 @@ from teatree.agents.pydantic_ai_config import (
     build_model_settings,
     native_anthropic_model_name,
 )
-from teatree.agents.pydantic_ai_session import _router_reported_cost
+from teatree.agents.pydantic_ai_turn import SessionRun, router_reported_cost
 from teatree.config import AgentHarness, AgentHarnessProvider
 from teatree.core.models import ConfigSetting
 from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError
@@ -138,14 +138,14 @@ class TestNativeModelResolution:
             patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False),
             pytest.raises(NativeAnthropicUnavailableError, match="anthropic"),
         ):
-            harness._resolve_model(options)
+            harness._resolve_model(options, SessionRun.start())
 
     @pytest.mark.skipif(not _ANTHROPIC_INSTALLED, reason="anthropic extra absent — see the fails-loud test")
     def test_native_branch_constructs_the_anthropic_model_when_the_extra_is_present(self) -> None:
         harness = PydanticAiHarness(config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC))
         options = HarnessOptions(model="claude-opus-4-8")
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False):
-            model = harness._resolve_model(options)
+            model = harness._resolve_model(options, SessionRun.start())
         # The native Anthropic model, NOT the OpenAI-compatible router model.
         assert "anthropic" in type(model).__module__.lower()
 
@@ -154,7 +154,7 @@ class TestNativeModelResolution:
         harness = PydanticAiHarness(
             model=injected, config=PydanticAiModelConfig(binding=PydanticAiBinding.NATIVE_ANTHROPIC)
         )
-        assert harness._resolve_model(HarnessOptions()) is injected
+        assert harness._resolve_model(HarnessOptions(), SessionRun.start()) is injected
 
 
 class TestNativeModelNameFallback:
@@ -256,11 +256,11 @@ class TestMaxTokensSetting:
 
 class TestRouterReportedCost:
     def test_reads_a_cost_key_from_run_usage_details(self) -> None:
-        assert _router_reported_cost(SimpleNamespace(details={"cost": 0.37})) == pytest.approx(0.37)
+        assert router_reported_cost(SimpleNamespace(details={"cost": 0.37})) == pytest.approx(0.37)
 
     def test_none_when_no_details(self) -> None:
-        assert _router_reported_cost(SimpleNamespace(details=None)) is None
-        assert _router_reported_cost(object()) is None
+        assert router_reported_cost(SimpleNamespace(details=None)) is None
+        assert router_reported_cost(object()) is None
 
     def test_ignores_a_bool_or_negative_value(self) -> None:
-        assert _router_reported_cost(SimpleNamespace(details={"cost": True, "total_cost": -1})) is None
+        assert router_reported_cost(SimpleNamespace(details={"cost": True, "total_cost": -1})) is None

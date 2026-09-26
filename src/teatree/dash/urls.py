@@ -23,7 +23,6 @@ from teatree.dash.views import (
     interchange_import,
     live,
     live_body_partial,
-    loop_action,
     loop_cadence,
     loops,
     loops_table_partial,
@@ -35,7 +34,6 @@ from teatree.dash.views import (
     preset_rename,
     preset_use,
     presets,
-    runner_toggle,
     schedule_activate,
     schedule_slot,
     schedule_slot_delete,
@@ -45,8 +43,12 @@ from teatree.dash.views import (
     settings_group,
     settings_readouts,
     settings_restore,
+    settings_seed_set,
     settings_set,
     settings_snapshot,
+    skills,
+    skills_refresh,
+    skills_remove,
     task_action,
     ticket_drawer,
     ticket_transition,
@@ -69,10 +71,8 @@ urlpatterns = [
     path("live/body/", live_body_partial, name="live_body"),
     path("loops/", loops, name="loops"),
     path("loops/table/", loops_table_partial, name="loops_table"),
-    path("loops/action/", loop_action, name="loop_action"),
     path("loops/mode/", mode_switch, name="mode-switch"),
     path("loops/gate/", gate_toggle, name="gate_toggle"),
-    path("loops/runner/", runner_toggle, name="runner_toggle"),
     path("loops/cadence/", loop_cadence, name="loop_cadence"),
     path("presets/", presets, name="presets"),
     path("presets/entry/", preset_entry, name="preset_entry"),
@@ -96,6 +96,16 @@ urlpatterns = [
     # in the query string beside it, since the global scope is the empty string.
     path("settings/set/<str:key>/", settings_set, name="settings_set"),
     path("settings/restore/<str:key>/", settings_restore, name="settings_restore"),
+    # A seed field is addressed by its three coordinates rather than a key + scope: the
+    # loop / preset / schedule rows are not ConfigSetting rows and have no scope at all.
+    path(
+        "settings/seed/<str:table>/<str:name>/<str:field>/",
+        settings_seed_set,
+        name="settings_seed_set",
+    ),
+    path("skills/", skills, name="skills"),
+    path("skills/refresh/", skills_refresh, name="skills_refresh"),
+    path("skills/<str:harness>/<str:name>/remove/", skills_remove, name="skills_remove"),
     # Moved out of settings: the dump reaches past the settings store (#4340). The export is
     # a bookmarkable GET, so its old address redirects (filters and all); the import was
     # POST-only, which nothing can have bookmarked.

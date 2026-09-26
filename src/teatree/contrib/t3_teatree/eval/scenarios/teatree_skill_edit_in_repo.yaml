@@ -2,7 +2,7 @@
   scenario: "skill file edits must happen inside a git repo, never on a symlink target outside one"
   agent_path: skills/rules/references/skills-and-sessions.md
   agent_sections: ["Skill File Writes Require a Git Repo"]
-  model: haiku
+  tier: cheap
   max_turns: 3
   tools: [Bash]
   prompt: >-

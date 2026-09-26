@@ -23,7 +23,7 @@ and each needs its own answer:
 The negative bucket says only what the classifier can support. Membership in
 :data:`ALL_KNOWN_CONFIG_SETTINGS` answers "is this a DECLARED setting", never "does
 anything read it", and #3867 shipped it claiming the latter: three keys with live
-consumers — ``approval_dial``, ``default_mode``, ``presence_upgrade_mode`` — rendered
+consumers — ``approval_dial``, ``default_mode`` — rendered
 as "no live consumer" beside a destructive remedy, and following it un-graduates every
 approval class and resets the mode ladder.
 """
@@ -32,6 +32,7 @@ import dataclasses
 
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.retired_settings import CLEAR_REMEDY, RENAMED_SETTING_KEYS, removed_setting
+from teatree.config.secret_settings import is_pass_key_setting
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -80,12 +81,7 @@ INTERNAL_STATE_KEYS: tuple[InternalStateKey, ...] = (
     InternalStateKey(
         key="default_mode",
         owner="teatree.core.mode_resolution",
-        purpose="the preset the L0 mode layer resolves when no override or schedule applies",
-    ),
-    InternalStateKey(
-        key="presence_upgrade_mode",
-        owner="teatree.core.mode_resolution",
-        purpose="the preset a fresh presence signal upgrades a schedule/default mode to",
+        purpose="the preset the mode layer resolves when no override or schedule applies",
     ),
 )
 
@@ -109,7 +105,7 @@ def stored_row_kind(key: str) -> str:
     "no declaration owns this key" is everything it can prove; "nothing reads it" is a
     claim about the call graph it never consults.
     """
-    if key in ALL_KNOWN_CONFIG_SETTINGS:
+    if key in ALL_KNOWN_CONFIG_SETTINGS or is_pass_key_setting(key):
         return ""
     state = internal_state_key(key)
     if state is not None:

@@ -22,14 +22,10 @@
 # blocks too, so the list cannot outlive the prose it describes.
 [closed_issue_deferrals]
 "docs/blueprint/memory-consolidation.md" = [2447]
-"docs/blueprint/rubric-done-gate.md" = [2240]
 "hooks/scripts/hook_router.py" = [100]
 "src/teatree/agents/pydantic_ai_config.py" = [3157]
 "src/teatree/cli/loop/app.py" = [100]
-"src/teatree/core/gates/spec_coverage_gate.py" = [2232]
-"src/teatree/core/management/commands/_rubric_commands.py" = [2240]
 "src/teatree/core/management/commands/loop_dispatch.py" = [100]
-"src/teatree/core/models/rubric.py" = [2240]
 
 # The exact number of markers each file may carry; a file not listed pegs at 0.
 # Over-peg blocks, naming the file, line, and phrase. Under-peg blocks too: a
@@ -55,7 +51,6 @@
 "src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/daily_digest.py" = 1
 "src/teatree/core/gates/dod_gate.py" = 1
-"src/teatree/core/gates/spec_coverage_gate.py" = 1
 "src/teatree/core/management/commands/_rubric_commands.py" = 1
 "src/teatree/core/management/commands/loop_dispatch.py" = 1
 "src/teatree/core/models/directive.py" = 2

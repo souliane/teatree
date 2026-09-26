@@ -178,6 +178,42 @@ The survey **fails open**: an inconclusive git probe or a forge that cannot be l
 - Extract and list acceptance criteria before coding.
 - If the ticket is vague, clarify with the user.
 
+### 2a. The Acceptance Criteria Live on the Plan
+
+An acceptance criterion with nothing pointing at it is how a ticket ships "done" with a
+criterion nobody implemented. The criteria have exactly one home: the plan's
+`acceptance_criteria` section. Recording the plan turns them into the ticket's `core.Rubric`,
+which an independent verifier grades before the ticket can be delivered or merged.
+
+```bash
+t3 <overlay> ticket plan <ticket-id> '<plan text>' --base-sha "$(git rev-parse origin/main)" \
+  --adequacy-json '{"design": {...}, "integration_seams": {...}, "edge_cases": {...},
+                    "test_strategy": {...}, "acceptance_criteria": {"content": ["<criterion>"]}}'
+```
+
+Write criteria that can FAIL — one satisfied by inaction is refused at population. A
+`"none_reason"` there is an ordinary reasoned negative: it writes no rubric rows and waives
+NOTHING. The one waiver is the human-authorized `t3 <overlay> ticket plan-bypass <id>
+--human-authorize <who> --reason <why>`, and even that never overrides a recorded FAIL.
+
+**Grading happens at the end, by someone other than the maker — automatically.** The cold
+reviewer is the producer: it returns `rubric_grades` in the same envelope as its verdict, and
+the orchestrator stamps both in one transaction. A PASS must cite what proves it — any test
+kind (unit, integration, functional, e2e), named in free-form prose:
+
+```json
+"rubric_grades": [{"ordinal": 0, "status": "pass", "rationale": "<the test that proves it>"}]
+```
+
+The CLI below is the **operator's** seam beside it — for a rubric no review will grade, never
+for the reviewer:
+
+```bash
+t3 <overlay> ticket rubric-grade <ticket-id> --grader-identity <reviewer> \
+  --reviewed-sha "$(git rev-parse HEAD)" \
+  --grades-json '[{"ordinal": 0, "status": "pass", "rationale": "<the test that proves it>"}]'
+```
+
 ### 2b. Infer Deliverables
 
 After extracting acceptance criteria, **proactively list all required artifacts** — don't wait for the user to tell you. Common deliverables to infer:
@@ -202,18 +238,7 @@ Present the inferred list and let the user confirm or adjust before proceeding. 
 - Determine which repos are affected by the ticket.
 - Load repository-specific references for each repo in scope.
 
-### 5. Detect Variant/Tenant (Multi-Tenant Projects)
-
-**Always detect the target tenant before coding.** This determines environment setup, feature flag scope, and config repos.
-
-1. **Check issue labels** — customer-name labels are authoritative, use directly.
-2. **Check issue description** — explicit customer mentions or config-repo references.
-3. **Check external tracker** — extract linked URLs from the issue description, fetch via MCP/CLI, look for customer/tenant properties. See project-specific skill references for the customer-name-to-variant mapping.
-4. **Ask the user** — last resort, if none of the above yields a customer.
-
-Pass the detected tenant to `t3 <overlay> worktree provision <customer>` and `t3 <overlay> worktree start <customer>`.
-
-### 6. Create Worktree + Setup (Always — Don't Ask)
+### 5. Create Worktree + Setup (Always — Don't Ask)
 
 Worktree creation is the default for every ticket. **Never ask "should I create a worktree?"** — just do it after scope is confirmed.
 
@@ -222,7 +247,7 @@ Delegate to `/t3:workspace`:
 - `t3 <overlay> workspace ticket` — create worktrees for affected repos.
 - `t3 <overlay> worktree provision` — provision environment (symlinks, env, DB, direnv).
 
-### 7. Start Dev Servers
+### 6. Start Dev Servers
 
 Delegate to `/t3:workspace`:
 

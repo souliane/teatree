@@ -18,6 +18,7 @@ that entry is deleted. Deleting the entry is part of the fix, not a chore left
 behind by it.
 """
 
+import dataclasses
 from pathlib import Path
 
 from teatree.eval.doctrine_agreement import (
@@ -28,7 +29,7 @@ from teatree.eval.doctrine_agreement import (
     stale_matchers,
     unpinned_mandates,
 )
-from teatree.eval.models import EvalSpec, Matcher
+from teatree.eval.models import EvalSpec, Matcher, SuccessfulToolCallMatcher
 
 #: No stale matcher is open. A matcher that demands a retired command is fixed
 #: where it is GENERATED (``scripts/eval/corpus_gen/``), never recorded here —
@@ -108,6 +109,27 @@ class TestStaleMatcherDetectionIsAntiVacuous:
 
     def test_the_retired_spelling_is_flagged(self) -> None:
         assert self._stale(r"git push .*(-u )?origin (?!main\b)\S") == (r"git push .*(-u )?origin (?!main\b)\S",)
+
+    def test_successful_call_matcher_on_retired_command_is_flagged(self) -> None:
+        spec = _spec_with_command_matcher("git push")
+        spec = dataclasses.replace(
+            spec,
+            matchers=(
+                SuccessfulToolCallMatcher(
+                    tool="Bash",
+                    arg_path="args.command",
+                    operator="~",
+                    value="git push",
+                    result_operator="~",
+                    result_value="pushed",
+                    before_tool="Bash",
+                    before_arg_path="args.command",
+                    before_operator="~",
+                    before_value="gh pr create",
+                ),
+            ),
+        )
+        assert tuple(v.pattern for v in stale_matchers((spec,), (self._MIGRATION,))) == ("git push",)
 
     def test_the_widened_spelling_is_not_flagged(self) -> None:
         assert self._stale(r"(git|t3) push") == ()

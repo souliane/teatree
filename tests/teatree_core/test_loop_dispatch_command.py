@@ -18,10 +18,11 @@ from django.utils import timezone
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.config import get_effective_settings
 from teatree.core.admission_governor import governor_enabled
-from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.core.models import ConfigSetting, ModeOverride, Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.task_claim import claim_generation
 from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY, write_admit_budget
+from teatree.loop.drain import set_worker_quiescing
 from tests._loop_principal_env import pinned_loop_principal
 from tests._pr_open_state_stub import mint_open_pr_review
 
@@ -301,6 +302,34 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         task.refresh_from_db()
         assert task.status == Task.Status.CLAIMED
         assert task.claimed_by == "loop-slot"
+
+    def _lapsed_reviewer_claim(self) -> Task:
+        task = self._reviewer_task()
+        task.claim(claimed_by="loop-slot")
+        task.lease_expires_at = timezone.now() - timedelta(seconds=10)
+        task.save(update_fields=["lease_expires_at"])
+        return task
+
+    def _claim_next_payload(self) -> list[dict]:
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        return json.loads(stdout.getvalue())
+
+    def test_claim_next_under_off_leaves_an_orphaned_unit_claimed(self) -> None:
+        task = self._lapsed_reviewer_claim()
+        ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
+
+        assert self._claim_next_payload() == []
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+
+    def test_claim_next_while_the_worker_quiesces_leaves_an_orphaned_unit_claimed(self) -> None:
+        task = self._lapsed_reviewer_claim()
+        set_worker_quiescing(value=True)
+
+        assert self._claim_next_payload() == []
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
 
     def test_claim_next_empty_when_nothing_pending(self) -> None:
         stdout = StringIO()
@@ -829,6 +858,28 @@ class TestSpawnClaim(_LoopDispatchTest):
         call_command("loop_dispatch", "spawn-claim", str(task.pk), claimed_by="custom-worker")
         task.refresh_from_db()
         assert task.claimed_by == "custom-worker"
+
+    def test_a_stopped_fleet_claims_nothing_and_names_why(self) -> None:
+        task = self._reviewer_task()
+        ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
+        err = StringIO()
+
+        with pytest.raises(SystemExit):
+            call_command("loop_dispatch", "spawn-claim", str(task.pk), stderr=err)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert "admits no loop" in err.getvalue()
+
+    def test_a_quiescing_worker_claims_nothing(self) -> None:
+        task = self._reviewer_task()
+        set_worker_quiescing(value=True)
+
+        with pytest.raises(SystemExit):
+            call_command("loop_dispatch", "spawn-claim", str(task.pk), stderr=StringIO())
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
 
 
 class TestAdmissionGovernorKillSwitchIsATrueRevert(_LoopDispatchTest):

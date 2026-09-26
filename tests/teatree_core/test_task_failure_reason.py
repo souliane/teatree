@@ -25,6 +25,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     classify_failure,
     is_causeless,
     is_environmental,
+    is_harness_fault,
     recovery_strategy,
     stall_fingerprints,
     stall_kinds,
@@ -99,6 +100,42 @@ class TestClassifier(TestCase):
         )
         assert kind == FailureKind.HARNESS_CRASH
         assert is_environmental(kind)
+
+    def test_a_control_request_timeout_outranks_the_traceback_that_carries_it(self) -> None:
+        """The SDK's own message for a CLI child that never answered.
+
+        It arrives AS a traceback, so ``harness_crash`` claimed it and called it
+        environmental: a name that reads as weather, for a slow session-start path teatree
+        owns. Deterministic here, so the repair loop's stall check counts it and two in a
+        row halt instead of retrying into the same deadline.
+        """
+        reason = (
+            "Traceback (most recent call last):\n"
+            '  File ".../claude_agent_sdk/_internal/query.py", line 577, in _send_control_request\n'
+            "    with anyio.fail_after(timeout):\n"
+            "Exception: Control request timeout: initialize"
+        )
+
+        kind = classify_failure(reason)
+
+        assert kind == FailureKind.HARNESS_CONTROL_TIMEOUT
+        assert not is_environmental(kind)
+        assert recovery_strategy(kind) is RecoveryStrategy.HALT
+
+    def test_a_control_request_timeout_is_a_harness_fault_and_so_is_a_crash(self) -> None:
+        assert is_harness_fault(FailureKind.HARNESS_CONTROL_TIMEOUT)
+        assert is_harness_fault(FailureKind.HARNESS_CRASH)
+
+    def test_a_defect_in_the_work_is_not_a_harness_fault(self) -> None:
+        """The health aggregator reddens on a RUN of these, so the set must not creep."""
+        assert not is_harness_fault(FailureKind.EVIDENCE_MISSING)
+        assert not is_harness_fault(FailureKind.UNCLASSIFIED)
+        assert not is_harness_fault(FailureKind.OUTAGE)
+
+    def test_two_control_timeouts_in_a_row_reach_the_stall_check(self) -> None:
+        """``harness_crash`` is dropped from the stall comparison; its named sibling must not be."""
+        assert stall_kinds([FailureKind.HARNESS_CONTROL_TIMEOUT] * 2) == [FailureKind.HARNESS_CONTROL_TIMEOUT] * 2
+        assert stall_kinds([FailureKind.HARNESS_CRASH] * 2) == []
 
     def test_an_unmatched_reason_is_named_unclassified_not_blank(self) -> None:
         """An unrecognised reason still gets a NAME, and is deterministic by default.
@@ -180,6 +217,7 @@ class TestClassifier(TestCase):
             "unknown overlay 'no-such': ticket 191 cannot be dispatched",
             "Agent result contains unexpected keys: cmd",
             "Traceback (most recent call last):",
+            "Exception: Control request timeout: initialize",
             "outage_death: connection refused",
             "result_error: no terminal ResultMessage",
             "provision_failed: uv sync exited 1",
@@ -188,6 +226,7 @@ class TestClassifier(TestCase):
             "missing required evidence for phase 'reviewing'",
             "review verdict recording refused: merge_safe needs a reviewed sha",
             "plan_missing: refusing to dispatch t3:coder for ticket 7 (coding)",
+            "review_unrecordable: refusing to dispatch the reviewer for souliane/teatree#4225",
             "issue_closed: refusing to dispatch t3:coder for ticket 7 (coding) — its issue is CLOSED",
             "cancelled: operator cancelled the task",
             "superseded: ticket reworked",

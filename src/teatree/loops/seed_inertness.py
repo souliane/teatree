@@ -21,23 +21,19 @@ setting on a fresh install — they exist to be selected by hand (``t3 loop pres
 "unreferenced" is their shipped state, not a fault. Reporting it would make the report noisy
 on every new box, which is how a health surface becomes one people learn to ignore.
 
-A mask can also kill the BOX (#4188). The live ``off`` row masked every survival loop off
-— including the two that recovered this box from both of one day's out-of-memory
-emergencies — while ``db_backup`` stayed forced ON, so the one mode an operator reaches for
-mid-incident could only ever consume disk. Both shapes are faults wherever they are found:
-a mask that quiets the load-bearing tier (the low-token mode excepted) and a mask that
-admits the backup once every reclaim loop is quiet.
+A mask can also kill the BOX. Admitting ``db_backup`` once every reclaim loop is quiet
+leaves the box writing backups with nothing that can free the space — a fault wherever it
+is found (:mod:`teatree.loops.mode_shape`).
 
 Presence alone was not enough (#4096). A live ``standard`` calendar carrying an extra
 ``Mon-Fri 19:00 -> maintenance`` slot, against a ``maintenance`` mask that stopped delivery
 while leaving intake admitted, stalled the merge lane 13h a night — with every row present,
 every mask non-empty and every slot naming a real preset, so this report said OK. It now
-also compares each live VALUE against the shipped table (:mod:`teatree.loops.seed_drift`)
-and judges each live mask against the structural rule in :mod:`teatree.loops.mode_shape`.
+also compares each live VALUE against the shipped table (:mod:`teatree.loops.seed_drift`).
 A divergence is a NOTE, never a fault and never rewritten — an operator override is a
-legitimate per-box decision, and the gap was that nobody could see it. The asymmetry it can
-produce IS a fault: a mode that stops the pipeline draining while it keeps filling is
-broken whoever wrote it.
+legitimate per-box decision, and the gap was that nobody could see it. A mask that names
+only SOME loops IS a fault: the unnamed ones read OFF, which is the fail-safe answer rather
+than one anybody chose.
 """
 
 import datetime as dt
@@ -45,14 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from teatree.loops.mode_shape import (
-    BACKUP_LOOP,
-    DISK_RECLAIM_LOOPS,
-    INTAKE_LOOPS,
-    backup_without_reclaim,
-    intake_without_delivery,
-    quieted_load_bearing,
-)
+from teatree.loops.mode_shape import backup_without_reclaim
 from teatree.loops.preset_seed import PresetSpec, ScheduleSpec, default_preset_specs, default_schedule_specs
 from teatree.loops.seed import LoopSeedSpec, load_loop_specs
 from teatree.loops.seed_drift import SlotShape, mode_entry_drift, schedule_slot_drift
@@ -71,9 +60,8 @@ KIND_DANGLING_SLOT = "dangling_slot"
 KIND_INACTIVE = "inactive"
 KIND_ENTRIES_OVERRIDDEN = "entries_overridden"
 KIND_SLOTS_OVERRIDDEN = "slots_overridden"
-KIND_INTAKE_WITHOUT_DELIVERY = "intake_without_delivery"
 KIND_BACKUP_WITHOUT_RECLAIM = "backup_without_reclaim"
-KIND_QUIETED_LOAD_BEARING = "quieted_load_bearing"
+KIND_NOT_TOTAL = "not_total"
 
 __all__ = [
     "KIND_BACKUP_WITHOUT_RECLAIM",
@@ -84,9 +72,8 @@ __all__ = [
     "KIND_EMPTY_MASK",
     "KIND_ENTRIES_OVERRIDDEN",
     "KIND_INACTIVE",
-    "KIND_INTAKE_WITHOUT_DELIVERY",
     "KIND_MISSING",
-    "KIND_QUIETED_LOAD_BEARING",
+    "KIND_NOT_TOTAL",
     "KIND_SLOTS_OVERRIDDEN",
     "KIND_STALE",
     "KIND_SUPPRESSED",
@@ -150,11 +137,8 @@ def _loop_findings(path: Path | None, now: dt.datetime) -> list[InertFinding]:
 
     rows = {row.name: row for row in Loop.objects.all()}
     behind = {loop.name: loop for loop in stale_loops(now)}
-    # The NARROW verdict, not chain membership: the question here is "is the shipped
-    # loop actually working", and membership is the deliberately wider persisted-chain
-    # set — a loop kept a member across the presence flip is NOT running right now
-    # (#4196), so reporting it as live would be the same false-quiet this file exists
-    # to surface.
+    # The verdict, not chain membership: the question here is "is the shipped loop
+    # actually working", and membership additionally intersects the live-tick registry.
     admitted = {verdict.name for verdict in effective_verdicts(now) if verdict.admitted}
     findings = []
     for spec in load_loop_specs(path):
@@ -162,8 +146,8 @@ def _loop_findings(path: Path | None, now: dt.datetime) -> list[InertFinding]:
         if row is None:
             findings.append(_missing("loop", spec.name, spec.description))
             continue
-        if not row.enabled:
-            findings.append(_disabled(spec))
+        if row.enabled is False:
+            findings.append(_force_off(spec, row))
             continue
         # A column-enabled loop the verdict refuses is not measured by ``stale_loops``
         # at all (#4185) — it has no chain to fall behind on. Its standing still is
@@ -212,18 +196,23 @@ def _suppressed(spec: LoopSeedSpec, row: "Loop", now: dt.datetime) -> InertFindi
     )
 
 
-def _disabled(spec: LoopSeedSpec) -> InertFinding:
-    """A shipped-ON loop found off REGRESSED; a shipped-off loop found off is shipping as designed."""
+def _force_off(spec: LoopSeedSpec, row: "Loop") -> InertFinding:
+    """A manual override forcing a loop OFF — a person's decision, reported with its reason.
+
+    A fault only when the loop SHIPS on: forcing a shipped-off loop off changes nothing,
+    while forcing a shipped-on one off stops something the box is supposed to be doing.
+    """
     regressed = spec.default_enabled
+    reason = row.override_reason or "no reason recorded"
     return InertFinding(
         family="loop",
         name=spec.name,
         kind=KIND_DISABLED_VS_SHIPPED if regressed else KIND_DISABLED,
         detail=(
-            f"disabled, but ships ENABLED — {spec.description} is not happening. "
-            "Re-enable it, or record why the box wants it off."
+            f"forced OFF by a manual override ({reason}), but ships ENABLED — {spec.description} "
+            "is not happening. Lift the override, or record why the box wants it off."
             if regressed
-            else f"disabled, exactly as it ships (opt-in) — {spec.description}"
+            else f"forced OFF by a manual override ({reason}); it ships off anyway — {spec.description}"
         ),
         is_fault=regressed,
     )
@@ -237,29 +226,23 @@ def _preset_findings(path: Path | None) -> list[InertFinding]:
     name that happens to ship.
     """
     from teatree.core.models import Loop, Mode  # noqa: PLC0415 — deferred: ORM import needs the app registry
-    from teatree.core.models.loop_preset import (  # noqa: PLC0415 — deferred: ORM-backed setting read
-        low_power_preset_name,
-    )
 
     specs = {spec.name: spec for spec in default_preset_specs(path)}
     rows = {row.name: row for row in Mode.objects.all()}
-    # An absent mask entry INHERITS, so both asymmetries turn on the base flags.
-    judged = (*INTAKE_LOOPS, *DISK_RECLAIM_LOOPS, BACKUP_LOOP)
-    base_enabled = dict(Loop.objects.filter(name__in=judged).values_list("name", "enabled"))
-    low_power = low_power_preset_name()
+    loop_names = set(Loop.objects.values_list("name", flat=True))
     findings = [_missing("preset", spec.name, spec.description) for spec in specs.values() if spec.name not in rows]
     findings.extend(
         finding
         for name, row in rows.items()
-        if (finding := _live_preset_finding(name, row, specs.get(name), base_enabled=base_enabled, low_power=low_power))
+        if (finding := _live_preset_finding(name, row, specs.get(name), loop_names=loop_names))
     )
     return findings
 
 
 def _live_preset_finding(
-    name: str, row: "Mode", spec: PresetSpec | None, *, base_enabled: dict[str, bool], low_power: str
+    name: str, row: "Mode", spec: PresetSpec | None, *, loop_names: set[str]
 ) -> InertFinding | None:
-    """Inert mask, then the box-killing shapes, then the stall, then drift — the actionable line wins."""
+    """Inert mask, then the box-killing shape, then the partial table, then drift — the actionable line wins."""
     mask = row.entries if isinstance(row.entries, dict) else {}
     if spec is not None and spec.entries and not mask:
         return InertFinding(
@@ -272,28 +255,22 @@ def _live_preset_finding(
             ),
             is_fault=True,
         )
-    consuming = backup_without_reclaim(mask, base_enabled=base_enabled)
+    consuming = backup_without_reclaim(mask)
     if consuming is not None:
         return InertFinding(
             family="preset", name=name, kind=KIND_BACKUP_WITHOUT_RECLAIM, detail=consuming.detail, is_fault=True
         )
-    quieted = quieted_load_bearing(mask) if name != low_power else ()
-    if quieted:
+    unnamed = sorted(loop_names - set(mask))
+    if unnamed:
         return InertFinding(
             family="preset",
             name=name,
-            kind=KIND_QUIETED_LOAD_BEARING,
+            kind=KIND_NOT_TOTAL,
             detail=(
-                f"masks load-bearing loop(s) off ({', '.join(quieted)}) — activating this mode leaves "
-                "nothing that can free disk or RAM when the box is under pressure, and no way in to do "
-                "it by hand. Admit them, or move the mask to the low-token mode"
+                f"holds no opinion on {', '.join(unnamed)} — those loops read OFF under this preset, "
+                "which is the fail-safe answer rather than a chosen one. Set them explicitly"
             ),
             is_fault=True,
-        )
-    asymmetry = intake_without_delivery(mask, base_enabled=base_enabled)
-    if asymmetry is not None:
-        return InertFinding(
-            family="preset", name=name, kind=KIND_INTAKE_WITHOUT_DELIVERY, detail=asymmetry.detail, is_fault=True
         )
     drift = mode_entry_drift(spec.entries, mask) if spec is not None else ()
     if drift:

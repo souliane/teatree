@@ -7,7 +7,8 @@ reclaimed as collateral of a done-looking ticket.
 
 Anti-vacuity coverage, driven through the real ``call_command("workspace",
 "teardown", ...)`` against real git repos under a temp dir. Only the two
-unstoppable externals are faked: the ``glab``/``gh`` subprocess and the forge
+unstoppable externals are faked: the forge open-MR read (HTTP for GitLab, the
+``gh`` subprocess for GitHub) and the forge
 API behind ``get_pr_open_state``.
 
 * ``TestRecordedPullRequestRows`` — the ticket-level view. An OPEN row refuses;
@@ -28,7 +29,6 @@ API behind ``get_pr_open_state``.
     never collapsed onto the same CLEAR outcome as a genuine non-forge host.
 """
 
-import json
 import shutil
 import subprocess
 import tempfile
@@ -114,16 +114,22 @@ class _TeardownHarness(TestCase):
             state=Worktree.State.PROVISIONED,
         )
 
-    def _forge_cli(self, *, open_branches: set[str] | None = None, returncode: int = 0):
-        """Fake the ``glab``/``gh`` probe: an open MR for every branch in *open_branches*."""
+    def _forge_cli(self, *, open_branches: set[str] | None = None, unreadable: bool = False):
+        """Fake the GitLab open-MR read: an open MR for every branch in *open_branches*.
+
+        Patches the HTTP seam, not a subprocess — the GitLab arm shells out to nothing, so it
+        cannot depend on a ``glab`` the deploy image never declares yet a bind-mounted
+        ``~/.local/bin`` may still supply. *unreadable* is the UNKNOWN arm: a read that could
+        not answer, which this fail-closed gate must refuse on.
+        """
         opened = open_branches or set()
 
-        def _run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            branch = cmd[cmd.index("--source-branch") + 1] if "--source-branch" in cmd else ""
-            payload = [{"web_url": _MR_URL}] if branch in opened else []
-            return subprocess.CompletedProcess(cmd, returncode, json.dumps(payload), "")
+        def _read(_repo_dir: object, branch: str) -> str | None:
+            if unreadable:
+                return None
+            return _MR_URL if branch in opened else ""
 
-        return patch.object(probe_mod, "run_allowed_to_fail", side_effect=_run)
+        return patch.object(probe_mod, "_gitlab_open_mr_url", side_effect=_read)
 
     def _forge_api(self, state: PrOpenState):
         """Fake the code host behind the injected reader, for the recorded-row leg."""
@@ -203,14 +209,15 @@ class TestUnrecordedMrBackingAWorktreeBranch(_TeardownHarness):
 
 class TestFailsClosed(_TeardownHarness):
     def test_refuses_when_the_branch_probe_fails(self) -> None:
-        with self._forge_cli(returncode=1), pytest.raises(OpenPullRequestTeardownError) as exc:
+        with self._forge_cli(unreadable=True), pytest.raises(OpenPullRequestTeardownError) as exc:
             self._teardown()
         assert "unknown" in str(exc.value)
         self.assert_nothing_reclaimed()
 
-    def test_refuses_when_the_forge_cli_is_missing(self) -> None:
+    def test_refuses_when_the_forge_read_cannot_run_at_all(self) -> None:
+        """A backend that cannot even be built is UNKNOWN, never verified absence."""
         with (
-            patch.object(probe_mod, "run_allowed_to_fail", side_effect=FileNotFoundError("glab")),
+            patch.object(probe_mod, "_gitlab_open_mr_url", side_effect=RuntimeError("backend unavailable")),
             pytest.raises(OpenPullRequestTeardownError),
         ):
             self._teardown()
@@ -262,7 +269,10 @@ class TestNoForgeRemote(_TeardownHarness):
     remote = "git@git.example.org:acme-org/backend.git"  # privacy-scan:allow
 
     def test_a_repo_with_no_forge_origin_is_clear(self) -> None:
-        with patch.object(probe_mod, "run_allowed_to_fail", side_effect=AssertionError("must not probe")):
+        with (
+            patch.object(probe_mod, "run_allowed_to_fail", side_effect=AssertionError("must not probe")),
+            patch.object(probe_mod, "_gitlab_open_mr_url", side_effect=AssertionError("must not probe")),
+        ):
             self._teardown()
         self.assert_all_reclaimed()
 

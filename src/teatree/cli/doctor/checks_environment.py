@@ -9,6 +9,7 @@ from pathlib import Path
 import typer
 
 from teatree.docker.workflow import launcher_bin_dir
+from teatree.utils.uv_constraints import uv_tool_install_hint
 
 
 def _check_single_db() -> bool:
@@ -129,18 +130,19 @@ def _check_dangling_editable_pth() -> bool:
 
     pth_still_dangling = dangling.pth_dangling_dir is not None
     if pth_still_dangling:
+        repair_command = uv_tool_install_hint("uv tool install --editable . --overrides uv-overrides.txt --force")
         typer.echo(
             f"FAIL  teatree editable .pth points at a non-existent dir: {dangling.pth_dangling_dir} "
             f"({dangling.pth}). A reaped worktree left it dangling — t3 dies with "
             f"ModuleNotFoundError. Re-anchor: re-run `t3 setup` from the canonical clone "
-            f"(or rewrite the .pth to $T3_REPO/src), then `cd $T3_REPO && uv tool install --editable . "
-            f"--overrides uv-overrides.txt --force`."
+            f"(or rewrite the .pth to $T3_REPO/src), then `cd $T3_REPO && {repair_command}`."
         )
     if dangling.receipt_source is not None:
+        repair_command = uv_tool_install_hint("uv tool install --editable . --overrides uv-overrides.txt --force")
         typer.echo(
             f"FAIL  uv tool receipt records a non-existent editable source: {dangling.receipt_source}. "
             f"It re-breaks the .pth on the next `t3 update`/reinstall. Fix: "
-            f"`cd $T3_REPO && uv tool install --editable . --overrides uv-overrides.txt --force`."
+            f"`cd $T3_REPO && {repair_command}`."
         )
     return False
 
@@ -340,6 +342,38 @@ def _check_venv_interpreter_is_this_host() -> bool:
     return ok
 
 
+def _check_project_venv_editable_pths() -> bool:
+    """FAIL when a project ``.venv`` teatree knows of carries a ``.pth`` naming a gone dir.
+
+    An editable install that landed in a SHARED venv dangles once its checkout is reaped,
+    and every import through that venv then breaks with ``ModuleNotFoundError``. Report-only:
+    a project venv's ``.pth`` set is its own ``uv sync``'s to rebuild, never this check's.
+    """
+    from teatree.cli.update import _collect_repos  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.editable_pth import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        SitePackages,
+        host_root_for_checkout,
+    )
+
+    repos = [repo for _name, repo in _collect_repos()]
+    roots = dict.fromkeys([*repos, *(host for repo in repos if (host := host_root_for_checkout(repo)) is not None)])
+    ok = True
+    for root in roots:
+        try:
+            site = SitePackages.of_project(root)
+            dangling = site.dangling_entries() if site is not None else ()
+        except OSError as exc:
+            typer.echo(f"WARN  Could not read the .pth files of {root}/.venv: {exc}")
+            continue
+        for pth, missing in dangling:
+            typer.echo(
+                f"FAIL  {pth}: {missing} does not exist — an editable install left this venv naming a "
+                f"reaped checkout, so imports through it fail. Repair: uv sync --directory {root} --reinstall"
+            )
+            ok = False
+    return ok
+
+
 def _check_legacy_overlay_alias() -> None:
     """Warn (never rewrite) on a stale legacy alias entry in the DB overlays registry.
 
@@ -436,8 +470,7 @@ def _configured_review_skill_gaps() -> list[str]:
         alternates = [name.strip() for name in settings.review_skill_alternates if name.strip()]
         configured: list[tuple[str, str]] = [("review_skill", primary)]
         configured.extend(("review_skill_alternates", name) for name in alternates)
-        if not settings.architectural_review_disabled:
-            configured.append(("architectural_review_skill", settings.architectural_review_skill.strip()))
+        configured.append(("architectural_review_skill", settings.architectural_review_skill.strip()))
         scope = overlay_name or "(active overlay)"
         if not primary and alternates:
             gaps.append(

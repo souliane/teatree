@@ -1,17 +1,15 @@
 """Issue-disposition mini-loop — auto-close high-confidence DEAD backlog issues.
 
-Per-overlay loop, default-OFF behind the ``auto_disposition_enabled`` gate
-(#2122). Consumes ``Domain.ISSUE_DISPOSITION`` through the public
+Per-overlay loop, scoped to the canonical core overlay (#2122). Consumes ``Domain.ISSUE_DISPOSITION`` through the public
 :func:`teatree.loop.domain_jobs.jobs_for_domain` seam, so
 :func:`teatree.loop.scanner_factories._issue_disposition_scanner_for` stays the
-single decision point for whether any scanner is emitted — with the default-OFF
-config this mini-loop contributes nothing and the registry/legacy parity stays
-byte-for-byte unchanged (#22).
+single decision point for whether any scanner is emitted (#22).
 
 The emitted ``issue_disposition.close_candidate`` signals route to the
 mechanical ``close_dead_issue`` handler — it CLOSES noise with an audit-trail
 comment but is physically unable to enqueue work, issuing no ``MergeClear`` and
-gaining no merge authority.
+gaining no merge authority. Closing an issue and commenting on it are both visible
+to whoever filed it, so the reach is ``COLLEAGUE``, not merely ``EGRESS``.
 """
 
 from typing import TYPE_CHECKING
@@ -45,6 +43,6 @@ MINI_LOOP = MiniLoop(
     name="issue_disposition",
     default_cadence_seconds=300,  # 5m tick rate — the scanner self-bounds via max_closes_per_tick
     build_jobs=_build_jobs,
-    declared_reach=frozenset({LoopReach.INGRESS, LoopReach.EGRESS}),
+    declared_reach=frozenset({LoopReach.INGRESS, LoopReach.COLLEAGUE}),
     determinism=LoopDeterminism.DETERMINISTIC,
 )

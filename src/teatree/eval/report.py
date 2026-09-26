@@ -6,10 +6,13 @@ import re
 from collections.abc import Callable
 from html import escape
 
+from teatree.eval.matcher_json import MatcherJson, matcher_json_dict
 from teatree.eval.matcher_vacuity import is_positive_anchor
 from teatree.eval.matchers import (
     ArgPattern,
     CallPattern,
+    assert_assistant_text_contains,
+    assert_assistant_text_matching,
     assert_final_state_contains,
     assert_final_state_matching,
     assert_no_tool_call_before,
@@ -21,14 +24,22 @@ from teatree.eval.matchers import (
 )
 from teatree.eval.models import (
     CAP_TERMINAL_REASONS,
+    COST_SOURCE_DERIVED,
+    COST_SOURCE_REPORTED,
+    COST_SOURCE_UNKNOWN,
     AnyOf,
+    AssistantTextMatcher,
     EvalRun,
     EvalSpec,
     ExpectItem,
     FinalStateMatcher,
     Matcher,
+    PlanBeforeToolMatcher,
+    SuccessfulToolCallMatcher,
     canonicalize_tool,
 )
+from teatree.eval.successful_call_matcher import assert_successful_tool_call_before
+from teatree.eval.trajectory_matchers import assert_visible_plan_before_first_tool
 
 
 @dataclasses.dataclass(frozen=True)
@@ -62,22 +73,19 @@ class ScenarioResult:
     @property
     def passed(self) -> bool:
         if self.skipped:
-            return True
+            return False
         if self.run.is_error:
             return False
         # A cap-truncated run never counts as a pass (#2192) unless single_action-exempt.
         if self.run.terminal_reason in CAP_TERMINAL_REASONS and not self._single_action_cap_exempt:
             return False
-        # A judge-only spec (a judge block, zero matchers) whose judge was never
-        # graded has NO gating evidence — every matcher vacuously passes and the
-        # judge verdict is absent, so it would read a permanent green. That is not
-        # a pass, it is an ungraded scenario; it must never satisfy the gate (the
-        # default lanes inject no grader, so this is the common state, not an edge).
+        # A judge-only spec has no deterministic evidence when the optional
+        # --judge lane was not enabled. Matcher-backed specs remain gradable.
         if not self.matcher_results and self.spec.judge is not None and self.judge is None:
             return False
         if not all(m.passed for m in self.matcher_results):
             return False
-        return self.judge is None or self.judge.skipped or self.judge.passed
+        return self.judge is None or (not self.judge.skipped and self.judge.passed)
 
     @property
     def verdict(self) -> str:
@@ -118,7 +126,7 @@ class ScenarioResult:
             return False
         if not any(is_positive_anchor(m.matcher) for m in self.matcher_results):
             return False
-        return self.judge is None or self.judge.skipped or self.judge.passed
+        return self.judge is None or (not self.judge.skipped and self.judge.passed)
 
     @property
     def _single_action_cap_exempt(self) -> bool:
@@ -172,15 +180,37 @@ def _dispatch(matcher: ExpectItem, run: EvalRun) -> None:
     if isinstance(matcher, AnyOf):
         _dispatch_any_of(matcher, run)
         return
+    if isinstance(matcher, SuccessfulToolCallMatcher):
+        assert_successful_tool_call_before(
+            run,
+            CallPattern(_canonicalize_tool(matcher.tool), matcher.arg_path, _as_regex(matcher.operator, matcher.value)),
+            _as_regex(matcher.result_operator, matcher.result_value),
+            CallPattern(
+                _canonicalize_tool(matcher.before_tool),
+                matcher.before_arg_path,
+                _as_regex(matcher.before_operator, matcher.before_value),
+            ),
+        )
+        return
     if isinstance(matcher, FinalStateMatcher):
         _dispatch_final_state(matcher, run)
         return
-    tool = _canonicalize_tool(matcher.tool)
-    if matcher.kind == "positive" and matcher.operator == "contains":
-        assert_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
+    if isinstance(matcher, AssistantTextMatcher | PlanBeforeToolMatcher):
+        if isinstance(matcher, AssistantTextMatcher):
+            _dispatch_assistant_text(matcher, run)
+        else:
+            assert_visible_plan_before_first_tool(
+                run,
+                governed_tools=matcher.governed_tools,
+                patterns=matcher.patterns,
+            )
         return
-    if matcher.kind == "positive" and matcher.operator == "~":
-        assert_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
+    tool = _canonicalize_tool(matcher.tool)
+    if matcher.kind == "positive" and matcher.operator in {"contains", "~"}:
+        if matcher.operator == "contains":
+            assert_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
+        else:
+            assert_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
         return
     if matcher.kind == "negative":
         _dispatch_negative(matcher, run, tool)
@@ -238,6 +268,17 @@ def _dispatch_final_state(matcher: FinalStateMatcher, run: EvalRun) -> None:
     raise NotImplementedError(msg)
 
 
+def _dispatch_assistant_text(matcher: AssistantTextMatcher, run: EvalRun) -> None:
+    if matcher.operator == "contains":
+        assert_assistant_text_contains(run, matcher.value)
+        return
+    if matcher.operator == "~":
+        assert_assistant_text_matching(run, matcher.value)
+        return
+    msg = f"unsupported assistant_text operator: {matcher.operator!r}"
+    raise NotImplementedError(msg)
+
+
 def _canonicalize_tool(name: str) -> str:
     return canonicalize_tool(name)
 
@@ -277,7 +318,9 @@ def render_text(results: list[ScenarioResult]) -> str:
                 lines.extend(f"    {body_line}" for body_line in matcher_result.message.splitlines())
             if result.judge is not None and not result.judge.skipped and not result.judge.passed:
                 lines.append(f"  - judge: {result.judge.rationale}")
-            if result.run.is_error and not any(not m.passed for m in result.matcher_results):
+            # Reported even when a matcher also failed: on an errored run the matcher
+            # failed BECAUSE the trajectory is empty, so the cause is the only fact worth reading.
+            if result.run.is_error:
                 lines.append(f"  - run errored: {result.run.terminal_reason}")
                 if result.run.raw_stderr.strip():
                     lines.append(f"    stderr: {result.run.raw_stderr.strip()[:500]}")
@@ -299,7 +342,17 @@ def render_json(results: list[ScenarioResult]) -> str:
                 "gate_assisted": r.gate_assisted,
                 "cap_truncated_matchers_satisfied": r.cap_truncated_matchers_satisfied,
                 "gate_events": [
-                    {"hook_event": e.hook_event_name, "outcome": e.outcome, "is_stop_block": e.is_stop_block}
+                    {
+                        "hook_event": e.hook_event_name,
+                        "outcome": e.outcome,
+                        "is_stop_block": e.is_stop_block,
+                        "sequence": e.sequence,
+                        "tool_name": e.tool_name,
+                        "tool_use_id": e.tool_use_id,
+                        "gate_id": e.gate_id,
+                        "reason": e.reason,
+                        "assistant_text": e.assistant_text,
+                    }
                     for e in r.run.gate_events
                 ],
                 "judge": (
@@ -309,7 +362,10 @@ def render_json(results: list[ScenarioResult]) -> str:
                 ),
                 "tool_calls": [{"name": c.name, "input": c.input, "turn": c.turn} for c in r.run.tool_calls],
                 "text_blocks": list(r.run.text_blocks),
-                "matchers": [_matcher_json_dict(_MatcherJson.of_result(m)) for m in r.matcher_results],
+                "matchers": [
+                    matcher_json_dict(MatcherJson.of_result(m.matcher, passed=m.passed, message=m.message))
+                    for m in r.matcher_results
+                ],
             }
             for r in results
         ],
@@ -391,81 +447,12 @@ def _html_scenario(result: ScenarioResult) -> str:
         body_parts.append(
             f'<p class="judge"><strong>judge ({judge_verdict}):</strong> {escape(result.judge.rationale)}</p>'
         )
-    if result.run.is_error and not failed_matchers:
+    if result.run.is_error:
         body_parts.append(f'<p class="judge"><strong>run errored:</strong> {reason}</p>')
         if result.run.raw_stderr.strip():
             body_parts.append(f"<pre>{escape(result.run.raw_stderr.strip()[:500])}</pre>")
     body = "\n".join(body_parts)
     return f'<details class="{verdict}">\n{head}\n{body}\n</details>'
-
-
-@dataclasses.dataclass(frozen=True)
-class _MatcherJson:
-    """One matcher serialized for the JSON report.
-
-    A single matcher fills ``tool``/``arg_path``/``operator``/``value``; an
-    ``any_of`` disjunction leaves them ``None`` and lists its positive
-    branches under ``alternatives`` instead.
-    """
-
-    kind: str
-    passed: bool
-    message: str
-    tool: str | None = None
-    arg_path: str | None = None
-    operator: str | None = None
-    value: str | None = None
-    alternatives: tuple["_MatcherJson", ...] = ()
-
-    @classmethod
-    def of_matcher(cls, matcher: Matcher, *, passed: bool = True, message: str = "") -> "_MatcherJson":
-        return cls(
-            kind=matcher.kind,
-            tool=matcher.tool,
-            arg_path=matcher.arg_path,
-            operator=matcher.operator,
-            value=matcher.value,
-            passed=passed,
-            message=message,
-        )
-
-    @classmethod
-    def of_result(cls, result: MatcherResult) -> "_MatcherJson":
-        matcher = result.matcher
-        if isinstance(matcher, AnyOf):
-            return cls(
-                kind="any_of",
-                passed=result.passed,
-                message=result.message,
-                alternatives=tuple(cls.of_matcher(alt) for alt in matcher.alternatives),
-            )
-        if isinstance(matcher, FinalStateMatcher):
-            return cls(
-                kind="final_state",
-                operator=matcher.operator,
-                value=matcher.value,
-                passed=result.passed,
-                message=result.message,
-            )
-        return cls.of_matcher(matcher, passed=result.passed, message=result.message)
-
-
-def _matcher_json_dict(matcher: _MatcherJson) -> dict[str, str | bool | list[object]]:
-    """Serialize a :class:`_MatcherJson`, omitting unset (``None``) scalar keys.
-
-    A single matcher emits its ``tool``/``arg_path``/``operator``/``value``;
-    an ``any_of`` omits those and emits ``alternatives`` instead.
-    """
-    out: dict[str, str | bool | list[object]] = {"kind": matcher.kind}
-    for key in ("tool", "arg_path", "operator", "value"):
-        scalar = getattr(matcher, key)
-        if scalar is not None:
-            out[key] = scalar
-    if matcher.alternatives:
-        out["alternatives"] = [_matcher_json_dict(alt) for alt in matcher.alternatives]
-    out["passed"] = matcher.passed
-    out["message"] = matcher.message
-    return out
 
 
 def _summary(results: list[ScenarioResult]) -> str:
@@ -476,12 +463,39 @@ def _summary(results: list[ScenarioResult]) -> str:
     )
 
 
+def cost_cell(run: EvalRun) -> str:
+    """One run's cost as a table cell — the figure, or ``unknown`` when nothing measured it."""
+    return "unknown" if run.cost_source == COST_SOURCE_UNKNOWN else f"${run.cost_usd:.4f}"
+
+
 def _cost_summary(results: list[ScenarioResult]) -> str:
-    total_usd = sum(r.run.cost_usd for r in results)
-    metered_calls = sum(1 for r in results if r.run.cost_usd > 0)
-    if metered_calls == 0:
-        return "API cost: $0.00 (no metered calls)"
-    return f"API cost: ${total_usd:.4f} over {metered_calls} metered call(s)"
+    """The run's spend, or an explicit *unknown* — never a ``$0.00`` nobody measured.
+
+    ``$0.00 (no metered calls)`` is only ever emitted for runs whose zero was MEASURED
+    (a recorded-transcript replay, a skip, a transport that reported a real zero). A run
+    that executed and whose cost was never established — no transport figure, and none
+    derived from usage — renders *unknown*, because the two must be distinguishable to a
+    reader watching for spend.
+    """
+    counts = _summary_dict(results)
+    priced, unknown = int(counts["priced_runs"]), int(counts["cost_unknown_runs"])
+    if priced:
+        line = f"API cost: ${counts['total_cost_usd']:.4f} over {priced} priced run(s){_cost_basis(results)}"
+        return line if not unknown else f"{line}; {unknown} further run(s) unmeasurable (cost unknown)"
+    if unknown:
+        return (
+            f"API cost: unknown — {unknown} executed run(s) report no transport cost and were "
+            "not priced from token usage, so nothing was measured. This is NOT $0.00."
+        )
+    return "API cost: $0.00 (no metered calls)"
+
+
+def _cost_basis(results: list[ScenarioResult]) -> str:
+    """How the priced runs were priced, so a list-price derivation never reads as a bill."""
+    sources = {r.run.cost_source for r in results if not r.skipped and r.run.cost_usd > 0}
+    if sources == {COST_SOURCE_DERIVED}:
+        return " (derived from token usage at list price)"
+    return "" if sources == {COST_SOURCE_REPORTED} else " (transport-reported and usage-derived)"
 
 
 def _summary_dict(results: list[ScenarioResult]) -> dict[str, int | float]:
@@ -490,12 +504,16 @@ def _summary_dict(results: list[ScenarioResult]) -> dict[str, int | float]:
     passed = sum(1 for r in results if r.passed and not r.skipped)
     failed = total - passed - skipped
     total_cost_usd = sum(r.run.cost_usd for r in results)
-    metered_calls = sum(1 for r in results if r.run.cost_usd > 0)
+    priced_runs = sum(1 for r in results if r.run.cost_usd > 0)
+    cost_unknown_runs = sum(1 for r in results if not r.skipped and r.run.cost_source == COST_SOURCE_UNKNOWN)
     return {
         "total": total,
         "passed": passed,
         "failed": failed,
         "skipped": skipped,
         "total_cost_usd": total_cost_usd,
-        "metered_calls": metered_calls,
+        "priced_runs": priced_runs,
+        # Executed runs whose cost could not be established at all. A consumer summing
+        # `total_cost_usd` without reading this is summing over an unknown denominator.
+        "cost_unknown_runs": cost_unknown_runs,
     }

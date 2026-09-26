@@ -7,8 +7,8 @@ AMBIENT overlay instead makes the whole surface conditional on how many overlays
 happen to be registered, because ``get_overlay()`` raises ``Multiple overlays found``
 as soon as there is more than one and no explicit pin (souliane/teatree#3793).
 
-Both reads go through the same owning overlay, so a post can never be addressed to one
-forge with another's credential.
+Absent an explicit environment override, both reads go through the same owning overlay,
+so a post can never be addressed to one forge with another's credential.
 
 A read that FAILED is kept distinct from one that found nothing
 (:class:`~teatree.cli.review.guarded_read.ReadOutcome`): the two need different
@@ -16,17 +16,14 @@ remediation, and reporting the first as the second sends the operator to a re-lo
 that changes nothing (souliane/teatree#3794).
 """
 
-import logging
 import os
 from typing import TYPE_CHECKING
 
 from teatree.cli.review.guarded_read import ReadOutcome, guarded_read, read_or_refuse
-from teatree.utils.run import run_allowed_to_fail
+from teatree.config.credential_pass_key import PassKeySource
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
-
-logger = logging.getLogger(__name__)
 
 _CRED_READ = "the review API token from the overlay that owns the target repo"
 _URL_READ = "the review GitLab base URL from the overlay config"
@@ -37,55 +34,25 @@ _REVIEW_FORGE = "gitlab"
 
 
 def owning_overlay_name(repo: str) -> str:
-    """The overlay that owns *repo* — by enumerated repo identity, then by declared namespace.
+    """The overlay that owns *repo* on the review forge — ``""`` when it is not exactly one.
 
-    :func:`~teatree.core.overlay_loader.infer_overlay_for_url` matches an
-    ENUMERATION (each overlay's ``get_workspace_repos()``), so a repo created in a
-    group the overlay owns but never added to its table resolves to nothing — and
-    on a multi-overlay install nothing means "ask the ambient overlay", which has
-    no claim on the target. The declared forge namespace
-    (:func:`~teatree.core.overlays.overlay_namespace.namespace_owner`) answers for
-    the group.
+    The review-surface binding of
+    :func:`~teatree.core.overlays.repo_ownership.owning_overlay_for_repo`, which the
+    publication privacy gate also consults from below the CLI layer. ``t3 review``
+    posts only to GitLab, so the forge is pinned here rather than taken per call.
 
-    That fallback is applied HERE rather than inside ``infer_overlay_for_url``
-    because ``owned_repos`` "gates ONLY the unknown-repo approval decision, never
-    merge-without-review" (:class:`~teatree.core.overlay.OverlayConfig`) and that
-    resolver also feeds merge authorization — so the namespace declaration reaches
-    the review surface it was added for and nothing else.
-
-    ``""`` when no overlay owns *repo*, when more than one does, or when any
-    registered overlay's declared scope will not read.
+    The namespace fallback is applied in that resolver rather than inside
+    ``infer_overlay_for_url`` because ``owned_repos`` "gates ONLY the unknown-repo
+    approval decision, never merge-without-review"
+    (:class:`~teatree.core.overlay.OverlayConfig`) and that resolver also feeds merge
+    authorization — so the namespace declaration reaches the surfaces it was added for
+    and nothing else.
     """
-    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.core.overlays.overlay_namespace import (  # noqa: PLC0415 — deferred: keeps CLI startup light
-        namespace_owner,
+    from teatree.core.overlays.repo_ownership import (  # noqa: PLC0415 — deferred: keeps CLI startup light
+        owning_overlay_for_repo,
     )
 
-    if (scopes := _declared_scopes()) is None:
-        return ""
-    slug = repo.strip()
-    return infer_overlay_for_url(slug) or namespace_owner(slug, scopes, forge=_REVIEW_FORGE)
-
-
-def _declared_scopes() -> list[tuple[str, dict[str, list[str]]]] | None:
-    """``(overlay, owned_repos)`` for every registered overlay, or ``None`` when one will not read.
-
-    An unreadable scope is not an absent one: dropping it can collapse a safe TIE
-    into a single owner, and that owner then supplies the token and base URL the
-    post is addressed with. So the whole attribution declines — the target reads
-    as unowned — rather than the failed read silently picking a winner. Still never
-    fatal: the failure is warned, not raised.
-    """
-    from teatree.core.overlay_loader import OverlayConfigResolver  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-    scopes: list[tuple[str, dict[str, list[str]]]] = []
-    for name in OverlayConfigResolver.all_names():
-        try:
-            scopes.append((name, OverlayConfigResolver.owned_repos(name)))
-        except Exception:
-            logger.warning("Overlay %r owned_repos read failed while attributing a review target", name, exc_info=True)
-            return None
-    return scopes
+    return owning_overlay_for_repo(repo, forge=_REVIEW_FORGE)
 
 
 def _owning_overlay(repo: str) -> "OverlayBase":
@@ -102,46 +69,40 @@ def _owning_overlay(repo: str) -> "OverlayBase":
     return get_overlay(owning_overlay_name(repo) or None)
 
 
-def _glab_login_token() -> str:
-    """The token of the local ``glab`` login, or ``""`` when there is none.
-
-    An absent ``glab`` binary is "no local login", not a read failure — this is the
-    last-resort source, consulted only after the owning overlay and the explicit env
-    value have both come up empty.
-    """
-    try:
-        result = run_allowed_to_fail(["glab", "auth", "status", "-t"], expected_codes=None)
-    except FileNotFoundError:
-        return ""
-    for line in result.stderr.splitlines():
-        if "Token" in line and ":" in line:
-            token_value = line.rsplit(":", 1)[-1].strip()
-            if token_value:
-                return token_value
-    return ""
-
-
 def read_token(repo: str) -> ReadOutcome[str]:
     """The API token for the forge that owns *repo*, with a failed read kept distinct.
 
-    Resolution order: the owning overlay's configured token, then an explicitly-set
-    ``$GITLAB_TOKEN``, then the local ``glab`` login. The overlay wins because it is the
-    only source keyed to the target — one process-wide env value cannot be the right
-    credential for two overlays' forges.
+    Resolution order: an explicitly-set ``$GITLAB_TOKEN``, then the owning overlay's
+    configured token. A logged-in ``glab`` account is never inherited: it is ambient
+    process state, not an explicit authorization for this review write.
+
+    The overlay read is ``get_gitlab_token()``, the OWNER credential — deliberately NOT
+    ``get_gitlab_token_for_remote()``. That override names the AUTHORING credential, and
+    the forge bars an MR's author from approving it, so routing this surface through it
+    would record every review and approval under the bot: the one identity that must
+    never carry an approval. Reviewing and approving stay the owner's account, acted as
+    by the agent. Pinned by
+    ``tests/teatree_cli/review/test_forge_target.py::TestApprovalUsesTheOwnerNotTheAuthoringCredential``.
     """
+    if explicit := os.environ.get("GITLAB_TOKEN", ""):
+        return ReadOutcome(value=explicit, failed=False)
 
     def _overlay_token() -> str:
-        return _owning_overlay(repo).config.get_gitlab_token()
+        config = _owning_overlay(repo).config
+        token = config.get_gitlab_token()
+        if token:
+            return token
+        resolution = config.resolve_pass_key("gitlab_token")
+        if resolution.source is PassKeySource.UNREADABLE:
+            msg = f"{resolution.setting} resolved from {resolution.source.value}; refusing ambient authentication"
+            raise RuntimeError(msg)
+        return ""
 
-    outcome = guarded_read(_CRED_READ, _overlay_token, neutral="")
-    if outcome.value:
-        return outcome
-    fallback = os.environ.get("GITLAB_TOKEN", "") or _glab_login_token()
-    return ReadOutcome(value=fallback, failed=False) if fallback else outcome
+    return guarded_read(_CRED_READ, _overlay_token, neutral="")
 
 
 def resolve_base_url(repo: str) -> str:
-    """The GitLab API base URL a post to *repo* is addressed to — overlay first, then env.
+    """The GitLab API base URL a post to *repo* is addressed to — explicit env, then overlay.
 
     REFUSES rather than guessing (#3509): a silent fallback could redirect an outbound
     review post to a DIFFERENT GitLab instance. An explicitly-set ``$GITLAB_URL`` is
@@ -153,7 +114,6 @@ def resolve_base_url(repo: str) -> str:
     def _overlay_url() -> str:
         return _owning_overlay(repo).config.gitlab_url
 
-    env_url = os.environ.get("GITLAB_URL", "").strip()
-    if not env_url:
-        return read_or_refuse(_URL_READ, _overlay_url)
-    return guarded_read(_URL_READ, _overlay_url, neutral=env_url).value or env_url
+    if env_url := os.environ.get("GITLAB_URL", "").strip():
+        return env_url
+    return read_or_refuse(_URL_READ, _overlay_url)

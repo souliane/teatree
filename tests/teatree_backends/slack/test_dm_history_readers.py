@@ -9,6 +9,7 @@ import logging
 
 import pytest
 
+from teatree.backends.slack.bot_errors import SlackReadRefusedError
 from teatree.backends.slack.dm_history import (
     _MAX_DM_PAGES,
     _MAX_THREAD_PAGES,
@@ -88,8 +89,16 @@ class TestReadThreadReplies:
         assert read_thread_replies(get=get, channel="D1", thread_ts="") == []
         assert calls == []  # never hit Slack on an empty key
 
-    def test_non_ok_response_returns_empty(self) -> None:
-        assert read_thread_replies(get=lambda *_: {"ok": False}, channel="D1", thread_ts="root.ts") == []
+    def test_a_refused_read_raises_the_slack_error_never_an_empty_thread(self) -> None:
+        refusal: RawAPIDict = {"ok": False, "error": "thread_not_found"}
+
+        with pytest.raises(SlackReadRefusedError, match="thread_not_found") as excinfo:
+            read_thread_replies(get=lambda *_, **__: refusal, channel="D1", thread_ts="root.ts")
+
+        assert excinfo.value.error_code == "thread_not_found"
+
+    def test_an_ok_empty_thread_returns_empty(self) -> None:
+        assert read_thread_replies(get=lambda *_, **__: _ok([]), channel="D1", thread_ts="root.ts") == []
 
     def test_follows_the_cursor_across_pages(self) -> None:
         pages = {
@@ -117,7 +126,7 @@ class TestReadThreadReplies:
         assert len(replies) == _MAX_THREAD_PAGES
         assert "hit the" in caplog.text
 
-    def test_a_refused_page_mid_walk_returns_no_replies(self) -> None:
+    def test_a_refused_page_mid_walk_raises_rather_than_returning_half_a_thread(self) -> None:
         """Half a thread reads as "my answer is not there", and the caller re-posts it."""
         pages: dict[str, RawAPIDict] = {
             "": _page([{"ts": "root.ts"}, {"ts": "r1"}], next_cursor="c1"),
@@ -127,7 +136,69 @@ class TestReadThreadReplies:
         def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
             return pages[str(params.get("cursor", ""))]
 
-        assert read_thread_replies(get=get, channel="D1", thread_ts="root.ts") == []
+        with pytest.raises(SlackReadRefusedError, match="ratelimited"):
+            read_thread_replies(get=get, channel="D1", thread_ts="root.ts")
+
+
+class _TokenedThread:
+    """A ``conversations.replies`` stub answering per token, recording which tokens asked."""
+
+    def __init__(self, by_token: dict[str, RawAPIDict]) -> None:
+        self._by_token = by_token
+        self.tokens: list[str] = []
+
+    def __call__(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
+        assert method == "conversations.replies"
+        assert params["ts"] == "root.ts"
+        self.tokens.append(token)
+        return self._by_token[token]
+
+
+class TestReadThreadRepliesUserTokenFallback:
+    @pytest.mark.parametrize("bot_error", ["not_in_channel", "channel_not_found"])
+    def test_a_thread_the_bot_cannot_see_is_read_through_the_user_token(self, bot_error: str) -> None:
+        get = _TokenedThread(
+            {
+                "": {"ok": False, "error": bot_error},
+                "xoxp-user": _ok([{"ts": "root.ts"}, {"ts": "r1"}]),
+            }
+        )
+
+        replies = read_thread_replies(get=get, channel="C1", thread_ts="root.ts", user_token="xoxp-user")
+
+        assert [r["ts"] for r in replies] == ["root.ts", "r1"]
+        assert all(r["channel"] == "C1" for r in replies)
+        assert get.tokens == ["", "xoxp-user"]
+
+    def test_both_tokens_refused_raises_the_user_token_error(self) -> None:
+        get = _TokenedThread(
+            {
+                "": {"ok": False, "error": "not_in_channel"},
+                "xoxp-user": {"ok": False, "error": "channel_not_found"},
+            }
+        )
+
+        with pytest.raises(SlackReadRefusedError, match="channel_not_found") as excinfo:
+            read_thread_replies(get=get, channel="C1", thread_ts="root.ts", user_token="xoxp-user")
+
+        assert isinstance(excinfo.value.__context__, SlackReadRefusedError)
+        assert excinfo.value.__context__.error_code == "not_in_channel"
+
+    def test_a_refusal_the_user_token_cannot_cure_is_not_retried(self) -> None:
+        get = _TokenedThread({"": {"ok": False, "error": "ratelimited"}})
+
+        with pytest.raises(SlackReadRefusedError, match="ratelimited"):
+            read_thread_replies(get=get, channel="C1", thread_ts="root.ts", user_token="xoxp-user")
+
+        assert get.tokens == [""]
+
+    def test_without_a_user_token_the_bot_refusal_is_raised(self) -> None:
+        get = _TokenedThread({"": {"ok": False, "error": "not_in_channel"}})
+
+        with pytest.raises(SlackReadRefusedError, match="not_in_channel"):
+            read_thread_replies(get=get, channel="C1", thread_ts="root.ts")
+
+        assert get.tokens == [""]
 
 
 class TestReadUserDmsWindow:
@@ -147,6 +218,21 @@ class TestReadUserDmsWindow:
         messages = read_user_dms(get=get, channel="D1", since="2.0", identity=None)
 
         assert [m["ts"] for m in messages] == ["3.0", "2.9", "2.8"]
+
+    def test_the_window_includes_its_own_anchor(self) -> None:
+        # `oldest` is exclusive by default, and the thread fan-out only reaches roots
+        # this history returns — so an exclusive window drops a reply landing under
+        # the very message the cursor was taken from.
+        seen: list[dict[str, str | int]] = []
+
+        def get(_method: str, params: dict[str, str | int]) -> RawAPIDict:
+            seen.append(params)
+            return _page([{"ts": "2.0"}])
+
+        messages = read_user_dms(get=get, channel="D1", since="2.0", identity=None)
+
+        assert seen[0]["inclusive"] == "true"
+        assert [m["ts"] for m in messages] == ["2.0"]
 
     def test_an_unbounded_poll_never_walks_back_through_the_whole_history(self) -> None:
         cursors: list[str] = []

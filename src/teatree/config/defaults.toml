@@ -1,16 +1,17 @@
 # teatree shipped defaults — every value a fresh install starts from.
 #
-# HAND-EDITABLE. Edit a value here and the box serves it. `[teatree]` is the last tier of
-# every settings resolution chain (env -> DB(overlay) -> DB(global) -> overlay code
-# default -> THIS FILE); the seed tables below are what `t3 setup` creates the loop, mode
-# and schedule rows from. A `[teatree]` value that diverges from its in-code dataclass
-# default needs a matching entry in `defaults_approvals.toml` — that entry is the reviewed
-# decision, and CI refuses an unrecorded divergence.
+# `[teatree]` IS GENERATED. Every value in it is rendered from the declaration that states
+# it — the `UserSettings` dataclass, `COLD_SETTINGS`, `COLD_HOOK_SETTINGS` — so a hand edit
+# here is rendered away by the next `scripts/hooks/generate_defaults_toml.py --write`, and
+# a shipped default is changed at its declaration. Nothing RESOLVES from this file: the
+# chain ends at the declaration it renders (env -> DB(overlay) -> DB(global) -> overlay
+# code default -> declared default), so a value here can only agree with the declaration
+# or be a bug. The seed tables below are what `t3 setup` creates the loop, mode and
+# schedule rows from, and those ARE hand-maintained.
 #
-# `manage.py snapshot_settings_defaults` proposes a snapshot of the live box's global
-# settings onto the `[teatree]` table; it renders the diff, asks the owner through the
-# deferred-question queue, and writes only once that question is answered `approve`. It
-# rewrites `[teatree]` alone — every seed table below is hand-maintained.
+# `manage.py snapshot_settings_defaults` REPORTS which of the live box's global settings
+# differ from the shipped ones, and writes nothing: adopting one means editing the
+# declaration that states it, reviewed as the code change it is.
 #
 # `[teatree]` — the `config_setting export`/`import` schema, with `speak`/`mr_reminder` as
 # sub-tables. EXACTLY the Category.DEFAULT keys of
@@ -31,21 +32,25 @@
 # overwritten by the next render.
 #
 # `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
-# optional `daily_at` for a once-per-day loop, `colleague_facing` (the away-gate skips
-# it), `default_enabled` (only the local/read-only operational core ships ON),
+# optional `daily_at` for a once-per-day loop, `colleague_facing` (a REPORTING axis —
+# a posture holds colleague work off through `egress`, per action, not by masking a loop),
+# `default_enabled` (declarative: it records the local/read-only operational core; no live
+# seed writes it, because a loop's shipped posture is a mode opinion and `Loop.enabled` is
+# the manual override),
 # `description`, and `prompt_body` for the one prompt-backed loop (every other loop runs
 # its own `src/teatree/loops/<name>/loop.py`). Table ORDER is the seed order, pinned
 # against the frozen `0001_initial` copy.
 #
-# `[modes.<name>]` — a curated mode: its availability posture plus an `entries` table
-# masking each loop on/off. A loop ABSENT from `entries` INHERITS its own enabled flag,
-# which is how a destructive-capable loop is never silently re-enabled by a mode switch.
-# That inheritance is why a mode masking DELIVERY off (`ship` / `tickets`) must also name
-# the INTAKE loop (`issue_implementer`): left absent it keeps claiming issues the masked
-# delivery lane cannot merge. `teatree.loops.mode_shape` fails the audit on that shape.
-# The mirror rule is the LOAD-BEARING tier (`teatree.loops.mode_shape.LOAD_BEARING_LOOPS`):
-# no mask may quiet it (the low-token mode excepted), and none may keep `db_backup` writing
-# once every reclaim loop is quiet — that shape can only ever consume disk.
+# `[modes.<name>]` — a curated mode: its egress posture plus an `entries` table naming
+# EVERY live loop on or off. The table is TOTAL: there is no absent tier and nothing to
+# inherit, so what a mode does is readable from the mode alone, and a loop added later is
+# written `false` into every mode — quiet at birth, admitted only by a deliberate edit.
+# ONE shape invariant survives (`teatree.loops.mode_shape.backup_without_reclaim`): no
+# mask may keep `db_backup` writing once every reclaim loop is quiet, the shape that can
+# only ever consume disk and the one reached exactly when an operator grabs a halt posture
+# mid-incident. The postures are a chain — `present` >= `afk` >= `maintenance` >= `off` —
+# so stepping down one can only ever remove work; `token-outage` sits outside it, defined
+# by a property rather than a position: it admits only the loops that call no model.
 #
 # `[schedules.<name>]` — a weekly calendar of `[[...slots]]`, each a wall-clock start in
 # the schedule's `timezone` (`days` are Python weekday numbers, Monday = 0).
@@ -70,13 +75,19 @@ excluded_skills = [] # list — skills never offered to an agent, whatever the l
 agent_harness = "claude_sdk" # str — which agent CLI teatree drives (claude, codex, ...)
 agent_max_turns = 250 # int — turn ceiling for one agent run
 autonomy = "full" # str, one of: babysit | notify | full — how far the factory may act without asking the operator
+backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
+dogfood_smoke_skill = "dogfood-smoke" # str — skill the dogfood smoke loop runs
 enforce_regulated_path = false # bool — route work touching a regulated path through the allowlisted models only
 envelope_stop_gate_refusals = 2 # int — refuse a turn that ends without the required result envelope
+eval_local_skill = "eval" # str — skill the local eval loop runs
+harness_skill_exclusions = [] # list — box-wide Claude Code or Codex skills removed from that harness until explicitly installed again
 mode = "auto" # str, one of: interactive | auto — publishing posture: auto pushes without waiting, interactive asks first
 openai_compatible_lane = "factory" # str — which work lane routes to the OpenAI-compatible endpoint
+openai_compatible_sends_prompt_cache_key = false # bool — send prompt_cache_key; only for an endpoint that accepts it
 pydantic_ai_max_tokens = 64000 # int — token ceiling for one pydantic-ai request
 pydantic_ai_request_limit = 40 # int — requests one pydantic-ai run may make
 regulated_path_model_allowlist = [] # list — models allowed to touch a regulated path
+scanning_news_skill = "scanning-news" # str — skill the news scanning loop runs
 subagent_spawn_ceiling = 20 # int — sub-agents one dispatch may spawn
 ticket_budget_max_cost_usd = 0.0 # float — dollars one ticket may cost before it is halted
 watchdog_max_cost_usd = 0.0 # float — dollars a watched run may spend before the watchdog stops it
@@ -85,71 +96,107 @@ watchdog_max_turns = 0 # int — turns a watched run may take before the watchdo
 
 [teatree.Loops."Cadence & throughput"]
 loop_cadence_seconds = 720 # int — default seconds between ticks of a loop that declares none
-loop_runner_enabled = true # bool — run the worker that drives the loop ticks
 merge_wip = 1 # int — how many merges may be in flight at once
 wip = "full" # str, one of: slow | medium | full | boost — how much work may be in progress at once
 worker_quiescing = false # bool — deploy drain gate — cleared on a fresh init; freeze the factory with `t3 loop preset use off --hold`
 write_wip = 3 # int — how many writing units may be in flight at once
 
-[teatree.Loops.Scanners]
-ask_before_backlog_sweep_closes = true # bool — ask the operator before a backlog sweep closes an issue
-ask_before_creating_news_tickets = true # bool — ask the operator before the news scanner files a ticket
-auto_update_reinstall = false # bool — reinstall the CLI after an update instead of only pulling
-auto_update_require_green_main = true # bool — only self-update onto a main whose CI is green
-backlog_sweep_cadence_hours = 24 # int — hours between backlog sweeps
-backlog_sweep_disabled = false # bool — stop scheduling backlog sweeps
-backlog_sweep_skill = "sweeping-tickets" # str — skill the backlog sweep loop runs
-dogfood_smoke_cadence_hours = 24 # int — hours between dogfood smoke runs
-dogfood_smoke_disabled = false # bool — stop scheduling dogfood smoke runs
-dogfood_smoke_overlay = "" # str — overlay the dogfood smoke run exercises
-dogfood_smoke_skill = "dogfood-smoke" # str — skill the dogfood smoke loop runs
-eval_local_cadence_hours = 168 # int — hours between local eval runs
-eval_local_disabled = false # bool — stop scheduling local eval runs
-eval_local_skill = "eval" # str — skill the local eval loop runs
-scanning_news_cadence_hours = 24 # int — hours between news scans
-scanning_news_disabled = false # bool — stop scheduling news scans
-scanning_news_skill = "scanning-news" # str — skill the news scanning loop runs
+[teatree.Loops."Fan-out & admission"]
+scanner_overlay_scope = [] # list — overlays the full-fleet scanners sweep; empty sweeps every registered overlay
 schema_readiness_gate_enabled = true # bool — refuse work when the database schema is not migrated
-self_update_cadence_hours = 1 # int — hours between self-update checks
-self_update_disabled = false # bool — stop self-updating
 
 [teatree.Loops."Kill switches & credentials"]
 approved_recipe_sha = "" # str — commit of the provisioning recipe the operator reviewed and approved
-auto_disposition_enabled = false # bool — let the loop close or re-label issues it has decided about
-auto_disposition_max_closes_per_tick = 5 # int — ceiling on issues auto-disposition may close in one tick
 billing_cycle_anchor_day = 0 # int — day of the month the subscription's usage window resets
 boost_concurrency = 0 # int — extra concurrent units allowed while the box is in boost
 ci_eval_heal_autofix_enabled = false # bool — let CI propose a fix for a red eval scenario on its own
 contribute_plugin_dir = false # bool — directory holding the plugin a contribute run writes to
-db_backup_cadence_hours = 24 # int — hours between database backups
-db_backup_disabled = false # bool — stop scheduling database backups
 db_backup_retention_days = 7 # int — days a database backup is kept before it is pruned
-directive_intake_per_tick = 25 # int — how many owner directives the directive loop intakes per tick
 directive_loop_enabled = true # bool — run the directive loop that turns owner directives into config
-directive_verify_days = 7 # int — days a ratified directive is watched before it is considered settled
-dream_propose_evals = false # bool — let the dream loop propose new eval scenarios
 factory_score_enabled = false # bool — compute and record the factory health score each tick
 fleet_claim_enabled = false # bool — let this box claim work from the shared fleet queue
-gitlab_approval_scanner_enabled = false # bool — scan GitLab for approvals that should advance a ticket
 hook_fetch_titles = true # bool — let hooks fetch issue titles, at the cost of a network call per prompt
-issue_implementer_enabled = true # bool — let the loop claim and implement labelled issues
 issue_implementer_label = "" # str — label an issue must carry for the implementer to claim it
 issue_implementer_max_concurrent = 3 # int — fallback in-flight ceiling when the resource loop has no adaptive reading
-issue_intake_pass_budget_seconds = 45.0 # float — seconds the intake scanner walks candidates before recording a resume point
-limit_autorecovery_enabled = true # bool — resume automatically once a usage limit window reopens
-mr_triage_enabled = false # bool — run the merge-request triage ladder, which surfaces verdicts and never acts
-mr_triage_max_mrs_per_tick = 20 # int — merge requests the triage ladder may assess in one tick
 orchestrate_claim_enabled = false # bool — let the orchestrator claim work rather than only routing it
 outer_loop_enabled = false # bool — run the outer loop that measures and improves the factory itself
+review_nag_enabled = false # bool — chase a review request that has gone unanswered
+sdk_monthly_credit_usd = 200.0 # float — monthly SDK credit the cost tracker measures spend against
+trusted_issue_authors = [] # list — issue authors whose issues may be claimed without extra triage
+umbrella_issue_labels = ["epic", "umbrella", "tracking"] # list — labels marking an issue as an umbrella/epic parent intake never claims
+
+[teatree.Loops.arch_review]
+architectural_review_after_merge_count = 25 # int — merges that must land before another architectural review is due
+architectural_review_cadence_hours = 168 # int — hours between architectural review runs
+
+[teatree.Loops.backlog_sweep]
+ask_before_backlog_sweep_closes = true # bool — ask the operator before a backlog sweep closes an issue
+
+[teatree.Loops.directive_loop]
+directive_intake_per_tick = 25 # int — how many owner directives the directive loop intakes per tick
+directive_verify_days = 7 # int — days a ratified directive is watched before it is considered settled
+
+[teatree.Loops.dogfood]
+dogfood_smoke_overlay = "" # str — overlay the dogfood smoke run exercises
+
+[teatree.Loops.dream]
+dream_automation_asks = false # bool — let the dream pass promote a recurring manual ask to a fix
+dream_compliance_escalate = false # bool — let the dream pass file enforcement tickets for recurrences
+dream_compliance_measure = true # bool — let the dream pass persist a compliance snapshot
+dream_cross_link = true # bool — let the dream pass cross-link related memories
+dream_decay = true # bool — let the dream pass decay and archive stale memories
+dream_derive_evals = false # bool — let the dream pass synthesize full eval scenarios with a model
+dream_memory_promote = true # bool — let the dream pass promote a core-gap memory to a fix
+dream_merge = true # bool — let the dream pass merge near-duplicate memories
+dream_propose_evals = true # bool — let the dream pass propose new eval scenarios
+dream_reindex = true # bool — let the dream pass regenerate MEMORY.md
+dream_validate_live = false # bool — let eval promotion run the metered live validator
+
+[teatree.Loops.followup]
+review_resume_reply_enabled = false # bool — reply in-thread that a paused review request is ready again
+
+[teatree.Loops.housekeeping]
+auto_update_reinstall = false # bool — reinstall the CLI after an update instead of only pulling
+auto_update_require_green_main = true # bool — only self-update onto a main whose CI is green
+pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clone
+pull_main_clone_disabled = false # bool — stop pulling the main clones on a cadence
+self_update_disabled = false # bool — stop self-updating
+
+[teatree.Loops.issue_disposition]
+auto_disposition_enabled = false # bool — let the loop close or re-label issues it has decided about
+
+[teatree.Loops.issue_implementer]
+issue_intake_pass_budget_seconds = 45.0 # float — seconds the intake scanner walks candidates before recording a resume point
+
+[teatree.Loops.news]
+ask_before_creating_news_tickets = true # bool — ask the operator before the news scanner files a ticket
+scanning_news_cadence_hours = 24 # int — hours between news scans
+
+[teatree.Loops.outer_loop]
 outer_loop_max_per_week = 1 # int — outer-loop runs allowed per week
 outer_loop_measure_days = 7 # int — days of history the outer loop measures over
 outer_loop_stop_after_consecutive_failures = 3 # int — consecutive failures that stop the outer loop
-sdk_monthly_credit_usd = 200.0 # float — monthly SDK credit the cost tracker measures spend against
-triage_assessor_cadence_hours = 24 # int — hours between triage assessor runs
-triage_assessor_enabled = true # bool — run the triage assessor over untriaged issues
-triage_assessor_max_issues_per_tick = 10 # int — issues the triage assessor may assess in one tick
-trusted_issue_authors = [] # list — issue authors whose issues may be claimed without extra triage
-umbrella_issue_labels = ["epic", "umbrella", "tracking"] # list — labels marking an issue as an umbrella/epic parent intake never claims
+
+[teatree.Loops.resource_pressure]
+intake_ram_per_agent_gb = 6.2 # float — RAM one admitted ticket is sized at when deriving intake concurrency
+intake_ram_reserve_gb = 4.0 # float — RAM held back from intake sizing so a burst is absorbed instead of OOMing
+ram_crit_avail_gb = 1.5 # float — available RAM below this many GB is critical
+ram_warn_avail_gb = 3.0 # float — available RAM below this many GB warns
+
+[teatree.Loops.review]
+admit_colleague_prs_to_board = true # bool — put pull requests opened by colleagues onto the review board
+
+[teatree.Loops.ship]
+gitlab_approval_scanner_enabled = false # bool — scan GitLab for approvals that should advance a ticket
+mr_conflict_scan_enabled = false # bool — scan open merge requests for conflicts, at the cost of a forge read each
+mr_triage_enabled = false # bool — run the merge-request triage ladder, which surfaces verdicts and never acts
+
+[teatree.Loops.snapshot_warmer]
+snapshot_warmer_max_age_days = 1 # int — days a warmed snapshot stays usable
+
+[teatree.Loops.tickets]
+task_sweep_disabled = false # bool — stop sweeping abandoned tasks back into the queue
+task_sweep_recheck_interval_hours = 1 # int — hours between rechecks of a swept task
 
 [teatree.Communication."Posting on your behalf"]
 admin_autologin_enabled = true # bool — log the loopback operator into Django admin without a password prompt
@@ -158,8 +205,9 @@ claude_chrome = false # bool — drive Chrome through the Claude browser integra
 max_open_prs_per_repo_per_ticket = 1 # int — open pull requests one ticket may hold in one repo
 notify_on_post_on_behalf = true # bool — DM the operator a receipt after every post made under their identity
 notify_user_via_bot = true # bool — deliver notifications through the overlay bot rather than silently
+notion_write_allowed_roots = [] # list — Notion ids the integration token may write under; with none, every write is refused
+notion_write_denied_roots = [] # list — Notion ids never written under, even below an allowed root
 on_behalf_auto_actions = ["post_e2e_evidence"] # list — actions the agent may take under the operator's identity unattended
-on_behalf_post_mode = "draft_or_ask" # str, one of: draft_or_ask | ask | immediate — whether a colleague-visible post drafts, asks, or publishes immediately
 require_human_approval_to_answer = true # bool — require the operator to approve an answer before it is posted
 require_human_approval_to_merge = true # bool — require a recorded human approver before a merge
 review_request_post_disabled = false # bool — stop posting review requests
@@ -173,14 +221,9 @@ statusline_chain = [] # list — which statusline segments render, in order
 statusline_engaged_render = false # bool — render the statusline only while the session is engaged
 
 [teatree.Gates.Quality."Architectural review"]
-architectural_review_after_merge_count = 25 # int — merges that must land before another architectural review is due
-architectural_review_cadence_hours = 168 # int — hours between architectural review runs
-architectural_review_disabled = false # bool — stop scheduling architectural reviews
-architectural_review_retry_backoff_hours = 12 # int — hours to wait before retrying a failed architectural review
 architectural_review_skill = "ac-reviewing-codebase" # str — skill the architectural review loop runs
 
 [teatree.Gates.Quality.Review]
-admit_colleague_prs_to_board = true # bool — put pull requests opened by colleagues onto the review board
 independent_reviewer_identities = [] # list — extra identities trusted to record an independent review, beside the operator's own handles
 pr_review_backend = "auto" # str, one of: auto | claude | codex — which reviewer runs the self-authored-PR cold review; auto resolves per tick
 require_anti_vacuity_attestation = false # bool — require proof a regression test was observed red before its fix
@@ -197,7 +240,6 @@ require_debt_delta = false # bool — require a change to state whether it added
 require_executed_repro = false # bool — require an executed reproduction before a bug fix is accepted
 require_merge_evidence = false # bool — require merge evidence to be recorded before the merge lands
 require_merge_quality_verdict = false # bool — require a quality verdict on the change before it merges
-require_plan_adequacy = false # bool — require the plan to be judged adequate before coding starts
 
 [teatree.Gates.Quality."Critic & send proxy"]
 bulk_close_threshold = 5 # int — how many closes in one run count as a bulk action needing approval
@@ -207,8 +249,6 @@ send_proxy_mode = "warn" # str, one of: warn | enforce — whether outbound mess
 
 [teatree.Gates.Quality."Definition of done"]
 e2e_confidence_threshold = 90 # int — confidence an E2E verdict must reach before it counts as evidence
-require_rubric_verification = false # bool — require the rubric to be verified rather than asserted
-require_spec_coverage = false # bool — require every spec deliverable to carry its own evidence
 
 [teatree.Gates.Pre-publish]
 attachment_gate_enabled = true # bool — refuse a post whose attachment was never verified to exist
@@ -221,26 +261,15 @@ dashboard_logo = "dash/logo.jpg" # str — static path of the logo shown in the 
 e2e_mandatory_gate_enabled = true # bool — require posted E2E evidence before a display-impacting change ships
 gate_relaxation_gate_enabled = true # bool — refuse a change that weakens a safety gate without approval
 incremental_push_gate = true # bool — scope the push gate to the diff instead of running it whole-tree
-mr_conflict_scan_enabled = false # bool — scan open merge requests for conflicts, at the cost of a forge read each
-mr_state_questions_max_per_tick = 2 # int — merge-request state questions that may be raised in one tick
 mr_title_regex = "^(feat|fix|improvement|config|techdebt|chore|docs|refactor|test|perf|build|ci)(\\(.+\\))?!?: .+" # str — regex a pull request title must match
 orchestrator_bash_gate_enabled = true # bool — refuse heavy shell commands run directly by the orchestrator
-pull_main_clone_cadence_hours = 1 # int — hours between pulls of each main clone
-pull_main_clone_disabled = false # bool — stop pulling the main clones on a cadence
 require_work_group_batch = false # bool — refuse to broadcast one work-group member while a sibling is not review-ready
 review_exempt_repos = [] # list — repos whose merge requests need no review request (a `!` prefix un-exempts one)
 review_exempt_repos_count_toward_group_readiness = true # bool — let review-exempt merge requests still hold their work group
-review_nag_enabled = false # bool — chase a review request that has gone unanswered
 review_nag_max_interval_days = 30 # int — ceiling on the review nag's widening re-ask interval
-review_pause_reaction_emojis = ["double_vertical_bar", "pause_button"] # list — Slack reaction names meaning a review request is deliberately paused
-review_request_dedup_max_pages = 5 # int — pages of history searched for an existing review request
-review_request_dedup_window_days = 30 # int — days a prior review request suppresses a duplicate
-review_resume_reply_enabled = false # bool — reply in-thread that a paused review request is ready again
 slack_voice_classifier_mode = "warn" # str, one of: strict | warn | off — how a Slack message is classified as the operator's voice
 snapshot_baseline_gate_enabled = true # bool — refuse a snapshot diff taken against a stale baseline
 solo_repo_url_pattern = "" # str — regex matching repos the operator works on alone
-work_group_generic_scopes = ["build", "chore", "ci", "config", "deps", "docs", "infra", "test", "tooling"] # list — commit scopes too generic to group merge requests on
-work_group_max_members = 12 # int — members above which a work group is surfaced as a question rather than held
 
 [teatree.Gates."Pre-Django hooks"]
 answer_first_gate_enabled = true # bool — refuse a turn that reports a dispatch instead of answering the user's question
@@ -252,8 +281,9 @@ completion_claim_gate_enabled = true # bool — refuse a multi-deliverable compl
 config_overwrite_gate_enabled = true # bool — refuse a blind overwrite of a config file that was not read first
 cron_loop_shell_gate_enabled = true # bool — refuse a harness cron that shells a t3 loop command the worker drives
 deny_circuit_breaker_enabled = true # bool — pause dispatch after repeated classifier denials instead of retrying
-deny_circuit_breaker_threshold = 3 # int — consecutive denials that trip the circuit breaker
 dispatch_quote_gate_on_task_create_enabled = false # bool — check quoting of a task-list entry when it is created
+dispatch_quote_scan_enabled = true # bool — check quoting of an agent dispatch prompt before the sub-agent runs
+foreign_branch_push_gate_enabled = true # bool — refuse a push onto a branch another author owns
 general_purpose_agent_gate_enabled = true # bool — refuse a blank general-purpose sub-agent for managed-repo work
 git_add_all_gate_enabled = true # bool — refuse a whole-tree `git add -A` / `git add .` stage
 glab_stale_base_remote_gate_enabled = true # bool — refuse a merge-request create on a stale glab-base remote (glab no-ops)
@@ -266,11 +296,13 @@ memory_recall_enabled = true # bool — recall durable memories into a session's
 merged_detection_gate_enabled = true # bool — warn when a hand-rolled probe asks whether a branch has landed
 no_self_reviewer_assign_gate_enabled = true # bool — refuse assigning the author as their own reviewer
 orchestrator_boundary_agent_gate_enabled = true # bool — refuse orchestrator work that belongs in a sub-agent
+orchestrator_delegation_gate_enabled = true # bool — refuse an unbounded orchestrator read that belongs in a sub-agent
 orchestrator_investigation_gate_enabled = true # bool — refuse an orchestrator investigation that should be dispatched
 orchestrator_turn_budget = 25 # int — output-token budget for one orchestrator turn
 orchestrator_turn_wall_clock_seconds = 180 # int — seconds one orchestrator turn may take
 out_of_band_merge_gate_enabled = true # bool — refuse a merge that skipped the recorded review path
 plan_edit_gate_enabled = true # bool — refuse a source edit made while the session is still planning
+raw_pr_create_gate_enabled = true # bool — refuse a raw MR/PR create that would open it under the wrong identity
 self_dm_gate_enabled = true # bool — classify a self-DM apart from a colleague post, so it is not gated
 single_branch_repo_gate_enabled = true # bool — refuse a second branch in a repo declared single-branch
 skill_loading_gate_enabled = true # bool — refuse a turn that skipped a skill the loader required
@@ -279,46 +311,32 @@ stop_snapshotter_enabled = true # bool — snapshot session findings before a st
 unbacked_claim_gate_enabled = true # bool — refuse a diagnosis or an escalation that cites no artefact the agent read
 unknown_repo_push_gate_enabled = true # bool — refuse a push to a repo teatree does not recognise
 verbatim_paste_gate_enabled = true # bool — refuse a publish whose body reproduces the operator's own words verbatim
+visible_plan_gate_enabled = true # bool — refuse an action until a plan for every named ticket is in visible assistant text
 
 [teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]
 adaptive_intake_concurrency_enabled = true # bool — let the resource loop set intake concurrency from observed headroom
+artifact_idle_days = 2.0 # float — days a checkout's rebuildable build products may sit untouched before eviction — a ceiling that decays with free disk between disk_warn_free_gb and disk_crit_free_gb, and stops gating below it
 disk_cache_allowlist = ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes", "~/.cache/go-build"] # list — cache directories disk reclamation may empty
 disk_crit_free_gb = 10.0 # float — free disk below this many GB is critical
 disk_warn_free_gb = 25.0 # float — free disk below this many GB warns
-intake_ram_per_agent_gb = 6.2 # float — RAM one admitted ticket is sized at when deriving intake concurrency
-intake_ram_reserve_gb = 4.0 # float — RAM held back from intake sizing so a burst is absorbed instead of OOMing
 orphan_group_min_age_hours = 6 # int — hours a leaderless process group must have run before it is reported
-ram_crit_avail_gb = 1.5 # float — available RAM below this many GB is critical
-ram_warn_avail_gb = 3.0 # float — available RAM below this many GB warns
-resource_pressure_cadence_minutes = 5 # int — minutes between resource-pressure checks
-resource_pressure_disabled = false # bool — stop checking resource pressure
-resource_pressure_min_free_interval_minutes = 30 # int — minutes before the same pressure alarm may fire again
-venv_idle_days = 2.0 # float — days a checkout's virtualenv may sit untouched before it is evicted as cache — a ceiling that decays with free disk between disk_warn_free_gb and disk_crit_free_gb, and stops gating below it
 
 [teatree.Infrastructure."Resource pressure"."Destructive levers"]
 allow_destructive_disk = false # bool — allow disk reclamation to remove artifacts it cannot prove are rebuildable
 allow_destructive_ram = false # bool — allow the RAM reaper to kill processes outside its allowlist
-max_worktree_gc_per_tick = 3 # int — worktrees the garbage collector may reap in one tick
 ram_kill_allowlist = [] # list — processes the RAM reaper may kill under pressure
 worktree_stale_days = 30 # int — days after which an untouched worktree counts as stale
 
 [teatree.Infrastructure."Retention & sweeps"]
-deferred_question_age_ceiling_days = 3 # int — days a deferred question may sit unresolved before it is escalated
-deferred_question_max_escalations = 3 # int — escalations an unanswered question gets before it is drained stale
-incoming_event_retention_days = 30 # int — days an incoming event row is kept
 max_concurrent_local_stacks = 1 # int — how many tickets may hold a running local stack at once
-park_attempt_retention_days = 7 # int — days a parked attempt is kept before it is pruned
 scratch_retention_days = 0 # int — days of agent scratch the sweep reclaims under the temp root; disabled by default
 scratch_sweep_root = "" # str — temp root the scratch sweep reclaims from (blank auto-resolves the host view)
 session_stale_after_hours = 12 # int — hours after which a session with no heartbeat counts as stale
 target_branch = "" # str — long-lived integration branch every pull request targets instead of the repo default
 task_attempt_retention_days = 30 # int — days a task attempt row is kept
 task_result_retention_days = 1 # int — days a task result row is kept
-task_sweep_disabled = false # bool — stop sweeping abandoned tasks back into the queue
-task_sweep_recheck_interval_hours = 1 # int — hours between rechecks of a swept task
 ticket_transition_prune_disabled = false # bool — stop pruning old ticket transition rows
 worktree_occupancy_gate_enabled = true # bool — refuse a second agent the checkout another agent already holds
-worktree_occupancy_lease_seconds = 1800 # int — how long an agent's claim on a checkout stands without a heartbeat
 
 [teatree.Infrastructure.Provisioning]
 admission_governor_enabled = true # bool — let the governor refuse new work when the box is already saturated
@@ -329,28 +347,22 @@ clean_ignore = [] # list — branch globs the cleanup reapers never touch
 drain_slot_reservation = 1 # int — slots only reviewing/shipping agents may occupy, so drains never starve
 idle_stack_e2e_recent_minutes = 60 # int — minutes an E2E run keeps a stack safe from the idle reaper
 idle_stack_idle_minutes = 30 # int — minutes of inactivity after which a local stack counts as idle
-idle_stack_reaper_cadence_minutes = 5 # int — minutes between idle-stack reaper runs
-idle_stack_reaper_disabled = false # bool — stop reaping idle local stacks
-local_stack_queue_disabled = false # bool — stop queueing work that needs a local stack
-local_stack_queue_max_attempts = 13 # int — attempts a queued local-stack unit gets before it is abandoned
 metered_spend_window_hours = 24 # int — the window the metered token ceiling is measured over
 metered_token_ceiling = 0 # int — the metered lane's spend ceiling in tokens over the window below; 0 leaves it unset
 provision_fast_step_timeout_seconds = 120 # int — seconds a step declared fast may take before it is failed
 provision_max_concurrency = 0 # int — provisioning steps that may run at once
-provision_ram_ceiling_percent = 85 # int — percent of RAM provisioning may consume before it backs off
+provision_ram_ceiling_percent = 75 # int — percent of RAM provisioning may consume before it backs off
 provision_slow_threshold_seconds = 600 # int — seconds after which a provisioning step is reported as slow
 provision_step_timeout_seconds = 1800 # int — seconds an ordinary provisioning step may take
 single_branch_repos = [] # list — repos that may carry only one branch at a time
-snapshot_warmer_disabled = false # bool — stop warming the snapshot caches
-snapshot_warmer_max_age_days = 1 # int — days a warmed snapshot stays usable
-stale_stack_min_age_minutes = 0 # int — minutes a stack must exist before staleness is judged
+stale_stack_min_age_minutes = 240 # int — minutes a stack must exist before staleness is judged
 test_worker_ram_gb = 1.25 # float — RAM one pytest worker is sized at when the governor caps test parallelism
 
 [teatree.Registries."Term scanning, agent tables & cold reads"]
 active_loop_schedule = "" # str — name of the weekly schedule deciding when the autonomous loops may run
 danger_gate_fail_open = false # bool — let the danger gate pass when it cannot evaluate, instead of refusing
-low_power_auto_engage = false # bool — switch to the low-token preset by itself when the box is under pressure
-low_power_preset_name = "" # str — preset engaged when low power is on
+token_outage_auto_engage = false # bool — switch to the token-outage preset by itself when the token budget parks
+token_outage_preset_name = "" # str — preset engaged when the token budget parks
 
 [teatree.mr_reminder] # table — when and how often a stale review request is chased
 default_channel = ""
@@ -407,7 +419,7 @@ description = "Scans the local Ticket DB and each code host every 5m — surfaci
 delay_seconds = 300
 colleague_facing = false
 default_enabled = false
-description = "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. Always runs (not colleague-facing); self-review keeps going unattended."
+description = "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. Ships DISABLED; once enabled the away-gate never skips it (colleague_facing = false), so self-review keeps going while the owner is unreachable."
 
 [loops.ship]
 delay_seconds = 300
@@ -419,7 +431,7 @@ description = "Sweeps your own-authored + same-repo open PRs every 5m: folds in 
 delay_seconds = 300
 colleague_facing = false
 default_enabled = false
-description = "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m; default-off behind auto_disposition_enabled, bounded per tick."
+description = "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m, only for t3-teatree owned repos; bounded per tick."
 
 [loops.audit]
 delay_seconds = 1800
@@ -437,13 +449,13 @@ description = "Intakes newly-assigned issues (auto-starting ready ones) and fire
 delay_seconds = 1800
 colleague_facing = false
 default_enabled = false
-description = "Discovers and claims admitted backlog issues to auto-implement, kicking off the maker pipeline; every 30m. issue_implementer_enabled ships ON (#3895), so this Loop row is the remaining switch."
+description = "Discovers and claims admitted backlog issues to auto-implement, kicking off the maker pipeline; every 30m. The active preset decides whether it runs."
 
 [loops.triage_assessor]
-delay_seconds = 3600
+delay_seconds = 86400
 colleague_facing = false
 default_enabled = false
-description = "Assesses OPEN needs-triage issues hourly and queues keep/close/needs-info recommendations behind an ask-gate; triage_assessor_enabled ships ON (#3895), so this Loop row is the remaining switch, and it never acts without per-item approval."
+description = "Assesses OPEN needs-triage issues daily and queues keep/close/needs-info recommendations behind an ask-gate; this row IS the cadence, the active preset decides whether it runs, and it never acts without per-item approval."
 
 [loops.dm_sweep]
 delay_seconds = 3600
@@ -458,10 +470,11 @@ default_enabled = true
 description = "Fast-forwards the editable teatree and overlay installs (self-update), pulls each overlay's main clone, and reconciles the ticket board against forge truth, hourly."
 
 [loops.arch_review]
-delay_seconds = 10800
+delay_seconds = 86400
+daily_at = 04:00:00
 colleague_facing = false
 default_enabled = false
-description = "Dispatches a sub-agent every 3h to run a holistic, codebase-wide architectural review via the ac-reviewing-codebase skill."
+description = "Dispatches a sub-agent at 04:00 to run a holistic, codebase-wide architectural review via the ac-reviewing-codebase skill; the scanner enforces architectural_review_cadence_hours (168) and the merge-count backstop, so this row is only how often that gate is CHECKED — and, because a failed review leaves that clock untouched, how soon a failed one retries."
 prompt_body = "Run an architectural review of the codebase using the ac-reviewing-codebase skill. Dispatch a sub-agent that loads /ac-reviewing-codebase and performs a holistic, codebase-wide architectural review, surfacing findings as the skill prescribes."
 
 [loops.dogfood]
@@ -471,22 +484,23 @@ default_enabled = false
 description = "Runs the overlay provisioning smoke test once a day to catch broken worktree setup."
 
 [loops.eval_local]
-delay_seconds = 86400
+delay_seconds = 604800
 colleague_facing = false
 default_enabled = false
-description = "Runs the local behavioral eval suite; the scanner enforces its own weekly cadence (checked daily)."
+description = "Runs the local behavioral eval suite weekly; this row IS the cadence."
 
 [loops.db_backup]
 delay_seconds = 86400
+daily_at = 02:00:00
 colleague_facing = false
 default_enabled = true
-description = "Backs up teatree's own control DB daily and prunes past the keep-last-N-days retention (directive #2); the scanner enforces db_backup_cadence_hours, gated by db_backup_disabled."
+description = "Backs up teatree's own control DB at 02:00 and prunes past the keep-last-N-days retention; this row IS the cadence."
 
 [loops.backlog_sweep]
 delay_seconds = 86400
 colleague_facing = false
 default_enabled = false
-description = "Groups the backlog daily — bundles related issues into an existing host and closes nothing for real; this row is the switch (backlog_sweep_disabled ships open), gated by ask_before_backlog_sweep_closes."
+description = "Groups the backlog daily — bundles related issues into an existing host and closes nothing for real; this row plus the active preset are the switch, gated by ask_before_backlog_sweep_closes."
 
 [loops.news]
 delay_seconds = 86400
@@ -512,7 +526,7 @@ description = "Advances at most one T4 autoresearch experiment one step per day 
 delay_seconds = 3600
 colleague_facing = false
 default_enabled = false
-description = "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); directive_loop_enabled ships ON (#3895), so this Loop row is the remaining switch, and the execution arc additionally needs the factory-score and critic-live guards."
+description = "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); directive_loop_enabled ships ON, so this Loop row is the remaining switch, and the execution arc additionally needs the factory-score and critic-live guards."
 
 [loops.ci_eval_heal]
 delay_seconds = 300
@@ -524,89 +538,93 @@ description = "Advances operator-opened CI-eval heal sessions every 5m (observe-
 delay_seconds = 1800
 colleague_facing = false
 default_enabled = false
-description = "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair (#4451). Observe-only: it writes nothing and opens nothing. Default-OFF."
+description = "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair. Observe-only: it writes nothing and opens nothing. Default-OFF."
 
 [loops.memory_skim]
 delay_seconds = 604800
 colleague_facing = false
 default_enabled = false
-description = "Skims the Claude memories weekly (directive 32) and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF."
+description = "Skims the Claude memories weekly and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF."
 
 [modes.present]
-description = "Full working-hours mode: deliver, interact, keep improvement loops warm."
+egress = "allow"
+description = "Do everything: every loop runs and the factory acts on the owner's behalf."
 
 [modes.present.entries]
 inbox = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+snapshot_warmer = true
 dispatch = true
 tickets = true
-ship = true
 review = true
+ship = true
+issue_disposition = true
+audit = true
 followup = true
-audit = true
-news = true
-arch_review = true
-dream = true
-eval_local = true
-dogfood = true
-snapshot_warmer = true
+issue_implementer = true
+triage_assessor = true
+dm_sweep = true
 housekeeping = true
+arch_review = true
+dogfood = true
+eval_local = true
+db_backup = true
+backlog_sweep = true
+news = true
+dream = true
+outer_loop = true
+directive_loop = true
+ci_eval_heal = true
+ratchet_repair = true
+memory_skim = true
+
+[modes.afk]
+egress = "forbid"
+description = "The daily job with no colleague interaction at all: implement and take intake, but never review a colleague's MR, never answer an inbound review comment, and never post on the owner's behalf."
+
+[modes.afk.entries]
+inbox = true
 idle_stack_reaper = true
 local_stack_queue = true
 resource_pressure = true
-
-[modes.away]
-description = "The factory keeps taking new work while the owner is unreachable; the colleague-facing loop is off."
-
-[modes.away.entries]
-inbox = true
+snapshot_warmer = true
 dispatch = true
 tickets = true
-ship = true
 review = true
+ship = true
+issue_disposition = true
 audit = true
-news = true
-arch_review = true
-dream = true
-snapshot_warmer = true
+followup = true
+issue_implementer = true
+triage_assessor = true
+dm_sweep = true
 housekeeping = true
-idle_stack_reaper = true
-local_stack_queue = true
-resource_pressure = true
-followup = false
+arch_review = true
+dogfood = true
+eval_local = true
+db_backup = true
+backlog_sweep = true
+news = true
+dream = true
+outer_loop = true
+directive_loop = false
+ci_eval_heal = true
+ratchet_repair = true
+memory_skim = true
 
 [modes.maintenance]
-description = "Drain-only: finish and merge what is in flight, run the consolidation loops, take no new intake."
+egress = "forbid"
+description = "Self-repair only: keep the box healthy, drain the local queue, heal CI and back up — no delivery, no intake, no outward voice."
 
 [modes.maintenance.entries]
 inbox = true
-dispatch = true
-ship = true
-review = true
-dream = true
-eval_local = true
-dogfood = true
-arch_review = true
-news = true
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
 snapshot_warmer = true
-housekeeping = true
-idle_stack_reaper = true
-local_stack_queue = true
-resource_pressure = true
-tickets = false
-issue_implementer = false
-followup = false
-audit = false
-
-[modes.low-token]
-description = "Token-budget guard: only deterministic model-free local loops stay up."
-
-[modes.low-token.entries]
-inbox = true
-idle_stack_reaper = true
-local_stack_queue = true
-resource_pressure = true
-snapshot_warmer = false
-dispatch = false
+dispatch = true
 tickets = false
 review = false
 ship = false
@@ -620,25 +638,59 @@ housekeeping = true
 arch_review = false
 dogfood = false
 eval_local = false
-db_backup = false
+db_backup = true
+backlog_sweep = false
+news = false
+dream = false
+outer_loop = false
+directive_loop = false
+ci_eval_heal = true
+ratchet_repair = false
+memory_skim = false
+
+[modes.token-outage]
+egress = "allow"
+description = "Token-budget guard: only the loops that never call a model stay up."
+
+[modes.token-outage.entries]
+inbox = false
+idle_stack_reaper = true
+local_stack_queue = true
+resource_pressure = true
+snapshot_warmer = true
+dispatch = false
+tickets = false
+review = false
+ship = false
+issue_disposition = true
+audit = false
+followup = true
+issue_implementer = false
+triage_assessor = false
+dm_sweep = true
+housekeeping = true
+arch_review = false
+dogfood = false
+eval_local = false
+db_backup = true
 backlog_sweep = false
 news = false
 dream = false
 outer_loop = false
 directive_loop = false
 ci_eval_heal = false
-ratchet_repair = false
-memory_skim = false
+ratchet_repair = true
+memory_skim = true
 
 [modes.off]
-description = "Every WORK loop off — the hard hold (a holiday, or a calendar that says nothing runs); the load-bearing tier stays up so the box can still relieve itself."
+egress = "allow"
+description = "Completely off. Nothing reaps stacks, nothing answers Slack — recovery is SSH, docker or django-admin, and the switch reports what it strands."
 
 [modes.off.entries]
-inbox = true
-idle_stack_reaper = true
-local_stack_queue = true
-resource_pressure = true
-housekeeping = true
+inbox = false
+idle_stack_reaper = false
+local_stack_queue = false
+resource_pressure = false
 snapshot_warmer = false
 dispatch = false
 tickets = false
@@ -650,6 +702,7 @@ followup = false
 issue_implementer = false
 triage_assessor = false
 dm_sweep = false
+housekeeping = false
 arch_review = false
 dogfood = false
 eval_local = false
@@ -665,7 +718,7 @@ memory_skim = false
 
 [schedules.standard]
 timezone = "Europe/Vienna"
-description = "Owner working hours (Europe/Vienna): weekdays 09:00-16:00 → present (attended); all other times (weekday evenings/nights + weekends) → away (autonomous, colleague-facing loop off)."
+description = "Owner working hours (Europe/Vienna): weekdays 09:00-16:00 → present (attended); all other times (weekday evenings/nights + weekends) → afk (autonomous, no outward voice)."
 
 [[schedules.standard.slots]]
 days = [0, 1, 2, 3, 4]
@@ -675,18 +728,18 @@ preset_name = "present"
 [[schedules.standard.slots]]
 days = [0, 1, 2, 3, 4]
 start_time = 16:00:00
-preset_name = "away"
+preset_name = "afk"
 
 [[schedules.standard.slots]]
 days = [5, 6]
 start_time = 00:00:00
-preset_name = "away"
+preset_name = "afk"
 
-[schedules.always-away]
+[schedules.always-afk]
 timezone = ""
-description = "Away all week: the owner is unreachable, the factory keeps taking work."
+description = "AFK all week: the factory keeps taking work and never posts on the owner's behalf."
 
-[[schedules.always-away.slots]]
+[[schedules.always-afk.slots]]
 days = [0, 1, 2, 3, 4, 5, 6]
 start_time = 00:00:00
-preset_name = "away"
+preset_name = "afk"

@@ -15,7 +15,7 @@ from teatree.agents import runner as runner_mod
 from teatree.agents.runner import run_agent
 from teatree.core.gates.closed_issue_dispatch_gate import ISSUE_CLOSED_PREFIX
 from teatree.core.models import Session, Task, Ticket
-from teatree.core.models.plan_artifact import PlanArtifact
+from tests.factories import record_test_plan
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 
 _URL = "https://github.com/souliane/teatree/issues/4045"
@@ -54,7 +54,7 @@ class _DispatchProbe(TestCase):
         # The plan gate sits ahead of this one at the same seam, so an unplanned
         # ticket would refuse for the WRONG reason and the assertions would pass
         # while proving nothing about the closed-issue gate.
-        PlanArtifact.record(ticket=self.ticket, plan_text="Do X by Y", recorded_by="t3:planner")
+        record_test_plan(self.ticket, plan_text="Do X by Y", recorded_by="t3:planner")
         self.spawned: list[object] = []
 
     def _dispatch(self, phase: str, host: _Host | None, *, ticket: Ticket | None = None) -> Task:
@@ -151,7 +151,7 @@ class TestOutOfScopeDispatchesAreUntouched(_DispatchProbe):
             role=Ticket.Role.REVIEWER,
             issue_url="https://github.com/souliane/teatree/pull/4200",
         )
-        PlanArtifact.record(ticket=reviewer, plan_text="Review it", recorded_by="t3:planner")
+        record_test_plan(reviewer, plan_text="Review it", recorded_by="t3:planner")
         host = _Host({"state": "closed"})
         self._dispatch("coding", host, ticket=reviewer)
 
@@ -160,7 +160,7 @@ class TestOutOfScopeDispatchesAreUntouched(_DispatchProbe):
 
     def test_a_synthetic_cadence_url_spawns_without_a_forge_read(self) -> None:
         cadence = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="scanning-news://t3-teatree")
-        PlanArtifact.record(ticket=cadence, plan_text="Scan", recorded_by="t3:planner")
+        record_test_plan(cadence, plan_text="Scan", recorded_by="t3:planner")
         host = _Host({"state": "closed"})
         self._dispatch("coding", host, ticket=cadence)
 

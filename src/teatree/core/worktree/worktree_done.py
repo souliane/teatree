@@ -37,26 +37,29 @@ from pathlib import Path
 
 from teatree.config import clone_root
 from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, _resolve_worktree_path, cleanup_worktree
-from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord, banned_terms_status
+from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
 from teatree.core.cleanup.unshipped_work import capture_unshipped_work
-from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons, working_tree_dirt
+from teatree.core.cleanup.working_tree_dirt import real_uncommitted_reasons
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import (
-    INCONCLUSIVE_SOURCE,
     RedundancyVerdict,
     _branch_tree_matches_squash,
     branch_redundancy,
     content_equivalence_blockers,
-    effective_default_target,
     is_squash_merged,
     reset_forge_probe_cache,
 )
 from teatree.core.worktree.branch_verdict import branch_landed_for_teardown
 from teatree.core.worktree.broken_checkout import BrokenCheckout, BrokenCheckoutVerdict, classify_broken_checkout
 from teatree.core.worktree.clone_paths import resolve_clone_path
-from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
+from teatree.core.worktree.worktree_emit import (
+    _build_emit_record,
+    _effective_default_target,
+    _resolve_row_probes,
+    _RowProbes,
+)
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -72,19 +75,6 @@ _DONE_TICKET_STATES = Ticket.marker_release_states()
 _PREVIEW_LIMIT = 3
 _FALLBACK_DEFAULT_TARGET = "origin/main"
 _CLONE_UNRESOLVABLE_SOURCE = "clone-unresolvable"
-
-
-def _effective_default_target(repo: Path) -> str:
-    """Resolve ``repo``'s REAL default branch as an ``origin/<default>`` ref.
-
-    Thin ``Path``-taking adapter over the shared
-    :func:`branch_classification.effective_default_target` so done-detection, the
-    redundancy/emit probes, and :func:`cleanup._raise_if_genuinely_ahead` all
-    resolve the base the SAME way (a ``master``/``develop``-default repo is never
-    measured against a base it does not have). Fail-safe to ``origin/main`` on an
-    unresolvable default — the downstream content gate fails CLOSED there.
-    """
-    return effective_default_target(str(repo))
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +122,9 @@ class ReapOutcome:
     emit: CleanupEmitRecord | None = None
 
 
-def worktree_is_done(worktree: Worktree) -> DoneSignal:
+def worktree_is_done(
+    worktree: Worktree, *, branch: str | None = None, verdict: RedundancyVerdict | None = None
+) -> DoneSignal:
     """Whether ``worktree`` is teardown-eligible — necessary, but not sufficient.
 
     Reads the FSM state FIRST (no git), so a terminal ticket is done even when
@@ -140,18 +132,24 @@ def worktree_is_done(worktree: Worktree) -> DoneSignal:
     the forge squash-merge signal for a still-non-terminal ticket whose branch
     nonetheless shipped. Fail-safe to NOT done: a missing forge CLI or an
     inconclusive probe reads as not-done, so an uncertain worktree is kept.
+
+    ``branch`` is the branch the CHECKOUT actually holds, which the DB slug can
+    drift from. Judging the slug asks about a branch nobody is working on: it
+    reported ``squash-merged`` for a checkout holding unlanded commits on a
+    different branch, which is a done signal a sweep acts on. Defaults to the slug
+    for the callers that have no resolved target.
     """
     ticket = worktree.ticket
     state = str(ticket.state) if ticket is not None else ""
     if state in _DONE_TICKET_STATES:
         return DoneSignal(done=True, source=f"ticket-state:{state}")
-    if _branch_squash_merged(worktree):
+    if _branch_squash_merged(worktree, branch or worktree.branch, verdict=verdict):
         return DoneSignal(done=True, source="squash-merged")
     return DoneSignal(done=False, source=f"not-done:{state or 'no-ticket'}")
 
 
-def _branch_squash_merged(worktree: Worktree) -> bool:
-    """Whether ``worktree``'s branch is provably squash-merged AND has no open PR. Fail-safe to False.
+def _branch_squash_merged(worktree: Worktree, branch: str, *, verdict: RedundancyVerdict | None = None) -> bool:
+    """Whether ``branch`` is provably squash-merged AND has no open PR. Fail-safe to False.
 
     The content heuristic (:func:`is_squash_merged`) matches any branch whose tip is
     patch-id-equivalent to ``origin/<default>`` — including a still-OPEN PR that merely
@@ -161,19 +159,28 @@ def _branch_squash_merged(worktree: Worktree) -> bool:
     lives inside :func:`is_squash_merged` (the shared destructive chokepoint), so this
     path and the branch-prune pass inherit it identically. The FSM terminal-state path
     in :func:`worktree_is_done` is unaffected — only this content heuristic is gated.
+
+    A ``verdict`` the caller already ran is the SAME ladder over the same branch, so
+    reusing it changes no answer and drops one forge round-trip per row. It is read
+    only once the clone resolves: a verdict computed against a fallback path that holds
+    no clone speaks for nothing, and a not-done ticket is never done on that guess.
     """
     workspace = clone_root()
     repo = resolve_clone_path(workspace, worktree)
     if repo is None or not repo.is_dir():
         return False
+    if verdict is not None:
+        return verdict.redundant
     try:
         default = git.default_branch(str(repo))
     except (RuntimeError, CommandFailedError):
         return False
-    return is_squash_merged(str(repo), worktree.branch, default)
+    return is_squash_merged(str(repo), branch, default)
 
 
-def analyze_worktree_changes(worktree: Worktree, *, workspace: Path) -> ChangeAnalysis:
+def analyze_worktree_changes(
+    worktree: Worktree, *, workspace: Path, probes: _RowProbes | None = None
+) -> ChangeAnalysis:
     """Prove every uncommitted change and unpushed commit redundant, or keep the worktree.
 
     The PRIMARY safety step (CORRECTION 1 / the #706 data-loss guard hoisted): a
@@ -191,19 +198,28 @@ def analyze_worktree_changes(worktree: Worktree, *, workspace: Path) -> ChangeAn
 
     Fails CLOSED: every inconclusive probe contributes a kept-reason, so the
     worktree is kept rather than wiped on uncertainty.
+
+    ``probes`` are the row-level resolutions the reaper already made; they are
+    recomputed here only for a caller that has none.
     """
     wt_path = _resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
-    target = _effective_target(str(repo_main), wt_path, worktree)
+    target = probes.target if probes else _effective_target(str(repo_main), wt_path, worktree)
     default_target = _effective_default_target(Path(repo_main))
 
     reasons: list[str] = []
     reasons.extend(real_uncommitted_reasons(wt_path, target))
-    reasons.extend(_unpushed_commit_reasons(Path(repo_main), target, default_target=default_target))
+    reasons.extend(
+        _unpushed_commit_reasons(
+            Path(repo_main), target, default_target=default_target, verdict=probes.verdict if probes else None
+        )
+    )
     return ChangeAnalysis(proven_redundant=not reasons, kept_reasons=reasons)
 
 
-def _wipe_fingerprint(worktree: Worktree, *, workspace: Path) -> tuple[str | None, tuple[str, ...]]:
+def _wipe_fingerprint(
+    worktree: Worktree, *, workspace: Path, probes: _RowProbes | None = None
+) -> tuple[str | None, tuple[str, ...]]:
     """The tip SHA plus the working tree's dirt — the state the analysis was made against.
 
     The TOCTOU bracket for :func:`reap_done_worktree`: sampled before the
@@ -217,14 +233,18 @@ def _wipe_fingerprint(worktree: Worktree, *, workspace: Path) -> tuple[str | Non
     """
     wt_path = _resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
-    target = _effective_target(str(repo_main), wt_path, worktree)
+    target = probes.target if probes else _effective_target(str(repo_main), wt_path, worktree)
     resolved = git.run(repo=target.probe_repo, args=["rev-parse", "--verify", "--quiet", target.ref])
     head = resolved or classify_orphan_ref(target).recovered_sha
     return head, tuple(real_uncommitted_reasons(wt_path, target))
 
 
 def _unpushed_commit_reasons(
-    repo_main: Path, target: _EffectiveTarget, *, default_target: str = _FALLBACK_DEFAULT_TARGET
+    repo_main: Path,
+    target: _EffectiveTarget,
+    *,
+    default_target: str = _FALLBACK_DEFAULT_TARGET,
+    verdict: RedundancyVerdict | None = None,
 ) -> list[str]:
     """Kept-reasons for unpushed commits not proven redundant; empty when all redundant.
 
@@ -264,8 +284,10 @@ def _unpushed_commit_reasons(
     # analysis IS the data-loss gate — its caller force-wipes past every guard in
     # ``cleanup_worktree`` — and those rungs read a patch's PRIOR appearance, which
     # a later commit over the same region does not erase.
-    if branch is not None and branch_landed_for_teardown(content_repo, branch, default_target):
-        return []
+    if branch is not None:
+        landed = verdict if verdict is not None else branch_redundancy(content_repo, branch, default_target)
+        if landed.redundant and branch_landed_for_teardown(content_repo, branch, default_target):
+            return []
     preview = ", ".join(unpushed[:_PREVIEW_LIMIT]) + (", …" if len(unpushed) > _PREVIEW_LIMIT else "")
     return [f"{len(unpushed)} commit(s) not provably on {default_target} (content not upstream): {preview}"]
 
@@ -292,77 +314,6 @@ def _branch_ref_gone_reasons(
     count = len(decision.unsynced) or 1
     preview = ", ".join(decision.unsynced[:_PREVIEW_LIMIT]) or decision.recovered_sha[:7]
     return [f"{count} commit(s) on NO remote (content not upstream): {preview}"]
-
-
-def _verdict_provenance(repo_main: Path, verdict: RedundancyVerdict) -> tuple[bool, str]:
-    """Did a content probe actually PROVE this verdict, and which layer decided?
-
-    Without this, an empty ``unique_commit_shas`` means two opposite things — the
-    tip was proven to hold nothing unique, or nothing could be probed at all — and
-    the judgment skill routes the first to DELETE. A repo the shared checkout
-    probe cannot confirm (a row whose ``clone_path`` outlived its clone) makes
-    every git answer below it meaningless, so it reports its own source rather
-    than the verdict's.
-    """
-    if probe_checkout(repo_main) is not CheckoutState.CHECKOUT:
-        return False, _CLONE_UNRESOLVABLE_SOURCE
-    return verdict.source != INCONCLUSIVE_SOURCE, verdict.source
-
-
-def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) -> CleanupEmitRecord:
-    """Assemble the structured handoff record for a NOT-auto-deleted worktree.
-
-    Resolves the current-tip redundancy (for ``unique_commit_shas`` +
-    ``merged_with_post_merge_work``), its provenance (:func:`_verdict_provenance`,
-    so an unprobeable item never emits the proven-redundant shape), the WORKING
-    TREE's uncommitted delta, the banned-terms status of the unique content, the
-    tip author/date, and the liveness reason — everything the judgment skill needs
-    to route the item without re-probing git itself.
-
-    The working-tree read is what makes the record agree with the caller that
-    builds it. This function is reached from the KEEP branches of the reap pass,
-    including the one whose keep-reason IS uncommitted work — and a delta that was
-    never committed is invisible to every commit probe above, so without it the
-    record described a clean, redundant worktree while the CLI beside it printed
-    "salvage, do not wipe". A checkout kept for its dirt now emits that dirt.
-    """
-    wt_path = _resolve_worktree_path(workspace, worktree)
-    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
-    target = _effective_target(str(repo_main), wt_path, worktree)
-    ref = target.branch_to_delete or worktree.branch
-    probe_repo = str(repo_main)
-    default_target = _effective_default_target(Path(repo_main))
-    verdict = branch_redundancy(probe_repo, ref, default_target)
-    content_verified, verdict_source = _verdict_provenance(Path(repo_main), verdict)
-    try:
-        texts = [
-            git.run_strict(repo=probe_repo, args=["log", f"{default_target}..{ref}", "--format=%B"]),
-            git.run_strict(repo=probe_repo, args=["diff", f"{default_target}...{ref}"]),
-        ]
-    except CommandFailedError:
-        # STRICT so the failure is real, not a lenient "" degrade. Unreadable
-        # content emits banned_terms_status "unknown" — the judgment skill treats
-        # an unknown-scan item conservatively (clean before salvage), never as
-        # "scanned clean".
-        texts = []
-    status, found = banned_terms_status(texts)
-    owner = git.run(repo=probe_repo, args=["log", "-1", "--format=%an", ref])
-    last_date = git.run(repo=probe_repo, args=["log", "-1", "--format=%cI", ref])
-    return CleanupEmitRecord(
-        path=wt_path,
-        branch=worktree.branch,
-        kind="worktree",
-        unique_commit_shas=verdict.unique_shas,
-        uncommitted_paths=list(working_tree_dirt(wt_path, target).paths),
-        merged_with_post_merge_work=verdict.merged_with_post_merge_work,
-        content_verified=content_verified,
-        verdict_source=verdict_source,
-        banned_terms_status=status,
-        banned_terms_found=found,
-        liveness=liveness,
-        last_commit_date=last_date,
-        owner=owner,
-    )
 
 
 def _pre_gate_outcome(worktree: Worktree, *, workspace: Path, verdict: ReapPreGateVerdict) -> ReapOutcome:
@@ -435,26 +386,31 @@ def reap_done_worktree(
     if broken.state is not BrokenCheckout.LIVE_CHECKOUT:
         return _dead_checkout_outcome(worktree, workspace=workspace, verdict=broken, dry_run=dry_run)
 
-    signal = worktree_is_done(worktree)
+    wt_path = _resolve_worktree_path(workspace, worktree)
+    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
+    probes = _resolve_row_probes(workspace, Path(repo_main), wt_path, worktree)
+
+    branch = probes.target.branch_to_delete or worktree.branch
+    signal = worktree_is_done(worktree, branch=branch, verdict=probes.verdict)
     if not signal.done:
         return ReapOutcome(
             "kept",
             f"KEPT '{worktree.branch}': not done ({signal.source}) — keeping the worktree",
-            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
+            emit=_build_emit_record(worktree, workspace=workspace, liveness="", probes=probes),
         )
 
-    fingerprint_at_analysis = _wipe_fingerprint(worktree, workspace=workspace)
-    analysis = analyze_worktree_changes(worktree, workspace=workspace)
+    fingerprint_at_analysis = _wipe_fingerprint(worktree, workspace=workspace, probes=probes)
+    analysis = analyze_worktree_changes(worktree, workspace=workspace, probes=probes)
     if not analysis.proven_redundant:
         return ReapOutcome(
             "kept",
             f"KEPT '{worktree.branch}': done ({signal.source}) but {'; '.join(analysis.kept_reasons)} "
             f"— salvage with `t3 <overlay> workspace salvage`, do not wipe",
-            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
+            emit=_build_emit_record(worktree, workspace=workspace, liveness="", probes=probes),
         )
 
     return _wipe_proven_redundant(
-        worktree, workspace=workspace, signal=signal, fingerprint_at_analysis=fingerprint_at_analysis, dry_run=dry_run
+        worktree, signal=signal, fingerprint_at_analysis=fingerprint_at_analysis, dry_run=dry_run, probes=probes
     )
 
 
@@ -497,10 +453,10 @@ def _fingerprint_label(fingerprint: tuple[str | None, tuple[str, ...]]) -> str:
 def _wipe_proven_redundant(
     worktree: Worktree,
     *,
-    workspace: Path,
     signal: DoneSignal,
     fingerprint_at_analysis: tuple[str | None, tuple[str, ...]],
     dry_run: bool,
+    probes: _RowProbes,
 ) -> ReapOutcome:
     """Wipe a proven-redundant worktree, re-checking the TOCTOU bracket before the force-wipe.
 
@@ -512,17 +468,16 @@ def _wipe_proven_redundant(
     """
     if dry_run:
         return ReapOutcome(
-            "would-wipe",
-            f"WOULD WIPE '{worktree.branch}': done ({signal.source}), all changes proven redundant",
+            "would-wipe", f"WOULD WIPE '{worktree.branch}': done ({signal.source}), all changes proven redundant"
         )
-    fingerprint_before_wipe = _wipe_fingerprint(worktree, workspace=workspace)
+    fingerprint_before_wipe = _wipe_fingerprint(worktree, workspace=probes.workspace, probes=probes)
     if fingerprint_before_wipe != fingerprint_at_analysis:
         return ReapOutcome(
             "kept",
             f"KEPT '{worktree.branch}': the worktree changed during analysis "
             f"({_fingerprint_label(fingerprint_at_analysis)} → {_fingerprint_label(fingerprint_before_wipe)}) "
             "— re-run cleanup to re-analyse",
-            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
+            emit=_build_emit_record(worktree, workspace=probes.workspace, liveness="", probes=probes),
         )
     result = cleanup_worktree(worktree, force=True, strict_hygiene=False)
     return ReapOutcome("wiped", f"Wiped '{worktree.branch}' ({signal.source}): {result.label}", errors=result.errors)
@@ -540,9 +495,22 @@ def reap_done_worktrees_detailed(workspace: Path, *, dry_run: bool) -> list[Reap
     """
     reset_forge_probe_cache()
     return [
-        reap_done_worktree(worktree, workspace=workspace, dry_run=dry_run)
+        _reap_or_report(worktree, workspace=workspace, dry_run=dry_run)
         for worktree in Worktree.objects.select_related("ticket")
     ]
+
+
+def _reap_or_report(worktree: Worktree, *, workspace: Path, dry_run: bool) -> ReapOutcome:
+    """One row's disposition, or an ``error`` outcome — a raising row never aborts the sweep.
+
+    A single unreadable row used to abort the whole first pass, so every row after
+    it went unexamined and the backlog could only ever grow.
+    """
+    try:
+        return reap_done_worktree(worktree, workspace=workspace, dry_run=dry_run)
+    except Exception as exc:  # one bad row must not cost the sweep every row after it
+        logger.exception("reaping wt#%s failed", worktree.pk)
+        return ReapOutcome("error", f"ERROR wt#{worktree.pk} '{worktree.branch}': {exc!r} — row skipped, nothing wiped")
 
 
 def reap_done_worktrees(workspace: Path, *, dry_run: bool) -> list[str]:

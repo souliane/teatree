@@ -7,7 +7,9 @@ decision ladder and the three bounds are pinned in ``test_pr_sweep_scanner.py``.
 """
 
 import json
+from unittest.mock import patch
 
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient
 from teatree.loop.scanners.pr_sweep_decision import red_required_at_stale_base
 from teatree.loop.scanners.pr_sweep_types import PrSummary
@@ -44,7 +46,8 @@ class _CapturingClient(GhPrApiClient):
     argv_log: "list[list[str]]" = []  # noqa: RUF012 — shared capture buffer; the slotted base forbids an instance field.
     rc: int = 0
 
-    def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
+    def _run_gh(self, argv: list[str], *, slug: str) -> tuple[int, str, str]:
+        del slug
         type(self).argv_log.append(argv)
         return type(self).rc, "", "expected_head_sha does not match"
 
@@ -55,7 +58,7 @@ class TestGhUpdatePrBranch:
     def _client(self, *, rc: int) -> _CapturingClient:
         _CapturingClient.argv_log = []
         _CapturingClient.rc = rc
-        return _CapturingClient(token="")
+        return _CapturingClient()
 
     def test_shells_the_sha_bound_update_branch_endpoint(self) -> None:
         client = self._client(rc=0)
@@ -70,6 +73,19 @@ class TestGhUpdatePrBranch:
         client = self._client(rc=1)
 
         assert client.update_pr_branch(slug=SLUG, pr_id=4029, expected_head_oid=HEAD) is False
+
+    def test_empty_routed_token_never_uses_ambient_gh_for_the_write(self, monkeypatch) -> None:
+        monkeypatch.setenv("GH_TOKEN", "ambient-token")
+        client = GhPrApiClient()
+
+        empty = ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET, detail="route unset")
+        with (
+            patch("teatree.forge_credentials.resolve_slug_token", return_value=empty),
+            patch("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail") as run,
+        ):
+            assert client.update_pr_branch(slug=SLUG, pr_id=4029, expected_head_oid=HEAD) is False
+
+        run.assert_not_called()
 
 
 #: The login a fork PR's head repository reports — anything but the base repo's owner.
@@ -116,7 +132,8 @@ class _ScriptedClient(GhPrApiClient):
     compare_json: str = ""
     compare_rc: int = 0
 
-    def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
+    def _run_gh(self, argv: list[str], *, slug: str) -> tuple[int, str, str]:
+        del slug
         type(self).argv_log.append(argv)
         if argv[:2] == ["api", "graphql"]:
             return type(self).compare_rc, type(self).compare_json, "Could not resolve head ref"
@@ -142,7 +159,7 @@ class TestListOpenPrsResolvesBehindBase:
         _ScriptedClient.pr_list_json = json.dumps(raw_prs)
         _ScriptedClient.compare_json = _compare_payload(behind)
         _ScriptedClient.compare_rc = compare_rc
-        return _ScriptedClient(token="")
+        return _ScriptedClient()
 
     def _one(self, raw: dict[str, object], *, behind: dict[int, int | None], rc: int = 0) -> PrSummary:
         client = self._client([raw], behind=behind, compare_rc=rc)

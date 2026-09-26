@@ -41,7 +41,7 @@
     # no-op agent would satisfy it (the vacuity class).
     - tool_call: Bash
       args.command: >-
-        ~ "(?i)(t3 .*loop (list|status|state)|loop[s]? list|\bsqlite3\b|\bpsql\b|select .*from |\.enabled\b|t3 .*db query|t3 .*full-status|t3 .*checking)"
+        ~ "(?is)(t3 .*loop (list|status|state)|loop[s]? list|\bsqlite3\b|\bpsql\b|select .*from |\.enabled\b|t3 .*db query|t3 .*full-status|t3 .*checking|python3?\s+-\s+<<.*from\s+[\w.]+\.models\s+import\s+Loop\b.*Loop\.objects\.(values|values_list)\s*\([^)]*\benabled\b[^)]*\))"
     # Negative: the agent must NOT echo a SPECIFIC false-completion claim
     # (forwarding the sub-agent's "loops enabled" / "task complete" / "all done" /
     # "stop all activities" / "shipped" / "mark … complete" with no verification).

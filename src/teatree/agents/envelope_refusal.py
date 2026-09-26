@@ -46,6 +46,13 @@ NO_ENVELOPE_ERROR = f"{NO_ENVELOPE_PREFIX}agent produced no JSON result envelope
 #: it names; the fields themselves are appended for the agent to act on.
 MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
 
+#: Prefix the recorder stamps on returned ``rubric_grades`` it cannot stamp — a
+#: non-list, a batch leaving a criterion ungraded, or a grade the guarded factory
+#: refuses. The mirror of :data:`MALFORMED_FIX_RECORD_PREFIX`: it classifies the
+#: refusal as an ENVELOPE refusal, so the reviewer earns ``transient_requeue``'s
+#: one-shot corrective retry rather than being paged as a genuine defect.
+MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
+
 #: Substrings identifying a RECORDER-side envelope refusal — an envelope that
 #: parsed but is unusable, as opposed to a genuine defect (an assertion, a test
 #: failure, a review verdict the reviewer legitimately withheld).
@@ -55,6 +62,7 @@ _RECORDER_REFUSAL_MARKERS = (
     "result is not valid json",
     "result must be a json object",
     MALFORMED_FIX_RECORD_PREFIX.strip().casefold(),
+    MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
 )
 
 

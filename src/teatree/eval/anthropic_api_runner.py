@@ -29,14 +29,31 @@ skip-shaped :class:`~teatree.eval.models.EvalRun`, unless ``require_executed`` a
 the all-skipped enforcement gate — then it raises
 :class:`AnthropicApiKeyMissingError` on the FIRST scenario, the earliest fail-loud
 point.
+
+Usage limit: once the organisation reaches the usage limit set in its console, the API
+answers every request with HTTP 400. :class:`UsageLimitStopModel` raises that as
+:class:`~teatree.eval.api_errors.UsageLimitReachedError` beneath the harness session, and
+the run is recorded as a ``usage_limit_reached`` skip: it did not run, it did not fail, and
+no retry envelope waits it out.
 """
 
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from http import HTTPStatus
+from typing import Any
+
 from claude_agent_sdk.types import EffortLevel
-from pydantic_ai.models import Model
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import ModelMessage, ModelResponse
+from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.wrapper import WrapperModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.settings import ModelSettings
+from pydantic_ai.tools import RunContext
 
 from teatree.config import get_effective_settings
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
 from teatree.eval.model_resolution import resolve_spec_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import EvalRun, EvalSpec
@@ -92,8 +109,11 @@ class AnthropicApiRunner:
         # Delegate the request loop + vocabulary mapping + watchdog to the pydantic_ai
         # lane, injecting the Anthropic model so its own model-resolution is
         # never reached; the turn cap bounds that loop.
-        delegate = PydanticAiRunner(model=model, caps=self._caps)
-        return delegate.run(spec)
+        delegate = PydanticAiRunner(model=UsageLimitStopModel(model), caps=self._caps)
+        try:
+            return delegate.run(spec)
+        except UsageLimitReachedError as stop:
+            return EvalRun.skipped(spec.name, f"{USAGE_LIMIT_REACHED_REASON}: {stop}")
 
     def _resolve_model_or_skip(self, spec: EvalSpec) -> Model | None:
         """The injected model, else a real ``AnthropicModel``; ``None`` when the key is absent.
@@ -117,6 +137,59 @@ class AnthropicApiRunner:
                 raise AnthropicApiKeyMissingError(msg) from exc
             return None
         return _build_anthropic_model(spec, api_key)
+
+
+#: The Messages API shares ``invalid_request_error`` across every 400, so the message is its only discriminator.
+_USAGE_LIMIT_MESSAGE = "specified api usage limits"
+
+
+def usage_limit_stop(exc: ModelHTTPError) -> UsageLimitReachedError | None:
+    """The typed stop for the Messages API's usage-limit 400, read from its status and JSON body; else ``None``."""
+    if exc.status_code != HTTPStatus.BAD_REQUEST or not isinstance(exc.body, dict):
+        return None
+    error = exc.body.get("error")
+    message = error.get("message") if isinstance(error, dict) else None
+    if not isinstance(message, str) or _USAGE_LIMIT_MESSAGE not in message.casefold():
+        return None
+    return UsageLimitReachedError(message)
+
+
+@contextmanager
+def _raise_usage_limit_stop() -> Iterator[None]:
+    try:
+        yield
+    except ModelHTTPError as exc:
+        stop = usage_limit_stop(exc)
+        if stop is None:
+            raise
+        raise stop from exc
+
+
+class UsageLimitStopModel(WrapperModel):
+    """Raise the usage-limit 400 below the harness session, which grades every provider HTTP error as a failed run."""
+
+    async def request(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+    ) -> ModelResponse:
+        with _raise_usage_limit_stop():
+            return await super().request(messages, model_settings, model_request_parameters)
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[Any] | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        with _raise_usage_limit_stop():
+            async with super().request_stream(
+                messages, model_settings, model_request_parameters, run_context
+            ) as response_stream:
+                yield response_stream
 
 
 def _build_anthropic_model(spec: EvalSpec, api_key: str) -> Model:
@@ -150,4 +223,10 @@ def build_anthropic_api_eval_runner(
     return AnthropicApiRunner(caps=caps, require_executed=require_executed)
 
 
-__all__ = ["AnthropicApiKeyMissingError", "AnthropicApiRunner", "build_anthropic_api_eval_runner"]
+__all__ = [
+    "AnthropicApiKeyMissingError",
+    "AnthropicApiRunner",
+    "UsageLimitStopModel",
+    "build_anthropic_api_eval_runner",
+    "usage_limit_stop",
+]

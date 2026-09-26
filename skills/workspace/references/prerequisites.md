@@ -13,6 +13,7 @@ Scripts that need Bash 5+ features (associative arrays) include a version guard 
 ## Required Tools
 
 - `bash` 5+ (macOS: `brew install bash` and ensure it's first on `$PATH`; system `/bin/bash` is 3.x)
+- GNU `timeout` (coreutils; macOS: `brew install coreutils`, then put the gnubin directory first on PATH — `brew --prefix coreutils`/libexec/gnubin — or `dev/push-gate.sh` finds only `gtimeout`, which it also accepts) — `dev/push-gate.sh` caps its conformance core with it and refuses to run unbounded without it
 - `zsh` or `bash` (scripts are shell functions sourced into the current shell)
 - `git` (worktree lifecycle, branch detection, cleanup)
 - `docker` with `docker compose` plugin

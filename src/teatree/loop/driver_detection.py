@@ -6,17 +6,15 @@ driver is present (a DRIVERLESS slot looks healthy but never ticks). It lives on
 the loop side because core must not import ``teatree.loop`` — and the management
 commands that claim ownership already reach into ``teatree.loop``.
 
-Substrate-agnostic: the probes read the LIVE ``loop_runner_enabled`` setting and
-the LIVE worker flock, so the same code is correct before and after the
-loop-runner default flip — only the observed distribution of values changes.
-This is the observability net for that flip (a slot claimed while the worker is
-enabled-but-not-yet-running detects as driverless and says so).
+Substrate-agnostic: the probes read the LIVE fleet-admission verdict and the LIVE
+worker flock, so a slot claimed while the fleet admits work but no worker is yet
+running detects as driverless and says so.
 """
 
-from teatree.config.resolution import get_effective_settings
 from teatree.core.loop_lease_liveness import namespace_is_attributable
 from teatree.core.models import LoopDriver
 from teatree.core.session_identity import owner_record
+from teatree.loops.enable_verdict import fleet_admits_work
 from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held, pid_alive
 
 
@@ -26,11 +24,11 @@ def detect_driver(session_id: str) -> str:
     Deterministic precedence, each probe cheap and fail-safe-to-``""`` (any probe
     exception is swallowed — detection NEVER raises into a claim):
 
-    - :data:`~teatree.core.models.LoopDriver.LOOP_RUNNER` iff the
-        ``loop_runner_enabled`` kill-switch resolves ON AND a live worker holds the
-        ``WORKER_SINGLETON`` kernel flock. A flag that is ON with a FREE flock is
-        NOT ``loop_runner`` — that is precisely the "worker enabled but not running"
-        hole the DRIVERLESS warning must name.
+    - :data:`~teatree.core.models.LoopDriver.LOOP_RUNNER` iff the active preset
+        admits work AND a live worker holds the ``WORKER_SINGLETON`` kernel flock. A
+        fleet that admits work with a FREE flock is NOT ``loop_runner`` — that is
+        precisely the "work admitted but nothing running" hole the DRIVERLESS warning
+        must name.
     - :data:`~teatree.core.models.LoopDriver.SELF_PUMP` iff the loop-registry
         ``t3-loop-tick-owner`` record names THIS ``session_id`` with a live pid (the
         Stop self-pump keeps the owning session alive to fire ticks).
@@ -52,14 +50,14 @@ def detect_driver(session_id: str) -> str:
 
 
 def _worker_is_driving() -> bool:
-    """Whether the loop runner is both ENABLED and actually holding the worker flock."""
+    """Whether the fleet admits work AND a worker is actually holding the flock."""
     try:
-        if not get_effective_settings().loop_runner_enabled:
+        if not fleet_admits_work():
             return False
         # Kernel-flock truth, not ``read_pid`` — a recycled pid can never fake a live
-        # worker. A flag ON with a FREE flock is the "enabled but not running" hole.
+        # worker. Admitted work with a FREE flock is the "nothing running" hole.
         return flock_is_held(WORKER_SINGLETON)
-    except Exception:  # noqa: BLE001 — a settings/flock read failure is not a live worker
+    except Exception:  # noqa: BLE001 — a verdict/flock read failure is not a live worker
         return False
 
 

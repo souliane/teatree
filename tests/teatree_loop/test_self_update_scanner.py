@@ -38,7 +38,7 @@ from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.schema_readiness import invalidate_schema_readiness
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.self_update import SelfUpdateScanner
+from teatree.loop.scanners.self_update import CI_UNVERIFIED_REASON, CI_VERIFIED_REASON, SelfUpdateScanner
 from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
 from teatree.loop.scanners.self_update_schema import SchemaReconcile, SchemaReconcileState
 
@@ -161,14 +161,10 @@ class SelfUpdateScannerBehaviorTests(TestCase):
         self.addCleanup(_rmtree_safe, d)
         return d
 
-    def _scanner(self, *, repos: list[tuple[str, Path]], cadence_hours: int = 1) -> SelfUpdateScanner:
+    def _scanner(self, *, repos: list[tuple[str, Path]]) -> SelfUpdateScanner:
         # Default to a GREEN CI verdict so these decision-ladder tests exercise
         # the pull path; the CI-gate fail-closed cases live in their own class.
-        return SelfUpdateScanner(
-            repos=tuple(repos),
-            cadence_hours=cadence_hours,
-            ci_status=_StubCiStatus(CiVerdict.GREEN),
-        )
+        return SelfUpdateScanner(repos=tuple(repos), ci_status=_StubCiStatus(CiVerdict.GREEN))
 
     def test_clean_default_branch_with_trailing_commit_is_fast_forwarded(self) -> None:
         """The canonical success path: clone is one commit behind, scanner ff-pulls it."""
@@ -228,11 +224,10 @@ class SelfUpdateScannerBehaviorTests(TestCase):
         assert signal.kind == "self_update.skipped"
         assert "branch" in signal.payload["reason"].lower()
 
-    def test_cadence_not_elapsed_skips_without_running_git(self) -> None:
-        """A recent successful pull within the cadence window short-circuits the scan."""
+    def test_a_recent_marker_does_not_suppress_the_pull(self) -> None:
+        """The row is the timer: a marker minutes old is a record, not a gate."""
         clone = self._tmp / "teatree"
-        _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
-        # Pre-record a marker observed 5 minutes ago — the 1-hour cadence has NOT elapsed.
+        old_sha = _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
         SelfUpdateMarker.objects.create(
             repo_label="teatree",
             repo_path=str(clone),
@@ -240,28 +235,8 @@ class SelfUpdateScannerBehaviorTests(TestCase):
             last_pulled_sha="deadbeef",
             last_pull_at=timezone.now() - _dt.timedelta(minutes=5),
         )
-        old_sha = _head_sha(clone)
 
-        signals = self._scanner(repos=[("teatree", clone)], cadence_hours=1).scan()
-
-        # Clone was NOT touched — the cadence gate prevented the git work.
-        assert _head_sha(clone) == old_sha
-        assert len(signals) == 1
-        assert signals[0].kind == "self_update.cadence_not_elapsed"
-
-    def test_cadence_elapsed_runs_the_pull(self) -> None:
-        """An old marker re-enables the per-tick pull."""
-        clone = self._tmp / "teatree"
-        old_sha = _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
-        SelfUpdateMarker.objects.create(
-            repo_label="teatree",
-            repo_path=str(clone),
-            last_outcome="up_to_date",
-            last_pulled_sha=old_sha,
-            last_pull_at=timezone.now() - _dt.timedelta(hours=2),
-        )
-
-        signals = self._scanner(repos=[("teatree", clone)], cadence_hours=1).scan()
+        signals = self._scanner(repos=[("teatree", clone)]).scan()
 
         assert _head_sha(clone) != old_sha
         assert len(signals) == 1
@@ -338,6 +313,7 @@ class SelfUpdateCiGateTests(TestCase):
             repos=(("teatree", self.clone),),
             ci_status=ci_status,
             require_green_main=require_green_main,
+            auto_update_reinstall=True,
         )
         return scanner.scan()
 
@@ -381,6 +357,37 @@ class SelfUpdateCiGateTests(TestCase):
         assert signals[0].kind == "self_update.updated"
         assert ci.queried == [], "gate off must not query the CI source at all"
 
+    def test_gate_off_queues_the_reinstall_marked_ci_unverified(self) -> None:
+        # The reinstall rides exactly the tree the pull gate admitted. With the gate
+        # off that tree is unverified, and a reader of the signal or the marker must
+        # be able to tell that from a green-gated pull.
+        signals = self._scan(ci_status=_StubCiStatus(CiVerdict.RED), require_green_main=False)
+
+        assert PendingReinstall.objects.filter(repo_label="teatree").exists()
+        assert CI_UNVERIFIED_REASON in signals[0].payload["reason"]
+        assert CI_UNVERIFIED_REASON in SelfUpdateMarker.objects.get(repo_label="teatree").last_reason
+
+    def test_green_gated_pull_queues_the_reinstall_marked_ci_verified(self) -> None:
+        signals = self._scan(ci_status=_StubCiStatus(CiVerdict.GREEN))
+
+        assert PendingReinstall.objects.filter(repo_label="teatree").exists()
+        assert CI_VERIFIED_REASON in signals[0].payload["reason"]
+        assert CI_VERIFIED_REASON in SelfUpdateMarker.objects.get(repo_label="teatree").last_reason
+
+    def _assert_non_green_queues_nothing(self, verdict: CiVerdict) -> None:
+        self._scan(ci_status=_StubCiStatus(verdict))
+
+        assert _head_sha(self.clone) == self.old_sha
+        assert not PendingReinstall.objects.filter(repo_label="teatree").exists()
+
+    def test_a_gated_red_queues_no_reinstall(self) -> None:
+        # The invariant the corrected prose claims: with the gate on, a non-green
+        # default branch neither pulls nor leaves anything queued to reinstall.
+        self._assert_non_green_queues_nothing(CiVerdict.RED)
+
+    def test_a_gated_unknown_queues_no_reinstall(self) -> None:
+        self._assert_non_green_queues_nothing(CiVerdict.UNKNOWN)
+
     def test_ci_not_queried_when_clone_already_up_to_date(self) -> None:
         # An already-current clone is up_to_date BEFORE the CI gate — no remote call.
         up_to_date = self._tmp / "current"
@@ -404,7 +411,7 @@ class SelfUpdateCiGateTests(TestCase):
 
 
 class SelfUpdateDeferredReinstallQueueTests(TestCase):
-    """#1760: ``auto_update_reinstall`` queues a deferred reinstall on update only."""
+    """#1760: with ``auto_update_reinstall`` on, an actual update queues a deferred reinstall."""
 
     def setUp(self) -> None:
         import tempfile  # noqa: PLC0415 — test-local
@@ -416,24 +423,25 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
         self.clone = self._tmp / "teatree"
         self.old_sha = _clone_trailing_by_one_commit(origin=self.origin, clone=self.clone)
 
-    def _scanner(self, *, auto_update_reinstall: bool) -> SelfUpdateScanner:
+    def _scanner(self) -> SelfUpdateScanner:
         return SelfUpdateScanner(
             repos=(("teatree", self.clone),),
             ci_status=_StubCiStatus(CiVerdict.GREEN),
-            auto_update_reinstall=auto_update_reinstall,
+            auto_update_reinstall=True,
         )
 
-    def test_update_queues_pending_reinstall_when_opted_in(self) -> None:
-        self._scanner(auto_update_reinstall=True).scan()
+    def test_an_update_queues_nothing_until_the_reinstall_is_opted_into(self) -> None:
+        SelfUpdateScanner(repos=(("teatree", self.clone),), ci_status=_StubCiStatus(CiVerdict.GREEN)).scan()
+
+        assert _head_sha(self.clone) != self.old_sha
+        assert not PendingReinstall.objects.filter(repo_label="teatree").exists()
+
+    def test_an_actual_update_queues_the_pending_reinstall(self) -> None:
+        self._scanner().scan()
 
         row = PendingReinstall.objects.get(repo_label="teatree")
         assert row.state == PendingReinstall.State.PENDING
         assert row.target_sha == _head_sha(self.clone)
-
-    def test_update_does_not_queue_when_flag_off(self) -> None:
-        self._scanner(auto_update_reinstall=False).scan()
-
-        assert not PendingReinstall.objects.filter(repo_label="teatree").exists()
 
     def test_no_queue_when_nothing_advanced(self) -> None:
         current = self._tmp / "current"
@@ -441,7 +449,6 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
         scanner = SelfUpdateScanner(
             repos=(("teatree", current),),
             ci_status=_StubCiStatus(CiVerdict.GREEN),
-            auto_update_reinstall=True,
         )
 
         scanner.scan()
@@ -459,7 +466,7 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
             "upsert_pending",
             side_effect=RuntimeError("db gone"),
         ):
-            signals = self._scanner(auto_update_reinstall=True).scan()
+            signals = self._scanner().scan()
 
         assert signals[0].kind == "self_update.updated", "the tick must still report the update"
         assert _head_sha(self.clone) != self.old_sha
@@ -478,7 +485,7 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
             "upsert_pending",
             side_effect=RuntimeError("db gone"),
         ):
-            signals = self._scanner(auto_update_reinstall=True).scan()
+            signals = self._scanner().scan()
 
         assert REINSTALL_QUEUE_FAILED_REASON in signals[0].payload["reason"]
         marker = SelfUpdateMarker.objects.get(repo_label="teatree")
@@ -646,14 +653,7 @@ def _rmtree_safe(path: str) -> None:
 
 
 class SelfUpdateScannerWiringTests(TestCase):
-    """The wiring layer reads the cadence setting and enumerates target repos."""
-
-    def test_default_cadence_setting_is_one_hour(self) -> None:
-        """``UserSettings.self_update_cadence_hours`` defaults to 1 hour."""
-        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
-
-        settings = UserSettings()
-        assert settings.self_update_cadence_hours == 1
+    """The wiring layer honours the escape hatch and enumerates target repos."""
 
     def test_self_update_disabled_setting_defaults_off(self) -> None:
         """``self_update_disabled`` defaults to ``False`` — scanner is on by default."""
@@ -668,26 +668,21 @@ class SelfUpdateScannerWiringTests(TestCase):
 
         assert UserSettings().auto_update_require_green_main is True
 
-    def test_auto_update_reinstall_defaults_off(self) -> None:
-        """``auto_update_reinstall`` defaults OFF — the new side-effect is opt-in (#1760)."""
-        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
-
-        assert UserSettings().auto_update_reinstall is False
-
-    def test_wiring_passes_ci_gate_and_reinstall_flags(self) -> None:
-        """The wiring helper plumbs the CI source + both #1760 flags into the scanner."""
+    def test_wiring_passes_the_ci_gate_into_the_scanner(self) -> None:
+        """The wiring helper plumbs the CI source + the #1760 fail-closed gate in."""
         from unittest.mock import patch  # noqa: PLC0415 — test-local
 
         from teatree.config import UserSettings  # noqa: PLC0415 — test-local
         from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415 — test-local
-        from teatree.loop.scanners.self_update_ci import GhMainCiStatus  # noqa: PLC0415 — test-local
+        from teatree.loop.scanners.self_update_ci import (  # noqa: PLC0415 — test-local
+            ForgeMainCiStatus,
+            GhMainCiStatus,
+            GlabMainCiStatus,
+        )
 
-        settings = UserSettings(auto_update_reinstall=True, auto_update_require_green_main=False)
+        settings = UserSettings(auto_update_require_green_main=False)
         with (
-            patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type("Cfg", (), {"user": settings})(),
-            ),
+            patch("teatree.loop.global_scanner_factories.get_effective_settings", return_value=settings),
             patch(
                 "teatree.loop.global_scanner_factories._collect_self_update_repos",
                 return_value=[("teatree", Path("/x/teatree"))],
@@ -695,12 +690,15 @@ class SelfUpdateScannerWiringTests(TestCase):
         ):
             scanner = _self_update_scanner()
         assert scanner is not None
-        assert isinstance(scanner.ci_status, GhMainCiStatus)
+        # The per-clone router, with BOTH arms wired: a clone whose origin is GitLab must
+        # reach a real verdict source, not the fail-closed UNKNOWN an unwired arm returns.
+        assert isinstance(scanner.ci_status, ForgeMainCiStatus)
+        assert isinstance(scanner.ci_status.github, GhMainCiStatus)
+        assert isinstance(scanner.ci_status.gitlab, GlabMainCiStatus)
         assert scanner.require_green_main is False
-        assert scanner.auto_update_reinstall is True
 
     def test_wiring_builds_scanner_when_repos_available(self) -> None:
-        """The wiring helper returns a scanner with the configured cadence."""
+        """The wiring helper returns a scanner over the enumerated clones."""
         from unittest.mock import patch  # noqa: PLC0415 — test-local
 
         from teatree.config import UserSettings  # noqa: PLC0415 — test-local
@@ -708,8 +706,8 @@ class SelfUpdateScannerWiringTests(TestCase):
 
         with (
             patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type("Cfg", (), {"user": UserSettings(self_update_cadence_hours=3)})(),
+                "teatree.loop.global_scanner_factories.get_effective_settings",
+                return_value=UserSettings(),
             ),
             patch(
                 "teatree.loop.global_scanner_factories._collect_self_update_repos",
@@ -718,7 +716,6 @@ class SelfUpdateScannerWiringTests(TestCase):
         ):
             scanner = _self_update_scanner()
         assert scanner is not None
-        assert scanner.cadence_hours == 3
         assert scanner.repos == (("teatree", Path("/x/teatree")),)
 
     def test_wiring_returns_none_when_disabled(self) -> None:
@@ -729,8 +726,8 @@ class SelfUpdateScannerWiringTests(TestCase):
         from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415 — test-local
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": UserSettings(self_update_disabled=True)})(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=UserSettings(self_update_disabled=True),
         ):
             scanner = _self_update_scanner()
         assert scanner is None
@@ -744,8 +741,8 @@ class SelfUpdateScannerWiringTests(TestCase):
 
         with (
             patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type("Cfg", (), {"user": UserSettings()})(),
+                "teatree.loop.global_scanner_factories.get_effective_settings",
+                return_value=UserSettings(),
             ),
             patch(
                 "teatree.loop.global_scanner_factories._collect_self_update_repos",
@@ -762,7 +759,7 @@ class SelfUpdateScannerWiringTests(TestCase):
         from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415 — test-local
         from teatree.loop.scanners.self_update import SelfUpdateScanner  # noqa: PLC0415 — test-local
 
-        fake_scanner = SelfUpdateScanner(repos=(("teatree", Path("/x")),), cadence_hours=1)
+        fake_scanner = SelfUpdateScanner(repos=(("teatree", Path("/x")),))
         with patch(
             "teatree.loop.global_scanner_factories._self_update_scanner",
             return_value=fake_scanner,
@@ -793,11 +790,7 @@ class SelfUpdateScannerStaleNoticeTests(TestCase):
         _seed_origin_with_two_commits(self.origin)
 
     def _scanner(self, clone: Path) -> SelfUpdateScanner:
-        return SelfUpdateScanner(
-            repos=(("teatree", clone),),
-            cadence_hours=1,
-            ci_status=_StubCiStatus(CiVerdict.GREEN),
-        )
+        return SelfUpdateScanner(repos=(("teatree", clone),), ci_status=_StubCiStatus(CiVerdict.GREEN))
 
     def test_dirty_clone_skip_emits_durable_notice(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415 — test-local

@@ -1,8 +1,8 @@
 """Global operational-health aggregator (PR-17, M6).
 
 Computes a single green / yellow / red verdict for "is the factory healthy right
-now" from deterministic durable signals — stale loop ticks, failed tasks,
-overlay-declared problems — and persists each as a :class:`KnownIssue` row so
+now" from deterministic durable signals — stale loop ticks, failed tasks, a RUN of
+harness-fault deaths, overlay-declared problems — and persists each as a :class:`KnownIssue` row so
 the verdict survives compaction and an operator can see *which* things are
 wrong, not just the color.
 
@@ -31,22 +31,24 @@ yellows; yellow = any non-critical signal; green otherwise.
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
+from django.db.models import Max
 from django.utils import timezone
 
 from teatree.core.cleanup.reclaim_pressure import reclaim_is_stalled
 from teatree.core.factory.dream_staleness import dream_fallen_behind
-from teatree.core.factory.fleet_policy_signal import fleet_policy_violation
 from teatree.core.factory.harness_provider_consistency import harness_provider_mismatches
+from teatree.core.factory.health_signal import HealthSignal, SignalCollection
 from teatree.core.factory.stalled_backlog import (
     STALLED_BACKLOG_THRESHOLD,
     STALLED_BACKLOG_WINDOW,
     stranded_ticket_count,
 )
 from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
+from teatree.core.modelkit.task_failure_taxonomy import is_harness_fault
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.overlay_loader import get_all_overlays
@@ -66,46 +68,9 @@ _TICK_OVERRUN_MULTIPLE = 2
 _FAILED_TASK_WINDOW = timedelta(hours=6)
 # Three concurrent yellows is the red threshold (spec).
 _RED_YELLOW_THRESHOLD = 3
-
-
-@dataclass(frozen=True, slots=True)
-class HealthSignal:
-    """One live "something is wrong" observation feeding the aggregator.
-
-    *fingerprint* is the stable dedupe key — the same problem seen on two ticks
-    carries the same fingerprint so it updates one :class:`KnownIssue` row
-    rather than piling up duplicates. *severity* is a
-    :class:`KnownIssue.Severity` value (``critical`` / ``warning``). *kind* is a
-    coarse machine label for the signal family; *overlay* scopes it; *summary*
-    is the human line; *evidence_url* is the clickable jump-to-proof link.
-    """
-
-    fingerprint: str
-    severity: str
-    summary: str
-    kind: str = ""
-    overlay: str = ""
-    evidence_url: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class SignalCollection:
-    """What a health read SAW, and which sources it could not read at all (#4354).
-
-    ``signals`` are the live observations. ``unread`` names every source whose read
-    FAILED — an overlay that raised, a DB query that errored, a whole collector that
-    blew up. The two are kept apart because both a failed read and an all-clear read
-    contribute zero signals, and :meth:`KnownIssueManager.reconcile` treats a missing
-    fingerprint as RESOLVED: collapsing them retires an issue nothing has fixed.
-    """
-
-    signals: tuple[HealthSignal, ...] = ()
-    unread: tuple[str, ...] = ()
-
-    @property
-    def complete(self) -> bool:
-        """True iff every source answered, so an absent fingerprint really did clear."""
-        return not self.unread
+# Consecutive harness-fault deaths that make the factory RED. Two is a coincidence a
+# retry explains; the incident that motivated it ran six in a row and 53 of 60.
+_CONSECUTIVE_CRASH_THRESHOLD = 3
 
 
 class HealthStatus(StrEnum):
@@ -118,10 +83,19 @@ class HealthStatus(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class HealthReport:
-    """The computed verdict plus the open issues that produced it."""
+    """The computed verdict, the open issues that produced it, and WHEN it was measured.
+
+    ``measured_at`` is not decoration. This verdict is persisted state that only
+    :func:`reconcile_health` refreshes, so a consumer that renders it without a
+    date renders "checked, clear" and "nobody has looked since Tuesday"
+    identically — which is how a hours-old finding circulates as current. ``None``
+    means nothing dates the registry, and a consumer must say so rather than
+    round an unknown age down to *now*.
+    """
 
     status: HealthStatus
     open_issues: tuple[KnownIssue, ...]
+    measured_at: datetime | None = None
 
     @property
     def open_count(self) -> int:
@@ -271,6 +245,51 @@ def _failed_task_signals() -> SignalCollection:
     )
 
 
+def _consecutive_harness_crash_signals() -> SignalCollection:
+    """One CRITICAL when the last :data:`_CONSECUTIVE_CRASH_THRESHOLD` finished tasks ALL died in the harness.
+
+    :func:`_failed_task_signals` above collapses any number of failures into a single
+    WARNING, and the verdict needs three concurrent warnings to redden — so a factory
+    where every single dispatch crashes reports YELLOW, forever. That is the fail-open
+    this collector closes: a RUN of harness faults is not a warning, it is a factory
+    completing nothing, and it must be impossible for it to read healthy.
+
+    Consecutive over TERMINAL tasks in id order, so one completion anywhere in the run
+    clears it — that is what separates "the harness is down" from "some tasks fail".
+    Fail-open, naming itself ``unread`` on a read it could not make.
+    """
+    try:
+        from django.apps import apps  # noqa: PLC0415 — deferred so the app registry is only touched at read time
+
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        recent = list(
+            task_model.objects.filter(status__in=("completed", "failed"))
+            .order_by("-pk")
+            .values_list("status", "failure_kind")[:_CONSECUTIVE_CRASH_THRESHOLD],
+        )
+    except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
+        warn_throttled(logger, "health-harness-crash", "harness-crash health read failed — skipped", exc_info=True)
+        return SignalCollection(unread=("_consecutive_harness_crash_signals",))
+    if len(recent) < _CONSECUTIVE_CRASH_THRESHOLD:
+        return SignalCollection()
+    if not all(status == "failed" and is_harness_fault(kind) for status, kind in recent):
+        return SignalCollection()
+    kinds = ", ".join(sorted({kind for _, kind in recent}))
+    return SignalCollection(
+        (
+            HealthSignal(
+                fingerprint="consecutive-harness-crashes",
+                severity=KnownIssue.Severity.CRITICAL,
+                kind="harness_crash_run",
+                summary=(
+                    f"the last {_CONSECUTIVE_CRASH_THRESHOLD} finished tasks all died in the harness ({kinds}) "
+                    f"— the factory is dispatching and completing nothing"
+                ),
+            ),
+        )
+    )
+
+
 def _stalled_backlog_signals() -> SignalCollection:
     """One CRITICAL when admitted work has been left with no execution path (#4704).
 
@@ -320,29 +339,6 @@ def _harness_provider_consistency_signals() -> SignalCollection:
     ]
     unread = [f"harness-provider-pair:{scope}" for scope in unread_scopes]
     return SignalCollection(tuple(signals), tuple(unread))
-
-
-def _fleet_loop_policy_signals() -> SignalCollection:
-    """One WARNING when this box's fleet loop declaration is unsatisfiable.
-
-    What "unsatisfiable" means is :mod:`teatree.core.factory.fleet_policy_signal` —
-    this turns that transient stderr warning into a durable :class:`KnownIssue` row
-    that clears on its own once the repo variable is fixed. An env read cannot
-    fail, so this collector has no ``unread`` state of its own.
-    """
-    reason = fleet_policy_violation()
-    if not reason:
-        return SignalCollection()
-    return SignalCollection(
-        (
-            HealthSignal(
-                fingerprint="fleet-loop-policy-contradiction",
-                severity=KnownIssue.Severity.WARNING,
-                kind="config_pair_drift",
-                summary=f"fleet loop policy: {reason}",
-            ),
-        )
-    )
 
 
 def _admission_pressure_signals() -> SignalCollection:
@@ -458,10 +454,10 @@ _COLLECTORS = (
     _overlay_health_signals,
     _stale_tick_signals,
     _failed_task_signals,
+    _consecutive_harness_crash_signals,
     _stalled_backlog_signals,
     _dream_staleness_signals,
     _harness_provider_consistency_signals,
-    _fleet_loop_policy_signals,
     _admission_pressure_signals,
     _reclaim_stall_signals,
 )
@@ -527,6 +523,17 @@ def _status_from_issues(issues: Iterable[KnownIssue]) -> HealthStatus:
     return HealthStatus.GREEN
 
 
+def _registry_touched_at() -> datetime | None:
+    """The last time a reconcile touched the registry at all, across ALL rows.
+
+    Resolved rows count. A clean verdict has no open issue to date it, and green
+    is the verdict whose age matters most — it says nothing about whether anything
+    looked. The freshest ``last_seen`` in the whole table is the one durable
+    record of when the aggregator last ran.
+    """
+    return KnownIssue.objects.aggregate(latest=Max("last_seen"))["latest"]
+
+
 def read_health() -> HealthReport:
     """Return the verdict + open issues from the persisted rows (read-only).
 
@@ -536,10 +543,11 @@ def read_health() -> HealthReport:
     """
     try:
         issues = tuple(KnownIssue.objects.open())
+        measured_at = _registry_touched_at()
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
         warn_throttled(logger, "health-read", "open-issue read failed — chip degraded to green", exc_info=True)
-        return HealthReport(status=HealthStatus.GREEN, open_issues=())
-    return HealthReport(status=_status_from_issues(issues), open_issues=issues)
+        return HealthReport(status=HealthStatus.GREEN, open_issues=(), measured_at=None)
+    return HealthReport(status=_status_from_issues(issues), open_issues=issues, measured_at=measured_at)
 
 
 def reconcile_health() -> HealthReport:

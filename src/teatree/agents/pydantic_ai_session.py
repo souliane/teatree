@@ -2,7 +2,7 @@
 
 Split out of :mod:`teatree.agents.harness` (module-health LOC cap): the session adapts
 a pydantic_ai run into the SAME ``claude_agent_sdk`` message vocabulary every
-harness backend yields, so the driver (:func:`teatree.agents.runner._collect`) never
+harness backend yields, so the driver (:func:`teatree.agents.runner_stream._collect`) never
 special-cases the transport. It depends on neither the ``Harness`` protocol nor the registry
 — only the message vocabulary and the Lane-B compaction policy — so it lives below the
 harness module with no import cycle. Re-exported from ``teatree.agents.harness`` for
@@ -11,33 +11,40 @@ back-compat (``from teatree.agents.harness import PydanticAiHarnessSession``).
 
 import asyncio
 import json
-import re
-import time
-import uuid
-from collections.abc import AsyncIterable, AsyncIterator, Iterator
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterator, Sequence
 from contextlib import suppress
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Final
 
 from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock
-from claude_agent_sdk.types import RateLimitInfo
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UnexpectedModelBehavior, UsageLimitExceeded
-from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from teatree.agents.lane_b.compaction import CompactionPolicy, compact_history
-from teatree.agents.runner_failure_taxonomy import HARD_REFUSAL_STATUSES
-from teatree.llm.anthropic_limits import believable_refusal_reset
+from teatree.agents.provider_refusal import hard_refusal_event
+from teatree.agents.pydantic_ai_turn import (
+    SessionRun,
+    ToolCallEntry,
+    ToolCallRecord,
+    TurnSpend,
+    egress_block_in,
+    retry_text,
+)
+from teatree.llm.anthropic_limits import EgressBlockedError
 
 if TYPE_CHECKING:
     from pydantic_ai import AgentRunResult
     from pydantic_ai.messages import AgentStreamEvent, ModelMessage
     from pydantic_ai.tools import RunContext
-
-#: The response-usage keys A metered OpenAI-compatible endpoint may
-#: carry its own per-request cost under, when pydantic_ai threads it through ``RunUsage.details``.
-_ROUTER_COST_KEYS = ("cost", "cost_usd", "total_cost", "total_cost_usd")
 
 #: The pydantic_ai provider/run failures a turn maps onto an ERROR ``ResultMessage``
 #: instead of letting them escape as a raw exception. NARROW on purpose — it covers the
@@ -48,7 +55,8 @@ _ROUTER_COST_KEYS = ("cost", "cost_usd", "total_cost", "total_cost_usd")
 #: ``sdk_error`` FAILED-with-traceback rather than being laundered into a transport
 #: failure; and ``asyncio.CancelledError`` is untouched (it is not an ``Exception``), so
 #: the interrupt / external-cancel disambiguation in :meth:`receive_response` stays intact.
-_RUN_ERRORS = (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded)
+# openai 3 re-raises a request hook's own exception unwrapped, so the egress refusal is caught by type too.
+_RUN_ERRORS = (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded, EgressBlockedError)
 
 #: The terminal ``ResultMessage.subtype`` a max-tokens truncation is surfaced under by
 #: :meth:`PydanticAiHarnessSession.receive_response`. Shared with the headless driver
@@ -57,39 +65,61 @@ _RUN_ERRORS = (ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded)
 MAX_TOKENS_TRUNCATION_SUBTYPE: Final[str] = "error_max_tokens"
 
 
-def _router_reported_cost(run_usage: object) -> float | None:
-    """The metered router's OWN reported cost from a pydantic_ai run usage, or ``None`` (#3157 E5).
-
-    A metered OpenAI-compatible endpoint knows the real per-request cost; core only
-    estimates it. When pydantic_ai surfaces that figure in ``RunUsage.details``, record THAT
-    number (flagged not-estimated) instead of the price-table estimate. Absent (the common case
-    today) → ``None``, so the estimate is used and flagged as such. Best-effort: any cost-like
-    key, coerced to a non-negative float.
-    """
-    details = getattr(run_usage, "details", None)
-    if not isinstance(details, dict):
-        return None
-    for key in _ROUTER_COST_KEYS:
-        value = details.get(key)
-        if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
-            return float(value)
-    return None
-
-
-async def _drain_events(_ctx: "RunContext[None]", events: "AsyncIterable[AgentStreamEvent]") -> None:
+class _StreamedToolCapture:
     """The ``event_stream_handler`` whose PRESENCE keeps the run on the streaming path.
 
     :meth:`~pydantic_ai.agent.AbstractAgent.run` issues a NON-streamed model request
     unless an ``event_stream_handler`` is supplied (its ``_needs_streaming`` branch),
     and a long coding turn must stay streamed — the provider rejects a non-streamed
-    request whose token ceiling implies a multi-minute completion. So this exists to
-    select the transport, not to observe it: it only drains, which is exactly what
-    ``run`` does to whatever a handler leaves behind. The turn's tool calls and text
-    are read afterwards off the finished run's own message history
-    (:func:`_tool_blocks_since`), the same vocabulary either transport yields.
+    request whose token ceiling implies a multi-minute completion.
+
+    It also RECORDS each tool call/result part as it goes, which is the only record of
+    them a turn that RAISES leaves behind: ``run`` returns no result on the error path,
+    so the finished-history read (:func:`_tool_blocks_since`) has nothing to read and
+    the whole trajectory is lost. A model that issued its tool call correctly and then
+    answered nothing exhausts pydantic_ai's single output retry, and the run was graded
+    as if it had called nothing at all. A successful turn ignores this capture and still
+    reads the run's own history, so the recorded path is unchanged.
     """
-    async for _event in events:
-        pass
+
+    def __init__(self, observer: "Callable[[AgentStreamEvent], None] | None" = None) -> None:
+        self._parts: list[ToolCallPart | ToolReturnPart | RetryPromptPart] = []
+        self._calls: list[ToolCallRecord] = []
+        self._observer = observer
+
+    async def __call__(self, _ctx: "RunContext[None]", events: "AsyncIterable[AgentStreamEvent]") -> None:
+        # Keyed on the EVENT, never on the part it exposes: pydantic_ai surfaces ONE
+        # ``ToolCallPart`` through THREE events (``PartStartEvent``, ``PartEndEvent`` and
+        # ``FunctionToolCallEvent``), so a part-typed filter records every call three
+        # times and a turn-budget assertion reads 3x the calls the model actually made.
+        # These two fire exactly once per call and once per result.
+        async for event in events:
+            if self._observer is not None:
+                self._observer(event)
+            if isinstance(event, FunctionToolCallEvent | FunctionToolResultEvent):
+                self._parts.append(event.part)
+            if isinstance(event, FunctionToolCallEvent):
+                self._calls.append(ToolCallRecord.start(event.part))
+            elif isinstance(event, FunctionToolResultEvent) and (call := self._open_call(event.tool_call_id)):
+                call.finish(event.part)
+
+    def blocks(self) -> "Iterator[AssistantMessage]":
+        """The captured parts in the seam's vocabulary, in the order the run produced them."""
+        for part in self._parts:
+            yield _tool_call_message(part) if isinstance(part, ToolCallPart) else _tool_result_message(part)
+
+    def has_tool_calls(self) -> bool:
+        return any(isinstance(part, ToolCallPart) for part in self._parts)
+
+    def trajectory(self) -> list[ToolCallEntry]:
+        """Every tool call the turn made, success or failure, in the order the model issued them."""
+        return [call.as_record() for call in self._calls]
+
+    def _open_call(self, tool_call_id: str) -> ToolCallRecord | None:
+        # Providers may reuse a call id across requests, so a result pairs with the latest unanswered call.
+        return next(
+            (call for call in reversed(self._calls) if call.tool_call_id == tool_call_id and not call.returned), None
+        )
 
 
 class _MaxTokensTruncationError(RuntimeError):
@@ -136,7 +166,7 @@ def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[
     :class:`~claude_agent_sdk.ToolResultBlock` (``is_error`` set for a refusal),
     each carried in its own :class:`~claude_agent_sdk.AssistantMessage`. This is
     what turns the ``pydantic_ai`` lane from text-in/text-out into a tool-emitting
-    session the driver (:func:`teatree.agents.runner._collect`) sees in the same
+    session the driver (:func:`teatree.agents.runner_stream._collect`) sees in the same
     vocabulary the ``claude_sdk`` lane yields. *start* is the message count of the
     (compacted) seed history, so only THIS turn's messages are mapped.
     """
@@ -144,28 +174,56 @@ def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[
         if isinstance(message, ModelResponse):
             for part in message.parts:
                 if isinstance(part, ToolCallPart):
-                    yield AssistantMessage(
-                        content=[ToolUseBlock(id=part.tool_call_id, name=part.tool_name, input=_as_input(part.args))],
-                        model="",
-                    )
+                    yield _tool_call_message(part)
         elif isinstance(message, ModelRequest):
             for part in message.parts:
-                if isinstance(part, ToolReturnPart):
-                    yield AssistantMessage(
-                        content=[ToolResultBlock(tool_use_id=part.tool_call_id, content=str(part.content))],
-                        model="",
-                    )
-                elif isinstance(part, RetryPromptPart):
-                    yield AssistantMessage(
-                        content=[
-                            ToolResultBlock(
-                                tool_use_id=part.tool_call_id or "",
-                                content=_retry_text(part),
-                                is_error=True,
-                            )
-                        ],
-                        model="",
-                    )
+                if isinstance(part, ToolReturnPart | RetryPromptPart):
+                    yield _tool_result_message(part)
+
+
+#: pydantic_ai's message when a run exhausts its OUTPUT-retry budget. Its
+#: empty-or-non-actionable-response path (``_agent_graph.consume_output_retry``, called with
+#: no ``error``) raises it ``from None``; every other path that raises this same text attaches
+#: a cause, so a ``None`` ``__cause__`` identifies the empty-response case alone.
+_OUTPUT_RETRY_EXHAUSTED_PREFIX = "Exceeded maximum output retries"
+
+
+def _is_quiet_turn_end(exc: Exception, captured: "_StreamedToolCapture") -> bool:
+    """A model that did its work and then answered nothing — a turn END, not a provider failure.
+
+    An Anthropic model told to emit a tool call and nothing else returns an EMPTY response
+    afterwards, which pydantic_ai resubmits once and then raises on. The CLI-backed lane ends
+    such a turn normally, so treating it as an error is a transport divergence that discards a
+    complete trajectory. Requires captured tool calls: a run that produced NOTHING stays an
+    error, so the all-empty vacuous-green guard keeps its teeth.
+    """
+    return (
+        isinstance(exc, UnexpectedModelBehavior)
+        and str(exc).startswith(_OUTPUT_RETRY_EXHAUSTED_PREFIX)
+        and exc.__cause__ is None
+        and captured.has_tool_calls()
+    )
+
+
+def _tool_call_message(part: ToolCallPart) -> AssistantMessage:
+    """One ``ToolCallPart`` as the seam's tool-use message."""
+    return AssistantMessage(
+        content=[ToolUseBlock(id=part.tool_call_id, name=part.tool_name, input=_as_input(part.args))],
+        model="",
+    )
+
+
+def _tool_result_message(part: "ToolReturnPart | RetryPromptPart") -> AssistantMessage:
+    """One tool result as the seam's tool-result message; a ``RetryPromptPart`` is a gate refusal."""
+    if isinstance(part, ToolReturnPart):
+        return AssistantMessage(
+            content=[ToolResultBlock(tool_use_id=part.tool_call_id, content=str(part.content))],
+            model="",
+        )
+    return AssistantMessage(
+        content=[ToolResultBlock(tool_use_id=part.tool_call_id or "", content=retry_text(part), is_error=True)],
+        model="",
+    )
 
 
 def _as_input(args: object) -> dict[str, Any]:
@@ -185,12 +243,6 @@ def _as_input(args: object) -> dict[str, Any]:
     return {}
 
 
-def _retry_text(part: RetryPromptPart) -> str:
-    """The refusal text of a ``RetryPromptPart`` (a gate deny), as a plain string."""
-    content = part.content
-    return content if isinstance(content, str) else str(content)
-
-
 def _model_identity_usage(model_name: str) -> dict[str, Any]:
     """The ``model_usage`` map carrying ONLY the billed model's identity, no breakdown.
 
@@ -207,21 +259,6 @@ def _model_identity_usage(model_name: str) -> dict[str, Any]:
     return {model_name: {}}
 
 
-def _usage_payload(run_usage: RunUsage) -> dict[str, int]:
-    """The run's token counts in the ``ResultMessage.usage`` vocabulary the driver reads.
-
-    ONE mapping for the success and the error envelopes, because they diverged: the error
-    path carried no ``usage`` at all, so every provider/run failure on the metered lane
-    recorded no tokens even though the caller held the ``RunUsage`` all along (#4816).
-    """
-    return {
-        "input_tokens": run_usage.input_tokens,
-        "output_tokens": run_usage.output_tokens,
-        "cache_read_input_tokens": run_usage.cache_read_tokens,
-        "cache_creation_input_tokens": run_usage.cache_write_tokens,
-    }
-
-
 def _turns_made(run_usage: RunUsage) -> int:
     """The model requests the turn actually made — never zero.
 
@@ -234,53 +271,6 @@ def _turns_made(run_usage: RunUsage) -> int:
     ``1`` over-counted a multi-request run.
     """
     return max(run_usage.requests, 1)
-
-
-#: An ISO-8601 instant anywhere in a refusal body — the fallback when the router sends no
-#: ``Retry-After``. The observed shape is prose: ``"token cycle spend limit reached, resets
-#: at 2026-09-21T00:00:00Z"``, so the instant is extracted rather than parsed off a field.
-_ISO_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
-
-
-def _refusal_resets_at(exc: ModelHTTPError) -> int | None:
-    """When the provider says its refusal lifts, as a Unix timestamp — or ``None``.
-
-    Two rungs, structured first: ``Retry-After`` (which pydantic_ai already parses in both
-    its delta-seconds and HTTP-date forms), then an ISO-8601 instant in the body. BOTH are
-    bounded by :func:`believable_refusal_reset`, because neither is a window teatree can
-    verify and nothing downstream bounds a park at all: a body's first ISO-8601 instant is
-    as often the request's own ``created`` stamp as the reset, and a key ``expires_at``
-    parks the lane for years. Outside the band the answer is ``None``, which is SAFE
-    rather than a failure — ``effective_resets_at`` falls back to the cause's one-hour
-    horizon, so a rejected parse costs one extra hour of park and an accepted one is
-    capped at :data:`~teatree.llm.anthropic_limits.REFUSAL_RESET_CEILING`.
-    """
-    now = time.time()
-    if exc.retry_after is not None:
-        return believable_refusal_reset(now + exc.retry_after, now=now)
-    found = _ISO_INSTANT.search(str(exc.body or ""))
-    if found is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(found.group())
-    except ValueError:
-        return None
-    aware = parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-    return believable_refusal_reset(aware.timestamp(), now=now)
-
-
-def _hard_refusal_event(exc: ModelHTTPError, *, session_id: str) -> RateLimitEvent | None:
-    """The rejected window a 401/403 carries, or ``None`` for every other status.
-
-    A hard refusal parks the LANE — so it rides the channel the driver already drains
-    (``_collect`` → ``outcome.rate_limit_info`` → ``UsageWindowState``) rather than a new
-    one. ``rate_limit_type`` stays unset: the provider named no Anthropic window, and
-    ``limit_match`` classifies this from the status before it ever reads the typed field.
-    """
-    if exc.status_code not in HARD_REFUSAL_STATUSES:
-        return None
-    info = RateLimitInfo(status="rejected", resets_at=_refusal_resets_at(exc), raw={"status": exc.status_code})
-    return RateLimitEvent(rate_limit_info=info, uuid=uuid.uuid4().hex, session_id=session_id)
 
 
 class PydanticAiHarnessSession:
@@ -347,7 +337,7 @@ class PydanticAiHarnessSession:
         model_name: str,
         history: "list[ModelMessage] | None" = None,
         phase: str | None = None,
-        request_limit: int | None = None,
+        run: SessionRun | None = None,
     ) -> None:
         self._agent = agent
         self._model_name = model_name
@@ -356,19 +346,31 @@ class PydanticAiHarnessSession:
         # un-phased run stays history-identical to #2885 — a resumed thread is
         # sent verbatim, never trimmed.
         self._phase = phase
-        # The per-run sequential-request cap (the metered-lane guardrail). A positive
-        # value becomes ``UsageLimits(request_limit=...)`` on each run so a
-        # cheap-model maker can't drift on a long tool loop;
-        # ``None``/``<= 0`` leaves the run uncapped (the ``claude_sdk`` behaviour).
-        self._request_limit = request_limit
         # A stable per-session id stamped onto EVERY terminal ``ResultMessage``
         # (success and error), so the attempt recorder (:func:`headless._attempt_usage`)
         # persists a non-empty ``agent_session_id`` — the claude_sdk lane always
         # carries one; pydantic_ai has no server-side session, so teatree mints it.
-        self._session_id = uuid.uuid4().hex
+        # A harness mints it before building the provider, so the router is keyed on the same id.
+        self._run = run or SessionRun.start()
+        self._session_id = self._run.session_id
+        self._event_observer: Callable[[AgentStreamEvent], None] | None = None
+        self._hook_events: Sequence[object] | None = None
+        self._emitted_hook_events = 0
+        # A positive cap becomes ``UsageLimits(request_limit=...)`` on each run so a cheap-model
+        # maker can't drift on a long tool loop.
+        self._request_limit = self._run.request_limit
         self._pending_prompt: str | None = None
         self._active_task: asyncio.Task[AgentRunResult[str]] | None = None
         self._interrupted = False
+
+    def observe_transport_hooks(
+        self,
+        observer: "Callable[[AgentStreamEvent], None]",
+        events: "Sequence[object]",
+    ) -> None:
+        """Attach an optional transport's streamed-event observer and hook ledger."""
+        self._event_observer = observer
+        self._hook_events = events
 
     @property
     def history(self) -> "list[ModelMessage]":
@@ -387,7 +389,7 @@ class PydanticAiHarnessSession:
         """Drive one queued turn TO COMPLETION, yielding it in the ``claude_agent_sdk`` vocabulary.
 
         Driven by :meth:`~pydantic_ai.agent.AbstractAgent.run` — the graph-to-completion
-        API — with a no-op ``event_stream_handler`` (:func:`_drain_events`) to keep the
+        API — with a capturing ``event_stream_handler`` (:class:`_StreamedToolCapture`) to keep the
         provider request streamed. NOT ``run_stream``, which pydantic_ai documents as
         single-shot: it "will consider the first output matching the ``output_type`` to
         be the final output, [...] stop running the agent graph and [...] not execute any
@@ -429,6 +431,8 @@ class PydanticAiHarnessSession:
         # usage state and mutates it in place, so the error paths below still report
         # the requests the failed turn actually made.
         run_usage = RunUsage()
+        captured = _StreamedToolCapture(self._event_observer)
+        first_request = len(self._run.usage_tee.requests)
         try:
             task = asyncio.ensure_future(
                 self._agent.run(
@@ -436,7 +440,7 @@ class PydanticAiHarnessSession:
                     message_history=sent_history,
                     usage_limits=self._usage_limits(),
                     usage=run_usage,
-                    event_stream_handler=_drain_events,
+                    event_stream_handler=captured,
                 )
             )
             self._active_task = task
@@ -451,36 +455,18 @@ class PydanticAiHarnessSession:
                 raise
             finally:
                 self._active_task = None
-        except UsageLimitExceeded as exc:
-            # The run hit its OWN per-run request cap (``_request_limit``) — a genuine
-            # FAILED, NOT a park: its message names no rate/usage-limit phrase, so
-            # ``classify_limit`` never mistakes it for a recoverable window.
-            yield self._error_result(
-                exc, subtype="error_max_turns", num_turns=_turns_made(run_usage), run_usage=run_usage
-            )
-            return
-        except ModelHTTPError as exc:
-            refusal = _hard_refusal_event(exc, session_id=self._session_id)
-            if refusal is not None:
-                yield refusal
-            yield self._error_result(
-                exc,
-                subtype="error_during_execution",
-                num_turns=_turns_made(run_usage),
-                run_usage=run_usage,
-                api_error_status=exc.status_code,
-            )
-            return
-        except (ModelAPIError, UnexpectedModelBehavior) as exc:
-            # A provider/run error with no HTTP status (``ContentFilterError`` is a
-            # ``UnexpectedModelBehavior``, ``ModelHTTPError`` is caught above).
-            yield self._error_result(
-                exc, subtype="error_during_execution", num_turns=_turns_made(run_usage), run_usage=run_usage
-            )
+        except _RUN_ERRORS as exc:
+            spend = self._spend(run_usage, first_request, captured)
+            for hook_event in self._new_hook_events():
+                yield hook_event
+            for message in self._failed_turn_messages(exc, captured=captured, run_usage=run_usage, spend=spend):
+                yield message
             return
         all_messages = run_result.all_messages()
         self._history = all_messages
         text = run_result.output
+        for hook_event in self._new_hook_events():
+            yield hook_event
         if _hit_max_tokens(all_messages):
             yield self._error_result(
                 _MaxTokensTruncationError(
@@ -489,7 +475,7 @@ class PydanticAiHarnessSession:
                 ),
                 subtype=MAX_TOKENS_TRUNCATION_SUBTYPE,
                 num_turns=run_usage.requests,
-                run_usage=run_usage,
+                spend=self._spend(run_usage, first_request, captured),
             )
             return
         # Surface this turn's tool calls/results in the seam's tool-block
@@ -498,6 +484,7 @@ class PydanticAiHarnessSession:
         for tool_message in _tool_blocks_since(all_messages, len(sent_history)):
             yield tool_message
         yield AssistantMessage(content=[TextBlock(text=text)], model=self._model_name)
+        spend = self._spend(run_usage, first_request, captured)
         yield ResultMessage(
             subtype="success",
             duration_ms=0,
@@ -508,23 +495,79 @@ class PydanticAiHarnessSession:
             # turn ceiling evaluates. A hardcoded 1 left a runaway session unbounded.
             num_turns=run_usage.requests,
             session_id=self._session_id,
-            # #3157 E5: pass the metered router's OWN reported cost through when it surfaces
-            # one, so the attempt records the real figure (flagged not-estimated) instead of
-            # the price-table guess; ``None`` (the common case) falls back to the estimate.
-            total_cost_usd=_router_reported_cost(run_usage),
-            usage=_usage_payload(run_usage),
+            # #3157 E5: the metered router's OWN reported cost, so the attempt records the real
+            # figure (flagged not-estimated); ``None`` falls back to the price-table estimate.
+            total_cost_usd=spend.cost_usd,
+            usage=spend.usage,
             result=text,
-            model_usage=_model_identity_usage(self._model_name),
+            model_usage=_model_identity_usage(spend.model),
+        )
+
+    def _new_hook_events(self) -> "Iterator[object]":
+        """Yield hook events appended by an optional transport adapter exactly once."""
+        if self._hook_events is None:
+            return
+        pending = self._hook_events[self._emitted_hook_events :]
+        self._emitted_hook_events += len(pending)
+        yield from pending
+
+    def _failed_turn_messages(
+        self, exc: Exception, *, captured: _StreamedToolCapture, run_usage: RunUsage, spend: TurnSpend
+    ) -> "Iterator[AssistantMessage | RateLimitEvent | ResultMessage]":
+        """This turn's recovered trajectory, then the terminal message its failure maps to.
+
+        The captured tool blocks lead on EVERY path: a run that raises returns no result,
+        so the streamed capture is the only record of what the model did before it failed.
+        A hard 401/403 refusal also yields its rejected window ahead of the result (#4816).
+        """
+        yield from captured.blocks()
+        num_turns = _turns_made(run_usage)
+        if (egress := egress_block_in(exc)) is not None:
+            yield self._error_result(egress, subtype="error_during_execution", num_turns=num_turns, spend=spend)
+        elif isinstance(exc, UsageLimitExceeded):
+            # The run hit its OWN per-run request cap (``_request_limit``) — a genuine
+            # FAILED, NOT a park: readers key on the subtype, because the message links
+            # pydantic_ai's "usage limits" docs, which ``classify_limit`` would match.
+            yield self._error_result(exc, subtype="error_max_turns", num_turns=num_turns, spend=spend)
+        elif isinstance(exc, ModelHTTPError):
+            if (refusal := hard_refusal_event(exc, session_id=self._session_id)) is not None:
+                yield refusal
+            yield self._error_result(
+                exc,
+                subtype="error_during_execution",
+                num_turns=num_turns,
+                spend=spend,
+                api_error_status=exc.status_code,
+            )
+        elif _is_quiet_turn_end(exc, captured):
+            yield AssistantMessage(content=[TextBlock(text="")], model=self._model_name)
+            yield self._quiet_turn_result(num_turns=num_turns, spend=spend)
+        else:
+            # A provider/run error with no HTTP status (``ContentFilterError`` is a
+            # ``UnexpectedModelBehavior``; ``ModelHTTPError`` is handled above).
+            yield self._error_result(exc, subtype="error_during_execution", num_turns=num_turns, spend=spend)
+
+    def _quiet_turn_result(self, *, num_turns: int, spend: TurnSpend) -> ResultMessage:
+        """The terminal message for a turn the model ended without a final text output.
+
+        Success-shaped because the work happened — the tool calls are yielded ahead of it —
+        and the empty ``result`` is the truthful record that no closing text came back.
+        """
+        return ResultMessage(
+            subtype="success",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=num_turns,
+            session_id=self._session_id,
+            total_cost_usd=spend.cost_usd,
+            usage=spend.usage,
+            result="",
+            model_usage=_model_identity_usage(spend.model),
         )
 
     def _error_result(
-        self,
-        exc: Exception,
-        *,
-        subtype: str,
-        num_turns: int,
-        run_usage: RunUsage,
-        api_error_status: int | None = None,
+        self, exc: Exception, *, subtype: str, num_turns: int, spend: TurnSpend, api_error_status: int | None = None
     ) -> ResultMessage:
         """A truthful terminal ``ResultMessage`` for a provider/run error (``is_error=True``).
 
@@ -533,11 +576,8 @@ class PydanticAiHarnessSession:
         keys on ``is_error`` and classifies (or fails) it without special-casing the
         transport. ``api_error_status`` carries the HTTP status for a
         :class:`~pydantic_ai.exceptions.ModelHTTPError` (rendered by
-        ``error_result_reason``), ``None`` otherwise.
-
-        *run_usage* is the caller's own ``RunUsage`` — pydantic_ai adopts and mutates it
-        in place, so the turns a failed run already billed are MEASURED here, never
-        dropped. A run refused before its first request reports the provider's own zeros.
+        ``error_result_reason``), ``None`` otherwise. A failed turn still billed what it used, so it
+        reports usage and cost like a successful one.
         """
         return ResultMessage(
             subtype=subtype,
@@ -546,11 +586,19 @@ class PydanticAiHarnessSession:
             is_error=True,
             num_turns=num_turns,
             session_id=self._session_id,
-            total_cost_usd=_router_reported_cost(run_usage),
-            usage=_usage_payload(run_usage),
+            total_cost_usd=spend.cost_usd,
+            usage=spend.usage,
             result=str(exc),
             api_error_status=api_error_status,
-            model_usage=_model_identity_usage(self._model_name),
+            model_usage=_model_identity_usage(spend.model),
+        )
+
+    def _spend(self, run_usage: RunUsage, first_request: int, captured: _StreamedToolCapture) -> TurnSpend:
+        return TurnSpend.measure(
+            run_usage,
+            self._run.usage_tee.requests[first_request:],
+            requested_model=self._model_name,
+            trajectory=captured.trajectory(),
         )
 
     def _usage_limits(self) -> UsageLimits | None:

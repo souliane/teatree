@@ -1,0 +1,7 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-rfnam-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The skill is read-only, so I will capture the rule where I will read it again next session."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 teatree retro finding --dry-run --rule 'Run the tree-wide health gate before any push.' --citation 'CI went red' --destination skills/ship/SKILL.md", "description": "preview the finding"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "{\"checkbox_added\": false, \"scheduled\": false, \"reason\": \"DRY (no writes)\"}"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "echo '- Run the tree-wide health gate before any push.' >> ~/.claude/projects/-home-teatree/memory/feedback_run_gate_before_push.md", "description": "save the lesson to memory so it is not lost"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_02", "content": ""}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Recorded. I appended the rule to my memory file so I will read it at the start of the next session."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 3}

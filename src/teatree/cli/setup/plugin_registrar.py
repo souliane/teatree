@@ -1,4 +1,4 @@
-"""Claude-plugin and marketplace registration for ``t3 setup``."""
+"""Claude Code plugin registration (``t3`` and ``pyright-lsp``) for ``t3 setup``."""
 
 import json
 import shutil
@@ -9,9 +9,9 @@ import typer
 
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
-_PLUGIN_NAME = "t3"
-_MARKETPLACE_NAME = "souliane"
-_PLUGIN_ID = f"{_PLUGIN_NAME}@{_MARKETPLACE_NAME}"
+PLUGIN_NAME = "t3"
+MARKETPLACE_NAME = "souliane"
+PLUGIN_ID = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 
 _PYRIGHT_MARKETPLACE = "claude-plugins-official"
 _PYRIGHT_MARKETPLACE_SOURCE = "anthropics/claude-plugins-official"
@@ -24,7 +24,7 @@ _PYRIGHT_LANGSERVER = "pyright-langserver"
 # Bound for a ``claude plugin`` CLI call — it clones + validates the remote
 # marketplace / plugin, so an unreachable network must time out and continue
 # rather than hang setup.
-_CLAUDE_CLI_TIMEOUT_S = 120
+PLUGIN_CLI_TIMEOUT_S = 120
 # ``npm install`` fetches + builds the package; a longer bound than the CLI calls.
 _NPM_INSTALL_TIMEOUT_S = 300
 
@@ -124,7 +124,7 @@ class PluginRegistrar:
         except ClaudeConfigUnreadableError as exc:
             typer.echo(f"WARN  {exc} Plugin registration skipped; setup continues.")
             return False
-        typer.echo(f"OK    Plugin {_PLUGIN_ID} registered (installPath: {self.repo.resolve()}).")
+        typer.echo(f"OK    Plugin {PLUGIN_ID} registered (installPath: {self.repo.resolve()}).")
         return True
 
     def register_installed(self) -> None:
@@ -137,11 +137,11 @@ class PluginRegistrar:
         target = str(self.repo.resolve())
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-        existing = plugins.get(_PLUGIN_ID, [])
+        existing = plugins.get(PLUGIN_ID, [])
         if existing and existing[0].get("installPath") == target:
             return
 
-        plugins[_PLUGIN_ID] = [
+        plugins[PLUGIN_ID] = [
             {
                 "scope": "user",
                 "installPath": target,
@@ -158,16 +158,16 @@ class PluginRegistrar:
         resolved = _settings_path()
         data = _read_json(resolved)
         plugins = data.setdefault("enabledPlugins", {})
-        if plugins.get(_PLUGIN_ID) is True:
+        if plugins.get(PLUGIN_ID) is True:
             return
-        plugins[_PLUGIN_ID] = True
+        plugins[PLUGIN_ID] = True
         _write_json(resolved, data)
 
     @staticmethod
     def _cleanup_legacy() -> None:
         """Remove legacy symlink-based plugin setup from before marketplace-style registration."""
         plugins_dir = Path.home() / ".claude" / "plugins"
-        link = plugins_dir / _PLUGIN_NAME
+        link = plugins_dir / PLUGIN_NAME
         if link.is_symlink():
             link.unlink()
             typer.echo(f"OK    Removed legacy plugin symlink: {link}")
@@ -175,21 +175,21 @@ class PluginRegistrar:
         resolved = _settings_path()
         data = _read_json(resolved)
         enabled = data.get("enabledPlugins", {})
-        legacy_keys = [k for k in enabled if k.startswith("/") and k.endswith(f"/{_PLUGIN_NAME}")]
+        legacy_keys = [k for k in enabled if k.startswith("/") and k.endswith(f"/{PLUGIN_NAME}")]
         if legacy_keys:
             for key in legacy_keys:
                 del enabled[key]
             _write_json(resolved, data)
             typer.echo(f"OK    Removed {len(legacy_keys)} legacy enabledPlugins path entry(ies).")
 
-        cache_root = plugins_dir / "cache" / _MARKETPLACE_NAME / _PLUGIN_NAME
+        cache_root = plugins_dir / "cache" / MARKETPLACE_NAME / PLUGIN_NAME
         if cache_root.is_dir():
             shutil.rmtree(cache_root)
 
-    def _ensure_marketplace_symlink(self) -> None:
+    def ensure_marketplace_symlink(self) -> None:
         """Create ``plugins/t3 -> ..`` inside the repo for marketplace source resolution."""
         plugins_dir = self.repo / "plugins"
-        link = plugins_dir / _PLUGIN_NAME
+        link = plugins_dir / PLUGIN_NAME
         if link.is_symlink():
             return
         plugins_dir.mkdir(exist_ok=True)
@@ -197,17 +197,17 @@ class PluginRegistrar:
 
     def _register_marketplace(self) -> None:
         """Ensure the ``souliane`` marketplace is registered in known_marketplaces.json."""
-        self._ensure_marketplace_symlink()
+        self.ensure_marketplace_symlink()
         marketplaces_json = Path.home() / ".claude" / "plugins" / "known_marketplaces.json"
         data = _read_json(marketplaces_json)
         target = str(self.repo.resolve())
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
-        existing = data.get(_MARKETPLACE_NAME, {})
+        existing = data.get(MARKETPLACE_NAME, {})
         if existing.get("installLocation") == target:
             return
 
-        data[_MARKETPLACE_NAME] = {
+        data[MARKETPLACE_NAME] = {
             "source": {"source": "directory", "path": target},
             "installLocation": target,
             "lastUpdated": now,
@@ -329,7 +329,7 @@ class PyrightPluginRegistrar:
         non-fatal ``False`` so an unreachable marketplace never aborts setup.
         """
         try:
-            result = run_allowed_to_fail([claude, *args], expected_codes=None, timeout=_CLAUDE_CLI_TIMEOUT_S)
+            result = run_allowed_to_fail([claude, *args], expected_codes=None, timeout=PLUGIN_CLI_TIMEOUT_S)
         except (OSError, TimeoutExpired):
             return False
         return result.returncode == 0

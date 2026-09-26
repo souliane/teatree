@@ -15,10 +15,11 @@ covers both imports.
 import io
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.doctor.checks_environment import _check_dangling_editable_pth
+from teatree.cli.doctor.checks_environment import _check_dangling_editable_pth, _check_project_venv_editable_pths
 from teatree.utils import editable_pth
 
 
@@ -371,3 +372,84 @@ class TestCheckDanglingEditablePth:
         assert ok is False
         assert "uv tool receipt records a non-existent editable source" in message
         assert str(gone_clone) in message
+
+
+def _project_venv_pth(root: Path, line: str) -> Path:
+    site = root / ".venv" / "lib" / "python3.13" / "site-packages"
+    site.mkdir(parents=True)
+    pth = site / "teatree.pth"
+    pth.write_text(f"import _virtualenv\n{line}\n", encoding="utf-8")
+    return pth
+
+
+def _project_check_output(repos: list[tuple[str, Path]]) -> tuple[bool, str]:
+    out = io.StringIO()
+    with patch("teatree.cli.update._collect_repos", return_value=repos), redirect_stdout(out):
+        verdict = _check_project_venv_editable_pths()
+    return verdict, out.getvalue()
+
+
+class TestSitePackages:
+    def test_of_project_is_the_venv_site_dir(self, tmp_path: Path) -> None:
+        pth = _project_venv_pth(tmp_path, str(tmp_path))
+        assert editable_pth.SitePackages.of_project(tmp_path) == editable_pth.SitePackages(pth.parent)
+
+    def test_of_project_is_none_without_a_venv(self, tmp_path: Path) -> None:
+        assert editable_pth.SitePackages.of_project(tmp_path) is None
+
+    def test_dangling_entries_name_each_gone_line_and_resolve_relative_ones(self, tmp_path: Path) -> None:
+        site = tmp_path / "site"
+        site.mkdir()
+        (site / "kept").mkdir()
+        gone = tmp_path / "gone"
+        (site / "a.pth").write_text(f"kept\n{gone}\n# comment\n", encoding="utf-8")
+        assert editable_pth.SitePackages(site).dangling_entries() == ((site / "a.pth", gone),)
+
+    def test_referrers_are_the_pth_files_naming_a_dir_inside_the_checkout(self, tmp_path: Path) -> None:
+        checkout = tmp_path / "wt"
+        pth = _project_venv_pth(tmp_path / "clone", str(checkout / "src"))
+        _project_venv_pth(tmp_path / "other", str(tmp_path / "elsewhere"))
+        assert editable_pth.SitePackages(pth.parent).referrers(checkout) == (pth,)
+        assert editable_pth.SitePackages.of_project(tmp_path / "other").referrers(checkout) == ()
+
+    def test_an_unreadable_pth_raises_rather_than_reading_as_no_referrer(self, tmp_path: Path) -> None:
+        site = tmp_path / "site"
+        (site / "unreadable.pth").mkdir(parents=True)
+        with pytest.raises(OSError, match=r"unreadable\.pth"):
+            editable_pth.SitePackages(site).referrers(tmp_path / "wt")
+
+
+class TestCheckProjectVenvEditablePths:
+    def test_an_unreadable_pth_warns_instead_of_passing_silently(self, tmp_path: Path) -> None:
+        root = tmp_path / "clone"
+        (root / ".venv" / "lib" / "python3.13" / "site-packages" / "unreadable.pth").mkdir(parents=True)
+        ok, output = _project_check_output([("clone", root)])
+        assert ok is True
+        assert f"WARN  Could not read the .pth files of {root}/.venv" in output
+
+    def test_fails_naming_the_pth_the_missing_dir_and_the_repair(self, tmp_path: Path) -> None:
+        root = tmp_path / "clone"
+        gone = tmp_path / "reaped-worktree" / "src"
+        pth = _project_venv_pth(root, str(gone))
+        verdict, output = _project_check_output([("teatree", root)])
+        assert verdict is False
+        assert str(pth) in output
+        assert str(gone) in output
+        assert f"uv sync --directory {root} --reinstall" in output
+
+    def test_passes_when_every_line_resolves(self, tmp_path: Path) -> None:
+        root = tmp_path / "clone"
+        (root / "src").mkdir(parents=True)
+        _project_venv_pth(root, str(root / "src"))
+        assert _project_check_output([("teatree", root)]) == (True, "")
+
+    def test_scans_the_venv_of_the_fork_that_vendors_core(self, tmp_path: Path) -> None:
+        fork = tmp_path / "fork"
+        vendored = fork / "vendor" / "teatree"
+        vendored.mkdir(parents=True)
+        (vendored / "pyproject.toml").write_text('[project]\nname = "teatree"\n', encoding="utf-8")
+        (fork / "pyproject.toml").write_text('[project]\nname = "acme-factory"\n', encoding="utf-8")
+        _project_venv_pth(fork, str(tmp_path / "reaped"))
+        verdict, output = _project_check_output([("teatree", vendored)])
+        assert verdict is False
+        assert f"uv sync --directory {fork} --reinstall" in output

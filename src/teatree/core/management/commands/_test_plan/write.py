@@ -19,16 +19,26 @@ from typing import TypedDict
 
 from teatree.core.evidence import test_plan_validation as _tpv
 from teatree.core.evidence import video_evidence as _vev
+from teatree.core.evidence.bdd_scenario_source import (
+    BddScenarioSource,
+    BddSourceError,
+    parse_bdd_source_mapping,
+    validate_bdd_source,
+)
 from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError, check_blocked_body_from_config
 from teatree.core.intake.resolve import WorktreeNotFoundError, resolve_worktree
 from teatree.core.management.commands._e2e_runners import ARTIFACTS_ENV
+from teatree.core.management.commands._test_plan.body_captures import resolve_body_captures
 from teatree.core.management.commands._test_plan.committed_captures import (
     embed_side_captures,
     evidence_dir_for,
+    legacy_flat_capture_migration,
+    migrate_legacy_flat_captures,
     refuse_invalid_committed_captures,
 )
 from teatree.core.management.commands._test_plan.file_store import plan_path_for_ticket, read_plan_state, write_plan
 from teatree.core.management.commands._test_plan.render import (
+    PlanState,
     SideManifest,
     TestPlanManifest,
     TestPlanValidationError,
@@ -38,6 +48,7 @@ from teatree.core.management.commands._test_plan.render import (
     render_body,
 )
 from teatree.core.models import Ticket, Worktree
+from teatree.utils.media import MediaKind
 
 __all__ = [
     "PlanWriteResult",
@@ -96,6 +107,7 @@ class TestPlanWrite:
     manifest: TestPlanManifest
     embed_captures: bool = False
     skip_validation: bool = False
+    artifacts_dir: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,11 +121,13 @@ class TestPlanFlags:
     relative artifact paths resolve against it. ``skip_validation`` bypasses the
     capture preflight (red-box / duplicate / pre-roll gates) — the agent never
     sets it on its own. ``body_file`` is a path to a pre-authored markdown body
-    written verbatim, mutually exclusive with ``manifest``. ``allow_no_video``
+    written verbatim once the captures it links resolve, mutually exclusive
+    with ``manifest``. ``allow_no_video``
     is the escape for the stills-only gate. ``embed_captures`` commits the run's
     captures beside the plan instead of citing them — for a plan issued outside
     the repository, whose readers cannot reach the artifacts directory a
-    citation names.
+    citation names. ``artifacts_dir`` is the root a cited capture's path is
+    relative to; empty falls back to ``T3_E2E_ARTIFACTS_DIR``.
     """
 
     __test__ = False  # not a pytest test class (name starts with 'Test')
@@ -125,6 +139,7 @@ class TestPlanFlags:
     body_file: str = ""
     allow_no_video: bool = False
     embed_captures: bool = False
+    artifacts_dir: str = ""
 
 
 def resolve_ticket(ticket: str, worktree: Worktree | None, *, manifest_ticket: str = "") -> Ticket:
@@ -158,7 +173,7 @@ def artifact_ref(path: Path, *, root: Path | None = None) -> str:
     explicit *root*, else ``T3_E2E_ARTIFACTS_DIR`` — so a file committed to a
     customer repo never carries a host-absolute path.
     """
-    resolved = root or (Path(env) if (env := os.environ.get(ARTIFACTS_ENV, "").strip()) else None)
+    resolved = root or _artifacts_root("")
     if resolved is not None:
         try:
             return f"`{path.relative_to(resolved)}`"
@@ -167,49 +182,45 @@ def artifact_ref(path: Path, *, root: Path | None = None) -> str:
     return f"`{path.name}`"
 
 
-def _reference_side(side: SideManifest) -> dict[str, WorkflowEmbed]:
+def _reference_side(side: SideManifest, *, artifacts_dir: Path | None) -> dict[str, WorkflowEmbed]:
     """This side's per-workflow capture references, persisted into the plan state."""
     return {
         name: {
-            "video_md": artifact_ref(wf.video) if wf.video is not None else "",
-            "image_md": [artifact_ref(img) for img in wf.images],
+            "video_md": artifact_ref(wf.video, root=artifacts_dir) if wf.video is not None else "",
+            "image_md": [artifact_ref(img, root=artifacts_dir) for img in wf.images],
         }
         for name, wf in side.workflows.items()
     }
 
 
-def _incoming_captures(write: TestPlanWrite) -> list[Path]:
+def _incoming_captures(write: TestPlanWrite) -> dict[str, list[Path]]:
     """Every image this run would commit beside the plan."""
-    sides = (side for side in (write.manifest.dev, write.manifest.local) if side.present)
-    return [image for side in sides for wf in side.workflows.values() for image in wf.images]
+    return {
+        env: [image for wf in side.workflows.values() for image in wf.images]
+        for env, side in write.manifest.present_sides().items()
+    }
 
 
-def _side_embeds(write: TestPlanWrite, *, env: str, evidence_dir: Path) -> dict[str, WorkflowEmbed]:
+def _side_embeds(write: TestPlanWrite, side: SideManifest, *, env: str, evidence_dir: Path) -> dict[str, WorkflowEmbed]:
     """One side's capture references — committed beside the plan, or cited by path."""
-    side = write.manifest.dev if env == "dev" else write.manifest.local
-    if not side.present:
-        return {}
     if write.embed_captures:
-        return embed_side_captures(evidence_dir, side=side)
-    return _reference_side(side)
+        return embed_side_captures(evidence_dir, env=env, side=side)
+    return _reference_side(side, artifacts_dir=write.artifacts_dir)
 
 
-def _preflight_captures(manifest: TestPlanManifest, *, skip: bool, allow_no_video: bool) -> None:
+def _preflight_captures(images: list[Path], videos: list[Path], *, skip: bool, allow_no_video: bool) -> None:
     """Run the deterministic capture preflight; re-raise a hard failure for the single catch arm.
 
     Refuses (fail-loud) on a missing red box, a byte-identical duplicate, a
-    stills-only manifest, or a video with excessive blank/static pre-roll — so
-    the command exits non-zero before anything is written. ``skip`` bypasses the
+    stills-only run, or a video with excessive blank/static pre-roll — so the
+    command exits non-zero before anything is written. ``skip`` bypasses the
     image AND video gates; ``allow_no_video`` is the stills-only escape (both
     user-authorised).
     """
-    wfs = [wf for side in (manifest.dev, manifest.local) if side.present for wf in side.workflows.values()]
     try:
-        warnings = _tpv.validate_test_plan_images([img for wf in wfs for img in wf.images], skip=skip)
-        _tpv.refuse_stills_only(
-            has_image=any(wf.images for wf in wfs), has_video=any(wf.video for wf in wfs), allow_no_video=allow_no_video
-        )
-        _vev.validate_manifest_videos([wf.video for wf in wfs if wf.video is not None], skip=skip)
+        warnings = _tpv.validate_test_plan_images(images, skip=skip)
+        _tpv.refuse_stills_only(has_image=bool(images), has_video=bool(videos), allow_no_video=allow_no_video)
+        _vev.validate_manifest_videos(videos, skip=skip)
     except (_tpv.TestPlanImageValidationError, _vev.VideoEvidenceError) as exc:
         raise TestPlanValidationError(str(exc)) from exc
     for warning in warnings:
@@ -227,7 +238,13 @@ def build_validated_write(flags: TestPlanFlags) -> TestPlanWrite:
     """
     base_dir = Path(flags.manifest_dir) if flags.manifest_dir else None
     manifest = parse_manifest(flags.manifest, base_dir=base_dir)
-    _preflight_captures(manifest, skip=flags.skip_validation, allow_no_video=flags.allow_no_video)
+    wfs = [wf for side in manifest.present_sides().values() for wf in side.workflows.values()]
+    _preflight_captures(
+        [image for wf in wfs for image in wf.images],
+        [wf.video for wf in wfs if wf.video is not None],
+        skip=flags.skip_validation,
+        allow_no_video=flags.allow_no_video,
+    )
     ticket = resolve_ticket(flags.ticket, _resolve_worktree_or_none(), manifest_ticket=manifest.ticket)
     return TestPlanWrite(
         path=plan_path_for_ticket(ticket),
@@ -237,6 +254,7 @@ def build_validated_write(flags: TestPlanFlags) -> TestPlanWrite:
         manifest=manifest,
         embed_captures=flags.embed_captures,
         skip_validation=flags.skip_validation,
+        artifacts_dir=Path(flags.artifacts_dir) if flags.artifacts_dir else None,
     )
 
 
@@ -259,23 +277,30 @@ def write_test_plan(write: TestPlanWrite) -> PlanWriteResult:
     renders a literal ``**Blocked:** <reason>`` line, which is the honest
     disclosure mechanism. Only the free-text ``--body-file`` path is scanned.
     """
+    prior = read_plan_state(write.path)
+    source = _resolve_scenario_source(write.manifest, prior)
     evidence_dir = evidence_dir_for(write.path)
+    incoming = _incoming_captures(write) if write.embed_captures else {}
+    migrations = legacy_flat_capture_migration(evidence_dir, incoming=incoming, prior=prior)
     refuse_invalid_committed_captures(
         evidence_dir,
-        incoming=_incoming_captures(write) if write.embed_captures else [],
+        incoming=incoming,
+        superseded_legacy=migrations.keys(),
         skip=write.skip_validation,
     )
+    migrate_legacy_flat_captures(migrations, prior=prior)
 
-    prior = read_plan_state(write.path)
-    embeds = {env: _side_embeds(write, env=env, evidence_dir=evidence_dir) for env in ("dev", "local")}
+    sides = write.manifest.present_sides()
+    embeds = {env: _side_embeds(write, side, env=env, evidence_dir=evidence_dir) for env, side in sides.items()}
     state = merge_state(prior, manifest=write.manifest, title=write.title, embeds=embeds)
+    state["scenario_source"] = source
     state["ticket"] = write.ticket_id
     body = render_body(state)
+    _validate_bdd_body(body)
 
     action = "updated" if write.path.is_file() else "created"
     write_plan(write.path, body)
-    envs = [env for env, side in (("dev", write.manifest.dev), ("local", write.manifest.local)) if side.present]
-    return PlanWriteResult(path=str(write.path), envs=envs, action=action)
+    return PlanWriteResult(path=str(write.path), envs=list(sides), action=action)
 
 
 def summary_line(result: PlanWriteResult, *, source: str = "") -> str:
@@ -299,7 +324,8 @@ def run_write_test_plan(
 
     The full ``e2e write-test-plan`` orchestration, factored out of the CLI
     command so the thin command method stays a delegation. When
-    ``flags.body_file`` is set, its content is written verbatim (no manifest);
+    ``flags.body_file`` is set, its content is written verbatim (no manifest)
+    once the captures it links resolve and pass the manifest path's gates;
     mutually exclusive with ``flags.manifest``. A
     :class:`TestPlanValidationError` is written to ``write_err`` and re-raised as
     ``SystemExit(1)``.
@@ -319,11 +345,12 @@ def run_write_test_plan(
 
 
 def _write_body_file(flags: TestPlanFlags) -> PlanWriteResult:
-    """Write a pre-authored body verbatim to the ticket's plan file.
+    """Write a pre-authored body verbatim to the ticket's plan file, its linked captures gated first.
 
-    A hand-authored body is exactly the path that let unvalidated captures reach
-    a reviewer, so the captures already committed beside the plan are gated here
-    too — the body's prose is the author's, its evidence is not.
+    Every ``evidence/<plan>/…`` link the body carries must resolve — copied from
+    the artifacts dir under ``--embed-captures``, else already committed — and
+    the result passes the same preflight and committed-capture gate as a
+    manifest's captures, before anything is copied or written.
     """
     body_path = Path(flags.body_file)
     body = body_path.read_text(encoding="utf-8") if body_path.is_file() else ""
@@ -332,11 +359,51 @@ def _write_body_file(flags: TestPlanFlags) -> PlanWriteResult:
         raise TestPlanValidationError(msg)
     resolved = resolve_ticket(flags.ticket, _resolve_worktree_or_none())
     check_blocked_body_from_config(body, str(resolved.issue_url))
+    _validate_bdd_body(body)
     path = plan_path_for_ticket(resolved)
-    refuse_invalid_committed_captures(evidence_dir_for(path), incoming=[], skip=flags.skip_validation)
+    evidence_dir = evidence_dir_for(path)
+    captures = resolve_body_captures(
+        body,
+        evidence_dir=evidence_dir,
+        embed=flags.embed_captures,
+        artifacts_dir=_artifacts_root(flags.artifacts_dir),
+    )
+    _preflight_captures(
+        captures.linked(MediaKind.IMAGE),
+        captures.linked(MediaKind.VIDEO),
+        skip=flags.skip_validation,
+        allow_no_video=flags.allow_no_video,
+    )
+    refuse_invalid_committed_captures(
+        evidence_dir,
+        incoming=captures.incoming_images(),
+        superseded_legacy=captures.superseded_flat,
+        skip=flags.skip_validation,
+    )
+    captures.embed()
     action = "updated" if path.is_file() else "created"
     write_plan(path, body)
     return PlanWriteResult(path=str(path), envs=[], action=action)
+
+
+def _artifacts_root(explicit: str) -> Path | None:
+    """The run's artifacts root: *explicit*, else ``T3_E2E_ARTIFACTS_DIR``, else ``None``."""
+    root = explicit or os.environ.get(ARTIFACTS_ENV, "").strip()
+    return Path(root) if root else None
+
+
+def _resolve_scenario_source(manifest: TestPlanManifest, prior: PlanState) -> BddScenarioSource:
+    try:
+        return parse_bdd_source_mapping(manifest.scenario_source or prior.get("scenario_source"))
+    except BddSourceError as error:
+        raise TestPlanValidationError(str(error)) from None
+
+
+def _validate_bdd_body(body: str) -> None:
+    try:
+        validate_bdd_source(body)
+    except BddSourceError as error:
+        raise TestPlanValidationError(str(error)) from None
 
 
 def _resolve_worktree_or_none() -> Worktree | None:

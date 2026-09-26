@@ -599,6 +599,12 @@ class TestSonarCheck:
             assert "/original/worktree" in args
 
 
+def _invoke_validate_mr(title: str, description: str, *args: str):
+    """Drive ``t3 tool validate-mr``, whose title/description pair rides STDIN, not argv."""
+    payload = json.dumps({"title": title, "description": description})
+    return runner.invoke(app, ["tool", "validate-mr", *args], input=payload)
+
+
 class TestValidateMrCommand:
     """`t3 tool validate-mr` runs the active overlay's validate_pr (#119 Part 3).
 
@@ -613,16 +619,13 @@ class TestValidateMrCommand:
 
     def test_valid_metadata_exits_zero(self):
         with patch("teatree.cli.tools.get_overlay", return_value=self._overlay([])):
-            result = runner.invoke(
-                app,
-                ["tool", "validate-mr", "--title", "fix: x (p#1)", "--description", "fix: x (p#1)\n\nB"],
-            )
+            result = _invoke_validate_mr("fix: x (p#1)", "fix: x (p#1)\n\nB")
         assert result.exit_code == 0, result.output
 
     def test_invalid_metadata_exits_nonzero_and_prints_errors(self):
         ov = self._overlay(["Title is empty.", "MR description is empty."])
         with patch("teatree.cli.tools.get_overlay", return_value=ov):
-            result = runner.invoke(app, ["tool", "validate-mr", "--title", "", "--description", ""])
+            result = _invoke_validate_mr("", "")
         assert result.exit_code != 0
         assert "Title is empty." in result.output
         assert "MR description is empty." in result.output
@@ -630,10 +633,7 @@ class TestValidateMrCommand:
     def test_passes_title_and_description_through_to_overlay(self):
         ov = self._overlay([])
         with patch("teatree.cli.tools.get_overlay", return_value=ov):
-            runner.invoke(
-                app,
-                ["tool", "validate-mr", "--title", "feat: a [f] (p#1)", "--description", "body here"],
-            )
+            _invoke_validate_mr("feat: a [f] (p#1)", "body here")
         ov.metadata.validate_pr.assert_called_once_with(
             "feat: a [f] (p#1)", "body here", require_sections=True, repo=""
         )
@@ -652,16 +652,12 @@ class TestValidateMrCommand:
         # tests above mock ``get_overlay`` and never hit that import, so the
         # real ``t3`` entrypoint is driven here in a subprocess with the env
         # var stripped, exactly as the hook invokes it.
-        driver = (
-            "import sys\n"
-            "from teatree.cli import main\n"
-            "sys.argv = ['t3', 'tool', 'validate-mr', '--title', 'feat: x (#1)', "
-            "'--description', 'feat: x (#1)\\n\\n## What\\nx\\n\\n## Why\\ny']\n"
-            "main()\n"
-        )
+        driver = "import sys\nfrom teatree.cli import main\nsys.argv = ['t3', 'tool', 'validate-mr']\nmain()\n"
+        body = "feat: x (#1)\n\n## What\nx\n\n## Why\ny"
         env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
         proc = subprocess.run(
             [sys.executable, "-c", driver],
+            input=json.dumps({"title": "feat: x (#1)", "description": body}),
             capture_output=True,
             text=True,
             check=False,
@@ -739,10 +735,7 @@ class TestValidateMrMultipleOverlays:
             "bravo": _AcceptingOverlay(["acme/bravo"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(
-                app,
-                ["tool", "validate-mr", "--title", "fix: x", "--description", "fix: x\n\nbody"],
-            )
+            result = _invoke_validate_mr("fix: x", "fix: x\n\nbody")
         assert result.exit_code == 0, result.output
         assert "ImproperlyConfigured" not in result.output
 
@@ -759,7 +752,7 @@ class TestValidateMrMultipleOverlays:
             "bravo": _AcceptingOverlay(["acme/bravo"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(app, ["tool", "validate-mr", "--title", "bad", "--description", "bad"])
+            result = _invoke_validate_mr("bad", "bad")
         assert result.exit_code == 1
         assert "Title is invalid." in result.output
 
@@ -770,7 +763,7 @@ class TestValidateMrMultipleOverlays:
             "bravo": _AcceptingOverlay(["acme/bravo"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(app, ["tool", "validate-mr", "--title", "fix: x", "--description", "fix: x"])
+            result = _invoke_validate_mr("fix: x", "fix: x")
         assert result.exit_code == 0, result.output
 
     def test_deny_when_all_overlays_reject(self, monkeypatch):
@@ -779,13 +772,13 @@ class TestValidateMrMultipleOverlays:
             "bravo": _RejectingOverlay(["acme/bravo"], ["bravo rejects"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(app, ["tool", "validate-mr", "--title", "bad", "--description", "bad"])
+            result = _invoke_validate_mr("bad", "bad")
         assert result.exit_code == 1
         assert "alpha rejects" in result.output or "bravo rejects" in result.output
 
     def test_no_overlays_skips_fail_open(self, monkeypatch):
         with self._register(monkeypatch, {}):
-            result = runner.invoke(app, ["tool", "validate-mr", "--title", "anything", "--description", "x"])
+            result = _invoke_validate_mr("anything", "x")
         assert result.exit_code == 0
 
 
@@ -835,19 +828,7 @@ class TestValidateMrTargetRepoKeyed:
             "strict": _RejectingOverlay(["strict-org/widget"], ["missing (url)"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(
-                app,
-                [
-                    "tool",
-                    "validate-mr",
-                    "--title",
-                    "fix(x): missing url",
-                    "--description",
-                    "fix(x): missing url",
-                    "--repo",
-                    "strict-org/widget",
-                ],
-            )
+            result = _invoke_validate_mr("fix(x): missing url", "fix(x): missing url", "--repo", "strict-org/widget")
         assert result.exit_code == 1, result.output
         assert "missing (url)" in result.output
 
@@ -858,19 +839,7 @@ class TestValidateMrTargetRepoKeyed:
         }
         compliant = "fix(x): real change (https://example.com/strict-org/bugs/-/work_items/42)"
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(
-                app,
-                [
-                    "tool",
-                    "validate-mr",
-                    "--title",
-                    compliant,
-                    "--description",
-                    compliant,
-                    "--repo",
-                    "strict-org/widget",
-                ],
-            )
+            result = _invoke_validate_mr(compliant, compliant, "--repo", "strict-org/widget")
         assert result.exit_code == 0, result.output
 
     def test_known_target_overlay_whose_validator_crashes_fails_closed(self, monkeypatch):
@@ -881,19 +850,7 @@ class TestValidateMrTargetRepoKeyed:
             "strict": crashing,
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(
-                app,
-                [
-                    "tool",
-                    "validate-mr",
-                    "--title",
-                    "x",
-                    "--description",
-                    "x",
-                    "--repo",
-                    "strict-org/widget",
-                ],
-            )
+            result = _invoke_validate_mr("x", "x", "--repo", "strict-org/widget")
         assert result.exit_code == 1, result.output
 
     def test_unmatched_target_repo_falls_back_to_cwd_behaviour(self, monkeypatch):
@@ -904,19 +861,7 @@ class TestValidateMrTargetRepoKeyed:
             "bravo": _AcceptingOverlay(["acme/bravo"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(
-                app,
-                [
-                    "tool",
-                    "validate-mr",
-                    "--title",
-                    "fix: x",
-                    "--description",
-                    "fix: x",
-                    "--repo",
-                    "unknown-org/unknown-repo",
-                ],
-            )
+            result = _invoke_validate_mr("fix: x", "fix: x", "--repo", "unknown-org/unknown-repo")
         assert result.exit_code == 0, result.output
 
     def test_lenient_target_does_not_require_strict_url(self, monkeypatch):
@@ -927,19 +872,7 @@ class TestValidateMrTargetRepoKeyed:
             "strict": _RejectingOverlay(["strict-org/widget"], ["missing (url)"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(
-                app,
-                [
-                    "tool",
-                    "validate-mr",
-                    "--title",
-                    "fix: lenient change",
-                    "--description",
-                    "fix: lenient change",
-                    "--repo",
-                    "lenient-org/tool",
-                ],
-            )
+            result = _invoke_validate_mr("fix: lenient change", "fix: lenient change", "--repo", "lenient-org/tool")
         assert result.exit_code == 0, result.output
 
 
@@ -966,18 +899,8 @@ class TestValidateMrTeatreeRepoNeverGetsExternalConvention:
             "strict-overlay": _RejectingOverlay(["acme-org/acme-product"], ["MR title type 'chore' is not allowed"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(
-                app,
-                [
-                    "tool",
-                    "validate-mr",
-                    "--title",
-                    "chore: fix typo in README",
-                    "--description",
-                    "chore: fix typo in README",
-                    "--repo",
-                    "souliane/teatree",
-                ],
+            result = _invoke_validate_mr(
+                "chore: fix typo in README", "chore: fix typo in README", "--repo", "souliane/teatree"
             )
         assert result.exit_code == 0, result.output
 
@@ -988,18 +911,8 @@ class TestValidateMrTeatreeRepoNeverGetsExternalConvention:
             "strict-overlay": _RejectingOverlay(["acme-org/acme-product"], ["MR title type 'chore' is not allowed"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(
-                app,
-                [
-                    "tool",
-                    "validate-mr",
-                    "--title",
-                    "chore: fix typo in README",
-                    "--description",
-                    "chore: fix typo in README",
-                    "--repo",
-                    "souliane/teatree",
-                ],
+            result = _invoke_validate_mr(
+                "chore: fix typo in README", "chore: fix typo in README", "--repo", "souliane/teatree"
             )
         assert result.exit_code == 0, result.output
 
@@ -1011,19 +924,7 @@ class TestValidateMrTeatreeRepoNeverGetsExternalConvention:
             "strict-overlay": _RejectingOverlay(["acme-org/acme-product"], ["MR title type 'chore' is not allowed"]),
         }
         with self._register(monkeypatch, overlays):
-            result = runner.invoke(
-                app,
-                [
-                    "tool",
-                    "validate-mr",
-                    "--title",
-                    "chore: fix typo",
-                    "--description",
-                    "chore: fix typo",
-                    "--repo",
-                    "acme-org/acme-product",
-                ],
-            )
+            result = _invoke_validate_mr("chore: fix typo", "chore: fix typo", "--repo", "acme-org/acme-product")
         assert result.exit_code == 1, result.output
         assert "chore" in result.output
 
@@ -1034,18 +935,8 @@ class TestValidateMrTeatreeRepoNeverGetsExternalConvention:
         }
         with self._register(monkeypatch, overlays):
             for title_type in ("docs", "test", "refactor"):
-                result = runner.invoke(
-                    app,
-                    [
-                        "tool",
-                        "validate-mr",
-                        "--title",
-                        f"{title_type}: something",
-                        "--description",
-                        f"{title_type}: something",
-                        "--repo",
-                        "souliane/teatree",
-                    ],
+                result = _invoke_validate_mr(
+                    f"{title_type}: something", f"{title_type}: something", "--repo", "souliane/teatree"
                 )
                 assert result.exit_code == 0, f"Expected {title_type}: to pass for souliane/teatree\n{result.output}"
 

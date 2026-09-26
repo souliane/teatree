@@ -178,7 +178,14 @@ def _default_resolver(overlay: str) -> MessagingBackend | None:
     return messaging_from_overlay(overlay or None)
 
 
-def verify_reply_visible(backend: MessagingBackend, *, channel: str, thread_root: str) -> bool:
+def verify_reply_visible(
+    backend: MessagingBackend,
+    *,
+    channel: str,
+    thread_root: str,
+    after_ts: str | None = None,
+    expected_ts: str | None = None,
+) -> bool:
     """Confirm the just-posted reply is visible under its thread ROOT (#2061).
 
     Reads the thread root's replies and confirms a bot reply is present. The
@@ -187,10 +194,11 @@ def verify_reply_visible(backend: MessagingBackend, *, channel: str, thread_root
     read-back keyed on the user-message ts misses it and would wrongly stamp
     a delivered reply as absent (or, on the dedup side, post a duplicate). An
     absent reply — including the conservative outcome of an empty/raised read
-    — means the caller does NOT stamp ``loop_replied_at`` and the row retries
-    next cycle (never stamp on an unconfirmed post).
+    — releases the provisional claim; no confirmed receipt is stamped.
     """
-    return bot_reply_present_in_thread(backend, channel=channel, thread_root=thread_root)
+    return bot_reply_present_in_thread(
+        backend, channel=channel, thread_root=thread_root, after_ts=after_ts, expected_ts=expected_ts
+    )
 
 
 def _mark_unit_loop_replied(unit: _Unit, kind: str) -> bool:
@@ -293,14 +301,24 @@ def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
         return "retry"
     try:
         thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
-        if not bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root):
-            backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=answer)
-            if not verify_reply_visible(backend, channel=unit.channel, thread_root=thread_root):
+        floor = unit.rows[-1].slack_ts
+        if not bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor):
+            post = backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=answer)
+            posted_ts = post.get("ts")
+            if (
+                post.get("ok") is not True
+                or not isinstance(posted_ts, str)
+                or not verify_reply_visible(
+                    backend, channel=unit.channel, thread_root=thread_root, after_ts=floor, expected_ts=posted_ts
+                )
+            ):
                 _unmark_unit_loop_replied(unit)
                 return "retry"
     except Exception:
         _unmark_unit_loop_replied(unit)
         raise
+    for row in unit.rows:
+        row.observe_confirmed_loop_reply()
     _react_done(backend, unit)
     return "simple"
 
@@ -383,7 +401,12 @@ def _dispatch_or_report(
                 text=unit.text,
             ),
         )
-    backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
+    reaction = backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
+    if reaction.get("ok") is not True and reaction.get("error") != "already_reacted":
+        msg = "in-flight reaction was not confirmed by Slack"
+        raise RuntimeError(msg)
+    for row in unit.rows:
+        row.observe_confirmed_loop_reply()
     report.dispatched += 1
 
 
@@ -396,14 +419,24 @@ def _report_coverage(backend: MessagingBackend, unit: _Unit, coverage: Coverage)
     not the same as finished.
     """
     thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
-    if not bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root):
-        backend.post_reply(
+    floor = unit.rows[-1].slack_ts
+    if not bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root, after_ts=floor):
+        post = backend.post_reply(
             channel=unit.channel,
             ts=unit.slack_ts,
             text=f"Already covered by {coverage.describe()} — not dispatching a second lane.",
         )
-        if not verify_reply_visible(backend, channel=unit.channel, thread_root=thread_root):
+        posted_ts = post.get("ts")
+        if (
+            post.get("ok") is not True
+            or not isinstance(posted_ts, str)
+            or not verify_reply_visible(
+                backend, channel=unit.channel, thread_root=thread_root, after_ts=floor, expected_ts=posted_ts
+            )
+        ):
             return False
+    for row in unit.rows:
+        row.observe_confirmed_loop_reply()
     backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=InboundReaction.IN_FLIGHT)
     return True
 
@@ -432,6 +465,8 @@ def _answer_bound_question(backend: MessagingBackend, unit: _Unit, reader: Inbou
     if not apply_bound_answer(bound):
         _unmark_unit_loop_replied(unit)
         return False
+    for row in unit.rows:
+        row.observe_confirmed_loop_reply()
     _react_done(backend, unit)
     return True
 

@@ -4,6 +4,7 @@ Each helper is narrow (single concern, single ``typer.echo`` path) and returns
 ``bool`` for pass/fail aggregation by :func:`teatree.cli.doctor.run_checks.run_doctor_checks`.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -11,6 +12,24 @@ import typer
 
 if TYPE_CHECKING:
     from teatree.cli.doctor.checks_resources import JsonObject
+    from teatree.config.agent_spawn import SkillModelPolicy
+
+
+def _warn_unrecognised_route_tiers(
+    skill: str,
+    policy: "SkillModelPolicy",
+    unrecognised: Callable[[str], bool],
+) -> None:
+    if not isinstance(policy, tuple):
+        return
+    for index, candidate in enumerate(policy):
+        # Candidate model IDs belong to each harness's own catalog. A
+        # declared tier participates in TeaTree's floor ordering.
+        if candidate.tier and unrecognised(candidate.tier):
+            typer.echo(
+                f"WARN  [agent.skill_models] {skill}[{index}].tier = {candidate.tier!r} "
+                "matches no known tier or model id; it will be treated as most-capable. Likely a typo."
+            )
 
 
 def _check_account_switch() -> bool:
@@ -71,7 +90,7 @@ def _check_agent_session_pins() -> bool:
     try:
         cfg = resolve_agent_config()
     except ValueError as exc:
-        typer.echo(f"FAIL  Invalid agent_session_effort setting: {exc}")
+        typer.echo(f"FAIL  Invalid agent_session_effort or agent_skill_models setting: {exc}")
         return False
 
     known = known_model_vocabulary() | {value.lower() for value in cfg.tier_models.values()}
@@ -90,11 +109,12 @@ def _check_agent_session_pins() -> bool:
             "it will be treated as most-capable. Likely a typo."
         )
     for skill, floor in cfg.skill_models.items():
-        if floor and _unrecognised(floor):
+        if isinstance(floor, str) and _unrecognised(floor):
             typer.echo(
                 f"WARN  [agent.skill_models] {skill} = {floor!r} matches no known tier or model id; "
                 "it will be treated as most-capable. Likely a typo."
             )
+        _warn_unrecognised_route_tiers(skill, floor, _unrecognised)
     return True
 
 

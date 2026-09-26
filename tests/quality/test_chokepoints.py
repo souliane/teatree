@@ -275,9 +275,18 @@ _NON_CONTENT_PARAMS = frozenset(
         # ``enrich`` shapes how much of a READ is fetched (``list_my_prs`` skipping the
         # per-PR CI lookup); a bool cannot ferry outbound text in either position.
         "enrich",
+        # ``branch`` is the READ-query scope of ``fetch_open_pr_url_for_branch`` — a git
+        # ref name that selects WHICH open PR is looked up and ferries no outbound
+        # colleague-visible text. Same shape as ``since``/``updated_after``: registering
+        # that read at the forge WRITE seam would be a false statement about what it does
+        # (#4515). It is the only ``CodeHostBackend`` parameter of that name — a write
+        # that carries a branch does so inside ``PullRequestSpec`` (``spec``).
+        "branch",
         "state",
         "query",
         "expected_head_oid",
+        # ``squash`` picks the keystone merge's mode (``ticket merge --no-squash``); a bool carries no text.
+        "squash",
         "child_type",
         "spec",
         "filepath",

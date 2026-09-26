@@ -12,7 +12,7 @@ fail-open so one broken resolve never suppresses another scope's signal.
 
 Separated from :mod:`teatree.core.factory.operational_health` the way
 ``dream_fallen_behind`` is — the aggregator owns folding a per-scope mismatch
-into a :class:`~teatree.core.factory.operational_health.HealthSignal`, this
+into a :class:`~teatree.core.factory.health_signal.HealthSignal`, this
 module owns resolving and comparing the pair itself.
 """
 

@@ -2,24 +2,28 @@
 
 The ``claude_sdk`` harness resumes a parked headless run cheaply via the SDK's
 own ``--resume <session_id>`` (server-side session storage, see
-:func:`teatree.agents._runner_options._get_resume_session_id`). The
+:func:`teatree.agents.session_lineage.resume_session_id`). The
 ``pydantic_ai`` transport has no equivalent server-side session, so its
 in-memory conversation (``list[ModelMessage]``) must be persisted by teatree
-itself on PARK and rehydrated on RESUME — the piece epic #2565-C names as the
+itself and rehydrated on RESUME — the piece epic #2565-C names as the
 "one new piece" cached-resume needs (BLUEPRINT.md § Loop Topology).
+
+Lifecycle: every run that reaches a recorded outcome RETAINS its conversation under its
+own task pk before the outcome is written (:func:`retain_run_thread`), so a failure, a
+limit park and a needs-input park all leave something the next dispatch can continue —
+and a concurrent requeue can never observe the failed row before its thread exists. The
+entry is DISCARDED once nothing will continue it: the run completed without asking for
+input (:func:`release_finished_thread`), or the requeue sweep decided the row will not retry.
 
 No migration: reuses ``Ticket.extra`` (an already-migrated per-ticket JSON
 store — precedent: ``more_prs_coming``, ``prs``) under the
-``pydantic_ai_threads`` key, keyed by the PARKED ``Task``'s own pk — the SAME
-identifier :func:`~teatree.agents._runner_options._get_resume_session_id`
-walks the ``parent_task`` chain to find, so a pydantic_ai resume locates the
-same ancestor a claude_sdk resume would. Entries are single-use: a resume
-POPS its entry, mirroring ``schedule_resume``'s idempotent chaining
-— the store never accumulates stale threads across repeated park/resume
-cycles. Follows the same unlocked-outer-read + ``merge_extra``-locked-write
-shape ``backends/gitlab/sync_terminal.py`` already uses for the nested
-``prs`` dict — one ticket rarely parks two pydantic_ai tasks in the same
-instant, so the narrow TOCTOU window that pattern accepts is unchanged here.
+``pydantic_ai_threads`` key, keyed by the ``Task``'s own pk — the SAME
+identifier :func:`~teatree.agents.session_lineage.resume_session_id` reads off the
+typed continuation lineage, so a pydantic_ai resume locates the same source a
+claude_sdk resume would. Entries are single-use: a resume POPS its entry. An add
+merges into the LOCKED re-read of ``extra``, because parallel children of one ticket
+retain their threads concurrently; a removal re-reads ``extra`` first, so a removal
+from a long-held ticket instance cannot drop a sibling's entry written meanwhile.
 
 Prompt-cache fallback policy (#2886): resending the rehydrated history is the
 WHOLE mechanism — no manual ``cache_control`` markers are sent (prompt-cache
@@ -44,64 +48,47 @@ silently and irrecoverably destroys the parked conversation.
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 
-from teatree.agents.result_schema import AgentResultBlob
+from teatree.agents.session_lineage import resumable_lineage
 from teatree.core.models import Task
+from teatree.core.models.ticket_evidence import TASK_THREADS_KEY
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
 
-    from teatree.core.models.types import TicketExtra
 
 logger = logging.getLogger(__name__)
-
-_THREAD_STORE_KEY = "pydantic_ai_threads"
 
 
 def persist_parked_thread(task: Task, history: "list[ModelMessage]") -> None:
     """Durably store *history* keyed to *task*'s own pk, for a later resume.
 
-    Called once, at PARK time (a ``needs_user_input`` STOP) — never on an
-    ordinary completed run, where there is nothing to resume. Also reused to
-    RESTORE a thread :func:`rehydrate_thread_for_resume` already popped when
-    the dispatch it seeded is refused before it ever runs (see
+    Also reused to RESTORE a thread :func:`rehydrate_thread_for_resume` already popped
+    when the dispatch it seeded is refused before it ever runs (see
     :func:`teatree.agents.runner._restore_unconsumed_resume_thread`).
     """
-    ticket = task.ticket
-    threads = dict(ticket.extra.get(_THREAD_STORE_KEY, {}) if isinstance(ticket.extra, dict) else {})
-    threads[str(task.pk)] = ModelMessagesTypeAdapter.dump_python(history, mode="json")
-    ticket.merge_extra(set_keys=cast("TicketExtra", {_THREAD_STORE_KEY: threads}))
-    logger.info("Persisted pydantic_ai thread for parked task %s (%d messages)", task.pk, len(history))
+    dumped = ModelMessagesTypeAdapter.dump_python(history, mode="json")
+    task.ticket.merge_extra(merge_into_dicts={TASK_THREADS_KEY: {str(task.pk): dumped}})
+    logger.info("Persisted pydantic_ai thread for task %s (%d messages)", task.pk, len(history))
 
 
-def maybe_persist_on_park(task: Task, result: AgentResultBlob, thread: "list[ModelMessage] | None") -> None:
-    """Persist *thread* iff *result* is a ``needs_user_input`` PARK — else a no-op.
-
-    An ordinary completed run (or one with no ``thread`` — claude_sdk, or a
-    watchdog-interrupted run) has nothing to resume.
-
-    The sibling park is a usage LIMIT, which never produces a result envelope —
-    :func:`maybe_persist_on_limit_park` covers it.
-    """
-    if result.get("needs_user_input") and thread:
-        persist_parked_thread(task, thread)
-
-
-def maybe_persist_on_limit_park(task: Task, thread: "list[ModelMessage] | None") -> None:
-    """Persist *thread* for a usage-limit park (souliane/teatree#3605) — else a no-op.
-
-    A limit-parked run (``usage_window.park_or_rotate_on_limit``) is re-queued as
-    ITSELF, so there is no child task whose ``parent_task`` points at the parked one:
-    the entry is stored under *task*'s own pk and :func:`rehydrate_thread_for_resume`
-    reads *task* first. Without this the resume re-paid the whole accumulated context
-    as fresh input — a cost, never an error, which is why it went unnoticed.
-    """
+def retain_run_thread(task: Task, thread: "list[ModelMessage] | None") -> None:
+    """Keep a finished run's conversation under *task*'s own pk; a transport with none keeps nothing."""
     if thread:
         persist_parked_thread(task, thread)
+
+
+def release_finished_thread(task: Task) -> None:
+    """Drop *task*'s conversation once it completed without asking for input — nothing will continue it."""
+    last_attempt = task.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+    if last_attempt is not None and (last_attempt.result or {}).get("needs_user_input"):
+        return
+    if Task.objects.filter(pk=task.pk, status=Task.Status.COMPLETED).exists():
+        task.ticket.pop_task_thread(int(task.pk))
 
 
 @dataclass(frozen=True)
@@ -121,32 +108,25 @@ class ResumedThread:
 
 
 def rehydrate_thread_for_resume(task: Task) -> "ResumedThread | None":
-    """Reload the nearest parked thread — *task*'s own, else an ancestor's.
+    """Reload the parked thread of the conversation *task* is typed to continue.
 
-    *task* itself is checked first: a usage-limit park re-queues the same row, so its
-    conversation is keyed under its own pk (#3605). Otherwise the walk follows
-    ``parent_task`` exactly like
-    :func:`~teatree.agents._runner_options._get_resume_session_id`, so a
-    pydantic_ai resume finds the SAME ancestor a claude_sdk resume would.
-    Consumes the entry on read (single-use). Never raises — see the module
-    docstring's fallback policy.
+    Walks :func:`~teatree.agents.session_lineage.resumable_lineage` exactly like
+    :func:`~teatree.agents.session_lineage.resume_session_id`, so a pydantic_ai resume
+    finds the SAME source a claude_sdk resume would. A usage-limit park re-queues the
+    same row typed SELF, which is how its own-pk entry is reached (#3605). Consumes the
+    entry on read (single-use). Never raises — see the module docstring's fallback policy.
     """
-    current: Task | None = task
-    while current is not None:
+    for current in resumable_lineage(task):
         history = _pop_thread(current)
         if history is not None:
             return ResumedThread(ancestor=current, history=history)
-        current = current.parent_task
     return None
 
 
 def _pop_thread(task: Task) -> "list[ModelMessage] | None":
-    ticket = task.ticket
-    threads = dict(ticket.extra.get(_THREAD_STORE_KEY, {}) if isinstance(ticket.extra, dict) else {})
-    raw = threads.pop(str(task.pk), None)
+    raw = task.ticket.pop_task_thread(int(task.pk))
     if raw is None:
         return None
-    ticket.merge_extra(set_keys=cast("TicketExtra", {_THREAD_STORE_KEY: threads}))
     try:
         return ModelMessagesTypeAdapter.validate_python(raw)
     except ValidationError:

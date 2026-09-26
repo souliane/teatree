@@ -22,10 +22,12 @@ from pathlib import Path
 
 import pytest
 
+from tests._hook_env import HOOK_ENV_NAME
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: What ``resolve-uv.sh`` redirects a workspace member to.
-_HOOK_ENV = ".venv-hook"
+_HOOK_ENV = HOOK_ENV_NAME
 
 #: Recorded when an invocation carried no ``UV_PROJECT_ENVIRONMENT`` — it took whatever
 #: environment uv resolved on its own, which for a member is the shared one.
@@ -37,7 +39,14 @@ if [ "${{1:-}}" = "--version" ]; then echo "uv 0.0.0-test"; exit 0; fi
 printf '%s\\n' "${{UV_PROJECT_ENVIRONMENT:-{_NO_REDIRECT}}}" >>"${{UV_STUB_ENVS}}"
 """
 
-_COPIED = ("dev/push-gate.sh", "dev/lib/xdist-workers.sh", "scripts/hooks/lib/resolve-uv.sh")
+_COPIED = (
+    "dev/push-gate.sh",
+    "dev/lib/gate-record.sh",
+    "dev/lib/gate-lock.sh",
+    "dev/lib/xdist-workers.sh",
+    "scripts/hooks/lib/resolve-uv.sh",
+    "src/teatree/utils/push_gate_lock.py",
+)
 
 
 def _lane_repo(tmp_path: Path, *, vendored: bool) -> Path:

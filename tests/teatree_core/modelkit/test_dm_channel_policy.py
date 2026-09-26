@@ -60,6 +60,10 @@ def test_internal_is_pull() -> None:
         "watchdog:doctor-unreachable:20260819",
         "watchdog:doctor-no-verdict:20260819",
         "schema_behind_code:t3-teatree:0d8e47228d1b",
+        "self-improve:cgroup-probe-inert:incident:state:initial",
+        "self-improve:ram-probe-inert:incident:state:initial",
+        "self-improve:disk-probe-inert:incident:state:initial",
+        "self-improve:outbound-unposted:incident:state:initial",
     ],
 )
 def test_a_registered_outage_page_pushes(key: str) -> None:
@@ -86,6 +90,10 @@ def test_push_signals_membership_is_pinned_exactly() -> None:
                 "watchdog:doctor-unreachable",
                 "watchdog:doctor-no-verdict",
                 "schema_behind_code",
+                "self-improve:cgroup-probe-inert",
+                "self-improve:ram-probe-inert",
+                "self-improve:disk-probe-inert",
+                "self-improve:outbound-unposted",
             }
         )
         == PUSH_SIGNALS
@@ -96,3 +104,67 @@ def test_signal_prefixes_walks_every_colon_boundary() -> None:
     assert signal_prefixes("watchdog:red:abc") == ("watchdog", "watchdog:red", "watchdog:red:abc")
     assert signal_prefixes("solo") == ("solo",)
     assert signal_prefixes("") == ()
+
+
+class TestADirectlyRequestedPushIsHonoured:
+    """A key nobody registered is the ONE-OFF case, not an unregistered alarm.
+
+    The registry answers "does this recurring signal earn an interruption", and it
+    answers PULL by default because an alarm site that fires 225 times a week is
+    cheaper to write than to justify. A one-off message a person or an agent asked
+    to be sent — a progress note on a specific merge request, an answer to a
+    question — has a key that by construction nobody could have registered, so the
+    registry read it as an unearned alarm and swallowed it. Two such messages about
+    one merge request were recorded and never delivered, and the CLI exited 0.
+
+    The lever is the caller stating it: an alarm call site cannot set it (it declares
+    an audience and a key, not a request), so the flood the registry closes stays
+    closed, and the un-registrable one-off gets through.
+    """
+
+    def test_an_unregistered_signal_still_pulls_by_default(self) -> None:
+        assert classify(audience=NotifyAudience.OWNER_DELIVERY, idempotency_key="mr172-progress-20260828") is (
+            DmChannel.PULL
+        )
+
+    def test_the_same_signal_pushes_when_the_caller_asked_for_a_push(self) -> None:
+        assert (
+            classify(
+                audience=NotifyAudience.OWNER_DELIVERY,
+                idempotency_key="mr172-progress-20260828",
+                requested_push=True,
+            )
+            is DmChannel.PUSH
+        )
+
+    def test_an_escalation_the_caller_asked_to_push_is_honoured_too(self) -> None:
+        assert (
+            classify(
+                audience=NotifyAudience.OWNER_ESCALATION,
+                idempotency_key="nobody-registered-this",
+                requested_push=True,
+            )
+            is DmChannel.PUSH
+        )
+
+    def test_an_internal_audience_is_still_never_interrupted(self) -> None:
+        """Audience is deny-by-default and outranks the request: INTERNAL is not for the owner."""
+        assert (
+            classify(
+                audience=NotifyAudience.INTERNAL,
+                idempotency_key="anything",
+                requested_push=True,
+            )
+            is DmChannel.PULL
+        )
+
+    def test_a_registered_signal_is_unaffected_by_the_flag(self) -> None:
+        for requested in (False, True):
+            assert (
+                classify(
+                    audience=NotifyAudience.OWNER_DELIVERY,
+                    idempotency_key="watchdog:compose-up-failed:20260901",
+                    requested_push=requested,
+                )
+                is DmChannel.PUSH
+            )

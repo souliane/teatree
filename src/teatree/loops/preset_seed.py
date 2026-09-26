@@ -16,18 +16,19 @@ who re-arranged a schedule's slots keeps that arrangement.
 **``standard`` ships active:** the seed pins ``active_loop_schedule`` to
 ``standard`` through the provenance-aware :meth:`ConfigSetting.objects.seed`, so a
 fresh install runs the owner's working-hours calendar out of the box — Mon-Fri
-09:00-16:00 ``Europe/Vienna`` → ``present`` (attended), every other hour → ``away``
-(autonomous, colleague-facing loop off). The provenance seed CREATES the pin on a fresh
+09:00-16:00 ``Europe/Vienna`` → ``present`` (attended), every other hour → ``afk``
+(autonomous, no outward voice). The provenance seed CREATES the pin on a fresh
 box and PRESERVES an operator who switched to another calendar (or cleared it),
 so a re-seed never overrides the owner's choice.
 
-A loop ABSENT from a mode's ``entries`` table INHERITS its own enabled flag, which is
-how the dark/destructive-opt-in loops (``issue_implementer`` / ``issue_disposition`` /
-``backlog_sweep`` / ``outer_loop`` / ``directive_loop``) stay untouched by every mode
-except ``low-token`` / ``off`` — a mode switch never silently re-enables the owner's
-explicit opt-in on a destructive-capable loop. ``maintenance`` names
-``issue_implementer`` explicitly because draining in-flight work means taking no new
-intake.
+Every mode names EVERY loop (B1), so a mode switch is readable from the mode alone and a
+loop added later starts off in all of them. The seed is a write seam like any other and
+folds through the same derivation (:func:`_entries_for_seed`), so a live loop the shipped
+tables never named — an overlay's own, or one added ahead of the tables — is seeded OFF
+rather than absent. ``present`` runs all of them — it is B6's "do
+everything" — and each other posture subtracts from it, so switching down a posture can
+only ever remove work. ``afk`` subtracts exactly one loop and adds ``egress = "forbid"``;
+that egress line, not a masked loop, is what "except colleague facing" means.
 """
 
 import datetime as dt
@@ -47,6 +48,7 @@ class PresetSpec:
     name: str
     description: str
     entries: dict[str, bool]
+    egress: str = "allow"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +75,7 @@ def default_preset_specs(path: Path | None = None) -> tuple[PresetSpec, ...]:
             name=name,
             description=entry["description"],
             entries={loop: bool(value) for loop, value in entry.get("entries", {}).items()},
+            egress=entry.get("egress", "allow"),
         )
         for name, entry in shipped_seed_table(_MODES_TABLE, path).items()
     )
@@ -92,6 +95,22 @@ def default_schedule_specs(path: Path | None = None) -> tuple[ScheduleSpec, ...]
         )
         for name, entry in shipped_seed_table(_SCHEDULES_TABLE, path).items()
     )
+
+
+def _entries_for_seed(entries: dict[str, bool], loop_names: set[str]) -> dict[str, bool]:
+    """*entries* as a total opinion over the live loops — the seed's fold (B1).
+
+    An empty ``Loop`` table is the one case that must NOT totalize: there is nothing to be
+    total over, and folding against it would drop every shipped opinion, seeding ``present``
+    as the posture that runs nothing. The ``post_save`` backfill writes each loop in instead.
+    """
+    from teatree.core.models.preset_totality import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+        totalized_entries,
+    )
+
+    if not loop_names:
+        return dict(entries)
+    return totalized_entries(entries, loop_names=loop_names)
 
 
 #: The calendar ``active_loop_schedule`` is pinned to on a fresh install.
@@ -120,15 +139,23 @@ def seed_default_presets_and_schedules() -> PresetSeedResult:
         ModeSchedule,
         ModeScheduleSlot,
     )
+    from teatree.core.models.preset_totality import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
+        live_loop_names,
+    )
     from teatree.loop.preset_resolution import (  # noqa: PLC0415 — deferred import (cycle-safe / pre-app-registry)
         ACTIVE_SCHEDULE_SETTING,
     )
 
+    loop_names = live_loop_names()
     presets_created = 0
     for spec in default_preset_specs():
         _, made = Mode.objects.get_or_create(
             name=spec.name,
-            defaults={"entries": spec.entries, "description": spec.description},
+            defaults={
+                "entries": _entries_for_seed(spec.entries, loop_names),
+                "description": spec.description,
+                "egress": spec.egress,
+            },
         )
         presets_created += int(made)
 

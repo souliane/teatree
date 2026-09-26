@@ -15,6 +15,7 @@ from teatree.core.management.commands._test_plan import from_seams as _from_seam
 from teatree.core.management.commands._test_plan.write import PlanWriteResult
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayE2E, OverlayMetadata
+from tests.teatree_core._on_behalf_gate_helpers import permit_on_behalf_gate
 from tests.teatree_core.conftest import CommandOverlay
 
 _ISSUE_URL = "https://gitlab.com/org/repo/-/issues/8521"
@@ -60,8 +61,8 @@ class _FromSeamsBase(TestCase):
     def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._monkeypatch = monkeypatch
         self._tmp = tmp_path
-        # IMMEDIATE on-behalf mode: the post is not gated for the test's lifetime.
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "immediate")
+        # A permitting posture: the post is not gated for the test's lifetime.
+        permit_on_behalf_gate(monkeypatch)
         # No worktree — the ticket resolves via the explicit --ticket ref.
         monkeypatch.setattr(
             _from_seams,
@@ -73,7 +74,7 @@ class _FromSeamsBase(TestCase):
     def _plan_path(self) -> Path:
         return self._tmp / "checkout" / "test-plans" / f"repo-{_TICKET_NUMBER}.md"
 
-    def _ticket_with_recipe(self, *, spec: str = _SPEC, shas: dict[str, str] | None = None) -> Path:
+    def _ticket_with_recipe(self, *, spec: str = _SPEC, shas: dict[str, str] | None = None, env: str = "local") -> Path:
         ticket = Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
         checkout = self._tmp / "checkout"
         checkout.mkdir(exist_ok=True)
@@ -89,13 +90,13 @@ class _FromSeamsBase(TestCase):
             ticket,
             result="green",
             per_repo_shas=shas if shas is not None else {"backend": "abc1234"},
-            env="local",
+            env=env,
             provenance=RunProvenance(spec_path=spec, artifacts_dir=str(artifacts_root)),
         )
         return artifacts_root
 
-    def _write_capture(self, artifacts_root: Path, *, slot: str = "step1") -> None:
-        env_dir = artifacts_root / _TICKET_NUMBER / "local"
+    def _write_capture(self, artifacts_root: Path, *, slot: str = "step1", env: str = "local") -> None:
+        env_dir = artifacts_root / _TICKET_NUMBER / env
         env_dir.mkdir(parents=True, exist_ok=True)
         (env_dir / f"{slot}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
@@ -133,6 +134,18 @@ class TestAssembleAndWrite(_FromSeamsBase):
 
         assert result["action"] == "updated"
         assert [p.name for p in self._plan_path.parent.iterdir()] == [f"repo-{_TICKET_NUMBER}.md"]
+
+    def test_stack_run_renders_in_its_own_evidence_side(self) -> None:
+        artifacts_root = self._ticket_with_recipe(env="stack")
+        self._write_capture(artifacts_root, env="stack")
+
+        result = self._run(ticket=_ISSUE_URL, spec_path="", artifacts_dir="")
+
+        assert result["envs"] == ["stack"]
+        body = self._plan_path.read_text(encoding="utf-8")
+        assert "Stack tested: backend `abc1234`" in body
+        assert '"stack":{"commits":{"backend":"abc1234"},"env":"stack"' in body
+        assert "Local tested: backend `abc1234`" not in body
 
 
 class TestFailLoud(_FromSeamsBase):

@@ -19,9 +19,6 @@ from teatree.provisioning.skill_pin import PinAudit, SkillPinStatus, write_pin_a
 
 _SPEC = "team/skills/ac-python#d0008a39e9b1b9ba905e15380ee62ef459183dfd"
 _MOVED_TO = "9f2c1ab4c5d6e7f8091a2b3c4d5e6f7a8b9c0d1e"
-#: A whole-repo BUNDLE pin: two segments, so it names no single installable skill and
-#: the skill enumeration drops it — the shape that went unmeasured in the real apm.yml.
-_BUNDLE_SPEC = "obra/superpowers#1f20bef3f59b85ad7b52718f822e37c4478a3ff5"
 
 
 @pytest.fixture
@@ -92,7 +89,8 @@ def test_recorded_stale_pin_renders_a_pasteable_bump_and_gates_nothing(tmp_path:
     ok, output = _run(record, now=now, manifest=manifest)
     assert ok is True
     assert "INFO" in output
-    assert f"apm install team/skills/ac-python#{_MOVED_TO}" in output
+    assert f"team/skills/ac-python#{_MOVED_TO}" in output
+    assert "t3 setup" in output
     assert "FAIL" not in output
 
 
@@ -122,9 +120,7 @@ class TestDeclaredPinCoverage:
 
     ``pin_advisory_lines`` speaks only about MEASURED pins, so a declared pin the
     measurement never reached produced no line at all — and a doctor that prints nothing
-    is read as "every pin is current". The real ``apm.yml``'s only third-party pin is a
-    two-segment bundle that the skill enumeration drops, so it was never measured and
-    the check had been silently reporting on a strict subset of the mandate.
+    is read as "every pin is current".
     """
 
     @staticmethod
@@ -132,18 +128,6 @@ class TestDeclaredPinCoverage:
         record = tmp_path / "audit.json"
         _record(record, _status(), measured_at=now - dt.timedelta(days=1))
         return record
-
-    def test_a_bundle_pin_the_measurement_never_covered_is_unverified(self, tmp_path: Path) -> None:
-        now = dt.datetime(2026, 8, 4, tzinfo=dt.UTC)
-        record = self._fresh_record(tmp_path, now)
-        manifest = _manifest_declaring(tmp_path, [_SPEC, _BUNDLE_SPEC])
-
-        ok, output = _run(record, now=now, manifest=manifest)
-
-        assert ok is True
-        assert "UNVERIFIED" in output
-        assert _BUNDLE_SPEC in output
-        assert "FAIL" not in output
 
     def test_a_pin_added_since_the_last_setup_is_unverified(self, tmp_path: Path) -> None:
         """The same hole from the other direction — the record is fresh but no longer complete."""

@@ -23,10 +23,10 @@
 # Sibling of `refuse-public-push-with-leak.sh` (#685/#730): same Phase-0
 # pre-push prek block, same fail-OPEN posture, same interpreter fallback
 # chain. When no forge CLI is available, the slug is not an owner/repo
-# shape, our login can't be resolved, or the MR query fails, the CLI
-# answers NONE and the gate passes through — a transient forge-API
-# failure must never brick a legitimate push, and this is a safety net
-# layered on top of the behavioural rule, not the only line of defence.
+# shape, or the MR query fails, the CLI answers NONE and the gate passes
+# through. Once an open MR IS found, a login this venue cannot resolve
+# answers UNKNOWN and is refused like a foreign MR: it is not evidence
+# the push is harmless, and the token still releases it.
 #
 # Git invokes a pre-push hook as:  hook <remote-name> <remote-url>
 # and feeds ref updates on stdin, one per line:
@@ -117,17 +117,20 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
   branch=${local_ref#refs/heads/}
   [ -n "${branch}" ] || continue
 
-  # Ask the host-routed resolver. An unresolvable answer (no forge CLI, no
-  # login, a probe error) comes back NONE, so only a CONFIRMED foreign open
-  # MR reaches the block below. `T3_FOREIGN_MR_CMD` overrides the resolver
-  # for testing, mirroring `T3_REPO_VISIBILITY_CMD`.
+  # Ask the host-routed resolver. No open MR, or no forge to ask, comes back
+  # NONE; an open MR whose ownership this venue cannot settle comes back
+  # UNKNOWN and is refused like a confirmed FOREIGN one. `T3_FOREIGN_MR_CMD`
+  # overrides the resolver for testing, mirroring `T3_REPO_VISIBILITY_CMD`.
   if [ -n "${T3_FOREIGN_MR_CMD:-}" ]; then
     verdict=$(${T3_FOREIGN_MR_CMD} "${remote_url}" "${branch}" 2>/dev/null || true)
   else
     verdict=$(_resolve_foreign_mr "${branch}" || true)
   fi
-  read -r kind pr_number pr_author our_login <<<"${verdict}" || true
-  [ "${kind:-}" = "FOREIGN" ] || continue
+  read -r kind pr_number pr_author field4 field5 <<<"${verdict}" || true
+  case "${kind:-}" in
+    FOREIGN | UNKNOWN) : ;;
+    *) continue ;;
+  esac
 
   # A foreign OPEN MR backs this branch. Allow only with an explicit
   # co-authoring override token in the commit messages the push INTRODUCES —
@@ -162,8 +165,20 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
     continue
   fi
 
-  echo "✗ refuse: '${branch}' backs an OPEN MR (#${pr_number}) authored by '${pr_author}', not you ('${our_login}')."
-  echo "  Pushing would silently modify a teammate's MR. Your changes belong on YOUR own branch."
+  if [ "${kind}" = "UNKNOWN" ]; then
+    probe="'${field4} api user'"
+    echo "✗ refuse: '${branch}' backs an OPEN MR (#${pr_number}) authored by '${pr_author}', and this venue cannot tell whether that is you."
+    case "${field5:-}" in
+      timeout=*) echo "  The identity probe ${probe} TIMED OUT (${field5#timeout=}); that is not evidence the CLI is unauthenticated. Retry, or push from a venue where it answers." ;;
+      exit-nonzero) echo "  The identity probe ${probe} exited non-zero; check '${field4} auth status' in this venue." ;;
+      tool-absent) echo "  '${field4}' is not installed in this venue, so ${probe} could not run." ;;
+      *) echo "  The identity probe ${probe} could not name a login (${field5:-unknown})." ;;
+    esac
+    echo "  Declare the MR author as one of your own logins in self_forge_identities if it is yours."
+  else
+    echo "✗ refuse: '${branch}' backs an OPEN MR (#${pr_number}) authored by '${pr_author}', not you ('${field4}')."
+    echo "  Pushing would silently modify a teammate's MR. Your changes belong on YOUR own branch."
+  fi
   echo "  A worktree opened to INSPECT a colleague's MR is read-only (see /t3:rules § never push to a colleague's open MR branch)."
   echo "  For a genuine co-authoring push, add [push-to-foreign-mr-ok: <reason>] to a commit message in the push range."
   blocked=1

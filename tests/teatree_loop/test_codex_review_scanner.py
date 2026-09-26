@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.core.models.codex_review_marker import CodexReviewMarker
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.codex_review import (
     ADVERSARIAL_REVIEW_VARIANT,
@@ -290,7 +291,10 @@ class TestGhCodexPrApi:
             return _FakeCompleted(returncode=0, stdout=payload, stderr="")
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="ghp_x")
+        # The adapter also stamps each head's required-checks standing; stub it so the
+        # decode assertions below never depend on a live forge read.
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.head_checks_unsettled", lambda **_: False)
+        api = GhCodexPrApi()
         prs = api.list_open_self_prs(slug=SLUG)
         assert len(prs) == 1
         assert prs[0].slug == SLUG
@@ -307,7 +311,7 @@ class TestGhCodexPrApi:
             return _FakeCompleted(returncode=127, stdout="", stderr="gh: command not found")
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="")
+        api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
     def test_file_not_found_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -317,7 +321,7 @@ class TestGhCodexPrApi:
             raise FileNotFoundError(msg)
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="x")
+        api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
     def test_gh_auth_failure_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -330,7 +334,7 @@ class TestGhCodexPrApi:
             )
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="")
+        api = GhCodexPrApi()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_self_prs(slug=SLUG)
         assert excinfo.value.error_class == ScannerErrorClass.AUTH
@@ -345,7 +349,7 @@ class TestGhCodexPrApi:
             )
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="x")
+        api = GhCodexPrApi()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_self_prs(slug=SLUG)
         assert excinfo.value.error_class == ScannerErrorClass.RATE_LIMIT
@@ -360,7 +364,7 @@ class TestGhCodexPrApi:
             )
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="x")
+        api = GhCodexPrApi()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_self_prs(slug=SLUG)
         assert excinfo.value.error_class == ScannerErrorClass.NETWORK
@@ -371,7 +375,7 @@ class TestGhCodexPrApi:
             return _FakeCompleted(returncode=1, stdout="", stderr="some other failure")
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="x")
+        api = GhCodexPrApi()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_self_prs(slug=SLUG)
         assert excinfo.value.error_class == ScannerErrorClass.UNKNOWN
@@ -382,7 +386,7 @@ class TestGhCodexPrApi:
             return _FakeCompleted(returncode=0, stdout="   \n", stderr="")
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="x")
+        api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
     def test_malformed_json_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -391,7 +395,7 @@ class TestGhCodexPrApi:
             return _FakeCompleted(returncode=0, stdout="not json", stderr="")
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="x")
+        api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
     def test_non_list_json_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -400,10 +404,10 @@ class TestGhCodexPrApi:
             return _FakeCompleted(returncode=0, stdout='{"oops": "object not array"}', stderr="")
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="x")
+        api = GhCodexPrApi()
         assert api.list_open_self_prs(slug=SLUG) == []
 
-    def test_token_is_exported_as_gh_token_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_owner_routed_token_is_exported_as_gh_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict[str, object] = {}
 
         def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
@@ -412,23 +416,23 @@ class TestGhCodexPrApi:
             return _FakeCompleted(returncode=0, stdout="[]", stderr="")
 
         monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="ghp_secret")
+        api = GhCodexPrApi()
         api.list_open_self_prs(slug=SLUG)
         env = captured["env"]
         assert isinstance(env, dict)
-        assert env.get("GH_TOKEN") == "ghp_secret"
+        assert env.get("GH_TOKEN") == "test-token"
 
-    def test_no_token_does_not_set_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured: dict[str, object] = {}
-
-        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
-            captured["env"] = kwargs.get("env")
-            return _FakeCompleted(returncode=0, stdout="[]", stderr="")
-
-        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
-        api = GhCodexPrApi(token="")
-        api.list_open_self_prs(slug=SLUG)
-        assert captured["env"] is None
+    def test_unset_route_refuses_ambient_auth(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GH_TOKEN", "hostile-ambient")
+        api = GhCodexPrApi()
+        empty = ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET, detail="route unset")
+        with (
+            patch("teatree.forge_credentials.resolve_slug_token", return_value=empty),
+            patch("teatree.loop.scanners.codex_review.run_allowed_to_fail") as run,
+            pytest.raises(ScannerError, match="refusing ambient gh authentication"),
+        ):
+            api.list_open_self_prs(slug=SLUG)
+        run.assert_not_called()
 
 
 class TestDecodePr:

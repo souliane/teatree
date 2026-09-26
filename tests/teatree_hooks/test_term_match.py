@@ -14,6 +14,8 @@ All term lists here are SYNTHETIC neutral fakes — no real customer/overlay
 term value appears, so this public test file leaks nothing.
 """
 
+from pathlib import Path
+
 import pytest
 
 from teatree.hooks import term_match
@@ -345,3 +347,61 @@ class TestBareSlugInCliShapedTextIsCaught:
 
     def test_t3_slug_allowlist_run_consumes_the_slug(self) -> None:
         assert term_match.matched_term(self._CLI_TEXT, ("op",), ("t3-op",)) is None
+
+
+class TestEmailAddressesAreScannedLikeAnyOtherContent:
+    """An email address in file content is published text, so it is scanned.
+
+    The matcher used to blank every email before tokenizing, so a term inside
+    any address was invisible to every file scan — ``contact@acme.example``
+    never matched ``acme``. That carve-out was written for an author/contact
+    metadata FIELD but applied to every line of every file, and no caller ever
+    turned it off. Author identity has its own gate (the pre-push noreply guard
+    and ``fast_push`` author-identity check); the company-identifier
+    ``allowlist`` is what legitimately exempts an address here.
+    """
+
+    _ORG_TERMS = ("op", "customercodename")
+    _ORG_ALLOW = ("op-engineering",)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "contact@acme.example",
+            "acme@mailhost.example",
+            "Author: someone <dev@acme.example>",
+            "login = 'acme@webmail.example'",
+        ],
+    )
+    def test_term_inside_an_address_matches(self, text: str) -> None:
+        assert term_match.matched_term(text, _ACME_TERMS) == "acme"
+
+    def test_address_with_no_configured_term_does_not_match(self) -> None:
+        assert term_match.matched_term("Author: someone <dev@example.org>", _ACME_TERMS) is None
+
+    def test_file_matches_reports_a_term_inside_an_address(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.md"
+        target.write_text("clean first line\nwrite to contact@acme.example\n", encoding="utf-8")
+
+        assert term_match.file_matches(str(target), _ACME_TERMS) == [(2, "acme", "write to contact@acme.example")]
+
+    def test_file_matches_leaves_a_clean_address_alone(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.md"
+        target.write_text("write to contact@example.org\n", encoding="utf-8")
+
+        assert term_match.file_matches(str(target), _ACME_TERMS) == []
+
+    def test_allowlisted_identifier_in_an_address_is_exempt(self, tmp_path: Path) -> None:
+        target = tmp_path / "doc.md"
+        target.write_text("Author: someone <dev@op-engineering.example>\n", encoding="utf-8")
+
+        assert term_match.file_matches(str(target), self._ORG_TERMS, allowlist=self._ORG_ALLOW) == []
+
+    def test_same_address_matches_without_the_allowlist(self, tmp_path: Path) -> None:
+        """Anti-vacuity for the exemption: the allowlist is what excuses it, not the '@'."""
+        target = tmp_path / "doc.md"
+        target.write_text("Author: someone <dev@op-engineering.example>\n", encoding="utf-8")
+
+        assert term_match.file_matches(str(target), self._ORG_TERMS) == [
+            (1, "op", "Author: someone <dev@op-engineering.example>")
+        ]

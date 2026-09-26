@@ -13,9 +13,9 @@ import pytest
 from claude_agent_sdk import ResultMessage
 
 from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
-from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.models import COST_SOURCE_NOT_METERED, COST_SOURCE_UNKNOWN, EvalRun, EvalSpec
 from teatree.eval.report import ScenarioResult, render_json, render_text
-from teatree.eval.transcript import StreamJsonEvent, extract_cost_usd
+from teatree.eval.transcript import StreamJsonEvent, reported_cost_usd
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,7 +29,7 @@ def _result_event(cost: float | None = None) -> StreamJsonEvent:
     return StreamJsonEvent(line_no=1, type="result", subtype="success", raw=raw)
 
 
-def _run(*, cost_usd: float = 0.0, spec_name: str = "s") -> EvalRun:
+def _run(*, cost_usd: float = 0.0, spec_name: str = "s", cost_source: str = COST_SOURCE_NOT_METERED) -> EvalRun:
     return EvalRun(
         spec_name=spec_name,
         tool_calls=(),
@@ -39,6 +39,7 @@ def _run(*, cost_usd: float = 0.0, spec_name: str = "s") -> EvalRun:
         raw_stdout="",
         raw_stderr="",
         cost_usd=cost_usd,
+        cost_source=cost_source,
     )
 
 
@@ -63,32 +64,37 @@ def _scenario_result(run: EvalRun) -> ScenarioResult:
 
 
 # ---------------------------------------------------------------------------
-# extract_cost_usd
+# reported_cost_usd
 # ---------------------------------------------------------------------------
 
 
-class TestExtractCostUsd:
+class TestReportedCostUsd:
     def test_returns_cost_from_result_event(self) -> None:
         events = [_result_event(cost=0.05)]
-        assert extract_cost_usd(events) == pytest.approx(0.05)
+        assert reported_cost_usd(events) == pytest.approx(0.05)
 
-    def test_returns_zero_when_no_result_event(self) -> None:
-        assert extract_cost_usd([]) == pytest.approx(0.0)
+    def test_returns_none_when_no_result_event(self) -> None:
+        assert reported_cost_usd([]) is None
 
-    def test_returns_zero_when_result_event_has_no_cost_field(self) -> None:
+    def test_returns_none_when_result_event_has_no_cost_field(self) -> None:
+        """Unreported is NOT ``$0`` — the caller prices the run from its usage instead."""
         events = [_result_event(cost=None)]
-        assert extract_cost_usd(events) == pytest.approx(0.0)
+        assert reported_cost_usd(events) is None
+
+    def test_a_reported_zero_is_kept_as_a_zero(self) -> None:
+        events = [_result_event(cost=0.0)]
+        assert reported_cost_usd(events) == pytest.approx(0.0)
 
     def test_uses_last_result_event(self) -> None:
         events = [_result_event(cost=0.01), _result_event(cost=0.09)]
-        assert extract_cost_usd(events) == pytest.approx(0.09)
+        assert reported_cost_usd(events) == pytest.approx(0.09)
 
     def test_ignores_non_result_events(self) -> None:
         system_event = StreamJsonEvent(
             line_no=1, type="system", subtype="init", raw={"type": "system", "total_cost_usd": 999}
         )
         events = [system_event, _result_event(cost=0.03)]
-        assert extract_cost_usd(events) == pytest.approx(0.03)
+        assert reported_cost_usd(events) == pytest.approx(0.03)
 
 
 # ---------------------------------------------------------------------------
@@ -171,12 +177,19 @@ class TestRenderTextCostLine:
     def test_metered_run_emits_cost_line(self) -> None:
         results = [_scenario_result(_run(cost_usd=0.01)), _scenario_result(_run(cost_usd=0.02))]
         text = render_text(results)
-        assert "API cost: $0.0300 over 2 metered call(s)" in text
+        assert "API cost: $0.0300 over 2 priced run(s)" in text
 
-    def test_zero_cost_emits_no_metered_calls_line(self) -> None:
-        results = [_scenario_result(_run(cost_usd=0.0))]
+    def test_measured_zero_emits_no_metered_calls_line(self) -> None:
+        """A run that provably spent nothing — nothing metered it — reads ``$0.00``."""
+        results = [_scenario_result(_run(cost_usd=0.0, cost_source=COST_SOURCE_NOT_METERED))]
         text = render_text(results)
         assert "API cost: $0.00 (no metered calls)" in text
+
+    def test_unmeasured_zero_reads_unknown_not_a_dollar_figure(self) -> None:
+        results = [_scenario_result(_run(cost_usd=0.0, cost_source=COST_SOURCE_UNKNOWN))]
+        text = render_text(results)
+        assert "API cost: unknown" in text
+        assert "API cost: $0.00" not in text
 
     def test_mixed_run_aggregates_only_nonzero(self) -> None:
         results = [
@@ -184,7 +197,7 @@ class TestRenderTextCostLine:
             _scenario_result(_run(cost_usd=0.0)),
         ]
         text = render_text(results)
-        assert "API cost: $0.0300 over 1 metered call(s)" in text
+        assert "API cost: $0.0300 over 1 priced run(s)" in text
 
     def test_cost_line_never_absent(self) -> None:
         results = [_scenario_result(_run(cost_usd=0.0))]
@@ -195,7 +208,7 @@ class TestRenderTextCostLine:
         """Verbatim cost line must appear — guards against stripping it from render_text."""
         results = [_scenario_result(_run(cost_usd=0.05))]
         text = render_text(results)
-        assert "API cost: $0.0500 over 1 metered call(s)" in text
+        assert "API cost: $0.0500 over 1 priced run(s)" in text
 
 
 # ---------------------------------------------------------------------------
@@ -208,10 +221,10 @@ class TestRenderJsonCost:
         results = [_scenario_result(_run(cost_usd=0.01)), _scenario_result(_run(cost_usd=0.02))]
         payload = json.loads(render_json(results))
         assert payload["summary"]["total_cost_usd"] == pytest.approx(0.03)
-        assert payload["summary"]["metered_calls"] == 2
+        assert payload["summary"]["priced_runs"] == 2
 
     def test_summary_zero_cost_for_subscription_runs(self) -> None:
         results = [_scenario_result(_run(cost_usd=0.0))]
         payload = json.loads(render_json(results))
         assert payload["summary"]["total_cost_usd"] == pytest.approx(0.0)
-        assert payload["summary"]["metered_calls"] == 0
+        assert payload["summary"]["priced_runs"] == 0

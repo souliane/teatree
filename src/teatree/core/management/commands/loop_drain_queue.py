@@ -58,12 +58,10 @@ class Command(TyperCommand):
         finally:
             LoopLease.objects.release("loop-drain-queue", owner=owner)
 
-        retired = result["retired"]
-        retired_total = sum(retired.values()) if isinstance(retired, dict) else 0
-        emit(
-            result,
-            json_output=json_output,
-            out=out,
-            err=err,
-            human=f"OK    retired={retired_total} drained={result['drained']}",
+        retired_total = sum(result["retired"].values())
+        human = (
+            f"HALT  the active preset admits ZERO loops — {result['stranded']} READY `default` job(s) stranded"
+            if result["halted"]
+            else f"OK    retired={retired_total} drained={result['drained']}"
         )
+        emit(result, json_output=json_output, out=out, err=err, human=human)

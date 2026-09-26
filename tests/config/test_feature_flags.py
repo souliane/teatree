@@ -11,8 +11,8 @@ ON value — the Goodhart guard that keeps the outer loop's OFF switch un-flippa
 without a code-reviewed stage demotion.
 
 The live registry is seeded with several real flags — mostly ``DARK`` plus a few
-``SETTLING`` (``incremental_push_gate``, graduated by #122; ``limit_autorecovery_enabled``,
-by #3691; ``directive_loop_enabled``, by #3895). ``REMOVE`` is not represented live, so
+``SETTLING`` (``incremental_push_gate``, graduated by #122;
+``directive_loop_enabled``, by #3895). ``REMOVE`` is not represented live, so
 the stage-discrimination invariants are proven non-vacuously over a MIXED FIXTURE rather
 than the live set's accidental composition.
 """
@@ -34,7 +34,6 @@ from teatree.config import (
 from teatree.config.feature_flags import (
     REMOVE_STAGE_BANNER,
     UNTRACKED_BANNER,
-    flag_trailer,
     render_flags_audit,
     tracking_reference,
     untracked_flags,
@@ -72,10 +71,7 @@ class TestRegistrySeededNonVacuously:
         assert stages == set(FlagStage)
 
     def test_canonical_seed_flag_present(self) -> None:
-        # The canonical DARK flags plus a retro-classified one — loop_runner_enabled was
-        # graduated OUT by PR-28 (durable kill-switch, no longer a dying flag).
         assert {"outer_loop_enabled", "factory_score_enabled"} <= set(FEATURE_FLAGS)
-        assert "loop_runner_enabled" not in FEATURE_FLAGS
 
 
 class TestRegisteredHome:
@@ -120,13 +116,12 @@ class TestRegisteredHome:
 
 
 class TestEveryGateToggleIsClassified:
-    """No ``require_*`` toggle ships unclassified — the hole ``require_spec_coverage`` fell through.
+    """No ``require_*`` toggle ships unclassified — the hole a dark gate falls through.
 
-    Its ON state refused every RETROSPECTED→DELIVERED advance (a missing manifest
-    is itself a block) while no command could write the manifest, and nothing
-    reviewed that because the flag was in no registry at all. Classification is
-    now mandatory: a new gate toggle is a dying ``FEATURE_FLAGS`` entry or a
-    declared-durable operator policy, never neither.
+    An unclassified toggle's ON state can refuse an advance nothing is able to
+    satisfy, with nothing reviewing that because the flag is in no registry at all.
+    Classification is mandatory: a new gate toggle is a dying ``FEATURE_FLAGS``
+    entry or a declared-durable operator policy, never neither.
     """
 
     def _gate_toggles(self) -> set[str]:
@@ -144,12 +139,6 @@ class TestEveryGateToggleIsClassified:
 
     def test_durable_bucket_names_only_real_gate_toggles(self) -> None:
         assert self._gate_toggles() >= DURABLE_GATE_SETTINGS
-
-    def test_spec_coverage_gate_is_governed_dark_and_off(self) -> None:
-        flag = FEATURE_FLAGS["require_spec_coverage"]
-        assert flag.stage is FlagStage.DARK
-        assert "2232" in flag.tracking_issue
-        assert UserSettings().require_spec_coverage is False
 
 
 class TestLifecycleFields:
@@ -212,31 +201,14 @@ class TestDarkDefaultsOff:
             assert (not ships_off_default) != off_value
 
 
-class TestResilienceRecoveryGraduation:
-    """The idle usage-window auto-recovery flag graduated DARK -> SETTLING (default ON).
-
-    A fresh deploy self-recovers from an exhausted usage window out of the box; the
-    recovery flag survives only as a per-overlay escape hatch during its soak. The
-    deep-merge SAFETY-posture gates are deliberately left DARK — this is a resilience
-    default, not a safety loosening.
-    """
-
-    def test_limit_autorecovery_graduated_to_settling(self) -> None:
-        flag = FEATURE_FLAGS["limit_autorecovery_enabled"]
-        assert flag.stage is FlagStage.SETTLING
-        assert flag.off_value is False
-
-    def test_limit_autorecovery_defaults_on_for_a_fresh_deploy(self) -> None:
-        # The whole point of the graduation: a fresh deploy no longer idles on the
-        # first usage-window exhaustion — the recovery chain arms by default.
-        assert UserSettings().limit_autorecovery_enabled is True
+class TestSafetyPostureGatesStayDark:
+    """A resilience default graduating must never carry a safety-posture gate with it."""
 
     def test_safety_posture_gates_stay_dark(self) -> None:
         # The deep-merge / safety-posture dark gates MUST NOT graduate alongside the
         # resilience-recovery flag: they stay OFF by default, each equal to its off_value.
         defaults = UserSettings()
         safety_posture_flags = {
-            "require_plan_adequacy",
             "critic_gate_mode",
             "send_proxy_mode",
             "require_debt_delta",
@@ -365,14 +337,3 @@ class TestATrackingIssueThatResolvesToNothingIsSaidSo:
 
     def test_empty_registry_renders_a_placeholder_not_a_crash(self) -> None:
         assert "no feature flags" in render_flags_audit({})
-
-
-class TestFlagTrailer:
-    def test_trailer_names_stage_and_tracking_for_a_flag(self) -> None:
-        trailer = flag_trailer("outer_loop_enabled")
-        assert "feature flag" in trailer
-        assert "stage=dark" in trailer
-        assert "tracking" in trailer
-
-    def test_trailer_is_empty_for_a_durable_setting(self) -> None:
-        assert flag_trailer("mode") == ""

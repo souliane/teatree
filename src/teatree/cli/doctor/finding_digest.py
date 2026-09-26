@@ -34,7 +34,12 @@ _DIGEST_CHARS = 16
 
 def finding_identity(message: str) -> str:
     """The volatility-normalized identity of one doctor FAIL *message*."""
-    return _DIGITS.sub("#", " ".join(message.split()))
+    normalized = " ".join(message.split())
+    if normalized.startswith("FAIL Registered worktree ") and " never was a git checkout " in normalized:
+        # A changing worktree pk/path is another instance of the SAME broken
+        # registration category, not a new box condition worth paging for.
+        return "FAIL Registered worktree never was a git checkout"
+    return _DIGITS.sub("#", normalized)
 
 
 def findings_digest(messages: Iterable[str]) -> str:

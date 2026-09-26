@@ -27,10 +27,40 @@ from teatree.backends.loader import (
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.slack.routing import OwnerDmOnlyError
+from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource
 from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
+from teatree.core.backend_registry import UnknownSlackScopeProfileError
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.forge_credentials import (
+    ForgeCredentialRequest,
+    ForgeCredentialTarget,
+    ForgeTokenResolution,
+    ForgeTokenState,
+)
 
 _GIT = shutil.which("git") or "git"
+_ACTIVE_OVERLAY: OverlayBase | None = None
+
+
+@pytest.fixture(autouse=True)
+def _central_forge_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    def resolve(request: ForgeCredentialRequest) -> ForgeTokenResolution:
+        overlay = request.target if request.target_kind is ForgeCredentialTarget.OVERLAY else _ACTIVE_OVERLAY
+        token = ""
+        if overlay is not None:
+            token = (
+                overlay.config.get_github_token()
+                if request.credential == "github_token"
+                else overlay.config.get_gitlab_token()
+            )
+        return ForgeTokenResolution(
+            request.credential,
+            request.overlay_name or "test",
+            ForgeTokenState.TOKEN if token else ForgeTokenState.UNSET,
+            token=token,
+        )
+
+    monkeypatch.setattr("teatree.forge_credentials._provider", resolve)
 
 
 def _git_repo_with_origin(path: Path, origin_url: str) -> str:
@@ -53,12 +83,14 @@ def teardown_function() -> None:
 
 
 def _build_overlay(**config_kwargs: object) -> OverlayBase:
+    global _ACTIVE_OVERLAY  # noqa: PLW0603 - test-local owner registry
     overlay = MagicMock(spec=OverlayBase)
     config = _StubTokenConfig()
     for key, value in config_kwargs.items():
         setattr(config, key, value)
     overlay.config = config
-    return cast("OverlayBase", overlay)
+    _ACTIVE_OVERLAY = cast("OverlayBase", overlay)
+    return _ACTIVE_OVERLAY
 
 
 class _StubTokenConfig(OverlayConfig):
@@ -86,13 +118,17 @@ class _StubTokenConfig(OverlayConfig):
     def get_slack_token(self) -> str:
         return self._slack
 
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        token = self._github if name == "github_token" else self._gitlab if name == "gitlab_token" else ""
+        source = PassKeySource.DECLARED_DEFAULT if token else PassKeySource.UNSET
+        return PassKeyResolution(f"{name}_pass_key", token, source)
+
 
 def _stub_token(overlay: OverlayBase, *, github: str = "", gitlab: str = "", slack: str = "") -> None:
     cast("_StubTokenConfig", overlay.config).set_tokens(github=github, gitlab=gitlab, slack=slack)
 
 
-def test_get_code_host_returns_none_when_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
+def test_get_code_host_returns_none_when_no_token() -> None:
     overlay = _build_overlay()
     _stub_token(overlay)
     assert get_code_host(overlay) is None
@@ -147,16 +183,14 @@ def test_get_code_hosts_honours_explicit_gitlab_choice() -> None:
     assert [type(h).__name__ for h in hosts] == [GitLabCodeHost.__name__]
 
 
-def test_get_code_hosts_returns_empty_when_no_tokens_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
+def test_get_code_hosts_returns_empty_when_no_tokens_resolve() -> None:
     overlay = _build_overlay()
     _stub_token(overlay)
     assert get_code_hosts(overlay) == []
 
 
-def test_get_code_hosts_explicit_choice_returns_empty_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_code_hosts_explicit_choice_returns_empty_without_token() -> None:
     """Pinning a platform but having no token for it surfaces as an empty list."""
-    monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
     overlay = _build_overlay(code_host="github")
     _stub_token(overlay)
     assert get_code_hosts(overlay) == []
@@ -172,74 +206,22 @@ def test_get_code_hosts_raises_on_unknown_choice() -> None:
         get_code_hosts(overlay)
 
 
-class TestOverlayScopedAmbientGithub:
-    """A gh-CLI-only box builds a GitHub host for the overlay-scoped resolvers.
-
-    ``get_github_token()`` returns ``""`` when auth lives purely in the ``gh``
-    CLI login (no PAT wired into the overlay). Pre-fix, ``get_code_hosts``
-    returned ``[]``, ``OverlayBackends.host`` was ``None``, and every
-    host-dependent loop scanner was silently disabled. The overlay-scoped
-    resolvers now mirror the ``_github_host_for_repo`` ambient carve-out: an
-    empty-token ``GitHubCodeHost`` backs the logged-in ``gh`` account.
-    """
-
-    def test_get_code_hosts_builds_ambient_github_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+class TestOverlayScopedGithub:
+    def test_hostile_ambient_login_never_builds_a_tokenless_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GH_TOKEN", "hostile")
+        monkeypatch.setenv("GITHUB_TOKEN", "also-hostile")
         overlay = _build_overlay()
-        _stub_token(overlay)
-        hosts = get_code_hosts(overlay)
-        assert [type(h).__name__ for h in hosts] == [GitHubCodeHost.__name__]
-
-    def test_get_code_host_builds_ambient_github_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
-        overlay = _build_overlay()
-        _stub_token(overlay)
-        host = get_code_host(overlay)
-        assert isinstance(host, GitHubCodeHost)
-
-    def test_host_backend_builds_ambient_github_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
-        overlay = _build_overlay()
-        _stub_token(overlay)
-        assert isinstance(_host_backend(overlay, "github", "git@github.com:org/repo.git"), GitHubCodeHost)
-
-    def test_no_ambient_and_no_token_stays_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Regression guard: the no-auth path is unchanged when ambient gh is absent."""
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
-        overlay = _build_overlay()
-        _stub_token(overlay)
         assert get_code_hosts(overlay) == []
         assert get_code_host(overlay) is None
         assert _host_backend(overlay, "github", "git@github.com:org/repo.git") is None
 
-    def test_explicit_token_builds_single_host_not_duplicated_by_ambient(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An explicit token authors the sole host — the ambient path never duplicates it."""
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+    def test_routed_token_wins_over_hostile_ambient_identity(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GH_TOKEN", "hostile")
         overlay = _build_overlay()
-        _stub_token(overlay, github="gh-explicit")
+        _stub_token(overlay, github="routed-owner")
         hosts = get_code_hosts(overlay)
         assert [type(h).__name__ for h in hosts] == [GitHubCodeHost.__name__]
-        assert cast("GitHubCodeHost", hosts[0])._token == "gh-explicit"
-        assert cast("GitHubCodeHost", get_code_host(overlay))._token == "gh-explicit"
-
-    def test_explicit_gitlab_keeps_primary_over_ambient_github(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An explicit GitLab token outranks an ambient-only GitHub host for hosts[0]."""
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
-        overlay = _build_overlay()
-        _stub_token(overlay, gitlab="gl-explicit")
-        hosts = get_code_hosts(overlay)
-        assert isinstance(hosts[0], GitLabCodeHost)
-        assert [type(h).__name__ for h in hosts] == [GitLabCodeHost.__name__, GitHubCodeHost.__name__]
-        # Singular resolver stays consistent: explicit gitlab wins.
-        assert isinstance(get_code_host(overlay), GitLabCodeHost)
-
-    def test_pinned_gitlab_never_builds_ambient_github(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
-        overlay = _build_overlay(code_host="gitlab")
-        _stub_token(overlay, gitlab="gl-explicit")
-        hosts = get_code_hosts(overlay)
-        assert all(not isinstance(h, GitHubCodeHost) for h in hosts)
-        assert not isinstance(get_code_host(overlay), GitHubCodeHost)
+        assert cast("GitHubCodeHost", hosts[0])._token == "routed-owner"
 
 
 def test_get_messaging_default_is_noop() -> None:
@@ -274,6 +256,13 @@ def test_get_messaging_dm_only_sets_owner_dm_only() -> None:
     backend = get_messaging(overlay)
     assert isinstance(backend, SlackBotBackend)
     assert backend._owner_dm_only is True
+
+
+def test_get_messaging_unknown_profile_refuses_to_build() -> None:
+    overlay = _build_overlay(messaging_backend="slack", slack_scope_profile="dm-only", slack_user_id="U-owner")
+    _stub_token(overlay, slack="xoxb-fake")
+    with pytest.raises(UnknownSlackScopeProfileError, match="slack_scope_profile"):
+        get_messaging(overlay)
 
 
 def test_get_messaging_dm_only_refuses_non_owner_channel() -> None:
@@ -456,8 +445,7 @@ def test_get_code_host_for_url_falls_back_to_default_for_unknown_domain() -> Non
     assert isinstance(result, GitHubCodeHost)
 
 
-def test_get_code_host_for_url_returns_none_when_no_matching_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
+def test_get_code_host_for_url_returns_none_when_no_matching_token() -> None:
     overlay = _build_overlay()
     _stub_token(overlay)
     assert get_code_host_for_url(overlay, "https://github.com/org/repo/issues/1") is None
@@ -479,14 +467,9 @@ class TestGetCodeHostForRepo:
         repo = _git_repo_with_origin(tmp_path / "gl", "git@gitlab.com:group/repo.git")
         assert isinstance(get_code_host_for_repo(overlay, repo), GitLabCodeHost)
 
-    def test_github_hosted_repo_resolves_github_even_when_gitlab_token_set(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_github_hosted_repo_resolves_github_even_when_gitlab_token_set(self, tmp_path: Path) -> None:
         overlay = _build_overlay()
         _stub_token(overlay, github="gh-tok", gitlab="gl-tok")
-        # The configured GitHub token can push here — keep it (no ambient probe,
-        # hermetic: never shell a real ``gh api``).
-        monkeypatch.setattr("teatree.backends.loader.gh_can_push", lambda _slug, *, token="": True)
         repo = _git_repo_with_origin(tmp_path / "gh", "git@github.com:souliane/teatree.git")
         assert isinstance(get_code_host_for_repo(overlay, repo), GitHubCodeHost)
 
@@ -555,101 +538,30 @@ class TestGitlabTokenIsScopedToTheRemote:
         assert backend.client.token == "scoped-token"
 
 
-class TestGetCodeHostForRepoGithubAmbientAuth:
-    """A tokenless overlay falls back to ``gh``'s own ambient auth (#2946).
-
-    ``_run_gh`` already inherits the parent environment (and thus ``gh``'s
-    logged-in account) when no explicit token is passed — ``_host_backend``
-    used to short-circuit to ``None`` before that fallback ever got a
-    chance to run. GitLab's REST transport has no equivalent ambient-auth
-    path (see ``GitLabHTTPClient.get_json``/``post_json``), so it keeps
-    raising on an empty token.
-    """
-
-    def test_falls_back_to_ambient_auth_when_no_token_configured(
+class TestGetCodeHostForRepoGithubRouting:
+    def test_hostile_ambient_login_never_replaces_an_unset_route(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setenv("GH_TOKEN", "hostile")
+        monkeypatch.setenv("GITHUB_TOKEN", "also-hostile")
         overlay = _build_overlay()
-        _stub_token(overlay)  # no GitHub, no GitLab token configured
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
-        repo = _git_repo_with_origin(tmp_path / "gh-ambient", "git@github.com:souliane/teatree.git")
-
-        result = get_code_host_for_repo(overlay, repo)
-
-        assert isinstance(result, GitHubCodeHost)
-
-    def test_configured_token_that_can_push_is_used_without_ambient_probe(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        overlay = _build_overlay()
-        _stub_token(overlay, github="gh-tok")
-        # The configured token CAN push to this repo, so it authors the PR and
-        # the ambient account is never consulted (a working token costs one
-        # ``repos/{slug}`` push probe and nothing more).
-        monkeypatch.setattr("teatree.backends.loader.gh_can_push", lambda _slug, *, token="": True)
-        monkeypatch.setattr(
-            "teatree.backends.loader.gh_ambient_auth_available",
-            lambda: (_ for _ in ()).throw(AssertionError("ambient must not be probed when the token can push")),
-        )
-        repo = _git_repo_with_origin(tmp_path / "gh-tok", "git@github.com:souliane/teatree.git")
-
-        result = get_code_host_for_repo(overlay, repo)
-
-        assert isinstance(result, GitHubCodeHost)
-        assert result._token == "gh-tok"
-
-    def test_non_collaborator_token_falls_back_to_ambient_collaborator(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The configured token is NOT a collaborator on this repo (its
-        # ``createPullRequest`` fails "must be a collaborator"), but the ambient
-        # ``gh`` CLI account IS. The collaborator identity must author the PR.
-        overlay = _build_overlay()
-        _stub_token(overlay, github="bot-token")
-
-        def fake_can_push(_slug: str, *, token: str = "") -> bool:
-            # Only the ambient (empty-token) identity can push here.
-            return token == ""
-
-        monkeypatch.setattr("teatree.backends.loader.gh_can_push", fake_can_push)
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
-        repo = _git_repo_with_origin(tmp_path / "gh-collab", "git@github.com:souliane/teatree.git")
-
-        result = get_code_host_for_repo(overlay, repo)
-
-        assert isinstance(result, GitHubCodeHost)
-        # The COLLABORATOR identity (ambient gh account, token="") authors the PR,
-        # NOT the configured non-collaborator token. Reverting the fix returns the
-        # bot token here and re-triggers the "must be a collaborator" abort.
-        assert result._token == ""
-
-    def test_non_collaborator_token_kept_when_ambient_also_cannot_push(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Neither the configured token nor the ambient account can push — never
-        # silently switch identity; keep the configured token so the real error
-        # surfaces rather than guessing an identity that also cannot create.
-        overlay = _build_overlay()
-        _stub_token(overlay, github="bot-token")
-        monkeypatch.setattr("teatree.backends.loader.gh_can_push", lambda _slug, *, token="": False)
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
-        repo = _git_repo_with_origin(tmp_path / "gh-nopush", "git@github.com:souliane/teatree.git")
-
-        result = get_code_host_for_repo(overlay, repo)
-
-        assert isinstance(result, GitHubCodeHost)
-        assert result._token == "bot-token"
-
-    def test_raises_when_no_token_and_ambient_auth_unavailable(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        overlay = _build_overlay()
-        _stub_token(overlay)
-        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
         repo = _git_repo_with_origin(tmp_path / "gh-noauth", "git@github.com:souliane/teatree.git")
 
-        with pytest.raises(BackendResolutionError, match="github"):
+        with pytest.raises(BackendResolutionError, match="github_token_pass_key"):
             get_code_host_for_repo(overlay, repo)
+
+    def test_routed_owner_identity_is_kept_for_collaborator_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GH_TOKEN", "hostile-collaborator")
+        overlay = _build_overlay()
+        _stub_token(overlay, github="routed-owner")
+        repo = _git_repo_with_origin(tmp_path / "gh-owner", "git@github.com:souliane/teatree.git")
+
+        result = get_code_host_for_repo(overlay, repo)
+
+        assert isinstance(result, GitHubCodeHost)
+        assert result._token == "routed-owner"
 
 
 class _OpenStateHost:

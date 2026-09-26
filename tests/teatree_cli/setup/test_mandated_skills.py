@@ -1,94 +1,142 @@
-"""`t3 setup` provisions the configuration-mandated skills idempotently (#3652)."""
-
-import subprocess
 from pathlib import Path
 
-import pytest
-
 from teatree.cli.setup.mandated_skills import MandatedSkillProvisioner
-from teatree.provisioning.skill_source import MandatedSkillInstaller
-
-_MANIFEST = (
-    "name: souliane/teatree\ndependencies:\n    apm:\n    - obra/superpowers#1f20bef\n    - souliane/skills/ac-python\n"
+from teatree.harness_skills import SkillsHarness
+from teatree.provisioning.skills_cli import (
+    SKILLS_CLI_VERSION,
+    SkillAddResult,
+    SkillAddStatus,
+    SkillsCliCommandError,
+    SkillsCliVersionError,
 )
 
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)  # noqa: S607 — git on PATH
+class FakeSkillsCli:
+    def __init__(
+        self,
+        results: tuple[SkillAddResult, ...] = (),
+        error: SkillsCliCommandError | None = None,
+        version_error: SkillsCliVersionError | None = None,
+    ) -> None:
+        self.results = results
+        self.error = error
+        self.version_error = version_error
+        self.calls: list[tuple[str, tuple[SkillsHarness, ...], tuple[str, ...]]] = []
+        self.events: list[str] = []
+
+    def version(self) -> str:
+        self.events.append("version")
+        if self.version_error is not None:
+            raise self.version_error
+        return SKILLS_CLI_VERSION
+
+    def add_selected(
+        self,
+        package: str,
+        harnesses: tuple[SkillsHarness, ...],
+        skills: tuple[str, ...],
+    ) -> tuple[SkillAddResult, ...]:
+        self.events.append("add")
+        self.calls.append((package, harnesses, skills))
+        if self.error is not None:
+            raise self.error
+        return self.results or tuple(SkillAddResult(skill, SkillAddStatus.INSTALLED) for skill in skills)
 
 
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    """A teatree checkout declaring one mandated skill, sourced from a real local repo."""
-    source = tmp_path / "remotes" / "souliane" / "skills"
-    (source / "ac-python").mkdir(parents=True)
-    (source / "ac-python" / "SKILL.md").write_text("---\nname: ac-python\n---\n", encoding="utf-8")
-    _git(source.parent, "init", "--quiet", "-b", "main", "skills")
-    _git(source, "config", "user.email", "t@e.st")  # privacy-scan:allow (fake test git-config email, not PII)
-    _git(source, "config", "user.name", "t")
-    _git(source, "add", "-A")
-    _git(source, "commit", "--quiet", "-m", "skills")
-
-    checkout = tmp_path / "teatree"
-    checkout.mkdir()
-    (checkout / "apm.yml").write_text(_MANIFEST, encoding="utf-8")
-    return checkout
+def _repo(tmp_path: Path, *dependencies: str) -> Path:
+    repo = tmp_path / "teatree"
+    repo.mkdir()
+    lines = "\n".join(f"  - {dependency}" for dependency in dependencies)
+    (repo / "apm.yml").write_text(f"name: souliane/teatree\ndependencies:\n  apm:\n{lines}\n", encoding="utf-8")
+    return repo
 
 
-@pytest.fixture
-def provisioner(tmp_path: Path, repo: Path, monkeypatch: pytest.MonkeyPatch) -> MandatedSkillProvisioner:
-    monkeypatch.setattr(
-        "teatree.cli.setup.mandated_skills.MandatedSkillInstaller",
-        lambda cache_root, **kwargs: _local_installer(cache_root, tmp_path, **kwargs),
+def test_only_third_party_mandates_are_grouped_and_installed_for_both_harnesses(tmp_path: Path) -> None:
+    repo = _repo(
+        tmp_path,
+        "souliane/teatree/skills/architecture-design",
+        "obra/superpowers/skills/writing-plans#1f20bef",
+        "obra/superpowers/skills/test-driven-development#1f20bef",
+        "souliane/skills/ac-python#38a0dcc",
     )
-    return MandatedSkillProvisioner(repo, tmp_path / "home" / ".claude" / "skills", tmp_path / "cache")
+    cli = FakeSkillsCli()
+
+    assert MandatedSkillProvisioner(repo, cli=cli).provision(lambda _line: None)
+    harnesses = (SkillsHarness.CLAUDE_CODE, SkillsHarness.CODEX)
+    assert cli.calls == [
+        ("obra/superpowers#1f20bef", harnesses, ("writing-plans", "test-driven-development")),
+        ("souliane/skills#38a0dcc", harnesses, ("ac-python",)),
+    ]
+    assert cli.events == ["version", "add", "add"]
 
 
-def _local_installer(cache_root: Path, tmp_path: Path, **kwargs: Path | None) -> MandatedSkillInstaller:
-    """The real installer with only its remote redirected at a local bare repo.
+def test_first_party_teatree_skills_stay_in_the_plugin_lane(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, "souliane/teatree/skills/architecture-design")
+    cli = FakeSkillsCli()
 
-    Every keyword the production call site passes is FORWARDED, never dropped, so the
-    double keeps exercising the real two-source contract — the plugin's own tree first,
-    the declared remote as the fallback — rather than a version of it that ignores
-    whichever parameter the double was written before.
-    """
-    return MandatedSkillInstaller(cache_root, remote_base=f"{tmp_path / 'remotes'}/", **kwargs)
+    assert MandatedSkillProvisioner(repo, cli=cli).provision(lambda _line: None)
+    assert cli.events == ["version"]
+    assert cli.calls == []
 
 
-class TestMandatedSkillProvisioner:
-    def test_a_declared_but_absent_skill_becomes_loadable(self, provisioner: MandatedSkillProvisioner) -> None:
-        lines: list[str] = []
+def test_exact_cli_version_is_checked_before_any_install(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, "souliane/skills/ac-python#38a0dcc")
+    cli = FakeSkillsCli(version_error=SkillsCliVersionError("1.8.0"))
+    lines: list[str] = []
 
-        assert provisioner.provision(lines.append)
-        assert (provisioner.skills_dir / "ac-python" / "SKILL.md").is_file()
+    assert not MandatedSkillProvisioner(repo, cli=cli).provision(lines.append)
+    assert cli.events == ["version"]
+    assert cli.calls == []
+    assert any("expected 1.7.0, got 1.8.0" in line for line in lines)
 
-    def test_re_running_is_idempotent_and_reaches_the_same_end_state(
-        self, provisioner: MandatedSkillProvisioner
-    ) -> None:
-        provisioner.provision(lambda _line: None)
-        target = (provisioner.skills_dir / "ac-python").resolve()
-        lines: list[str] = []
 
-        assert provisioner.provision(lines.append)
-        assert (provisioner.skills_dir / "ac-python").resolve() == target
-        assert any("already loadable" in line for line in lines)
+def test_version_mismatch_without_mandates_blocks_downstream_source_install(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, "souliane/teatree/skills/architecture-design")
+    cli = FakeSkillsCli(version_error=SkillsCliVersionError("1.8.0"))
 
-    def test_an_unreachable_source_warns_instead_of_raising(
-        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(
-            "teatree.cli.setup.mandated_skills.MandatedSkillInstaller",
-            lambda cache_root, **kwargs: _local_installer(cache_root, tmp_path / "nowhere", **kwargs),
-        )
-        lines: list[str] = []
+    ready = MandatedSkillProvisioner(repo, cli=cli).provision(lambda _line: None)
+    if ready:
+        cli.add_selected("team/skills#reviewed", (SkillsHarness.CODEX,), ("runtime-demand",))
 
-        assert not MandatedSkillProvisioner(repo, tmp_path / "skills", tmp_path / "cache").provision(lines.append)
-        assert any("WARN" in line and "ac-python" in line for line in lines)
+    assert ready is False
+    assert cli.events == ["version"]
+    assert cli.calls == []
 
-    def test_a_checkout_with_no_manifest_warns_rather_than_reporting_success_silently(self, tmp_path: Path) -> None:
-        empty = tmp_path / "empty"
-        empty.mkdir()
-        lines: list[str] = []
 
-        assert MandatedSkillProvisioner(empty, tmp_path / "skills", tmp_path / "cache").provision(lines.append)
-        assert any("WARN" in line for line in lines)
+def test_skipped_results_are_reported_as_already_installed(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, "souliane/skills/ac-python#38a0dcc")
+    cli = FakeSkillsCli((SkillAddResult("ac-python", SkillAddStatus.SKIPPED),))
+    lines: list[str] = []
+
+    assert MandatedSkillProvisioner(repo, cli=cli).provision(lines.append)
+    assert any("already installed" in line and "ac-python" in line for line in lines)
+
+
+def test_failed_add_result_warns_and_returns_false(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, "souliane/skills/ac-python#38a0dcc")
+    cli = FakeSkillsCli((SkillAddResult("ac-python", SkillAddStatus.FAILED),))
+    lines: list[str] = []
+
+    assert not MandatedSkillProvisioner(repo, cli=cli).provision(lines.append)
+    assert any(line.startswith("WARN") and "ac-python" in line for line in lines)
+
+
+def test_cli_failure_warns_with_the_package_and_returns_false(tmp_path: Path) -> None:
+    repo = _repo(tmp_path, "souliane/skills/ac-python#38a0dcc")
+    cli = FakeSkillsCli(error=SkillsCliCommandError(("skills", "add"), 1, "offline"))
+    lines: list[str] = []
+
+    assert not MandatedSkillProvisioner(repo, cli=cli).provision(lines.append)
+    assert any(line.startswith("WARN") and "souliane/skills#38a0dcc" in line and "offline" in line for line in lines)
+
+
+def test_unreadable_manifest_warns_without_calling_the_cli(tmp_path: Path) -> None:
+    repo = tmp_path / "empty"
+    repo.mkdir()
+    cli = FakeSkillsCli()
+    lines: list[str] = []
+
+    assert not MandatedSkillProvisioner(repo, cli=cli).provision(lines.append)
+    assert cli.events == ["version"]
+    assert cli.calls == []
+    assert any(line.startswith("WARN") for line in lines)

@@ -118,7 +118,7 @@ class TestInternalStateKeysAreNotCalledDead:
 
     def test_lookup_returns_none_for_a_key_that_is_not_state(self) -> None:
         assert internal_state_key(self.STAMP) is not None
-        assert internal_state_key("issue_implementer_enabled") is None
+        assert internal_state_key("adaptive_intake_concurrency_enabled") is None
 
     def test_no_registered_key_is_also_a_live_setting(self) -> None:
         registered = {entry.key for entry in INTERNAL_STATE_KEYS}
@@ -129,13 +129,12 @@ class TestInternalStateKeysAreNotCalledDead:
         [
             ("approval_dial", "teatree.core.models.approval_dial"),
             ("default_mode", "teatree.core.mode_resolution"),
-            ("presence_upgrade_mode", "teatree.core.mode_resolution"),
         ],
     )
     def test_a_security_relevant_live_key_is_never_offered_the_clear_remedy(self, key: str, owner: str) -> None:
-        # #3867 printed the destructive remedy beside all three. Following it on
-        # `approval_dial` un-graduates every approval class back to ASK; on the two mode
-        # keys it drops the operator's ladder back to the compiled fallback.
+        # #3867 printed the destructive remedy beside both. Following it on `approval_dial`
+        # un-graduates every approval class back to ASK; on `default_mode` it drops the
+        # operator's posture back to the compiled fallback.
         note = stored_row_note(key)
         assert "config_setting clear" not in note
         assert "not a declared setting" not in note
@@ -155,3 +154,8 @@ class TestInternalStateKeysAreNotCalledDead:
         for entry in INTERNAL_STATE_KEYS:
             source = Path(str(import_module(entry.owner).__file__)).read_text(encoding="utf-8")
             assert entry.key in source, f"{entry.owner} no longer carries {entry.key!r} — drop the registry entry"
+
+
+class TestCredentialPassKeyRows:
+    def test_a_pass_key_row_is_live_configuration_not_an_orphan(self) -> None:
+        assert stored_row_note("notion_token_pass_key") == ""

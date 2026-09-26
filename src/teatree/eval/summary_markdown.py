@@ -11,7 +11,8 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from teatree.eval.discovery import find_spec
-from teatree.eval.report import ScenarioResult
+from teatree.eval.models import COST_SOURCE_UNKNOWN, EvalRun
+from teatree.eval.report import ScenarioResult, cost_cell
 
 if TYPE_CHECKING:
     from teatree.eval.pass_at_k import PassAtKResult
@@ -65,7 +66,7 @@ def _row_from_scenario(result: ScenarioResult) -> _SummaryRow:
         lane=result.spec.lane,
         verdict=result.verdict,
         trials="-" if result.skipped else "1/1",
-        cost="-" if result.skipped else f"${result.run.cost_usd:.4f}",
+        cost="-" if result.skipped else cost_cell(result.run),
         cap_truncated=result.cap_truncated_matchers_satisfied,
     )
 
@@ -78,9 +79,37 @@ def _row_from_pass_at_k(result: "PassAtKResult") -> _SummaryRow:
         lane=_lane_of(result.spec_name, None),
         verdict=verdict,
         trials="-" if result.skipped else f"{result.passes}/{result.trials}",
-        cost="-" if result.skipped else f"${result.cost_usd:.4f}",
+        cost="-" if result.skipped else _pass_at_k_cost(result),
         cap_truncated=verdict == "fail" and bool(reds) and all(t.cap_truncated_matchers_satisfied for t in reds),
     )
+
+
+def _executed_runs(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> list[EvalRun]:
+    """Every run that actually executed — a pass@k row is N of them, not one."""
+    runs: list[EvalRun] = []
+    for item in results:
+        if isinstance(item, ScenarioResult):
+            if not item.skipped:
+                runs.append(item.run)
+        else:
+            runs.extend(trial.run for trial in item.trial_results if not trial.skipped)
+    return runs
+
+
+def _pass_at_k_cost(result: "PassAtKResult") -> str:
+    """The summed figure, or ``unknown`` when no executed trial's cost was established.
+
+    ``all([])`` is True, so a non-skipped result that recorded NO trials renders
+    ``unknown`` rather than the summed ``$0.0000``, which would read as a free run.
+    """
+    if all(run.cost_source == COST_SOURCE_UNKNOWN for run in _executed_runs([result])):
+        return "unknown"
+    return f"${result.cost_usd:.4f}"
+
+
+def _unknown_cost_runs(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> int:
+    """Executed runs whose cost nothing measured — the header's honesty qualifier."""
+    return sum(1 for run in _executed_runs(results) if run.cost_source == COST_SOURCE_UNKNOWN)
 
 
 def _model_of(results: Sequence[ScenarioResult] | Sequence["PassAtKResult"]) -> str:
@@ -113,9 +142,11 @@ def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAt
     passed, failed, skipped = _summary_counts_for_rows(rows)
     total_cost_usd = sum(item.run.cost_usd if isinstance(item, ScenarioResult) else item.cost_usd for item in results)
     model = _model_of(results)
+    unknown = _unknown_cost_runs(results)
+    cost_note = f" (+{unknown} run(s) cost unknown)" if unknown else ""
     header = (
         f"**{passed} passed**, **{failed} failed**, **{skipped} skipped** (of {len(rows)}) "
-        f"· model `{model}` · cost ${total_cost_usd:.4f}"
+        f"· model `{model}` · cost ${total_cost_usd:.4f}{cost_note}"
     )
     table = [
         "| scenario | lane | verdict | trials | cost |",

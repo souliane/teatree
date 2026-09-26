@@ -15,8 +15,9 @@ from typing import TYPE_CHECKING
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.account_fingerprint import current_account_fingerprint
+from teatree.core.authoring_credential import reset_authoring_credential_cache
 from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
-from teatree.core.backend_registry import get_backend_provider
+from teatree.core.backend_registry import UnknownSlackScopeProfileError, get_backend_provider
 
 if TYPE_CHECKING:
     from teatree.core.backend_registry import NotionPageClient, SentryReadClient, SharePointReadClient
@@ -387,7 +388,7 @@ def notion_client_from_overlay(overlay_name: str | None = None) -> "NotionPageCl
     token = overlay.config.get_notion_token()
     if not token:
         return None
-    return get_backend_provider().build_notion_client(token=token)
+    return get_backend_provider().build_notion_client(token=token, overlay=key or None)
 
 
 def sentry_client_from_overlay(overlay_name: str | None = None) -> "SentryReadClient | None":
@@ -518,7 +519,11 @@ def _backends_from_toml(
         if name in already_found or not isinstance(overlay_cfg, dict):
             continue
         hosts = tuple(_hosts_from_toml(overlay_cfg))
-        messaging = _messaging_from_toml(overlay_cfg)
+        try:
+            messaging = _messaging_from_toml(overlay_cfg)
+        except UnknownSlackScopeProfileError as exc:
+            logger.warning("Overlay %r: %s Building no Slack backend for it.", name, exc)
+            messaging = None
         db_path = _find_external_db(name, overlay_cfg)
         if not hosts and messaging is None and db_path is None:
             continue
@@ -548,6 +553,7 @@ def reset_backend_caches() -> None:
     _code_host_none_until.clear()
     _messaging_none_until.clear()
     _cache_account_state.fingerprint = None
+    reset_authoring_credential_cache()
     get_backend_provider().reset_caches()
 
 

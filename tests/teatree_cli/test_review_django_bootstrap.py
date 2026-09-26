@@ -163,13 +163,11 @@ class TestReviewPostDraftNoteBootstrapsDjango:
     """
 
     def test_post_draft_note_does_not_raise_improperly_configured(self, tmp_path: Path) -> None:
-        # Gate off via the ``T3_ON_BEHALF_POST_MODE`` env override (DB-home mode,
-        # legacy file tier removed) so we exercise the gate chokepoint without a
-        # recorded approval row.
+        # A draft is colleague-invisible, so no posture withholds it — the chokepoint
+        # is exercised with no approval row and nothing staged.
         probe = (
             "import os\n"
             f"os.environ['HOME'] = {str(tmp_path)!r}\n"
-            "os.environ['T3_ON_BEHALF_POST_MODE'] = 'immediate'\n"
             "os.environ['GITLAB_TOKEN'] = 't'\n"
             "from unittest.mock import patch\n"
             "from typer.testing import CliRunner\n"

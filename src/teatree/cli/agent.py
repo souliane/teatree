@@ -1,7 +1,9 @@
-"""``t3 agent`` — launch Claude Code with auto-detected project context."""
+"""``t3 agent`` — launch the configured agent with project context."""
 
+import json
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -18,6 +20,15 @@ AGENT_SKILL_OPTION = typer.Option(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class AgentLaunchContext:
+    task: str
+    project_root: Path
+    context_lines: list[str]
+    skills: list[str]
+    ask_user_which_skill: bool
+
+
 def _detect_agent_ticket_status(project_root: Path) -> str:
     if not (project_root / "manage.py").is_file():
         return ""
@@ -31,6 +42,50 @@ def _detect_agent_ticket_status(project_root: Path) -> str:
         return "(error)"
 
 
+def _configured_cli_runtime(*, task: str) -> str:
+    """Return the attended or unattended CLI runtime selected by the project."""
+    from django.conf import settings  # noqa: PLC0415 — Django is bootstrapped by the command
+
+    setting_name = "TEATREE_HEADLESS_RUNTIME" if task else "TEATREE_INTERACTIVE_RUNTIME"
+    return str(getattr(settings, setting_name, "claude-code"))
+
+
+def _build_agent_context(
+    *,
+    task: str,
+    context_lines: list[str],
+    skills: list[str],
+    ask_user_which_skill: bool,
+    skill_prefix: str,
+) -> str:
+    """Build the shared startup context in the target runtime's skill syntax."""
+    from teatree.cli.doctor import IntrospectionHelpers  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    lines = list(context_lines)
+    teatree_editable, teatree_url = IntrospectionHelpers.editable_info("teatree")
+    if teatree_editable and teatree_url:
+        lines.append(f"TeaTree source (editable): {teatree_url.removeprefix('file://')}")
+    lines.append("")
+    if skills:
+        lines.extend(
+            (
+                "Load only these skills before starting work:",
+                *(f"  - {skill_prefix}{skill}" for skill in skills),
+            ),
+        )
+    if ask_user_which_skill:
+        lines.extend(
+            (
+                "TeaTree could not infer the lifecycle skill for this session.",
+                "Before doing any work, ask the user which lifecycle skill to load.",
+            ),
+        )
+    lines.extend(("", "Run `t3 --help` to see available commands.", "Run `uv run pytest` to run tests."))
+    if task:
+        lines.extend(("", f"Task: {task}"))
+    return "\n".join(lines)
+
+
 def _launch_claude(
     *,
     task: str,
@@ -42,39 +97,21 @@ def _launch_claude(
     """Shared logic: resolve skills, build prompt, exec into claude."""
     import shutil  # noqa: PLC0415 — deferred: loaded only when this command runs
 
-    from teatree.cli.doctor import IntrospectionHelpers  # noqa: PLC0415 — deferred: keeps CLI startup light
-
     claude_bin = shutil.which("claude")
     if not claude_bin:
         typer.echo("claude CLI not found on PATH. Install Claude Code first.")
         raise typer.Exit(code=1)
 
-    teatree_editable, teatree_url = IntrospectionHelpers.editable_info("teatree")
-    if teatree_editable and teatree_url:
-        context_lines.append(f"TeaTree source (editable): {teatree_url.removeprefix('file://')}")
-    context_lines.append("")
-    if skills:
-        context_lines.extend(
-            (
-                "Load only these skills before starting work:",
-                *(f"  - /{skill}" for skill in skills),
-            ),
-        )
-    if ask_user_which_skill:
-        context_lines.extend(
-            (
-                "TeaTree could not infer the lifecycle skill for this session.",
-                "Before doing any work, ask the user which lifecycle skill to load.",
-            ),
-        )
-    context_lines.extend(("", "Run `t3 --help` to see available commands.", "Run `uv run pytest` to run tests."))
-    if task:
-        context_lines.extend(("", f"Task: {task}"))
-
     from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
 
     settings = get_effective_settings()
-    context = "\n".join(context_lines)
+    context = _build_agent_context(
+        task=task,
+        context_lines=context_lines,
+        skills=skills,
+        ask_user_which_skill=ask_user_which_skill,
+        skill_prefix="/",
+    )
     cmd = [claude_bin]
     if settings.claude_chrome:
         cmd.append("--chrome")
@@ -104,12 +141,75 @@ def _launch_claude(
     os.execvp(claude_bin, cmd)  # noqa: S606 — argv list, no shell
 
 
+def _launch_codex(
+    *,
+    task: str,
+    project_root: Path,
+    context_lines: list[str],
+    skills: list[str],
+    ask_user_which_skill: bool,
+) -> None:
+    """Build native Codex CLI argv and replace the current process."""
+    import shutil  # noqa: PLC0415 — deferred: loaded only when this command runs
+
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        typer.echo("codex CLI not found on PATH. Install Codex CLI first.")
+        raise typer.Exit(code=1)
+
+    context = _build_agent_context(
+        task=task,
+        context_lines=context_lines,
+        skills=skills,
+        ask_user_which_skill=ask_user_which_skill,
+        skill_prefix="$",
+    )
+    context_config = f"developer_instructions={json.dumps(context)}"
+    if task:
+        cmd = [
+            codex_bin,
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-C",
+            str(project_root),
+            "-c",
+            context_config,
+            task,
+        ]
+    else:
+        cmd = [codex_bin, "-C", str(project_root), "-c", context_config]
+
+    typer.echo(f"Launching Codex in {project_root}...")
+    os.execvp(codex_bin, cmd)  # noqa: S606 — argv list, no shell
+
+
+def _launch_agent(*, runtime: str, launch: AgentLaunchContext) -> None:
+    """Dispatch the manual CLI session without touching the headless Harness seam."""
+    launchers = {
+        "claude": _launch_claude,
+        "claude-code": _launch_claude,
+        "codex": _launch_codex,
+    }
+    try:
+        launcher = launchers[runtime]
+    except KeyError as exc:
+        msg = f"Unsupported agent runtime: {runtime}"
+        raise typer.BadParameter(msg) from exc
+    launcher(
+        task=launch.task,
+        project_root=launch.project_root,
+        context_lines=launch.context_lines,
+        skills=launch.skills,
+        ask_user_which_skill=launch.ask_user_which_skill,
+    )
+
+
 def agent(
     task: str = typer.Argument("", help="What to work on (e.g. 'fix the sync bug', 'add a new command')"),
     phase: str = AGENT_PHASE_OPTION,
     skill: list[str] = AGENT_SKILL_OPTION,
 ) -> None:
-    """Launch Claude Code with auto-detected project context."""
+    """Launch the configured agent with auto-detected project context."""
     ensure_django()
 
     from teatree.cli import _find_project_root  # noqa: PLC0415 — deferred: breaks agent ↔ cli cycle
@@ -149,10 +249,13 @@ def agent(
         typer.echo(str(exc))
         raise typer.Exit(code=1) from exc
 
-    _launch_claude(
-        task=task,
-        project_root=project_root,
-        context_lines=lines,
-        skills=selection.skills,
-        ask_user_which_skill=selection.ask_user,
+    _launch_agent(
+        runtime=_configured_cli_runtime(task=task),
+        launch=AgentLaunchContext(
+            task=task,
+            project_root=project_root,
+            context_lines=lines,
+            skills=selection.skills,
+            ask_user_which_skill=selection.ask_user,
+        ),
     )

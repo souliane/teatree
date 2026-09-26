@@ -50,3 +50,34 @@ class TestActivePick(TestCase):
         AnthropicActivePick.objects.create(kind="oauth", scope="x", pass_path="p1")
         with pytest.raises(IntegrityError), transaction.atomic():
             AnthropicActivePick.objects.create(kind="oauth", scope="x", pass_path="p2")
+
+
+class TestUnpinAccount(TestCase):
+    """A spent account is provably wrong for EVERY scope, so its pins all go at once."""
+
+    def _pin_everywhere(self, pass_path: str) -> None:
+        for scope in ("", "alpha", "beta"):
+            AnthropicActivePick.objects.set_pick("oauth", scope, pass_path)
+
+    def test_unpin_account_clears_every_scope_that_named_it(self) -> None:
+        self._pin_everywhere("anthropic/a/oauth")
+        AnthropicActivePick.objects.set_pick("api_key", "", "anthropic/e/api")
+
+        removed = AnthropicActivePick.objects.unpin_account("anthropic/a/oauth")
+
+        assert removed == 3
+        assert not AnthropicActivePick.objects.filter(pass_path="anthropic/a/oauth").exists()
+        assert AnthropicActivePick.objects.pick_for("api_key", "") == "anthropic/e/api"
+
+    def test_unpin_account_leaves_other_accounts_pins_alone(self) -> None:
+        AnthropicActivePick.objects.set_pick("oauth", "alpha", "anthropic/a/oauth")
+        AnthropicActivePick.objects.set_pick("oauth", "beta", "anthropic/b/oauth")
+
+        assert AnthropicActivePick.objects.unpin_account("anthropic/a/oauth") == 1
+        assert AnthropicActivePick.objects.pick_for("oauth", "beta") == "anthropic/b/oauth"
+
+    def test_unpin_account_is_idempotent(self) -> None:
+        self._pin_everywhere("anthropic/a/oauth")
+        AnthropicActivePick.objects.unpin_account("anthropic/a/oauth")
+
+        assert AnthropicActivePick.objects.unpin_account("anthropic/a/oauth") == 0

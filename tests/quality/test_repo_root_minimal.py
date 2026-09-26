@@ -59,6 +59,8 @@ ALLOWED_ROOT = frozenset(
         ".vscode",
         ".claudeignore",
         ".claude-plugin",
+        ".codex-plugin",
+        ".agents",
         ".mcp.json",
         "settings.json",
         "hooks",

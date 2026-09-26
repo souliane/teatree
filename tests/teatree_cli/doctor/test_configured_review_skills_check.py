@@ -55,34 +55,21 @@ class TestConfiguredReviewSkillGaps:
         assert _configured_review_skill_gaps() == []
 
     def test_empty_review_skill_is_a_noop(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # No skill seeded at all; the empty review_skill (opt-in unset) is skipped
-        # and the architectural cadence is disabled — so nothing is checked.
+        # The empty review_skill (opt-in unset) is skipped; the architectural skill
+        # is always checked now, so it is seeded and the run is clean.
+        _seed_skill(canonical_dir, "ac-reviewing-codebase")
         _pin(
             monkeypatch,
-            replace(UserSettings(), review_skill="", architectural_review_disabled=True),
-        )
-        assert _configured_review_skill_gaps() == []
-
-    def test_disabled_architectural_review_skips_its_skill(
-        self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _seed_skill(canonical_dir, "code")
-        _pin(
-            monkeypatch,
-            replace(
-                UserSettings(),
-                architectural_review_disabled=True,
-                architectural_review_skill="ac-reviewing-codebase",
-                review_skill="",
-            ),
+            replace(UserSettings(), review_skill=""),
         )
         assert _configured_review_skill_gaps() == []
 
     def test_opted_in_review_skill_dangling_flagged(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _seed_skill(canonical_dir, "code")
+        _seed_skill(canonical_dir, "ac-reviewing-codebase")
         _pin(
             monkeypatch,
-            replace(UserSettings(), review_skill="ac-reviewing-codebase", architectural_review_disabled=True),
+            replace(UserSettings(), review_skill="dangling-reviewer"),
         )
         gaps = _configured_review_skill_gaps()
         assert len(gaps) == 1
@@ -92,7 +79,7 @@ class TestConfiguredReviewSkillGaps:
         _seed_skill(canonical_dir, "ac-reviewing-codebase")
         _pin(
             monkeypatch,
-            replace(UserSettings(), review_skill="t3:ac-reviewing-codebase", architectural_review_disabled=True),
+            replace(UserSettings(), review_skill="t3:ac-reviewing-codebase"),
         )
         assert _configured_review_skill_gaps() == []
 
@@ -100,13 +87,13 @@ class TestConfiguredReviewSkillGaps:
         # An alternate the gate would accept evidence for, that nobody can run,
         # is the same incident class as a dangling primary — and it hides better.
         _seed_skill(canonical_dir, "elite-review")
+        _seed_skill(canonical_dir, "ac-reviewing-codebase")
         _pin(
             monkeypatch,
             replace(
                 UserSettings(),
                 review_skill="elite-review",
                 review_skill_alternates=["codex-review"],
-                architectural_review_disabled=True,
             ),
         )
         gaps = _configured_review_skill_gaps()
@@ -117,13 +104,13 @@ class TestConfiguredReviewSkillGaps:
     def test_installed_alternate_resolves_clean(self, canonical_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _seed_skill(canonical_dir, "elite-review")
         _seed_skill(canonical_dir, "codex-review")
+        _seed_skill(canonical_dir, "ac-reviewing-codebase")
         _pin(
             monkeypatch,
             replace(
                 UserSettings(),
                 review_skill="elite-review",
                 review_skill_alternates=["codex-review"],
-                architectural_review_disabled=True,
             ),
         )
         assert _configured_review_skill_gaps() == []

@@ -10,7 +10,8 @@ approach:
     BETWEEN tokens.
 - ``;``, ``|``, ``&``, ``&&``, ``||`` and ``\n`` are emitted as standalone
     metacharacter tokens regardless of surrounding whitespace, so
-    ``cmd "x";echo --quote-ok`` is split at the ``;`` even with no space.
+    ``cmd "x";echo --quote-ok`` is split at the ``;`` even with no space, unless
+    glued to a redirect (``2>&1``, ``>|out``) -- see :func:`_operator_is_redirect_glue`.
 - A bare ``(`` at a command boundary (not glued inside a token) is emitted as
     a subshell-open separator, so a publish wrapped in ``(gh …)`` becomes its own
     segment led by the forge tool instead of a ``(gh`` leader the catalogue
@@ -59,7 +60,7 @@ class Token:
     raw: str = ""
 
 
-def raw_substitution_sees_live(raw: str, openers: tuple[str, ...]) -> bool:
+def raw_substitution_sees_live(raw: str, openers: tuple[str, ...], report_from: int = 0) -> bool:
     """Quote-aware walk: True iff any ``openers`` marker in ``raw`` is LIVE.
 
     A command/process substitution (``$(...)``, ``<(...)``, ``>(...)``) or a
@@ -83,7 +84,9 @@ def raw_substitution_sees_live(raw: str, openers: tuple[str, ...]) -> bool:
 
     Returns True on the first live marker, else False. Markers are matched as
     literal prefixes, so a single-character backtick opener composes with the
-    two-character ``$(`` / ``<(`` / ``>(`` family.
+    two-character ``$(`` / ``<(`` / ``>(`` family. ``report_from`` narrows which
+    markers are REPORTED, never which characters are walked -- a value-only
+    slice of ``raw`` would lose the quote state opened before it.
     """
     in_single = False
     in_double = False
@@ -99,7 +102,7 @@ def raw_substitution_sees_live(raw: str, openers: tuple[str, ...]) -> bool:
             in_double = not in_double
             i += 1
             continue
-        if not in_single:
+        if not in_single and i >= report_from:
             for opener in openers:
                 if raw.startswith(opener, i):
                     return True
@@ -115,7 +118,6 @@ _ONE_CHAR_OPS: Final[tuple[str, ...]] = (";", "|", "&", "\n")
 
 # Whitespace / newline character sets used throughout the lexer. Using
 # set literals so membership checks are O(1) and ruff's PLR6201 is happy.
-_INLINE_WHITESPACE: Final[frozenset[str]] = frozenset({" ", "\t"})
 _NEWLINE_CHARS: Final[frozenset[str]] = frozenset({"\n", "\r"})
 _DOUBLE_QUOTE_ESCAPES: Final[frozenset[str]] = frozenset({'"', "\\", "`", "$", "\n"})
 
@@ -378,8 +380,8 @@ def _match_operator(state: _LexerState) -> str | None:
     return None
 
 
-def _ampersand_is_redirect_glue(state: _LexerState, op: str) -> bool:
-    r"""Return True iff a matched ``&`` is really part of a REDIRECT, not a separator.
+def _operator_is_redirect_glue(state: _LexerState, op: str) -> bool:
+    r"""``2>&1`` and ``>|out`` are single redirection operators, not a separator plus a word.
 
     Bash lexes ``&`` glued to a redirection as one redirection operator, never
     as a command separator: ``2>&1`` / ``>&2`` / ``1<&0`` duplicate a file
@@ -394,7 +396,14 @@ def _ampersand_is_redirect_glue(state: _LexerState, op: str) -> bool:
     quote char, so a real background ``&`` after a quoted word never matches),
     or the char immediately after is ``>`` (the ``&>`` both-streams redirect,
     which bash prefers over background-plus-empty-redirect).
+
+    A ``|`` after a single ``>`` is the clobber-override ``>|``; splitting there
+    stranded the redirect TARGET in a phantom segment, so the write-target
+    resolver read the command as writing nothing. ``>>|`` is no operator at all.
     """
+    if op == "|":
+        preceding = state.command[: state.i]
+        return preceding.endswith(">") and not preceding.endswith(">>")
     if op != "&":
         return False
     if state.i > 0 and state.command[state.i - 1] in {">", "<"}:
@@ -496,9 +505,9 @@ def _try_consume_structured(state: _LexerState) -> bool:
             return True
     op = _match_operator(state)
     if op is not None:
-        if _ampersand_is_redirect_glue(state, op):
-            # ``2>&1`` / ``>&2`` / ``&>file``: the ``&`` belongs to the redirect
-            # word -- append it as a word char so no phantom segment is split off.
+        if _operator_is_redirect_glue(state, op):
+            # ``2>&1`` / ``&>file`` / ``>|out``: the metacharacter belongs to the
+            # redirect word -- append it as a word char so no phantom segment splits off.
             state.begin_token()
             state.current.append(ch)
             state.i += 1

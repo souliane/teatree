@@ -73,6 +73,9 @@ class TestNoSilentGreen:
         assert "claude --version" in text
         assert "--require-executed" in text
 
+    def test_full_suite_uses_configured_semantic_judges(self) -> None:
+        assert _text().count("--escalate-on-fail --judge") == 2
+
 
 class TestReusesTheDockerEvalInvocation:
     def test_runs_backend_api_in_docker(self) -> None:
@@ -114,6 +117,12 @@ class TestSharding:
         assert "--shard" in _text()
         # The full-suite leg passes the matrix shard token through to the CLI.
         assert "matrix.shard" in _text()
+
+    def test_eval_and_combine_checkout_the_prepared_commit(self) -> None:
+        jobs = _jobs()
+        for name in ("eval", "combine"):
+            checkout = jobs[name]["steps"][0]
+            assert checkout["with"]["ref"] == "${{ needs.prepare.outputs.sha }}"
 
 
 class TestCombineJob:

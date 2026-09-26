@@ -444,7 +444,10 @@ class TestDefaultRunReachesApi:
             captured["argv"] = argv
             return _Result()
 
-        with patch.object(gh_token_preflight, "run_allowed_to_fail", fake_run):
+        with (
+            patch.object(gh_token_preflight, "forge_cli_env", return_value={"GH_TOKEN": "routed"}),
+            patch.object(gh_token_preflight, "run_allowed_to_fail", fake_run),
+        ):
             gh_token_preflight._default_run(["-i", f"repos/{_SLUG}"])
         assert captured["argv"][:2] == ["gh", "api"]
         assert captured["argv"][-1] == f"repos/{_SLUG}"

@@ -26,6 +26,7 @@ from django.test import TestCase
 from teatree.core.gates import privacy_gate
 from teatree.core.gates.privacy_gate import overlay_privacy_rules, scan_outbound_text
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
+from tests.teatree_core.gates._two_overlay_registry import register_a_sibling_overlay
 
 # Synthetic, never a real redact term: these tests must not reproduce any
 # genuinely-private vocabulary in a fixture, a log, or an assertion message.
@@ -54,9 +55,9 @@ class TestPrivacyGateMultiOverlay(TestCase):
         self.addCleanup(os.chdir, Path.cwd())
         os.chdir(Path(tmp_dir.name))
 
+        register_a_sibling_overlay(self)
         self.overlay_names = sorted(get_all_overlays())
-        if len(self.overlay_names) < 2:
-            self.skipTest(f"needs a multi-overlay install to reproduce the ambiguity, got {self.overlay_names}")
+        assert len(self.overlay_names) >= 2, self.overlay_names
         with pytest.raises(ImproperlyConfigured, match="Multiple overlays found"):
             get_overlay()
 

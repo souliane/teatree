@@ -122,16 +122,16 @@ class TestSingleLoopLine:
 
 
 class TestRecentMarkerNotRendered:
-    """Complaint 3: the ``self_update`` cadence reason never reaches the statusline."""
+    """Complaint 3: a no-op ``self_update`` pass never reaches the statusline."""
 
     def test_recent_marker_dropped(self, tmp_path: Path) -> None:
         signal = ScanSignal(
-            kind="self_update.cadence_not_elapsed",
-            summary="self-update teatree: cadence_not_elapsed (recent_marker)",
+            kind="self_update.up_to_date",
+            summary="self-update teatree: up_to_date",
             payload={
                 "repo": "teatree",
-                "outcome": "cadence_not_elapsed",
-                "reason": "recent_marker",
+                "outcome": "up_to_date",
+                "reason": "",
                 "old_sha": "",
                 "new_sha": "",
             },
@@ -148,7 +148,6 @@ class TestRecentMarkerNotRendered:
 
     def test_all_self_update_outcomes_dropped(self) -> None:
         for outcome, reason in (
-            ("cadence_not_elapsed", "recent_marker"),
             ("up_to_date", ""),
             ("updated", ""),
             ("skipped", "branch=feature!=main"),

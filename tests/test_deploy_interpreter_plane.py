@@ -8,9 +8,21 @@ and DELETED it: ``Removed virtual environment at: .venv``, ~1 GB per venue flip,
 indefinitely. 37 such rebuilds took the box to 100% full.
 
 The fix is a single shared root for the PROJECT plane: uv's own default under the
-container ``HOME``, bound from the host at path identity — exactly the rule the
-worktree tree it must stay consistent with already follows. It is set at RUNTIME
-by compose, not by the image.
+HOST home, bound at path identity — exactly the rule the worktree tree it must
+stay consistent with already follows. It is set at RUNTIME by compose, not by the
+image.
+
+The address has to be the HOST's, not the container's. A first cut rebased only
+the bind SOURCE and left the container's coordinate hardcoded at ``/home/teatree``,
+which is an identity mount ONLY on a box whose deploy home happens to be that. On
+any other host the container then ran ``uv python install`` against a directory it
+called ``/home/teatree/...`` while the host called it something else, and uv — which
+writes its ``cpython-<minor>`` aliases as ABSOLUTE symlinks, with no relative mode —
+rewrote the HOST's alias set to point inside the container. Every alias dangled, and
+every venv and hook env resolving through one broke. Worse on a Linux host, where
+the platform tag matches and the container overwrites the host's real interpreter.
+:class:`TestRenderedRootIsIdenticalInBothVenues` renders a non-matching host home
+and pins source, target and env to one string.
 
 Where it is set is load-bearing, not a detail. The image's own ``uv python
 install`` runs after the image ``ENV``, so an image-level project root would make
@@ -28,6 +40,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from test_deploy_bindmount_compose import _render, _rendered_mounts
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEPLOY_DIR = REPO_ROOT / "deploy"
@@ -39,9 +52,17 @@ ENTRYPOINT = DEPLOY_DIR / "entrypoint.sh"
 CONTAINER_HOME = "/home/teatree"  # privacy-scan:allow — the box's public, documented deploy home
 HOST_HOME_PLACEHOLDER = "${TEATREE_HOST_HOME:-" + CONTAINER_HOME + "}"
 
-# The ONE interpreter root, derived once so the container-configured and
-# host-default spellings can never drift apart inside this test module.
-SHARED_PYTHON_ROOT = f"{CONTAINER_HOME}/.local/share/uv/python"
+# The ONE interpreter root, spelled the ONE way both the bind and the env use it.
+# It is the HOST's address, named by the same variable on both sides of the mount,
+# so every ABSOLUTE path uv writes inside it resolves in BOTH venues. Rebasing only
+# the SOURCE — the container keeping `/home/teatree` as its own coordinate — is the
+# defect this module now pins: uv rewrites the alias set with container-absolute
+# targets, and off-box every one of them dangles for the host.
+SHARED_PYTHON_ROOT = f"{HOST_HOME_PLACEHOLDER}/.local/share/uv/python"
+
+# What that root renders to on the deployed box, where the variable takes its
+# default. Byte-identical to the pre-fix hardcoding, which is why the box is unchanged.
+BOX_PYTHON_ROOT = f"{CONTAINER_HOME}/.local/share/uv/python"
 
 # The tool plane, which stays on its named volume.
 TOOL_PLANE_VOLUME = "teatree_uv"
@@ -147,23 +168,31 @@ class TestInterpreterRootIsOneSharedPath:
         }
         assert mounts_shared_root, "no service mounts the shared interpreter root"
         assert mounts_shared_root == resolves_shared_root
+        # And the value each mounting service resolves is that mount's own TARGET,
+        # not a second spelling of it. An env var naming a path the bind does not
+        # land on is how `uv python install` writes into a directory nobody shares.
+        target = _bind_mounts()[SHARED_PYTHON_ROOT]["target"]
+        for name in mounts_shared_root:
+            assert environments[name]["UV_PYTHON_INSTALL_DIR"] == target
 
-    def test_that_root_is_uvs_own_default_under_the_container_home(self) -> None:
-        # Naming uv's DEFAULT rather than a bespoke path is what lets the HOST —
-        # which sets the variable nowhere — arrive at the same directory without
-        # configuring anything, which is the whole basis of the path identity.
-        assert f"{CONTAINER_HOME}/.local/share/uv/python" == SHARED_PYTHON_ROOT
+    def test_that_root_is_uvs_own_default_under_the_host_home(self) -> None:
+        # Naming uv's DEFAULT relative path is what lets the HOST — which sets the
+        # variable nowhere — arrive at the same directory without configuring
+        # anything. The PREFIX is the host home, so the address the container uses
+        # is the host's own; the variable's default keeps the box rendering to the
+        # container home it always did.
+        assert f"{HOST_HOME_PLACEHOLDER}/.local/share/uv/python" == SHARED_PYTHON_ROOT
+        assert SHARED_PYTHON_ROOT.replace(HOST_HOME_PLACEHOLDER, CONTAINER_HOME, 1) == BOX_PYTHON_ROOT
 
     def test_that_root_is_bound_from_the_host_at_path_identity(self) -> None:
         entry = _bind_mounts().get(SHARED_PYTHON_ROOT)
         assert entry is not None, f"{SHARED_PYTHON_ROOT} must be a host bind mount"
-        suffix = SHARED_PYTHON_ROOT.removeprefix(CONTAINER_HOME)
-        assert entry["source"] == f"{HOST_HOME_PLACEHOLDER}{suffix}"
-        # Source == target when the variable takes its default, which is the box:
-        # a pyvenv.cfg's absolute `home` resolves in BOTH venues only under that
-        # identity, which is why this one invariant covers both directions of the
-        # acceptance (container reading a host-built venv, and the reverse).
-        assert entry["source"].replace(HOST_HOME_PLACEHOLDER, CONTAINER_HOME, 1) == entry["target"]
+        # source == target OUTRIGHT, as one literal string. The earlier form
+        # substituted HOST_HOME_PLACEHOLDER away before comparing, which asserted
+        # the identity only for a host whose home IS the container home — so it
+        # stayed green while the container's coordinate remained `/home/teatree`
+        # on every other host. THIS is the assertion that would have caught it.
+        assert entry["source"] == entry["target"] == SHARED_PYTHON_ROOT
 
     def test_the_shared_root_is_writable_by_the_container(self) -> None:
         # `uv python install` provisions the shared root at runtime; a read-only
@@ -251,6 +280,52 @@ class TestToolPlaneStaysOnTheNamedVolume:
 
     def test_path_still_leads_with_the_tool_bin_dir(self) -> None:
         assert _dockerfile_path_entries()[0] == f"{TOOL_PLANE_TARGET}/bin"
+
+
+class TestRenderedRootIsIdenticalInBothVenues:
+    """`docker compose config` end to end — on the box, and on a host that is not it.
+
+    The static assertions above read one compose file; these render it. The
+    non-matching host home is the case the box can never exercise and the one the
+    defect lived in, so it is asserted as a TRIPLE — bind source, bind target, and
+    the env every mounting service resolves — all one string.
+    """
+
+    def test_the_box_renders_the_root_it_always_did(self, tmp_path: Path) -> None:
+        # The no-change half of the acceptance: where the variable takes its
+        # default, every rendered byte is what it was before the fix.
+        entry = _rendered_mounts(_render(tmp_path, {}))[BOX_PYTHON_ROOT]
+        assert entry["source"] == entry["target"] == BOX_PYTHON_ROOT
+
+    def test_a_non_matching_host_home_renders_one_identical_triple(self, tmp_path: Path) -> None:
+        host_home = "/home/operator"
+        expected = f"{host_home}/.local/share/uv/python"
+        rendered = _render(tmp_path, {"TEATREE_HOST_HOME": host_home})
+        mounts = _rendered_mounts(rendered)
+
+        assert expected in mounts, f"{expected} missing from the rendered config"
+        assert mounts[expected]["source"] == mounts[expected]["target"] == expected
+
+        mounting = [
+            name
+            for name, service in rendered["services"].items()
+            if any(volume.get("target") == expected for volume in service.get("volumes", []))
+        ]
+        assert mounting, "no rendered service mounts the interpreter root"
+        for name in mounting:
+            assert rendered["services"][name]["environment"]["UV_PYTHON_INSTALL_DIR"] == expected
+
+    def test_a_non_matching_host_home_leaves_no_container_coordinate_behind(self, tmp_path: Path) -> None:
+        # The defect stated as its own absence. Pre-fix this rendered a mount
+        # targeting the CONTAINER's `/home/teatree/...` while its source was the
+        # operator's — the split address uv then wrote container-absolute alias
+        # targets into the host's root through.
+        rendered = _render(tmp_path, {"TEATREE_HOST_HOME": "/home/operator"})
+        assert BOX_PYTHON_ROOT not in _rendered_mounts(rendered)
+        resolved = {
+            service.get("environment", {}).get("UV_PYTHON_INSTALL_DIR") for service in rendered["services"].values()
+        }
+        assert BOX_PYTHON_ROOT not in resolved
 
 
 if __name__ == "__main__":

@@ -20,7 +20,7 @@ def _build_jobs(**_: object) -> "list[_ScannerJob]":
 
 MINI_LOOP = MiniLoop(
     name="dogfood",
-    default_cadence_seconds=3600,  # 1h tick rate — daily cadence enforced internally
+    default_cadence_seconds=3600,  # a floor only; the seeded row asks for 86400 and that IS the cadence
     build_jobs=_build_jobs,
     declared_reach=frozenset({LoopReach.COLLEAGUE}),
     determinism=LoopDeterminism.AI,

@@ -262,7 +262,7 @@ Verify against the source before quoting in a bug report — these can drift.
 
 - **Scanners** — the scanner family lives in `src/teatree/loop/scanners/` and that directory is the **source of truth**; read it for the current set rather than trusting any inline roster (it holds ~30 modules and grows — #1478 added `resource_pressure` and `task_sweep`). Describe what you found by **role**, not by a frozen list:
   - **Per-overlay signal-producers** run once per registered overlay when that overlay's backend resolves — e.g. `my_prs`, `reviewer_prs`, `assigned_issues`, `slack_mentions`, `slack_broadcasts`, `codex_review`, `pr_sweep` (non-exhaustive). A multi-overlay tick tags each with `[<overlay>]`.
-  - **Global / cadence-gated scanners** run once per tick (some only every N hours via a settings-driven cadence) — e.g. `pending_tasks`, `notion_view`, `resource_pressure`, `self_update`, `pull_main_clone`, `outbound_audit` (non-exhaustive). They carry no overlay tag.
+  - **Global / cadence-gated scanners** run once per tick (some only every N hours via their own cadence gate) — e.g. `pending_tasks`, `notion_view`, `resource_pressure`, `self_update`, `pull_main_clone`, `outbound_audit` (non-exhaustive). They carry no overlay tag.
   - **Mechanical handlers** (`src/teatree/loop/mechanical.py`, `mechanical_resources.py`) are the inline executors the dispatcher runs for handler-kind signals rather than handing to an agent — e.g. `free_resources` (for `resource.cleanup_needed`) and `task_completion` (for `task.completion_detected`). A signal whose kind maps to a handler that has gone missing is a bug.
   - `build_default_scanners` in `src/teatree/loop/global_scanner_factories.py` is the authoritative assembly (which scanners run, per-overlay vs global, behind which cadence/flag). Quote it, don't memorise the list above — the examples are a non-exhaustive sample, not the inventory.
 - **Signal kinds** → **default zone / agent** (see `src/teatree/loop/dispatch.py`):
@@ -273,6 +273,15 @@ Verify against the source before quoting in a bug report — these can drift.
   - `pending_task`, `assigned_issue.ready` → agent `t3:orchestrator`
   - `notion.unrouted` → webhook `n8n`
   - A kind absent from `STATUSLINE_ZONE_BY_KIND` (`src/teatree/loop/dispatch_tables.py`) falls back per dispatch path: `_dispatch_one` → `in_flight`, `dispatch_answering` → `action_needed` (the dual-dispatch mirror uses `in_flight`). `src/teatree/loop/dispatch.py` (the consult order) plus its `dispatch_tables`/`dispatch_reducer`/`dispatch_gates` siblings are the source of truth — quote them, don't memorise them. A genuinely unmapped *new* kind is the bug to flag, not the fallback itself.
+
+## Reference — reading a provision-smoke verdict
+
+`t3 dogfood overlay-provision-smoke` is the cadence-driven sibling of the tick hunt above: the `provision_smoke` scanner queues it once per fire of the daily `dogfood` Loop row so provision-path CLI bugs surface in the loop, not in the user's next E2E session. Reading its one-line verdict:
+
+- **`overlay_resolution_failed` at a `*_env_unset` step** — this class. Those steps run the workspace verbs with `T3_OVERLAY_NAME` removed from the child env; a bare `get_overlay()` raises `Multiple overlays found` on a multi-overlay install. Its `*_env_set` twin pins the var, so the two together tell you which resolution route regressed.
+- **`; uncovered: dslr-alias-variant (...)` on a PASS** — the run could not exercise the variant→tenant alias path, because the overlay declares no variant whose canonical tenant differs from its own name. Not a failure; a named coverage gap. Fix it by listing the alias variant (the LEFT side of the overlay's alias map) in the overlay's `known_variants`, or pass `--variant <alias>` explicitly.
+- An identity-mapped variant is the trap this guards: the smoke passes green while a non-identity alias bug ships.
+- **`provision_failed at env_show: worktree path unresolved: ...`** — every step after `workspace_ticket` targets the new worktree by `--path`, resolved from the `Ticket` row that step created. This verdict means the row carries no materialised checkout, so the smoke stopped rather than shelling the step out pathless and blaming your CWD.
 
 ## Rules
 

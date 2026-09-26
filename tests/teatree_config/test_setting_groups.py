@@ -99,10 +99,10 @@ class TestGroupingIsDerivedNotHandKept:
             ("autoload", ("Workspace", "Engagement & identity")),
             ("mode", ("Agents", "Mode & harness")),
             ("loop_cadence_seconds", ("Loops", "Cadence & throughput")),
-            ("on_behalf_post_mode", ("Communication", "Posting on your behalf")),
             ("require_merge_evidence", ("Gates", "Quality", "Merge & done")),
-            ("architectural_review_cadence_hours", ("Gates", "Quality", "Architectural review")),
-            ("disk_warn_free_gb", ("Infrastructure", "Resource pressure", "Thresholds & cadence")),
+            ("architectural_review_skill", ("Gates", "Quality", "Architectural review")),
+            ("artifact_idle_days", ("Infrastructure", "Resource pressure", "Thresholds & cadence")),
+            ("ram_warn_avail_gb", ("Loops", "resource_pressure")),
             ("allow_destructive_disk", ("Infrastructure", "Resource pressure", "Destructive levers")),
             ("provision_max_concurrency", ("Infrastructure", "Provisioning")),
             ("banned_terms", ("Registries", "Term scanning, agent tables & cold reads")),
@@ -160,7 +160,7 @@ class TestTheOutlineTheTextSurfacesRender:
         return list(group_outline(keys, key_of=lambda key: key))
 
     def test_a_level_is_announced_once_however_many_leaves_share_it(self) -> None:
-        sections = self._sections(("require_merge_evidence", "architectural_review_disabled", "critic_gate_mode"))
+        sections = self._sections(("require_merge_evidence", "architectural_review_skill", "critic_gate_mode"))
         announced = [(heading.depth, heading.label) for section in sections for heading in section.headings]
         assert announced.count((1, "Gates")) == 1, "a shared parent level is re-announced per child"
         assert announced.count((2, "Quality")) == 1
@@ -199,8 +199,9 @@ _SAMPLE: dict[str, object] = {
     "autoload": False,
     "mode": "interactive",
     "require_merge_evidence": True,
-    "architectural_review_cadence_hours": 168,
-    "disk_warn_free_gb": 5,
+    "architectural_review_skill": "ac-reviewing-codebase",
+    "ram_warn_avail_gb": 5,
+    "artifact_idle_days": 2.0,
 }
 
 
@@ -234,6 +235,7 @@ class TestTheTomlRendererBothSurfacesShare:
         assert headers == [
             '[teatree.Workspace."Engagement & identity"]',
             '[teatree.Agents."Mode & harness"]',
+            "[teatree.Loops.resource_pressure]",
             '[teatree.Gates.Quality."Architectural review"]',
             '[teatree.Gates.Quality."Merge & done"]',
             '[teatree.Infrastructure."Resource pressure"."Thresholds & cadence"]',

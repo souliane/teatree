@@ -21,10 +21,12 @@ self-authored MR, never on an open MR, never twice.
 
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from django.utils import timezone
 
+from teatree.config import cold_reader
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.review_request_merge_react import (
@@ -92,6 +94,7 @@ class _AuthoredHost:
 def _seed(*, reacted: bool) -> ReviewRequestPost:
     return ReviewRequestPost.objects.create(
         mr_url=_MR_URL,
+        overlay="",
         slack_channel_id=_CHANNEL,
         slack_thread_ts=_THREAD_TS,
         created_at=timezone.now(),
@@ -157,13 +160,14 @@ class TestSelfAuthoredReactSkipMatrix:
         post.refresh_from_db()
         assert post.done_at is not None
 
-    def test_self_authored_via_current_user_only_never_reacts(self) -> None:
+    def test_self_authored_via_configured_forge_identity_never_reacts(self) -> None:
         post = _seed(reacted=False)
         slack = _RecordingSlack()
         host = _AuthoredHost(open_state=PrOpenState.MERGED, author=_USER_LOGIN, user=_USER_LOGIN)
         scanner = ReviewRequestMergeReactScanner(messaging=slack, host=host, identities=())
 
-        scanner.scan()
+        with patch.object(cold_reader, "mapping_setting", return_value={"github.com": [_USER_LOGIN]}):
+            scanner.scan()
 
         assert slack.reactions == []
         post.refresh_from_db()

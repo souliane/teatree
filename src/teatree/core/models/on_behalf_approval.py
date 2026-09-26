@@ -1,8 +1,8 @@
 """Recorded per-post user-approval channel for the on-behalf pre-gate (#960/#961).
 
-The ``on_behalf_post_mode`` pre-gate (``teatree.on_behalf_gate``)
+The posture pre-gate (``teatree.on_behalf_gate``)
 refuses to publish a post made under the user's identity to a
-colleague/customer surface (BLOCK verdict under ``ask`` / ``draft_or_ask``)
+colleague/customer surface (BLOCK verdict under a forbidding posture)
 unless the user has approved it. Its only
 satisfier must NOT be an interactive TTY — a chat-only operator plus any
 unattended loop could then never let a sanctioned reply go out, the exact

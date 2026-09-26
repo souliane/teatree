@@ -27,24 +27,29 @@ Both are driven by the dedicated reactive drain-queue ``/loop``
 :func:`expire_then_drain`, behind the ``loop-drain-queue`` ``LoopLease``). The drain
 refuses to run while a live worker holds the ``worker`` singleton flock
 (:data:`~teatree.utils.singleton.WORKER_SINGLETON` — probed via the same constant
-the workers acquire), and it only drains the ``default`` queue — the
-``loops``-queue ``loop_timer`` rows advance ONLY on the worker's pinned executors, so
-the drain cannot become a second loop runner that bypasses the ``loop_runner_enabled``
-kill-switch.
+the workers acquire) AND while the active preset admits zero loops, so a posture that
+stops the fleet stops this path too rather than going on running work behind it. It
+drains the ``default`` and ``cheap`` headless queues; the ``loops``-queue ``loop_timer``
+rows advance ONLY on the worker's pinned executors.
 """
 
 import datetime as dt
 import logging
 import os
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from django.core.exceptions import SuspiciousOperation
 from django.db import transaction
-from django.db.models import Case, IntegerField, Q, Value, When
-from django.db.models.expressions import BaseExpression
 from django.db.utils import OperationalError
 from django.utils import timezone
+
+from teatree.core.admission_priority import (
+    ADMISSION_ORDER,
+    ADMISSION_RANK_ALIAS,  # noqa: F401 — public compatibility re-export
+    admission_priority_annotations,
+)
+from teatree.loops.enable_verdict import fleet_admits_work
 
 if TYPE_CHECKING:
     from teatree.core.managers import ClaimOrder
@@ -53,43 +58,6 @@ logger = logging.getLogger(__name__)
 
 _STALE_THRESHOLD_DEFAULT_HOURS = 24
 _DRAIN_BATCH_DEFAULT = 5
-
-#: Priority order the loop admits pending Task rows in: TODO/followup (rank 0)
-#: before a new-ticket auto-start (rank 1), then FIFO ``pk`` within a rank.
-ADMISSION_RANK_ALIAS = "_admission_rank"
-ADMISSION_ORDER: tuple[str, ...] = (ADMISSION_RANK_ALIAS, "pk")
-
-
-def _new_ticket_autostart_q() -> Q:
-    """A task that auto-STARTS a brand-new ticket: an initial-phase, un-parented row.
-
-    A ``planning``/``scoping`` task with no ``parent_task`` is the first phase of
-    a freshly picked-up ticket. Everything else — a downstream lifecycle phase
-    (coding/testing/reviewing/shipping), a followup (``parent_task`` set), or a
-    reactive ``answering``/``bughunt`` task — is continuing TODO work that should
-    drain first. Matched across every accepted spelling so a short-verb
-    ``plan``/``scope`` row ranks identically to the canonical gerund.
-    """
-    from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415 — deferred: loaded at tick time
-
-    autostart_phases = phase_spellings("planning") + phase_spellings("scoping")
-    return Q(parent_task__isnull=True) & Q(phase__in=autostart_phases)
-
-
-def admission_priority_annotations() -> dict[str, BaseExpression]:
-    """The ``.annotate()`` kwargs producing the integer :data:`ADMISSION_RANK_ALIAS`.
-
-    ``0`` = TODO/followup (drain first); ``1`` = new-ticket auto-start. Paired
-    with :data:`ADMISSION_ORDER` on the claim/plan path so a queued TODO admits
-    before a lower-``pk`` new-ticket task at equal priority.
-    """
-    return {
-        ADMISSION_RANK_ALIAS: Case(
-            When(_new_ticket_autostart_q(), then=Value(1)),
-            default=Value(0),
-            output_field=IntegerField(),
-        )
-    }
 
 
 def admission_claim_order() -> "ClaimOrder":
@@ -204,8 +172,8 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: s
     inspectable/re-enqueueable. No hard delete.
 
     ``queue_name`` scopes the sweep to one queue when given. The worker's
-    startup + hourly expiry pass the ``default`` queue (via
-    :func:`expire_stale_default_jobs`) so it never touches the ``loops``-queue
+    startup + hourly expiry pass both headless queues (via
+    :func:`expire_stale_headless_jobs`) so it never touches the ``loops``-queue
     timer chains — those are owned by the reconciler's own staleness repair
     (stranded-RUNNING / surplus prune), and a shared cutoff sweep would fight it.
     """
@@ -236,20 +204,26 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: s
 def expire_stale_default_jobs(*, threshold_hours: int | None = None) -> dict[str, int]:
     """Retire stale READY jobs on the ``default`` queue only — the heavy FSM/headless backlog.
 
-    The worker's startup expiry (before it spawns executors) and its hourly
-    maintenance chain both call this so a box that accumulated days-old
-    provision/ship/teardown jobs while no worker ran does NOT blind-fire them the
-    instant the worker spawns (the default-ON flip's load-jam class). Scoped to the
-    ``default`` queue so the reconciler stays the sole owner of ``loops``-queue timer
-    staleness — a shared cutoff sweep would mark a ``daily_at`` successor timer FAILED
-    the instant it crosses the 24 h threshold, retiring a live chain just before it fires.
+    Called by :func:`expire_stale_headless_jobs` before worker startup and during
+    hourly maintenance. It leaves ``loops`` timers to the reconciler; a shared cutoff
+    could retire a live ``daily_at`` successor just before it fires.
     """
     from django.tasks import DEFAULT_TASK_QUEUE_NAME  # noqa: PLC0415 — deferred: needs the app registry ready
 
     return expire_stale_ready_jobs(threshold_hours=threshold_hours, queue_name=DEFAULT_TASK_QUEUE_NAME)
 
 
-def _run_one_ready_job() -> bool:
+def expire_stale_headless_jobs(*, threshold_hours: int | None = None) -> dict[str, int]:
+    """Retire stale coding and cheap jobs before either worker executor starts."""
+    from teatree.core.task_dispatch import CHEAP_TASK_QUEUE  # noqa: PLC0415 — queue policy at call time
+
+    retired = expire_stale_default_jobs(threshold_hours=threshold_hours)
+    for name, count in expire_stale_ready_jobs(threshold_hours=threshold_hours, queue_name=CHEAP_TASK_QUEUE).items():
+        retired[name] = retired.get(name, 0) + count
+    return retired
+
+
+def _run_one_ready_job(queue_name: str) -> bool:
     """Claim and run a single READY job, mirroring ``db_worker.run_task``.
 
     Returns ``True`` if a job was claimed and executed (success OR failure —
@@ -257,29 +231,17 @@ def _run_one_ready_job() -> bool:
     job was available. The row is locked + claimed inside an exclusive
     transaction so a concurrent drainer cannot pick the same job.
 
-    Only the ``default`` queue is drained: the self-rescheduling ``loop_timer``
-    chains ride the separate ``loops`` queue and run ONLY on the worker's pinned
-    executors, so the tick drain never becomes an accidental loop runner that
-    bypasses the ``loop_runner_enabled`` kill-switch. ``"loops"`` is the only
-    non-``default`` queue, so scoping the claim to ``DEFAULT_TASK_QUEUE_NAME``
-    leaves the timer rows for the worker.
+    The caller selects one headless queue; the self-rescheduling ``loop_timer``
+    chains ride ``loops`` and run ONLY on the worker's pinned executors.
     """
     from django.db import close_old_connections  # noqa: PLC0415 — deferred: Django import at call time
-    from django.tasks import (  # noqa: PLC0415 — deferred: Django import at call time
-        DEFAULT_TASK_BACKEND_ALIAS,
-        DEFAULT_TASK_QUEUE_NAME,
-        signals,
-    )
+    from django.tasks import DEFAULT_TASK_BACKEND_ALIAS, signals  # noqa: PLC0415 — deferred: Django import at call time
     from django.utils.crypto import get_random_string  # noqa: PLC0415 — deferred: Django import at call time
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
     from django_tasks_db.utils import exclusive_transaction  # noqa: PLC0415 — deferred: Django import at call time
 
     worker_id = f"tickdrain-{os.getpid()}-{get_random_string(32)}"
-    ready = (
-        DBTaskResult.objects.ready()
-        .filter(backend_name=DEFAULT_TASK_BACKEND_ALIAS)
-        .filter(queue_name=DEFAULT_TASK_QUEUE_NAME)
-    )
+    ready = DBTaskResult.objects.ready().filter(backend_name=DEFAULT_TASK_BACKEND_ALIAS).filter(queue_name=queue_name)
 
     with exclusive_transaction(ready.db):
         try:
@@ -330,10 +292,17 @@ def drain_ready_batch(*, max_jobs: int | None = None) -> int:
     if a_worker_is_running():
         logger.debug("Skipping in-process queue drain: a live worker holds a worker singleton.")
         return 0
+    from django.tasks import DEFAULT_TASK_QUEUE_NAME  # noqa: PLC0415 — queue policy at drain time
+
+    from teatree.core.task_dispatch import CHEAP_TASK_QUEUE  # noqa: PLC0415 — queue policy at drain time
+
     limit = max_jobs if max_jobs is not None else drain_batch_size()
     drained = 0
-    for _ in range(limit):
-        if not _run_one_ready_job():
+    for index in range(limit):
+        queues = (CHEAP_TASK_QUEUE, DEFAULT_TASK_QUEUE_NAME)
+        if index % 2:
+            queues = tuple(reversed(queues))
+        if not any(_run_one_ready_job(queue_name) for queue_name in queues):
             break
         drained += 1
     if drained:
@@ -341,18 +310,54 @@ def drain_ready_batch(*, max_jobs: int | None = None) -> int:
     return drained
 
 
-def expire_then_drain() -> dict[str, int | dict[str, int]]:
+class DrainCycle(TypedDict):
+    """One reactive drain cycle's outcome — what it retired, what it ran, what it stranded."""
+
+    retired: dict[str, int]
+    drained: int
+    halted: bool
+    stranded: int
+
+
+def expire_then_drain() -> DrainCycle:
     """Expire stale READY jobs, then drain a bounded batch of the fresh remainder.
 
     The expiry runs *first* so a stale heavy job (a 12-day-old provision/ship/
     teardown) is retired to ``FAILED`` before the drain can ever claim and run
     it. Only jobs newer than the stale threshold survive to be drained.
 
-    Scoped to the ``default`` queue: the reactive ``loops``-queue ``loop_timer``
+    Scoped to the two headless queues: the reactive ``loops``-queue ``loop_timer``
     chains are owned by the reconciler's own staleness repair, so a shared cutoff
     sweep here would mark a due ``daily_at`` successor timer FAILED the instant it
     crosses the 24 h threshold and retire the live chain just before it fires.
+
+    A posture admitting zero loops halts the whole cycle, and says how deep the queue it
+    is stranding is: a stop nobody can measure is how the retired kill-switch came to read
+    as a stop while this path went on running work.
     """
-    retired = expire_stale_default_jobs()
+    if not fleet_admits_work():
+        stranded = ready_headless_depth()
+        logger.warning(
+            "the active preset admits ZERO loops — the reactive drain is HALTED with %d READY headless job(s) "
+            "stranded. They keep until a posture admits work again; `t3 loop preset show` names the posture.",
+            stranded,
+        )
+        return {"retired": {}, "drained": 0, "halted": True, "stranded": stranded}
+    retired = expire_stale_headless_jobs()
     drained = drain_ready_batch()
-    return {"retired": retired, "drained": drained}
+    return {"retired": retired, "drained": drained, "halted": False, "stranded": 0}
+
+
+def ready_headless_depth() -> int:
+    """How many READY headless jobs are waiting — the strand report's number."""
+    from django.tasks import (  # noqa: PLC0415 — deferred: Django import at call time
+        DEFAULT_TASK_QUEUE_NAME,
+        TaskResultStatus,
+    )
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.task_dispatch import CHEAP_TASK_QUEUE  # noqa: PLC0415 — queue policy at call time
+
+    return DBTaskResult.objects.filter(
+        status=TaskResultStatus.READY, queue_name__in=(DEFAULT_TASK_QUEUE_NAME, CHEAP_TASK_QUEUE)
+    ).count()

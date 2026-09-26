@@ -74,15 +74,15 @@ mirroring `require_human_approval_to_merge`.
 
 **This setting is not the egress gate, and no tier opens that one (#3895).** The
 post in step 4 goes out under the user's identity to a colleague surface, so
-`_BaseReplier` routes `post_in_thread` / `post_comment` through the
-`on_behalf_post_mode` pre-gate (`require_on_behalf_approval`) before any wire
-call. Under the shipped `draft_or_ask` that gate BLOCKs at every tier — the
+`_BaseReplier` routes `post_in_thread` / `post_comment` through the posture
+pre-gate (`require_on_behalf_approval`) before any wire call. Under a forbidding
+posture that gate BLOCKs at every tier — the
 `ReplyDispatch` row lands FAILED with an actionable message and the retry sweep
 re-attempts once the user records the approval. So `false` here buys the DM
 round-trip, not colleague egress: to actually post unattended the overlay needs a
-recorded `OnBehalfApproval` for the target, or an explicit
-`t3 <overlay> config_setting set on_behalf_post_mode immediate --overlay <name>`.
-Raising `autonomy` never grants it. `post_dm` is a bot→user message and is
+recorded `OnBehalfApproval` for the target, or a permitting posture selected
+durably with `t3 loop preset use present --reason <why>` — box-global, since
+there is no per-overlay egress tier. Raising `autonomy` never grants it. `post_dm` is a bot→user message and is
 outside the gate, so the approval DM path works at every tier.
 
 Resolve the effective value with

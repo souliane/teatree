@@ -20,34 +20,29 @@ def find_clone_path(workspace: Path, repo_name: str) -> Path | None:
     """Resolve ``repo_name`` to an actual git clone under ``workspace``.
 
     Tries the literal path first (``workspace / repo_name``) so explicit
-    ``souliane/teatree``-style entries keep working. If that's not a git
-    checkout, scans one level deep — ``workspace / */basename`` — so a bare
-    ``teatree`` from ``--repos teatree`` finds the namespaced clone at
-    ``workspace/souliane/teatree``. Returns ``None`` when no match exists.
-    Logs a warning when more than one match is found and picks the first
-    (alphabetic) so the operator can spot basename collisions in the logs.
+    ``souliane/teatree``-style entries keep working, then the FLAT root
+    (``workspace / basename``), then scans one level deep —
+    ``workspace / */basename`` — so a bare ``teatree`` from ``--repos teatree``
+    finds the namespaced clone at ``workspace/souliane/teatree``. Returns ``None``
+    when no match exists. Logs a warning when more than one match is found and
+    picks the first (alphabetic) so the operator can spot basename collisions in
+    the logs.
+
+    The flat rung is what makes a FULL namespace path resolvable. A GitLab repo is
+    recorded as ``<group>/<subgroup>/<repo>`` while a clone root commonly holds it
+    flat, so the literal probe missed and the one-level scan looked everywhere
+    except the root itself — measured as "No git clone found or creatable for
+    <group>/<subgroup>/<repo> under <clone-root>".
+    It sits ABOVE the one-level scan because a same-basename clone under an
+    unrelated namespace may be a different repo entirely (#2276), so the root the
+    clone root's own layout uses is the better answer.
 
     A non-existent ``workspace`` resolves to ``None`` (no clone), never a crash:
     the per-overlay ``workspace_dir`` default (``~/workspace/t3-workspaces/<overlay>/``)
     need not exist yet on a fresh setup, and ``iterdir()`` would raise
     ``FileNotFoundError`` on the one-level scan otherwise.
     """
-    literal = workspace / repo_name
-    if (literal / ".git").is_dir():
-        return literal
-
-    if not workspace.is_dir():
-        return None
-
-    basename = Path(repo_name).name
-    matches: list[Path] = []
-    for entry in sorted(workspace.iterdir()):
-        if not entry.is_dir() or entry == literal:
-            continue
-        candidate = entry / basename
-        if (candidate / ".git").is_dir():
-            matches.append(candidate)
-
+    matches = _clone_candidates(workspace, repo_name)
     if not matches:
         return None
     if len(matches) > 1:
@@ -58,6 +53,34 @@ def find_clone_path(workspace: Path, repo_name: str) -> Path | None:
             matches[0],
         )
     return matches[0]
+
+
+def unambiguous_clone_path(workspace: Path, repo_name: str) -> Path | None:
+    """:func:`find_clone_path`, but ``None`` when several clones match instead of the first.
+
+    For a caller that reads a MISSING ref as permission to destroy: a ref absent from one
+    of two same-basename clones may live in the other.
+    """
+    matches = _clone_candidates(workspace, repo_name)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _clone_candidates(workspace: Path, repo_name: str) -> list[Path]:
+    """The literal or flat clone alone when it exists, else every one-level-deep basename match."""
+    literal = workspace / repo_name
+    if (literal / ".git").is_dir():
+        return [literal]
+    if not workspace.is_dir():
+        return []
+    basename = Path(repo_name).name
+    flat = workspace / basename
+    if flat != literal and (flat / ".git").is_dir():
+        return [flat]
+    return [
+        entry / basename
+        for entry in sorted(workspace.iterdir())
+        if entry.is_dir() and entry != literal and (entry / basename / ".git").is_dir()
+    ]
 
 
 def stored_clone_path(worktree: Worktree) -> Path | None:

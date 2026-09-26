@@ -81,6 +81,22 @@ def owning_clone(checkout: Path) -> Path | None:
     return parent if parent.is_dir() else None
 
 
+def unavailable_linked_worktree_gitdir(checkout: Path) -> bool:
+    git_file = checkout / ".git"
+    if not git_file.is_file():
+        return False
+    try:
+        first_line = git_file.read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, UnicodeError, IndexError):
+        return False
+    if not first_line.startswith("gitdir: "):
+        return False
+    gitdir = Path(first_line.removeprefix("gitdir: ").strip())
+    if not gitdir.is_absolute():
+        gitdir = (checkout / gitdir).resolve()
+    return "worktrees" in gitdir.parts and not gitdir.exists()
+
+
 def discover_checkouts() -> list[Path]:
     """Every checkout teatree commits from, deduped, most-authoritative first.
 

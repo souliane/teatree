@@ -4,14 +4,14 @@ Built on the existing :func:`teatree.backends.github.api._run_gh` seam (auth via
 ``GH_TOKEN`` env, never on argv, never logged), so no loop or CLI code shells a
 raw ``gh``. Every method is one bounded ``gh`` subprocess and returns immediately
 — the poll is stateful across ticks, never a blocking ``--watch``. The client
-holds only the repo slug and an optional token; :func:`build_ci_eval_client`
-resolves the token from ``GH_TOKEN`` at the point of use.
+holds only the repo slug and its routed token; :func:`build_ci_eval_client`
+resolves the token from the slug's owning overlay.
 """
 
 import json
-import os
 from pathlib import Path
 
+from teatree import forge_credentials
 from teatree.backends.github.api import _run_gh
 from teatree.types import RawAPIDict
 
@@ -112,5 +112,7 @@ class GhCiEvalClient:
 
 
 def build_ci_eval_client(repo: str = DEFAULT_CI_EVAL_REPO) -> GhCiEvalClient:
-    """Build a client for *repo*, taking the token from ``GH_TOKEN`` at point of use."""
-    return GhCiEvalClient(repo, token=os.environ.get("GH_TOKEN", ""))
+    """Build a client with the token routed by *repo*'s owning overlay."""
+    resolution = forge_credentials.resolve_slug_token(repo, forge="github", credential="github_token")
+    token = resolution.token if resolution.state is forge_credentials.ForgeTokenState.TOKEN else ""
+    return GhCiEvalClient(repo, token=token)

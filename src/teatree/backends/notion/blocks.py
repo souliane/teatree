@@ -13,12 +13,18 @@ Supported: ATX headings (``#``…``###``, optionally toggle via a trailing
 task list items, block quotes, fenced code, ``---`` dividers, pipe tables, and
 ``<details><summary>…`` toggles. Inline: ``**bold**``, ``*italic*``,
 ``` `code` ```, ``~~strike~~``, and ``[text](url)``.
+
+:func:`copyable_blocks` is the other way into that escape hatch: it turns a
+FETCHED tree back into a postable one, so a customer-authored section is copied
+natively instead of being round-tripped through this Markdown subset and
+downgraded on the way.
 """
 
 import re
 from typing import ClassVar
 
-from teatree.backends.notion.errors import NotionUnsupportedMarkdownError
+from teatree.backends.notion.errors import NotionUncopyableBlockError, NotionUnsupportedMarkdownError
+from teatree.backends.notion.markdown import ChildrenLookup
 from teatree.types import RawAPIDict
 
 #: Notion refuses a single rich-text run longer than this.
@@ -329,3 +335,49 @@ def build_blocks(markdown: str) -> list[RawAPIDict]:
         msg = f"the body produced no Notion blocks: {markdown.strip()[:120]!r}"
         raise NotionUnsupportedMarkdownError(msg)
     return blocks
+
+
+#: Blocks that point at content a POST cannot bring with it: a child page or
+#: database is its own Notion object, a synced block is owned elsewhere, and
+#: ``unsupported`` is Notion declining to expose the content at all.
+_UNCOPYABLE_TYPES = frozenset({"child_page", "child_database", "synced_block", "unsupported"})
+
+#: Asset blocks whose ``file`` variant carries a signed, expiring Notion URL.
+#: Their ``external`` variant is a plain URL and copies fine.
+_ASSET_TYPES = frozenset({"file", "image"})
+
+
+def copyable_blocks(children_of: ChildrenLookup, blocks: list[RawAPIDict]) -> list[RawAPIDict]:
+    """Rebuild a fetched block tree as a POST-able one.
+
+    Server-owned fields are dropped and ``has_children`` is resolved into an
+    inline ``children`` list, because a fetched ``table`` carries no rows of its
+    own — re-posting one as fetched yields an empty table or a 400.
+    """
+    return [_copyable_block(children_of, block) for block in blocks]
+
+
+def _copyable_block(children_of: ChildrenLookup, block: RawAPIDict) -> RawAPIDict:
+    kind = str(block.get("type", ""))
+    raw = block.get(kind)
+    payload = dict(raw) if isinstance(raw, dict) else {}
+    block_id = str(block.get("id", "?"))
+    _refuse_uncopyable(kind, payload, block_id=block_id)
+    if block.get("has_children"):
+        payload["children"] = copyable_blocks(children_of, children_of(block_id))
+    return {"object": "block", "type": kind, kind: payload}
+
+
+def _refuse_uncopyable(kind: str, payload: RawAPIDict, *, block_id: str) -> None:
+    if kind in _UNCOPYABLE_TYPES:
+        msg = (
+            f"block {block_id} is a {kind}, whose content lives outside the block — a copy would "
+            "post an empty shell. Recreate that object separately, or copy the section without it."
+        )
+        raise NotionUncopyableBlockError(msg)
+    if kind in _ASSET_TYPES and payload.get("type") == "file":
+        msg = (
+            f"block {block_id} is a Notion-hosted {kind}: its URL is signed and expires, so the copy "
+            "would break once it does. Re-upload the asset, or reference it by external URL."
+        )
+        raise NotionUncopyableBlockError(msg)

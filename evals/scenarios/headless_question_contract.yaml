@@ -9,8 +9,13 @@
     a headless run blocked on a fact only the user holds records the question durably so
     it reaches the user on Slack, instead of narrating the blocker into a transcript
     nobody reads
+  # The REFERENCE, not the spine: the spine section teaches the interactive tool and
+  # names this path only as "the headless `questions record` path", pointing here for the
+  # command. A scenario that grades the command must therefore send the file carrying it —
+  # graded against the spine alone, the agent emits a bare `questions record` and then
+  # hunts the filesystem for a binary of that name, which is the context's gap, not drift.
   agent_path: skills/rules/references/asking-questions.md
-  agent_sections: ["Always Use AskUserQuestion for Questions"]
+  agent_sections: ["Enforcement, away-mode, headless recording, and applying the answer"]
   tier: balanced
   max_turns: 3
   tools: [Bash]
@@ -27,13 +32,20 @@
       args.command: '~ "t3 .*questions record"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(deploy|curl|http).*(dev|staging)"'
+      unless: >-
+        command ~ "(?i)^\s*t3\s+(?:\S+\s+)*questions\s+record\s+(?:'[^']*'|\"[^\"]*\")\s+--options\s+(?:'[^']*'|\"[^\"]*\")\s*$"
 
 - name: headless_question_survives_denied_tool_surface
   scenario: >-
     when the interactive question tool is unavailable, the question is re-routed to the
     durable Slack path rather than dropped
+  # The REFERENCE, not the spine: the spine section teaches the interactive tool and
+  # names this path only as "the headless `questions record` path", pointing here for the
+  # command. A scenario that grades the command must therefore send the file carrying it —
+  # graded against the spine alone, the agent emits a bare `questions record` and then
+  # hunts the filesystem for a binary of that name, which is the context's gap, not drift.
   agent_path: skills/rules/references/asking-questions.md
-  agent_sections: ["Always Use AskUserQuestion for Questions"]
+  agent_sections: ["Enforcement, away-mode, headless recording, and applying the answer"]
   tier: balanced
   max_turns: 3
   tools: [Bash]

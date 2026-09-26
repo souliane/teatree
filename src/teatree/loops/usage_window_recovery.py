@@ -11,9 +11,8 @@ maintenance chains (``reconcile_timers`` / ``prune_task_results``): the re-arm d
 purely time-based (``resets_at`` has passed), so a released task that re-hits the limit
 simply re-parks — no fragile "is the model reachable yet" inference probe is needed.
 
-Gated by ``limit_autorecovery_enabled``, which ships ON: turned OFF the chain degrades to a
-cheap keepalive that clears nothing, releases nothing, and posts nothing. Seeded by
-``ensure_maintenance_chains`` at worker startup and self-perpetuating after that.
+Seeded by ``ensure_maintenance_chains`` at worker startup and self-perpetuating after
+that.
 
 Harness-limited (NOT teatree-fixable, stated plainly): this re-arms the WORKER / DB loop
 plane. Resuming the interactive orchestrator SESSION's conversation, or auto-resuming the
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 #: While a window is still parked the chain polls at this cadence so recovery lands within
 #: ~a minute of the reset; when no window is active it idles at the slower keepalive cadence
-#: (still alive to react to a flag flip + a fresh park).
+#: (still alive to pick up a fresh park).
 ACTIVE_POLL_SECONDS = 60
 IDLE_KEEPALIVE_SECONDS = 300
 
@@ -76,14 +75,14 @@ def recover_windows(now: dt.datetime) -> RecoveryOutcome:
         return RecoveryOutcome()
 
     released = _release_parked_tasks(now)
-    _clear_auto_engaged_low_power()
+    _clear_auto_engaged_token_outage()
     _wake_loops(now)
     _notify_recovered(cleared_pks=cleared, released=released, now=now)
     logger.info("usage_window_recovery: cleared %s window(s), released %s parked task(s)", len(cleared), released)
     return RecoveryOutcome(cleared=cleared, released=released)
 
 
-def _clear_auto_engaged_low_power() -> None:
+def _clear_auto_engaged_token_outage() -> None:
     """Clear a low-token override this system auto-engaged on the park (#3159 item 6).
 
     Best-effort — a user override is never touched, and a failure here must never
@@ -92,7 +91,7 @@ def _clear_auto_engaged_low_power() -> None:
     from teatree.core.models import ModeOverride  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
 
     try:
-        ModeOverride.objects.clear_auto_engaged_low_power()
+        ModeOverride.objects.clear_auto_engaged_token_outage()
     except Exception:
         logger.debug("low-token auto-engage clear failed during recovery", exc_info=True)
 
@@ -154,17 +153,6 @@ def _notify_recovered(*, cleared_pks: list[int], released: int, now: dt.datetime
         logger.debug("usage_window_recovery notify failed for key=%s", key, exc_info=True)
 
 
-def _autorecovery_enabled() -> bool:
-    """Whether ``limit_autorecovery_enabled`` resolves ON — fail-safe OFF on a failed read."""
-    try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
-
-        return bool(get_effective_settings().limit_autorecovery_enabled)
-    except Exception:
-        logger.debug("limit_autorecovery_enabled read failed — treating auto-recovery as OFF", exc_info=True)
-        return False
-
-
 def _pending_recovery() -> bool:
     from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred import (cycle-safe / task-body)
@@ -198,10 +186,7 @@ def usage_window_recovery() -> dict[str, int]:
     """One recovery fire: clear due windows, then re-schedule this chain.
 
     Self-dedups first (another pending recovery carries the chain), mirroring the
-    ``reconcile_timers`` contract, so an at-least-once redelivery collapses to one. While
-    ``limit_autorecovery_enabled`` is OFF the body is a cheap keepalive — it clears nothing
-    and posts nothing (behaviorally inert) but keeps re-scheduling so a flag flip is picked
-    up without a worker restart.
+    ``reconcile_timers`` contract, so an at-least-once redelivery collapses to one.
 
     Successor-FIRST, exactly as :func:`~teatree.loops.timer_chains.loop_timer` chains: the
     recovery body writes to several tables and a raise there would otherwise end the chain
@@ -210,9 +195,6 @@ def usage_window_recovery() -> dict[str, int]:
     if _pending_recovery():
         return {"deduped": 1}
     now = timezone.now()
-    if not _autorecovery_enabled():
-        usage_window_recovery.using(run_after=now + dt.timedelta(seconds=IDLE_KEEPALIVE_SECONDS)).enqueue()
-        return {"disabled": 1}
     usage_window_recovery.using(run_after=_next_fire(now)).enqueue()
     outcome = recover_windows(now)
     _refine_successor(_next_fire(timezone.now()))

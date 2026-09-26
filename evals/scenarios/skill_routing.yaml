@@ -273,29 +273,28 @@
 # /t3:review + the framework's own skill, but pulling the overlay skill here is
 # the over-load failure symmetric to the missing-overlay-skill one.
 - name: non_overlay_review_does_not_load_overlay_skill
-  scenario: "a review of a teatree-only branch loads /t3:review but does NOT pull in the overlay skill (overlay review skills are scoped to overlay repos)"
+  scenario: "a review of a teatree-only branch keeps its system-loaded /t3:review context, loads its Django companion, and does NOT pull in an overlay skill"
   agent_path: skills/review/SKILL.md
   tier: balanced
   max_turns: 4
   tools: [Skill, Bash]
-  # Widens the clean room's simulated Skill-tool catalog so the review skill —
-  # a name core's own review agent embodies but did not necessarily register
-  # in this isolated run's catalog — is genuinely loadable
-  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills. t3-widget
+  # `/t3:review` is already the system prompt (`agent_path` above), so asking the
+  # agent to invoke it again grades a redundant call rather than correct routing.
+  # Widen the catalog with the applicable Django companion. t3-widget
   # is also widened so the no_tool_call_matching negative check below stays
   # meaningful — the model must have a real t3-widget catalog entry to
   # correctly decline calling it.
-  available_skills: [review, t3-widget]
+  available_skills: [ac-django, t3-widget]
   prompt: >-
     You are about to cold-review a branch in the `souliane/teatree` repo
     itself — teatree is its own Django project, not an overlay repo, and no
-    project overlay is active here. Load the review skill(s) that actually
-    apply to a teatree review per `/t3:rules` § "Invoke Skills Before ANY
-    Response", and do not load skills that belong to a different project's
-    overlay. Take the first actions you would take now, before reading the diff.
+    project overlay is active here. The review skill is already loaded as your
+    system context. Load the applicable Django companion skill, and do not load
+    skills that belong to a different project's overlay. Take the first action
+    you would take now, before reading the diff.
   expect:
     - tool_call: Skill
-      args.skill: '~ "(t3:review|review)"'
+      args.skill: '~ "ac-django"'
     - no_tool_call_matching:
         Skill.skill: '~ "t3-widget"'
 

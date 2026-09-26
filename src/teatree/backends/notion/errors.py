@@ -19,6 +19,8 @@ Class                        Exit  What the operator must do
 :class:`NotionPropertyNotFoundError` 12  the page carries no property by that name
 :class:`NotionUnwritablePropertyError` 13  that property cannot take that plain text
 :class:`NotionPageNotLiveError`      14  the page is dead (or unprovable) — read the current one
+:class:`NotionSectionNotFoundError`  15  --after-heading named no heading the page carries — supply an existing one
+:class:`NotionUncopyableBlockError`  16  the block cannot be re-posted — copy without it
 ===========================  ====  =============================================
 
 The distinction that costs the most to get wrong is **not-shared vs bad-token**.
@@ -190,6 +192,37 @@ class NotionPageNotLiveError(NotionError):
     """
 
     exit_code = 14
+
+
+class NotionSectionNotFoundError(NotionError):
+    """``--after-heading`` named a heading the page does not carry.
+
+    Its own condition rather than a fallback to appending at the end: a
+    positioned write whose position is missing has no correct place to land, and
+    the end of the page is the one place the caller explicitly did not ask for.
+    """
+
+    exit_code = 15
+
+
+class NotionUncopyableBlockError(NotionError):
+    """A fetched block has no faithful POST-able form, so the copy stops.
+
+    Either the block is a pointer to an object a copy cannot bring with it (a
+    child page or database, a synced block, one Notion itself calls
+    ``unsupported``), or its asset is Notion-hosted behind a signed URL that
+    expires — a copy of which renders today and 404s next week. Refusing names
+    the block; silently dropping it hands back a section missing content the
+    caller believes it copied.
+    """
+
+    exit_code = 16
+
+
+class NotionWriteRefusedError(NotionError):
+    """The write guard refused the target: a write-denied root is above it, or no write-allowed root is."""
+
+    exit_code = 17
 
 
 def normalize_object_id(reference: str) -> str:

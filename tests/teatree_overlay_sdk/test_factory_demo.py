@@ -47,9 +47,11 @@ class TestOverlaySdkDrivesFullCycle(TestCase):
         # selects it, and drives the dispatch through overlay_sdk.run_agent.
         try:
             sdk.register_harness(
-                "demo_factory",
-                lambda ctx: _DemoFactoryHarness(success_stream({"summary": "demo cycle complete"})),
-                capabilities=_DemoFactoryHarness.capabilities,
+                sdk.HarnessSpec(
+                    name="demo_factory",
+                    factory=lambda ctx: _DemoFactoryHarness(success_stream({"summary": "demo cycle complete"})),
+                    capabilities=_DemoFactoryHarness.capabilities,
+                )
             )
             with patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))):
                 ConfigSetting.objects.set_value("agent_harness", "demo_factory")

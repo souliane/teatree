@@ -13,9 +13,10 @@ it. Bare ``t3 agent`` with no task argument execs an INTERACTIVE ``claude`` and
 deliberately pins nothing — that session is attended, and its mode is the
 operator's to choose.
 
-:data:`READER_DEFAULT_DENY` is pinned only by the #116 quarantined reader:
-``dontAsk`` denies whatever no allow rule permits, and the reader defines none,
-so its effective tool set is empty by default rather than by enumeration.
+:data:`READER_DEFAULT_DENY` is pinned by the #116 quarantined reader and the eval
+judge: ``dontAsk`` denies whatever no allow rule permits. The judge also sets
+an empty tool list explicitly, so it can run under a root CI user without
+requesting ``bypassPermissions``.
 
 ``auto`` is deliberately absent. It is the posture ``t3 doctor check`` advises
 for a session the operator is sitting in front of, and teatree never pins it —

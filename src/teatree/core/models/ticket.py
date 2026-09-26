@@ -409,7 +409,7 @@ class Ticket(
             # #800 N3: canonical locked RMW — a concurrent pr_urls /
             # visual_qa writer no longer clobbers reviewed_sha /
             # last_review_state.
-            self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.APPROVED.value})
+            self.merge_extra(set_keys={"reviewed_sha": sha, "discharged_sha": sha})
 
     @transition(
         field="state",
@@ -434,7 +434,16 @@ class Ticket(
         """Reviewer-role terminal disposition for a no-postable-action review."""
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:
-            self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.REVIEWED_NO_ACTION.value})
+            # REVIEWED_NO_ACTION is kept on ``last_review_state`` because callers read it
+            # there, and unlike APPROVED it drives no dismissal path. ``discharged_sha`` is
+            # what survives the scanner overwriting that key with the live forge value.
+            self.merge_extra(
+                set_keys={
+                    "reviewed_sha": sha,
+                    "discharged_sha": sha,
+                    "last_review_state": ReviewState.REVIEWED_NO_ACTION.value,
+                },
+            )
         self._consume_pending_phase_tasks("reviewing")
 
     @transition(field="state", source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
@@ -469,9 +478,9 @@ class Ticket(
 
     @transition(field="state", source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
-        """Reach DELIVERED past the Definition-of-Done gates — each NO-OP unless configured."""
+        """Reach DELIVERED past the Definition-of-Done gates (the rubric one always applies)."""
         get_gate("fix_record_dod")(self)
-        get_gate("spec_coverage")(self)
+        get_gate("rubric_verified")(self)
         get_gate("integration_review")(self)
         get_gate("critic")(self)
 

@@ -7,8 +7,8 @@ tool install --editable <src> --reinstall`` + ``t3 setup`` + a self-DB
 migrate, which the scanner deliberately never runs inline (it would steal
 the foreground mid-tick).
 
-``PendingReinstall`` is the bridge: when ``auto_update_reinstall`` is
-enabled and the scanner advances a clone, it upserts one row per
+``PendingReinstall`` is the bridge: when the scanner advances a clone, it
+upserts one row per
 ``repo_label`` recording the SHA it pulled to. The deferred drain
 (:mod:`teatree.loop.self_update_reinstall`) runs as the very first step of
 the next per-tick subprocess — a fresh process, before any scanner code

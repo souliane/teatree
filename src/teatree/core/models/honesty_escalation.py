@@ -28,8 +28,9 @@ model per module, an idempotent :meth:`record` classmethod keyed on the logical
 identity, and short state-advancing methods.
 """
 
+from collections.abc import Sequence
 from datetime import timedelta
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 from django.db import models
 from django.utils import timezone
@@ -40,6 +41,11 @@ from django.utils import timezone
 # A module constant so it is tunable in one place; deliberately generous so a
 # legitimate in-flight escalation is not dropped mid-session.
 _DEFAULT_TTL = timedelta(hours=6)
+
+
+class EscalationSubject(NamedTuple):
+    session_id: str
+    task_id: int
 
 
 class HonestyEscalation(models.Model):
@@ -120,12 +126,29 @@ class HonestyEscalation(models.Model):
         scope = models.Q(task_id__isnull=True)
         if task_id is not None:
             scope |= models.Q(task_id=task_id)
-        return cls.objects.filter(
-            scope,
-            session_id=session_id,
-            cleared_at__isnull=True,
-            expires_at__gt=timezone.now(),
-        ).exists()
+        return cls._live().filter(scope, session_id=session_id).exists()
+
+    @classmethod
+    def first_active_subject(cls, subjects: Sequence["EscalationSubject"]) -> "EscalationSubject | None":
+        """The first subject, in order, an active row covers — session-wide, or scoped to that subject's own task."""
+        owners = set(
+            cls._live()
+            .filter(session_id__in=[subject.session_id for subject in subjects])
+            .values_list("session_id", "task_id")
+        )
+        return next(
+            (
+                subject
+                for subject in subjects
+                if subject.session_id
+                and ((subject.session_id, None) in owners or (subject.session_id, subject.task_id) in owners)
+            ),
+            None,
+        )
+
+    @classmethod
+    def _live(cls) -> "models.QuerySet[HonestyEscalation]":
+        return cls.objects.filter(cleared_at__isnull=True, expires_at__gt=timezone.now())
 
     @classmethod
     def mark_cleared(cls, session_id: str) -> int:

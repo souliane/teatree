@@ -4,14 +4,14 @@ The user directive (2026-06-05): "AI evals should be run locally from
 time to time, and in CI once a week." The CI half already exists
 (``.github/workflows/ci.yml`` ``eval-weekly`` + ``scripts/eval/
 first_pr_of_week.py``). This is the local half: the loop fires an
-``eval_local`` task per cadence window (default 168h = weekly) so the
-SCOPED eval suite runs locally without depending on an external cron.
+``eval_local`` task on its ``Loop`` row's own weekly cadence so the SCOPED
+eval suite runs locally without depending on an external cron.
 
 The scanner is one of the periodic task-queuing family that share
 :class:`teatree.loop.scanners.phase_cadence.PhaseCadence`:
 
-* **Single trigger.** Only a cadence (``eval_local_cadence_hours``,
-    default 168h). A fixed-rate platform behaviour, not coupled to
+* **Single trigger.** The ``eval_local`` ``Loop`` row's own weekly cadence,
+    and nothing else. A fixed-rate platform behaviour, not coupled to
     delivery velocity.
 * **Overlay anchor is injected, not baked.** A core scanner that does
     not know any overlay's name; the wiring layer
@@ -46,17 +46,16 @@ class EvalLocalScanner:
     layer is the single place that resolves
     :class:`teatree.config.UserSettings` and
     :func:`teatree.config.discover_active_overlay` to scanner kwargs. The
-    on/off decision lives at the wiring layer (``eval_local_disabled`` in
-    core config); the scanner itself always scans when invoked.
+    on/off decision is the ``eval_local`` ``Loop`` row and the active preset; the
+    scanner itself always scans when invoked.
     """
 
     overlay_name: str
     skill: str = "eval"
-    cadence_hours: int = 168
     name: str = "eval_local"
 
     def scan(self) -> list[ScanSignal]:
-        cadence = PhaseCadence(self.overlay_name, phase=EVAL_LOCAL_PHASE, cadence_hours=self.cadence_hours)
+        cadence = PhaseCadence(self.overlay_name, phase=EVAL_LOCAL_PHASE)
         if cadence.in_flight_exists():
             return []
 

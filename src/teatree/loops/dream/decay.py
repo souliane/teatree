@@ -71,7 +71,6 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
 
 from teatree.loops.dream._shared import ARCHIVE_INDEX_NAME, INDEX_NAME
 from teatree.loops.dream.decay_corpus import MemoryFile, inbound_citers, is_referenced, load_memory_files
@@ -180,7 +179,7 @@ def ledger_durable_home_resolver() -> HomeResolver:
     homed_source_paths: set[str] = set()
     destinations: list[str] = []
     for row in rows:
-        homed_source_paths.update(_source_path_strings(row.source_files))
+        homed_source_paths.update(row.member_paths)
         if row.durable_destination:
             destinations.append(row.durable_destination)
 
@@ -207,26 +206,6 @@ def cold_archive_names(archive_dir: Path | None) -> set[str]:
     if archive_dir is None or not archive_dir.is_dir():
         return set()
     return {md.name for md in archive_dir.glob("*.md")}
-
-
-def _source_path_strings(source_files: object) -> set[str]:
-    """Normalize a ledger row's ``source_files`` JSON into the set of member path strings.
-
-    A member is stored either as a bare path string or as a ``{"path": ...}``
-    object (the engine writes bare strings; older/manual rows may carry the
-    object form). Anything else is ignored.
-    """
-    if not isinstance(source_files, list):
-        return set()
-    paths: set[str] = set()
-    for member in source_files:
-        if isinstance(member, str):
-            paths.add(member)
-        elif isinstance(member, Mapping):
-            path = cast("Mapping[str, object]", member).get("path")
-            if isinstance(path, str):
-                paths.add(path)
-    return paths
 
 
 def _provenance_header(memory: MemoryFile, now: datetime, reason: str) -> str:

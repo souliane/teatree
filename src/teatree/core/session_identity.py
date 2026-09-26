@@ -50,7 +50,14 @@ its principal from it removes an inconsistency rather than inventing a
 new identity. It is an identity SOURCE only — the t3-master gate itself
 reads the DB lease (:mod:`teatree.core.gates.t3_master_gate`, #3968), because
 nothing prunes this file and a stale record locked the reactive loops out
-permanently. The module-boundary graph forbids ``teatree.core`` importing
+permanently.
+
+#4479 — the fallback answers "which principal holds the lease", and that is
+never an answer to "who WROTE this". Session hand-off authorship therefore
+resolves through :func:`session_id_from_env` alone
+(:func:`teatree.core.management.commands.handover.authoring_session_id`),
+which can name this process or nothing; the loop-ownership callers keep the
+full precedence unchanged. The module-boundary graph forbids ``teatree.core`` importing
 ``teatree.loop``/hooks, so the registry key constant is deliberately
 redeclared here; it is read with only ``os``/``pathlib`` + ``json`` and
 fails open (any OSError/JSON error → ``""``).
@@ -288,6 +295,18 @@ def is_loop_runner_session(session_id: str) -> bool:
     return session_id == LOOP_RUNNER_SESSION_ID
 
 
+def is_unattended_unauthorized_write(*, authorized_by: str) -> bool:
+    """Is this write the unattended runner's own, with nobody having authorized it?
+
+    The ONE predicate behind every owner-write refusal, so a governed config key and the
+    posture that decides the owner's voice cannot come to disagree about who is acting.
+    Scoped to what teatree can PROVE is unattended: the loop runner declares its own
+    principal and a process it spawned inherits it, while an interactive session is never
+    refused — claiming otherwise would name a distinction this cannot make.
+    """
+    return not authorized_by and is_loop_runner_session(loop_principal()[0])
+
+
 __all__ = [
     "LOOP_RUNNER_SESSION_ID",
     "RUNNER_PID_ENV",
@@ -296,6 +315,7 @@ __all__ = [
     "current_session_id",
     "current_session_pid",
     "is_loop_runner_session",
+    "is_unattended_unauthorized_write",
     "loop_principal",
     "owner_record",
     "runner_identity_env",

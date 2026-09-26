@@ -42,9 +42,11 @@ from teatree.core.cleanup.cleanup import _resolve_worktree_path
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import content_equivalence_blockers, effective_default_target
 from teatree.core.worktree.checkout_liveness import wrong_venue_reason
-from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.clone_paths import resolve_clone_path, stored_clone_path, unambiguous_clone_path
+from teatree.core.worktree.venue_safe_registry import registrations
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
+from teatree.utils.git_run import run_with_status
 from teatree.utils.run import CommandFailedError
 
 _PREVIEW_LIMIT = 3
@@ -112,6 +114,46 @@ def classify_broken_checkout(
     return _branch_verdict(worktree, wt_path=wt_path, repo_main=repo_main, refresh=refresh or RemoteRefresh())
 
 
+def is_pure_ghost(worktree: Worktree, *, workspace: Path) -> bool:
+    """Whether *worktree*'s row holds nothing anywhere: no dir, no branch ref, no registration.
+
+    The one shape every downstream probe answers about by failing closed — a
+    dir-gone row's ``git log HEAD --not --remotes`` raises, and the refusal it
+    earns ("could not verify the branch is pushed") is permanent, so the row is
+    kept forever while still pinning its ``db_name`` against the orphan-DB reaper.
+    Proving all three absences is what turns that unanswerable question into a
+    positive "there is nothing here to lose".
+
+    The clone is the row's stored one, else the clone a name scan finds — only when it finds
+    exactly one, since a ref missing from one of two same-basename clones may live in the
+    other. A ref probe that fails rather than answering "missing", and any other git error,
+    answer ``False``.
+    """
+    if Path(_resolve_worktree_path(workspace, worktree)).is_dir():
+        return False
+    clone = stored_clone_path(worktree) or unambiguous_clone_path(workspace, worktree.repo_path)
+    if clone is None or not worktree.branch:
+        return False
+    if not _branch_ref_proven_absent(clone, worktree.branch):
+        return False
+    return not _has_registration(clone, workspace, worktree)
+
+
+def _has_registration(clone: Path, workspace: Path, worktree: Worktree) -> bool:
+    """Whether git still registers a checkout at the row's path — fail-safe to ``True``.
+
+    A registration git has not pruned is a claim on the path, so releasing the row
+    under one leaves the registry naming a row that no longer exists. An unreadable
+    registry is missing evidence, and missing evidence keeps the row.
+    """
+    wt_path = Path(_resolve_worktree_path(workspace, worktree)).expanduser()
+    try:
+        entries = registrations(str(clone))
+    except CommandFailedError:
+        return True
+    return any(Path(entry.path).expanduser() == wt_path for entry in entries)
+
+
 def unresolved_checkout_reason(wt_path: Path) -> str:
     """Why *wt_path* could not be judged — the phrase every KEEP surface reports.
 
@@ -175,6 +217,12 @@ def _branch_ref_exists(repo_main: Path, branch: str) -> bool:
     return git.check(repo=str(repo_main), args=["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
 
 
+def _branch_ref_proven_absent(repo_main: Path, branch: str) -> bool:
+    """``show-ref --verify`` exits 1 for a missing ref; any other failure proves nothing."""
+    probe = run_with_status(repo=str(repo_main), args=["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"])
+    return probe.returncode == 1
+
+
 def _unrecoverable_work(repo_main: Path, branch: str) -> str:
     """Describe *branch*'s work that would be lost by a release; ``""`` when nothing would.
 
@@ -200,5 +248,6 @@ __all__ = [
     "BrokenCheckoutVerdict",
     "RemoteRefresh",
     "classify_broken_checkout",
+    "is_pure_ghost",
     "unresolved_checkout_reason",
 ]

@@ -20,14 +20,10 @@ from teatree.core.models import ConfigSetting
 
 class TestDbBackupDefaults:
     def test_dataclass_defaults(self) -> None:
-        settings = UserSettings()
-        assert settings.db_backup_disabled is False
-        assert settings.db_backup_cadence_hours == 24
-        assert settings.db_backup_retention_days == 7
+        assert UserSettings().db_backup_retention_days == 7
 
-    def test_all_three_keys_are_db_overridable(self) -> None:
-        for key in ("db_backup_disabled", "db_backup_cadence_hours", "db_backup_retention_days"):
-            assert key in OVERLAY_OVERRIDABLE_SETTINGS
+    def test_the_retention_key_is_db_overridable(self) -> None:
+        assert "db_backup_retention_days" in OVERLAY_OVERRIDABLE_SETTINGS
 
 
 class TestDbBackupResolution(TestCase):
@@ -36,19 +32,11 @@ class TestDbBackupResolution(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_empty_store_resolves_to_defaults(self) -> None:
-        settings = get_effective_settings()
-        assert settings.db_backup_disabled is False
-        assert settings.db_backup_cadence_hours == 24
-        assert settings.db_backup_retention_days == 7
+        assert get_effective_settings().db_backup_retention_days == 7
 
     def test_stored_rows_override(self) -> None:
-        ConfigSetting.objects.set_value("db_backup_disabled", value=True)
-        ConfigSetting.objects.set_value("db_backup_cadence_hours", 48)
         ConfigSetting.objects.set_value("db_backup_retention_days", 14)
-        settings = get_effective_settings()
-        assert settings.db_backup_disabled is True
-        assert settings.db_backup_cadence_hours == 48
-        assert settings.db_backup_retention_days == 14
+        assert get_effective_settings().db_backup_retention_days == 14
 
     def test_non_positive_retention_fails_safe_to_default(self) -> None:
         # A 0 / negative retention would prune every backup immediately — the bound
@@ -57,7 +45,3 @@ class TestDbBackupResolution(TestCase):
         assert get_effective_settings().db_backup_retention_days == 7
         ConfigSetting.objects.set_value("db_backup_retention_days", -3)
         assert get_effective_settings().db_backup_retention_days == 7
-
-    def test_non_positive_cadence_fails_safe_to_default(self) -> None:
-        ConfigSetting.objects.set_value("db_backup_cadence_hours", 0)
-        assert get_effective_settings().db_backup_cadence_hours == 24

@@ -10,8 +10,15 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from teatree.cli.slack.listen import _resolve_overlays, slack_app
+from teatree.cli.slack.listen import (
+    DRAIN_FAILED_EXIT_CODE,
+    DRAIN_FAILED_NOTICE,
+    EMPTY_QUEUE_EXIT_CODE,
+    _resolve_overlays,
+    slack_app,
+)
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 runner = CliRunner()
 
@@ -162,7 +169,22 @@ class TestCheckCommand:
         with patch("teatree.backends.slack.receiver.drain_event_queue", return_value=[]):
             result = runner.invoke(slack_app, ["check"])
 
-        assert result.exit_code == 2
+        assert result.exit_code == EMPTY_QUEUE_EXIT_CODE
+
+    def test_a_drain_that_cannot_run_exits_distinctly_from_an_empty_queue(self) -> None:
+        # An unreadable queue, an unbootstrappable Django or a token error all exited 1
+        # with empty stdout - byte-identical to the empty queue the deploy watchdog
+        # records as healthy, so the wedge it exists to catch was invisible.
+        with patch(
+            "teatree.backends.slack.receiver.drain_event_queue",
+            side_effect=OSError("queue unreadable"),
+        ):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == DRAIN_FAILED_EXIT_CODE
+        assert DRAIN_FAILED_EXIT_CODE != EMPTY_QUEUE_EXIT_CODE
+        assert DRAIN_FAILED_NOTICE in result.stderr
+        assert not result.stdout.strip()
 
     def test_stands_down_when_another_drain_holds_the_lock(self) -> None:
         # The 30s cron can double-fire; a concurrent drain would double-ack the
@@ -370,15 +392,15 @@ class TestListenCommand:
 class TestReactCommand:
     """``t3 slack react`` routes through the on-behalf egress (#960/#1750)."""
 
-    def _gate(self, tmp_path: Path, monkeypatch, mode: str) -> None:
+    def _gate(self, tmp_path: Path, monkeypatch, *, forbidding: bool) -> None:
         from teatree.core.models import ConfigSetting  # noqa: PLC0415
 
         ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
-        ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
+        seed_forbidding_posture() if forbidding else seed_permitting_posture()
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
     def test_no_backend_exits_1(self, tmp_path: Path, monkeypatch) -> None:
-        self._gate(tmp_path, monkeypatch, "immediate")
+        self._gate(tmp_path, monkeypatch, forbidding=False)
         with patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: None):
             result = runner.invoke(slack_app, ["react", "D1", "1.0", "eyes"])
 
@@ -386,7 +408,7 @@ class TestReactCommand:
         assert "No slack backend" in result.stdout
 
     def test_self_dm_react_succeeds_ungated(self, tmp_path: Path, monkeypatch) -> None:
-        self._gate(tmp_path, monkeypatch, "ask")
+        self._gate(tmp_path, monkeypatch, forbidding=True)
         fake = _RouteAwareFake()
         with patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: fake):
             result = runner.invoke(slack_app, ["react", _DM_CHANNEL, "1.0", "eyes"])
@@ -396,7 +418,7 @@ class TestReactCommand:
         assert fake.react_routed_calls == [(_DM_CHANNEL, "1.0", "eyes")]
 
     def test_colleague_react_blocked_under_ask(self, tmp_path: Path, monkeypatch) -> None:
-        self._gate(tmp_path, monkeypatch, "ask")
+        self._gate(tmp_path, monkeypatch, forbidding=True)
         fake = _RouteAwareFake()
         with patch("teatree.cli.slack.listen.messaging_from_overlay", lambda _o=None: fake):
             result = runner.invoke(slack_app, ["react", "C_COLLEAGUE", "1.0", "merge"])

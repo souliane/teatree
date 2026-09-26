@@ -1,21 +1,18 @@
 """Which loops should carry a ``loop_timer`` chain, and which admitted ones have no driver (#4185).
 
-Chain MEMBERSHIP is the unified ENABLE verdict — hold > forced > mode mask >
-``Loop.enabled`` — read in bulk through
-:func:`teatree.loops.enable_verdict.effective_verdicts`, the SAME
+Chain MEMBERSHIP is the unified ENABLE verdict — hold > manual override > preset —
+read in bulk through :func:`teatree.loops.enable_verdict.effective_verdicts`, the SAME
 :class:`~teatree.loops.enable_verdict.EnablePlanes` seam the live tick's per-fire
-admission gates on. NOT the raw ``Loop.enabled`` column: that column is the verdict's
-LOWEST-precedence input, so a governing mode decides every loop and the column is never
-reached, and building the chain from it left mode-admitted loops with no driver at all
-while :func:`teatree.loops.timer_reconciler.ensure_loop_timers` pruned away any timer
-they did have.
+admission gates on. NOT the raw ``Loop.enabled`` column: that is the MANUAL-override
+layer, empty on a fleet nobody has intervened on, so the preset decides every loop and
+the column answers about none of them. Building the chain from it left preset-admitted
+loops with no driver at all while
+:func:`teatree.loops.timer_reconciler.ensure_loop_timers` pruned away any timer they had.
 
 Membership is deliberately WIDER than the per-fire admission, but never
 differently-sourced. :func:`teatree.loops.loop_table.admitted_loop_names` narrows the
-same seam with two further arms this module must not carry: ``is_due``, which would
-prune the chain of every loop sitting between cadences, and the colleague-facing away
-gate — a colleague-facing loop keeps its chain through an away window and step-3
-admission skips its individual fires.
+same seam with the arm this module must not carry: ``is_due``, which would prune the
+chain of every loop sitting between cadences.
 """
 
 from typing import TYPE_CHECKING
@@ -64,11 +61,10 @@ def timer_chain_loop_names(now: "dt.datetime | None" = None) -> set[str]:
     :mod:`teatree.loops.off_live_tick_driver` firing their own tick command, never a
     worker timer, so they never get a chain that would only ever no-op.
 
-    Membership is the PRESENCE-INVARIANT closure of the enable verdict
-    (:func:`teatree.loops.enable_verdict.membership_loop_names`), not the instant verdict
-    the tick gates a fire on: the chain is persisted and fires later, and the presence
-    upgrade flips with no event to hook, so a point-in-time set would delete the timers of
-    loops the very next keystroke admits. Wider, never differently-sourced.
+    Membership is the enable verdict itself
+    (:func:`teatree.loops.enable_verdict.membership_loop_names`) — the SAME object the
+    tick gates a fire on. Every arm of that verdict moves only on a durable write or a
+    schedule boundary, so a chain built now is still answerable when it fires.
 
     *now* pins the instant the mode is resolved at, so a caller that judges membership
     ALONGSIDE another mode-derived reading (the staleness alarm's suppression arm) asks

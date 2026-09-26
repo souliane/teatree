@@ -56,7 +56,9 @@ class TestDashboardHeadAnchor:
             patch("teatree.core.factory.operational_health.read_health", return_value=_health(HealthStatus.GREEN, 0)),
         ):
             lines = dashboard_head_anchor(colorize=False)
-        assert lines == ["overlays: alpha · beta · health: ●"], repr(lines)
+        # The chip carries the age of the verdict; with no registry row to date it
+        # that reads ``age?`` rather than implying the verdict was just taken.
+        assert lines == ["overlays: alpha · beta · health: ● (age?)"], repr(lines)
 
     def test_empty_when_nothing_to_show(self) -> None:
         with (

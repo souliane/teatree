@@ -50,3 +50,20 @@ def extract_forge_post_body(command: str, cwd: Path | None = None) -> str | None
     if is_fail_closed_sentinel(payload):
         return None
     return payload
+
+
+def format_block_message(finding: str) -> str:
+    """The gate's deny for a scan that found a banned trailer, carrying the scanner summary."""
+    return (
+        "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
+        f"Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n{finding}"
+    )
+
+
+def format_scanner_error_message(detail: str) -> str:
+    """The gate's deny for a scanner that RAN and errored — never reported as a finding."""
+    return (
+        "BLOCKED: AI-signature scanner error — it exited nonzero without a clean result, so the "
+        "PR body / commit message could NOT be confirmed signature-free. This is a scanner error, "
+        f"not a detected trailer. Fix the scanner / environment and retry (BLUEPRINT §17.6 gate 15).\n{detail}"
+    )

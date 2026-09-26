@@ -9,13 +9,14 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**34 entries** — 5 greppable, 29 judgement.
+**36 entries** — 5 greppable, 31 judgement.
 
 ## Index
 
 - [Test function with no assertion](#assert-nothing-test) — high, judgement
 - [Lower-level module importing a higher-level one](#backwards-dependency-edge) — high, judgement
 - [Test that writes its own baseline / snapshot](#baseline-auto-accept) — high, judgement
+- [One concept edited in N files](#concept-with-many-owners) — high, judgement
 - [Destructive op reachable without its guard](#destructive-op-outside-its-guard) — high, judgement
 - [FloatField for currency](#float-for-money) — high, judgement
 - [Liveness path hard-fails a transient and locks the factory out](#gate-fails-closed-on-transient) — high, judgement
@@ -45,6 +46,7 @@ holistic (`ac-reviewing-codebase`).
 - [Signal carrying core domain flow](#signal-for-core-flow) — medium, greppable
 - [Fallback chain that hides the primary failure](#silent-fallback-chain) — medium, judgement
 - [List/fetch reads only the first page](#silent-truncation-pagination) — medium, judgement
+- [New configurable surface that was not earned](#unearned-configurable-surface) — medium, judgement
 - [Multi-line comment block narrating what the code already says](#comment-block-narrates-code) — low, judgement
 - [Documentation prose that restates the code instead of capturing architecture](#doc-prose-restates-code) — low, judgement
 
@@ -170,6 +172,21 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** Code that reads as protection while not being in force — a feature merged behind a flag whose live value is off, a scanner registered but never ticked, or a setting whose only safe value is held in place by a SEPARATE gate rather than by the code that consumes it. The source reads correct, so nobody re-checks whether it runs.
 
 **Preferred.** Read the LIVE value, not the default in the source, and assert reachability — a test or liveness row proving the path executes in production configuration. A feature that cannot be shown to run is not shipped.
+
+## New configurable surface that was not earned
+
+<a id="unearned-configurable-surface"></a>
+
+- **id:** `unearned-configurable-surface`
+- **severity:** medium
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** minimal-configurable-surface
+
+**Anti-pattern.** A change that answers "where does this variation live?" by ADDING surface — a new setting, a new flag, a new abstract member — where the value was derivable from something already known, or the specialisation belonged in the single caller that wanted it. The cost is paid at every reader and every implementation rather than once at the definition, so the diff that introduces it looks cheap.
+
+**Preferred.** Derive the value instead of configuring it. Give a setting one reader that resolves it into a value the rest of the code consumes. Put a member only one implementation fills meaningfully into that implementation, not on the base. When an existing surface would have to widen to fit one caller, change the caller.
 
 ## Gate performs the guarded side effect before concluding refusal
 
@@ -387,6 +404,21 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A module sitting beside unrelated neighbours instead of in the package whose concern it shares — a scanner outside the scanners package, a CLI command outside the CLI package, a script or config dropped at the repo root — or a cohesive set of siblings that has grown past the point where it should have become its own subpackage. god-module asks what is INSIDE one file; this asks WHERE the files live. Each placement looked reasonable when it was added, so no single diff reads as wrong and the layout degrades only in aggregate.
 
 **Preferred.** A file lives in the package whose concern it shares, and a cohesive set of siblings serving one concern becomes its own subpackage. Every finding names the concrete target path so the fix needs no re-derivation.
+
+## One concept edited in N files
+
+<a id="concept-with-many-owners"></a>
+
+- **id:** `concept-with-many-owners`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** one-place-test, file-hierarchy-check
+
+**Anti-pattern.** A concept whose next change costs more than one file — most often a module-level helper called from N call sites, which removes the duplicated lines while leaving N places to edit. Two near-misses read as factorization too: exempting a surface over a difference of presentation (a locale string, a date stringified for an encoder, an appended flag) rather than of behaviour or data shape, and deduplicating 3 of 5 sites. god-module asks what is INSIDE one file and file-outside-its-package asks WHERE files live; this asks WHO owns the concept.
+
+**Preferred.** Ask what the next change costs — if this concept changes shape tomorrow, how many files do I touch — and answer ONE. Give the concept an owner the call sites hand the work to, not a function they each re-invoke. Centralising is not flattening: the owner holds the invariant and may keep deliberately distinct strategies distinct, so an owner that erased a deliberate difference is the same finding pointed the other way.
 
 ## Lower-level module importing a higher-level one
 

@@ -20,9 +20,9 @@ class NoPlanArtifactError(InvalidTransitionError):
 class NoCurrentPlanError(InvalidTransitionError):
     """code()/schedule_coding was attempted with no adequate, current-HEAD-bound plan.
 
-    Raised by ``plan_currency_gate.check_plan_current`` (SELFCATCH-3) when
-    ``require_plan_adequacy`` is on and the latest plan is inadequate (a thin/legacy
-    row) or STALE — its base_sha moved off the live target HEAD and an intervening
+    Raised by ``plan_currency_gate.check_plan_current`` (SELFCATCH-3) when the latest
+    plan is inadequate (a thin/legacy row) or STALE — its base_sha moved off the live
+    target HEAD and an intervening
     commit touched a declared integration seam. The message names the
     ``plan-reaffirm`` remediation so the block is never a hard lock.
     """

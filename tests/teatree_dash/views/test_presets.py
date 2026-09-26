@@ -12,10 +12,10 @@ from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.enable_verdict import effective_verdicts
 
 
-def _loop(name: str, *, enabled: bool = True) -> Loop:
+def _loop(name: str) -> Loop:
     loop, _ = Loop.objects.update_or_create(
         name=name,
-        defaults={"script": f"src/teatree/loops/{name}/loop.py", "delay_seconds": 60, "enabled": enabled},
+        defaults={"script": f"src/teatree/loops/{name}/loop.py", "delay_seconds": 60, "enabled": None},
     )
     return loop
 
@@ -30,9 +30,9 @@ class PresetEntryPostTestCase(TestCase):
 
     def setUp(self) -> None:
         self.url = reverse("dash:preset_entry")
-        _loop("review", enabled=False)
+        _loop("review")
         _preset("present", {})
-        ModeOverride.objects.set_override("present")
+        ModeOverride.objects.set_override("present", reason="test override")
         self.addCleanup(ModeOverride.objects.clear)
 
     def _verdict(self, name: str) -> object:
@@ -43,26 +43,21 @@ class PresetEntryPostTestCase(TestCase):
 
     def test_setting_on_persists_and_the_resolver_agrees(self) -> None:
         self._post("on")
-        assert Mode.objects.by_name("present").entries == {"review": True}
+        assert Mode.objects.by_name("present").state_for("review") is True
         assert self._verdict("review").admitted is True
 
     def test_setting_off_persists_as_false(self) -> None:
         self._post("off")
-        assert Mode.objects.by_name("present").entries == {"review": False}
+        assert Mode.objects.by_name("present").state_for("review") is False
 
-    def test_setting_inherit_stores_no_entry_at_all(self) -> None:
+    def test_the_write_leaves_the_map_answering_for_every_loop(self) -> None:
         self._post("on")
-        self._post("inherit")
         entries = Mode.objects.by_name("present").entries
-        assert "review" not in entries
-        assert entries.get("review") is not False
+        assert set(entries) == set(Loop.objects.values_list("name", flat=True))
 
-    def test_returning_to_inherit_hands_the_decision_back_to_the_base(self) -> None:
-        self._post("on")
-        self._post("inherit")
-        verdict = self._verdict("review")
-        assert verdict.layer == "base"
-        assert verdict.admitted is False
+    def test_inherit_is_no_longer_a_state(self) -> None:
+        resp = self.client.post(self.url, {"preset": "present", "loop": "review", "state": "inherit"})
+        assert resp.status_code == 400
 
     def test_unknown_state_is_rejected(self) -> None:
         resp = self.client.post(self.url, {"preset": "present", "loop": "review", "state": "maybe"})
@@ -167,7 +162,7 @@ class PresetAdminPostTestCase(TestCase):
         assert Mode.objects.by_name("spare") is None
 
     def test_deleting_the_active_preset_is_rejected(self) -> None:
-        ModeOverride.objects.set_override("spare")
+        ModeOverride.objects.set_override("spare", reason="test override")
         resp = self.client.post(reverse("dash:preset_delete"), {"preset": "spare"})
         assert resp.status_code == 400
         assert Mode.objects.by_name("spare") is not None
@@ -175,7 +170,7 @@ class PresetAdminPostTestCase(TestCase):
 
 class PresetEditorPageTestCase(TestCase):
     def setUp(self) -> None:
-        _loop("inbox", enabled=True)
+        _loop("inbox")
         _preset("present", {"inbox": True})
 
     def test_page_renders_the_preset_tab(self) -> None:
@@ -183,17 +178,16 @@ class PresetEditorPageTestCase(TestCase):
         assert resp.status_code == 200
         assert b"present" in resp.content
 
-    def test_page_surfaces_the_no_opinion_wording(self) -> None:
+    def test_the_page_says_a_preset_answers_for_every_loop(self) -> None:
         _loop("review")
         resp = self.client.get(reverse("dash:presets"), {"preset": "present"})
-        assert b"No opinion on" in resp.content
+        assert b"answers for every loop" in resp.content
 
-    def test_read_model_names_the_loops_the_preset_leaves_undecided(self) -> None:
+    def test_the_two_tallies_account_for_every_row(self) -> None:
         _loop("review")
         card = build_preset_editor(selected="present").selected_card
         assert card is not None
-        assert "review" in card.inherit_loops
-        assert "inbox" not in card.inherit_loops
+        assert card.on_count + card.off_count == len(card.entries)
 
 
 class PresetsHtmxSwapTestCase(TestCase):

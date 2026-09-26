@@ -21,24 +21,18 @@ from teatree.core.gates import (
     review_context_gate,
     review_request_state_gate,
     review_skill_gate,
-    rubric_gate,
-    spec_coverage_gate,
 )
 from teatree.core.gates.anti_vacuity_gate import anti_vacuity_required
 from teatree.core.gates.integration_review_gate import integration_review_required
 from teatree.core.gates.review_context_gate import review_context_required
 from teatree.core.gates.review_request_state_gate import reviewed_state_required
 from teatree.core.gates.review_skill_gate import configured_review_skill, configured_review_skill_alternates
-from teatree.core.gates.rubric_gate import rubric_gate_required
-from teatree.core.gates.spec_coverage_gate import spec_coverage_required
 
 # (module, required-fn name, the UserSettings field it reads)
 _REQUIRED_CASES = [
-    (rubric_gate, "rubric_gate_required", "require_rubric_verification"),
     (anti_vacuity_gate, "anti_vacuity_required", "require_anti_vacuity_attestation"),
     (review_context_gate, "review_context_required", "require_review_context"),
     (review_request_state_gate, "reviewed_state_required", "require_reviewed_state_for_review_request"),
-    (spec_coverage_gate, "spec_coverage_required", "require_spec_coverage"),
     (integration_review_gate, "integration_review_required", "require_integration_review"),
 ]
 
@@ -47,11 +41,9 @@ _REQUIRED_CASES = [
 # Directly imported (not name-strings) so a revert of any ``*_required`` body — or a
 # re-point to the wrong setting field — turns these red (§17.6.3 anti-vacuity).
 _DIRECT_REQUIRED_CASES = [
-    (rubric_gate, rubric_gate_required, "require_rubric_verification"),
     (anti_vacuity_gate, anti_vacuity_required, "require_anti_vacuity_attestation"),
     (review_context_gate, review_context_required, "require_review_context"),
     (review_request_state_gate, reviewed_state_required, "require_reviewed_state_for_review_request"),
-    (spec_coverage_gate, spec_coverage_required, "require_spec_coverage"),
     (integration_review_gate, integration_review_required, "require_integration_review"),
 ]
 
@@ -115,14 +107,6 @@ def _off_capture(captured: dict[str, object]):
     return _req
 
 
-def test_check_rubric_threads_ticket_overlay() -> None:
-    ticket = SimpleNamespace(overlay="acme", pk=1)
-    captured: dict[str, object] = {}
-    with patch.object(rubric_gate, "rubric_gate_required", _off_capture(captured)):
-        rubric_gate.check_rubric_satisfied(ticket, "sha", transition="merge")
-    assert captured["o"] == "acme"
-
-
 def test_check_anti_vacuity_threads_ticket_overlay() -> None:
     ticket = SimpleNamespace(overlay="acme", pk=1)
     captured: dict[str, object] = {}
@@ -152,14 +136,6 @@ def test_check_reviewed_state_threads_ticket_overlay() -> None:
     captured: dict[str, object] = {}
     with patch.object(review_request_state_gate, "reviewed_state_required", _off_capture(captured)):
         assert review_request_state_gate.check_reviewed_state(ticket) == ""
-    assert captured["o"] == "acme"
-
-
-def test_check_spec_coverage_threads_ticket_overlay() -> None:
-    ticket = SimpleNamespace(overlay="acme", pk=1, extra={})
-    captured: dict[str, object] = {}
-    with patch.object(spec_coverage_gate, "spec_coverage_required", _off_capture(captured)):
-        spec_coverage_gate.check_spec_coverage(ticket)
     assert captured["o"] == "acme"
 
 
@@ -241,8 +217,8 @@ class TestReviewSkillGateThreadsTicketOverlay:
 def test_empty_ticket_overlay_becomes_none() -> None:
     # A ticket with a blank overlay resolves the AMBIENT overlay (None), never
     # ``get_effective_settings("")`` (which would resolve nothing).
-    ticket = SimpleNamespace(overlay="", pk=1)
+    ticket = SimpleNamespace(overlay="", pk=1, extra={})
     captured: dict[str, object] = {}
-    with patch.object(rubric_gate, "rubric_gate_required", _off_capture(captured)):
-        rubric_gate.check_rubric_satisfied(ticket, "sha", transition="merge")
+    with patch.object(anti_vacuity_gate, "anti_vacuity_required", _off_capture(captured)):
+        anti_vacuity_gate.check_anti_vacuity_attestation(ticket, "sha", transition="merge")
     assert captured["o"] is None

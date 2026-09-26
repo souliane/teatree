@@ -39,7 +39,16 @@ from django.db import transaction
 
 from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX
 from teatree.eval.matrix import MatrixRow
-from teatree.eval.models import AnyOf, ExpectItem, FinalStateMatcher, Matcher, TokenUsage
+from teatree.eval.models import (
+    AnyOf,
+    AssistantTextMatcher,
+    ExpectItem,
+    FinalStateMatcher,
+    Matcher,
+    PlanBeforeToolMatcher,
+    SuccessfulToolCallMatcher,
+    TokenUsage,
+)
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import MatcherResult, ScenarioResult
 from teatree.utils import git
@@ -92,7 +101,25 @@ def _matcher_detail(item: MatcherResult) -> "MatcherDetail":
     if isinstance(matcher, AnyOf):
         return _any_of_detail(matcher, passed=item.passed)
     if isinstance(matcher, FinalStateMatcher):
-        return _final_state_detail(matcher, passed=item.passed)
+        return _text_detail("final_state", matcher.operator, matcher.value, passed=item.passed)
+    if isinstance(matcher, AssistantTextMatcher):
+        return _text_detail("assistant_text", matcher.operator, matcher.value, passed=item.passed)
+    if isinstance(matcher, PlanBeforeToolMatcher):
+        return _text_detail(
+            "assistant_text_before_first_tool",
+            "~",
+            " | ".join(matcher.patterns),
+            passed=item.passed,
+        )
+    if isinstance(matcher, SuccessfulToolCallMatcher):
+        return MatcherDetail(
+            kind="tool_call_succeeded",
+            tool=matcher.tool,
+            arg_path=matcher.arg_path,
+            operator=matcher.operator,
+            value=matcher.value,
+            passed=item.passed,
+        )
     return MatcherDetail(
         kind=matcher.kind,
         tool=matcher.tool,
@@ -103,21 +130,20 @@ def _matcher_detail(item: MatcherResult) -> "MatcherDetail":
     )
 
 
-def _final_state_detail(matcher: FinalStateMatcher, *, passed: bool) -> "MatcherDetail":
-    """Persist a final-state matcher: the subject is the final assistant message.
+def _text_detail(kind: str, operator: str, value: str, *, passed: bool) -> "MatcherDetail":
+    """Persist a matcher whose subject is the agent's own text rather than a tool call.
 
-    ``MatcherDetail`` requires ``tool``/``arg_path`` strings; a final-state
-    matcher has neither (its sole subject is the run's terminal message), so the
-    ``<final_state>`` sentinel names the subject and ``arg_path`` is empty.
+    ``MatcherDetail`` requires ``tool``/``arg_path`` strings; these matchers have
+    neither, so the ``<kind>`` sentinel names the subject and ``arg_path`` is empty.
     """
     from teatree.core.models import MatcherDetail  # noqa: PLC0415 — deferred: keep import Django-free
 
     return MatcherDetail(
-        kind="final_state",
-        tool="<final_state>",
+        kind=kind,
+        tool=f"<{kind}>",
         arg_path="",
-        operator=matcher.operator,
-        value=matcher.value,
+        operator=operator,
+        value=value,
         passed=passed,
     )
 

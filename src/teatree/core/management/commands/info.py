@@ -143,7 +143,7 @@ def _e2e_lines(artifacts: TicketArtifacts) -> list[str]:
         posted = run.posted_url or "(unposted — no video/comment URL)"
         lines.extend(
             (
-                f"  - {run.spec} [{run.result}] @ {run.head_sha[:8]}",
+                f"  - {run.spec} [{run.result}] target={run.target} @ {run.head_sha[:8]}",
                 f"      evidence: {posted}",
             )
         )

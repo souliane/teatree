@@ -1,15 +1,14 @@
 """The one supported push path from the worker container (souliane/teatree#3927).
 
 Without a named seam every agent improvises, and the two forms it reaches for
-first are the ones that hurt: a bare ``git push`` from a shell that has no
-``GH_TOKEN`` (a ``docker exec`` bypasses the entrypoint's export and inherits
-only ``TEATREE_GH_TOKEN`` from the compose ``env_file``) blocks on git's
-interactive credential prompt until something kills it, and the "fix" for that
+first are the ones that hurt: a bare ``git push`` without an owning-overlay
+credential route blocks on git's interactive credential prompt until something
+kills it, and the "fix" for that
 — writing the token into ``remote.origin.url`` — persists the credential in the
 ``.git/config`` of a host-bind-mounted worktree, where it outlives the session.
 
-:func:`push_branch` closes both: the credential is resolved through the same
-chain the loop scanners use and handed to git as ``GH_TOKEN`` env only, every
+:func:`push_branch` closes both: the credential is resolved from the repository's
+owning overlay and handed to git as ``GH_TOKEN`` env only, every
 interactive prompt is disabled so a missing credential fails in milliseconds
 with a readable reason, and a remote that already embeds a secret is refused
 rather than pushed to. It never passes ``--no-verify``, so the pre-push hooks
@@ -17,17 +16,27 @@ still gate the push, and it offers ``--force-with-lease`` but no bare
 ``--force``.
 """
 
-import os
+import time
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Self, TypedDict
 from urllib.parse import urlsplit
 
 from teatree.core.forge_push_refs import BranchRef, local_tip
+from teatree.core.forge_push_verdict import PUSH_EXIT_CODES as _PUSH_EXIT_CODES
+from teatree.core.forge_push_verdict import CredentialSource as _CredentialSource
+from teatree.core.forge_push_verdict import ForgeCredential as _ForgeCredential
+from teatree.core.forge_push_verdict import GitPushError as _GitPushError
+from teatree.core.forge_push_verdict import PushFailure as _PushFailure
+from teatree.core.forge_push_verdict import PushVerdict as _PushVerdict
+from teatree.core.forge_push_verdict import gate_aborted_verdict as _gate_aborted_verdict
+from teatree.core.push_gate_record import GateRunRecord
+from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
+from teatree.utils.forge import forge_from_remote
 from teatree.utils.git_run import git_env_non_interactive, run_with_status
 from teatree.utils.git_run import run as git_read
-from teatree.utils.run import CompletedProcess, TimeoutExpired, run_allowed_to_fail
+from teatree.utils.ram_scope import cgroup_v2_oom_kills
+from teatree.utils.run import TimeoutExpired, run_bounded_group
 
 #: The single ``git push`` subprocess call runs the WHOLE pre-push hook chain
 #: (``dev/push-gate.sh``: the never-lockout contract, ``tests/conformance``, the
@@ -36,13 +45,15 @@ from teatree.utils.run import CompletedProcess, TimeoutExpired, run_allowed_to_f
 #: necessarily covers both phases; splitting them would mean running the hooks a
 #: second time standalone and pushing with ``--no-verify``, defeating the "hooks
 #: always gate the push" guarantee this module exists for (souliane/teatree#4484).
+#: The hook precedes transfer and receive-pack updates refs atomically, so a deadline
+#: can leave an unchanged or fully-landed ref, never a half-pushed ref.
 #: Evidence for the bound: ``dev/push-gate.sh`` alone measured 428s GREEN on a
 #: 3-file diff at box load 40; ticket 1015 (#4404, a materially larger diff)
-#: independently stalled behind a ~1200s (20min) gate run at similar load. 1800s
-#: clears both with headroom while staying a genuinely-enforced, finite bound —
+#: independently stalled behind a ~1200s (20min) gate run at similar load. 2700s
+#: includes the machine-wide lock queue while staying a genuinely-enforced, finite bound —
 #: a real transport hang is still caught, just not mistaken for a hook chain that
 #: is merely slow under load.
-PUSH_TIMEOUT_SECONDS = 1800.0
+PUSH_TIMEOUT_SECONDS = 2700.0
 
 #: The post-condition read is a second network round trip, so it is bounded too — but
 #: far tighter than the push: it transfers one ref, never a pack.
@@ -63,104 +74,6 @@ _FORGE_TOKEN_PREFIXES: tuple[str, ...] = (
     "glpat-",
     "glptt-",
 )
-
-#: git's stderr when it wanted a credential and could not get one — the class of
-#: failure whose readable cause is the credential chain, not the push itself.
-_CREDENTIAL_FAILURE_MARKERS: tuple[str, ...] = (
-    "terminal prompts disabled",
-    "could not read username",
-    "could not read password",
-    "authentication failed",
-)
-
-#: git's stderr when the remote held the ref and declined the update.
-_NON_FAST_FORWARD_MARKERS: tuple[str, ...] = ("non-fast-forward", "fetch first", "[rejected]")
-
-#: git's stderr when the REMOTE's own policy declined the update. Distinct from
-#: ``[rejected]`` as a substring, so the two never cross-match.
-_REMOTE_REJECTION_MARKERS: tuple[str, ...] = ("[remote rejected]", "hook declined")
-
-#: Lines that prove git got as far as talking to the remote.
-_REMOTE_CONTACT_PREFIXES: tuple[str, ...] = ("To ", "remote:")
-
-#: git's summary line after a push it started and could not finish — printed when a
-#: local hook aborts it, absent when git died before that (an unresolvable host).
-_GIT_PUSH_ABORTED = "error: failed to push some refs"
-
-#: git's own exit code when a pre-push hook refuses. A transport failure exits 128,
-#: which is what lets the two be told apart without guessing.
-_GATE_REFUSAL_RC = 1
-
-#: git's own outer commentary on a failed push — true of every push failure and
-#: therefore evidence of none. Dropping it is what leaves the refusing gate's own
-#: words as the message (souliane/teatree#4076).
-_GIT_OUTER_PUSH_NOISE: tuple[str, ...] = ("error: failed to push some refs", "hint:", "To ")
-
-#: Where ``dev/lib/xdist-workers.sh`` records the worker bound it chose, in the git common
-#: dir that also holds the pre-push hook — so a gate the cgroup killed still says what it ran
-#: under, having printed nothing before it died.
-_XDIST_BOUND_FILE = "t3-xdist-bound"
-
-
-class CredentialSource(StrEnum):
-    """Where the forge-write credential came from, in resolution order."""
-
-    GH_TOKEN = "GH_TOKEN"  # noqa: S105 — an env-var name, not a credential
-    TEATREE_GH_TOKEN = "TEATREE_GH_TOKEN"  # noqa: S105 — an env-var name, not a credential
-    OVERLAY_PASS_STORE = "overlay pass store"  # noqa: S105 — a source label, not a credential
-    AMBIENT = "ambient git credential helper"
-
-
-class PushFailure(StrEnum):
-    """Why a push did not deliver, at the granularity the operator's next action needs.
-
-    Every member is a different fix — edit the code, fix the environment, fetch and
-    merge, retry — so collapsing them onto one rc=1 costs the caller the diagnosis
-    (souliane/teatree#4076). ``NONE`` is falsy, so ``if outcome.failure`` reads.
-    """
-
-    NONE = ""
-    CONFIG = "config"
-    CREDENTIAL = "credential"
-    GATE_REFUSED = "gate-refused"
-    NON_FAST_FORWARD = "non-fast-forward"
-    REMOTE_REJECTED = "remote-rejected"
-    TRANSPORT = "transport"
-    NOT_ON_REMOTE = "not-on-remote"
-    REMOTE_SHA_MISMATCH = "remote-sha-mismatch"
-    UNVERIFIABLE = "unverifiable"
-
-
-#: ``t3 push``'s exit status per failure kind — the machine-readable half of the same
-#: distinction, for a caller that branches on the code rather than parsing prose.
-PUSH_EXIT_CODES: dict[PushFailure, int] = {
-    PushFailure.NONE: 0,
-    PushFailure.TRANSPORT: 1,
-    PushFailure.CONFIG: 2,
-    PushFailure.CREDENTIAL: 3,
-    PushFailure.GATE_REFUSED: 4,
-    PushFailure.NON_FAST_FORWARD: 5,
-    PushFailure.NOT_ON_REMOTE: 6,
-    PushFailure.REMOTE_SHA_MISMATCH: 6,
-    PushFailure.UNVERIFIABLE: 7,
-    PushFailure.REMOTE_REJECTED: 8,
-}
-
-
-@dataclass(frozen=True)
-class PushVerdict:
-    """One failure kind and the sentence that tells the operator what to do about it."""
-
-    failure: PushFailure
-    detail: str
-
-
-@dataclass(frozen=True)
-class ForgeCredential:
-    """A resolved forge-write token plus the source it came from."""
-
-    token: str
-    source: CredentialSource
 
 
 class PushReport(TypedDict):
@@ -187,10 +100,10 @@ class PushOutcome:
     ok: bool
     branch: str
     remote: str
-    credential_source: CredentialSource
+    credential_source: _CredentialSource
     pushed_sha: str = ""
     detail: str = ""
-    failure: PushFailure = PushFailure.NONE
+    failure: _PushFailure = _PushFailure.NONE
 
     @property
     def exit_code(self) -> int:
@@ -201,7 +114,7 @@ class PushOutcome:
         """
         if self.ok:
             return 0
-        return PUSH_EXIT_CODES[self.failure] or PUSH_EXIT_CODES[PushFailure.TRANSPORT]
+        return _PUSH_EXIT_CODES[self.failure] or _PUSH_EXIT_CODES[_PushFailure.TRANSPORT]
 
     def as_dict(self) -> PushReport:
         return {
@@ -216,46 +129,32 @@ class PushOutcome:
         }
 
 
+@dataclass(frozen=True)
+class _PushAttempt:
+    repo: str
+    remote: str
+    branch: BranchRef
+    env: dict[str, str]
+    tip_before_push: str
+    credential: _ForgeCredential
+    started_at: float
+    oom_kills_before: int | None
+
+
 def scrub_token(text: str, token: str) -> str:
     """Replace every occurrence of *token* in *text* with :data:`REDACTION`."""
     return text.replace(token, REDACTION) if token else text
 
 
-def _overlay_github_token() -> str:
-    """The active overlay's ``pass``-store GitHub token; ``""`` when unavailable.
-
-    Best-effort by design: ``t3 push`` must work in a bare clone with no Django
-    settings, no DB, and no registered overlay, so an unresolvable overlay
-    degrades to the ambient credential helper instead of raising.
-    """
-    try:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: Django-dependent
-
-        return get_overlay().config.get_github_token()
-    except Exception:  # noqa: BLE001 — any overlay/Django/pass failure is "no token from here"
-        return ""
-
-
-def resolve_forge_credential() -> ForgeCredential:
-    """Resolve the forge-write token: env first, then the overlay ``pass`` store.
-
-    ``GH_TOKEN`` is what the deploy entrypoint exports for the role process;
-    ``TEATREE_GH_TOKEN`` is the compose ``env_file`` name a ``docker exec`` shell
-    inherits instead. The overlay getter is the same one
-    ``loop/scanner_factories`` reads, so every forge write on the box resolves
-    through one chain.
-    """
-    for source, name in (
-        (CredentialSource.GH_TOKEN, "GH_TOKEN"),
-        (CredentialSource.TEATREE_GH_TOKEN, "TEATREE_GH_TOKEN"),
-    ):
-        token = os.environ.get(name, "")
-        if token:
-            return ForgeCredential(token=token, source=source)
-    token = _overlay_github_token()
-    if token:
-        return ForgeCredential(token=token, source=CredentialSource.OVERLAY_PASS_STORE)
-    return ForgeCredential(token="", source=CredentialSource.AMBIENT)
+def resolve_forge_credential(repo: str | Path = ".") -> _ForgeCredential:
+    """Resolve the owning overlay's routed GitHub credential for *repo*."""
+    resolution = resolve_repo_token(str(repo), credential="github_token")
+    return _ForgeCredential(
+        token=resolution.token,
+        source=_CredentialSource.OVERLAY_PASS_STORE,
+        state=resolution.state,
+        detail=resolution.detail,
+    )
 
 
 def remote_url_embeds_credential(url: str) -> bool:
@@ -274,26 +173,6 @@ def remote_url_embeds_credential(url: str) -> bool:
     if password is not None:
         return True
     return username.startswith(_FORGE_TOKEN_PREFIXES)
-
-
-def credential_failure_hint(git_stderr: str, credential: ForgeCredential) -> str:
-    """The actionable next step when git failed for want of a credential; ``""`` otherwise.
-
-    A resolved token still buys nothing unless git's credential helper is wired
-    to consume it, so the two cases need different fixes and the raw git error
-    distinguishes neither.
-    """
-    if not any(marker in git_stderr.lower() for marker in _CREDENTIAL_FAILURE_MARKERS):
-        return ""
-    if credential.source is CredentialSource.AMBIENT:
-        return (
-            "no forge token resolved — export TEATREE_GH_TOKEN (or GH_TOKEN), "
-            "or provision the overlay's pass store, then re-run `t3 push`"
-        )
-    return (
-        f"a {credential.source.value} token was supplied but git could not use it — "
-        "run `gh auth setup-git` to wire git's credential helper to gh, then re-run `t3 push`"
-    )
 
 
 @dataclass(frozen=True)
@@ -355,137 +234,25 @@ class ObservedRemoteRef:
         line = result.stdout.strip()
         return cls(remote=remote, branch=branch, reachable=True, sha=line.split()[0] if line else "")
 
-    def verdict(self, local_sha: str) -> PushVerdict:
+    def verdict(self, local_sha: str) -> _PushVerdict:
         if not self.reachable:
-            return PushVerdict(
-                PushFailure.UNVERIFIABLE,
+            return _PushVerdict(
+                _PushFailure.UNVERIFIABLE,
                 f"git push exited 0 but '{self.remote}' could not be read back, so nothing confirms "
                 f"'{self.branch.name}' landed — treat it as unlanded and re-run `t3 push` once the remote answers",
             )
         if not self.sha:
-            return PushVerdict(
-                PushFailure.NOT_ON_REMOTE,
+            return _PushVerdict(
+                _PushFailure.NOT_ON_REMOTE,
                 f"git push exited 0 but '{self.remote}' has no {self.branch.qualified} — nothing landed",
             )
         if self.sha != local_sha:
-            return PushVerdict(
-                PushFailure.REMOTE_SHA_MISMATCH,
+            return _PushVerdict(
+                _PushFailure.REMOTE_SHA_MISMATCH,
                 f"git push exited 0 but '{self.remote}' holds {self.branch.qualified} at {self.sha}, "
                 f"not the local tip {local_sha} — fetch and compare before re-running `t3 push`",
             )
-        return PushVerdict(PushFailure.NONE, "")
-
-
-@dataclass(frozen=True)
-class GitPushError:
-    """A non-zero ``git push``, classified into the failure the operator must act on.
-
-    git reports a refusing pre-push gate, an unusable credential and a stale branch
-    through one rc=1 and one outer sentence; each needs a different fix, and only the
-    gate case has an author whose own words were worth keeping.
-    """
-
-    returncode: int
-    stderr: str
-    pre_push_hook: str
-    credential: ForgeCredential
-
-    @classmethod
-    def of(cls, result: CompletedProcess[str], *, repo: str, credential: ForgeCredential) -> Self:
-        hook = Path(repo) / git_read(repo=repo, args=["rev-parse", "--git-path", "hooks/pre-push"])
-        return cls(
-            returncode=result.returncode,
-            stderr=(result.stderr or result.stdout).strip(),
-            pre_push_hook=str(hook) if os.access(hook, os.X_OK) else "",
-            credential=credential,
-        )
-
-    @property
-    def gate_output(self) -> str:
-        kept = [line for line in self.stderr.splitlines() if not line.startswith(_GIT_OUTER_PUSH_NOISE)]
-        return "\n".join(kept).strip()
-
-    @property
-    def reached_the_remote(self) -> bool:
-        return any(line.startswith(_REMOTE_CONTACT_PREFIXES) for line in self.stderr.splitlines())
-
-    @property
-    def refused_by_a_gate(self) -> bool:
-        """Positive evidence a LOCAL hook aborted the push — never mere absence of evidence.
-
-        Every teatree checkout has an executable pre-push hook, and an unreachable
-        network produces no remote-contact lines either, so inferring the gate from
-        absence blames it for every transport outage — the same mis-diagnosis
-        souliane/teatree#4076 exists to stop. git prints its aborted-push summary only
-        for a push it started and could not finish, and exits 1 rather than 128.
-        """
-        return (
-            bool(self.pre_push_hook)
-            and self.returncode == _GATE_REFUSAL_RC
-            and any(line.startswith(_GIT_PUSH_ABORTED) for line in self.stderr.splitlines())
-            and not self.reached_the_remote
-        )
-
-    @property
-    def failure(self) -> PushFailure:
-        lowered = self.stderr.lower()
-        if self.refused_by_a_gate:
-            return PushFailure.GATE_REFUSED
-        if any(marker in lowered for marker in _REMOTE_REJECTION_MARKERS):
-            return PushFailure.REMOTE_REJECTED
-        if any(marker in lowered for marker in _CREDENTIAL_FAILURE_MARKERS):
-            return PushFailure.CREDENTIAL
-        if any(marker in lowered for marker in _NON_FAST_FORWARD_MARKERS):
-            return PushFailure.NON_FAST_FORWARD
-        return PushFailure.TRANSPORT
-
-    @property
-    def verdict(self) -> PushVerdict:
-        failure = self.failure
-        if failure is PushFailure.GATE_REFUSED:
-            return PushVerdict(failure, self._gate_detail())
-        if failure is PushFailure.CREDENTIAL:
-            hint = credential_failure_hint(self.stderr, self.credential)
-            return PushVerdict(failure, f"git push failed (rc={self.returncode}): {self.stderr} — {hint}")
-        if failure is PushFailure.NON_FAST_FORWARD:
-            return PushVerdict(
-                failure,
-                f"the remote branch has commits this clone does not (rc={self.returncode}) — fetch and "
-                f"integrate them, then re-run `t3 push`: {self.stderr}",
-            )
-        if failure is PushFailure.REMOTE_REJECTED:
-            return PushVerdict(
-                failure,
-                f"the remote's own policy declined this update (rc={self.returncode}) — a branch "
-                f"protection rule or a server-side hook, which no retry from here changes: {self.stderr}",
-            )
-        return PushVerdict(failure, f"git push failed (rc={self.returncode}): {self.stderr}")
-
-    def _gate_detail(self) -> str:
-        if self.gate_output:
-            return (
-                f"the pre-push gate refused this push (rc={self.returncode}); "
-                f"{self.pre_push_hook} said:\n{self.gate_output}"
-            )
-        return (
-            f"the pre-push gate {self.pre_push_hook} refused this push (rc={self.returncode}) and printed "
-            "nothing — a gate killed mid-run (an OOM cap kills the sweep it escalated to) leaves no output. "
-            f"Run the gate directly to see its stage output{self._recorded_xdist_bound()}"
-        )
-
-    def _recorded_xdist_bound(self) -> str:
-        """The worker bound the lanes last recorded for this clone, as a message suffix.
-
-        Turns the OOM cap the message already suspects into numbers a reader can check, and
-        stays a suffix so an absent record leaves the wording exactly as it was.
-        """
-        try:
-            recorded = (Path(self.pre_push_hook).parent.parent / _XDIST_BOUND_FILE).read_text(encoding="utf-8").strip()
-        except OSError:
-            recorded = ""
-        if not recorded:
-            return ""
-        return f". The last worker bound dev/lib/xdist-workers.sh recorded here: {recorded}"
+        return _PushVerdict(_PushFailure.NONE, "")
 
 
 def _push_argv(repo: str, remote: str, branch: BranchRef, *, force_with_lease: bool) -> list[str]:
@@ -495,7 +262,20 @@ def _push_argv(repo: str, remote: str, branch: BranchRef, *, force_with_lease: b
     return argv
 
 
-def _refusal(verdict: PushVerdict, *, branch: BranchRef, remote: str, credential: ForgeCredential) -> PushOutcome:
+def _timeout_output(exc: TimeoutExpired) -> str:
+    # The stub types both streams as bytes, but a text-mode run hands back str.
+    texts = [
+        stream.decode(errors="replace") if isinstance(stream, bytes) else stream for stream in (exc.stdout, exc.stderr)
+    ]
+    return "\n".join(text.strip() for text in texts if isinstance(text, str) and text.strip())
+
+
+def _oom_kill_delta(before: int | None) -> int | None:
+    after = cgroup_v2_oom_kills()
+    return after - before if before is not None and after is not None else None
+
+
+def _refusal(verdict: _PushVerdict, *, branch: BranchRef, remote: str, credential: _ForgeCredential) -> PushOutcome:
     return PushOutcome(
         ok=False,
         branch=branch.name,
@@ -506,32 +286,66 @@ def _refusal(verdict: PushVerdict, *, branch: BranchRef, remote: str, credential
     )
 
 
-def _config_verdict(*, repo: str, remote: str, branch: BranchRef) -> PushVerdict:
+def _push_timeout_outcome(exc: TimeoutExpired, attempt: _PushAttempt) -> PushOutcome:
+    observed = ObservedRemoteRef.observe(
+        repo=attempt.repo,
+        remote=attempt.remote,
+        branch=attempt.branch,
+        env=attempt.env,
+    )
+    if observed.reachable and observed.sha == attempt.tip_before_push:
+        return PushOutcome(
+            ok=True,
+            branch=attempt.branch.name,
+            remote=attempt.remote,
+            credential_source=attempt.credential.source,
+            pushed_sha=observed.sha,
+            detail=f"push deadline hit after landing; remote read-back confirmed {observed.sha}",
+        )
+    partial_output = _timeout_output(exc)
+    gate_run = GateRunRecord.read(attempt.repo, since=attempt.started_at)
+    if gate_run is not None and gate_run.was_interrupted:
+        verdict = _gate_aborted_verdict(
+            gate_run=gate_run,
+            oom_kill_delta=_oom_kill_delta(attempt.oom_kills_before),
+            output=partial_output,
+        )
+    else:
+        verdict = _PushVerdict(_PushFailure.TRANSPORT, f"push timed out after {PUSH_TIMEOUT_SECONDS:.0f}s")
+    return _refusal(
+        verdict,
+        branch=attempt.branch,
+        remote=attempt.remote,
+        credential=attempt.credential,
+    )
+
+
+def _config_verdict(*, repo: str, remote: str, branch: BranchRef) -> _PushVerdict:
     """The repo-config reason this push must not even be attempted; ``NONE`` when there is none."""
     if not branch.name:
-        return PushVerdict(
-            PushFailure.CONFIG,
+        return _PushVerdict(
+            _PushFailure.CONFIG,
             "refusing to push a detached HEAD — check out a branch first, or pass --branch",
         )
     if not local_tip(repo=repo, ref=branch.qualified):
-        return PushVerdict(
-            PushFailure.CONFIG,
+        return _PushVerdict(
+            _PushFailure.CONFIG,
             f"no branch '{branch.name}' in {repo} — check the spelling, or drop --branch to push the "
             "checked-out one. git resolves the refspec before it runs any hook, so this never "
             "reached the pre-push gate",
         )
     urls = RemoteUrls.read(repo=repo, remote=remote)
     if not urls.fetch:
-        return PushVerdict(PushFailure.CONFIG, f"no remote named '{remote}' in {repo} — add it, or pass --remote")
+        return _PushVerdict(_PushFailure.CONFIG, f"no remote named '{remote}' in {repo} — add it, or pass --remote")
     if urls.embeds_credential:
-        return PushVerdict(
-            PushFailure.CONFIG,
+        return _PushVerdict(
+            _PushFailure.CONFIG,
             f"remote '{remote}' embeds a credential in its URL — that secret persists in .git/config "
             f"and outlives the session. Strip it (`git remote set-url {remote} <url-without-credentials>`, "
             "and `--push` too if a pushurl is set) and re-run `t3 push`, which supplies the credential "
             "to git as env only",
         )
-    return PushVerdict(PushFailure.NONE, "")
+    return _PushVerdict(_PushFailure.NONE, "")
 
 
 def push_branch(
@@ -548,14 +362,27 @@ def push_branch(
     traceback. An rc=0 ``git push`` only ends the attempt; the branch counts as
     pushed once ``git ls-remote`` — a read of the remote, not of any local ref —
     reports it at the local tip. Anything else is a refusal carrying the
-    :class:`PushFailure` that says which fix it needs.
+    :class:`~teatree.core.forge_push_verdict.PushFailure` that says which fix it needs.
     """
-    credential = resolve_forge_credential()
     repo_path = str(repo)
+    credential = resolve_forge_credential(repo_path)
     resolved_branch = BranchRef.resolve(repo=repo_path, branch=branch)
     config = _config_verdict(repo=repo_path, remote=remote, branch=resolved_branch)
     if config.failure:
         return _refusal(config, branch=resolved_branch, remote=remote, credential=credential)
+    urls = RemoteUrls.read(repo=repo_path, remote=remote)
+    github_remote = forge_from_remote(urls.push or urls.fetch) == "github"
+    if github_remote and credential.state is not ForgeTokenState.TOKEN:
+        return _refusal(
+            _PushVerdict(
+                _PushFailure.CREDENTIAL,
+                f"github_token_pass_key for the repository's owning overlay is "
+                f"{credential.state.value}: {credential.detail}; refusing ambient git/gh authentication",
+            ),
+            branch=resolved_branch,
+            remote=remote,
+            credential=credential,
+        )
 
     env = git_env_non_interactive()
     if credential.token:
@@ -563,23 +390,36 @@ def push_branch(
     # Read BEFORE the push: a commit landing locally while it runs would otherwise make
     # a genuinely delivered push look like a mismatch against a tip it never carried.
     tip_before_push = local_tip(repo=repo_path, ref=resolved_branch.qualified)
+    push_started_at = float(int(time.time()))
+    oom_kills_before = cgroup_v2_oom_kills()
+    attempt = _PushAttempt(
+        repo=repo_path,
+        remote=remote,
+        branch=resolved_branch,
+        env=env,
+        tip_before_push=tip_before_push,
+        credential=credential,
+        started_at=push_started_at,
+        oom_kills_before=oom_kills_before,
+    )
     try:
-        result = run_allowed_to_fail(
+        result = run_bounded_group(
             _push_argv(repo_path, remote, resolved_branch, force_with_lease=force_with_lease),
             expected_codes=None,
             env=env,
             timeout=PUSH_TIMEOUT_SECONDS,
         )
-    except TimeoutExpired:
-        return _refusal(
-            PushVerdict(PushFailure.TRANSPORT, f"push timed out after {PUSH_TIMEOUT_SECONDS:.0f}s"),
-            branch=resolved_branch,
-            remote=remote,
-            credential=credential,
-        )
+    except TimeoutExpired as exc:
+        return _push_timeout_outcome(exc, attempt)
     if result.returncode != 0:
         return _refusal(
-            GitPushError.of(result, repo=repo_path, credential=credential).verdict,
+            _GitPushError.of(
+                result,
+                repo=repo_path,
+                credential=credential,
+                since=push_started_at,
+                oom_kills_before=oom_kills_before,
+            ).verdict,
             branch=resolved_branch,
             remote=remote,
             credential=credential,
@@ -601,20 +441,13 @@ def push_branch(
 
 
 __all__ = [
-    "PUSH_EXIT_CODES",
     "PUSH_TIMEOUT_SECONDS",
     "REDACTION",
     "VERIFY_TIMEOUT_SECONDS",
-    "CredentialSource",
-    "ForgeCredential",
-    "GitPushError",
     "ObservedRemoteRef",
-    "PushFailure",
     "PushOutcome",
     "PushReport",
-    "PushVerdict",
     "RemoteUrls",
-    "credential_failure_hint",
     "push_branch",
     "remote_url_embeds_credential",
     "resolve_forge_credential",

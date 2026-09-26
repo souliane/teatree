@@ -53,8 +53,8 @@ _DRIVERLESS_WARNING = (
     "WARN  loop slot {slot!r} claimed but DRIVERLESS — no tick driver is registered, so this loop "
     "will not tick.\n"
     "      Register one of:\n"
-    "        - run `t3 worker` (or `config_setting set loop_runner_enabled true` then restart the "
-    "session for the SessionStart resurrection) for the loop runner,\n"
+    "        - run `t3 worker` (or restart the session for the SessionStart resurrection) "
+    "for the loop runner,\n"
     "        - keep the owning Claude session alive for the Stop self-pump,\n"
     "        - `t3 loop claim --slot {slot} --driver external` if a foreign scheduler drives it."
 )

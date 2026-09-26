@@ -1,12 +1,11 @@
-"""Deny a raw ``glab api``/``gh api`` WRITE to a review-comment endpoint (#2384 PR6).
+"""Deny a raw ``glab api``/``gh api`` WRITE to a review-comment endpoint.
 
-Sub-agents have repeatedly posted MR/PR review comments by shelling out to a raw
-forge REST POST — ``glab api projects/.../merge_requests/<n>/discussions -X POST``
-(or ``.../notes``, or the GitHub ``.../pulls/<n>/comments``) — bypassing the
-sanctioned top-level ``t3 review post-comment`` / ``post-draft-note`` path that
-enforces draft-default (#1207), dedup, and on-behalf approval (#960). RED-CARD,
-5x recurrence. This gate closes the bypass at the Bash boundary: a WRITE to a
-review discussion/notes/comments endpoint is denied; plain GET reads pass through.
+A raw forge REST POST — ``glab api projects/.../merge_requests/<n>/discussions
+-X POST`` (or ``.../notes``, or the GitHub ``.../pulls/<n>/comments``) — bypasses
+the sanctioned top-level ``t3 review post-comment`` / ``post-draft-note`` path
+that enforces draft-default, dedup, and on-behalf approval. This gate closes the
+bypass at the Bash boundary: a WRITE to a review discussion/notes/comments
+endpoint is denied; plain GET reads pass through.
 
 The refusal names the CLI that can address the surface the caller actually hit.
 An ISSUE/work-item note has no counterpart in the ``t3 review`` create seam —
@@ -28,9 +27,8 @@ forge send ``-f`` as a query parameter rather than a body write (#1568). Every
 other effective method (POST/PUT/PATCH/DELETE/…) is a write. Fails OPEN on an
 internal parse error — a gate bug must never wedge the fleet.
 
-Extracted whole from ``hook_router`` (the #2384 Wave-2 router split, PR6) so the
-dispatcher shrinks; the router re-exports :func:`handle_block_raw_review_post`
-into ``_HANDLERS`` unchanged. The deny routes through the router's shared
+The router re-exports :func:`handle_block_raw_review_post` into ``_HANDLERS``.
+The deny routes through the router's shared
 ``emit_pretooluse_deny`` chokepoint (back-imported lazily), so the
 ``_write_pretooluse_deny`` deny writer and the repeated-denial circuit breaker
 stay in the router. A narrow targeted-command gate — it denies only a raw
@@ -48,6 +46,8 @@ Only ``REVIEW_POST_ENDPOINT_RE`` and the deny reason, used solely by this gate, 
 
 import re
 import sys
+
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
@@ -91,11 +91,24 @@ def is_raw_review_write(command: str) -> bool:
     present, else GET. A forced GET sends body flags as query params and cannot
     create a comment, so it is the only read (#1568).
 
-    Uses a word-boundary regex (not plain ``in``) so ``glab  api`` / ``gh  api``
-    double-space variants are caught (F4). The effective-method regexes live in
-    the ``forge_api_detect`` sibling (shared with ``_effective_method_is_write``
-    and the out-of-band-merge gate) and are back-imported lazily — one definition each.
+    Delegates to :func:`teatree.hooks.raw_review_post_detect.is_raw_review_write` —
+    the SAME leaf Lane B's hard-deny registry uses — which reads the method from the
+    ``glab api`` shell segment alone, so a ``-f`` belonging to ``rm -f`` / ``pgrep -f``
+    elsewhere in the call never reclassifies a read. Falls back to the whole-text
+    verdict (the ``forge_api_detect`` regexes, one definition each) when the leaf is
+    not importable, so a broken environment never weakens the gate.
     """
+    try:
+        with teatree_src_on_path():
+            from teatree.hooks import raw_review_post_detect  # noqa: PLC0415 — lazy src-bootstrap import
+
+            return raw_review_post_detect.is_raw_review_write(command)
+    except Exception:  # noqa: BLE001 — with no leaf importable the whole-text verdict still guards the write
+        return _whole_text_is_raw_review_write(command)
+
+
+def _whole_text_is_raw_review_write(command: str) -> bool:
+    """The pre-segment classification over the whole command text — the leaf-unavailable fallback."""
     from hooks.scripts.forge_api_detect import (  # noqa: PLC0415 deferred back-import
         _GLAB_GH_API_RE,
         _REVIEW_POST_BODY_FLAG_RE,
@@ -108,12 +121,8 @@ def is_raw_review_write(command: str) -> bool:
         return False
     methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
     if methods:
-        is_read = methods[-1] == "GET"
-    elif _REVIEW_POST_BODY_FLAG_RE.search(command):
-        is_read = False
-    else:
-        is_read = True
-    return not is_read
+        return methods[-1] != "GET"
+    return bool(_REVIEW_POST_BODY_FLAG_RE.search(command))
 
 
 def review_post_deny_reason(command: str) -> str | None:

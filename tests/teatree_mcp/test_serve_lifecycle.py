@@ -10,7 +10,7 @@ import os
 import subprocess
 import time
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -274,3 +274,116 @@ class TestOrphanDetectionIsHostOnly:
             assert reap_orphaned_servers(matcher=lambda _: True) == []
 
         never_signalled.kill.assert_not_called()
+
+
+# The command line a container-wrapping ``t3`` launcher produces, abbreviated only in
+# the credential prologue's body. ``t3-in-container`` is ``sh -c``'s ``$0`` label, so
+# the ``t3`` token that carries ``mcp serve`` is preceded neither by argv[0] nor by a
+# python interpreter — the two forms the matcher was written for.
+_WRAPPED_SERVE_COMMAND = (
+    "docker compose -f /srv/deploy/docker-compose.yml exec -T --env GITLAB_TOKEN "
+    'teatree-worker sh -c if [ -z "${GITLAB_TOKEN:-}" ]; then :; fi exec "$@" '
+    "t3-in-container t3 mcp serve"
+)
+_WRAPPED_SERVE_PLUGIN_COMMAND = (
+    "/Users/x/.docker/cli-plugins/docker-compose compose -f /srv/deploy/docker-compose.yml "  # privacy-scan:allow
+    'exec -T teatree-worker sh -c if [ -z "${GITLAB_TOKEN:-}" ]; then :; fi exec "$@" '
+    "t3-in-container t3 mcp serve"
+)
+
+# The prologue reaches ``ps`` with the quote characters that are LITERAL inside
+# ``sh -c``'s script argument, abbreviated here to one branch.
+_PROLOGUE_BODY = 'if [ -z "${GITLAB_TOKEN:-}" ]; then :; fi exec "$@"'
+_PROLOGUE = f"sh -c {_PROLOGUE_BODY}"
+_COMPOSE = "docker compose -f /srv/deploy/docker-compose.yml"
+_SERVE = "t3-in-container t3 mcp serve"
+
+# Every shape ``deploy/t3`` launches: the two dispatch helpers and the
+# non-TTY final hop share the ``exec -T`` form, the TTY hop drops ``-T``, and the
+# last resort is ``run --rm``. All five put ``t3-in-container`` immediately
+# before ``t3``.
+_LAUNCHER_COMMANDS = [
+    _WRAPPED_SERVE_COMMAND,
+    _WRAPPED_SERVE_PLUGIN_COMMAND,
+    f"{_COMPOSE} exec -T teatree-worker {_PROLOGUE} {_SERVE}",
+    f"{_COMPOSE} exec teatree-worker {_PROLOGUE} {_SERVE}",
+    f"{_COMPOSE} run --rm --no-deps --entrypoint sh teatree-worker -c {_PROLOGUE_BODY} {_SERVE}",
+]
+
+# ``ps`` renders argv, and a shell has already CONSUMED an argument's quotes by
+# the time the process exists — so ``grep -r "t3 mcp serve" /src`` reaches every
+# host sweep as ``grep -r t3 mcp serve /src``. A quoted fixture is a string no
+# sweep can ever read: the matcher rejects it on the quotes while the row that
+# actually appears goes unexamined.
+_LOOKALIKE_COMMANDS = [
+    "docker compose exec teatree-worker grep -r t3 mcp serve /src",
+    "docker compose exec teatree-worker rg t3 mcp serve /src",
+    "docker compose exec teatree-worker sh -c echo t3 mcp serve",
+    "docker compose exec teatree-worker xargs t3 mcp serve",
+    "docker compose exec teatree-worker t3 mcp reconnect",
+    "docker ps",
+]
+
+
+class TestMatchesTheContainerWrappingLauncher:
+    """The launcher form is the ONLY one a dockerised install produces on the host.
+
+    ``t3 setup`` replaces ``t3`` on PATH with a launcher that execs
+    ``docker compose exec … t3 mcp serve``, so the server process itself lives in the
+    container — where PID 1 proves nothing — and the process the host reaper can
+    soundly classify is the LAUNCHER. Matching only the bare form left the host sweep
+    matching zero rows on every such install.
+    """
+
+    @pytest.mark.parametrize("command", _LAUNCHER_COMMANDS)
+    def test_matches_the_launcher_the_host_can_classify(self, command: str) -> None:
+        assert is_serve_command(command)
+
+    @pytest.mark.parametrize("command", _LOOKALIKE_COMMANDS)
+    def test_still_rejects_lookalikes_under_a_container_cli(self, command: str) -> None:
+        assert not is_serve_command(command)
+
+    def test_an_abandoned_launcher_is_selected_and_a_live_one_is_not(self) -> None:
+        records = [
+            ProcessRecord(pid=20, ppid=1, command=_WRAPPED_SERVE_COMMAND),
+            ProcessRecord(pid=21, ppid=900, command=_WRAPPED_SERVE_COMMAND),
+        ]
+
+        assert orphaned_serve_pids(records, self_pid=1234) == [20]
+
+
+class TestPpidZeroIsNeverAnOrphanProof:
+    """A container's ``docker exec`` process reports PPID 0 whether or not it is live.
+
+    Measured inside a running worker: a freshly launched server whose client was still
+    attached reported ``ppid=0``, identical to every long-lived one. Treating PPID 0 as
+    the container's disconnection signature therefore SIGTERMs every live server — the
+    outcome the container carve-out exists to make impossible.
+    """
+
+    def test_a_ppid_zero_row_is_not_selected(self) -> None:
+        records = [ProcessRecord(pid=30, ppid=0, command=_SERVE_COMMAND)]
+
+        assert orphaned_serve_pids(records, self_pid=1234) == []
+
+
+class TestReapRunsBeforeDelegating:
+    """``delegate_to_owning_domain`` is an ``execv``; nothing after it runs on the host.
+
+    On an install whose control DB the container owns, the host process replaces its
+    own image and the reap that followed the handoff never executed — leaving the host
+    sweep, the one venue where PID 1 is a sound proof, permanently unreached.
+    """
+
+    def test_predecessors_are_reaped_before_the_handoff(self) -> None:
+        calls = Mock()
+        with (
+            patch("teatree.cli.mcp.reap_orphaned_servers", calls.reap),
+            patch("teatree.cli.mcp.delegate_to_owning_domain", calls.delegate),
+            patch("teatree.cli.mcp.start_parent_death_watch"),
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.mcp.server.build_server"),
+        ):
+            serve()
+
+        assert [name for name, _, _ in calls.mock_calls] == ["reap", "delegate"]

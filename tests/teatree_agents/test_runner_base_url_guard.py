@@ -81,15 +81,15 @@ class TestAmbientDispatchRefusesBaseUrlRedirect(TestCase):
         # The sanctioned shape: an operator's OWN API key routed through a gateway,
         # Bedrock/Vertex, or an Anthropic-compatible third-party provider.
         with _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _API_KEY: "sk-ant-key"}):
-            assert _provider_child_env(None) is None
+            assert _provider_child_env(None).env is None
 
     def test_allows_an_ambient_dispatch_with_no_redirect_configured(self) -> None:
         with _ambient(**{_OAUTH: "sk-ant-oat01-x"}):
-            assert _provider_child_env(None) is None
+            assert _provider_child_env(None).env is None
 
     def test_an_empty_redirect_value_expresses_nothing_and_is_ignored(self) -> None:
         with _ambient(**{ANTHROPIC_BASE_URL_ENV: "   ", _OAUTH: "sk-ant-oat01-x"}):
-            assert _provider_child_env(None) is None
+            assert _provider_child_env(None).env is None
 
 
 class TestPinnedProviderRefusesBaseUrlRedirect(TestCase):
@@ -105,7 +105,7 @@ class TestPinnedProviderRefusesBaseUrlRedirect(TestCase):
 
     def test_api_key_pin_carries_the_redirect_through_to_the_child(self) -> None:
         with _ambient(**{ANTHROPIC_BASE_URL_ENV: _GATEWAY, _API_KEY: "sk-ant-key"}):
-            env = _provider_child_env(AgentHarnessProvider.API_KEY)
+            env = _provider_child_env(AgentHarnessProvider.API_KEY).env
 
         assert env is not None
         assert env[ANTHROPIC_BASE_URL_ENV] == _GATEWAY

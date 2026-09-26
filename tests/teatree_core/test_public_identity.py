@@ -20,6 +20,7 @@ from teatree.core.public_identity import (
     is_noreply_email,
     is_public_github_remote,
 )
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 
 
 class TestNoreplyPattern:
@@ -66,6 +67,15 @@ class TestPublicGithubVisibility:
             return type("R", (), {"stdout": visibility + "\n", "returncode": 0})()
 
         return _fake
+
+    @pytest.fixture(autouse=True)
+    def _routed_owner_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "teatree.core.forge_pr_probe.resolve_url_token",
+            lambda *_args, **_kwargs: ForgeTokenResolution(
+                "github_token", "test", ForgeTokenState.TOKEN, token="routed"
+            ),
+        )
 
     def test_public_non_souliane_repo_is_public(self) -> None:
         # The exact bug #785: a PUBLIC repo owned by a non-souliane
@@ -158,6 +168,15 @@ class TestNonGithubHostNeverPublic:
     @staticmethod
     def _gh_public(_cmd: list[str], **_kw: object) -> object:
         return type("R", (), {"stdout": "PUBLIC\n", "returncode": 0})()
+
+    @pytest.fixture(autouse=True)
+    def _routed_owner_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "teatree.core.forge_pr_probe.resolve_url_token",
+            lambda *_args, **_kwargs: ForgeTokenResolution(
+                "github_token", "test", ForgeTokenState.TOKEN, token="routed"
+            ),
+        )
 
     @pytest.mark.parametrize(
         "remote",

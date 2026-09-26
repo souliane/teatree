@@ -83,6 +83,7 @@ T3_MCP_COVERED: Mapping[str, str] = {
     "config_setting set": "config_setting_set",
     "lifecycle record-e2e-run": "record_e2e_run",
     "lifecycle visit-phase": "ticket_visit_phase",
+    "notify dm": "notify_user",
     "notify send": "notify_user",
     "pr create": "pr_create",
     "questions answer": "question_answer",
@@ -134,6 +135,15 @@ _PROHIBITION_MARKERS: tuple[str, ...] = (
     "do not call",
     "must not run",
 )
+
+# A marker matching INSIDE a symbol (`egress_forbidden`, `egress-forbidden`) silently drops that
+# LINE's raw calls from the ledger, so a marker ending in a word character is bounded on both
+# sides; one ending in punctuation (``never ` ``) takes the left bound only, since the code it
+# introduces starts with a word character.
+_MARKER_RES: dict[str, re.Pattern[str]] = {
+    marker: re.compile(rf"(?<![\w-]){re.escape(marker)}" + (r"(?![\w-])" if marker[-1].isalnum() else ""))
+    for marker in _PROHIBITION_MARKERS
+}
 
 # ``gh``/``glab``/``sentry-cli`` as a whole token, optionally reached through a
 # path (``/usr/bin/gh``, ``./gh``) or a prefix word (``command gh``).
@@ -258,7 +268,7 @@ def signatures_in_fragment(fragment: str) -> list[str]:
 
 def is_prohibition(line: str) -> bool:
     lowered = line.lower()
-    return any(marker in lowered for marker in _PROHIBITION_MARKERS)
+    return any(_MARKER_RES[marker].search(lowered) is not None for marker in _PROHIBITION_MARKERS)
 
 
 def raw_calls_in(source: str, path: str) -> list[RawCall]:

@@ -191,7 +191,7 @@ def provision_overlay(
     if open_browser:
         webbrowser.open(report.install_url)
 
-    # A dm_only bot has no channel/group scopes and joins no review channels —
+    # A dm_only bot has no channels:join and joins no review channels —
     # skip the broadcast-channel join entirely (it would only fail not_in_channel).
     if scope_profile == "dm_only":
         report.notes.append("dm_only: skipped review-channel join")

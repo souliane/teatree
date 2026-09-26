@@ -282,8 +282,9 @@ class TestRunSingleOverlay:
                 on_event=on_event,
             )
 
-        # The inbound event fires the drain signal immediately — no cadence wait.
-        on_event.assert_called_once_with()
+        # The inbound event fires the record-then-wake callback immediately — no cadence
+        # wait — and hands it the overlay + the event, which the DM hot path records on.
+        on_event.assert_called_once_with("ov", {"type": "app_mention", "text": "hello", "ts": "1.0"})
 
     def test_handler_does_not_signal_for_filtered_bot_message(self, tmp_path: Path) -> None:
         import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
@@ -332,7 +333,7 @@ class TestRunSingleOverlay:
         stop = threading.Event()
         queue = tmp_path / "events.jsonl"
 
-        def boom() -> None:
+        def boom(_overlay: str, _event: dict) -> None:
             message = "db unavailable"
             raise RuntimeError(message)
 
@@ -364,6 +365,81 @@ class TestRunSingleOverlay:
         # The durable JSONL write still landed even though the wake signal raised.
         events = drain_event_queue(queue)
         assert len(events) == 1
+
+    def test_a_connected_loop_stamps_the_liveness_heartbeat(self, tmp_path: Path) -> None:
+        # The stamp is written from INSIDE the connected wait loop, so it attests to a
+        # live WebSocket rather than to a process that is merely still running.
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
+
+        mock_client = MagicMock()
+        mock_client.socket_mode_request_listeners = []
+        stop = threading.Event()
+        heartbeat = tmp_path / "slack-listener-heartbeat.json"
+
+        def fake_connect() -> None:
+            stop.set()
+
+        mock_client.connect = fake_connect
+
+        with (
+            patch.object(slack_sdk.socket_mode, "SocketModeClient", return_value=mock_client),
+            patch.object(slack_sdk.web, "WebClient"),
+        ):
+            _run_single_overlay(
+                overlay=("ov", "xapp", "xoxb"),
+                queues=_queues(tmp_path),
+                stop_event=stop,
+                heartbeat_path=heartbeat,
+            )
+
+        beat = json.loads(heartbeat.read_text(encoding="utf-8"))
+        assert beat["interval_seconds"] > 0
+        assert beat["updated_at"] > 0
+
+    def test_a_disconnected_client_does_not_refresh_the_heartbeat(self, tmp_path: Path) -> None:
+        import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep
+        import slack_sdk.web  # noqa: PLC0415 — optional slack_sdk dep
+
+        mock_client = MagicMock()
+        mock_client.socket_mode_request_listeners = []
+        mock_client.is_connected.return_value = False
+        stop = threading.Event()
+        heartbeat = tmp_path / "slack-listener-heartbeat.json"
+
+        def fake_connect() -> None:
+            stop.set()
+
+        mock_client.connect = fake_connect
+
+        with (
+            patch.object(slack_sdk.socket_mode, "SocketModeClient", return_value=mock_client),
+            patch.object(slack_sdk.web, "WebClient"),
+        ):
+            _run_single_overlay(
+                overlay=("ov", "xapp", "xoxb"),
+                queues=_queues(tmp_path),
+                stop_event=stop,
+                heartbeat_path=heartbeat,
+            )
+
+        assert not heartbeat.exists()
+
+    def test_a_loop_that_never_connects_stamps_nothing(self, tmp_path: Path) -> None:
+        # A dead WebSocket must go stale: the stamp lives past `client.connect()`, so a
+        # receiver that cannot connect leaves the heartbeat ageing for the doctor.
+        stop = threading.Event()
+        stop.set()
+        heartbeat = tmp_path / "slack-listener-heartbeat.json"
+        with patch.dict("sys.modules", {"slack_sdk": None, "slack_sdk.socket_mode": None}):
+            _run_single_overlay(
+                overlay=("ov", "xapp", "xoxb"),
+                queues=_queues(tmp_path),
+                stop_event=stop,
+                heartbeat_path=heartbeat,
+            )
+
+        assert not heartbeat.exists()
 
     def test_handler_filters_bot_messages(self, tmp_path: Path) -> None:
         import slack_sdk.socket_mode  # noqa: PLC0415 — optional slack_sdk dep

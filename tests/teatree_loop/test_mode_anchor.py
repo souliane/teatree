@@ -42,7 +42,7 @@ class TestModeHandleRidesLoopLine:
 
     def test_manual_override_renders_mode_manual_never_a_second_segment(self) -> None:
         Mode.objects.update_or_create(name="off", defaults={"entries": {}})
-        ModeOverride.objects.set_override("off")
+        ModeOverride.objects.set_override("off", reason="test override")
         line = self._loop_line()
         assert "mode: manual" in line, line
         assert "availability:" not in line, line

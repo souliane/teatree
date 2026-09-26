@@ -18,6 +18,7 @@ docs are out of scope because they legitimately carry templated placeholders
 import re
 from pathlib import Path
 
+from teatree.config.credential_pass_key import CORE_CREDENTIALS, credential_of_setting
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 
 _SRC = Path(__file__).resolve().parents[2] / "src"
@@ -48,7 +49,9 @@ def test_enumeration_is_not_vacuous() -> None:
 
 def test_every_advised_key_is_settable() -> None:
     unsettable = {
-        key: sorted(set(files)) for key, files in _advised_keys().items() if key not in ALL_KNOWN_CONFIG_SETTINGS
+        key: sorted(set(files))
+        for key, files in _advised_keys().items()
+        if key not in ALL_KNOWN_CONFIG_SETTINGS and credential_of_setting(key) not in CORE_CREDENTIALS
     }
     assert not unsettable, (
         f"advice names keys `config_setting set` refuses: {unsettable}. "

@@ -2,19 +2,17 @@
 
 Renders what an operator needs to reason about the two normal handles — which
 schedule is active, which preset it selects, and what each preset says about each
-loop. The per-loop opinion is deliberately **tri-state**: ``on`` forces the loop
-to run, ``off`` masks it, and *no opinion* hands the decision to the loop's own
-base ``enabled`` column — now and in future, so a later base flip silently changes
-behaviour. Nothing here recomputes an admission verdict; the effective verdict and
-its deciding layer come from :mod:`teatree.loops.preset_status`, the same resolver
-``t3 loop preset show`` prints.
+loop. Every preset answers for every loop, ``on`` or ``off``, so a tab reads as the
+whole posture rather than a partial opinion. Nothing here recomputes an admission
+verdict; the effective verdict and its deciding layer come from
+:mod:`teatree.loops.preset_status`, the same resolver ``t3 loop preset show`` prints.
 """
 
 from dataclasses import dataclass
 
 from teatree.core.models import Loop, Mode, ModeSchedule, ModeScheduleSlot
 from teatree.loops.preset_admin import PresetReferrers, preset_referrers
-from teatree.loops.preset_editing import ENTRY_INHERIT, ENTRY_OFF, ENTRY_ON, entry_state_of
+from teatree.loops.preset_editing import ENTRY_OFF, ENTRY_ON, entry_state_of
 from teatree.loops.preset_status import PresetSummary, active_summary
 from teatree.loops.schedule_editing import active_schedule_name
 from teatree.loops.shipped_guard import is_shipped, shipped_delete_phrase
@@ -24,17 +22,16 @@ WEEKDAY_LABELS: tuple[str, ...] = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Su
 
 @dataclass(frozen=True, slots=True)
 class PresetEntryRow:
-    """One loop's row inside a preset tab: what it does, its base, and this preset's opinion."""
+    """One loop's row inside a preset tab: what it does and whether this preset runs it."""
 
     loop_name: str
     description: str
-    base_enabled: bool
     state: str
 
 
 @dataclass(frozen=True, slots=True)
 class PresetCard:
-    """One preset tab — its identity plus a row per loop and the on/off/no-opinion tally."""
+    """One preset tab — its identity plus a row per loop and the on/off tally."""
 
     name: str
     description: str
@@ -54,15 +51,6 @@ class PresetCard:
     @property
     def off_count(self) -> int:
         return self._count(ENTRY_OFF)
-
-    @property
-    def inherit_count(self) -> int:
-        return self._count(ENTRY_INHERIT)
-
-    @property
-    def inherit_loops(self) -> tuple[str, ...]:
-        """The loops this preset holds NO opinion on — the gap an operator must see."""
-        return tuple(row.loop_name for row in self.entries if row.state == ENTRY_INHERIT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +101,7 @@ class PresetEditorView:
     active_schedule: str
     selected_preset: str
     selected_card: PresetCard | None = None
-    entry_states: tuple[str, str, str] = (ENTRY_ON, ENTRY_OFF, ENTRY_INHERIT)
+    entry_states: tuple[str, str] = (ENTRY_ON, ENTRY_OFF)
     weekdays: tuple[tuple[int, str], ...] = tuple(enumerate(WEEKDAY_LABELS))
 
 
@@ -152,7 +140,6 @@ def _preset_card(preset: Mode, loops: tuple[Loop, ...], *, active_name: str) -> 
             PresetEntryRow(
                 loop_name=loop.name,
                 description=loop.description,
-                base_enabled=loop.enabled,
                 state=entry_state_of(preset, loop.name),
             )
             for loop in loops

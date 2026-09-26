@@ -51,21 +51,34 @@ class TestGuardRepoRemoteSlug:
             git_guard.guard_repo_remote_slug(repo="/tmp/r", expected_slug="souliane/teatree")
 
 
-class TestIsGithubSlug:
-    def test_owner_repo_is_a_slug(self) -> None:
-        assert git_guard.is_github_slug("souliane/teatree") is True
+class TestIsRemoteProjectPath:
+    """Which ``repos`` entries carry a canonical remote identity to guard against (#151).
 
-    def test_bare_basename_is_not_a_slug(self) -> None:
-        assert git_guard.is_github_slug("teatree") is False
+    Two-segment-only was the defect: a GitLab project path nests arbitrarily
+    (``group/subgroup/repo``), so restricting the predicate to one "/" left every
+    GitLab namespace unguarded on the very clone-resolution rungs that serve it.
+    """
 
-    def test_nested_namespace_is_not_a_two_part_slug(self) -> None:
-        assert git_guard.is_github_slug("acme/team/backend") is False
+    def test_owner_repo_is_a_project_path(self) -> None:
+        assert git_guard.is_remote_project_path("souliane/teatree") is True
 
-    def test_empty_is_not_a_slug(self) -> None:
-        assert git_guard.is_github_slug("") is False
+    def test_a_three_segment_gitlab_path_is_a_project_path(self) -> None:
+        assert git_guard.is_remote_project_path("acme/team/backend") is True
 
-    def test_missing_owner_is_not_a_slug(self) -> None:
-        assert git_guard.is_github_slug("/teatree") is False
+    def test_a_deeply_nested_namespace_is_a_project_path(self) -> None:
+        assert git_guard.is_remote_project_path("org/division/team/backend") is True
 
-    def test_missing_name_is_not_a_slug(self) -> None:
-        assert git_guard.is_github_slug("souliane/") is False
+    def test_bare_basename_is_not_a_project_path(self) -> None:
+        assert git_guard.is_remote_project_path("teatree") is False
+
+    def test_empty_is_not_a_project_path(self) -> None:
+        assert git_guard.is_remote_project_path("") is False
+
+    def test_an_absolute_path_is_not_a_project_path(self) -> None:
+        assert git_guard.is_remote_project_path("/teatree") is False
+
+    def test_missing_name_is_not_a_project_path(self) -> None:
+        assert git_guard.is_remote_project_path("souliane/") is False
+
+    def test_an_empty_middle_segment_is_not_a_project_path(self) -> None:
+        assert git_guard.is_remote_project_path("acme//backend") is False

@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +27,18 @@ def _classification(ahead: list[BranchCommit] | None = None) -> SubjectPrefilter
 
 def _commit(sha: str = "abc", subject: str = "feat: x") -> BranchCommit:
     return BranchCommit(sha=sha, subject=subject, is_merge=False)
+
+
+def _clone_with_deleted_branch(tmp_path: Path) -> tuple[Path, str]:
+    origin = make_git_repo(tmp_path / "origin.git", bare=True)
+    clone = tmp_path / "clone"
+    run_git(tmp_path, "clone", "-q", str(origin), str(clone))
+    run_git(clone, "commit", "-q", "--allow-empty", "-m", "initial")
+    run_git(clone, "push", "-q", "origin", "main")
+    branch = "deleted-feature"
+    run_git(clone, "branch", branch)
+    run_git(clone, "branch", "-D", branch)
+    return clone, branch
 
 
 class TestClassifyBranch(TestCase):
@@ -457,12 +470,11 @@ class TestFindOrphansInWorkspace(TestCase):
 
     @patch("teatree.core.gates.orphan_guard.clone_root")
     @patch("teatree.core.gates.orphan_guard.classify_branch")
-    def test_skips_worktree_whose_classification_fails_but_reports_the_rest(
+    def test_non_missing_git_failure_propagates(
         self,
         mock_classify: MagicMock,
         mock_clone_root: MagicMock,
     ) -> None:
-        """#2937: one worktree's git failure must not crash the whole scan."""
         fake_workspace = MagicMock()
 
         def _fake_div(_self: object, x: str) -> MagicMock:
@@ -472,26 +484,30 @@ class TestFindOrphansInWorkspace(TestCase):
         mock_clone_root.return_value = fake_workspace
 
         self._make_worktree("org/alpha", "feat-1")
-        self._make_worktree("org/beta", "feat-2")
+        mock_classify.side_effect = CommandFailedError(
+            cmd=["git", "-C", "/ws/org/alpha", "log", "feat-1", "--not", "origin/main"],
+            returncode=128,
+            stdout="",
+            stderr="fatal: cannot change to '/ws/org/alpha': No such file or directory",
+        )
 
-        def classify(repo: str, branch: str) -> BranchReport:
-            if branch == "feat-1":
-                raise CommandFailedError(
-                    cmd=["git", "-C", repo, "log", branch, "--not", "origin/main"],
-                    returncode=128,
-                    stdout="",
-                    stderr="fatal: cannot change to '/ws/org/alpha': No such file or directory",
-                )
-            return BranchReport(repo=repo, branch=branch, status=BranchStatus.PUSHED_ORPHAN, ahead_count=1)
+        with pytest.raises(CommandFailedError):
+            find_orphans_in_workspace()
 
-        mock_classify.side_effect = classify
+    def test_deleted_branch_is_skipped_and_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            clone, branch = _clone_with_deleted_branch(root)
+            self._make_worktree(clone.name, branch)
 
-        orphans = find_orphans_in_workspace()
+            with (
+                patch("teatree.core.gates.orphan_guard.clone_root", return_value=root),
+                self.assertLogs("teatree.core.gates.orphan_guard", level="WARNING") as logs,
+            ):
+                orphans = find_orphans_in_workspace()
 
-        branches = [o.branch for o in orphans]
-        assert "feat-1" not in branches
-        assert "feat-2" in branches
-        assert len(orphans) == 1
+        assert orphans == []
+        assert any("branch missing" in message and branch in message for message in logs.output)
 
     @patch("teatree.core.gates.orphan_guard.clone_root")
     @patch("teatree.core.gates.orphan_guard.classify_branch")

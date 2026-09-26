@@ -236,7 +236,9 @@ class TestNotionClient:
 
         _patch_notion_transport(monkeypatch, handler)
 
-        NotionClient(token="secret").update_page_status("pg-9", property_name="Status", value="Merged")
+        client = NotionClient(token="secret")
+        monkeypatch.setattr(client._write_guard, "check", lambda _target: None)
+        client.update_page_status("pg-9", property_name="Status", value="Merged")
 
         assert seen["method"] == "PATCH"
         assert seen["url"] == "https://api.notion.com/v1/pages/pg-9"

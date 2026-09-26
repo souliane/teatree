@@ -30,7 +30,9 @@ _MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 
 
 def _resolved(*, entries: dict[str, bool] | None = None, name: str = "present") -> ResolvedMode:
-    return ResolvedMode(mode=Mode(name=name, entries=entries or {}), source="override", until=None)
+    return ResolvedMode(
+        mode=Mode(name=name, entries=entries or {}), source="override", until=None, fail_open=entries is None
+    )
 
 
 def _mini(name: str) -> MiniLoop:
@@ -59,7 +61,7 @@ class TestBlockedLoopsStateTheirReason(django.test.TestCase):
         """The exact shape that hid the review outage: enabled, due — and force-skipped."""
         now = timezone.now()
         Loop.objects.create(name="br-forced", delay_seconds=60, prompt=_prompt())
-        LoopState.objects.override("br-forced", on=False, reason="holding until the variable is corrected")
+        Loop.objects.set_manual_override("br-forced", runs=False, reason="holding until the variable is corrected")
 
         reason = _reason("br-forced", now=now)
 
@@ -81,11 +83,13 @@ class TestBlockedLoopsStateTheirReason(django.test.TestCase):
 
         assert "not due" in _reason("br-cooling", now=now).lower()
 
-    def test_a_disabled_loop_says_it_is_disabled(self) -> None:
+    def test_a_force_off_loop_says_its_override_did_it(self) -> None:
         now = timezone.now()
-        Loop.objects.create(name="br-off", delay_seconds=60, prompt=_prompt(), enabled=False)
+        Loop.objects.create(
+            name="br-off", delay_seconds=60, prompt=_prompt(), enabled=False, override_reason="test override"
+        )
 
-        assert "disabled" in _reason("br-off", now=now).lower()
+        assert "manual override" in _reason("br-off", now=now).lower()
 
     def test_a_loop_the_active_mode_masks_off_names_the_mode(self) -> None:
         now = timezone.now()
@@ -116,7 +120,7 @@ class TestBlockedLoopsStateTheirReason(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="br-quiet", delay_seconds=60, prompt=_prompt())
         Loop.objects.create(name="br-blocked", delay_seconds=60, prompt=_prompt())
-        LoopState.objects.override("br-blocked", on=False, reason="emergency")
+        Loop.objects.set_manual_override("br-blocked", runs=False, reason="emergency")
         quiet = MiniLoop(name="br-quiet", default_cadence_seconds=60, build_jobs=lambda **_: [])
 
         with (
@@ -149,7 +153,7 @@ class TestReasonedPassKeepsTheExistingContracts(django.test.TestCase):
     def test_a_blocked_loop_keeps_its_cadence_anchor(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="bc-anchor", delay_seconds=60, prompt=_prompt())
-        LoopState.objects.override("bc-anchor", on=False, reason="emergency")
+        Loop.objects.set_manual_override("bc-anchor", runs=False, reason="emergency")
 
         _reason("bc-anchor", now=now)
 
@@ -161,7 +165,7 @@ class TestReasonedPassKeepsTheExistingContracts(django.test.TestCase):
         registry = tuple(_mini(f"bc-n{i}") for i in range(5))
         for loop in registry:
             Loop.objects.create(name=loop.name, delay_seconds=60, prompt=_prompt())
-        LoopState.objects.override("bc-n0", on=False, reason="emergency")
+        Loop.objects.set_manual_override("bc-n0", runs=False, reason="emergency")
         LoopState.objects.pause("bc-n1")
 
         with (

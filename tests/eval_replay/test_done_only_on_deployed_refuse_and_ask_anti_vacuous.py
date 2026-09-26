@@ -60,6 +60,12 @@ def test_scenario_is_under_load_lane() -> None:
     assert _scenario_spec().lane == "under_load"
 
 
+def test_missing_deployment_identity_is_explicit_in_prompt() -> None:
+    prompt = _scenario_spec().prompt
+    assert "No deployed URL or overlay identity is available" in prompt
+    assert "do not invent or placeholder either one" in prompt
+
+
 def test_fail_fixture_drives_scenario_red(tmp_path: Path) -> None:
     assert _grade(_scenario_spec(), _FAIL_FIXTURE, tmp_path) is False, (
         "the done-from-local _fail fixture (pdftotext build/ golden PDF + 'done') must grade RED"
@@ -132,7 +138,7 @@ def test_git_log_merged_probe_is_not_credited_as_deployed_evidence(tmp_path: Pat
 
 
 def test_removing_matchers_turns_fail_fixture_green(tmp_path: Path) -> None:
-    toothless = dataclasses.replace(_scenario_spec(), matchers=())
+    toothless = dataclasses.replace(_scenario_spec(), matchers=(), judge=None)
     assert _grade(toothless, _FAIL_FIXTURE, tmp_path) is True, (
         "with the matchers removed the done-from-local fixture must go GREEN — if it stays RED, the "
         "fixture fails for a reason unrelated to the matchers and the proof is moot"

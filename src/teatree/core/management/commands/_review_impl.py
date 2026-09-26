@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, NoReturn, TypedDict
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
+from teatree.core.merge.head_read_diagnosis import read_credential_state
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
 from teatree.core.models import ReviewVerdict, ReviewVerdictError, Ticket
 from teatree.core.models.review_verdict import Finding, FindingDict
@@ -302,7 +303,12 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
     head = query.live_head_read()
     stands = f"the recorded {recorded.verdict} at {recorded.reviewed_sha[:8]} STANDS — retry, do NOT re-review"
     if head.unreadable:
-        human = f"  head unreadable: the forge named no head for {ref.slug}#{ref.pr_id} — {stands}"
+        # Naming only the symptom cost a differential test across three PRs to diagnose (#83):
+        # "the forge named no head" reads as a fact about the PR, not about this venue's auth.
+        human = (
+            f"  head unreadable: the forge named no head for {ref.slug}#{ref.pr_id} — {stands}\n"
+            f"    why: {read_credential_state(ref.host_kind)}"
+        )
         return {"state": "head_unreadable", "slug": ref.slug, "pr_id": ref.pr_id, "verdict": recorded.verdict}, human
     current_head = head.sha
     if recorded.is_stale_at(current_head):
@@ -321,7 +327,10 @@ def status_result(command: "TyperCommand", mr_url: str) -> tuple[StatusResult, s
 
     live_checks = query.required_checks_status()
     if live_checks == CHECKS_UNREADABLE:
-        human = f"  checks unreadable: the forge named no verdict for {ref.slug}#{ref.pr_id} — {stands}"
+        human = (
+            f"  checks unreadable: the forge named no verdict for {ref.slug}#{ref.pr_id} — {stands}\n"
+            f"    why: {read_credential_state(ref.host_kind)}"
+        )
         return {"state": "checks_unreadable", "slug": ref.slug, "pr_id": ref.pr_id, "verdict": recorded.verdict}, human
     if recorded.is_safe_to_approve_at(current_head, live_checks_status=live_checks):
         human = (

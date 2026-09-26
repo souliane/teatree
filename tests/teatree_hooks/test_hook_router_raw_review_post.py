@@ -203,3 +203,41 @@ class TestAllowsReadsAndUnrelated:
     def test_empty_command_passes_through(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert handle_block_raw_review_post(_bash_event("")) is not True
         assert capsys.readouterr().out.strip() == ""
+
+
+class TestColdGuardClassifiesTheMethodPerApiSegment:
+    """The cold PreToolUse guard reads the method from the ``glab api`` segment only.
+
+    The transcript shapes that were denied as writes: a read-only GET followed by
+    ``pgrep -f`` / ``rm -f`` in the same Bash call, or preceded by ``glab repo view -F json``.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            (
+                'glab api "/projects/1/merge_requests/6898/notes?per_page=10" 2>/dev/null\n'
+                'pgrep -f "t3 review" >/dev/null'
+            ),
+            (
+                'glab api "projects/1/merge_requests/8075/notes?per_page=100" 2>/dev/null | python3 -c "print(1)"\n'
+                "rm -f /tmp/x.md"
+            ),
+            (
+                "PID=$(glab repo view org/repo -F json | jq .id); "
+                'glab api "projects/$PID/issues/4680/notes?per_page=100"'
+            ),
+        ],
+    )
+    def test_read_next_to_unrelated_body_flag_is_allowed(
+        self, command: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert raw_review_post_guard.is_raw_review_write(command) is False
+        assert handle_block_raw_review_post(_bash_event(command)) is not True
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_write_in_its_own_segment_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = "rm -f /tmp/x; glab api projects/1/merge_requests/7/notes --method POST --field body=@/tmp/b.md"
+        assert handle_block_raw_review_post(_bash_event(command)) is True
+        assert _parse_deny(capsys) is not None
+        assert raw_review_post_detect.raw_review_deny_reason(command) is not None

@@ -89,12 +89,11 @@ def test_banned_terms_hook_flags_a_configured_term(tmp_path: Path) -> None:
     assert "BANNED TERM" in result.stdout
 
 
-@pytest.mark.integration
-def test_banned_terms_hook_ignores_matches_inside_email_addresses(tmp_path: Path) -> None:
-    home, db = _stage_hook_config(tmp_path, ["internalterm"])
+def _run_banned_terms_hook(tmp_path: Path, sample_line: str, terms: list[str]) -> subprocess.CompletedProcess[str]:
+    home, db = _stage_hook_config(tmp_path, terms)
 
     sample = tmp_path / "AGENTS.md"
-    sample.write_text("Git author: adrien <adrien.cossa@internalterm.example>\n", encoding="utf-8")
+    sample.write_text(sample_line, encoding="utf-8")
 
     root = find_project_root()
     assert root is not None
@@ -103,12 +102,34 @@ def test_banned_terms_hook_ignores_matches_inside_email_addresses(tmp_path: Path
     env["HOME"] = str(home)
     env["T3_CONFIG_DB"] = str(db)
 
-    result = subprocess.run(
+    return subprocess.run(
         [str(script), str(sample)],
         capture_output=True,
         check=False,
         env=env,
         text=True,
+    )
+
+
+@pytest.mark.integration
+def test_banned_terms_hook_flags_a_term_inside_an_email_address(tmp_path: Path) -> None:
+    """An address is published content — only the allowlist exempts an identifier inside one."""
+    result = _run_banned_terms_hook(
+        tmp_path,
+        "Git author: jane <jane.doe@internalterm.example>\n",
+        ["internalterm"],
+    )
+
+    assert result.returncode == 1
+    assert "BANNED TERM" in result.stdout
+
+
+@pytest.mark.integration
+def test_banned_terms_hook_leaves_a_clean_email_address_alone(tmp_path: Path) -> None:
+    result = _run_banned_terms_hook(
+        tmp_path,
+        "Git author: jane <jane.doe@example.org>\n",
+        ["internalterm"],
     )
 
     assert result.returncode == 0

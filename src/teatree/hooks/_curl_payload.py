@@ -15,7 +15,10 @@ this module without a cycle.
 import json
 from typing import Final
 
-from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, attached_value
+from teatree.hooks._parser_primitives import BODY_FIELD_NAMES, FAIL_CLOSED_SENTINEL, attached_value
+
+# The argv walkers' catalogue plus Slack's ``text``, which has no CLI-flag form.
+_JSON_BODY_KEYS: Final[tuple[str, ...]] = (*sorted(BODY_FIELD_NAMES), "text")
 
 # Curl long-option data flags — payload is JSON-or-text.
 _CURL_DATA_LONG_FLAGS: Final[frozenset[str]] = frozenset(
@@ -31,18 +34,18 @@ _CURL_FORM_FLAGS: Final[frozenset[str]] = frozenset({"-F", "--form", "--form-str
 
 
 def _json_body_fields(blob: str) -> list[str]:
-    """Return ``text``/``message``/``body`` values from a JSON blob, if any."""
+    """Return the body-bearing values a JSON blob carries, if any."""
     try:
         decoded = json.loads(blob)
     except (ValueError, TypeError):
         return []
     if not isinstance(decoded, dict):
         return []
-    return [str(decoded[key]) for key in ("text", "message", "body") if key in decoded]
+    return [str(decoded[key]) for key in _JSON_BODY_KEYS if key in decoded]
 
 
 def _scan_curl_payload(raw: str, payloads: list[str]) -> None:
-    """Append ``raw`` plus its JSON ``text``/``message``/``body`` fields.
+    """Append ``raw`` plus every body-bearing JSON field it decodes to.
 
     A non-JSON-decodable body that LOOKS like JSON (starts with ``{`` or
     ``[``) fails closed because we cannot be sure the gate's pattern

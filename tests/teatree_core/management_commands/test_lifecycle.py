@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 from io import StringIO
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +21,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.config.settings import TeaTreeConfig, UserSettings
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.overlay import ProvisionStep
+from tests._git_repo import make_git_repo, run_git
 from tests.teatree_core.management_commands._overlays import (
     FAILING_IMPORT_OVERLAY,
     FULL_OVERLAY,
@@ -37,6 +38,15 @@ pytestmark = pytest.mark.filterwarnings(
 
 
 # ── Lifecycle commands ──────────────────────────────────────────────
+
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _real_git_everything_else_canned(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Let real ``git`` answer the checkout probes; ``direnv``/``prek`` stay canned and observable."""
+    if argv and argv[0] == "git":
+        return _REAL_SUBPROCESS_RUN(argv, **kwargs)
+    return subprocess.CompletedProcess(argv, 0, "", "")
 
 
 class TestLifecycleSetup(TestCase):
@@ -306,10 +316,12 @@ class TestLifecycleSetup(TestCase):
     def test_runs_prek_install_when_config_exists(self) -> None:
         """Setup runs 'prek install -f' when .pre-commit-config.yaml exists in worktree path."""
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            wt_path = tmp_path / "worktree"
-            wt_path.mkdir()
+            # A REAL linked worktree: the install resolves the shared git dir before it may
+            # quarantine anything and refuses a directory `git rev-parse` cannot answer for,
+            # while `_reject_main_clone` refuses a path whose `.git` is a directory.
+            clone = make_git_repo(Path(tmp).resolve() / "clone")
+            wt_path = Path(tmp).resolve() / "worktree"
+            run_git(clone, "worktree", "add", "-q", str(wt_path), "-b", "feature")
             (wt_path / ".pre-commit-config.yaml").write_text("repos: []\n", encoding="utf-8")
 
             ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/100")
@@ -322,7 +334,7 @@ class TestLifecycleSetup(TestCase):
             )
 
             with patch.object(utils_run_mod, "subprocess") as mock_sp:
-                mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                mock_sp.run.side_effect = _real_git_everything_else_canned
                 mock_sp.TimeoutExpired = subprocess.TimeoutExpired
                 mock_sp.CompletedProcess = subprocess.CompletedProcess
                 call_command("worktree", "provision", path=str(wt_path))
@@ -333,7 +345,9 @@ class TestLifecycleSetup(TestCase):
             ]
             assert len(prek_calls) == 1
             assert prek_calls[0][0][0] == ["prek", "install", "-f"]
-            assert prek_calls[0][1].get("cwd") == str(wt_path)
+            # `_install_cwd` answers with `git rev-parse --show-toplevel`, which macOS reports
+            # under /private/var while `tempfile` hands back /var.
+            assert Path(prek_calls[0][1]["cwd"]).resolve() == wt_path.resolve()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

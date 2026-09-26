@@ -49,6 +49,7 @@ from django.conf import settings
 from django.db.models import Count, Max, Q
 from django.utils import timezone
 
+from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, stall_fingerprints, stall_kinds
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
@@ -70,13 +71,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_STUCK_IDLE_HOURS = 6
 
-#: The subject ticket a halt question names. Public because the question carries no
-#: dedupe marker, session or parked task, so the TEXT is the only handle the question
-#: drain has on its subject (:mod:`teatree.loop.question_subjects`).
-STUCK_HALT_MARKER = "[stuck-redispatch-halt ticket={pk}]"
-#: Extracts the ticket pk from an escalation marker so an already-escalated ticket is
-#: skipped without re-running its per-ticket budget query every tick (bounds the sweep).
-STUCK_HALT_PK_RE = re.compile(r"\[stuck-redispatch-halt ticket=(\d+)\]")
+#: The indexed dedupe key one halted ticket escalates under, matching the ``repair-*``
+#: siblings. Answering the question must never resurrect a fresh one, so the guard reads
+#: EVERY row carrying the marker rather than only the pending ones ``record`` looks at.
+#: Public because the question drain names the halt's subject ticket from it
+#: (:mod:`teatree.loop.question_subjects`).
+STUCK_HALT_MARKER = "stuck-redispatch-halt:{pk}"
+STUCK_HALT_PK_RE = re.compile(r"^stuck-redispatch-halt:(\d+)$")
 
 #: The non-terminal work-states an AUTHOR ticket re-dispatches from, mapped to the
 #: phase the state implies. NOT_STARTED / SCOPED await provisioning (excluded);
@@ -122,7 +123,10 @@ def redispatch_stuck_tickets() -> int:
         # up, a scheduling method that raises unexpectedly) must NOT abort the sweep and
         # strand every OTHER stuck ticket. Record it loudly and move on.
         try:
-            scheduled += _redispatch_one(candidate)
+            with redispatch_window() as refusal:
+                if refusal:
+                    continue
+                scheduled += _redispatch_one(candidate)
         except Exception:
             logger.exception("Stuck-redispatch skipped ticket %s after an unexpected error", candidate.ticket.pk)
     return scheduled
@@ -156,10 +160,10 @@ def _already_escalated_ticket_pks() -> set[int]:
     never re-escalated when its question is answered/dismissed and never re-budget-
     queried every tick.
     """
-    texts = DeferredQuestion.objects.filter(question__contains="[stuck-redispatch-halt ticket=").values_list(
-        "question", flat=True
+    markers = DeferredQuestion.objects.filter(dedupe_marker__startswith="stuck-redispatch-halt:").values_list(
+        "dedupe_marker", flat=True
     )
-    return {int(m.group(1)) for text in texts if (m := STUCK_HALT_PK_RE.search(text))}
+    return {int(m.group(1)) for marker in markers if (m := STUCK_HALT_PK_RE.match(marker))}
 
 
 def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate]:
@@ -391,20 +395,25 @@ def _escalate_once(ticket: Ticket, *, reason: str) -> None:
 
     Idempotent: a per-ticket marker deduped across ALL questions (answered or not) so a
     halted stuck ticket escalates exactly once and answering/dismissing the question
-    never resurrects a fresh one. Reuses the §17.1 invariant 9 surface (statusline /
-    ``t3 teatree questions list`` / Slack DM).
+    never resurrects a fresh one. INTERNAL, like its ``repair-stall`` / ``repair-cap``
+    siblings — a halted re-dispatch budget is the box reporting its own health, and it
+    stays visible on the statusline and ``t3 teatree questions list`` without paging.
     """
     marker = STUCK_HALT_MARKER.format(pk=ticket.pk)
-    already = DeferredQuestion.objects.filter(question__contains=marker).exists()
-    if already:
+    if DeferredQuestion.objects.filter(dedupe_marker=marker).exists():
         return
     where = ticket.issue_url or f"ticket {ticket.pk}"
     question = (
-        f"{marker} Stuck ticket {where} (state {ticket.state!r}) has no work in flight but "
+        f"Stuck ticket {where} (state {ticket.state!r}) has no work in flight but "
         f"re-dispatch is halted: {reason} Auto-scheduling is stopped so it does not re-run a "
         "doomed phase forever. How should it proceed — investigate, rework, or ignore?"
     )
-    DeferredQuestion.record(question, session_id="")
+    DeferredQuestion.record(
+        question,
+        session_id="",
+        dedupe_marker=marker,
+        audience=DeferredQuestion.Audience.INTERNAL,
+    )
 
 
 def _idle_threshold_hours() -> int:

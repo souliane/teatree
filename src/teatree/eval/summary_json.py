@@ -18,21 +18,33 @@ the in-process lanes apply (souliane/teatree#3855, souliane/teatree#3921).
 """
 
 import dataclasses
+import hashlib
 import json
 import os
-from collections.abc import Sequence
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
 from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX
 from teatree.eval.discovery import find_spec
 from teatree.eval.harness_failure import measured_nothing
-from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE
+from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import ScenarioResult
 from teatree.eval.triage import ScenarioRecord, ScenarioTriage, classify_red
 
-_HEAD_SHA_ENV_VAR = "GITHUB_SHA"
+_HEAD_SHA_ENV_VARS = ("CI_COMMIT_SHA", "GITHUB_SHA")
+
+
+def scenario_version(spec: EvalSpec) -> str:
+    """Stable version of the scenario definition at this checkout."""
+    if spec.source_path.is_file():
+        source = spec.source_path.read_bytes()
+    else:
+        source = repr(dataclasses.replace(spec, source_path=Path())).encode()
+    return hashlib.sha256(spec.name.encode() + b"\0" + source).hexdigest()
+
 
 AnyResult = ScenarioResult | PassAtKResult
 
@@ -46,6 +58,7 @@ class _ScenarioRow:
     """
 
     name: str
+    version: str
     lane: str
     surface: str
     verdict: str
@@ -53,8 +66,9 @@ class _ScenarioRow:
     terminal_reason: str
     matcher_failed: bool
     judge_failed: bool
+    judge_unverified: bool = False
 
-    def as_json(self) -> ScenarioRecord:
+    def as_json(self, *, escalation: str | None = None) -> ScenarioRecord:
         triage = classify_red(
             ScenarioTriage(
                 verdict=self.verdict,
@@ -70,8 +84,10 @@ class _ScenarioRow:
         # run MEASURED NOTHING has no verdict to exempt, so it is never advisory (#3922).
         # The lane already exited on the guard; this keeps the merged-artifact gate that
         # re-runs afterwards from blessing the shard the first gate failed.
+        outcome = _outcome(self, triage.value if triage is not None else None, escalation=escalation)
         return {
             "name": self.name,
+            "version": self.version,
             "lane": self.lane,
             "surface": self.surface,
             "verdict": self.verdict,
@@ -80,17 +96,40 @@ class _ScenarioRow:
             "matcher_failed": self.matcher_failed,
             "judge_failed": self.judge_failed,
             "triage_class": triage.value if triage is not None else None,
+            "outcome": outcome,
             "advisory": self.surface == INTERACTIVE_SURFACE and not measured_nothing(self.terminal_reason),
         }
+
+
+_OUTCOMES = ("PASS", "FLAKY", "BEHAVIOR_FAIL", "INFRA_BLOCKED", "UNVERIFIED")
+
+
+def _outcome(row: _ScenarioRow, triage: str | None, *, escalation: str | None) -> str:
+    if row.verdict == "skip" or row.judge_unverified:
+        return "UNVERIFIED"
+    if row.verdict == "pass":
+        return "PASS"
+    if escalation == "unresolved":
+        return "UNVERIFIED"
+    if escalation == "flaky":
+        return "FLAKY"
+    if triage is not None and triage.startswith("infra_"):
+        return "INFRA_BLOCKED"
+    return "BEHAVIOR_FAIL"
 
 
 def _judge_failed(result: ScenarioResult) -> bool:
     return result.judge is not None and not result.judge.skipped and not result.judge.passed
 
 
+def _judge_unverified(result: ScenarioResult) -> bool:
+    return result.spec.judge is not None and (result.judge is None or result.judge.skipped)
+
+
 def _row_from_scenario(result: ScenarioResult) -> _ScenarioRow:
     return _ScenarioRow(
         name=result.spec.name,
+        version=scenario_version(result.spec),
         lane=result.spec.lane,
         surface=result.spec.surface,
         verdict=result.verdict,
@@ -98,6 +137,7 @@ def _row_from_scenario(result: ScenarioResult) -> _ScenarioRow:
         terminal_reason=result.run.terminal_reason,
         matcher_failed=any(not m.passed for m in result.matcher_results),
         judge_failed=_judge_failed(result),
+        judge_unverified=_judge_unverified(result),
     )
 
 
@@ -124,6 +164,7 @@ def _row_from_pass_at_k(result: PassAtKResult) -> _ScenarioRow:
     spec = find_spec(result.spec_name)
     return _ScenarioRow(
         name=result.spec_name,
+        version=scenario_version(spec) if spec is not None else "",
         lane=spec.lane if spec is not None else "unknown",
         # An unresolvable spec falls back to the GATING surface: a row whose surface
         # cannot be proven advisory must never be exempted by default.
@@ -135,6 +176,7 @@ def _row_from_pass_at_k(result: PassAtKResult) -> _ScenarioRow:
         terminal_reason=_pass_at_k_terminal_reason(result, executed),
         matcher_failed=any(any(not m.passed for m in t.matcher_results) for t in executed),
         judge_failed=any(_judge_failed(t) for t in executed),
+        judge_unverified=any(_judge_unverified(t) for t in executed),
     )
 
 
@@ -152,7 +194,13 @@ def _model_of(results: Sequence[AnyResult]) -> str:
     return "unknown"
 
 
-def render_summary_json(results: Sequence[AnyResult], *, head_sha: str, generated_at: str) -> str:
+def render_summary_json(
+    results: Sequence[AnyResult],
+    *,
+    head_sha: str,
+    generated_at: str,
+    escalations: Mapping[str, str] | None = None,
+) -> str:
     """Render the publish-safe per-scenario JSON (§2.4); ``head_sha``/``generated_at`` are injected.
 
     Injecting the sha and timestamp keeps the function pure and deterministic —
@@ -161,6 +209,8 @@ def render_summary_json(results: Sequence[AnyResult], *, head_sha: str, generate
     ``Sequence[PassAtKResult]``.
     """
     rows = [_row(result) for result in results]
+    scenario_rows = [row.as_json(escalation=(escalations or {}).get(row.name)) for row in rows]
+    counts = Counter(row["outcome"] for row in scenario_rows)
     totals = {
         "total": len(rows),
         "passed": sum(1 for r in rows if r.verdict == "pass"),
@@ -172,13 +222,16 @@ def render_summary_json(results: Sequence[AnyResult], *, head_sha: str, generate
         "model": _model_of(results),
         "head_sha": head_sha,
         "totals": totals,
-        "scenarios": [row.as_json() for row in rows],
+        "outcome_counts": {outcome: counts[outcome] for outcome in _OUTCOMES},
+        "scenarios": scenario_rows,
     }
     return json.dumps(payload, indent=2)
 
 
-def write_summary_json(results: Sequence[AnyResult], path: Path) -> None:
-    """Resolve ``head_sha`` (``GITHUB_SHA`` env) + ``generated_at`` (clock) and write the JSON.
+def write_summary_json(
+    results: Sequence[AnyResult], path: Path, *, escalations: Mapping[str, str] | None = None
+) -> None:
+    """Resolve ``head_sha`` (GitLab or GitHub env) and write the JSON.
 
     The single writer both the single-trial and pass@k lanes call, so the
     environment/clock resolution lives in one place and the pure renderer stays
@@ -187,8 +240,9 @@ def write_summary_json(results: Sequence[AnyResult], path: Path) -> None:
     path.write_text(
         render_summary_json(
             results,
-            head_sha=os.environ.get(_HEAD_SHA_ENV_VAR, ""),
+            head_sha=next((os.environ[name] for name in _HEAD_SHA_ENV_VARS if os.environ.get(name)), ""),
             generated_at=datetime.now(UTC).isoformat(),
+            escalations=escalations,
         ),
         encoding="utf-8",
     )

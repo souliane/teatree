@@ -13,17 +13,26 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from teatree.agents.codex_shared_app_server import reset_shared_codex_app_servers
+from teatree.agents.live_mailbox import reset_shared_brokers
+from teatree.agents.skill_routing import clear_route_availability_cache
+from teatree.cli.slack.listen import reset_dm_recorders
 from teatree.config.host_projection import SILENCE_ADVISORY_ENV, reset_advisory_memo
+from teatree.config.override_read_health import note_healthy_read
+from teatree.core.admission import machine_load
 from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
 from teatree.core.models.types import reset_stripped_key_warnings
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
+from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
+from teatree.utils.host_pressure import reset_missing_warning_memo
+from teatree.utils.ram_probe import available_cpu_count
 from teatree.utils.work_tree import reset_cwd_cache
 from tests._db_template import build_or_reuse_template, restore_from_template
-from tests._machine_probe import pinned_ram_headroom
+from tests._machine_probe import pinned_load_and_cores, pinned_ram_headroom
 from tests._speak_thread_sentinel import SpeakThreadSentinel
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
@@ -80,6 +89,28 @@ def _strip_git_hook_env() -> None:
 
 
 _strip_git_hook_env()
+
+
+def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
+    """Bound a bare ``-n auto`` by this process's CPU and usable RAM."""
+    return bounded_auto_workers(
+        cores=available_cpu_count(),
+        memory_mib=ram_scope.read_ram_headroom().available_mib,
+        explicit=os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS"),
+    )
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Refuse a non-sharded whole-tree local run before test collection starts."""
+    config = session.config
+    if hasattr(config, "workerinput"):
+        return
+    sharded = bool(getattr(config.option, "splits", 0) and getattr(config.option, "group", 0)) or bool(
+        os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
+    )
+    refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded)
+    if refusal:
+        raise pytest.UsageError(refusal)
 
 
 def load_script(name: str) -> types.ModuleType:
@@ -156,6 +187,29 @@ def _clear_backend_caches() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_route_availability_cache() -> Iterator[None]:
+    clear_route_availability_cache()
+    yield
+    clear_route_availability_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_host_pressure_warning_memo() -> Iterator[None]:
+    reset_missing_warning_memo()
+    yield
+    reset_missing_warning_memo()
+
+
+@pytest.fixture(autouse=True)
+def _reset_live_harness_registries() -> Iterator[None]:
+    reset_shared_brokers()
+    reset_shared_codex_app_servers()
+    yield
+    reset_shared_brokers()
+    reset_shared_codex_app_servers()
+
+
+@pytest.fixture(autouse=True)
 def _silence_host_projection_advisory() -> Iterator[None]:
     """Keep the once-per-process host-projection advisory off every test's stderr.
 
@@ -190,22 +244,27 @@ def _reset_declaration_caches() -> Iterator[None]:
     reset_single_branch_cache()
     reset_ci_memo()
     reset_forge_probe_cache()
+    note_healthy_read.cache_clear()
     yield
     reset_single_branch_cache()
     reset_ci_memo()
     reset_forge_probe_cache()
+    note_healthy_read.cache_clear()
 
 
 @pytest.fixture(autouse=True)
-def _pin_machine_memory_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the admission governor off THIS box's free memory.
+def _pin_machine_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the admission governor off THIS box — its free memory, its load, its cores.
 
-    ``read_machine_signal`` reads the cgroup-aware probe and the governor brakes at/under
-    ``RAM_BRAKE_FLOOR_GB``, so an unpinned suite reds tests that never mention memory
-    whenever the host is under pressure. A test that cares about the reading patches this
-    same seam in its own body, which lands after this fixture and therefore wins.
+    ``read_machine_signal`` reads all three, and every admission verdict is derived from
+    them, so an unpinned suite reds tests that never mention machine capacity: a host
+    under memory pressure brakes at ``RAM_BRAKE_FLOOR_GB``, a busy one HALTs at
+    ``BRAKE_LOAD_PER_CORE * cores``, and a 2-vCPU runner's WRITE ceiling of 1 refuses
+    every second concurrent claim. A test that cares about a reading patches the same
+    seam in its own body, which lands after this fixture and therefore wins.
     """
     monkeypatch.setattr(ram_scope, "read_ram_headroom", pinned_ram_headroom)
+    monkeypatch.setattr(machine_load, "read_load_and_cores", pinned_load_and_cores)
 
 
 @pytest.fixture(autouse=True)
@@ -329,6 +388,19 @@ def _reset_work_tree_cwd_cache() -> Iterator[None]:
     reset_cwd_cache()
     yield
     reset_cwd_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_slack_dm_recorders() -> Iterator[None]:
+    """Drop the listener's per-overlay DM recorders around every test.
+
+    Each recorder holds the backend ``messaging_from_overlay`` resolved and the bot
+    identity probed through it, so it survives the ``_clear_backend_caches`` reset it
+    is derived from and answers a later test's overlay with the earlier test's backend.
+    """
+    reset_dm_recorders()
+    yield
+    reset_dm_recorders()
 
 
 @pytest.fixture(autouse=True)

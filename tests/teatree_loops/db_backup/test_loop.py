@@ -12,7 +12,7 @@ class TestDbBackupMiniLoop:
         assert MINI_LOOP.default_cadence_seconds == 86400
 
     def test_build_jobs_returns_the_scanner_when_enabled(self) -> None:
-        scanner = DbBackupScanner(retention_days=7, cadence_hours=24)
+        scanner = DbBackupScanner(retention_days=7)
         with patch("teatree.loop.global_scanner_factories._db_backup_scanner", return_value=scanner):
             jobs = _build_jobs()
         assert len(jobs) == 1

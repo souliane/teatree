@@ -115,6 +115,20 @@ class TestNegativeControlHonestWording:
 
 
 class TestMainEntrypoint:
+    def test_skipped_planted_run_is_not_caught(self) -> None:
+        control = run_negative_control()
+        skipped = NegativeControlOutcome(
+            scenario_name=NEGATIVE_CONTROL_SCENARIO,
+            result=ScenarioResult(
+                spec=control.result.spec,
+                run=control.result.run,
+                matcher_results=(),
+                skipped=True,
+            ),
+            offending_tool_call=None,
+        )
+        assert skipped.caught is False
+
     def test_returns_zero_when_harness_catches_violation(self) -> None:
         assert main() == 0
 

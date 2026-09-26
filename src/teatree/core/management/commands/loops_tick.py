@@ -38,12 +38,12 @@ from typing import IO, TYPE_CHECKING, Annotated, Any, cast
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.config.resolution import get_effective_settings
 from teatree.core.backend_factory import iter_overlay_backends
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.machine_output import emit
 from teatree.core.models import LoopLease
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds
-from teatree.loop.preset_resolution import active_overlay_scope
 from teatree.loop.statusline import set_overridden_loops_reader, set_preset_line_reader
 from teatree.loops.preset_status import overridden_loop_names, preset_line_handles
 
@@ -74,17 +74,21 @@ def _scanner_context(request: "TickRequest") -> "BuildJobsContext":
 
 
 def _focus_scoped_backends() -> list["OverlayBackends"]:
-    """Full-fleet overlay backends, restricted to a focus preset's ``overlay_scope`` (#3159 item 7).
+    """Full-fleet overlay backends, restricted to the box's ``scanner_overlay_scope``.
 
-    A ``focus:<overlay>`` preset carries an ``overlay_scope`` allowlist so a tick
-    scans only that backend. Fail-open at every step: no active preset (or an empty
-    scope) scans the whole fleet, and a scope that matches no overlay also falls
-    back to the whole fleet rather than scanning nothing.
+    Which overlays this box sweeps is a property OF THE BOX, not of whichever preset is
+    active: it answers "whose repos does this factory look after", and that answer does
+    not change when the operator goes AFK. Carried on the preset it was 27 identical
+    copies of one fact and made every new preset a place to get it wrong.
+
+    Fail-open at every step: an unreadable setting or an empty scope sweeps the whole
+    fleet, and a scope matching no registered overlay also falls back to the whole fleet
+    rather than sweeping nothing — a typo must not silently stop the factory.
     """
     backends = iter_overlay_backends()
     try:
-        scope = set(active_overlay_scope())
-    except Exception:  # noqa: BLE001 — the preset layer must never blank the scan set
+        scope = set(get_effective_settings().scanner_overlay_scope)
+    except Exception:  # noqa: BLE001 — the config layer must never blank the scan set
         return backends
     if not scope:
         return backends

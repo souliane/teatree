@@ -1,30 +1,28 @@
 """Rubric->verifier done-gate wired into the merge precondition path (#2241).
 
-Extends the §17.4.3 keystone-merge gate with the rubric dimension: with
-``require_rubric_verification`` on, a merge is refused unless the CLEAR's ticket
-carries a rubric that is fully PASS — every criterion graded PASS by an INDEPENDENT
-verifier (grader != maker) bound to the merge-time live head SHA. It is fail-closed:
-an empty / ungraded / failed / maker-graded / stale-SHA rubric refuses the merge.
+Extends the §17.4.3 keystone-merge gate with the rubric dimension: a merge is refused
+unless the CLEAR's ticket carries a rubric that is fully PASS — every criterion graded
+PASS by an INDEPENDENT verifier (grader != maker), citing what proves it, bound to the
+merge-time live head SHA. It is fail-closed: an empty / ungraded / failed / uncited /
+maker-graded / stale-SHA rubric refuses the merge, and no setting relaxes it.
 
 The anti-vacuous pairing is :meth:`test_merge_refused_on_failed_criterion` (#1, must
 go RED before the gate is wired) + :meth:`test_merge_allowed_when_all_pass_at_head`
 (#6) — a gate that passes against an unsatisfied rubric guards nothing.
 
 Only the unstoppable external (``gh``) is stubbed; the gate, CLEAR, FSM, and DB
-writes are real. ``require_rubric_verification`` is pinned per test so the suite is
-deterministic regardless of the host config.
+writes are real.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.config import UserSettings
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Rubric, RubricCriterion, Ticket
+from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.rubric import PHASE_CRITERIA
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 from tests.teatree_core.test_merge_execution import _GhStub
 
@@ -42,9 +40,10 @@ def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
 _SHA = "a" * 40
 _OTHER_SHA = "b" * 40
 _GRADER = "cold-reviewer"
+_CITATION = "unit: tests/teatree_core/test_rubric_gate_merge_precondition.py"
 
 
-def _clear(ticket: Ticket) -> MergeClear:
+def _clear(ticket: Ticket | None) -> MergeClear:
     return MergeClear.objects.create(
         ticket=ticket,
         pr_id=2241,
@@ -56,15 +55,6 @@ def _clear(ticket: Ticket) -> MergeClear:
     )
 
 
-@contextmanager
-def _gate(*, required: bool) -> Iterator[None]:
-    with patch(
-        "teatree.core.gates.rubric_gate.get_effective_settings",
-        return_value=UserSettings(require_rubric_verification=required),
-    ):
-        yield
-
-
 def _merge(clear: MergeClear) -> object:
     # Seed the #2829 sibling verdict the real ``clear`` path records (the gate
     # is downstream of the rubric check, so a refuse-on-rubric test is unaffected).
@@ -73,10 +63,16 @@ def _merge(clear: MergeClear) -> object:
         return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
 
+def _bypass(ticket: Ticket) -> PlanArtifact:
+    return PlanArtifact.record_bypass(
+        ticket=ticket, plan_text="[audited bypass by alice] urgent hotfix", recorded_by="alice"
+    )
+
+
 def _passing_rubric(ticket: Ticket, *, sha: str = _SHA, grader: str = _GRADER) -> Rubric:
     rubric = Rubric.populate(ticket, ["AC1", "AC2"])
     for criterion in rubric.criteria.all():
-        criterion.record_grade(status="pass", grader_identity=grader, reviewed_sha=sha)
+        criterion.record_grade(status="pass", grader_identity=grader, reviewed_sha=sha, rationale=_CITATION)
     return rubric
 
 
@@ -85,8 +81,7 @@ class TestRubricGateMergePrecondition(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         _passing_rubric(ticket)
         clear = _clear(ticket)
-        with _gate(required=True):
-            _merge(clear)
+        _merge(clear)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
 
@@ -95,7 +90,7 @@ class TestRubricGateMergePrecondition(TestCase):
         rubric = _passing_rubric(ticket)
         rubric.criteria.get(ordinal=0).record_grade(status="fail", grader_identity=_GRADER, reviewed_sha=_SHA)
         clear = _clear(ticket)
-        with _gate(required=True), pytest.raises(MergePreconditionError, match="FAIL"):
+        with pytest.raises(MergePreconditionError, match="FAIL"):
             _merge(clear)
         ticket.refresh_from_db()
         clear.refresh_from_db()
@@ -105,9 +100,11 @@ class TestRubricGateMergePrecondition(TestCase):
     def test_merge_refused_on_ungraded_criterion(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         rubric = Rubric.populate(ticket, ["AC1", "AC2"])
-        rubric.criteria.get(ordinal=0).record_grade(status="pass", grader_identity=_GRADER, reviewed_sha=_SHA)
+        rubric.criteria.get(ordinal=0).record_grade(
+            status="pass", grader_identity=_GRADER, reviewed_sha=_SHA, rationale=_CITATION
+        )
         clear = _clear(ticket)
-        with _gate(required=True), pytest.raises(MergePreconditionError, match="ungraded"):
+        with pytest.raises(MergePreconditionError, match="ungraded"):
             _merge(clear)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
@@ -123,7 +120,7 @@ class TestRubricGateMergePrecondition(TestCase):
             reviewed_sha=_SHA,
         )
         clear = _clear(ticket)
-        with _gate(required=True), pytest.raises(MergePreconditionError, match="maker"):
+        with pytest.raises(MergePreconditionError, match="maker"):
             _merge(clear)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
@@ -132,7 +129,7 @@ class TestRubricGateMergePrecondition(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         _passing_rubric(ticket, sha=_OTHER_SHA)
         clear = _clear(ticket)
-        with _gate(required=True), pytest.raises(MergePreconditionError, match="stale"):
+        with pytest.raises(MergePreconditionError, match="stale"):
             _merge(clear)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
@@ -141,7 +138,7 @@ class TestRubricGateMergePrecondition(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         Rubric.objects.create(ticket=ticket)
         clear = _clear(ticket)
-        with _gate(required=True), pytest.raises(MergePreconditionError, match="no criteria"):
+        with pytest.raises(MergePreconditionError, match="no criteria"):
             _merge(clear)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
@@ -149,15 +146,38 @@ class TestRubricGateMergePrecondition(TestCase):
     def test_merge_refused_when_no_rubric_recorded(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
-        with _gate(required=True), pytest.raises(MergePreconditionError, match="no rubric"):
+        with pytest.raises(MergePreconditionError, match="no rubric"):
             _merge(clear)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
 
-    def test_merge_unaffected_when_gate_off(self) -> None:
+    def test_a_bypassed_ticket_merges_over_pending_phase_criteria(self) -> None:
+        # A phase visit seeds a standing criterion onto every ticket's rubric, so an
+        # audited bypass that must merge would be blocked by content it never declared.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        clear = _clear(ticket)
-        with _gate(required=False):
-            _merge(clear)
+        Rubric.populate(ticket, [PHASE_CRITERIA["coding"]])
+        _bypass(ticket)
+        _merge(_clear(ticket))
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
+
+    def test_a_bypass_never_merges_over_a_recorded_fail(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        rubric = _passing_rubric(ticket)
+        rubric.criteria.get(ordinal=0).record_grade(status="fail", grader_identity=_GRADER, reviewed_sha=_SHA)
+        _bypass(ticket)
+        clear = _clear(ticket)
+        with pytest.raises(MergePreconditionError, match="FAIL"):
+            _merge(clear)
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert clear.consumed_at is None
+
+    def test_a_ticketless_clear_has_no_rubric_subject_and_merges(self) -> None:
+        # The rubric is FK'd to the ticket, so a CLEAR no ticket owns has nothing to
+        # grade and no ticket a bypass could be recorded on — outside the gate's subject.
+        clear = _clear(None)
+        _merge(clear)
+        clear.refresh_from_db()
+        assert clear.consumed_at is not None

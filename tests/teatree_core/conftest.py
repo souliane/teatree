@@ -12,10 +12,12 @@ import pytest
 from django.core.management import call_command
 from django.test import override_settings
 
+from teatree.core.admission_governor import MachineSignal, QuotaSignal
 from teatree.core.models import Worktree
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.overlay import OverlayBase, OverlayE2E, OverlayReview, OverlayRuntime, ProvisionStep, RunCommands
 from teatree.core.overlay_loader import reset_overlay_cache
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from tests.db_alias import RouteAllToAlias, register_sqlite_alias, teardown_sqlite_alias
 
 
@@ -104,6 +106,22 @@ class CommandOverlay(OverlayBase):
 
 
 COMMAND_OVERLAY = "tests.teatree_core.conftest.CommandOverlay"
+IMMEDIATE_BACKEND = {
+    "TASKS": {
+        "default": {
+            "BACKEND": "django.tasks.backends.immediate.ImmediateBackend",
+            "QUEUES": ["default", "loops", "cheap"],
+        },
+    },
+}
+HEALTHY_MACHINE_SIGNAL = MachineSignal(cores=8, load1=0.25, ram_available_gb=20.0)
+HEALTHY_QUOTA_SIGNAL = QuotaSignal(
+    fresh=True,
+    all_accounts_exhausted=False,
+    weekly_utilization=0.1,
+    short_utilization=0.1,
+    seconds_to_weekly_reset=7 * 24 * 3600 * 0.5,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -111,6 +129,17 @@ def _clear_overlay_cache() -> Iterator[None]:
     reset_overlay_cache()
     yield
     reset_overlay_cache()
+
+
+@pytest.fixture(autouse=True)
+def _routed_merge_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the merge transport off the host's ``pass`` store: every test stubs the gh runner anyway."""
+    monkeypatch.setattr(
+        "teatree.core.merge.ci_rollup.resolve_slug_token",
+        lambda *_args, **_kwargs: ForgeTokenResolution(
+            "github_token", "t3-teatree", ForgeTokenState.TOKEN, token="routed-test-token"
+        ),
+    )
 
 
 @pytest.fixture

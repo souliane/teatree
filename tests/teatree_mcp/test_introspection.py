@@ -138,3 +138,15 @@ class TestGateStatus(TestCase):
 
         assert report["deep_merge_gates"]["require_merge_quality_verdict"] is True
         assert "require_merge_quality_verdict" not in report["dark_gates"]
+
+
+class TestConfigSettingGetForCredentialPassKeys(TestCase):
+    def test_a_pass_key_reports_its_resolution_source(self) -> None:
+        ConfigSetting.objects.set_value("notion_token_pass_key", "venue/notion", scope="t3-teatree")
+
+        row = introspection.config_setting_get(key="notion_token_pass_key", overlay="t3-teatree")
+
+        assert (row["known"], row["value"], row["source"]) == (True, "venue/notion", "db, overlay scope")
+
+    def test_an_undeclared_credential_is_unknown(self) -> None:
+        assert introspection.config_setting_get(key="notoin_token_pass_key")["known"] is False

@@ -1,4 +1,4 @@
-"""Every DB-home settings key that no longer names a live ``UserSettings`` field.
+"""What a retired DB-home settings key resolves to, and what the operator is told.
 
 souliane/teatree#3527: a retired key is invisible to the resolver — ``_coerce_setting_rows``
 drops any row whose key is not in the DB-home parser registry — so removing a
@@ -6,8 +6,10 @@ setting silently reverted an operator's explicitly-configured value to the
 dataclass default. The removal of ``eval_credential`` reverted the configured
 credential operator with nothing said.
 
-This registry is the single place a retirement is recorded, and it admits exactly
-two outcomes, both of them visible:
+The retirements themselves are recorded in
+:mod:`teatree.config.retired_settings_ledger`; this module derives the registries the
+resolver reads and the sentences the operator is shown. A retirement admits exactly two
+outcomes, both of them visible:
 
 *   ``replacement`` set — the key was RENAMED. Its stored value MIGRATES: the row
     resolves onto the replacement field (the canonical key still wins when both
@@ -17,172 +19,16 @@ two outcomes, both of them visible:
     through to the default. Loud rather than fatal is deliberate: a stale row must
     never lock an operator out of their own factory (the never-lockout doctrine),
     but it must never be silent either.
-
-A rename ALSO wants a data migration rewriting the stored rows onto the new key,
-so the alias is a safety net rather than the mechanism — see
-``core/migrations/0027_generic_openai_compatible_backend.py``.
 """
 
 import sys
-from dataclasses import dataclass
+
+from teatree.config.retired_settings_ledger import RETIRED_SETTINGS, RetiredSetting
 
 #: The one remedy sentence a surface offers for a stale row — shared so the loud
 #: resolver warning and the ``config_setting list`` marker never drift apart.
 CLEAR_REMEDY = "t3 <overlay> config_setting clear {key}"
 
-
-@dataclass(frozen=True, slots=True)
-class RetiredSetting:
-    """One DB-home key that is no longer a live field, and what became of it.
-
-    *replacement* names the current field a stored value migrates onto, or is
-    ``None`` when the setting was removed outright. *reason* is rendered into the
-    loud removal warning, so it is written for the operator reading it — what the
-    setting used to do and what now does that job.
-
-    *subsystem* names the whole subsystem the retirement took with it, as the
-    word it is called by in scenario names (``"team"`` for the agent-teams pane
-    layer). It is ``None`` — the common case — when only the setting went and the
-    thing it configured is still live: ``branch_prefix`` retired the setting,
-    but branch prefixes still resolve, so branch-prefix behaviour is still
-    gradeable. A non-``None`` subsystem is a claim that the behaviour no longer
-    exists, and ``tests/conformance/test_retired_subsystem_evals.py`` holds the
-    eval catalog to it: souliane/teatree#3839 spent the full ``max_budget_usd``
-    cap grading a subsystem retired in souliane/teatree#3734, because nothing
-    tied the two ledgers together.
-    """
-
-    key: str
-    replacement: str | None
-    reason: str
-    subsystem: str | None
-
-
-RETIRED_SETTINGS: tuple[RetiredSetting, ...] = (
-    RetiredSetting(
-        key="todo_sweep_disabled",
-        replacement="task_sweep_disabled",
-        reason="the loop unit reconciles teatree Task rows, not the harness TODO list (#129)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="todo_sweep_recheck_interval_hours",
-        replacement="task_sweep_recheck_interval_hours",
-        reason="the loop unit reconciles teatree Task rows, not the harness TODO list (#129)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="speed",
-        replacement="wip",
-        reason="the throughput dial is the bounded-WIP setting; the value set is identical (#2951)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="orca_router_pass_path",
-        replacement="openai_compatible_credential_entry",
-        reason="the provider-specific backend collapsed into the generic OpenAI-compatible one (#3666)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="orca_router_name",
-        replacement="openai_compatible_model",
-        reason="the provider-specific backend collapsed into the generic OpenAI-compatible one (#3666)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="orca_router_lane",
-        replacement="openai_compatible_lane",
-        reason="the provider-specific backend collapsed into the generic OpenAI-compatible one (#3666)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="branch_prefix",
-        replacement=None,
-        reason="branch prefixes resolve from T3_BRANCH_PREFIX / git config user.name, never a setting (#2731)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="ask_before_post_on_behalf",
-        replacement=None,
-        reason="on-behalf gating resolves through on_behalf_post_mode (#2731)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="worktrees_dir",
-        replacement=None,
-        reason="the worktree root resolves through workspace_dir (#2731)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="eval_credential",
-        replacement=None,
-        reason="the eval lane's credential follows agent_harness_provider (#3527)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="teams_enabled",
-        replacement=None,
-        reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
-        subsystem="team",
-    ),
-    RetiredSetting(
-        key="teams_max_panes",
-        replacement=None,
-        reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
-        subsystem="team",
-    ),
-    RetiredSetting(
-        key="teams_idle_minutes",
-        replacement=None,
-        reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
-        subsystem="team",
-    ),
-    RetiredSetting(
-        key="teams_display",
-        replacement=None,
-        reason="the agent-teams pane layer is retired — nothing spawns a teammate pane (#3734)",
-        subsystem="team",
-    ),
-    RetiredSetting(
-        key="availability_schedule",
-        replacement=None,
-        reason="the availability surface was cut in favour of presets; nothing has resolved this key since (#4203)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="issue_implementer_cadence_hours",
-        replacement=None,
-        reason="the issue-implementer cadence is its `Loop` row's `delay_seconds`, which no setting fed (#4203)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="privacy",
-        replacement=None,
-        reason="scan strictness resolves from the `T3_PRIVACY` env var; this key never had a production reader (#4203)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="timezone",
-        replacement=None,
-        reason="each schedule carries its own zone, set with `t3 loop schedule set-timezone` (#4203)",
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="issue_implementer_require_label",
-        replacement=None,
-        reason=(
-            "admission is decided by the `decide_intake` table, which admits a trusted author "
-            "with no label at all; the untrusted-author case uses `issue_implementer_label` (#3634)"
-        ),
-        subsystem=None,
-    ),
-    RetiredSetting(
-        key="headless_max_turns",
-        replacement="agent_max_turns",
-        reason="there is one execution lane, so the ceiling qualifies nothing; the value set is identical (#4212)",
-        subsystem=None,
-    ),
-)
 
 #: Retired key -> the live field its stored value migrates onto.
 RENAMED_SETTING_KEYS: dict[str, str] = {

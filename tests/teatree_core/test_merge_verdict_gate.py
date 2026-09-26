@@ -31,6 +31,7 @@ from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import has_independent_cold_review
 from tests._forge_stub import changed_files_stdout
+from tests.factories import waive_rubric
 from tests.teatree_loop.test_pr_sweep_scanner import FakeKeystone, FakePrApiClient
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -57,6 +58,10 @@ def _record(verdict: str, *, sha: str = _HEAD, reviewer: str = "cold-reviewer", 
 
 
 def _clear(*, ticket: Ticket | None = None) -> MergeClear:
+    # The rubric done-gate runs at this chokepoint; the real path has an independent
+    # verifier grade the rubric, so the audited bypass stands in (cf. _seed_sibling_verdict).
+    if ticket is not None:
+        waive_rubric(ticket)
     """A green, cold-reviewer CLEAR bound to ``_HEAD`` — WITHOUT seeding a sibling verdict.
 
     The verdict each scenario controls itself, so this never auto-seeds (unlike

@@ -28,8 +28,9 @@ from teatree.core.runners import (
     WorktreeTeardownRunner,
     WorktreeVerifyRunner,
 )
-from teatree.core.runners.worktree_start import docker_compose_down
+from teatree.core.runners.worktree_start import docker_compose_down, docker_compose_stop
 from teatree.core.worktree.worktree_env import compose_project
+from teatree.docker.reap import sibling_test_project
 
 logger = logging.getLogger(__name__)
 
@@ -207,12 +208,30 @@ def execute_worktree_stop(worktree_id: int) -> WorktreeTransitionResult:
             )
             return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
         project = compose_project(worktree)
+        sibling = sibling_test_project((worktree.extra or {}).get("worktree_path", ""))
 
     failure = docker_compose_down(project)
+    if sibling:
+        _quiet_test_sibling(sibling, worktree_id)
     if failure:
         logger.warning("Worktree stop left compose project %s up for %s: %s", project, worktree_id, failure)
         return {"worktree_id": worktree_id, "ok": False, "detail": f"compose project {project} still up: {failure}"}
     return {"worktree_id": worktree_id, "ok": True, "detail": f"stopped compose project {project}"}
+
+
+def _quiet_test_sibling(sibling: str, worktree_id: int) -> None:
+    """Stop the harness stack running beside the worktree, best-effort.
+
+    STOP, never down: the sibling's test database lives in an anonymous volume that
+    ``down`` would take with the containers, charging the next run a full migration
+    replay to rebuild state that stopping preserves intact.
+
+    Its failure never changes the demotion's verdict. The worktree's own stack is
+    already down by here, so the RAM the caller asked for is freed either way, and
+    reporting ``ok=False`` would bounce a reaper that did its job.
+    """
+    if stubborn := docker_compose_stop(sibling):
+        logger.warning("Worktree stop left test sibling %s up for %s: %s", sibling, worktree_id, stubborn)
 
 
 @task()

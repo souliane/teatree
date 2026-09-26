@@ -10,10 +10,24 @@ package — routing the detector through it keeps the ``teatree.core`` fan-in fr
 from datetime import datetime
 
 from teatree.core.factory.merge_backlog import unconsumed_actionable_clear_rows
-from teatree.core.merge.clear_liveness import PROBE_CAP, ClearLiveness, PrStateReader, probe, unverified_reader
+from teatree.core.merge.clear_liveness import (
+    PROBE_CAP,
+    ClearLiveness,
+    LivenessProbe,
+    PrStateReader,
+    probe,
+    unverified_reader,
+)
 from teatree.core.models.merge_clear import MergeClear
 
-__all__ = ["PROBE_CAP", "PrStateReader", "live_pr_state_reader", "stalled_clears", "unverified_reader"]
+__all__ = [
+    "PROBE_CAP",
+    "PrStateReader",
+    "clear_liveness_probe",
+    "live_pr_state_reader",
+    "stalled_clears",
+    "unverified_reader",
+]
 
 
 def live_pr_state_reader() -> PrStateReader:
@@ -40,7 +54,16 @@ def stalled_clears(
     merge happened. *issued_before* applies the caller's own staleness threshold before
     any forge read, so the probe cap is spent on rows that already qualify.
     """
+    return clear_liveness_probe(issued_before=issued_before, read_state=read_state, cap=cap).of(ClearLiveness.STALLED)
+
+
+def clear_liveness_probe(
+    *,
+    issued_before: datetime | None = None,
+    read_state: PrStateReader = unverified_reader,
+    cap: int = PROBE_CAP,
+) -> LivenessProbe:
     population = unconsumed_actionable_clear_rows("")
     if issued_before is not None:
         population = [clear for clear in population if clear.issued_at <= issued_before]
-    return probe(population, read=read_state, cap=cap).of(ClearLiveness.STALLED)
+    return probe(population, read=read_state, cap=cap)

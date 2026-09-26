@@ -1,6 +1,10 @@
 {
   "model": "opusplan",
   "autoCompactEnabled": true,
+  "attribution": {
+    "commit": false,
+    "pr": false
+  },
   "enabledPlugins": {
     "t3@souliane": true,
     "pyright-lsp@claude-plugins-official": true

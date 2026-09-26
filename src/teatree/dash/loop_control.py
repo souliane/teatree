@@ -3,10 +3,9 @@
 The dashboard reads the SAME effective verdict the tick gates on — from the one
 shared source ``teatree.loops.enable_verdict.effective_verdicts`` that ``t3 loops
 list``, ``t3 loop preset show`` and the statusline also read — so it can never
-recompute a verdict that drifts from the fleet. That verdict folds all four layers:
-the durable ``LoopState`` hold (L4), the active preset's L3 override / L2 schedule
-mask (#3159), and the base ``Loop.enabled`` flag (L1). The write side
-(pause/resume/disable/enable) goes exclusively through the paired atomic
+recompute a verdict that drifts from the fleet. That verdict folds the three layers of
+the read order: the durable ``LoopState`` hold, the tri-state manual override
+(``Loop.enabled``), and the active preset. The write side goes exclusively through the
 ``LoopManager`` verbs, so this module only reads.
 """
 
@@ -14,25 +13,17 @@ import datetime as dt
 import logging
 from dataclasses import dataclass
 
-from teatree.config import get_effective_settings
 from teatree.core.mode_resolution import resolve_active_mode
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_preset import Mode
 from teatree.core.models.loop_state import LoopState, LoopStatus
 from teatree.dash.gate_state import dash_gate_fail_open
-from teatree.loops.enable_verdict import LoopVerdict, effective_verdicts
+from teatree.loops.enable_verdict import LoopVerdict, effective_verdicts, fleet_admits_work
 from teatree.loops.live import LoopStatusEntry, build_report
 from teatree.loops.loop_cadence_editing import CADENCE_STEP_SECONDS, CadenceBounds, cadence_bounds_for, is_off_grid
 from teatree.loops.registry import iter_loops
 
 logger = logging.getLogger(__name__)
-
-# The four legal per-loop control verbs. Each dispatches to the EXACT same manager
-# method the `manage.py loop_state` command calls, never a raw field write: `pause`
-# is the reversible LoopState hold (Loop.enabled untouched), while resume/disable/
-# enable move BOTH planes atomically through the paired LoopManager verbs.
-LOOP_ACTIONS: frozenset[str] = frozenset({"pause", "resume", "disable", "enable"})
-
 
 #: Clears the override so the schedule / default decides again — the one switch
 #: value that is not a ``Mode`` row name.
@@ -42,13 +33,6 @@ MODE_SWITCH_AUTO = "auto"
 # the one switch that relaxes every over-deny gate must never be a one-click toggle.
 GATE_CONFIRM_PHRASE = "fail-open"
 
-# The exact phrase the operator must type to STOP the whole loop fleet
-# (``loop_runner_enabled`` OFF). Same doctrine as the fail-open switch, mirrored on
-# the axis that matters here: the dangerous direction is OFF, and an accidental
-# stop is the hardest flip on this page to notice — nothing errors, work simply
-# stops arriving. Re-enabling needs no phrase; restarting the fleet is recoverable.
-RUNNER_CONFIRM_PHRASE = "stop-the-fleet"
-
 
 @dataclass(frozen=True, slots=True)
 class LoopRow:
@@ -56,7 +40,9 @@ class LoopRow:
 
     name: str
     description: str
-    enabled: bool
+    #: The MANUAL override: ``None`` = none set, else what the human forced.
+    enabled: bool | None
+    override_reason: str
     status: str
     effective: bool
     deciding_layer: str
@@ -82,7 +68,8 @@ class LoopControlView:
     #: Every defined mode, so the header offers the live set rather than a frozen list.
     mode_names: tuple[str, ...]
     gate_fail_open: bool
-    runner_enabled: bool
+    #: Whether the active preset admits ANY loop — the fleet's stop condition, shown read-only.
+    fleet_admits: bool
     #: The global cadence grid, stated ONCE as the table's legend (#4079). It is the same for
     #: every ordinary loop, so repeating it per row said nothing about any particular row.
     cadence_step_seconds: int = CADENCE_STEP_SECONDS
@@ -102,7 +89,7 @@ def build_loop_control() -> LoopControlView:
         mode_source=resolved.source,
         mode_names=tuple(Mode.objects.values_list("name", flat=True)),
         gate_fail_open=dash_gate_fail_open(),
-        runner_enabled=_runner_enabled(),
+        fleet_admits=_fleet_admits(),
         # Derived from the rows already loaded above rather than re-queried: the page's query
         # count is a pinned budget, and this listing is a property of rows it already holds.
         off_grid=tuple(
@@ -122,9 +109,9 @@ def _infra_slots() -> tuple[LoopStatusEntry, ...]:
         return ()
 
 
-def _runner_enabled() -> bool:
-    """The global ``loop_runner_enabled`` kill-switch state (shown read-only)."""
-    return get_effective_settings().loop_runner_enabled
+def _fleet_admits() -> bool:
+    """Whether the active preset admits any loop at all — the fleet's stop condition."""
+    return fleet_admits_work()
 
 
 def build_loop_rows() -> tuple[LoopRow, ...]:
@@ -161,9 +148,10 @@ def _loop_row(loop: Loop, status: str, verdict: LoopVerdict, tags: tuple[str, ..
         name=loop.name,
         description=loop.description,
         enabled=loop.enabled,
+        override_reason=loop.override_reason,
         status=status,
         effective=verdict.admitted,
-        deciding_layer=_deciding_layer(verdict, enabled=loop.enabled, status=status),
+        deciding_layer=_deciding_layer(verdict, status=status),
         cadence_label=loop.cadence_label,
         delay_seconds=loop.delay_seconds,
         daily_at=loop.daily_at.strftime("%H:%M") if loop.daily_at is not None else "",
@@ -174,78 +162,23 @@ def _loop_row(loop: Loop, status: str, verdict: LoopVerdict, tags: tuple[str, ..
     )
 
 
-#: How each layer that can supply the active mode's mask is named in the table. Keyed on
-#: :attr:`~teatree.core.mode_resolution.ResolvedMode.source`, so the L0 default row and
-#: the live-presence upgrade are nameable too rather than falling through to L1 (#4185).
-_MODE_LAYER_LABELS = {
-    "override": "L3 override",
-    "schedule": "L2 schedule",
-    "live": "L2 presence upgrade",
-    "default": "L0 default mode",
+#: How the layer that supplied the active preset is named in the table. Keyed on
+#: :attr:`~teatree.core.mode_resolution.ResolvedMode.source`.
+_PRESET_LAYER_LABELS = {
+    "override": "preset (pinned)",
+    "schedule": "preset (schedule)",
+    "default": "preset (default)",
 }
 
 
-def _deciding_layer(verdict: LoopVerdict, *, enabled: bool, status: str) -> str:
-    """Which control layer decides the loop's verdict — answers "why isn't it running".
+def _deciding_layer(verdict: LoopVerdict, *, status: str) -> str:
+    """Which layer decides the loop's verdict — answers "why isn't it running".
 
-    Reads the shared verdict's ``layer`` so the precedence mirrors the resolver
-    exactly: an L4 ``LoopState`` hold (paused/disabled) always wins, then whichever
-    layer supplied the active mode's mask (#3159, #4185), else the base L1
-    ``Loop.enabled``.
+    Reads the shared verdict's ``layer`` so the precedence mirrors the resolver exactly:
+    hold, then the manual override, then the preset that always answers.
     """
     if verdict.layer == "hold":
-        return "L4 hold — paused" if status == LoopStatus.PAUSED.value else "L4 hold — disabled"
-    label = _MODE_LAYER_LABELS.get(verdict.layer)
-    if label is not None:
-        return f"{label} — {_preset_effect(verdict)}"
-    if not enabled:
-        return "L1 — Loop.enabled off"
-    return "L1 — enabled"
-
-
-def _preset_effect(verdict: LoopVerdict) -> str:
-    """How the active preset flipped this loop: ``masked`` (forced off) or ``forced-on``."""
-    return "masked" if not verdict.admitted else "forced-on"
-
-
-def apply_loop_action(action: str, name: str) -> str:
-    """Apply a control verb to *name* via the same manager method the CLI uses; return the landed status.
-
-    Refuses an unknown action or a name with no ``Loop`` row (mirroring the
-    command's ``_require_known_loop`` guard) so a typo can never silently pause
-    nothing. ``pause`` calls ``LoopState.objects.pause`` (the reversible hold);
-    resume/disable/enable call the paired ``LoopManager`` verbs that move both
-    planes. Raises :class:`LoopActionError` on a bad action/name.
-    """
-    if action not in LOOP_ACTIONS:
-        msg = f"unknown loop action {action!r}"
-        raise LoopActionError(msg)
-    if not Loop.objects.filter(name=name).exists():
-        msg = f"no loop named {name!r}"
-        raise LoopActionError(msg)
-
-    if action == "pause":
-        LoopState.objects.pause(name)
-    elif action == "resume":
-        Loop.objects.resume(name)
-    elif action == "disable":
-        Loop.objects.disable(name)
-    else:
-        Loop.objects.enable(name)
-    _reconcile_timers()
-    return LoopState.objects.status_of(name).value
-
-
-def _reconcile_timers() -> None:
-    """Best-effort loop-timer reconcile after a control change (mirrors the CLI path)."""
-    try:
-        # deferred + best-effort like the loop_state command: a reconcile failure never fails the control write.
-        from teatree.loops.timer_reconciler import ensure_loop_timers  # noqa: PLC0415 — deferred best-effort reconcile
-
-        ensure_loop_timers()
-    except Exception:
-        logger.debug("ensure_loop_timers after dash loop-state change failed — reconciler will catch up", exc_info=True)
-
-
-class LoopActionError(ValueError):
-    """A dashboard loop-control POST named an unknown action or loop."""
+        return "hold — paused" if status == LoopStatus.PAUSED.value else "hold — disabled"
+    if verdict.layer == "manual":
+        return verdict.detail
+    return _PRESET_LAYER_LABELS.get(verdict.layer, "preset")

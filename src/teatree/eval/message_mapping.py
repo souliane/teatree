@@ -24,6 +24,7 @@ caps, terminal-cap handling): the runner OWNS *when* a trajectory is captured, t
 module owns *how* a captured trajectory becomes a graded ``EvalRun``.
 """
 
+import dataclasses
 import json
 from typing import Any
 
@@ -39,11 +40,11 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import HookEventMessage
 
+from teatree.eval.cost_observation import observe_cost
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import (
     StreamJsonEvent,
     extract_billed_model,
-    extract_cost_usd,
     extract_gate_events,
     extract_model_cost_split,
     extract_terminal_reason,
@@ -54,7 +55,7 @@ from teatree.eval.transcript import (
 )
 
 
-def eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
+def eval_run_from_messages(spec: EvalSpec, messages: list[Message], *, price_from_usage: bool = True) -> EvalRun:
     """Map the typed SDK messages onto the shared transcript extraction path.
 
     Each typed message is rendered to a stream-json event dict and folded DIRECTLY
@@ -63,11 +64,13 @@ def eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
     transcript path with no serialize/deserialize round-trip.
     """
     event_dicts = [event for event in map(_message_to_event, messages) if event is not None]
+    _enrich_pretool_audits(event_dicts)
     events = _events_from_dicts(event_dicts)
     raw_stdout = _render_stream_json(event_dicts)
     terminal_reason, is_error = extract_terminal_reason(events)
     present = requested_model_present(events, spec.model)
     split = extract_model_cost_split(events, spec.model)
+    cost = observe_cost(events, requested_model=spec.model, price_from_usage=price_from_usage)
     return EvalRun(
         spec_name=spec.name,
         tool_calls=tuple(extract_tool_calls(events)),
@@ -75,8 +78,11 @@ def eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
         terminal_reason=terminal_reason,
         is_error=is_error,
         raw_stdout=raw_stdout,
-        raw_stderr="",
-        cost_usd=extract_cost_usd(events),
+        # The provider/run exception the non-CLI lanes report on an error-shaped
+        # terminal message. Empty on a clean run, so a passing report is unchanged.
+        raw_stderr=_terminal_error_text(events),
+        cost_usd=cost.usd,
+        cost_source=cost.source,
         usage=extract_usage(events),
         billed_model=extract_billed_model(events),
         fell_back=None if present is None else not present,
@@ -86,6 +92,34 @@ def eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
         aux_usage=split.aux_usage,
         gate_events=tuple(extract_gate_events(events)),
     )
+
+
+def _terminal_error_text(events: list[StreamJsonEvent]) -> str:
+    """The final ``result`` event's own error text, or ``""`` on a clean run — this lane's stderr.
+
+    The non-CLI fresh-run lanes (``pydantic_ai`` / ``anthropic_api``) report a
+    provider or run failure by yielding an error-shaped ``ResultMessage`` whose
+    ``result`` field carries ``str(exc)`` and NOTHING else — the turn's tool blocks
+    and text are never yielded on that path, so the trajectory is empty. Without
+    this the whole cause is dropped: the report renders a bare
+    ``error_during_execution`` with an empty transcript, which is indistinguishable
+    from a model that simply answered nothing, and no lane artifact anywhere
+    carries the exception.
+
+    Only an ERRORED result is read — a successful run's ``result`` field is the
+    model's final text, which is already extracted as a text block.
+    """
+    for event in reversed(events):
+        if event.type != "result":
+            continue
+        subtype = event.subtype or "unknown"
+        is_error_field = event.raw.get("is_error")
+        is_error = bool(is_error_field) if is_error_field is not None else not subtype.startswith("success")
+        if not is_error:
+            return ""
+        text = event.raw.get("result")
+        return text if isinstance(text, str) else ""
+    return ""
 
 
 def _events_from_dicts(event_dicts: list[dict[str, Any]]) -> list[StreamJsonEvent]:
@@ -101,6 +135,53 @@ def _render_stream_json(event_dicts: list[dict[str, Any]]) -> str:
     if not event_dicts:
         return ""
     return "\n".join(json.dumps(event) for event in event_dicts) + "\n"
+
+
+@dataclasses.dataclass(frozen=True)
+class _PreToolAudit:
+    sequence: int
+    tool_name: str
+    tool_use_id: str
+    assistant_text: str
+
+
+def _enrich_pretool_audits(event_dicts: list[dict[str, Any]]) -> None:
+    sequence = 0
+    pending: list[_PreToolAudit] = []
+    for event in event_dicts:
+        if event.get("type") == "assistant" and event.get("parent_tool_use_id") is None:
+            message = event.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                pending = []
+                continue
+            assistant_text = "\n".join(
+                str(block.get("text", ""))
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+            pending = []
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                sequence += 1
+                pending.append(
+                    _PreToolAudit(
+                        sequence=sequence,
+                        tool_name=str(block.get("name") or ""),
+                        tool_use_id=str(block.get("id") or ""),
+                        assistant_text=assistant_text,
+                    )
+                )
+            continue
+        if event.get("type") != "system" or event.get("subtype") != "hook_response":
+            continue
+        if event.get("hook_event") != "PreToolUse" or not pending:
+            continue
+        audit = pending.pop(0)
+        for key, value in dataclasses.asdict(audit).items():
+            if event.get(key) in {None, ""}:
+                event[key] = value
 
 
 def _message_to_event(message: Message) -> dict[str, Any] | None:
@@ -119,6 +200,12 @@ def _message_to_event(message: Message) -> dict[str, Any] | None:
             "outcome": data.get("outcome"),
             "output": data.get("output"),
             "exit_code": data.get("exit_code"),
+            "sequence": data.get("sequence"),
+            "tool_name": data.get("tool_name"),
+            "tool_use_id": data.get("tool_use_id"),
+            "gate_id": data.get("gate_id"),
+            "reason": data.get("reason"),
+            "assistant_text": data.get("assistant_text"),
         }
     if isinstance(message, AssistantMessage):
         # ``parent_tool_use_id`` distinguishes a TOP-LEVEL (main-agent) turn —
@@ -138,6 +225,9 @@ def _message_to_event(message: Message) -> dict[str, Any] | None:
             "type": "result",
             "subtype": message.subtype,
             "is_error": message.is_error,
+            # The CLI's own result event carries this; dropping it discarded the ONLY
+            # record of a provider/run exception, whose error path yields no other message.
+            "result": message.result,
             "total_cost_usd": message.total_cost_usd,
             "usage": message.usage,
             "model_usage": message.model_usage,
@@ -147,7 +237,7 @@ def _message_to_event(message: Message) -> dict[str, Any] | None:
 
 def _block_to_dict(block: ContentBlock) -> dict[str, Any]:
     if isinstance(block, ToolUseBlock):
-        return {"type": "tool_use", "name": block.name, "input": dict(block.input)}
+        return {"type": "tool_use", "id": block.id, "name": block.name, "input": dict(block.input)}
     if isinstance(block, TextBlock):
         return {"type": "text", "text": block.text}
     if isinstance(block, ThinkingBlock):

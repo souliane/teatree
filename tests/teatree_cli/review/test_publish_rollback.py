@@ -13,8 +13,8 @@ from django.test import TestCase
 from teatree.cli.review.default_draft import publish_live_post
 from teatree.cli.review.on_behalf import publish_or_blocked, publish_or_blocked_issue
 from teatree.cli.review.service import ReviewService
-from teatree.config import OnBehalfPostMode
-from teatree.core.models import ConfigSetting, LivePostApproval, OnBehalfApproval, OnBehalfAudit
+from teatree.core.models import LivePostApproval, OnBehalfApproval, OnBehalfAudit
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 _APPROVER = "human-operator"
 
@@ -22,9 +22,9 @@ _APPROVER = "human-operator"
 class TestReturnedFailureRollsBackTheApproval(TestCase):
     @pytest.fixture(autouse=True)
     def _blocking_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_POST_MODE", "T3_ON_BEHALF_AUTO_ACTIONS"):
+        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS"):
             monkeypatch.delenv(env, raising=False)
-        ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.ASK.value)
+        seed_forbidding_posture()
 
     def test_a_failed_post_leaves_the_approval_unconsumed_and_writes_no_audit(self) -> None:
         OnBehalfApproval.record("acme/alpha!7", "post_comment", _APPROVER)
@@ -74,9 +74,9 @@ class TestTheSingleUseLivePostTokenSurvivesAFailedPost(TestCase):
 
     @pytest.fixture(autouse=True)
     def _blocking_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_POST_MODE", "T3_ON_BEHALF_AUTO_ACTIONS"):
+        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS"):
             monkeypatch.delenv(env, raising=False)
-        ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.ASK.value)
+        seed_forbidding_posture()
 
     def test_a_failed_live_post_leaves_the_approval_unconsumed(self) -> None:
         OnBehalfApproval.record("org/repo!7", "post_comment", _APPROVER)
@@ -95,9 +95,9 @@ class TestTheLiveTokenSurvivesAFailedPostUnderImmediateMode(TestCase):
 
     @pytest.fixture(autouse=True)
     def _immediate_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_POST_MODE", "T3_ON_BEHALF_AUTO_ACTIONS"):
+        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS"):
             monkeypatch.delenv(env, raising=False)
-        ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
+        seed_permitting_posture()
 
     def test_a_failed_live_post_leaves_the_approval_unconsumed(self) -> None:
         LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")

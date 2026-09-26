@@ -7,11 +7,13 @@ the ``Harness`` protocol nor the registry-resolution glue, so they live below th
 module with no import cycle. Re-exported from ``teatree.agents.harness`` for back-compat.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, cast
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import ReasoningEffort
 from pydantic_ai.profiles.anthropic import ANTHROPIC_THINKING_EFFORT_MAP, resolve_anthropic_effort
@@ -21,7 +23,14 @@ from pydantic_ai.settings import ModelSettings
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.model_tiering import DEFAULT_TIER, resolve_tier
+from teatree.agents.pydantic_ai_turn import SessionRun
 from teatree.agents.regulated_path import RegulatedPathPolicy
+from teatree.config.extra_headers import (
+    EXTRA_HEADERS_SETTING,
+    UNLISTED_HEADER_REFUSAL,
+    carries_unlisted_header,
+    listed_headers,
+)
 from teatree.llm.credentials import AnthropicApiKeyCredential, Credential
 from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_openai_compatible_backend
 
@@ -35,6 +44,8 @@ _X_LANE_HEADER = "x-lane"
 LANE_FACTORY = "factory"
 LANE_EVAL = "eval"
 LANE_BULK = "bulk"
+#: The placeholder an ``openai_compatible_extra_headers`` value may carry; each run substitutes its session id.
+SESSION_PLACEHOLDER = "{session}"
 
 
 class PydanticAiBinding(StrEnum):
@@ -108,6 +119,11 @@ class OpenAICompatibleLaneConfig:
     *   ``model`` — the ``openai_compatible_model`` id an unpinned teatree-native
         dispatch normalises UP to; ``None`` keeps the ``PYDANTIC_AI_TIER_MODELS``
         default for the dispatch's abstract tier.
+    *   ``extra_headers`` — the ``openai_compatible_extra_headers`` map every request carries
+        beside ``x-lane``; :data:`SESSION_PLACEHOLDER` in a value becomes the run's session id. A header off
+        :data:`~teatree.config.extra_headers.ALLOWED_EXTRA_HEADERS` is refused here, so no construction sends one.
+    *   ``sends_prompt_cache_key`` — the ``openai_compatible_sends_prompt_cache_key`` declaration that the
+        endpoint accepts ``prompt_cache_key``; off, the parameter is never sent.
     """
 
     lane: str = LANE_FACTORY
@@ -115,6 +131,14 @@ class OpenAICompatibleLaneConfig:
     base_url: str = ""
     credential_entry: str | None = None
     model: str | None = None
+    extra_headers: Mapping[str, str] = field(default_factory=dict)
+    sends_prompt_cache_key: bool = False
+
+    def __post_init__(self) -> None:
+        headers = dict(self.extra_headers)
+        if carries_unlisted_header(EXTRA_HEADERS_SETTING, headers):
+            raise ValueError(UNLISTED_HEADER_REFUSAL)
+        object.__setattr__(self, "extra_headers", MappingProxyType(headers))
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,7 +250,12 @@ def resolve_native_anthropic_model(
 
 
 def build_model_settings(
-    model: Model, effort: ReasoningEffort | None, *, binding: PydanticAiBinding, max_tokens: int | None
+    model: Model,
+    effort: ReasoningEffort | None,
+    *,
+    binding: PydanticAiBinding,
+    max_tokens: int | None,
+    prompt_cache_key: str | None = None,
 ) -> ModelSettings | None:
     """The model settings for *binding*: the base ``max_tokens`` ceiling plus the reasoning effort.
 
@@ -252,6 +281,8 @@ def build_model_settings(
     :data:`~pydantic_ai.profiles.anthropic.ANTHROPIC_THINKING_EFFORT_MAP` via
     :func:`~pydantic_ai.profiles.anthropic.resolve_anthropic_effort`, which also owns
     the per-model ``xhigh`` passthrough decision — never a vocabulary re-invented here.
+
+    ``prompt_cache_key`` is OpenAI-shaped, so only the router binding sends it.
     """
     # Built as a plain mapping rather than the per-binding ``…ModelSettings`` TypedDicts: the
     # ``AnthropicModelSettings`` symbol lives in ``pydantic_ai.models.anthropic``, which imports
@@ -270,25 +301,34 @@ def build_model_settings(
                 )
         else:
             settings["openai_reasoning_effort"] = effort
+    if prompt_cache_key and binding is PydanticAiBinding.ROUTER:
+        settings["openai_prompt_cache_key"] = prompt_cache_key
     return cast("ModelSettings", settings) if settings else None
 
 
-def build_openai_compatible_provider(config: OpenAICompatibleLaneConfig) -> OpenAIProvider:
-    """Build the configured OpenAI-compatible provider with the ``x-lane`` header.
+def build_openai_compatible_provider(config: OpenAICompatibleLaneConfig, run: SessionRun) -> OpenAIProvider:
+    """Build the configured OpenAI-compatible provider for one *run*: its headers and its usage tee.
 
-    Every provider-specific fact — the endpoint, the credential-store entry name —
-    arrives as ordinary configuration on *config*, resolved SYNCHRONOUSLY by
+    Every provider-specific fact — the endpoint, the credential-store entry name, the extra
+    headers — arrives as ordinary configuration on *config*, resolved SYNCHRONOUSLY by
     :func:`resolve_harness` (never here: this runs in the async event loop). The
-    provider is built from an :class:`~openai.AsyncOpenAI` client carrying a default
-    ``x-lane: <lane>`` header on every request — the only way to inject a default
-    header, since :class:`OpenAIProvider` sets none itself.
+    :class:`~openai.AsyncOpenAI` client carries the configured headers with the run's session id
+    substituted beside ``x-lane: <lane>`` — default headers
+    are the only injection point, since :class:`OpenAIProvider` sets none itself. The run's
+    :class:`~teatree.llm.usage_tee.UsageTee` hooks the client's responses, which is the one place
+    a router's float cost is still visible.
     """
     backend = resolve_openai_compatible_backend(
         base_url=config.base_url,
         model=config.model or "",
         credential=OpenAICompatibleCredential(pass_path_override=config.credential_entry or None),
     )
+    listed = listed_headers(dict(config.extra_headers))
+    headers = {name: value.replace(SESSION_PLACEHOLDER, run.session_id) for name, value in listed.items()}
     client = AsyncOpenAI(
-        base_url=backend.base_url, api_key=backend.api_key, default_headers={_X_LANE_HEADER: config.lane}
+        base_url=backend.base_url,
+        api_key=backend.api_key,
+        default_headers={**headers, _X_LANE_HEADER: config.lane},
+        http_client=DefaultAsyncHttpxClient(event_hooks={"response": [run.usage_tee.capture]}),
     )
     return OpenAIProvider(openai_client=client)

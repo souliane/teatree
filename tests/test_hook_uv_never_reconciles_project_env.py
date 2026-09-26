@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._hook_env import HOOK_ENV_NAME
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _HOOKS = _REPO_ROOT / "scripts" / "hooks"
 
@@ -226,7 +228,7 @@ class TestAForeignEnvAboveTheHookSurvives:
 
         _run(tmp_path, hook_repo, "ship the docs refresh next week")
 
-        assert _log(tmp_path, "syncs.log") == [str(root / ".venv-hook")], (
+        assert _log(tmp_path, "syncs.log") == [str(root / HOOK_ENV_NAME)], (
             f"a sync targeted something other than the hook's own env: {_log(tmp_path, 'syncs.log')}"
         )
 
@@ -252,7 +254,7 @@ class TestAUsableRootEnvIsStillNotTheMembersToReconcile:
         result = _run(tmp_path, hook_repo, f"we ship to {_BANNED_TERM} next week")
 
         assert result.returncode == _BANNED_TERM_EXIT, f"stderr={result.stderr!r}"
-        assert _log(tmp_path, "syncs.log") == [str(root / ".venv-hook")]
+        assert _log(tmp_path, "syncs.log") == [str(root / HOOK_ENV_NAME)]
         assert canary.exists(), "a member reconciling the root env uninstalls what only the root declares"
 
 
@@ -270,7 +272,7 @@ class TestAColdCloneStillScans:
             f"a cold clone must still scan, got {result.returncode}\nstdout={result.stdout!r} stderr={result.stderr!r}"
         )
         assert "BANNED TERM in" in result.stdout
-        assert _log(tmp_path, "syncs.log") == [str(root / ".venv-hook")], "a member builds its own, never the root's"
+        assert _log(tmp_path, "syncs.log") == [str(root / HOOK_ENV_NAME)], "a member builds its own, never the root's"
         assert not (root / ".venv").exists(), "the hook never creates the workspace root's environment"
 
     def test_a_cold_clone_passes_clean_text(self, tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from teatree.config import get_effective_settings
 from teatree.config.loader import clone_root
@@ -27,13 +28,13 @@ from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.instance_id import instance_id
 from teatree.utils import git, git_remote
 from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.url_slug import pr_ref_from_url, slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
     from teatree.core.models import ImplementedIssueMarker, Ticket
 
 logger = logging.getLogger(__name__)
 
-_ISSUE_URL_MARKERS = ("/-/issues/", "/-/merge_requests/", "/issues/", "/pull/", "/merge_requests/")
 #: An ssh-alias expansion is a local config read; it must never stall a claim.
 _SSH_PROBE_TIMEOUT = 5.0
 
@@ -44,22 +45,27 @@ def fleet_claim_enabled(overlay: str) -> bool:
 
 def repo_name_from_issue_url(issue_url: str) -> str:
     """The bare repo name from a forge issue/PR URL (``…/owner/repo/issues/N`` → ``repo``)."""
-    path = issue_url.split("://", 1)[-1]
-    for marker in _ISSUE_URL_MARKERS:
-        if marker in path:
-            return path.split(marker, 1)[0].rstrip("/").rsplit("/", 1)[-1]
-    return ""
+    return owner_repo_from_issue_url(issue_url).rsplit("/", 1)[-1]
 
 
 def owner_repo_from_issue_url(issue_url: str) -> str:
-    """The ``owner/repo`` (or ``group/sub/repo``) slug from a forge issue/PR URL."""
-    path = issue_url.split("://", 1)[-1]
-    for marker in _ISSUE_URL_MARKERS:
-        if marker in path:
-            base = path.split(marker, 1)[0].rstrip("/")
-            host_and_slug = base.split("/", 1)
-            return host_and_slug[1] if len(host_and_slug) > 1 else ""
-    return ""
+    """The ``owner/repo`` (or ``group/sub/repo``) slug from a forge issue/PR URL.
+
+    Resolved through the tree's ONE forge-URL parser rather than a private substring
+    list. The list did not know ``/-/work_items/<n>`` — the alias a forge serves the
+    SAME object under — so every work item resolved to ``""``, :func:`resolve_claim_repo`
+    failed safe, and nothing named that way could ever be claimed. A second parser is
+    also a second thing to teach: `url_slug` already folded the two spellings together
+    and this copy did not.
+    """
+    url = issue_url if "://" in issue_url else f"https://{issue_url}"
+    if slug := slug_from_issue_or_pr_url(urlparse(url).path):
+        return slug
+    # `owner/repo/merge_requests/<n>` — a self-hosted spelling with no `/-/`, which the
+    # issue-or-PR parser declines and the PR-ref one accepts. Kept so no shape the
+    # substring list resolved stops resolving.
+    ref = pr_ref_from_url(url)
+    return ref.slug if ref is not None else ""
 
 
 def _resolve_clone(issue_url: str) -> str:

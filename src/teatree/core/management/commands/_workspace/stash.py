@@ -2,15 +2,14 @@
 
 Split out of :mod:`teatree.core.management.commands._workspace.cleanup` so that
 module stays under the module-health LOC cap. The forge-CLI-free squash-merge
-signal it relies on (:func:`_branch_captured_upstream`) lives in
-:mod:`teatree.core.worktree.branch_classification` — the branch/worktree reapers share it.
+signal it relies on (:func:`_branch_captured_upstream`, below) lives here because
+the stash reaper is its only consumer.
 """
 
 import re
 from dataclasses import dataclass
 
 from teatree.core.management.commands._workspace.preview import preview_line
-from teatree.core.worktree.branch_classification import _branch_captured_upstream
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -75,6 +74,41 @@ def _stash_branch(line: str) -> str:
         return ""
     branch = match.group("branch").strip()
     return "" if branch == "(no branch)" else branch
+
+
+def _branch_captured_upstream(repo: str, branch: str, default: str) -> bool:
+    """Whether every unique commit of ``branch`` is already in ``origin/<default>`` (patch-id).
+
+    The forge-CLI-free per-commit cherry-zero signal the orphaned-stash reaper
+    uses on a ``stash@{N}`` ref. ``git cherry`` prints ``- <sha>`` for each commit
+    whose change is already upstream (a squash captured it) and ``+ <sha>`` for
+    one that is not; the ref is captured only when cherry actually RAN, produced
+    at least one comparison line, and every line is a ``-``.
+
+    Two data-loss traps this closes (#F4.1). (1) The probe runs through the STRICT
+    runner, so a real ``git cherry`` failure (unresolvable ``origin/<default>``,
+    the ref gone, a corrupt repo) raises :class:`CommandFailedError` and is caught
+    to ``False`` (not-captured) — the LENIENT runner degraded a failure to ``""``,
+    which the ``all(...)`` below then read as vacuously-captured. (2) EMPTY cherry
+    output is NOT captured: ``all([])`` is ``True``, but a stash ref that is a
+    merge commit (``git cherry`` compares no patch and prints nothing) or any ref
+    that produced no comparison line was never actually content-compared, so
+    treating it as captured would drop the ONLY copy of the work. Both now resolve
+    to ``False`` — a keep — so the orphaned-stash reaper keeps the stash on any
+    inconclusive probe.
+
+    The richer current-tip detector is
+    :func:`~teatree.core.worktree.branch_classification.branch_redundancy` (which
+    also runs the synthetic-squash and ``--merged`` layers); this one stays the
+    minimal per-commit form the stash path wants, and lives here because the stash
+    reaper is its only consumer.
+    """
+    try:
+        cherry = git.run_strict(repo=repo, args=["cherry", f"origin/{default}", branch])
+    except CommandFailedError:
+        return False
+    lines = [line for line in cherry.splitlines() if line.strip()]
+    return bool(lines) and all(line.startswith("-") for line in lines)
 
 
 def drop_orphaned_stashes(repo: str, *, dry_run: bool = False) -> list[str]:

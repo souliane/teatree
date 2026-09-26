@@ -20,7 +20,7 @@ NON-FATAL. A single failed provisioning seed warns to stderr and lets init
 continue (the runtime falls back to the code default) rather than aborting under
 ``set -e`` and taking the stack down. It runs the shell function verbatim from
 the entrypoint under a stub ``t3``, mirroring
-``tests/test_deploy_entrypoint_disable_loops.py``.
+``tests/test_deploy_entrypoint_token_preflight.py``.
 """
 
 import os

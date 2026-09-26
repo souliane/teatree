@@ -56,14 +56,6 @@ def _installed_versions(root: Path) -> list[tuple[int, int]]:
     return versions
 
 
-def _recorded_interpreter_home(pyvenv_cfg: Path) -> Path | None:
-    for line in pyvenv_cfg.read_text(encoding="utf-8", errors="replace").splitlines():
-        key, sep, value = line.partition("=")
-        if sep and key.strip() == "home":
-            return Path(value.strip())
-    return None
-
-
 def _checkout_pyvenv_cfgs(worktree_root: Path) -> list[Path]:
     """Every worktree checkout's ``.venv/pyvenv.cfg``, at the two depths they sit at.
 
@@ -85,14 +77,27 @@ def _root_supply_warning(root: Path, floor: tuple[int, int]) -> str | None:
 
 
 def _venue_mismatch_failures(worktree_root: Path, root: Path) -> list[str]:
+    """Every checkout whose recorded interpreter this venue cannot run.
+
+    EXISTENCE of the recorded home stopped being the test once both venues shared
+    one interpreter root at one address (#4642): the whole point of that mount is
+    that the other side's interpreter directory IS present here, so an existence
+    check reports a clean plane while uv is still deleting a gigabyte. The uv
+    platform tag is the remaining signal, and
+    :func:`~teatree.utils.venv_artifacts.foreign_venv_interpreter` owns both.
+    """
+    import sys  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    from teatree.utils.venv_artifacts import foreign_venv_interpreter  # noqa: PLC0415 — deferred: as above
+
     failures = []
     for pyvenv_cfg in _checkout_pyvenv_cfgs(worktree_root):
-        recorded = _recorded_interpreter_home(pyvenv_cfg)
-        if recorded is None or recorded.exists():
+        reason = foreign_venv_interpreter(pyvenv_cfg.parent, platform=sys.platform)
+        if reason is None:
             continue
         failures.append(
-            f"FAIL  {pyvenv_cfg.parent.parent} records interpreter home {recorded}, which does not "
-            f"exist in this venue (root {root}). Running uv there DELETES and rebuilds the "
+            f"FAIL  {pyvenv_cfg.parent.parent} records an interpreter this venue cannot run: "
+            f"{reason} (root {root}). Running uv there DELETES and rebuilds the "
             "environment — about a gigabyte, and again on the next flip back."
         )
     return failures

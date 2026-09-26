@@ -43,7 +43,7 @@ class TestPopulateModelRegistries:
         assert gate_registry.get_gate("plan_artifact") is not None
         assert gate_registry.get_gate("local_e2e_dod") is not None
         assert gate_registry.get_gate("fix_record_dod") is not None
-        assert gate_registry.get_gate("spec_coverage") is not None
+        assert gate_registry.get_gate("rubric_verified") is not None
         assert gate_registry.get_gate("merge_evidence") is not None
         assert gate_registry.get_gate("review_context_satisfied") is not None
         assert gate_registry.get_resolver("infer_overlay_for_url") is not None

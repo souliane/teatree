@@ -16,6 +16,11 @@ for the assertion that a credential must never appear there.
 
 import subprocess
 
+# The wrapper resolves a credential only for an invocation that RUNS a command
+# (`needs_gitlab_credential`), so `--help` — an inert probe until then — now forwards
+# nothing and every token assertion built on it read green while measuring the skip.
+CREDENTIAL_PROBE = ["doctor", "check"]
+
 ENV_REPORT = r"""
 while [ "$#" -gt 0 ]; do
     if [ "$1" = --env ] || [ "$1" = -e ]; then

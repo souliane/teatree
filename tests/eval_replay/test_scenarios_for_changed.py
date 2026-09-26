@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.eval.changed_scenarios import MAX_SELECTIVE_PR_SCENARIOS, selection_for_changed
+from teatree.eval.changed_scenarios import MAX_SELECTIVE_PR_SCENARIOS, _relative_to_root, selection_for_changed
 from teatree.eval.changed_scenarios import names_for_changed as _core_names_for_changed
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 from teatree.eval.models import EvalSpec
@@ -112,9 +112,48 @@ class TestSelectivePrCap:
     def test_whole_real_catalog_selection_is_capped(self) -> None:
         # Every real scenario file changed → the selector caps rather than returning
         # the full ~210-scenario catalog the PR lane cannot run in one job.
-        all_files = sorted({s.source_path.relative_to(_REPO_ROOT).as_posix() for s in discover_specs()})
+        all_files = sorted({_relative_to_root(s.source_path, _REPO_ROOT) for s in discover_specs()})
         out = _core_names_for_changed(all_files, discover_specs(), _REPO_ROOT)
         assert len(out) <= MAX_SELECTIVE_PR_SCENARIOS
+
+
+class TestSpecsOutsideTheCoreCheckout:
+    """An overlay ships its scenarios beside the vendored core, not inside it.
+
+    Keying those only against the core root fell through to the ABSOLUTE path, which no
+    repo-relative diff line can equal — so every MR touching an overlay scenario selected
+    ZERO and the lane reported success having graded nothing.
+
+    The layout is built under ``tmp_path`` rather than read off the installed overlays: the
+    core-only pytest lane registers none, so a catalog-derived version of this guard is
+    vacuous exactly where it is meant to bite.
+    """
+
+    def _vendored_layout(self, tmp_path: Path) -> tuple[Path, Path, str]:
+        (tmp_path / ".git").mkdir()
+        core_root = tmp_path / "vendor" / "core"
+        (core_root / "evals" / "scenarios").mkdir(parents=True)
+        outside = tmp_path / "overlay" / "evals" / "specs" / "alpha.yaml"
+        outside.parent.mkdir(parents=True)
+        outside.touch()
+        # The diff spelling comes from the CHECKOUT, never from the function under test:
+        # keying it through `_relative_to_root` reproduces the bug on both sides and passes.
+        return core_root, outside, outside.relative_to(tmp_path).as_posix()
+
+    def test_a_spec_outside_the_core_root_keys_repo_relative_never_absolute(self, tmp_path: Path) -> None:
+        core_root, outside, diff_spelling = self._vendored_layout(tmp_path)
+        assert _relative_to_root(outside, core_root) == diff_spelling
+
+    def test_changing_an_outside_spec_file_selects_its_scenarios(self, tmp_path: Path) -> None:
+        core_root, outside, diff_spelling = self._vendored_layout(tmp_path)
+        specs = [_spec("overlay_alpha", outside), _spec("core_beta", core_root / "evals" / "scenarios" / "b.yaml")]
+        assert names_for_changed([diff_spelling], specs, core_root) == ["overlay_alpha"]
+
+    def test_every_shipped_spec_outside_the_core_root_keys_repo_relative(self) -> None:
+        # The real catalog, when this venue registers an overlay that ships one.
+        for spec in (s for s in discover_specs() if not s.source_path.is_relative_to(_REPO_ROOT)):
+            key = _relative_to_root(spec.source_path, _REPO_ROOT)
+            assert not key.startswith("/"), f"{spec.name} keys absolute ({key}) — no diff line can match it"
 
 
 class TestTruncationSurfaced:
@@ -148,19 +187,22 @@ class TestTruncationSurfaced:
 
 class TestMain:
     def test_corpus_wide_change_surfaces_truncation_on_stderr(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:
         # Every real scenario file changed → the selection exceeds the cap; the deferral
         # note must appear on stderr (not silently drop the deferred scenarios), while
         # stdout still prints exactly the capped run set.
-        all_files = sorted({s.source_path.relative_to(_REPO_ROOT).as_posix() for s in discover_specs()})
+        all_files = sorted({_relative_to_root(s.source_path, _REPO_ROOT) for s in discover_specs()})
         monkeypatch.setattr("sys.stdin", io.StringIO("\n".join(all_files) + "\n"))
-        code = main([])
+        metadata = tmp_path / "selection.env"
+        code = main(["--metadata-env", str(metadata)])
         captured = capsys.readouterr()
         assert code == 0
         assert "capped to" in captured.err
         assert "weekly sharded lane" in captured.err
         assert len([line for line in captured.out.splitlines() if line]) == MAX_SELECTIVE_PR_SCENARIOS
+        deferred = len(discover_specs()) - MAX_SELECTIVE_PR_SCENARIOS
+        assert metadata.read_text(encoding="utf-8") == f"EVAL_DEFERRED={deferred}\n"
 
     def test_real_catalog_file_prints_names_and_exits_zero(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -241,3 +283,41 @@ class TestDiffFileNarrowsProseSelection:
         # The unchanged STDIN-only contract: granularity unknown → fail-safe to every
         # scenario grading the file, never the pre-#3944 zero.
         assert self._selected(monkeypatch, capsys, [])
+
+
+class TestRepoRootOption:
+    """A VENDORED core sits below the consuming repo's root, so its own root names half the catalog.
+
+    The diff paths a consuming repo's lane emits are relative to THAT repo, and a spec
+    living outside the vendored tree (an overlay's own catalog) resolves outside the
+    default root entirely — so it matched nothing and the lane reported a green having
+    selected zero. ``--repo-root`` is what lets the caller name the root its paths use.
+    """
+
+    @staticmethod
+    def _parent_relative_catalog_path() -> tuple[Path, str, list[str]]:
+        catalog_file = min(SCENARIOS_DIR.glob("*.yaml"))
+        parent = _REPO_ROOT.parent
+        expected = sorted(s.name for s in discover_specs() if s.source_path == catalog_file)
+        assert expected, "the chosen catalog file must define at least one scenario"
+        return parent, catalog_file.relative_to(parent).as_posix(), expected
+
+    def test_a_path_relative_to_a_parent_root_selects_under_that_root(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        parent, rel, expected = self._parent_relative_catalog_path()
+        monkeypatch.setattr("sys.stdin", io.StringIO(f"{rel}\n"))
+        code = main(["--repo-root", str(parent)])
+        printed = [line for line in capsys.readouterr().out.splitlines() if line]
+        assert code == 0
+        assert printed == expected
+
+    def test_the_same_path_selects_nothing_under_the_default_root(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The control: without the flag the parent-relative spelling reaches no spec, which
+        # is precisely the blind green the flag exists to remove.
+        _, rel, _ = self._parent_relative_catalog_path()
+        monkeypatch.setattr("sys.stdin", io.StringIO(f"{rel}\n"))
+        assert main(["--skip-code", "3"]) == 3
+        assert capsys.readouterr().out.strip() == ""

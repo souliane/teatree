@@ -42,9 +42,8 @@ from typer.testing import CliRunner
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.default_draft import notify_draft_created, resolve_reviewed_head_sha
-from teatree.config import OnBehalfPostMode
-from teatree.core.models import BotPing, ConfigSetting, LivePostApproval
-from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
+from teatree.core.models import BotPing, LivePostApproval, OnBehalfApproval
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -71,15 +70,25 @@ def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_
         conn.close()
 
 
-def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, user_id: str = "U-OPERATOR") -> None:
-    """Seed the DB-home Slack routing + IMMEDIATE on-behalf gate.
+def _write_cfg(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    user_id: str = "U-OPERATOR",
+    forbid: bool = False,
+) -> None:
+    """Seed the DB-home Slack routing + the active posture (permitting by default).
 
     ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it in a
-    config-store sqlite the reader resolves via ``T3_CONFIG_DB``. ``on_behalf_post_mode``
-    is ORM-resolved, staged in the ``ConfigSetting`` store.
+    config-store sqlite the reader resolves via ``T3_CONFIG_DB``. A live-post-TOKEN test needs
+    ``forbid=True`` plus a recorded ``OnBehalfApproval`` — under a permitting posture (a
+    PROCEED) neither on-behalf gate applies, so there is no token to isolate.
     """
     _seed_cold_slack_user(tmp_path, monkeypatch, user_id)
-    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
+    if forbid:
+        seed_forbidding_posture()
+    else:
+        seed_permitting_posture()
 
 
 def _wire_notify_backend(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
@@ -294,16 +303,29 @@ class TestResolveReviewedHeadShaDegradesOnLookupFailure:
         assert BotPing.objects.filter(idempotency_key=f"post_comment_draft:{OWNED_REPO}!6521:{today}").exists()
 
 
+def _record_on_behalf(mr: int, *, approver: str = "souliane") -> None:
+    """Satisfy the #960 on-behalf gate for one MR, isolating the #1207 live-post token below.
+
+    Under IMMEDIATE (a PROCEED posture) neither on-behalf gate applies at all
+    made the live-post token follow the verdict, so IMMEDIATE waives it too and there is no token
+    left to isolate. These tests run under ``ASK`` instead and record this approval so only the
+    live-post-token behavior (record / consume / MR-scope / TTL) varies between assertions.
+    """
+    OnBehalfApproval.record(target=f"{OWNED_REPO}!{mr}", action="post_comment", approver_id=approver)
+
+
 class TestPostCommentLiveRefusedWithoutToken:
     """``--live`` without a recorded approval refuses with an actionable message."""
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch)
+        _write_cfg(tmp_path, monkeypatch, forbid=True)
         _wire_notify_backend(monkeypatch)
         self.svc, self.stub = _service(monkeypatch)
 
     def test_live_post_refused_without_approval(self) -> None:
+        _record_on_behalf(7)
+
         msg, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
 
         assert code == 1
@@ -311,6 +333,8 @@ class TestPostCommentLiveRefusedWithoutToken:
         # No publish-shaped HTTP call lands when the gate refuses — the
         # shape gate's read-only ``get_json`` MR-author lookup is fine.
         assert all(kind != "post_json" for kind, _, _ in self.stub.calls)
+        # The on-behalf approval survives — the failed publish rolled its consume back.
+        assert OnBehalfApproval.objects.filter(target=f"{OWNED_REPO}!7", consumed_at__isnull=True).exists()
 
 
 class TestPostCommentLiveConsumesToken:
@@ -318,11 +342,12 @@ class TestPostCommentLiveConsumesToken:
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch)
+        _write_cfg(tmp_path, monkeypatch, forbid=True)
         _wire_notify_backend(monkeypatch)
         self.svc, self.stub = _service(monkeypatch)
 
     def test_live_proceeds_with_recorded_approval(self) -> None:
+        _record_on_behalf(7)
         LivePostApproval.record(mr_url=f"{OWNED_REPO}!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
 
         msg, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
@@ -331,10 +356,15 @@ class TestPostCommentLiveConsumesToken:
         assert "OK note_id=77" in msg
 
     def test_token_is_single_use(self) -> None:
+        # A fresh on-behalf approval per call keeps that gate satisfied throughout —
+        # ONLY the live-post token is under test for single-use exhaustion.
+        _record_on_behalf(7)
         LivePostApproval.record(mr_url=f"{OWNED_REPO}!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
 
         _, code1 = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
         assert code1 == 0
+
+        _record_on_behalf(7)
         msg2, code2 = self.svc.post_comment(OWNED_REPO, 7, "lgtm again", live=True)
         assert code2 == 1
         assert "approve-live-post" in msg2
@@ -345,12 +375,13 @@ class TestPostCommentLiveScopedToMr:
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch)
+        _write_cfg(tmp_path, monkeypatch, forbid=True)
         _wire_notify_backend(monkeypatch)
         self.svc, self.stub = _service(monkeypatch)
 
     def test_wrong_mr_token_does_not_authorise(self) -> None:
         LivePostApproval.record(mr_url=f"{OWNED_REPO}!1", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        _record_on_behalf(2)  # satisfies #960 for the MR actually targeted below
 
         msg, code = self.svc.post_comment(OWNED_REPO, 2, "lgtm", live=True)
 
@@ -365,7 +396,7 @@ class TestPostCommentLiveTokenExpiry:
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch)
+        _write_cfg(tmp_path, monkeypatch, forbid=True)
         _wire_notify_backend(monkeypatch)
         self.svc, self.stub = _service(monkeypatch)
 
@@ -375,6 +406,7 @@ class TestPostCommentLiveTokenExpiry:
         )
         # Backdate the row beyond the 15-minute TTL.
         LivePostApproval.objects.filter(pk=approval.pk).update(created_at=timezone.now() - timedelta(minutes=20))
+        _record_on_behalf(7)
 
         msg, code = self.svc.post_comment(OWNED_REPO, 7, "lgtm", live=True)
 

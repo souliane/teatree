@@ -27,7 +27,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.core.skill_sources import declared_skill_sources
+from teatree.core.skill_sources import declared_skill_sources, skill_demands_by_overlay
 from teatree.provisioning.skill_drift import SkillDrift, measure_skill_drift
 
 _MAX_NAMED = 8
@@ -47,25 +47,10 @@ def _named(skills: tuple[str, ...]) -> str:
 
 
 def _dispatched_skills_by_overlay() -> dict[str, list[tuple[str, str]]]:
-    """Overlay name → the ``(declaring field, skill name)`` pairs it dispatches."""
-    from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
-
-    dispatched: dict[str, list[tuple[str, str]]] = {}
-    for overlay_name, overlay in get_all_overlays().items():
-        config = getattr(overlay, "config", None)
-        if config is None:
-            continue
-        declared: list[tuple[str, str]] = [
-            (f"stage_skills[{phase}]", skill)
-            for phase, skills in getattr(config, "stage_skills", {}).items()
-            for skill in skills
-        ]
-        declared.extend(("companion_skills", skill) for skill in getattr(config, "companion_skills", []))
-        companion = getattr(config, "pr_review_companion", "")
-        if companion:
-            declared.append(("pr_review_companion", companion))
-        dispatched[overlay_name] = declared
-    return dispatched
+    return {
+        overlay_name: [(demand.source, demand.name) for demand in demands]
+        for overlay_name, demands in skill_demands_by_overlay().items()
+    }
 
 
 def _dispatched_skill_gaps() -> list[str]:

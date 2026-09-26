@@ -24,10 +24,11 @@ from django.db import transaction
 
 from teatree.config import effective_default
 from teatree.config.cold_defaults import DEFAULTS_TOML, shipped_defaults_table
+from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.config.defaults_snapshot import default_category_keys
 from teatree.config.defaults_snapshot import render_toml as render_shipped_file
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.provenance import PERSISTED_SOURCES, resolve_settings
+from teatree.config.provenance import ValueSource, resolve_settings
 from teatree.config.registries import REGISTRY_KEYS
 from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS, removed_setting
 from teatree.config.setting_groups import grouped_settings_table
@@ -61,6 +62,7 @@ from teatree.core.config_interchange.seed_tables import (
 from teatree.core.config_interchange.types import ConfigExport, ConfigImport, ImportedRow, OmittedRow, RejectedRow
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
+from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 
 
 @dataclass
@@ -93,7 +95,7 @@ def _configuration_rows(rows: dict[str, ConfigValue], scope: str, *, guard: _Exp
     """
     kept: dict[str, ConfigValue] = {}
     for key, value in rows.items():
-        if is_operator_configuration(key):
+        if is_operator_configuration(key) or known_pass_key_credential(key) is not None:
             kept[key] = value
         else:
             guard.omitted.append(OmittedRow(scope, key, stored_row_kind(key)))
@@ -244,22 +246,24 @@ def _filled_with_defaults(
     :func:`~teatree.config.provenance.resolve_settings` restricted to the persisted tiers —
     ``env`` and the active overlay's code defaults are this machine's state, not the file's.
 
-    A key no persisted tier reaches is left out: its only value is an in-code dataclass
-    default, which is not in stored form (a ``Path``, an enum) and has never been part of
-    the ``[teatree]`` table. Every ``Category.DEFAULT`` key IS in the shipped file, so the
-    defaults shape stays exhaustive.
+    A key the shipped file does not carry is left out when only its DECLARED default
+    reaches it: a Personal/Secret key's declaration is a machine path or an empty
+    credential the ``[teatree]`` table has never held, and several are not even in stored
+    form (a ``Path``, an enum). ``default_category_keys()`` IS that carried set, so the
+    defaults shape stays exhaustive while the wider shape gains nothing it never emitted.
 
     A filled key the secret guard would withhold falls back to the value the shipped file
     already ships in public, rather than leaving a hole: the defaults shape is only
     meaningful when it is COMPLETE, and the shipped value is public by construction. A key
     the guard ALREADY withheld on the way in is filled the same way but not reported twice.
     """
-    eligible = default_category_keys() if default_keys_only else _teatree_table_keys()
+    carried = default_category_keys()
+    eligible = carried if default_keys_only else _teatree_table_keys()
     shipped = shipped_defaults_table()
     withheld = {row.key for row in guard.redacted if row.scope == GLOBAL_SCOPE}
     filled = dict(rows)
     for key, entry in resolve_settings(sorted(eligible - set(rows)), persisted_only=True).items():
-        if entry.source not in PERSISTED_SOURCES:
+        if entry.source is ValueSource.CODE_DEFAULT and key not in carried:
             continue
         reason = None if guard.include_private else redaction_reason(key, entry.value, guard.terms)
         if reason is None:
@@ -372,7 +376,7 @@ def _unstorable_reason(key: str, value: ConfigValue, policy: _ImportPolicy) -> s
     if key in REMOVED_SETTING_KEYS:
         entry = removed_setting(key)
         return f"removed ({entry.reason if entry is not None else 'the setting was removed'})"
-    if key not in ALL_KNOWN_CONFIG_SETTINGS:
+    if key not in ALL_KNOWN_CONFIG_SETTINGS and known_pass_key_credential(key) is None:
         return "unknown key"
     if policy.allow_private:
         return None
@@ -413,11 +417,14 @@ def _classify_import_row(
     if (unstorable := _unstorable_reason(key, value, policy)) is not None:
         return ("reject", unstorable)
     candidate = merged_registry(value, stored) if key in REGISTRY_KEYS and isinstance(value, dict) else value
+    pass_key = known_pass_key_credential(key)
     try:
-        canonical = validate_config_write(key, candidate)
-    except ConfigWriteError as exc:
+        canonical = (
+            validate_pass_key_entry(candidate) if pass_key is not None else validate_config_write(key, candidate)
+        )
+    except (ConfigWriteError, ValueError) as exc:
         return ("reject", f"invalid: {exc}")
-    if canonical == effective_default(key):
+    if pass_key is None and canonical == effective_default(key):
         return ("skip", canonical)
     if canonical == stored:
         return ("unchanged", canonical)

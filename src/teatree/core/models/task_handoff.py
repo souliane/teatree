@@ -15,6 +15,28 @@ from teatree.core.models.task import Task
 
 _DEFAULT_REASON = "Agent needs human input"
 
+#: What :func:`schedule_resume` STORES: the owner's answer, true on any conversation the retry
+#: ends up carrying. The migration that back-filled ``session_continuation`` keys on this prefix.
+RESUME_ANSWER_PREFIX = "The user answered your earlier question:"
+
+#: What :func:`dispatch_reason` DERIVES: true only while the dispatch actually resumes. Storing it
+#: froze it into the prompt, and a requeue that answered FRESH still told the agent to continue
+#: from a decision point its new conversation has never seen.
+RESUME_CONTINUATION_CLAUSE = "Continue from where you left off — do NOT restart the task from scratch."
+
+
+def dispatch_reason(task: Task) -> str:
+    """The prompt instruction a dispatch of *task* carries — the stored reason, made true for it."""
+    reason = task.execution_reason
+    if not reason.startswith(RESUME_ANSWER_PREFIX):
+        return reason
+    # Rows queued before the clause moved out of storage still carry it inline, so it is taken
+    # off first: that both spares them a doubled sentence and applies the FRESH rule to them.
+    answered = reason.replace(RESUME_CONTINUATION_CLAUSE, "").strip()
+    if task.session_continuation == Task.SessionContinuation.FRESH:
+        return answered
+    return f"{answered} {RESUME_CONTINUATION_CLAUSE}"
+
 
 def park_for_user_input(task: Task) -> None:
     """Park a ``needs_user_input`` STOP as a durable, user-reachable question.
@@ -66,11 +88,12 @@ def schedule_resume(task: Task, *, answer: str) -> Task:
 
     Closes the headless ask-loop: the agent emitted ``needs_user_input`` and
     STOPPED, the question reached the user, and the reply now resumes the run.
-    The followup chains ``parent_task=task`` so ``_get_resume_session_id`` walks
-    back to this task's captured SDK session — the agent CONTINUES from the
+    The followup is typed ``SessionContinuation.PARENT``, so ``resume_session_id``
+    reads this task's captured SDK session — the agent CONTINUES from the
     decision point, it does not restart from scratch. The answer is prepended to
-    the work prompt via ``execution_reason``. Idempotent: a resume already queued
-    for this task is returned, never duplicated.
+    the work prompt via ``execution_reason``; :func:`dispatch_reason` adds the
+    continue-where-you-left-off instruction for as long as the retry really does.
+    Idempotent: a resume already queued for this task is returned, never duplicated.
     """
     existing = task.child_tasks.filter(  # ty: ignore[unresolved-attribute]
         status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
@@ -80,14 +103,12 @@ def schedule_resume(task: Task, *, answer: str) -> Task:
     last = task.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     agent_session_id = last.agent_session_id if last else ""
     session = Session.objects.create(ticket=task.ticket, agent_id=agent_session_id or "headless-resume")
-    reason = (
-        f"The user answered your earlier question: {answer}. "
-        "Continue from where you left off — do NOT restart the task from scratch."
-    )
+    reason = f"{RESUME_ANSWER_PREFIX} {answer}."
     return Task.objects.create(
         ticket=task.ticket,
         session=session,
         phase=task.phase,
         execution_reason=reason,
         parent_task=task,
+        session_continuation=Task.SessionContinuation.PARENT,
     )

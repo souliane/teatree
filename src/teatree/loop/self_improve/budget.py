@@ -18,17 +18,12 @@ from dataclasses import dataclass
 from django.utils import timezone
 
 from teatree.core.models.self_improve_firing import SelfImproveFiring
+from teatree.utils.disk_probe import disk_crit_percent, read_disk_used_percent
 from teatree.utils.ram_probe import read_ram_used_percent as _read_ram_used_percent
 
-# Static thresholds — overridable via env if the user wants to tune
-# without a code change.  Defaults match the issue plan.
-DEFAULT_RAM_FREE_FLOOR_PCT = 15
 DEFAULT_RAM_USED_CEILING_PCT = 85
 DEFAULT_SPAWN_CAP_WINDOW_SECONDS = 60 * 60
 DEFAULT_SPAWN_CAP = 3
-DEFAULT_DENIAL_WINDOW_SECONDS = 60 * 60
-DEFAULT_DENIAL_LIMIT = 3
-DEFAULT_DENIAL_BACKOFF_SECONDS = 4 * 60 * 60
 # Env-var NAME (not a credential value); split-assign so the literal does
 # not match ruff's hardcoded-password (S105) heuristic on the trailing
 # "_BUDGET" / "_TOKEN" word.
@@ -52,23 +47,22 @@ class BudgetVerdict:
         return cls(ok=True, reason="")
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def precheck_budget(  # noqa: PLR0913  # each kwarg is a BLUEPRINT § 5.7 guardrail input; kwargs-only.
+def precheck_budget(
     *,
     ram_used_percent: float | None = None,
+    disk_used_percent: float | None = None,
     recent_self_improve_spawns: int = 0,
-    recent_classifier_denials: int = 0,
-    now: dt.datetime | None = None,
     token_budget_remaining: int | None = None,
     ram_probe: Callable[[], float] | None = None,
 ) -> BudgetVerdict:
     """Return ``skip(reason)`` when any guardrail fails, else ``allow()``.
 
-    Order matches BLUEPRINT § 5.7 (RAM → spawn cap → denial cool-down →
-    token budget) so the first-failing reason is the most user-actionable
-    one.
+    Order is disk → RAM → spawn cap → token budget so the
+    first-failing reason is the most user-actionable one.
     """
-    del now  # reserved for future cool-down windowing — kept in the signature for callers
+    disk_sample = disk_used_percent if disk_used_percent is not None else read_disk_used_percent()
+    if disk_sample is not None and disk_sample >= disk_crit_percent():
+        return BudgetVerdict.skip(f"low_disk (used={disk_sample:.0f}%)")
     sample = (
         ram_used_percent
         if ram_used_percent is not None
@@ -76,10 +70,8 @@ def precheck_budget(  # noqa: PLR0913  # each kwarg is a BLUEPRINT § 5.7 guardr
     )
     if sample >= DEFAULT_RAM_USED_CEILING_PCT:
         return BudgetVerdict.skip(f"low_ram (used={sample:.0f}%)")
-    if recent_self_improve_spawns > DEFAULT_SPAWN_CAP:
+    if recent_self_improve_spawns >= DEFAULT_SPAWN_CAP:
         return BudgetVerdict.skip(f"spawn_cap ({recent_self_improve_spawns} in window)")
-    if recent_classifier_denials >= DEFAULT_DENIAL_LIMIT:
-        return BudgetVerdict.skip(f"classifier_denial_cooldown ({recent_classifier_denials} in window)")
     if token_budget_remaining is not None and token_budget_remaining <= 0:
         return BudgetVerdict.skip("token_budget_exhausted")
     return BudgetVerdict.allow()
@@ -88,10 +80,9 @@ def precheck_budget(  # noqa: PLR0913  # each kwarg is a BLUEPRINT § 5.7 guardr
 def recent_self_improve_firings(seconds: int, *, now: dt.datetime | None = None) -> int:
     """Count self-improve firings (any action) in the trailing window.
 
-    Used as a coarse proxy for "self-improve-originated spawns" — the
-    Phase 1 detectors do not spawn sub-agents directly, but the same
-    counter feeds the Phase 2/3 wiring without changing the schedule
-    contract.
+    The spawn-cap sample: a firing is what a cycle produces, so a box already
+    at the cap has done its share of self-improve work for the window and the
+    next cycle waits for these to age out.
     """
     moment = now or timezone.now()
     cutoff = moment - dt.timedelta(seconds=seconds)

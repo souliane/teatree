@@ -49,7 +49,7 @@ def check_task_attempt_activity(*, now: dt.datetime, runner_on: Callable[[], boo
     if age_seconds <= _INACTIVITY_SECONDS:
         return True
     typer.echo(
-        f"FAIL  loop_runner_enabled is ON with {activity.active_task_count} active task(s), but no task attempt "
+        f"FAIL  the active preset admits work with {activity.active_task_count} active task(s), but no task attempt "
         f"has run for {age_seconds // 60} min (threshold "
         f"{_INACTIVITY_SECONDS // 60} min) — work is queued but nothing is running."
     )

@@ -23,7 +23,7 @@ import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from teatree.config.override_read_health import record_degraded_read
+from teatree.config.override_read_health import note_healthy_read, record_degraded_read
 from teatree.config.settings import OverlayEntry
 
 if TYPE_CHECKING:
@@ -158,7 +158,7 @@ def _read_scope_rows(
     """
     for attempt in range(_READ_ATTEMPTS):
         try:
-            return read(), False
+            rows = read()
         except Exception as exc:
             if _override_read_degrades_silently(exc):
                 return {}, False
@@ -170,6 +170,9 @@ def _read_scope_rows(
                 record_degraded_read(scope_label, caller=caller)
                 return {}, True
             time.sleep(_READ_RETRY_BACKOFF[min(attempt, len(_READ_RETRY_BACKOFF) - 1)])
+        else:
+            note_healthy_read()
+            return rows, False
     return {}, True  # pragma: no cover — the loop always returns
 
 

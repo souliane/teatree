@@ -11,6 +11,7 @@ import subprocess
 
 import pytest
 
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.main_check_runs import PAGE_SIZE as _CHECK_RUNS_PAGE
 from teatree.loop.red_set_report import SetVerdict
 from teatree.loop.red_set_surface import _default_main_checks, record_red_set
@@ -236,7 +237,12 @@ class TestMainProbe:
             return subprocess.CompletedProcess(argv, returncode, stdout, "")
 
         monkeypatch.setattr("teatree.loop.red_set_surface.run_allowed_to_fail", fake_run)
-        monkeypatch.setattr("teatree.loop.red_set_surface._github_token", lambda _overlay: "")
+        monkeypatch.setattr(
+            "teatree.forge_credentials.resolve_named_overlay_token",
+            lambda overlay, *, credential: ForgeTokenResolution(
+                credential, overlay, ForgeTokenState.TOKEN, token="test-token"
+            ),
+        )
         result = _default_main_checks(slug=SLUG, overlay="t3-teatree")
         argv = captured[0]
         endpoint = next(arg for arg in argv if "check-runs" in arg)
@@ -251,6 +257,18 @@ class TestMainProbe:
     def _pages(*pages: list[dict[str, object]]) -> str:
         """The ``--slurp`` shape: one list of page bodies, each with its own ``check_runs``."""
         return json.dumps([{"total_count": len(page), "check_runs": page} for page in pages])
+
+    def test_empty_route_never_inherits_ambient_gh(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[object] = []
+        monkeypatch.setenv("GH_TOKEN", "ambient-token")
+        monkeypatch.setattr(
+            "teatree.forge_credentials.resolve_named_overlay_token",
+            lambda overlay, *, credential: ForgeTokenResolution(credential, overlay, ForgeTokenState.UNSET),
+        )
+        monkeypatch.setattr("teatree.loop.red_set_surface.run_allowed_to_fail", lambda *a, **k: calls.append((a, k)))
+
+        assert _default_main_checks(slug=SLUG, overlay="t3-teatree") is None
+        assert calls == []
 
     def test_a_completed_non_green_run_is_a_failing_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
         payload = self._pages(

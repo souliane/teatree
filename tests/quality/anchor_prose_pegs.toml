@@ -23,8 +23,8 @@ radius = 400
 # The governor's third caller is the Agent/Task PreToolUse gate; the task-LIST family is separate.
 "BLUEPRINT.md" = ["b7bf92da3aa32c32"]
 # 1: the skill-loading kill-switch has no TaskCreated counterpart.
-# 2: the quote gate is opt-in, and its setting name predates the correction.
-"docs/blueprint/configuration.md" = ["7ded7302a35ac27e", "bd7e933c6fe7119c"]
+# 2: the task-list quote gate is opt-in (default off), and its setting name predates the correction.
+"docs/blueprint/configuration.md" = ["7ded7302a35ac27e", "31e9d6dd45e43556"]
 # ultracode's gate enforces skill-loading only and has no task-list arm.
 "docs/blueprint/factory-architecture.md" = ["273cc5934f99908a"]
 # 1: the harness's 27-event constant list.
@@ -32,39 +32,38 @@ radius = 400
 # sets preventContinuation the task-creation consumer never reads.
 # 3: "task tools bypass PreToolUse" is the task-LIST family, not the dispatch tool.
 "docs/claude-code-internals.md" = ["9abffb84c4d06aef", "0f305c8269101808", "d024d706d59515b2"]
-# 1: the router's registered event list.
-# 2: do not conflate the sub-agent dispatch tool with the task-LIST tools.
-# 3: a deny DELETES the already-persisted todo row, and the event has ONE emitter.
-# 4: the envelope is inert; a visible gate writes systemMessage at exit 0.
-# 5: the one surviving arm is the quote scanner; a handler must fail open in-handler.
-# 6: the admission governor is consulted on the PreToolUse dispatch; the second arm is retired.
-# 7: the escape-marker table rows for the quote, admission and brief-anchor tokens —
-# quote is the only one of the three with a TaskCreated arm; brief-anchor is PreToolUse-only.
+# 1: the default-allow policy's closing rule, then the router's registered event list.
+# 2: the Agent matcher's off-ramps, and do not conflate the dispatch tool with the task-LIST tools.
+# 3: a deny DELETES the already-persisted todo row, and the event has ONE producer.
+# 4: the envelope is inert (only blockingError is read); a visible gate writes systemMessage at
+# exit 0; a dispatch-ness demand is unsatisfiable here, leaving the quote scanner as the one arm.
+# 5: the escape-marker table rows for the delegate, skill-load, quote, admission,
+# brief-anchor and config-overwrite tokens -- quote is the only one with a TaskCreated arm.
+# The delegate row is long enough that the window now OPENS inside its own `where the hook
+# reads it` cell, so merge-detect's row is entirely outside and is not named here.
 "hooks/CLAUDE.md" = [
-  "ee50c7da40c5b2a7",
-  "da70d24c3deb479f",
-  "c3347ea7f8257c9a",
-  "ec5c9a2f7d9da393",
-  "f807cf99027303d9",
-  "53403ec58ab78f9b",
-  "1de1a859a0054190"
+  "52e145dfa8355f47",
+  "e7c1d45f2a2b5ad6",
+  "4a7982322b68a925",
+  "4cb202f4e2805c65",
+  "b78b2d0d275023a1"
 ]
 # The TaskCreated event's own hooks.json wiring (no matcher).
 "hooks/hooks.json" = ["9e08240bd68c3563"]
 # There is exactly ONE dispatch interception point, and TaskCreated is not it.
 "hooks/scripts/dispatch_admission_gate.py" = ["a4846901d1d0b751"]
 # 1: the advisory emitter -- systemMessage carries the reason, decision:block never appears.
-# 2: the task-list quote gate's default-OFF resolver.
-# 3: the surviving handler's docstring and its never-lockout paragraph.
-# 4: the inner body, which emits the TaskCreated envelope rather than the PreToolUse one.
-# 5: the Agent matcher is the ONLY interception point a dispatch has.
-# 6: the _HANDLERS registration -- one handler, the skill-loading arm moved to Agent.
-# 7: _NEVER_BLOCKING_EVENTS -- a block here destroys the row the tool persisted.
-# 8: main()'s exit-code contract, where _NEVER_BLOCKING_EVENTS outranks both arms.
+# 2: the task-list quote gate's opt-in resolver, the surviving handler's docstring and its
+# never-lockout paragraph. Its window OPENS inside the sibling dispatch deny's arguments, so
+# `gate_id=` landing there re-digests prose that never moved.
+# 3: the inner body, which emits the TaskCreated envelope rather than the PreToolUse one.
+# 4: the Agent matcher is the ONLY interception point a dispatch has.
+# 5: the _HANDLERS registration -- one handler, the skill-loading arm moved to Agent.
+# 6: _NEVER_BLOCKING_EVENTS -- a block here destroys the row the tool persisted.
+# 7: main()'s exit-code contract, where _NEVER_BLOCKING_EVENTS outranks both arms.
 "hooks/scripts/hook_router.py" = [
   "e6e88a1a7ce4b21c",
-  "29f75d2d6607a867",
-  "743caac207b453c5",
+  "779ae66921c0dd0f",
   "ea376e6c61b7ad2a",
   "df0584b2e1507beb",
   "3b12a624d2d272f3",
@@ -92,10 +91,10 @@ radius = 400
 "docs/blueprint/configuration.md" = 1622
 "docs/blueprint/factory-architecture.md" = 811
 "docs/claude-code-internals.md" = 3653
-"hooks/CLAUDE.md" = 6826
+"hooks/CLAUDE.md" = 4055
 "hooks/hooks.json" = 1028
 "hooks/scripts/dispatch_admission_gate.py" = 811
-"hooks/scripts/hook_router.py" = 9217
+"hooks/scripts/hook_router.py" = 8857
 "hooks/scripts/run-hook.sh" = 811
 "hooks/scripts/task_created_deny.py" = 4156
 "skills/checking/SKILL.md" = 811

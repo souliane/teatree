@@ -32,6 +32,9 @@ class TestOwnerReplyAlwaysOn(django.test.SimpleTestCase):
     def test_recorder_source_never_reads_the_mode(self) -> None:
         import teatree.agents.reactive_envelope_recorders as recorders  # noqa: PLC0415 — test-time module inspection
 
+        # This lane reads the recorder's SOURCE, so a module with no file on disk leaves it
+        # asserting over nothing — say that, rather than letting `None` reach `Path()`.
+        assert recorders.__file__ is not None, "the recorder has no source file to inspect"
         source = Path(recorders.__file__).read_text(encoding="utf-8")
         offenders = [token for token in self._FORBIDDEN if token in source]
         assert offenders == [], f"owner-reply recorder must stay mode-independent — found: {offenders}"
@@ -43,8 +46,11 @@ class TestRequireHumanApprovalStaysSeparate(django.test.SimpleTestCase):
     def test_mode_has_no_merge_approval_field(self) -> None:
         field_names = {field.name for field in Mode._meta.get_fields()}
         assert "require_human_approval_to_merge" not in field_names
-        # Since #4202 the merged Mode carries only the loop mask + its overlay scope.
-        assert {"entries", "overlay_scope"} <= field_names
+        # The merged Mode carries the loop mask and the egress posture read at selection
+        # time. `overlay_scope` left it with #4202's follow-up — scanner scope is not a
+        # property of the preset.
+        assert {"entries", "egress"} <= field_names
+        assert "overlay_scope" not in field_names
         assert not any("approval" in name or "merge" in name for name in field_names)
 
 

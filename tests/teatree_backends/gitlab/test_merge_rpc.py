@@ -284,6 +284,21 @@ class TestMergePrSquashBound:
         # the keystone; core reconciles then retries, so the transport must not.
         assert idempotent is False
 
+    def test_no_squash_asks_for_a_merge_commit(self) -> None:
+        client = _FakeClient(get={"merge_method": "merge"}, put=_response(200, json.dumps({"merge_commit_sha": "l"})))
+        GitLabApiMergeRpc(client).merge_pr_squash_bound(slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, squash=False)
+        assert client.put_calls[0][1] == {"sha": _SHA, "squash": False}
+
+    @pytest.mark.parametrize("project", [{"merge_method": "ff"}, {}, None])
+    def test_no_squash_refuses_a_project_that_would_not_land_a_merge_commit(self, project: object) -> None:
+        client = _FakeClient(get=project, put=_response(200, json.dumps({"merge_commit_sha": "l"})))
+        result = GitLabApiMergeRpc(client).merge_pr_squash_bound(
+            slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA, squash=False
+        )
+        assert result.returncode == 1
+        assert "merge commit" in result.stderr
+        assert client.put_calls == []
+
     def test_sha_is_the_fallback_merged_oid(self) -> None:
         result = _rpc(put=_response(200, json.dumps({"sha": "landed"}))).merge_pr_squash_bound(
             slug=_SLUG, pr_id=_IID, expected_head_oid=_SHA

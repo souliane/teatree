@@ -1,7 +1,12 @@
 """The all-skipped guard turns a decorative (collected>0, ran==0) run red."""
 
-import pytest
+from pathlib import Path
 
+import pytest
+from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+
+from teatree.eval.message_mapping import eval_run_from_messages
+from teatree.eval.models import EvalSpec
 from teatree.eval.skip_guard import (
     AllSkippedError,
     EmptyFreshRunError,
@@ -12,6 +17,43 @@ from teatree.eval.skip_guard import (
     assert_fresh_run_produced_output,
     assert_judge_was_metered,
 )
+
+_MODEL = "claude-opus-4-8"
+
+
+def _usage_only_spec() -> EvalSpec:
+    return EvalSpec(
+        name="s",
+        scenario="text",
+        agent_path="skills/code/SKILL.md",
+        prompt="do",
+        matchers=(),
+        source_path=Path("/tmp/spec.yaml"),
+        model=_MODEL,
+    )
+
+
+def _usage_only_messages() -> list[object]:
+    model_usage: dict[str, dict[str, object]] = {_MODEL: {}}
+    return [
+        AssistantMessage(content=[TextBlock(text="answer")], model=_MODEL),
+        ResultMessage(
+            subtype="success",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+            total_cost_usd=None,
+            usage={
+                "input_tokens": 12_000,
+                "output_tokens": 3_000,
+                "cache_read_input_tokens": 40_000,
+                "cache_creation_input_tokens": 8_000,
+            },
+            model_usage=model_usage,
+        ),
+    ]
 
 
 class TestAssertExecutedWhenRequired:
@@ -71,6 +113,18 @@ class TestAssertSdkRunWasMetered:
         assert "throttl" in message
         assert "key-absent" in message or "credential" in message
 
+    def test_api_run_whose_transport_reported_nothing_raises_even_with_usage(self) -> None:
+        """Token usage is not a bill: the run it prices still reaches this guard as $0.
+
+        The only pin on the whole chain — observe_cost -> eval_run_from_messages -> this
+        guard — so a revert that accepts the flag and ignores it turns it red where a
+        literal $0 would not.
+        """
+        run = eval_run_from_messages(_usage_only_spec(), _usage_only_messages(), price_from_usage=False)
+
+        with pytest.raises(UnmeteredApiRunError):
+            assert_api_run_was_metered(backend="api", executed=1, total_cost_usd=run.cost_usd)
+
     def test_metered_api_run_does_not_raise(self) -> None:
         assert_api_run_was_metered(backend="api", executed=10, total_cost_usd=0.0556)
 
@@ -84,15 +138,12 @@ class TestAssertSdkRunWasMetered:
         assert_api_run_was_metered(backend="api", executed=0, total_cost_usd=0.0)
 
     def test_anthropic_api_backend_is_never_cost_checked(self) -> None:
-        # MUST-NOT-FIRE. `anthropic_api` is a FRESH Claude backend, so the tempting
-        # "fix" is to widen this guard to FRESH_CLAUDE_BACKENDS — that would red every
-        # healthy run. The lane delegates its drive to PydanticAiRunner, whose terminal
-        # ResultMessage carries total_cost_usd=_router_reported_cost(...) -> None for the
-        # Anthropic provider, so extract_cost_usd() floors to 0.0 on a run that genuinely
-        # executed (verified: a TestModel-driven run yields 1 tool call, 1 text block,
-        # terminal "success", cost_usd 0.0). $0 is this backend's NORMAL state, not
-        # evidence of a vacuous run; its vacuous-green signal is an empty trajectory,
-        # which assert_fresh_run_produced_output owns.
+        # MUST-NOT-FIRE. `anthropic_api` is a FRESH Claude backend, so the tempting "fix"
+        # is to widen this guard to FRESH_CLAUDE_BACKENDS. Its cost is DERIVED from token
+        # usage rather than billed by the transport, so it is positive for any run that
+        # made a call — it separates nothing this guard is looking for, and a run whose
+        # usage was unobservable would red on evidence it never had. The vacuous-green
+        # signal here is an empty trajectory, which assert_fresh_run_produced_output owns.
         assert_api_run_was_metered(backend="anthropic_api", executed=16, total_cost_usd=0.0)
 
 

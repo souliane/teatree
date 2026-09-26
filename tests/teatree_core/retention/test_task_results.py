@@ -84,7 +84,7 @@ class PrunableTaskResultsTestCase(TestCase):
 #: so the delete tests must run under the production topology — the suite's default
 #: ``DummyBackend`` would make them assert against a command that never ran.
 _DATABASE_BACKEND = {
-    "default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]},
+    "default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]},
 }
 
 

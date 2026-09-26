@@ -28,6 +28,7 @@ from teatree.core.management.commands._ensure_pr import create_or_defer_pr
 from teatree.core.models import PlanArtifact, Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners.ship import ShipExecutor
+from tests.factories import record_test_plan
 from tests.teatree_core.conftest import CommandOverlay
 
 
@@ -93,7 +94,7 @@ class TestCitedRatificationArtifacts:
 class TestWarnIfOwnerRatificationUnbacked(TestCase):
     def _artifact(self, recorded_by: str) -> PlanArtifact:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/4371")
-        return PlanArtifact.record(ticket=ticket, plan_text="the plan", recorded_by=recorded_by)
+        return record_test_plan(ticket, plan_text="the plan", recorded_by=recorded_by)
 
     def _warn(self, body: str) -> str | None:
         with patch.object(logging.getLogger("teatree.core.gates.open_questions_gate"), "warning") as warning:

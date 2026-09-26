@@ -1,7 +1,7 @@
 """DB-backed per-loop enable/disable/pause/resume state machine (#1913).
 
-One :class:`LoopState` row per loop name carries the durable control-plane
-status of that mini-loop: ``enabled`` (the default — runs), ``paused`` (a
+One :class:`LoopState` row per loop name carries the durable HOLD status of that
+mini-loop — the emergency brake, and the only thing it carries: ``enabled`` (the default — runs), ``paused`` (a
 reversible hold), or ``disabled`` (a durable kill-switch). The state is the
 canonical control tier, mirroring :class:`teatree.core.models.config_setting.ConfigSetting`
 ("the canonical tier is the DB", #1775 / §17.4): an **absent row resolves to
@@ -24,44 +24,9 @@ status. ``resume`` and ``enable`` are the same "make it run again" transition
 operator reached for the pause-vocabulary verb on a disabled loop.
 """
 
-import datetime as dt
 from typing import ClassVar
 
 from django.db import models
-from django.utils import timezone
-
-
-class ForcedState(models.TextChoices):
-    """The tri-state emergency FORCED plane over the preset mask (#3248).
-
-    ``NEUTRAL`` (the default and the resolved state of any loop with no row)
-    lets the preset/base decide. ``ON`` force-runs the loop even against a
-    preset that forces it off; ``OFF`` force-skips it. A durable hold (PAUSED/
-    DISABLED) still beats a FORCED value — resolution is hold > forced > preset
-    > base. This is the emergency handle (``t3 loop override``), TTL-bounded via
-    ``forced_until``; the per-loop enable/disable/pause/resume verbs are the
-    normal handle only under ``--emergency``.
-    """
-
-    NEUTRAL = "neutral", "Neutral"
-    ON = "on", "Forced on"
-    OFF = "off", "Forced off"
-
-
-def row_forced_value(
-    forced: str | None, forced_until: dt.datetime | None, now: dt.datetime | None = None
-) -> bool | None:
-    """Resolve a row's stored forced plane to ``True``/``False``/``None``.
-
-    NEUTRAL / absent → ``None``; an ON/OFF whose ``forced_until`` has passed →
-    ``None`` (expired). The one place the TTL-expiry rule lives, shared by the
-    single-lookup and bulk reads.
-    """
-    if forced in {ForcedState.ON.value, ForcedState.OFF.value}:
-        if forced_until is not None and forced_until <= (now or timezone.now()):
-            return None
-        return forced == ForcedState.ON.value
-    return None
 
 
 class LoopStatus(models.TextChoices):
@@ -152,79 +117,12 @@ class LoopStateManager(models.Manager["LoopState"]):
         row, _ = self.update_or_create(name=name, defaults={"status": status.value})
         return row
 
-    def override(self, name: str, *, on: bool, until: dt.datetime | None = None, reason: str = "") -> "LoopState":
-        """Set the emergency FORCED value for *name* (``on`` → run, else skip).
-
-        Writes only the forced plane — the hold ``status`` is left untouched, so
-        an override never clears a PAUSE/DISABLE. ``until`` bounds the override
-        (an expired TTL resolves back to neutral); ``reason`` is a free-form note.
-        """
-        row, _ = self.update_or_create(
-            name=name,
-            defaults={
-                "forced": (ForcedState.ON if on else ForcedState.OFF).value,
-                "forced_until": until,
-                "forced_reason": reason,
-            },
-        )
-        return row
-
-    def clear_override(self, name: str) -> "LoopState":
-        """Return *name*'s forced plane to NEUTRAL (the hold ``status`` is untouched)."""
-        row, _ = self.update_or_create(
-            name=name,
-            defaults={"forced": ForcedState.NEUTRAL.value, "forced_until": None, "forced_reason": ""},
-        )
-        return row
-
-    def forced_of(self, name: str, now: dt.datetime | None = None) -> bool | None:
-        """The live forced verdict for *name*: ``True``/``False``/``None`` (neutral).
-
-        An absent row, a NEUTRAL row, or an EXPIRED TTL all resolve to ``None``.
-        """
-        row = self.filter(name=name).first()
-        if row is None:
-            return row_forced_value(None, None, now)
-        return row_forced_value(row.forced, row.forced_until, now)
-
-    def forced_map(self, now: dt.datetime | None = None) -> dict[str, bool]:
-        """Every loop name with a LIVE (non-neutral, un-expired) forced value — the tick's bulk read.
-
-        One ``values_list`` over the small control table (mirroring
-        :meth:`held_names`), so the loop-table fan-out resolves every loop's
-        forced value from ONE query instead of a per-loop lookup.
-        """
-        _, forced = self.control_planes(now)
-        return forced
-
-    def control_planes(self, now: dt.datetime | None = None) -> "tuple[set[str], dict[str, bool]]":
-        """The (held names, live forced map) pair in ONE ``values_list`` — the tick's single control read.
-
-        The hold plane (PAUSED/DISABLED) and the emergency FORCED plane are both
-        resolved from one query so the per-tick admission (#2584 N+1) issues a
-        single ``teatree_loop_state`` read for both planes rather than one each.
-        """
-        moment = now or timezone.now()
-        held: set[str] = set()
-        forced: dict[str, bool] = {}
-        for name, status, forced_value, until in self.values_list("name", "status", "forced", "forced_until"):
-            if status != LoopStatus.ENABLED.value:
-                held.add(name)
-            value = row_forced_value(forced_value, until, moment)
-            if value is not None:
-                forced[name] = value
-        return held, forced
-
 
 class LoopState(models.Model):
     """One row per mini-loop name carrying its durable control-plane status."""
 
     name = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=16, choices=LoopStatus, default=LoopStatus.ENABLED)
-    # The emergency FORCED plane (#3248) — orthogonal to the hold ``status``.
-    forced = models.CharField(max_length=16, choices=ForcedState, default=ForcedState.NEUTRAL)
-    forced_until = models.DateTimeField(null=True, blank=True)
-    forced_reason = models.CharField(max_length=200, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

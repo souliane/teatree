@@ -9,6 +9,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config.settings import UserSettings
+from teatree.core.evidence.bdd_scenario_source import BddScenarioSource, render_bdd_source
 from teatree.core.evidence.test_plan_blocked_gate import (
     BlockedTestPlanPostError,
     check_blocked_body,
@@ -59,8 +60,16 @@ _IRRELEVANT_URL = "https://gitlab.com/some-org/some-repo/-/issues/7"
 _FAKE_COLLEAGUE_RE = re.compile(r"https://gitlab\.com/fake-corp/(?:main-app|other-app)/")
 _FAKE_SOLO_RE = re.compile(r"https://gitlab\.com/fake-owner/my-solo-tool(?:-e2e)?/")
 
-_CLEAN_BODY = "## E2E Evidence\n\nAll workflows passed on dev and local.\n"
-_BLOCKED_BODY = "## E2E Evidence\n\nUnable to test the login flow on DEV.\n"
+_FINAL_BDD_SOURCE: BddScenarioSource = {
+    "prd_page": "https://notion.so/example-prd",
+    "bdd_revision": "2026-09-22",
+    "status": "final",
+    "scenario_ids": ["BDD-123-001"],
+}
+_SCENARIO_SOURCE = render_bdd_source(_FINAL_BDD_SOURCE)
+
+_CLEAN_BODY = f"{_SCENARIO_SOURCE}\n\n## E2E Evidence\n\nAll workflows passed on dev and local.\n"
+_BLOCKED_BODY = f"{_SCENARIO_SOURCE}\n\n## E2E Evidence\n\nUnable to test the login flow on DEV.\n"
 
 
 class TestCheckBlockedBodyMustRefuse:
@@ -246,6 +255,7 @@ class TestStructuredManifestRenderIsNotGated(TestCase):
         manifest = json.dumps(
             {
                 "ticket": "123",
+                "scenario_source": _FINAL_BDD_SOURCE,
                 "workflows": [{"workflow": "Login"}],
                 "local": {"commits": {"client": "aabb"}},
                 "blocked_workflows": {"Login": "deploy blocked on cred"},

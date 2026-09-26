@@ -13,6 +13,9 @@ from tests.factories import MergeAuditFactory, MergeClearFactory
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
+GRADED_SIGNAL_IDS = ["first_try_green", "defect_escape", "review_catch", "merge_latency", "repair_burn"]
+VISIBILITY_SIGNAL_IDS = ["net_hand_written_loc"]
+
 
 def _call(*args: str, **kwargs: object) -> str:
     """Stdout — the machine channel (JSON under ``--json``, empty otherwise)."""
@@ -29,18 +32,12 @@ def _call_human(*args: str, **kwargs: object) -> str:
 
 
 class TestSignalsCommand:
-    def test_json_emits_five_signals_and_verdict(self) -> None:
+    def test_json_emits_the_graded_signals_the_visibility_row_and_a_verdict(self) -> None:
         payload = json.loads(_call(json_output=True))
         assert payload["window_days"] == 28
         assert payload["verdict"] in {"ok", "regressing", "red"}
-        assert len(payload["signals"]) == 5
-        assert {row["provider_id"] for row in payload["signals"]} == {
-            "first_try_green",
-            "defect_escape",
-            "review_catch",
-            "merge_latency",
-            "repair_burn",
-        }
+        # Two lists, not a count of six: the LoC row is REPORTED on this surface, never graded.
+        assert [row["provider_id"] for row in payload["signals"]] == [*GRADED_SIGNAL_IDS, *VISIBILITY_SIGNAL_IDS]
 
     def test_window_days_flows_through(self) -> None:
         payload = json.loads(_call("--window-days", "7", json_output=True))

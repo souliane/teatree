@@ -160,7 +160,8 @@ class TestAPerOverlaySettingReturnsToItsOwnRow(TestCase):
 
     def setUp(self) -> None:
         ConfigSetting.objects.set_value("overlays", {"demo": {"path": "~/demo"}})
-        ConfigSetting.objects.set_value("agent_phase_harness", {"coding": "codex"}, scope="demo")
+        # Predates the seam refusing this overlay scope; the box keeps such rows, so they must round-trip.
+        ConfigSetting.objects.create(key="agent_phase_harness", value={"coding": "codex"}, scope="demo")
 
     def _round_trip(self, *, dry_run: bool) -> ConfigImport:
         return import_toml_to_db(

@@ -22,18 +22,19 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class MergeAuditAuthorizers:
-    """The authorizer ids the post hook stamps on the ``MergeAudit`` for a non-default merge.
+class MergeAuditStamps:
+    """What the post hook stamps on the CLEAR and its ``MergeAudit`` for a non-default merge.
 
-    Both empty for an ordinary merge. ``expedited_by`` is the PENDING-checks
+    All empty/false for an ordinary merge. ``expedited_by`` is the PENDING-checks
     expedite waiver authoriser (§17.4.3 / PR-07); ``standing_delegation_by`` is the
-    config-sourced standing substrate authorizer (#3413). Grouped so
-    :func:`record_merge_and_advance` takes one audit-authorizer argument instead of
-    a widening list.
+    config-sourced standing substrate authorizer (#3413); ``merged_without_squash``
+    records a ``--no-squash`` merge on the consumed CLEAR. Grouped so
+    :func:`record_merge_and_advance` takes one stamps argument instead of a widening list.
     """
 
     expedited_by: str = ""
     standing_delegation_by: str = ""
+    merged_without_squash: bool = False
 
 
 def _supersede_siblings(locked: MergeClear, *, repo_slug: str) -> None:
@@ -84,7 +85,7 @@ def record_merge_and_advance(
     merged_sha: str,
     required_checks_status: str,
     repo_slug: str = "",
-    authorizers: MergeAuditAuthorizers | None = None,
+    authorizers: MergeAuditStamps | None = None,
 ) -> str:
     """Post hook: consume CLEAR, write audit, supersede siblings, ``mark_merged()``.
 
@@ -124,7 +125,7 @@ def record_merge_and_advance(
     """
     from teatree.core.modelkit.db_retry import retry_on_locked  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
-    stamps = authorizers or MergeAuditAuthorizers()
+    stamps = authorizers or MergeAuditStamps()
     if not isinstance(clear, MergeClear):  # pragma: no cover - guarded by caller
         msg = "record_merge_and_advance requires a MergeClear instance"
         raise MergePreconditionError(msg)
@@ -147,7 +148,8 @@ def record_merge_and_advance(
                 )
                 raise MergeReplayError(msg)
             locked.consumed_at = timezone.now()
-            locked.save(update_fields=["consumed_at"])
+            locked.merged_without_squash = stamps.merged_without_squash
+            locked.save(update_fields=["consumed_at", "merged_without_squash"])
             merge_audit_model.objects.create(
                 clear=locked,
                 merged_sha=merged_sha,

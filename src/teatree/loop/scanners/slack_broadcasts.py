@@ -19,6 +19,10 @@ via the injected :class:`MrStateClassifier`, persists a
     reviewer dispatch. This is an *outcome* reaction (review-DONE), deduped
     against existing reactors and the ``OutboundClaim`` ledger so it is
     posted at most once. The agent does not re-review already-done work.
+* **Somebody else already took the review** → no dispatch (#159): a reaction
+    (any emoji) or a thread reply on the broadcast from outside the self-set
+    (owner + bot), or — via the injected ``review_taken`` probe — a non-self,
+    non-bot note or any approval on the MR, which pins the row ``taken``.
 * **At least one open MR** → emit one ``slack.review_intent`` signal per
     open MR (the dispatcher routes each to the ``t3:reviewer`` agent). No
     ``:eyes:`` reaction is posted: a claim reaction must appear only at
@@ -68,7 +72,7 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.review.author_trust import classify_author
-from teatree.core.review.review_candidate import eyes_reacted_by_other
+from teatree.core.review.review_candidate import _resolve_self_identities, author_is_self, broadcast_claimed_by_other
 from teatree.loop.review_claim_signals import (
     filter_review_intent_signals,
     reaction_already_present,
@@ -76,6 +80,15 @@ from teatree.loop.review_claim_signals import (
 )
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.loop.scanners.base import ScannerError, ScanSignal
+from teatree.loop.scanners.slack_broadcast_claims import (
+    ReviewTakenProbe,
+    not_taken_on_the_forge,
+    resolve_self_slack_ids,
+)
+from teatree.loop.scanners.slack_broadcast_connect import (
+    ConnectChannelBotRestrictedError,
+    looks_like_connect_restriction,
+)
 from teatree.types import RawAPIDict
 from teatree.url_classify import find_pr_urls
 from teatree.utils.url_slug import pr_ref_from_url
@@ -87,29 +100,6 @@ logger = logging.getLogger(__name__)
 # scanner records the assignment intent so the dispatcher's mechanical
 # action can assign the user as reviewer on the MR.
 _SLACK_MENTION_RE = re.compile(r"<@([A-Z0-9]+)>")
-
-
-class ConnectChannelBotRestrictedError(RuntimeError):
-    """Raised when a broadcast in a Slack-Connect channel cannot be reacted to.
-
-    A Connect channel rejects the bot token, so
-    :func:`teatree.backends.slack.token_policy.channel_token` already routes every
-    WRITE there to the personal ``xoxp``. Reaching this error therefore means that
-    routed token failed too — no user token is configured (the policy falls back to
-    the rejected bot token), or the user token lacks ``reactions:write`` or
-    membership of the partner channel. The scanner hard-fails rather than silently
-    swallowing the dropped reaction; the error carries the channel id so callers can
-    surface a single actionable message.
-    """
-
-    def __init__(self, channel: str) -> None:
-        super().__init__(
-            f"Slack-Connect channel {channel!r} rejected the reaction under the routed "
-            "token. Provision the personal token with `t3 setup slack-user-token` and "
-            "confirm it carries reactions:write and membership of the channel. "
-            "Scanner is failing loudly per #1131 to avoid silent drops.",
-        )
-        self.channel = channel
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +192,8 @@ def _seed_review_request_posts(
     channel: str,
     ts: str,
     states: Sequence[MrState],
+    owner_identities: Sequence[str],
+    overlay: str,
 ) -> None:
     """Seed a ``ReviewRequestPost`` for every open MR in a broadcast (#1256).
 
@@ -217,10 +209,14 @@ def _seed_review_request_posts(
     are skipped — only open MRs need nagging.
     """
     for state in _open_subset(states):
+        self_identities = _resolve_self_identities(state.url, owner_identities)
+        if not author_is_self(state.author_username, current_user="", self_identities=self_identities):
+            continue
         record_review_request_post(
             mr_url=state.url,
             slack_channel_id=channel,
             slack_thread_ts=ts,
+            overlay=overlay,
         )
 
 
@@ -253,10 +249,17 @@ class SlackBroadcastsScanner:
     # MR. Empty disables the filter (legacy callers keep reacting on every
     # pending broadcast). Sibling of #1321's review-sweep own-author exclusion.
     current_gitlab_username: str = ""
+    owner_identities: tuple[str, ...] = field(default_factory=tuple)
+    # #159: the forge-side "somebody else already reviews this" probe, asked only for
+    # the open MRs of a broadcast still awaiting dispatch. ``None`` keeps a legacy
+    # caller on the Slack-side signals alone.
+    review_taken: ReviewTakenProbe | None = None
     name: str = field(default="slack_broadcasts", init=False)
+    _self_slack_ids: frozenset[str] = field(default_factory=frozenset, init=False)
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
+        self._self_slack_ids = resolve_self_slack_ids(self.backend, user_id=self._user_id())
         try:
             for channel in self.channels:
                 # F5.5: isolate each channel — one channel's fetch/handle failure
@@ -331,7 +334,13 @@ class SlackBroadcastsScanner:
         # so the ReviewNagScanner picks them up — manual broadcasts in the
         # review channel were previously invisible to the nag train because
         # only the bot's review-request flow wrote ReviewRequestPost rows.
-        _seed_review_request_posts(channel=row.channel, ts=row.slack_ts, states=states)
+        _seed_review_request_posts(
+            channel=row.channel,
+            ts=row.slack_ts,
+            states=states,
+            owner_identities=self.owner_identities,
+            overlay=self.overlay,
+        )
         signals = self._apply_classification(row, states, message, user_named=self._user_named(text))
         # #1295 cap B: detect ``<@user_slack_id>`` mentions so the
         # mechanical assigner picks up the MR without waiting for a
@@ -410,11 +419,15 @@ class SlackBroadcastsScanner:
             # #1384: every open MR in this broadcast is the user's own — there
             # is nothing to dispatch a reviewer for on one's own MR.
             return []
-        if not user_named and eyes_reacted_by_other(message, user_id=self._user_id()):
-            # A colleague has already :eyes:-claimed this review. Dispatching
-            # ``t3:reviewer`` anyway duplicates their in-flight work. An
-            # explicit ``<@user_slack_id>`` mention re-opens dispatch.
+        if not user_named and broadcast_claimed_by_other(message, self_ids=self._self_slack_ids):
+            # A colleague reacted on or replied under this broadcast: they took the
+            # review (#159). Dispatching ``t3:reviewer`` anyway duplicates their work.
+            # An explicit ``<@user_slack_id>`` mention re-opens dispatch.
             return []
+        if not user_named:
+            open_states = not_taken_on_the_forge(row, open_states, self.review_taken)
+            if not open_states:
+                return []
         # #113/#86: the ``:eyes:`` reaction is a CLAIM and must not be posted at
         # discovery time — only when a review is DONE (the FSM transition path
         # posts the outcome reaction). #79: a review-intent dispatch is the
@@ -509,26 +522,11 @@ class SlackBroadcastsScanner:
             # #1131 must surface loudly; the backend reports it as a generic
             # exception, so we lift it here. Any other reaction failure is
             # logged and left to the next tick.
-            if _looks_like_connect_restriction(exc):
+            if looks_like_connect_restriction(exc):
                 raise ConnectChannelBotRestrictedError(channel) from exc
             logger.exception("Failed to react :%s: on %s/%s", emoji, channel, ts)
             return
         record_reaction_claim(channel=channel, ts=ts, emoji=emoji)
-
-
-def _looks_like_connect_restriction(exc: BaseException) -> bool:
-    """Heuristic for the Slack-Connect restricted-reaction error shape.
-
-    Slack returns ``not_in_channel`` / ``channel_not_found`` / ``is_ext_shared``
-    for the Connect-restricted case. ``SlackBotBackend.react`` posts
-    ``reactions.add`` through the transport directly rather than through
-    :mod:`teatree.backends.slack.reactions`, so the typed
-    :class:`~teatree.backends.slack.react_errors.SlackReactionError` never reaches
-    this scanner — the error code arrives only inside a generic exception's
-    message, which is what the match below reads.
-    """
-    message = str(exc)
-    return any(token in message for token in ("not_in_channel", "channel_not_found", "is_ext_shared"))
 
 
 @dataclass(slots=True)

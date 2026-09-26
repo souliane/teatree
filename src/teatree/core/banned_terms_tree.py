@@ -62,7 +62,9 @@ def scan_committed_tree(
     the caller surfaces it LOUD rather than scanning as empty. An explicit
     ``banned_brands = []`` is the deliberate no-brands choice: the brand
     backstop is INERT (``brands_configured=False``) and the always-on
-    terminology gate still runs.
+    terminology gate still runs. The ``banned_terms_allowlist`` carve-out is read
+    from the same store and exempts the company's own identifiers, so this entry
+    point honours the escape hatch the other entry points already do.
 
     *allow_unset* is the EXPLICIT opt-in that downgrades a genuinely-unset brand
     list from a raise to the INERT terminology-only scan — fail-closed BY DEFAULT
@@ -80,7 +82,8 @@ def scan_committed_tree(
         if not allow_unset:
             raise
         terms = ()
-    return TreeScanResult(findings=scan_tree(repo_root, terms), brands_configured=bool(terms))
+    allowlist = banned_term_registry.allowlist_terms(config_path)
+    return TreeScanResult(findings=scan_tree(repo_root, terms, allowlist), brands_configured=bool(terms))
 
 
 @dataclass(frozen=True)

@@ -35,6 +35,7 @@ class SelfImproveFiring(models.Model):
 
     detector = models.CharField(max_length=128)
     dedup_key = models.CharField(max_length=255)
+    dedup_key_digest = models.CharField(max_length=16, db_index=True, default="", editable=False)
     state_hash = models.CharField(max_length=64)
     severity = models.CharField(max_length=16, choices=Severity.choices)
     first_fired_at = models.DateTimeField(default=timezone.now)

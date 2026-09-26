@@ -14,8 +14,8 @@ from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanner_factory_config import (
-    _gitlab_approvals_enabled,
     _user_identity_aliases_for_overlay,
+    gitlab_approvals_enabled,
     stranger_pr_admission,
 )
 from teatree.loop.scanners import (
@@ -25,6 +25,7 @@ from teatree.loop.scanners import (
     TicketCompletionScanner,
     TicketDispositionScanner,
 )
+from teatree.loop.scanners.pr_findings import RecordedVerdictReader
 from teatree.loop.tick_resolvers import (
     _allowed_url_prefixes_for_host,
     _identity_alias_groups_for_overlay,
@@ -53,7 +54,6 @@ def _jobs_for_backend_hosts(
     """
     jobs: list[_ScannerJob] = []
     ticket_completion_emitted = False
-    gitlab_approvals_enabled = _gitlab_approvals_enabled()
     identity_groups = _identity_alias_groups_for_overlay(tag, backend)
     # #1113 Defect 1: the trusted operator identity set (``backend.identities``,
     # #976) is an implicit self-group when no explicit ``identity_aliases``
@@ -80,6 +80,7 @@ def _jobs_for_backend_hosts(
                         identities=backend.identities,
                         allowed_url_prefixes=url_prefixes,
                         competing_url_prefixes=competing_prefixes,
+                        verdict_reader=RecordedVerdictReader(),
                     ),
                     overlay=tag,
                 ),
@@ -119,13 +120,17 @@ def _jobs_for_backend_hosts(
                 ),
             )
             ticket_completion_emitted = True
-        if gitlab_approvals_enabled:
-            # Poll-driven complement to the webhook-driven `SCHEDULE_MERGE` path
-            # (#936). Off by default — opt-in via the env flag so deployments
-            # that already wire the GitLab webhook do not double-emit.
+        # Poll-driven complement to the webhook-driven `SCHEDULE_MERGE` path (#936);
+        # a tick whose head SHA matches the last emission is a no-op, so a deployment
+        # that also wires the GitLab webhook does not double-emit.
+        if gitlab_approvals_enabled(tag):
             jobs.append(
                 _ScannerJob(
-                    scanner=GitLabApprovalsScanner(host=code_host, identities=backend.identities),
+                    scanner=GitLabApprovalsScanner(
+                        host=code_host,
+                        identities=backend.identities,
+                        allowed_url_prefixes=url_prefixes,
+                    ),
                     overlay=tag,
                 ),
             )

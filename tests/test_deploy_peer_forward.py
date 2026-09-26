@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.peer_forward import PLAN_FILE, RUNNER
+from teatree.core.host_hop.peer_forward import PLAN_FILE, RUNNER
 
 _BASH = shutil.which("bash") or "/bin/bash"
 _ROOT = Path(__file__).resolve().parents[1]

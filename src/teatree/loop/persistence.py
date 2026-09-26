@@ -21,11 +21,10 @@ from django.db import transaction
 from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.core.models import ImplementedIssueMarker, RedMrFixAttempt, Task, Ticket
 from teatree.core.models.auto_implement import mark_auto_implement
-from teatree.core.models.ticket_external_review import ReviewDeclined, schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix, fix_kind_of
-from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES, ActionPayload
-from teatree.loop.persistence_phase_task import create_phase_task, has_open_task, open_task_in_phase
+from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
+from teatree.loop.persistence_phase_task import create_phase_task, has_open_task
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -127,130 +126,10 @@ def _reconcile_existing_overlay(ticket: Ticket, *, created: bool) -> None:
 
 
 def _handle_reviewer(action: DispatchAction) -> Task | None:
-    """Reviewer-requested PR → Ticket(role=reviewer) + Task(phase=reviewing).
+    """Reviewer-requested PR → Ticket(role=reviewer) + Task(phase=reviewing)."""
+    from teatree.loop.persistence_reviewer import handle_reviewer  # noqa: PLC0415 — the leaf imports this hub
 
-    The ``self_pr`` payload flag (set by the #3569 Claude self-PR scanner) routes
-    to :func:`_handle_self_pr_review` — the SAME ``t3:reviewer`` agent + reviewing
-    phase, but per-SHA deduped via :class:`CodexReviewMarker` because the self-PR
-    scanner emits unconditionally every tick (the colleague path is deduped by the
-    reviewer cache instead).
-    """
-    payload = action.payload
-    if payload.get("self_pr"):
-        # Lazy: the sibling imports this module's shared ticket/task helpers, so it
-        # can only be imported after this module finishes loading (breaks the cycle).
-        from teatree.loop.persistence_self_pr_review import handle_self_pr_review  # noqa: PLC0415 — #3569
-
-        return handle_self_pr_review(action)
-    pr_url = str(payload.get("url") or "")
-    if not pr_url:
-        logger.debug("Skipping t3:reviewer action with no url: %r", action.detail)
-        return None
-    head_sha = str(payload.get("head_sha") or "")
-    scan_tag = str(payload.get("overlay") or "")
-    ticket, created = Ticket.objects.get_or_create(
-        issue_url=pr_url,
-        defaults={
-            "overlay": _owning_overlay(pr_url, scan_tag),
-            "role": Ticket.Role.REVIEWER,
-            "extra": {"reviewed_sha": head_sha} if head_sha else {},
-        },
-    )
-    _reconcile_existing_overlay(ticket, created=created)
-    if ticket.role != Ticket.Role.REVIEWER:
-        logger.debug(
-            "Ticket %s exists with role=%s, not promoting to reviewer for PR %s",
-            ticket.pk,
-            ticket.role,
-            pr_url,
-        )
-        return None
-    if head_sha and (ticket.extra or {}).get("reviewed_sha") != head_sha:
-        # #800 N3: canonical locked RMW — a concurrent pr_urls /
-        # visual_qa writer no longer clobbers reviewed_sha.
-        #
-        # #959 defect 2: a SHA move invalidates any prior approval — drop
-        # ``last_review_state`` in the same RMW so the
-        # ``_already_reviewed_at_head`` dedup below does NOT suppress
-        # review of the genuinely new revision (the recorded APPROVED
-        # belonged to the old SHA).
-        ticket.merge_extra(set_keys={"reviewed_sha": head_sha}, pop_keys=["last_review_state"])
-    open_task = open_task_in_phase(ticket, phase="reviewing")
-    if open_task is not None:
-        _link_broadcast_reviewer_task(payload, open_task)
-        return None
-    if _already_reviewed_at_head(ticket, head_sha):
-        # #959 defect 2: the MR was already independently reviewed AND
-        # approved (e.g. an out-of-band review pass) at the CURRENT head
-        # SHA. There is no *open* reviewing Task — the prior dedup
-        # (open-task-only) re-enqueued review every tick (the live tasks
-        # 49/50/51 for the already-approved SSO-mock MRs). A recorded
-        # forge approval matching the current head is authoritative
-        # "already reviewed"; a SHA move resets it via the mismatch path
-        # above, so a genuinely new revision is still reviewed.
-        logger.debug("PR %s already approved at head %s — not re-enqueuing review", pr_url, head_sha)
-        return None
-    return _schedule_reviewer_task(ticket, payload)
-
-
-def _schedule_reviewer_task(ticket: Ticket, payload: ActionPayload) -> Task | None:
-    result = schedule_external_review(ticket)
-    if result is ReviewDeclined.PR_STATE_UNKNOWN:
-        # Unrecording the head lets ReviewerPrsScanner re-offer it next tick instead of stranding the review.
-        ticket.merge_extra(pop_keys=["reviewed_sha"])
-    if isinstance(result, ReviewDeclined):
-        return None
-    _link_broadcast_reviewer_task(payload, result)
-    return result
-
-
-def _link_broadcast_reviewer_task(payload: ActionPayload, task: Task) -> None:
-    """Record the covering reviewer task on the ``ScannedBroadcast`` row that emitted it.
-
-    Closes the broadcast ledger's emission gate: until the row knows which task
-    covers it, ``ScannedBroadcast.awaiting_reviewer_dispatch`` keeps re-emitting
-    the review intent every tick. Best-effort — a broadcast that has since been
-    deleted must never break the dispatch it is auditing.
-    """
-    broadcast_id = payload.get("broadcast_id")
-    if not broadcast_id:
-        return
-    from teatree.core.models import ScannedBroadcast  # noqa: PLC0415 — lazy: avoids the models import cycle
-
-    row = ScannedBroadcast.objects.filter(pk=broadcast_id).first()
-    if row is not None:
-        row.attach_reviewer_task(str(task.pk))
-
-
-def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
-    """Has this PR a recorded terminal review observation at the current head?
-
-    The dedup signal for an *out-of-band* review (one not driven by a
-    loop reviewing Task, so there is no open/completed Task to key on) is
-    the reviewer ticket's ``last_review_state``/``reviewed_sha`` pair —
-    written by ``Ticket.mark_reviewed_externally`` / ``mark_review_no_action``
-    and the ``ReviewerPrsScanner`` cache. A terminal state at the current
-    head ⇒ the review already happened; re-enqueueing would duplicate it
-    every tick. Two terminal states suppress: ``APPROVED`` (a genuine
-    approving review — the existing #959 behaviour) and
-    ``REVIEWED_NO_ACTION`` (the reviewer concluded there was nothing to
-    post/approve on a bot MR — before #1077 there was no terminal state
-    for this, so the reviewing task re-dispatched every Stop-hook pump
-    forever). ``REVIEWED_NO_ACTION`` is intentionally *not* APPROVED so a
-    future genuine review is never hidden; suppression is keyed on the
-    head SHA, and a SHA move drops ``last_review_state`` (the #959 reset
-    in ``_handle_reviewer``) so a new revision is still reviewed.
-
-    A blank ``head_sha`` is treated as "cannot confirm parity" so review
-    is NOT suppressed (fail-open — never silently skip a real review).
-    """
-    if not head_sha:
-        return False
-    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-    extra = ticket.extra or {}
-    terminal = {ReviewState.APPROVED.value, ReviewState.REVIEWED_NO_ACTION.value}
-    return extra.get("last_review_state") in terminal and extra.get("reviewed_sha") == head_sha
+    return handle_reviewer(action)
 
 
 def _handle_orchestrator(action: DispatchAction) -> Task | None:
@@ -404,6 +283,14 @@ _FIX_REASON_BY_KIND: dict[str, str] = {
     RedMrFixAttempt.Kind.MERGE_CONFLICT: (
         "Auto-scheduled merge-conflict fix — resolve {pr_url} by MERGING the target branch "
         "into the head branch, never by rebasing"
+    ),
+    # Our own MR, so the finding is IMPLEMENTED rather than commented on: read the
+    # unresolved discussions and the recorded review findings, fix them on the MR's
+    # own branch, run the tests, push. Escalate only if the fix cannot proceed.
+    RedMrFixAttempt.Kind.REVIEW_FINDINGS: (
+        "Auto-scheduled review-findings fix — read the unresolved review findings on {pr_url}, "
+        "IMPLEMENT them on that MR's own branch, run the tests and push. Never answer a finding "
+        "on our own MR with another comment; escalate only if the fix cannot proceed"
     ),
 }
 

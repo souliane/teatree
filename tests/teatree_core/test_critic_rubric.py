@@ -4,7 +4,7 @@ Conformance: every DETERMINISTIC item's ``predicate_path`` resolves, and every L
 item's slug is one the dispatch contract actually asks the critic to judge — a
 renamed predicate or a forgotten LLM item fails the build. Each of the 3
 deterministic predicates has a CAUGHT fixture (over REAL production artifacts:
-PlanArtifact adequacy, keystone MergeAudit, the spec_coverage manifest) and a CLEAN
+PlanArtifact adequacy, keystone MergeAudit, the ticket's graded Rubric) and a CLEAN
 twin, proving the predicate is load-bearing. The LLM items carry no predicate — they
 are judged by the async critic (covered in the gate tests), never by a self-declared
 key, so there is no vacuous predicate to test here.
@@ -16,7 +16,7 @@ from django.test import TestCase
 from teatree.core.gates.critic_gate import build_critic_contract
 from teatree.core.gates.design_critic_gate import build_design_contract
 from teatree.core.gates.merge_quality_gate import build_merge_quality_contract
-from teatree.core.models import MergeAudit, MergeClear, PlanArtifact, Ticket
+from teatree.core.models import MergeAudit, MergeClear, PlanArtifact, Rubric, Ticket
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 from teatree.core.review import critic_rubric
 from teatree.core.review.critic_rubric import (
@@ -152,31 +152,37 @@ class TestDoneNotDonePredicate(TestCase):
 
 
 class TestCompletenessPredicate(TestCase):
-    def test_caught_when_no_spec_coverage_manifest(self) -> None:
-        # The no-manifest hole fix: zero proven ACs is a FAIL (matches check_spec_coverage), not pass-clean.
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+    """It REUSES the delivered-time gate, so the critic and the block cannot disagree."""
+
+    def _ticket(self) -> Ticket:
+        return Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+
+    def test_caught_when_no_rubric_is_recorded(self) -> None:
+        # Zero proven ACs is a FAIL (matching check_rubric_verified), not pass-clean.
+        assert completeness(self._ticket())
+
+    def test_caught_when_a_criterion_is_ungraded(self) -> None:
+        ticket = self._ticket()
+        Rubric.populate(ticket, ["AC-1 is delivered"])
         assert completeness(ticket)
 
-    def test_caught_when_an_acceptance_criterion_is_unbacked(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {
-            "spec_coverage": {
-                "acceptance_criteria": [
-                    {"id": "AC-1", "tests": ["tests/test_a.py::t"]},
-                    {"id": "AC-2", "tests": []},
-                ]
-            }
-        }
-        assert completeness(ticket)
-
-    def test_clean_when_every_criterion_is_backed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {"spec_coverage": {"acceptance_criteria": [{"id": "AC-1", "tests": ["tests/test_a.py::t"]}]}}
+    def test_clean_when_every_criterion_is_a_cited_pass(self) -> None:
+        ticket = self._ticket()
+        rubric = Rubric.populate(ticket, ["AC-1 is delivered"])
+        rubric.criteria.get(ordinal=0).record_grade(
+            status="pass", grader_identity="cold-reviewer", reviewed_sha="a" * 40, rationale="unit: tests/a.py::t"
+        )
         assert completeness(ticket) is None
 
-    def test_clean_with_a_recorded_override(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {"spec_coverage_override": {"reason": "pure docs change, no ACs"}}
+    def test_clean_when_the_plan_recorded_the_audited_waiver(self) -> None:
+        ticket = self._ticket()
+        PlanArtifact.objects.create(
+            ticket=ticket,
+            plan_text="plan body",
+            recorded_by="planner",
+            base_sha="a" * 40,
+            adequacy=dict(all_negated_adequacy("pure docs change, no ACs")),
+        )
         assert completeness(ticket) is None
 
 

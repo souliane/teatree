@@ -49,6 +49,8 @@ INTENTIONAL_FALLBACK_KINDS: frozenset[str] = frozenset(
         "pending_pr.drained",
         "pending_pr.retired",
         "pr.approved",
+        # Colleague-owned merge requests owe no nag; routing each to action_needed would be noise.
+        "review_request.foreign_author",
         "waiting.digest",
     }
 )
@@ -229,6 +231,17 @@ class TestEveryEmittedKindHasAnExplicitRoute:
         assert not contradictory, (
             f"INTENTIONAL_FALLBACK_KINDS entries that are actually routed/dropped: {contradictory}"
         )
+
+    def test_authorship_unreadable_requires_action(self) -> None:
+        assert STATUSLINE_ZONE_BY_KIND.get("review_request.authorship_unreadable") == "action_needed"
+
+    def test_ci_oauth_pool_failure_requires_action(self) -> None:
+        assert STATUSLINE_ZONE_BY_KIND.get("ci_oauth_pool.failed") == "action_needed"
+
+    def test_foreign_author_intentionally_uses_the_fallback(self) -> None:
+        kind = "review_request.foreign_author"
+        assert kind in INTENTIONAL_FALLBACK_KINDS
+        assert kind not in _EXPLICITLY_ROUTED_KINDS
 
 
 class TestEveryDispatchRouteHasAProducer:

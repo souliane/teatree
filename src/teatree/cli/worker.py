@@ -2,9 +2,8 @@
 
 The worker acquires the ``worker`` flock singleton and runs K pinned ``django_tasks_db``
 executor threads that drain the self-rescheduling loop-timer chains (no OS cron /
-launchd / systemd). PR-28 flipped ``loop_runner_enabled`` ON by default, so the worker
-owns the tick cadence out of the box; the SessionStart supervisor + ``t3 worker ensure``
-keep at least one alive. Bare ``t3 worker`` runs the worker (the ``run`` alias — one
+launchd / systemd). The worker owns the tick cadence out of the box; the SessionStart
+supervisor + ``t3 worker ensure`` keep at least one alive. Bare ``t3 worker`` runs the worker (the ``run`` alias — one
 documented invocation path); ``status``, ``ensure``, ``drain``, ``stop`` and ``restart``
 are the operator controls.
 
@@ -23,6 +22,7 @@ import typer
 if TYPE_CHECKING:
     from teatree.loop.drain import DrainProgress, DrainReport
     from teatree.loop.worker_lifecycle import StopReport
+    from teatree.loops.loop_staleness import LoopHealth
     from teatree.utils.singleton import HolderRecord
 
 
@@ -36,12 +36,11 @@ class DrainPayload(TypedDict):
 worker_app = typer.Typer(
     name="worker",
     help=(
-        "The singleton loop-timer worker (#1796 / PR-28). Bare `t3 worker` runs it "
-        "(the cadence owner, default ON via `loop_runner_enabled`). `status` reports "
-        "the live holder + resolved kill-switch + whether loops actually tick (it EXITS "
-        "NON-ZERO on a stale fleet); `ensure` spawns a detached worker iff enabled and "
-        "the flock is free; `drain` quiesces admission without stopping anything; "
-        "`stop` / `restart` end the live worker and verify it against the flock."
+        "The singleton loop-timer worker (#1796). Bare `t3 worker` runs it (the cadence "
+        "owner). `status` reports the live holder + how many loops the active preset admits "
+        "+ whether loops actually tick (it EXITS NON-ZERO on a stale fleet); `ensure` spawns "
+        "a detached worker iff the flock is free; `drain` quiesces admission without stopping "
+        "anything; `stop` / `restart` end the live worker and verify it against the flock."
     ),
     no_args_is_help=False,
     invoke_without_command=True,
@@ -93,24 +92,6 @@ def _flock_holder_pid() -> int | None:
     return read_pid(default_pid_path(WORKER_SINGLETON))
 
 
-def _resolve_kill_switch() -> tuple[bool, str]:
-    """The resolved ``loop_runner_enabled`` value + the tier it came from (env/overlay/global/default)."""
-    import os  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
-
-    from teatree.config import get_effective_settings  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
-    from teatree.core.models import ConfigSetting  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
-
-    value = get_effective_settings().loop_runner_enabled
-    if os.environ.get("T3_LOOP_RUNNER_ENABLED", "").strip():
-        return value, "env"
-    overlay = os.environ.get("T3_OVERLAY_NAME", "").strip()
-    if overlay and ConfigSetting.objects.filter(scope=overlay, key="loop_runner_enabled").exists():
-        return value, f"overlay:{overlay}"
-    if ConfigSetting.objects.filter(scope="", key="loop_runner_enabled").exists():
-        return value, "global"
-    return value, "default"
-
-
 def _timer_counts() -> dict[str, dict[str, int]]:
     """Per-loop ``{ready, running}`` ``loop_timer`` counts across the set that SHOULD be chained.
 
@@ -128,6 +109,13 @@ def _timer_counts() -> dict[str, dict[str, int]]:
         name: {"ready": len(pending_loop_timers(name)), "running": len(running_loop_timers(name))}
         for name in sorted(timer_chain_loop_names())
     }
+
+
+def _admission_line(health: "LoopHealth") -> str:
+    """The fleet's stop condition: does the active preset admit any loop at all?"""
+    verdict = health.admission
+    state = "admits work" if health.fleet_admits else "admits ZERO loops — the fleet is stopped"
+    return f"preset {verdict.mode!r} (source={verdict.source}) {state}"
 
 
 def _holder_lines(record: "HolderRecord | None") -> list[str]:
@@ -156,12 +144,12 @@ def _holder_lines(record: "HolderRecord | None") -> list[str]:
 
 @worker_app.command("status")
 def status_command(*, json_output: bool = typer.Option(False, "--json", help="Emit the status as JSON.")) -> None:
-    """Report the worker: flock holder, kill-switch + tier, timer counts, and whether loops tick.
+    """Report the worker: flock holder, admitted loops under the active preset, timers, staleness.
 
     Exits NON-ZERO when the loop fleet is stale.
     """
-    # The flock, the kill-switch and the READY timer rows all sit BEFORE the admission
-    # verdict that decides a tick, so all three read green while nothing happens.
+    # The flock and the READY timer rows both sit BEFORE the admission verdict that
+    # decides a tick, so both read green while nothing happens.
     # ``loop_health`` is the reading that closes that gap, and it is a GATE — a health
     # surface that cannot fail is the one that let a seven-hour freeze look healthy.
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
@@ -183,7 +171,6 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     # (the pid file is diagnostic; the flock is the lock). Fall back to the flock probe
     # so status never prints a false "NOT running" while loops are advancing (#3571).
     flock_held = flock_is_held(WORKER_SINGLETON, pid_path=default_pid_path(WORKER_SINGLETON))
-    enabled, source = _resolve_kill_switch()
     timers = _timer_counts()
     running = holder is not None or flock_held
     # Only a LIVE holder has a context worth reporting; the record left by a dead worker
@@ -199,11 +186,10 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
                     "holder_pid": holder,
                     "holder": record.context.as_json() if record is not None else None,
                     "flock_held": flock_held,
-                    "source": source,
                     "timers": timers,
-                    # ``loop_runner_enabled`` comes from ``health``: the fail-safe reader
-                    # the chain itself gates on, so the JSON cannot report a switch state
-                    # the timers do not obey.
+                    # The admission verdict comes from ``health``: the fail-safe reader the
+                    # chain itself gates on, so the JSON cannot report a posture the timers
+                    # do not obey.
                     **health.as_json(),
                 }
             )
@@ -219,9 +205,9 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
     typer.echo(f"worker: {state}")
     for line in _holder_lines(record):
         typer.echo(line)
-    typer.echo(f"loop_runner_enabled: {enabled} (from {source})")
-    if enabled and not running:
-        typer.echo("Worker is enabled but not running — run `t3 worker ensure`.")
+    typer.echo(_admission_line(health))
+    if health.fleet_admits and not running:
+        typer.echo("The active preset admits work but no worker is running — run `t3 worker ensure`.")
     ready_total = sum(c["ready"] for c in timers.values())
     running_total = sum(c["running"] for c in timers.values())
     typer.echo(f"loop timers: {len(timers)} enabled loop(s), {ready_total} READY, {running_total} RUNNING")
@@ -232,14 +218,16 @@ def status_command(*, json_output: bool = typer.Option(False, "--json", help="Em
 
 
 #: The actions that mean no worker is running as a result — the non-zero exits.
-_ENSURE_FAILURES = ("disabled", "error", "unverified")
+_ENSURE_FAILURES = ("error", "unverified")
 
 
 def _ensure_worker() -> tuple[str, str]:
-    """The shared ensure body: kill-switch gate → flock probe → the ONE detached spawner.
+    """The shared ensure body: flock probe → the ONE detached spawner.
 
     Returns the ``(action, detail)`` pair both ``ensure`` and ``restart`` report, so the
-    two can never diverge on when a worker may be spawned.
+    two can never diverge on when a worker may be spawned. Nothing gates on a posture here:
+    a worker whose preset admits nothing parks with its executors stopped and its process
+    alive, which is exactly what has to be running for the next schedule boundary to land.
     """
     from teatree.utils.singleton import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
         WORKER_SINGLETON,
@@ -247,9 +235,6 @@ def _ensure_worker() -> tuple[str, str]:
     )
     from teatree.utils.worker_spawn import spawn_detached_worker  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
-    enabled, _source = _resolve_kill_switch()
-    if not enabled:
-        return "disabled", "loop_runner_enabled is OFF — the kill-switch stops loops"
     if flock_is_held(WORKER_SINGLETON):
         return "already-running", "a worker already holds the flock"
     if not spawn_detached_worker():
@@ -275,11 +260,11 @@ def ensure_command(
     start_timeout: float = typer.Option(60.0, "--start-timeout", help="Seconds to wait for the spawned worker."),
     json_output: bool = typer.Option(False, "--json", help="Emit the outcome as JSON."),
 ) -> None:
-    """Spawn a detached worker iff ``loop_runner_enabled`` is ON and the flock is free.
+    """Spawn a detached worker iff the flock is free.
 
-    Refuses (with the reason) when the kill-switch is OFF or a worker already holds the
-    flock — an idempotent, cheap "make sure one is running" verb for a fresh install or
-    a headless box, sharing the ONE spawner with the SessionStart supervisor.
+    Refuses (with the reason) when a worker already holds the flock — an idempotent, cheap
+    "make sure one is running" verb for a fresh install or a headless box, sharing the ONE
+    spawner with the SessionStart supervisor.
 
     A spawn is only reported as such once the worker ACTUALLY holds the flock: the
     spawner itself returns success as soon as the ``t3`` binary resolves, so a startup

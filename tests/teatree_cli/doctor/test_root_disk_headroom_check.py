@@ -13,7 +13,15 @@ root filesystem.
 import os
 from unittest.mock import patch
 
+import pytest
+
 from teatree.cli.doctor.checks_resources import _check_root_disk_headroom, _disk_percent_threshold
+
+
+@pytest.fixture(autouse=True)
+def _no_real_consumer_probe():
+    with patch("teatree.cli.doctor.checks_resources.disk_consumers.summary", return_value="all unknown"):
+        yield
 
 
 class _FakeStatvfs:
@@ -41,6 +49,20 @@ class TestDiskPercentThreshold:
 
 
 class TestRootDiskHeadroomCheck:
+    def test_critical_alarm_names_the_measured_top_consumers(self, capsys) -> None:
+        with (
+            patch.object(os, "statvfs", return_value=_FakeStatvfs(total_gib=235, used_pct=96)),
+            patch(
+                "teatree.cli.doctor.checks_resources.disk_consumers.summary",
+                return_value="Docker build cache 12.0 GiB; worktrees/env dirs 7.0 GiB; control DB 1.0 GiB",
+            ),
+        ):
+            assert _check_root_disk_headroom() is False
+        output = capsys.readouterr().out
+        assert "Docker build cache 12.0 GiB" in output
+        assert "worktrees/env dirs 7.0 GiB" in output
+        assert "control DB 1.0 GiB" in output
+
     def test_fails_at_the_critical_band(self, capsys) -> None:
         """The band the host sat in unnoticed while every probe reported green."""
         with patch.object(os, "statvfs", return_value=_FakeStatvfs(total_gib=235, used_pct=96)):

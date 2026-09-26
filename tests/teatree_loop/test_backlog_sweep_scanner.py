@@ -1,8 +1,8 @@
 """DB-backed tests for ``BacklogSweepScanner`` (#2419, #4344).
 
 The scanner periodically queues a ``backlog_sweep`` ``Task`` row for the
-active core overlay on a single trigger: cadence
-(``backlog_sweep_cadence_hours``, default 24h = daily). It mirrors
+active core overlay on a single trigger: the ``backlog_sweep`` ``Loop`` row's own
+daily cadence. It mirrors
 :mod:`teatree.loop.scanners.scanning_news` — a once-per-cadence platform
 behaviour, not coupled to delivery velocity.
 
@@ -42,13 +42,11 @@ def _scanner(
     *,
     overlay_name: str = TEST_OVERLAY_NAME,
     skill: str = "sweeping-tickets",
-    cadence_hours: int = 24,
     require_approval: bool = True,
 ) -> BacklogSweepScanner:
     return BacklogSweepScanner(
         overlay_name=overlay_name,
         skill=skill,
-        cadence_hours=cadence_hours,
         require_approval=require_approval,
     )
 
@@ -97,15 +95,15 @@ class BacklogSweepScannerTests(TestCase):
         assert task.ticket.overlay == TEST_OVERLAY_NAME
 
     def test_cadence_elapsed_queues_new_task(self) -> None:
-        """A prior run older than cadence_hours triggers a new task."""
-        first = _scanner(cadence_hours=168).scan()
+        """A prior completed run does not block the row's next fire."""
+        first = _scanner().scan()
         assert len(first) == 1
         prior = _last_sweep_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
         _backdate_task(prior, hours=169)
 
-        second = _scanner(cadence_hours=168).scan()
+        second = _scanner().scan()
 
         assert len(second) == 1
         assert second[0].payload["trigger"] == "cadence"
@@ -113,33 +111,16 @@ class BacklogSweepScannerTests(TestCase):
         assert task is not None
         assert task.pk != prior.pk
 
-    def test_cadence_not_elapsed_no_task(self) -> None:
-        """A recent run within the cadence window blocks new queueing."""
-        first = _scanner(cadence_hours=168).scan()
-        assert len(first) == 1
-        prior = _last_sweep_task()
-        assert prior is not None
-        Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        # 1 hour ago — far inside the 168-hour window.
-        _backdate_task(prior, hours=1)
-
-        second = _scanner(cadence_hours=168).scan()
-
-        assert second == []
-        latest = _last_sweep_task()
-        assert latest is not None
-        assert latest.pk == prior.pk
-
     def test_pending_task_blocks_new_queueing(self) -> None:
         """A still-PENDING sweep task suppresses dupes even after cadence elapses."""
-        first = _scanner(cadence_hours=168).scan()
+        first = _scanner().scan()
         assert len(first) == 1
         prior = _last_sweep_task()
         assert prior is not None
         # Leave it PENDING and backdate so cadence WOULD trigger.
         _backdate_task(prior, hours=336)
 
-        second = _scanner(cadence_hours=168).scan()
+        second = _scanner().scan()
 
         assert second == []
         latest = _last_sweep_task()
@@ -149,13 +130,13 @@ class BacklogSweepScannerTests(TestCase):
 
     def test_claimed_task_blocks_new_queueing(self) -> None:
         """A CLAIMED (in-flight) sweep task is treated as pending — no dupes."""
-        _scanner(cadence_hours=168).scan()
+        _scanner().scan()
         prior = _last_sweep_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.CLAIMED)
         _backdate_task(prior, hours=336)
 
-        second = _scanner(cadence_hours=168).scan()
+        second = _scanner().scan()
 
         assert second == []
 
@@ -304,73 +285,44 @@ class BacklogSweepWiringTests(TestCase):
     """Confirm the tick-job builder reads core config (#2419, #4344).
 
     The backlog-sweep scanner is a single global scanner (``overlay=""``)
-    keyed off teatree-core platform config. ``backlog_sweep_disabled`` ships
-    OPEN, leaving the ``backlog_sweep`` ``Loop`` row (seeded disabled) as the
-    single switch — the ``issue_implementer`` / ``triage_assessor`` /
-    ``directive_loop`` shape. Setting the switch still stops the wiring dead.
+    keyed off teatree-core platform config; the ``backlog_sweep`` ``Loop`` row
+    (seeded disabled) and the active preset are the single switch.
     """
 
     def _patched_settings(self, **overrides: object) -> UserSettings:
         return UserSettings(**overrides)
-
-    def test_the_kill_switch_still_stops_the_wiring(self) -> None:
-        """``backlog_sweep_disabled = True`` → wiring produces NO scanner."""
-        from teatree.loop.global_scanner_factories import _backlog_sweep_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": self._patched_settings(backlog_sweep_disabled=True)})(),
-        ):
-            scanner = _backlog_sweep_scanner()
-        assert scanner is None
 
     def test_default_core_config_builds_a_daily_scanner(self) -> None:
         """Default core config → a scanner on the daily cadence the ticket asks for."""
         from teatree.loop.global_scanner_factories import _backlog_sweep_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._patched_settings(),
         ):
             scanner = _backlog_sweep_scanner()
         assert scanner is not None
         assert scanner.skill == "sweeping-tickets"
-        assert scanner.cadence_hours == 24
 
     def test_core_config_propagates_to_scanner_kwargs(self) -> None:
         """Tuned core config flows through to the scanner kwargs."""
         from teatree.loop.global_scanner_factories import _backlog_sweep_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {
-                    "user": self._patched_settings(
-                        backlog_sweep_disabled=False,
-                        backlog_sweep_skill="custom-sweep",
-                        backlog_sweep_cadence_hours=72,
-                    ),
-                },
-            )(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._patched_settings(backlog_sweep_skill="custom-sweep"),
         ):
             scanner = _backlog_sweep_scanner()
         assert scanner is not None
         assert scanner.skill == "custom-sweep"
-        assert scanner.cadence_hours == 72
 
     def test_ask_gate_defaults_on_in_wiring(self) -> None:
         """Default opt-in config wires the scanner with require_approval=True."""
         from teatree.loop.global_scanner_factories import _backlog_sweep_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {"user": self._patched_settings(backlog_sweep_disabled=False)},
-            )(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._patched_settings(),
         ):
             scanner = _backlog_sweep_scanner()
         assert scanner is not None
@@ -381,17 +333,10 @@ class BacklogSweepWiringTests(TestCase):
         from teatree.loop.global_scanner_factories import _backlog_sweep_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {
-                    "user": self._patched_settings(
-                        backlog_sweep_disabled=False,
-                        ask_before_backlog_sweep_closes=False,
-                    ),
-                },
-            )(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._patched_settings(
+                ask_before_backlog_sweep_closes=False,
+            ),
         ):
             scanner = _backlog_sweep_scanner()
         assert scanner is not None
@@ -405,12 +350,8 @@ class BacklogSweepWiringTests(TestCase):
         discovered = OverlayEntry(name="t3-teatree", overlay_class="")
         with (
             patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type(
-                    "Cfg",
-                    (),
-                    {"user": self._patched_settings(backlog_sweep_disabled=False)},
-                )(),
+                "teatree.loop.global_scanner_factories.get_effective_settings",
+                return_value=self._patched_settings(),
             ),
             patch(
                 "teatree.loop.global_scanner_factories.discover_active_overlay",
@@ -427,12 +368,8 @@ class BacklogSweepWiringTests(TestCase):
 
         with (
             patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type(
-                    "Cfg",
-                    (),
-                    {"user": self._patched_settings(backlog_sweep_disabled=False)},
-                )(),
+                "teatree.loop.global_scanner_factories.get_effective_settings",
+                return_value=self._patched_settings(),
             ),
             patch(
                 "teatree.loop.global_scanner_factories.discover_active_overlay",

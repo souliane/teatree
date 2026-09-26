@@ -27,6 +27,7 @@ def record_review_request_post(
     mr_url: str,
     slack_channel_id: str,
     slack_thread_ts: str,
+    overlay: str,
     bot_id: str = "",
 ) -> ReviewRequestPost:
     """Persist (or update) a ``ReviewRequestPost`` for *mr_url*.
@@ -43,14 +44,19 @@ def record_review_request_post(
                 "slack_channel_id": slack_channel_id,
                 "slack_thread_ts": slack_thread_ts,
                 "bot_id": bot_id,
+                "overlay": overlay,
             },
         )
         if not created:
+            update_fields = ["slack_channel_id", "slack_thread_ts", "bot_id"]
             post.slack_channel_id = slack_channel_id
             post.slack_thread_ts = slack_thread_ts
             if bot_id:
                 post.bot_id = bot_id
-            post.save(update_fields=["slack_channel_id", "slack_thread_ts", "bot_id"])
+            if post.overlay is None:
+                post.overlay = overlay
+                update_fields.append("overlay")
+            post.save(update_fields=update_fields)
     logger.info(
         "review_request_post recorded (created=%s): mr_url=%s channel=%s thread=%s",
         created,

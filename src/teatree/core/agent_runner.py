@@ -12,8 +12,6 @@ nothing is registered.
 
 from typing import TYPE_CHECKING, Protocol
 
-from teatree.core.modelkit.phases import subagent_for_phase
-
 if TYPE_CHECKING:
     from teatree.core.models import Task, TaskAttempt
     from teatree.types import SkillMetadata
@@ -44,14 +42,3 @@ def get_agent_runner() -> AgentRunner:
         )
         raise RuntimeError(msg)
     return _runner
-
-
-def has_registered_phase_agent(*, role: str, phase: str) -> bool:
-    """True iff ``(role, phase)`` is a dispatched pair in the ``SUBAGENT_BY_PHASE`` registry.
-
-    Pure registry membership over the ``core.modelkit`` leaf — no ORM, so the
-    ``teatree.core`` → ``teatree.core.modelkit`` edge is a declared tach edge
-    rather than a function-scoped import tach's acyclic guard cannot see.
-    ``Task.loop_dispatched`` is the ORM-side spelling of the same lookup.
-    """
-    return bool(subagent_for_phase(role, phase))

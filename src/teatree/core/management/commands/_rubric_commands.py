@@ -8,7 +8,7 @@ collects ``@command`` methods from every ``TyperCommand`` base in the MRO, so th
 mixin is the idiomatic split — the CLI surface is unchanged.
 
 ``rubric-set`` takes EXPLICIT acceptance criteria (a JSON array of strings or
-``{"text": ...}`` objects — no ``/plan`` derivation, that is [#2240]); ``rubric-grade``
+``{"text": ...}`` objects) beside the plan producer; ``rubric-grade``
 records a verifier's per-criterion PASS/FAIL through the guarded
 :meth:`RubricCriterion.record_grade` factory. The pure parse/validate/mutate
 helpers raise :class:`RubricCommandError` (or :class:`RubricError`) on a refusal,
@@ -22,7 +22,9 @@ from typing import Annotated, TypedDict
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.models import Rubric, RubricCriterion, RubricError, Ticket
+from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
+from teatree.core.models import Rubric, RubricError, Ticket
+from teatree.core.models.types import RubricGrade
 
 
 class RubricCommandError(ValueError):
@@ -42,12 +44,6 @@ class RubricGradeResult(TypedDict, total=False):
     graded_count: int
     fully_passed: bool
     error: str
-
-
-class GradeInput(TypedDict, total=False):
-    ordinal: object
-    status: object
-    rationale: object
 
 
 def parse_criteria(criteria_json: str, criteria_file: str) -> list[str] | None:
@@ -90,11 +86,14 @@ def set_rubric(ticket: Ticket, criteria: list[str]) -> Rubric:
     return Rubric.populate(ticket, criteria)
 
 
-def parse_grades(grades_json: str) -> list[GradeInput]:
-    """The grade objects from ``--grades-json``, validated to be a non-empty array.
+def parse_grades(grades_json: str) -> list[RubricGrade]:
+    """The grade objects from ``--grades-json``, in the shared :class:`RubricGrade` shape.
 
-    Raises :class:`RubricCommandError` on malformed JSON, a non-array payload, an
-    empty array, or any item that is not an object carrying ``ordinal`` + ``status``.
+    Raises :class:`RubricCommandError` on malformed JSON or a payload that is not a
+    non-empty array — the CLI's own contract, which the envelope's does not share (an
+    absent ``rubric_grades`` grades nothing rather than refusing). The per-ITEM shape is
+    :meth:`Rubric.normalize_grades`, the one normaliser the reviewing recorder runs too,
+    which raises :class:`RubricError`; both are refusals the command surfaces alike.
     """
     try:
         parsed = json.loads(grades_json) if grades_json.strip() else []
@@ -104,65 +103,7 @@ def parse_grades(grades_json: str) -> list[GradeInput]:
     if not isinstance(parsed, list) or not parsed:
         msg = "--grades-json must be a non-empty array of grade objects"
         raise RubricCommandError(msg)
-    grades: list[GradeInput] = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            msg = f"each grade must be an object: {item!r}"
-            raise RubricCommandError(msg)
-        fields = {str(key): value for key, value in item.items()}
-        if fields.get("ordinal") is None or fields.get("status") is None:
-            msg = f"each grade needs an ordinal and a status: {item!r}"
-            raise RubricCommandError(msg)
-        grades.append(
-            GradeInput(ordinal=fields["ordinal"], status=fields["status"], rationale=fields.get("rationale", ""))
-        )
-    return grades
-
-
-def clear_honesty_escalation_on_pass(ticket: Ticket) -> None:
-    """Clear the ticket's active honesty escalations on a verified-complete landing (#2263).
-
-    The PRIMARY clear for a :class:`~teatree.core.models.honesty_escalation.HonestyEscalation`:
-    when ``rubric-grade`` records a fully-passed rubric, the ticket landed an
-    honest, verified-complete outcome, so any active escalation for the ticket's
-    sessions is cleared (the TTL is only the safety-net backstop). Keyed to the
-    ticket's session ``agent_id``s. Fail-SAFE: a recording error never blocks the
-    grade command (the grade is already recorded — this is post-success cleanup).
-    """
-    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415 — deferred: ORM/app-registry
-
-    try:
-        sessions = ticket.sessions.exclude(agent_id="")
-        for agent_id in sessions.values_list("agent_id", flat=True).distinct():
-            HonestyEscalation.mark_cleared(agent_id)
-    except Exception:  # noqa: BLE001 — best-effort side-effect; a failure degrades to no-op
-        return
-
-
-def apply_grades(rubric: Rubric, grades: list[GradeInput], *, grader_identity: str, reviewed_sha: str) -> int:
-    """Stamp each grade through the guarded factory; raise on the first refusal.
-
-    An unknown ordinal raises :class:`RubricCommandError`; an invalid grade (maker
-    grader / bad SHA / bad status) raises :class:`RubricError`. Either aborts the
-    grading — a partial run that leaves some criteria silently ungraded must not
-    read as success. Returns the number graded.
-    """
-    graded = 0
-    for grade in grades:
-        ordinal = grade["ordinal"]
-        try:
-            criterion = rubric.criteria.get(ordinal=ordinal)
-        except RubricCriterion.DoesNotExist as exc:
-            msg = f"no criterion with ordinal {ordinal!r}"
-            raise RubricCommandError(msg) from exc
-        criterion.record_grade(
-            status=str(grade["status"]),
-            grader_identity=grader_identity,
-            reviewed_sha=reviewed_sha,
-            rationale=str(grade.get("rationale", "")),
-        )
-        graded += 1
-    return graded
+    return Rubric.normalize_grades(parsed)
 
 
 class RubricCommands(TyperCommand):
@@ -199,9 +140,9 @@ class RubricCommands(TyperCommand):
         """Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241).
 
         Replaces the ticket's :class:`Rubric` criteria atomically (a get-or-create),
-        resetting every grade to PENDING so a changed checklist is re-graded. The
-        criteria are explicit — auto-derivation from ``/plan`` is the [#2240] follow-up.
-        An empty / malformed / non-array payload is refused. Full contract:
+        resetting every grade to PENDING so a changed checklist is re-graded. This is
+        the operator seam beside the plan producer, which ADDS and so never resets a
+        grade. An empty / malformed / non-array payload is refused. Full contract:
         ``docs/blueprint/rubric-done-gate.md``.
         """
         ticket = self._resolve_rubric_ticket(ticket_id)
@@ -253,7 +194,7 @@ class RubricCommands(TyperCommand):
             raise SystemExit(1)
         try:
             grades = parse_grades(grades_json)
-            graded = apply_grades(rubric, grades, grader_identity=grader_identity, reviewed_sha=reviewed_sha)
+            graded = rubric.apply_grades(grades, grader_identity=grader_identity, reviewed_sha=reviewed_sha)
         except (RubricCommandError, RubricError) as exc:
             self.stderr.write(f"  rubric-grade refused: {exc}")
             raise SystemExit(1) from exc
@@ -270,13 +211,10 @@ class RubricCommands(TyperCommand):
 
 
 __all__ = [
-    "GradeInput",
     "RubricCommandError",
     "RubricCommands",
     "RubricGradeResult",
     "RubricSetResult",
-    "apply_grades",
-    "clear_honesty_escalation_on_pass",
     "parse_criteria",
     "parse_grades",
     "set_rubric",

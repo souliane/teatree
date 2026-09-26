@@ -31,11 +31,12 @@ HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "ho
 _REPO_ROOT = HOOK_ROUTER.parent.parent.parent
 
 # Opt the always-registered t3-teatree overlay into the SCOPE gate, and disable
-# the orchestrator-bash heavy-command gate so it does not deny the `git push`
-# first and mask the gate under test.
+# the unrelated push gates so they do not deny the `git push` first and mask
+# the repo-scope gate under test.
 _OPTED_IN_ROWS: dict[str, object] = {
     "unknown_repo_push_gate_enabled": True,
     "orchestrator_bash_gate_enabled": False,
+    "foreign_branch_push_gate_enabled": False,
     "overlays": {"t3-teatree": {"require_owned_repo_approval": True, "owned_repos": {"github.com": ["souliane"]}}},
 }
 

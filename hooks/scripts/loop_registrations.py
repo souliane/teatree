@@ -145,41 +145,40 @@ def _worker_is_alive() -> bool:
 
 
 def _worker_owns_cadence() -> bool:
-    """Whether ``loop_runner_enabled`` resolves ON (the worker drives the loops); fail-safe OFF."""
+    """Whether the active preset admits work (so the worker drives the loops); fail-safe OFF."""
     try:
         from hooks.scripts.django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415 deferred cold-hook import
 
         if not bootstrap_teatree_django():
             return False
-        from teatree.config import get_effective_settings  # noqa: PLC0415 (deferred: cold-hook import)
+        from teatree.loops.enable_verdict import fleet_admits_work  # noqa: PLC0415 (deferred: cold-hook import)
 
-        return bool(get_effective_settings().loop_runner_enabled)
+        return fleet_admits_work()
     except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-safe OFF.
         return False
 
 
 def cron_decommission_directive() -> str | None:
-    """The one-time CronDelete reminder for stale pre-flip native ``/loop`` crons, or ``None``.
+    """The one-time CronDelete reminder for stale native ``/loop`` crons, or ``None``.
 
-    PR-28 retired the native ``/loop`` cron mirror and made the ``t3 worker`` the default
-    cadence owner. A box that ran BEFORE the flip may still have per-loop
-    ``t3 loops tick --loop <name>`` crons registered in the harness. The worker's per-loop
-    ``loop-tick:<name>`` mutex + the ``Loop.last_run_at`` CAS make a stale cron BENIGN (a
-    wasted subprocess, never double work), but it should be cleaned up. Returns the
-    directive only when the worker owns the cadence (``loop_runner_enabled`` ON);
-    :func:`emit_loop_registrations` prepends it to the reactive-slot emission, so it is
-    emitted once per session under the SAME ``loop-pending`` marker that gates that
-    emission.
+    The ``t3 worker`` owns the loop-tick cadence, so a box carrying per-loop
+    ``t3 loops tick --loop <name>`` crons from an older harness registration is running
+    them for nothing. The worker's per-loop ``loop-tick:<name>`` mutex + the
+    ``Loop.last_run_at`` CAS make a stale cron BENIGN (a wasted subprocess, never double
+    work), but it should be cleaned up. Returns the directive only when the worker owns
+    the cadence; :func:`emit_loop_registrations` prepends it to the reactive-slot
+    emission, so it is emitted once per session under the SAME ``loop-pending`` marker
+    that gates that emission.
     """
     if not _worker_owns_cadence():
         return None
     return (
-        "Session setup: the `t3 worker` now owns the loop-tick cadence (PR-28 retired the "
-        "native `/loop` cron mirror). A pre-flip box may still have stale per-loop crons "
-        "registered. Run CronList once, then CronDelete every job whose prompt contains the "
-        "backtick-terminated token `` `t3 loops tick --loop <name>` `` — the worker drives "
-        "those loops now, so the crons only ever waste a subprocess (the per-loop mutex + CAS "
-        "make them benign). If CronList shows none, nothing to do."
+        "Session setup: the `t3 worker` owns the loop-tick cadence. A box carrying stale "
+        "per-loop crons from an older registration should drop them. Run CronList once, then "
+        "CronDelete every job whose prompt contains the backtick-terminated token "
+        "`` `t3 loops tick --loop <name>` `` — the worker drives those loops now, so the crons "
+        "only ever waste a subprocess (the per-loop mutex + CAS make them benign). If CronList "
+        "shows none, nothing to do."
     )
 
 
@@ -402,10 +401,9 @@ def emit_loop_registrations(stream: _Writable) -> bool:
     """Emit the owner session's reactive infra ``/loop`` registrations + the cron-decommission reminder.
 
     Returns whether anything was emitted so the caller writes the once-per-session
-    ``loop-pending`` marker (the emit-once key for both). PR-28 retired the
-    per-enabled-DB-loop ``CronCreate`` emission (the worker owns that cadence now); it
-    instead emits the one-time CronDelete reminder for stale pre-flip crons when the
-    worker owns the cadence. Nothing to register AND no reminder emits NOTHING and
+    ``loop-pending`` marker (the emit-once key for both). There is no per-loop
+    ``CronCreate`` emission — the worker owns that cadence — only the one-time CronDelete
+    reminder for stale crons, and only while the worker owns it. Nothing to register AND no reminder emits NOTHING and
     returns ``False`` so the owner session stays silent.
     """
     emitted = False

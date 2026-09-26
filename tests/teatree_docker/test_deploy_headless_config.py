@@ -61,6 +61,9 @@ class TestHeadlessClaudeSettings:
         data = self._settings()
         assert int(data["env"]["CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY"]) > 0
 
+    def test_commit_and_pr_attribution_are_disabled(self) -> None:
+        assert self._settings()["attribution"] == {"commit": False, "pr": False}
+
     def test_automode_carries_every_recommended_authorization(self) -> None:
         # #3408/#3410: the template's autoMode.allow is the single source both host
         # (`t3 setup --write-automode`) and container seed apply, so it must carry the
@@ -74,9 +77,9 @@ class TestEntrypointAndDockerfileWiring:
     def test_entrypoint_seeds_settings_before_t3_setup(self) -> None:
         text = (DEPLOY / "entrypoint.sh").read_text(encoding="utf-8")
         assert "seed_claude_settings" in text
-        # The seed call must immediately precede `t3 setup` so setup's statusLine
-        # merge lands on top of the seeded file rather than being clobbered by it.
-        assert "seed_claude_settings\n    t3 setup" in text
+        # The seed call must immediately precede `t3 setup` (and its retries) so setup's
+        # statusLine merge lands on top of the seeded file rather than being clobbered by it.
+        assert "seed_claude_settings\n    for attempt in 1 2 3; do\n        t3 setup --strict-agent-skills" in text
 
     def test_entrypoint_merge_preserves_unmanaged_keys(self) -> None:
         # Deep-merge with the existing file as the LEFT operand keeps statusLine.

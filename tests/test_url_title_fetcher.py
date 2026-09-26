@@ -11,6 +11,7 @@ from django.test import TestCase
 from teatree import url_title_fetcher as utf
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 
 
 @pytest.fixture
@@ -18,6 +19,17 @@ def cache_path(tmp_path, monkeypatch):
     cache = tmp_path / "url-titles.json"
     monkeypatch.setattr(utf, "CACHE_FILE", cache)
     return cache
+
+
+@pytest.fixture(autouse=True)
+def _forge_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "teatree.url_title_fetcher.resolve_slug_token",
+        lambda slug, *, credential, **_kwargs: ForgeTokenResolution(
+            credential, "owner", ForgeTokenState.TOKEN, token=f"routed-{slug}"
+        ),
+        raising=False,
+    )
 
 
 def _mk_completed(rc: int, stdout: str) -> SimpleNamespace:
@@ -68,17 +80,36 @@ class TestFetchTitles:
         run.assert_not_called()
 
     def test_fetches_uncached_gitlab_title(self, cache_path):
+        seen: list[dict[str, str]] = []
+
+        def _run(*_args, **kwargs):
+            seen.append(kwargs["env"])
+            return _mk_completed(0, json.dumps({"title": "Real MR title"}))
+
         with (
             patch("teatree.url_title_fetcher.shutil.which", return_value="/usr/bin/glab"),
-            patch(
-                "teatree.url_title_fetcher.run_allowed_to_fail",
-                return_value=_mk_completed(0, json.dumps({"title": "Real MR title"})),
-            ),
+            patch("teatree.url_title_fetcher.run_allowed_to_fail", side_effect=_run),
         ):
             titles = utf.fetch_titles("https://gitlab.com/g/r/-/merge_requests/99")
         assert titles == ["Real MR title"]
+        assert seen[0]["GITLAB_TOKEN"] == "routed-g/r"
         cached = json.loads(cache_path.read_text())
         assert cached["gitlab:g/r:merge_requests:99"] == "Real MR title"
+
+    def test_unset_gitlab_route_never_inherits_ambient_login(self, monkeypatch, cache_path):
+        calls: list[object] = []
+        monkeypatch.setenv("GITLAB_TOKEN", "hostile")
+        monkeypatch.setattr(
+            "teatree.url_title_fetcher.resolve_slug_token",
+            lambda *_args, **_kwargs: ForgeTokenResolution("gitlab_token", "owner", ForgeTokenState.UNSET),
+        )
+        monkeypatch.setattr("teatree.url_title_fetcher.shutil.which", lambda _tool: "/usr/bin/glab")
+        monkeypatch.setattr(
+            "teatree.url_title_fetcher.run_allowed_to_fail", lambda *args, **kwargs: calls.append((args, kwargs))
+        )
+
+        assert utf.fetch_titles("https://gitlab.com/g/r/-/merge_requests/5") == []
+        assert calls == []
 
     def test_fetches_uncached_github_pr_title(self, cache_path):
         with (
@@ -90,6 +121,22 @@ class TestFetchTitles:
         ):
             titles = utf.fetch_titles("https://github.com/owner/repo/pull/5")
         assert titles == ["Real PR title"]
+
+    def test_unset_github_route_never_inherits_ambient_login(self, monkeypatch, cache_path):
+        calls: list[object] = []
+        monkeypatch.setenv("GH_TOKEN", "hostile")
+        monkeypatch.setattr(
+            "teatree.url_title_fetcher.resolve_slug_token",
+            lambda *_args, **_kwargs: ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET),
+            raising=False,
+        )
+        monkeypatch.setattr("teatree.url_title_fetcher.shutil.which", lambda _tool: "/usr/bin/gh")
+        monkeypatch.setattr(
+            "teatree.url_title_fetcher.run_allowed_to_fail", lambda *args, **kwargs: calls.append((args, kwargs))
+        )
+
+        assert utf.fetch_titles("https://github.com/owner/repo/pull/5") == []
+        assert calls == []
 
     def test_failed_fetch_does_not_cache(self, cache_path):
         with (

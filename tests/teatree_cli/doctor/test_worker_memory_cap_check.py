@@ -12,6 +12,7 @@ independent of the real container.
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 from teatree.cli.doctor.checks_resources import (
     _BYTES_PER_GIB,
@@ -91,10 +92,22 @@ class TestWorkerMemoryCapCheck:
         assert _check_worker_memory_cap(role="", v2=v2, v1=v1) is True
         assert capsys.readouterr().out == ""
 
-    def test_worker_uncapped_is_silent(self, tmp_path: Path, capsys) -> None:
+    def test_worker_uncapped_reports_unverifiable_floor(self, tmp_path: Path, capsys) -> None:
         v2, v1 = _cgroup(tmp_path, v2="max")
-        assert _check_worker_memory_cap(role="worker", v2=v2, v1=v1) is True
-        assert capsys.readouterr().out == ""
+        assert _check_worker_memory_cap(role="worker", v2=v2, v1=v1) is False
+        assert "cannot verify" in capsys.readouterr().out
+
+    def test_missing_worker_cap_reports_unknown_instead_of_host_scope(self, tmp_path: Path, capsys) -> None:
+        assert _check_worker_memory_cap(role="worker", v2=tmp_path / "missing", v1=tmp_path / "missing-v1") is False
+        assert "cannot verify" in capsys.readouterr().out
+
+    def test_default_reader_uses_the_resolved_worker_membership(self, tmp_path: Path, capsys) -> None:
+        worker_cap = tmp_path / "system.slice" / "worker.scope" / "memory.max"
+        worker_cap.parent.mkdir(parents=True)
+        worker_cap.write_text(str(2 * _BYTES_PER_GIB), encoding="utf-8")
+        with patch("teatree.cli.doctor.checks_resources.cgroup_file", side_effect=[worker_cap, OSError()]):
+            assert _check_worker_memory_cap(role="worker") is False
+        assert "2 GiB" in capsys.readouterr().out
 
     def test_floor_override_is_honored(self, tmp_path: Path, capsys, monkeypatch) -> None:
         monkeypatch.setenv("TEATREE_WORKER_MEMORY_FLOOR_GIB", "24")

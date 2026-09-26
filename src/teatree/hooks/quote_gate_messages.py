@@ -16,6 +16,7 @@ detector stays free of presentation.
 from dataclasses import dataclass
 from typing import Final
 
+from teatree.hooks import _dispatch_quote_ok
 from teatree.hooks.quote_scanner import ScanResult
 
 
@@ -30,14 +31,17 @@ class QuoteGateSurface:
 
 
 #: The ``Agent``/``Task`` ``PreToolUse`` arm (#1401) — the only interception point a
-#: sub-agent dispatch has. Byte-frozen: this wording is correct and is ridden by the
-#: never-lockout contract, the liveness corpus and the deny-circuit leak family.
+#: sub-agent dispatch has. Kept only so :class:`TestTheSurfacesAreDistinct` can prove
+#: no two arms share a clause set; the ACTUAL dispatch message is rendered by
+#: :mod:`teatree.hooks._dispatch_quote_ok` (:func:`format_dispatch_block_message`),
+#: whose wording is byte-frozen and ridden by the never-lockout contract, the
+#: liveness corpus and the deny-circuit leak family.
 DISPATCH_SURFACE: Final[QuoteGateSurface] = QuoteGateSurface(
     gate_label="pre-dispatch quote-scanner gate (#1401)",
     carrier="The Agent/Task prompt",
     consequence="before dispatching (the sub-agent would otherwise echo it into a published output, "
     "defeating the #1213 publish gate)",
-    escape_location="near the start of the prompt",
+    escape_location="in the one-line `description` (subject) field",
 )
 
 #: The task-list arm (#171). The task-list tools bypass ``PreToolUse`` entirely and
@@ -87,7 +91,9 @@ def format_block_message(result: ScanResult) -> str:
 
 def format_dispatch_block_message(result: ScanResult) -> str:
     """Render the PreToolUse deny reason for a HIGH match in a dispatch prompt (#1401)."""
-    return _format_quote_block_message(result, DISPATCH_SURFACE)
+    names = ", ".join(sorted({f.name for f in result.high}))
+    excerpt = next((f.excerpt for f in result.high if f.excerpt), "")
+    return _dispatch_quote_ok.block_message(names, excerpt)
 
 
 def format_task_entry_block_message(result: ScanResult) -> str:

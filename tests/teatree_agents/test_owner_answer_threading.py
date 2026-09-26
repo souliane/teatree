@@ -53,7 +53,7 @@ class TestOwnerAnswerThreading(TestCase):
         task = self._owner_dm_task(channel=channel, slack_ts=owner_ts)
         PendingChatInjection.objects.create(overlay="acme", channel=channel, slack_ts=owner_ts, text="hi")
         Mode.objects.update_or_create(name="off", defaults={"entries": {}})
-        set_mode_override("off")
+        set_mode_override("off", reason="test override")
         assert ModeOverride.objects.current().preset_name == "off"
         backend = MagicMock()
         backend.post_reply.return_value = {"ok": True, "ts": "1700000000.000400"}
