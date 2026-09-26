@@ -34,6 +34,7 @@ from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_gitlab import ForgePrApiClient, GlabPrApiClient
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.loop.sweep_on_demand import trigger_sweep_for_verdict
 from teatree.types import RawAPIDict
 
@@ -104,10 +105,10 @@ class RecordingArm:
         del slug, check_name
         return False
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         del expected_head_oid
         self.merged.append((slug, pr_id))
-        return True, _MERGED
+        return BoundMergeResult(merged=True, merged_sha=_MERGED)
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
         del slug, pr_id, expected_head_oid

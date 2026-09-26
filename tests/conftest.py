@@ -108,7 +108,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     sharded = bool(getattr(config.option, "splits", 0) and getattr(config.option, "group", 0)) or bool(
         os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
     )
-    refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded)
+    # ``config.args`` holds only the leftover positionals (pytest strips recognized
+    # options), so ``--tach``/``--tach-base`` — which make a bare ``tests`` root a
+    # COLLECTION-time-deselected selection, not a whole-tree one — are read separately.
+    tach_scoped = (
+        bool(config.getoption("--tach", default=False)) or config.getoption("--tach-base", default=None) is not None
+    )
+    refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded, tach_scoped=tach_scoped)
     if refusal:
         raise pytest.UsageError(refusal)
 

@@ -24,6 +24,20 @@ def test_whole_tree_guard_refuses_unsharded_local_run(tmp_path: Path) -> None:
     assert whole_tree_refusal(["tests"], root=tmp_path, sharded=True) == ""
 
 
+def test_whole_tree_guard_allows_a_tach_scoped_doctest_selection(tmp_path: Path) -> None:
+    # Regression for #4856: `affected_tests.py::pytest_args` emits an explicit
+    # `tests` root alongside `--doctest-modules` targets on every SCOPED diff that
+    # touches a doctest-bearing src module — the common case. `pytest.Config.args`
+    # holds only the leftover positionals (flags like `--tach` are stripped by
+    # pytest's own parsing), so this exact positional shape must NOT be misread
+    # as an unbounded whole-tree run once the caller reports ``tach_scoped=True``.
+    doctest_root_positionals = ["tests", "src/teatree/loop/scanners/pr_sweep.py"]
+    assert whole_tree_refusal(doctest_root_positionals, root=tmp_path, sharded=False, tach_scoped=True) == ""
+    # Anti-vacuity: the SAME positionals still refuse when tach is not in play —
+    # proves the exemption is keyed on ``tach_scoped``, not on the path shape.
+    assert whole_tree_refusal(doctest_root_positionals, root=tmp_path, sharded=False) != ""
+
+
 def test_real_unsharded_pytest_refuses_before_collection() -> None:
     repo = Path(__file__).resolve().parents[2]
     env = os.environ.copy()

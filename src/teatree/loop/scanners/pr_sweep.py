@@ -83,6 +83,7 @@ from teatree.loop.scanners.pr_sweep_types import (
     UV_AUDIT_CHECK_NAME,
     MergeAttempt,
     PrSummary,
+    blocked_merge_attempt,
 )
 from teatree.utils.pr_ref import PrRef
 
@@ -387,27 +388,22 @@ class PrSweepScanner:
         ):
             return substrate.hold_solo_overlay_substrate(self.substrate_pinger, pr=pr)
         authorizing = review.authorizing_verdict
-        ok, merged_sha = self.api.merge_pr_squash_bound(
+        result = self.api.merge_pr_squash_bound(
             slug=pr.slug,
             pr_id=pr.number,
             expected_head_oid=pr.head_sha,
         )
-        if not ok:
-            return MergeAttempt(
-                slug=pr.slug,
-                pr_id=pr.number,
-                decision="blocked",
-                reason="solo_overlay_gh_fallback_failed",
-            )
-        self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
+        if not result.merged:
+            return blocked_merge_attempt(pr, reason_prefix="solo_overlay_merge_refused", refusal=result.refusal)
+        self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=result.merged_sha, fallback=fallback)
         reason = "solo_overlay_no_clear_uv_audit" if fallback else "solo_overlay_no_clear"
-        logger.info("pr_sweep merged %s#%d at %s on verdict %s", pr.slug, pr.number, merged_sha, authorizing)
+        logger.info("pr_sweep merged %s#%d at %s on verdict %s", pr.slug, pr.number, result.merged_sha, authorizing)
         return MergeAttempt(
             slug=pr.slug,
             pr_id=pr.number,
             decision="merged",
             merged=True,
-            merged_sha=merged_sha,
+            merged_sha=result.merged_sha,
             reason=reason,
             authorizing_verdict=authorizing,
         )
@@ -548,29 +544,34 @@ class PrSweepScanner:
         # here BEFORE the substrate-ping check below, silently bypassing the keystone
         # hold. Gate the escalation on the CLEAR not being substrate; a substrate
         # CLEAR falls through to ping-and-hold instead.
+        fallback_refusal = ""
         if fallback and not clear.is_substrate():
-            ok, fallback_sha = self.api.merge_pr_squash_bound(
+            result = self.api.merge_pr_squash_bound(
                 slug=pr.slug,
                 pr_id=pr.number,
                 expected_head_oid=pr.head_sha,
             )
-            if ok:
-                self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=fallback_sha, fallback=True)
+            if result.merged:
+                self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=result.merged_sha, fallback=True)
                 return MergeAttempt(
                     slug=pr.slug,
                     pr_id=pr.number,
                     decision="merged",
                     merged=True,
-                    merged_sha=fallback_sha,
+                    merged_sha=result.merged_sha,
                     reason="fallback_uv_audit_gh",
                 )
+            fallback_refusal = result.refusal
         if escalation_kind == "substrate" or clear.is_substrate():
             substrate.ping_substrate_hold(self.substrate_pinger, pr=pr, reviewed_sha=clear.reviewed_sha, error=error)
-        return MergeAttempt(
-            slug=pr.slug,
-            pr_id=pr.number,
-            decision="blocked",
-            reason=error or "keystone_refused",
+        # A fallback attempt's own refusal is the CURRENT cause and wins over ``error``,
+        # which is the earlier keystone refusal captured above (#4856) — reporting the
+        # stale keystone reason here would name the wrong precondition.
+        return blocked_merge_attempt(
+            pr,
+            reason_prefix="fallback_uv_audit_gh_refused",
+            refusal=fallback_refusal,
+            default_reason=error or "keystone_refused",
         )
 
     def _announce_merge(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
