@@ -8,7 +8,9 @@ time, with no opt-in. The env var remains an optional override.
 """
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,8 +18,10 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts import gate_result, mr_validator, t3_invocation
+from hooks.scripts.forge_api_detect import _is_existing_pr_metadata_only_edit
 from hooks.scripts.gate_result import GateSkipped
 from hooks.scripts.hook_router import handle_validate_mr_metadata
+from hooks.scripts.mr_cli_fields import _api_field_args, extract_api_mr_fields
 from teatree.config import COLD_HOOK_SETTINGS
 from teatree.core.review.mr_metadata import validate_mr_metadata
 from teatree.types import DEFAULT_MR_TITLE_REGEX
@@ -70,8 +74,8 @@ class TestDefaultOverlayValidation:
         # Invoked the default `t3 tool validate-mr` path.
         argv = run.call_args[0][0]
         assert argv[:3] == ["/usr/local/bin/t3", "tool", "validate-mr"]
-        assert "--title" in argv
-        assert "--description" in argv
+        assert not {"--title", "--description"} & set(argv), "the pair rides stdin, never argv"
+        assert json.loads(run.call_args.kwargs["input"]) == {"title": "", "description": ""}
 
     def test_allows_when_overlay_validator_passes(self, monkeypatch):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
@@ -356,6 +360,51 @@ class TestFileBasedDescriptionIsRead:
         assert description == ""
 
 
+class TestDynamicDescriptionFileArgSkipsInsteadOfLyingAboutIt:
+    """``--description-file "$(cat x)"`` is UNRESOLVABLE, not empty.
+
+    The hook sees the raw command before the shell expands it, so the file-arg
+    regex captures the leading fragment of the substitution (``$(cat``) as the
+    filename. Reading that fails and the description used to fall through as
+    ``""`` — so the gate refused the MR with "MR description is empty", a reason
+    that is simply FALSE and gives the agent nothing to act on. The inline
+    ``--description "$(cat x)"`` spelling of the same unresolvable body already
+    skipped and said so; both spellings now agree.
+    """
+
+    def _skip(self, command: str) -> GateSkipped:
+        result = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": command}})
+        assert isinstance(result, GateSkipped), f"expected a named skip, got {result!r}"
+        return result
+
+    def test_command_substitution_file_arg_skips(self):
+        reason = self._skip("glab mr create --title 'fix: t' --description-file \"$(cat /tmp/body.md)\"").reason
+        assert "unexpanded shell construct" in reason
+
+    def test_variable_file_arg_skips(self):
+        reason = self._skip("glab mr create --title 'fix: t' --description-file \"$BODY\"").reason
+        assert "unexpanded shell construct" in reason
+
+    def test_the_reason_denies_the_false_empty_claim_and_names_the_fix(self):
+        reason = self._skip("glab mr create --title 'fix: t' --description-file \"$(cat /tmp/b.md)\"").reason
+        assert "NOT an empty description" in reason
+        assert "--description-file <path>" in reason
+
+    def test_a_literal_path_that_is_merely_missing_still_reads_empty(self, tmp_path):
+        # Anti-vacuity: the skip is scoped to an UNRESOLVABLE arg. A real path
+        # that simply is not there keeps its old, correct verdict.
+        title, description = _fields(f"glab mr create --title 'fix: t' --description-file {tmp_path}/absent.md")
+        assert (title, description) == ("fix: t", "")
+
+    def test_a_literal_path_containing_a_dollar_in_single_quotes_is_still_read(self, tmp_path):
+        # Anti-vacuity the other way: an inert (single-quoted) marker is a real
+        # filename character, not a construct the shell expands.
+        desc = tmp_path / "$BODY.md"
+        desc.write_text("fix: real (proj#1)\n", encoding="utf-8")
+        _title, description = _fields(f"glab mr create --title 'fix: t' --description-file '{desc}'")
+        assert description.startswith("fix: real")
+
+
 class TestOutOfBandApiEditIsGated:
     """A REST-API MR/PR write is validated too, not just the create/update CLI.
 
@@ -377,7 +426,7 @@ class TestOutOfBandApiEditIsGated:
         # The untouched title is back-filled with the (here bad) description so
         # the verdict reflects only the edited field, never a spurious
         # "title empty" for an unset title.
-        assert "bad prose" in argv
+        assert json.loads(run.call_args.kwargs["input"]) == {"title": "bad prose", "description": "bad prose"}
 
     def test_description_only_api_edit_does_not_force_validate_title(self):
         # The untouched title is mirrored from the set description, so a
@@ -749,6 +798,18 @@ class TestEmbeddedTriggerIsNotAnMrMutation:
         cmd = 'gh issue create --title "gate over-fires on glab mr update string"'
         assert self._fields_for(cmd) is None
 
+    def test_asking_for_help_is_not_a_mutation(self):
+        # The gate refuses an empty title/description on a create, and `--help` sets
+        # neither — so the one command an operator reaches for after being refused was
+        # refused too, with the same message about metadata it was not setting.
+        assert self._fields_for("glab mr create --help") is None
+        assert self._fields_for("glab mr create -h") is None
+        assert self._fields_for("glab mr update --help") is None
+
+    def test_help_inside_a_title_is_still_a_mutation(self):
+        cmd = "glab mr create --title 'fix: --help me (proj#1)' --description 'fix: --help me (proj#1)'"
+        assert self._fields_for(cmd) == ("fix: --help me (proj#1)", "fix: --help me (proj#1)")
+
     def test_real_create_after_quoted_decoy_is_still_detected(self):
         cmd = (
             "echo 'will run glab mr create' && glab mr create --title 'fix: x (proj#1)' --description 'fix: x (proj#1)'"
@@ -801,3 +862,653 @@ class TestValidatorRunsFromAContainerVisibleCwd:
     def test_the_cwd_is_not_inherited_from_the_caller(self, tmp_path, monkeypatch):
         cwd = Path(self._spawn(tmp_path, monkeypatch).kwargs["cwd"]).resolve()
         assert cwd != tmp_path.resolve()
+
+
+class TestAtFileFieldIndirectionIsResolved:
+    """``--field description=@file`` is judged on the FILE; ``--raw-field`` on the literal.
+
+    The two flags are not interchangeable, and both CLIs say so: ``-F``/``--field``
+    applies a magic conversion in which a value opening with ``@`` names a file to
+    read (and ``@-`` names stdin), while ``-f``/``--raw-field`` adds a static string.
+    So under ``--field`` the literal ``@/tmp/body.md`` is a string the forge never
+    receives -- judging it is wrong in both directions, the silent one being a
+    NON-compliant body that sails through because ``@/tmp/body.md`` never looks like
+    a malformed title. Under ``--raw-field`` the literal IS what GitLab stores, and
+    dereferencing it would validate a file the forge never sees.
+
+    Only a path that is ABSOLUTE after ``expanduser()`` is read: a relative one
+    resolves against the HOOK process's directory, which is not the directory
+    ``glab`` runs in once the command opens with a ``cd``.
+    """
+
+    _ENDPOINT = "glab api --method PUT projects/x%2Fy/merge_requests/123"
+    _COMPLIANT = "fix(review): a real title\n\n## What\n\nSomething.\n"
+
+    def _description(self, command: str) -> str:
+        fields = extract_api_mr_fields(command)
+        assert fields is not None
+        return fields[1]
+
+    def test_a_compliant_body_in_a_file_is_read_and_passes(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(self._COMPLIANT)
+
+        description = self._description(f"{self._ENDPOINT} --field description=@{body}")
+
+        assert description.startswith("fix(review): a real title")
+        assert "@" not in description.splitlines()[0]
+
+    def test_a_noncompliant_body_in_a_file_is_seen_as_noncompliant(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text("just some prose with no conventional prefix\n")
+
+        description = self._description(f"{self._ENDPOINT} --field description=@{body}")
+
+        assert description.startswith("just some prose")
+
+    def test_raw_field_keeps_the_literal_the_forge_will_actually_store(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(self._COMPLIANT)
+
+        description = self._description(f"{self._ENDPOINT} --raw-field description=@{body}")
+
+        assert description == f"@{body}"
+
+    def test_the_short_field_flag_reads_the_file(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(self._COMPLIANT)
+
+        description = self._description(f"{self._ENDPOINT} -F description=@{body}")
+
+        assert description.startswith("fix(review): a real title")
+
+    def test_the_short_raw_field_flag_keeps_the_literal_case_sensitively(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(self._COMPLIANT)
+
+        description = self._description(f"{self._ENDPOINT} -f description=@{body}")
+
+        assert description == f"@{body}"
+
+    def test_an_unreadable_path_keeps_the_literal_while_a_readable_one_is_read(self, tmp_path: Path) -> None:
+        missing = tmp_path / "absent.md"
+        readable = tmp_path / "body.md"
+        readable.write_text(self._COMPLIANT)
+
+        assert self._description(f"{self._ENDPOINT} --field description=@{missing}") == f"@{missing}"
+        assert self._description(f"{self._ENDPOINT} --field description=@{readable}").startswith("fix(review):")
+
+    def test_a_stdin_value_is_never_read_as_a_file_in_the_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "-").write_text("a file literally named dash\n")
+        readable = tmp_path / "body.md"
+        readable.write_text(self._COMPLIANT)
+        monkeypatch.chdir(tmp_path)
+
+        assert self._description(f"{self._ENDPOINT} --field description=@-") == "@-"
+        assert self._description(f"{self._ENDPOINT} --field description=@") == "@"
+        assert self._description(f"{self._ENDPOINT} --field description=@{readable}").startswith("fix(review):")
+
+    def test_a_relative_path_keeps_the_literal_while_the_same_file_absolute_is_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(self._COMPLIANT)
+        monkeypatch.chdir(tmp_path)
+
+        assert self._description(f"{self._ENDPOINT} --field description=@body.md") == "@body.md"
+        assert self._description(f"{self._ENDPOINT} --field description=@{body}").startswith("fix(review):")
+
+    def test_a_latin_1_file_returns_the_literal_and_a_utf_8_one_is_read(self, tmp_path: Path) -> None:
+        latin1 = tmp_path / "latin1.md"
+        latin1.write_bytes("fix(review): caf\xe9\n".encode("latin-1"))
+        utf8 = tmp_path / "body.md"
+        utf8.write_text(self._COMPLIANT)
+
+        assert self._description(f"{self._ENDPOINT} --field description=@{latin1}") == f"@{latin1}"
+        assert self._description(f"{self._ENDPOINT} --field description=@{utf8}").startswith("fix(review):")
+
+    def test_an_unexpandable_user_and_a_nul_byte_path_keep_the_literal(self, tmp_path: Path) -> None:
+        utf8 = tmp_path / "body.md"
+        utf8.write_text(self._COMPLIANT)
+        unexpandable = "@~t3nosuchuser4242/x.md"
+        nul_byte = f"@{tmp_path}/bo\x00dy.md"
+
+        assert self._description(f"{self._ENDPOINT} --field description={unexpandable}") == unexpandable
+        assert self._description(f"{self._ENDPOINT} --field description={nul_byte}") == nul_byte
+        assert self._description(f"{self._ENDPOINT} --field description=@{utf8}").startswith("fix(review):")
+
+
+_API_ENDPOINT = "glab api --method PUT projects/x%2Fy/merge_requests/123"
+_COMPLIANT_BODY = "fix(review): a real title\n\n## What\n\nSomething.\n"
+_MARKER_ENV = "T3_MR_VALIDATE_MARKER"
+
+# The stub validator RECORDS the exact pair it judged before verdicting. Without that
+# record an ALLOW and a gate that never ran are the same observation -- rc 0 with empty
+# stdout -- which is the very blindness these tests exist to detect. It reads the pair
+# from STDIN, the channel the real validator uses, so a body over ARG_MAX still arrives.
+_VALIDATOR = (
+    "import json, os, sys\n"
+    "judged = json.load(sys.stdin)\n"
+    "with open(os.environ['T3_MR_VALIDATE_MARKER'], 'w', encoding='utf-8') as fh:\n"
+    "    json.dump(judged, fh)\n"
+    "for field, text in judged.items():\n"
+    "    if not text.split('\\n')[0].startswith('fix('):\n"
+    "        sys.stderr.write('%s is not conventional.\\n' % field)\n"
+    "        sys.exit(1)\n"
+    "sys.exit(0)\n"
+)
+
+_DRIVER = (
+    "import io, sys, json\n"
+    "import hooks.scripts.hook_router as r\n"
+    "r._HANDLERS['PreToolUse'] = [r.handle_validate_mr_metadata]\n"
+    "sys.argv = ['hook_router.py', '--event', 'PreToolUse']\n"
+    "sys.stdin = io.StringIO(json.dumps({payload}))\n"
+    "r.main()\n"
+)
+
+
+def _drive(
+    tmp_path: Path, command: str, *, cwd: Path | None = None, timeout: float = 60
+) -> subprocess.CompletedProcess[str]:
+    """Run *command* through the real ``hook_router.main`` in a subprocess."""
+    validator = tmp_path / "validator.py"
+    validator.write_text(_VALIDATOR)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}}
+    repo_root = Path(router.__file__).resolve().parents[2]
+    env: dict[str, str] = dict(os.environ)
+    env.pop("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", None)
+    env["HOME"] = env["USERPROFILE"] = str(home)
+    env["PYTHONPATH"] = str(repo_root)
+    env["T3_MR_VALIDATE_SCRIPT"] = str(validator)
+    env[_MARKER_ENV] = str(tmp_path / "judged.json")
+    return subprocess.run(
+        [sys.executable, "-c", _DRIVER.format(payload=json.dumps(payload))],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
+    )
+
+
+def _judged(tmp_path: Path) -> dict[str, str] | None:
+    """The title/description the validator actually judged, ``None`` when it never ran."""
+    marker = tmp_path / "judged.json"
+    return json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else None
+
+
+class TestTheGateStillEmitsADecisionOnAnUnreadableAtFile:
+    """A read that raises inside the gate is a gate that never ran, not a gate that refused.
+
+    ``hook_router.main`` wraps each handler in ``except Exception: continue`` -- a
+    broken gate fails OPEN by design. So an exception escaping the ``@filename``
+    read does not surface as a refusal; it silently skips the whole MR-metadata
+    gate and the ``glab api`` call proceeds unvalidated. A unit test on
+    ``extract_api_mr_fields`` cannot see that difference: both a refusal and a
+    skipped gate leave it returning nothing useful. Only the full chain can, and
+    it reads the two apart by the exit code the router hands the harness.
+    """
+
+    def _api_put(self, path: Path | str) -> str:
+        return f"{_API_ENDPOINT} --field description=@{path}"
+
+    def test_a_latin_1_at_file_is_refused_rather_than_skipping_the_gate(self, tmp_path: Path) -> None:
+        latin1 = tmp_path / "latin1.md"
+        latin1.write_bytes("fix(review): caf\xe9\n".encode("latin-1"))
+
+        result = _drive(tmp_path, self._api_put(latin1))
+
+        assert result.returncode == 2, f"the gate never ran; stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert json.loads(result.stdout)["permissionDecision"] == "deny"
+        assert "Traceback" not in result.stderr
+
+    def test_a_compliant_utf_8_at_file_is_allowed_through_the_same_chain(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(_COMPLIANT_BODY)
+
+        result = _drive(tmp_path, self._api_put(body))
+
+        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert result.stdout.strip() == ""
+        assert _judged(tmp_path) == {"title": _COMPLIANT_BODY, "description": _COMPLIANT_BODY}
+
+
+class TestTheGluedShortFlagIsGatedLikeTheSpacedOne:
+    """`-Fdescription=x` sets the same field as `-F description=x`, so it must be judged too.
+
+    Both CLIs accept a short flag glued to its value, and the api-field matcher required a
+    space or an `=` after EVERY flag -- so every glued spelling walked past the gate. The
+    silent half is worse than a mute gate: a command mixing a spaced `-F title=` with a
+    glued `-Fdescription=` yielded only the title, which the back-fill then copied into the
+    description, so the gate PASSED on a compliant title standing in for text the forge
+    would never store.
+    """
+
+    _NONCOMPLIANT = "just some prose with no conventional prefix\n"
+
+    def test_a_glued_short_field_naming_a_noncompliant_file_is_denied(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(self._NONCOMPLIANT)
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} -Fdescription=@{body}")
+
+        assert result.returncode == 2, f"the gate never ran; stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert json.loads(result.stdout)["permissionDecision"] == "deny"
+        assert _judged(tmp_path) == {"title": self._NONCOMPLIANT, "description": self._NONCOMPLIANT}
+
+    def test_a_glued_short_field_carrying_an_inline_value_is_denied(self, tmp_path: Path) -> None:
+        result = _drive(tmp_path, f"{_API_ENDPOINT} -Fdescription=JUNK")
+
+        assert result.returncode == 2, f"the gate never ran; stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert json.loads(result.stdout)["permissionDecision"] == "deny"
+        assert _judged(tmp_path) == {"title": "JUNK", "description": "JUNK"}
+
+    def test_a_compliant_title_is_never_back_filled_over_a_glued_junk_description(self, tmp_path: Path) -> None:
+        title = "fix(review): a real title"
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} -F 'title={title}' -Fdescription=JUNK")
+
+        assert _judged(tmp_path) == {"title": title, "description": "JUNK"}
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert json.loads(result.stdout)["permissionDecision"] == "deny"
+
+    def test_a_glued_short_raw_field_is_judged_on_the_literal_it_stores(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(_COMPLIANT_BODY)
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} -fdescription=@{body}")
+
+        assert result.returncode == 2, f"the gate never ran; stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert json.loads(result.stdout)["permissionDecision"] == "deny"
+        assert _judged(tmp_path) == {"title": f"@{body}", "description": f"@{body}"}
+
+    def test_a_glued_short_field_naming_a_compliant_file_is_read_and_allowed(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(_COMPLIANT_BODY)
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} -Fdescription=@{body}")
+
+        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert result.stdout.strip() == ""
+        assert _judged(tmp_path) == {"title": _COMPLIANT_BODY, "description": _COMPLIANT_BODY}
+
+    def test_a_long_flag_glued_to_its_key_is_not_a_spelling_either_cli_accepts(self) -> None:
+        for glued in ("--fielddescription=JUNK", "--raw-fielddescription=JUNK"):
+            assert extract_api_mr_fields(f"{_API_ENDPOINT} {glued}") is None, glued
+
+    @pytest.mark.parametrize(
+        ("field_args", "expected"),
+        [
+            ("--field description=VAL", ("VAL", "VAL")),
+            ("--field=description=VAL", ("VAL", "VAL")),
+            ("--field 'description=VAL WORDS'", ("VAL WORDS", "VAL WORDS")),
+            ("--field description='VAL WORDS'", ("VAL WORDS", "VAL WORDS")),
+            ("--raw-field description=VAL", ("VAL", "VAL")),
+            ("--raw-field='description=VAL WORDS'", ("VAL WORDS", "VAL WORDS")),
+            ("-F description=VAL", ("VAL", "VAL")),
+            ("-F=description=VAL", ("VAL", "VAL")),
+            ("-Fdescription=VAL", ("VAL", "VAL")),
+            ("-F'description=VAL WORDS'", ("VAL WORDS", "VAL WORDS")),
+            ('-F"description=VAL WORDS"', ("VAL WORDS", "VAL WORDS")),
+            ("-fdescription=VAL", ("VAL", "VAL")),
+            ("-f'description=VAL WORDS'", ("VAL WORDS", "VAL WORDS")),
+            ("--field 'title=T V' -Fdescription=VAL", ("T V", "VAL")),
+            ("--fielddescription=VAL", None),
+            ("--field state_event=close", None),
+        ],
+    )
+    def test_every_spelling_of_the_field_flag_lands_on_the_documented_verdict(
+        self, field_args: str, expected: tuple[str, str] | None
+    ) -> None:
+        assert extract_api_mr_fields(f"{_API_ENDPOINT} {field_args}") == expected
+
+
+_MKFIFO = pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the platform has no FIFO to build")
+
+
+class TestAMessageFileTheGateCannotReadNeverBlocksTheWholeRouter:
+    """A non-regular `@file` must be REFUSED, never opened -- opening one never returns.
+
+    `open()` on a FIFO with no writer blocks forever and `/dev/zero` never ends, so the
+    read outlives the router's whole PreToolUse budget. The harness then kills the
+    process, and EVERY handler in the chain is skipped -- a fail-open far wider than the
+    one gate. `stat(2)` answers without opening, so it is the probe that can ask the
+    question safely. Each test carries its own subprocess timeout so a regression
+    surfaces as `TimeoutExpired` rather than a wedged worker.
+    """
+
+    _HANG_TIMEOUT = 20
+
+    @_MKFIFO
+    def test_an_api_field_naming_a_fifo_is_refused_without_opening_it(self, tmp_path: Path) -> None:
+        fifo = tmp_path / "body.fifo"
+        os.mkfifo(fifo)
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} -F description=@{fifo}", timeout=self._HANG_TIMEOUT)
+
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert json.loads(result.stdout)["permissionDecision"] == "deny"
+        assert _judged(tmp_path) == {"title": f"@{fifo}", "description": f"@{fifo}"}
+
+    def test_an_api_field_naming_a_character_device_is_refused_rather_than_read(self, tmp_path: Path) -> None:
+        result = _drive(tmp_path, f"{_API_ENDPOINT} -F description=@/dev/zero", timeout=self._HANG_TIMEOUT)
+
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert json.loads(result.stdout)["permissionDecision"] == "deny"
+        assert _judged(tmp_path) == {"title": "@/dev/zero", "description": "@/dev/zero"}
+
+    @_MKFIFO
+    def test_a_description_file_naming_a_fifo_is_refused_without_opening_it(self, tmp_path: Path) -> None:
+        fifo = tmp_path / "body.fifo"
+        os.mkfifo(fifo)
+        command = f"glab mr create --title 'fix(review): a real title' --description-file {fifo}"
+
+        result = _drive(tmp_path, command, timeout=self._HANG_TIMEOUT)
+
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert json.loads(result.stdout)["permissionDecision"] == "deny"
+        assert _judged(tmp_path) == {"title": "fix(review): a real title", "description": ""}
+
+    def test_a_description_file_naming_a_regular_file_is_still_read_and_allowed(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(_COMPLIANT_BODY)
+        command = f"glab mr create --title 'fix(review): a real title' --description-file {body}"
+
+        result = _drive(tmp_path, command, timeout=self._HANG_TIMEOUT)
+
+        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert result.stdout.strip() == ""
+        assert _judged(tmp_path) == {"title": "fix(review): a real title", "description": _COMPLIANT_BODY}
+
+
+class TestAMessageFileLargerThanTheForgeAcceptsKeepsTheLiteral:
+    """The cap is GitLab's own 1 MiB MR-description limit, so it can refuse no body the forge would store.
+
+    Both sizes are LITERAL, never derived from the module's own constant: a test sized
+    from the constant moves with it, so it stays green for every cap value and pins only
+    that some cap exists. Written this way the pair brackets the boundary -- raising the
+    cap reads the over-sized file, lowering it refuses the exact-sized one.
+
+    Measured on this host: an argv element of exactly the limit is `E2BIG` (`ARG_MAX` is
+    1048576), so the router cannot carry a cap-sized description to the validator at all,
+    which is why the boundary is pinned at the parser.
+    """
+
+    _FORGE_DESCRIPTION_LIMIT = 1_048_576
+    _FIRST_LINE = b"fix(review): x\n"
+
+    def _description(self, path: Path) -> str:
+        fields = extract_api_mr_fields(f"{_API_ENDPOINT} --field description=@{path}")
+        assert fields is not None
+        return fields[1]
+
+    def _body_of(self, tmp_path: Path, size: int) -> Path:
+        body = tmp_path / "body.md"
+        body.write_bytes(self._FIRST_LINE + b"y" * (size - len(self._FIRST_LINE)))
+        assert body.stat().st_size == size
+        return body
+
+    def test_a_file_one_byte_over_the_forge_limit_keeps_the_literal(self, tmp_path: Path) -> None:
+        body = self._body_of(tmp_path, self._FORGE_DESCRIPTION_LIMIT + 1)
+
+        assert self._description(body) == f"@{body}"
+
+    def test_a_file_of_exactly_the_forge_limit_is_still_read(self, tmp_path: Path) -> None:
+        body = self._body_of(tmp_path, self._FORGE_DESCRIPTION_LIMIT)
+
+        assert self._description(body).startswith("fix(review): x")
+
+
+class TestTheRefusalNamesTheAtFilenameIndirectionItJudgedAsText:
+    """A refusal on a literal `@path` must say WHY the file was not read.
+
+    The gate validates the literal whenever the indirection does not resolve -- a relative
+    path, `@-`, a non-regular file, one over the cap. The refusal then quotes text the
+    operator never wrote as a description, with nothing naming the `@` rule, so the only
+    way to learn it is trial and error against a gate that refuses each attempt.
+    """
+
+    def _reason(self, result: subprocess.CompletedProcess[str]) -> str:
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        return json.loads(result.stdout)["permissionDecisionReason"]
+
+    def test_a_relative_at_path_refusal_names_the_rule_and_the_literal_it_judged(self, tmp_path: Path) -> None:
+        (tmp_path / "body.md").write_text(_COMPLIANT_BODY)
+
+        reason = self._reason(_drive(tmp_path, f"{_API_ENDPOINT} -F description=@body.md", cwd=tmp_path))
+
+        assert "is not conventional" in reason, reason
+        assert "@body.md" in reason, reason
+        assert "ABSOLUTE" in reason, reason
+        assert "REGULAR" in reason, reason
+        assert str(1_048_576) in reason, reason
+        assert "@-" in reason, reason
+
+    def test_a_plain_inline_value_refusal_carries_no_at_filename_note(self, tmp_path: Path) -> None:
+        reason = self._reason(_drive(tmp_path, f"{_API_ENDPOINT} -F description=JUNK"))
+
+        assert "is not conventional" in reason, reason
+        assert "ABSOLUTE" not in reason, reason
+
+    def test_a_dereferenced_at_path_is_allowed_with_no_note_at_all(self, tmp_path: Path) -> None:
+        body = tmp_path / "body.md"
+        body.write_text(_COMPLIANT_BODY)
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} -F description=@{body}")
+
+        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert result.stdout.strip() == ""
+        assert _judged(tmp_path) == {"title": _COMPLIANT_BODY, "description": _COMPLIANT_BODY}
+
+
+class TestADescriptionTooLargeForArgvIsStillValidated:
+    """A body the forge accepts must be JUDGED, never waved through for its size.
+
+    ``ARG_MAX`` is 1048576 on the reference box and a description-only edit back-fills
+    ``title=description``, so a body on argv rides it TWICE -- the exec fails ``E2BIG``
+    at roughly half the forge's own 1 MiB limit. The router wraps every handler in
+    ``except Exception: continue``, so that ``OSError`` surfaced as rc 0 with empty
+    stdout: indistinguishable from a clean PASS, on text nobody validated.
+
+    The marker is the load-bearing assertion. A test reading only the return code
+    passes under the bug in BOTH directions -- a gate that denied and a gate that never
+    ran are the same rc 0/rc 2 observation -- so only the pair the validator RECORDED
+    having judged separates them.
+    """
+
+    _FORGE_DESCRIPTION_LIMIT = 1_048_576
+    _NONCOMPLIANT_FIRST_LINE = "just some prose with no conventional prefix\n"
+
+    def _body_of(self, tmp_path: Path, first_line: str, size: int) -> Path:
+        body = tmp_path / "body.md"
+        body.write_text(first_line + "y" * (size - len(first_line)), encoding="utf-8")
+        assert body.stat().st_size == size
+        return body
+
+    def test_a_noncompliant_body_at_the_forge_limit_is_denied(self, tmp_path: Path) -> None:
+        body = self._body_of(tmp_path, self._NONCOMPLIANT_FIRST_LINE, self._FORGE_DESCRIPTION_LIMIT)
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} --field description=@{body}")
+
+        judged = _judged(tmp_path)
+        assert judged is not None, f"the validator NEVER RAN; stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert judged["description"].startswith(self._NONCOMPLIANT_FIRST_LINE)
+        assert len(judged["description"]) == self._FORGE_DESCRIPTION_LIMIT
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert json.loads(result.stdout)["permissionDecision"] == "deny"
+
+    def test_a_compliant_body_at_the_forge_limit_is_judged_and_allowed(self, tmp_path: Path) -> None:
+        body = self._body_of(tmp_path, "fix(review): a real title\n", self._FORGE_DESCRIPTION_LIMIT)
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} --field description=@{body}")
+
+        judged = _judged(tmp_path)
+        assert judged is not None, f"the validator NEVER RAN; stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert len(judged["description"]) == self._FORGE_DESCRIPTION_LIMIT
+        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert result.stdout.strip() == ""
+
+    def test_a_noncompliant_body_well_under_argv_is_denied_too(self, tmp_path: Path) -> None:
+        body = self._body_of(tmp_path, self._NONCOMPLIANT_FIRST_LINE, 520_000)
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} --field description=@{body}")
+
+        judged = _judged(tmp_path)
+        assert judged is not None, f"the validator NEVER RAN; stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert len(judged["description"]) == 520_000
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+class TestAnExecThatNeverStartsIsAnnouncedNotSwallowed:
+    """A spawn that fails outright is CANNOT_EVALUATE — loud and allowed, never silent.
+
+    ``run_mr_validator`` caught only ``TimeoutExpired`` and ``FileNotFoundError``, so an
+    ``OSError`` (``E2BIG`` on an over-``ARG_MAX`` body, ``EACCES``, ``ENOEXEC``) escaped
+    into ``hook_router.main``'s ``except Exception: continue``. The router then exited 0
+    with empty stdout — the byte-identical shape of a clean PASS, which is why the
+    fail-open went unnoticed: nothing anywhere said the validator had not run.
+    """
+
+    _EXEC_FAILED = OSError(7, "Argument list too long", "python3")
+
+    def _run(self) -> object:
+        with patch.object(mr_validator, "run_t3", side_effect=self._EXEC_FAILED):
+            return mr_validator.run_mr_validator(["t3", "tool", "validate-mr"], "fix: x (p#1)", "body")
+
+    def test_a_failed_exec_is_a_cannot_evaluate_marker(self) -> None:
+        assert isinstance(self._run(), GateSkipped)
+
+    def test_the_marker_names_the_exec_failure_so_the_warn_can_quote_it(self) -> None:
+        result = self._run()
+        assert isinstance(result, GateSkipped)
+        assert "Argument list too long" in result.reason
+
+    def test_a_failed_exec_is_never_read_as_an_absent_validator(self) -> None:
+        # ``None`` is the fail-CLOSED broken-env path; an exec that failed for its own
+        # reason must not be graded as "no validator exists at all".
+        assert self._run() is not None
+
+    def test_the_gate_announces_the_failed_exec_and_allows(self, monkeypatch, capsys) -> None:
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+
+        with patch.object(router.subprocess, "run", side_effect=self._EXEC_FAILED):
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "body"))
+
+        captured = capsys.readouterr()
+        assert blocked is False
+        assert captured.out.strip() == ""
+        assert "did NOT validate this call" in captured.err, captured.err
+        assert "Argument list too long" in captured.err, captured.err
+
+
+class TestEveryShellSeparatorBetweenAFieldFlagAndItsValue:
+    """A TAB or a newline separates a flag from its value exactly as a space does.
+
+    The matcher accepted only a space or an ``=``, so ``--field<TAB>description=JUNK``
+    yielded no fields at all and the gate emitted NOTHING — the silent-allow class the
+    glued-flag defect belonged to. Both CLIs parse it: ``glab api --field<TAB>foo=bar``
+    reaches the network, so the flag and its value were tokenised as a pair.
+    """
+
+    _FLAGS = ("--field", "--raw-field", "-F", "-f")
+    _SEPARATORS = ("\t", "\n")
+
+    @pytest.mark.parametrize("flag", _FLAGS)
+    @pytest.mark.parametrize("separator", _SEPARATORS)
+    def test_a_whitespace_separated_field_is_still_extracted(self, flag: str, separator: str) -> None:
+        command = f"{_API_ENDPOINT} {flag}{separator}description=JUNK"
+
+        assert extract_api_mr_fields(command) == ("JUNK", "JUNK"), repr(command)
+
+    def test_a_tab_separated_noncompliant_description_is_denied_end_to_end(self, tmp_path: Path) -> None:
+        result = _drive(tmp_path, f"{_API_ENDPOINT} --field\tdescription=JUNK")
+
+        assert _judged(tmp_path) == {"title": "JUNK", "description": "JUNK"}
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+class TestAValueTheShellConcatenatesIsJudgedWhole:
+    """The gate must judge the string the forge STORES, not a compliant quoted prefix of it.
+
+    ``-F 'title=fix(x): a (u)'"JUNK"`` is ONE shell word — the forge receives
+    ``fix(x): a (u)JUNK``. Matching only the quoted span reported a PASS on text that was
+    never what the command set: the round-1 back-fill masquerade reached through a
+    different door. A quoted KEY (``-F "description"=JUNK``) is the same word-splitting
+    fact seen from the other end, and yielded no field at all.
+    """
+
+    _TITLE = "fix(x): a (u)"
+
+    def test_a_quoted_prefix_does_not_stand_in_for_the_concatenated_value(self) -> None:
+        command = f"{_API_ENDPOINT} -F 'title={self._TITLE}'\"JUNKSUFFIX\""
+
+        assert extract_api_mr_fields(command) == (f"{self._TITLE}JUNKSUFFIX",) * 2
+
+    def test_a_bare_prefix_concatenated_with_a_quoted_span_is_judged_whole(self) -> None:
+        command = f'{_API_ENDPOINT} -F description=fix"(x): a (u)"TAIL'
+
+        assert extract_api_mr_fields(command) == ("fix(x): a (u)TAIL",) * 2
+
+    def test_a_quoted_key_still_names_the_field_it_sets(self) -> None:
+        command = f'{_API_ENDPOINT} -F "description"=JUNK'
+
+        assert extract_api_mr_fields(command) == ("JUNK", "JUNK")
+
+    def test_the_gate_judges_the_concatenated_value_end_to_end(self, tmp_path: Path) -> None:
+        stored = f"{self._TITLE}JUNKSUFFIX"
+
+        result = _drive(tmp_path, f"{_API_ENDPOINT} -F 'title={self._TITLE}'\"JUNKSUFFIX\"")
+
+        assert _judged(tmp_path) == {"title": stored, "description": stored}
+        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+    def test_a_quoted_key_naming_a_noncompliant_value_is_denied_end_to_end(self, tmp_path: Path) -> None:
+        result = _drive(tmp_path, f'{_API_ENDPOINT} -F "description"=JUNK')
+
+        assert _judged(tmp_path) == {"title": "JUNK", "description": "JUNK"}
+        assert result.returncode == 2, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+
+
+class TestBothFieldFlagMatchersAgreeOnWhatAFieldFlagLooksLike:
+    """Two regexes disagreeing about the same grammar is how the glued-flag defect happened.
+
+    ``mr_cli_fields`` extracts the metadata a field flag SETS; ``forge_api_detect`` extracts
+    the KEY it names, to decide whether a write is a metadata-only edit. They spelled the
+    same flag differently, so ``-Fdescription=`` was visible to one and invisible to the
+    other — and a command mixing a spaced metadata field with a glued STATE field then read
+    as metadata-only, exempting a state change from the gate that governs it.
+    """
+
+    _SPELLINGS = (
+        "--field description=X",
+        "--field=description=X",
+        "--field\tdescription=X",
+        "--raw-field description=X",
+        "-F description=X",
+        "-F=description=X",
+        "-Fdescription=X",
+        "-F\tdescription=X",
+        "-fdescription=X",
+    )
+
+    @pytest.mark.parametrize("spelling", _SPELLINGS)
+    def test_a_spelling_one_matcher_reads_is_read_by_the_other(self, spelling: str) -> None:
+        command = f"glab api --method PUT projects/x%2Fy/merge_requests/123 {spelling}"
+
+        assert _api_field_args(command), spelling
+        assert _is_existing_pr_metadata_only_edit(command), spelling
+
+    def test_a_glued_state_field_is_not_hidden_behind_a_spaced_metadata_one(self) -> None:
+        # The divergence's real cost: the state field the second matcher could not see.
+        command = (
+            "glab api --method PUT projects/x%2Fy/merge_requests/123 --field title=fix(x): a (u) -Fstate_event=close"
+        )
+
+        assert _is_existing_pr_metadata_only_edit(command) is False

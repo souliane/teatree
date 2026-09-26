@@ -1,7 +1,7 @@
 """Singleton cadence marker for the idle-stack reaper (souliane/teatree#2190).
 
 The :class:`IdleStackReaperScanner` runs every loop tick but only acts once
-per ``idle_stack_reaper_cadence_minutes`` — the cadence gate is carried across
+per the scanner's own ``cadence_minutes`` — the cadence gate is carried across
 tick boundaries by this durable singleton row (mirrors
 :class:`ResourcePressureMarker`). Without it a sub-minute tick cadence would
 re-scan + re-shell ``docker ps`` on every tick.

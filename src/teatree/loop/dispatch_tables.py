@@ -46,6 +46,15 @@ AGENT_BY_KIND: dict[str, str] = {
     # ``my_pr.conflict_unknown`` deliberately has NO route here: an unread merge
     # state is not evidence of a conflict, so it surfaces and dispatches nothing.
     "my_pr.conflicted": "t3:debug",
+    # The owner's fix-vs-post rule, made legible in the routing table itself: a
+    # review finding on an MR OUR OWN identity (or our declared bot) authored routes
+    # to the same fix agent as CI-redness, because a comment on our own MR merely
+    # registers a defect against ourselves. The sibling kind ``my_pr.draft_notes`` —
+    # a colleague's MR, or an author we could not resolve — has NO route here and
+    # only surfaces, so a branch is never written to on an unresolved identity. The
+    # scanner (:mod:`teatree.loop.scanners.pr_findings`) owns the decision; nothing
+    # downstream re-derives it.
+    "my_pr.findings_to_fix": "t3:debug",
     # #1047: a Slack reaction/mention on an MR-bearing message routes to the
     # reviewer pipeline. The maker/checker boundary (BLUEPRINT §17.8) is
     # preserved because the reviewer agent runs as a separate dispatch from
@@ -72,6 +81,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "mr_triage.verdict": "action_needed",
     "my_pr.failed": "action_needed",
     "my_pr.draft_notes": "action_needed",
+    "my_pr.findings_to_fix": "action_needed",
     "my_pr.open": "in_flight",
     # Both halves of the conflict sweep are owed work the operator must see. The
     # confirmed conflict is mirrored alongside its agent dispatch (see DUAL_DISPATCH);
@@ -91,6 +101,13 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # nothing is silent), so it is the record of cards teatree moved on its own — a
     # completed action, not a request, hence in_flight rather than action_needed.
     "board.reconciled": "in_flight",
+    # A standing manual override whose reason reads as resolved: a QUESTION for the owner,
+    # never an action teatree takes — proposing is not lifting (A8).
+    "override.lift_candidate": "action_needed",
+    # A shipped gate that has never fired and nobody decided to leave off (16A).
+    "gate.undecided": "action_needed",
+    # Control-DB leftovers the owner could reclaim — a proposal, never a deletion (A8).
+    "disk.reclaimable": "action_needed",
     "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
     "ticket.stale": "action_needed",
@@ -124,6 +141,15 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # rendered exactly like a healthy one. An inert probe is the operator's problem to
     # fix, not background noise, so it sits in action_needed next to real pressure.
     "resource.probe_inert": "action_needed",
+    # #4244 A probe that answered about the CONTAINER rootfs instead of the host volume is
+    # confidently wrong rather than absent — same operator remedy, so the same zone.
+    "resource.probe_degraded": "action_needed",
+    # Hourly CI credential-pool reconciliation failed; a stale eval secret needs
+    # operator repair rather than an invisible generic in-flight fallback.
+    "ci_oauth_pool.failed": "action_needed",
+    # A configured pool targeting a repository this deployment does not own is
+    # an actionable configuration mismatch; the scanner safely makes no write.
+    "ci_oauth_pool.unowned": "action_needed",
     # #3992 The resource loop moved intake concurrency by itself — an observation the
     # operator should be able to SEE, but never a thing for them to act on, so it
     # renders in in_flight rather than competing with the pressure advisories above.
@@ -157,6 +183,7 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # failure released its claim and retries, so it is in-flight rather than owed.
     "review_request.resumed": "action_needed",
     "review_request.pause_unreadable": "action_needed",
+    "review_request.authorship_unreadable": "action_needed",
     "review_request.resume_gated": "action_needed",
     "review_request.resume_failed": "in_flight",
     # pr_sweep flag-level signals the scanner refuses to act on autonomously
@@ -202,7 +229,9 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
 # identical rows ("No verifier for <kind> overlay=<overlay>") and crowd out
 # real signal (#1372). The signal is still emitted so internal counts work;
 # only the statusline rendering is suppressed.
-STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
+STATUSLINE_DROP_KINDS: frozenset[str] = frozenset(
+    {"outbound.audit_skipped", "ci_oauth_pool.reconciled", "ci_oauth_pool.disabled"}
+)
 
 # Signal-kind *prefixes* of pure scanner bookkeeping, kept off the statusline.
 STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
@@ -274,6 +303,10 @@ DUAL_DISPATCH: frozenset[str] = frozenset(
         # Same shape for a conflicted MR: the fix dispatches once per head, but
         # the conflict stays on the statusline every tick until it is resolved.
         "my_pr.conflicted",
+        # And for an own MR carrying unimplemented review findings: the fix agent
+        # runs once per head while the finding stays visible every tick until the
+        # push clears it.
+        "my_pr.findings_to_fix",
     },
 )
 
@@ -322,6 +355,9 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # #128 resource-pressure CRITICAL → mechanical freeing pass (allow-list
     # cache purge / idle-container stop; flag-gated worktree GC + SIGTERM).
     "resource.cleanup_needed": ("mechanical", "free_resources"),
+    # #4244 dormant-artifact sweep — its OWN job, deliberately NOT on the disk-CRIT
+    # band: the reclaim loses nothing, so pressure-gating it only delayed it.
+    "resource.artifacts_reclaimable": ("mechanical", "sweep_artifacts"),
     # #129 task-sweep — a teatree task whose artifact is terminal → the mechanical
     # handler RE-checks then completes it (never bulk, never on a stale read).
     "task.completion_detected": ("mechanical", "task_completion"),

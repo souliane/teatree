@@ -32,3 +32,13 @@ class ReviewState(StrEnum):
     # Distinct from APPROVED so the dedup never hides a future genuine
     # review, yet terminal so the reviewing task stops re-queueing (#1077).
     REVIEWED_NO_ACTION = "reviewed_no_action"
+    # The factory posted a review of its own. Terminal like REVIEWED_NO_ACTION, but never a
+    # forge observation: recording APPROVED here let ReviewerPrsScanner read the discharge
+    # back as an approval and report a dismissal against the live PENDING every tick.
+
+
+#: Forge observations that discharge a review on their own. The at-head dedup and the
+#: moved-head watch both read it, and must agree on what "already reviewed" means.
+DISCHARGED_REVIEW_STATES: frozenset[str] = frozenset(
+    {ReviewState.APPROVED.value, ReviewState.REVIEWED_NO_ACTION.value},
+)

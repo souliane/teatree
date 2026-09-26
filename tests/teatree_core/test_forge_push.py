@@ -7,6 +7,7 @@ secrets are assembled at runtime so this file carries no literal token.
 
 import os
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,20 +15,23 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.core import forge_push
+from teatree.core import forge_push, forge_push_verdict
 from teatree.core.forge_push import (
-    PUSH_EXIT_CODES,
     PUSH_TIMEOUT_SECONDS,
-    CredentialSource,
-    ForgeCredential,
-    PushFailure,
     PushOutcome,
-    credential_failure_hint,
     push_branch,
     remote_url_embeds_credential,
     resolve_forge_credential,
     scrub_token,
 )
+from teatree.core.forge_push_verdict import (
+    PUSH_EXIT_CODES,
+    CredentialSource,
+    ForgeCredential,
+    PushFailure,
+    credential_failure_hint,
+)
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.utils import git_run
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import CompletedProcess, TimeoutExpired
@@ -42,6 +46,11 @@ def _install_pre_push_hook(clone: Path, body: str) -> Path:
     hook.write_text(f"#!/bin/sh\n{body}")
     hook.chmod(0o755)
     return hook
+
+
+def _recording_pre_push_hook(body: str) -> str:
+    record_lib = Path(__file__).resolve().parents[2] / "dev" / "lib" / "gate-record.sh"
+    return f'. "{record_lib}"\nstart_push_gate_record\ntrap \'finish_push_gate_record "$?"\' EXIT\n{body}'
 
 
 @pytest.fixture
@@ -70,56 +79,63 @@ class _SpyingRun:
 
 
 class _RecordingRun:
-    """A ``run_allowed_to_fail`` stand-in that records each call and reports success."""
+    """A push-runner stand-in that records each call and reports success."""
 
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
         self.envs: list[dict[str, str]] = []
+        self.expected_codes: list[object] = []
 
     def __call__(
-        self, cmd: list[str], *, env: dict[str, str] | None = None, **_: object
+        self,
+        cmd: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        expected_codes: object = (0,),
+        **_: object,
     ) -> subprocess.CompletedProcess[str]:
         self.commands.append(cmd)
         self.envs.append(dict(env or {}))
+        self.expected_codes.append(expected_codes)
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
 
 class TestResolveForgeCredential:
-    def test_prefers_gh_token_over_teatree_gh_token(self) -> None:
-        with patch.dict(os.environ, {"GH_TOKEN": FAKE_TOKEN, "TEATREE_GH_TOKEN": "other"}, clear=False):
-            credential = resolve_forge_credential()
-        assert credential.token == FAKE_TOKEN
-        assert credential.source is CredentialSource.GH_TOKEN
-
-    def test_falls_back_to_teatree_gh_token(self) -> None:
-        env = {"TEATREE_GH_TOKEN": FAKE_TOKEN}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop("GH_TOKEN", None)
-            credential = resolve_forge_credential()
-        assert credential.token == FAKE_TOKEN
-        assert credential.source is CredentialSource.TEATREE_GH_TOKEN
-
-    def test_falls_back_to_overlay_pass_store(self) -> None:
+    def test_uses_the_owning_overlay_route_despite_hostile_ambient(self) -> None:
+        routed = ForgeTokenResolution(
+            "github_token",
+            "owner",
+            ForgeTokenState.TOKEN,
+            token=FAKE_TOKEN,
+            pass_key="owner/github",
+        )
         with (
-            patch.dict(os.environ, {}, clear=False),
-            patch("teatree.core.forge_push._overlay_github_token", return_value=FAKE_TOKEN),
+            patch.dict(
+                os.environ,
+                {"GH_TOKEN": "hostile-gh", "GITHUB_TOKEN": "hostile-github", "TEATREE_GH_TOKEN": "bootstrap-only"},
+                clear=False,
+            ),
+            patch("teatree.core.forge_push.resolve_repo_token", return_value=routed) as resolve,
         ):
-            os.environ.pop("GH_TOKEN", None)
-            os.environ.pop("TEATREE_GH_TOKEN", None)
-            credential = resolve_forge_credential()
+            credential = resolve_forge_credential("/repo")
+
+        resolve.assert_called_once_with("/repo", credential="github_token")
         assert credential.token == FAKE_TOKEN
         assert credential.source is CredentialSource.OVERLAY_PASS_STORE
+        assert credential.state is ForgeTokenState.TOKEN
 
-    def test_no_credential_falls_through_to_ambient_helper(self) -> None:
+    @pytest.mark.parametrize("state", [ForgeTokenState.UNSET, ForgeTokenState.UNREADABLE])
+    def test_preserves_empty_route_state_and_refuses_ambient(self, state: ForgeTokenState) -> None:
+        routed = ForgeTokenResolution("github_token", "owner", state, detail=f"route is {state.value}")
         with (
-            patch.dict(os.environ, {}, clear=False),
-            patch("teatree.core.forge_push._overlay_github_token", return_value=""),
+            patch.dict(os.environ, {"GH_TOKEN": FAKE_TOKEN, "GITHUB_TOKEN": FAKE_TOKEN}, clear=False),
+            patch("teatree.core.forge_push.resolve_repo_token", return_value=routed),
         ):
-            os.environ.pop("GH_TOKEN", None)
-            os.environ.pop("TEATREE_GH_TOKEN", None)
-            credential = resolve_forge_credential()
+            credential = resolve_forge_credential("/repo")
+
         assert credential.token == ""
-        assert credential.source is CredentialSource.AMBIENT
+        assert credential.source is CredentialSource.OVERLAY_PASS_STORE
+        assert credential.state is state
 
 
 class TestRemoteUrlEmbedsCredential:
@@ -143,10 +159,15 @@ class TestRemoteUrlEmbedsCredential:
 
 class TestCredentialFailureHint:
     def test_names_the_token_sources_when_none_resolved(self) -> None:
-        credential = ForgeCredential(token="", source=CredentialSource.AMBIENT)
+        credential = ForgeCredential(
+            token="",
+            source=CredentialSource.OVERLAY_PASS_STORE,
+            state=ForgeTokenState.UNSET,
+            detail="github_token_pass_key is unset",
+        )
         hint = credential_failure_hint("fatal: could not read Username for 'https://github.com'", credential)
-        assert "TEATREE_GH_TOKEN" in hint
-        assert "pass store" in hint
+        assert "github_token_pass_key" in hint
+        assert "owning overlay" in hint
 
     def test_names_the_helper_wiring_when_a_token_was_supplied(self) -> None:
         credential = ForgeCredential(token=FAKE_TOKEN, source=CredentialSource.TEATREE_GH_TOKEN)
@@ -218,7 +239,7 @@ class TestPushBranch:
     def test_child_env_disables_the_interactive_credential_prompt(self, clone_with_origin: Path) -> None:
         recorder = _RecordingRun()
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", recorder):
+        with patch("teatree.core.forge_push.run_bounded_group", recorder):
             push_branch(repo=clone_with_origin)
 
         seen = recorder.envs[-1]
@@ -226,19 +247,50 @@ class TestPushBranch:
         assert seen["GIT_ASKPASS"] == ""
         assert seen["GCM_INTERACTIVE"] == "never"
 
+    def test_push_uses_the_group_bounded_runner_and_accepts_its_verdict(self, clone_with_origin: Path) -> None:
+        recorder = _RecordingRun()
+
+        with patch("teatree.core.forge_push.run_bounded_group", recorder):
+            push_branch(repo=clone_with_origin)
+
+        assert recorder.commands
+        assert recorder.expected_codes == [None]
+
     def test_passes_the_token_as_gh_token_env_never_on_argv(self, clone_with_origin: Path) -> None:
-        with patch.dict(os.environ, {"GH_TOKEN": FAKE_TOKEN}, clear=False):
+        routed = ForgeTokenResolution(
+            "github_token", "owner", ForgeTokenState.TOKEN, token=FAKE_TOKEN, pass_key="owner/github"
+        )
+        with patch("teatree.core.forge_push.resolve_repo_token", return_value=routed):
             outcome = push_branch(repo=clone_with_origin)
 
         assert outcome.ok, outcome.detail
-        assert outcome.credential_source is CredentialSource.GH_TOKEN
+        assert outcome.credential_source is CredentialSource.OVERLAY_PASS_STORE
         assert FAKE_TOKEN not in outcome.detail
         assert FAKE_TOKEN not in run_git(clone_with_origin, "config", "--get", "remote.origin.url")
+
+    @pytest.mark.parametrize("state", [ForgeTokenState.UNSET, ForgeTokenState.UNREADABLE])
+    def test_github_push_refuses_hostile_ambient_when_owner_route_is_empty(
+        self, clone_with_origin: Path, state: ForgeTokenState
+    ) -> None:
+        run_git(clone_with_origin, "remote", "set-url", "origin", "https://github.com/acme/widget.git")
+        routed = ForgeTokenResolution("github_token", "owner", state, detail=f"owner route is {state.value}")
+        with (
+            patch.dict(os.environ, {"GH_TOKEN": FAKE_TOKEN, "GITHUB_TOKEN": FAKE_TOKEN}, clear=False),
+            patch("teatree.core.forge_push.resolve_repo_token", return_value=routed),
+            patch("teatree.core.forge_push.run_bounded_group") as push,
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.CREDENTIAL
+        assert state.value in outcome.detail
+        assert "refusing ambient" in outcome.detail
+        push.assert_not_called()
 
     def test_never_silences_the_pre_push_hooks(self, clone_with_origin: Path) -> None:
         recorder = _RecordingRun()
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", recorder):
+        with patch("teatree.core.forge_push.run_bounded_group", recorder):
             push_branch(repo=clone_with_origin)
 
         pushed = recorder.commands[-1]
@@ -248,7 +300,7 @@ class TestPushBranch:
     def test_force_with_lease_is_opt_in(self, clone_with_origin: Path) -> None:
         recorder = _RecordingRun()
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", recorder):
+        with patch("teatree.core.forge_push.run_bounded_group", recorder):
             push_branch(repo=clone_with_origin, force_with_lease=True)
 
         assert "--force-with-lease" in recorder.commands[-1]
@@ -270,8 +322,13 @@ class TestPushBranch:
             stderr="fatal: could not read Username for 'https://github.com': terminal prompts disabled",
         )
         with (
-            patch.dict(os.environ, {"GH_TOKEN": FAKE_TOKEN}, clear=False),
-            patch("teatree.core.forge_push.run_allowed_to_fail", return_value=blocked),
+            patch(
+                "teatree.core.forge_push.resolve_repo_token",
+                return_value=ForgeTokenResolution(
+                    "github_token", "owner", ForgeTokenState.TOKEN, token=FAKE_TOKEN, pass_key="owner/github"
+                ),
+            ),
+            patch("teatree.core.forge_push.run_bounded_group", return_value=blocked),
         ):
             outcome = push_branch(repo=clone_with_origin)
 
@@ -280,13 +337,11 @@ class TestPushBranch:
         assert FAKE_TOKEN not in outcome.detail
 
     def test_timeout_is_bounded(self) -> None:
-        # The bound covers the pre-push hook chain, not just the network (#4484) —
-        # generous, but never unbounded (see the mutation tests below).
-        assert 900 < PUSH_TIMEOUT_SECONDS <= 3600
+        assert pytest.approx(2700.0) == PUSH_TIMEOUT_SECONDS
 
     def test_a_push_that_timed_out_is_a_transport_refusal(self, clone_with_origin: Path) -> None:
         with patch(
-            "teatree.core.forge_push.run_allowed_to_fail",
+            "teatree.core.forge_push.run_bounded_group",
             side_effect=TimeoutExpired("git", PUSH_TIMEOUT_SECONDS),
         ):
             outcome = push_branch(repo=clone_with_origin)
@@ -294,6 +349,90 @@ class TestPushBranch:
         assert not outcome.ok
         assert outcome.failure is PushFailure.TRANSPORT
         assert "timed out" in outcome.detail
+
+    def test_a_timeout_after_the_remote_landed_is_reported_as_delivered(self, clone_with_origin: Path) -> None:
+        def land_then_time_out(cmd: list[str], *, timeout: float, **kwargs: Any) -> CompletedProcess[str]:
+            completed = subprocess.run(cmd, capture_output=True, text=True, check=False, env=kwargs.get("env"))
+            assert completed.returncode == 0, completed.stderr
+            raise TimeoutExpired(cmd, timeout, output=completed.stdout, stderr=completed.stderr)
+
+        with patch("teatree.core.forge_push.run_bounded_group", side_effect=land_then_time_out):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.ok
+        assert outcome.pushed_sha == run_git(clone_with_origin, "rev-parse", "HEAD")
+        assert "deadline hit after landing" in outcome.detail
+
+    def test_a_timeout_with_only_an_old_lock_heartbeat_is_transport(self, clone_with_origin: Path) -> None:
+        timed_out = TimeoutExpired(
+            "git",
+            PUSH_TIMEOUT_SECONDS,
+            output="=== push-gate: waiting for lock held by pid=41; elapsed=30s max=1500s ===\n",
+        )
+
+        with patch("teatree.core.forge_push.run_bounded_group", side_effect=timed_out):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.TRANSPORT
+
+    def test_a_timeout_during_an_active_gate_is_an_abort_without_a_lock_heartbeat(
+        self, clone_with_origin: Path
+    ) -> None:
+        started = int(time.time())
+        record_path = Path(
+            run_git(
+                clone_with_origin,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "t3-push-gate-run",
+            ).strip()
+        )
+        record_path.write_text(f"started={started}\npid=41\nstage=2\n", encoding="utf-8")
+
+        with (
+            patch.object(forge_push.time, "time", return_value=float(started)),
+            patch.object(
+                forge_push,
+                "run_bounded_group",
+                side_effect=TimeoutExpired("git", PUSH_TIMEOUT_SECONDS, output="ordinary gate progress\n"),
+            ),
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.GATE_ABORTED
+        assert "stage=2" in outcome.detail
+
+    def test_a_timeout_after_a_finished_gate_is_transport_despite_an_old_lock_heartbeat(
+        self, clone_with_origin: Path
+    ) -> None:
+        started = int(time.time())
+        record_path = Path(
+            run_git(
+                clone_with_origin,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "t3-push-gate-run",
+            ).strip()
+        )
+        record_path.write_text(
+            f"started={started}\npid=41\nlock_wait_s=30\nstage=3\nfinished={started}\nrc=0\n",
+            encoding="utf-8",
+        )
+        timed_out = TimeoutExpired(
+            "git",
+            PUSH_TIMEOUT_SECONDS,
+            output="=== push-gate: waiting for lock held by pid=17; elapsed=30s max=1500s ===\n",
+        )
+
+        with (
+            patch.object(forge_push.time, "time", return_value=float(started)),
+            patch.object(forge_push, "run_bounded_group", side_effect=timed_out),
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.TRANSPORT
 
 
 class TestPushTimeoutCoversTheHookChainNotJustTransport:
@@ -307,7 +446,7 @@ class TestPushTimeoutCoversTheHookChainNotJustTransport:
         self, clone_with_origin: Path
     ) -> None:
         """MUTATION: restore ``PUSH_TIMEOUT_SECONDS = 300.0`` → red."""
-        real_run = forge_push.run_allowed_to_fail  # captured BEFORE patching, so the fake can still delegate
+        real_run = forge_push.run_bounded_group  # captured BEFORE patching, so the fake can still delegate
 
         def clock_gated_run(cmd: list[str], *, timeout: float | None = None, **kwargs: Any) -> CompletedProcess[str]:
             """A fake clock: refuses the call if its budget is too small, else runs for real.
@@ -320,7 +459,7 @@ class TestPushTimeoutCoversTheHookChainNotJustTransport:
                 raise TimeoutExpired(cmd, timeout)
             return real_run(cmd, timeout=timeout, **kwargs)
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", side_effect=clock_gated_run):
+        with patch("teatree.core.forge_push.run_bounded_group", side_effect=clock_gated_run):
             outcome = push_branch(repo=clone_with_origin)
 
         assert outcome.ok, outcome.detail
@@ -333,7 +472,7 @@ class TestPushTimeoutCoversTheHookChainNotJustTransport:
             captured["timeout"] = timeout
             raise TimeoutExpired(cmd, timeout)
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", side_effect=hangs_forever):
+        with patch("teatree.core.forge_push.run_bounded_group", side_effect=hangs_forever):
             outcome = push_branch(repo=clone_with_origin)
 
         assert not outcome.ok
@@ -355,7 +494,7 @@ class TestTheRemoteSettlesWhetherThePushLanded:
     """An rc=0 ``git push`` is a claim; only a read of the remote settles it (#4088)."""
 
     def test_a_push_that_exited_0_without_landing_is_not_reported_as_pushed(self, clone_with_origin: Path) -> None:
-        with patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()):
+        with patch("teatree.core.forge_push.run_bounded_group", _RecordingRun()):
             outcome = push_branch(repo=clone_with_origin)
 
         assert not run_git(clone_with_origin, "ls-remote", "--heads", "origin")
@@ -371,7 +510,7 @@ class TestTheRemoteSettlesWhetherThePushLanded:
         run_git(clone_with_origin, "add", "file.txt")
         run_git(clone_with_origin, "commit", "-q", "-m", "more")
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()):
+        with patch("teatree.core.forge_push.run_bounded_group", _RecordingRun()):
             outcome = push_branch(repo=clone_with_origin)
 
         assert landed != run_git(clone_with_origin, "rev-parse", "HEAD")
@@ -383,7 +522,7 @@ class TestTheRemoteSettlesWhetherThePushLanded:
         """An unreadable remote is an unknown, and an unknown is never a success."""
         run_git(clone_with_origin, "remote", "set-url", "origin", str(clone_with_origin / "gone.git"))
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()):
+        with patch("teatree.core.forge_push.run_bounded_group", _RecordingRun()):
             outcome = push_branch(repo=clone_with_origin)
 
         assert not outcome.ok
@@ -398,7 +537,7 @@ class TestTheRemoteSettlesWhetherThePushLanded:
             return run_with_status(repo=repo, args=args, **kwargs)
 
         with (
-            patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()),
+            patch("teatree.core.forge_push.run_bounded_group", _RecordingRun()),
             patch("teatree.core.forge_push.run_with_status", side_effect=time_out_only_on_the_remote_read),
         ):
             outcome = push_branch(repo=clone_with_origin)
@@ -416,7 +555,7 @@ class TestTheRemoteSettlesWhetherThePushLanded:
             run_git(clone_with_origin, "commit", "-q", "-m", "later")
             return done
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", side_effect=push_then_commit_locally):
+        with patch("teatree.core.forge_push.run_bounded_group", side_effect=push_then_commit_locally):
             outcome = push_branch(repo=clone_with_origin)
 
         assert outcome.ok, outcome.detail
@@ -436,7 +575,7 @@ class TestTheRemoteSettlesWhetherThePushLanded:
         run_git(clone_with_origin, "push", "-q", "--set-upstream", "origin", "feature")
         run_git(clone_with_origin, "push", "-q", "--delete", "origin", "feature")
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", _RecordingRun()):
+        with patch("teatree.core.forge_push.run_bounded_group", _RecordingRun()):
             outcome = push_branch(repo=clone_with_origin)
 
         assert run_git(clone_with_origin, "rev-parse", "origin/feature", check=False)
@@ -457,32 +596,116 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
         assert "push-gate: FULL sweep escalated, killed" in outcome.detail
         assert "failed to push some refs" not in outcome.detail
 
-    def test_a_gate_that_died_without_output_is_still_named_as_the_refuser(self, clone_with_origin: Path) -> None:
-        """An OOM-killed gate leaves no words, so the seam must supply them."""
+    def test_a_gate_that_died_without_output_is_an_infrastructure_abort(self, clone_with_origin: Path) -> None:
         _install_pre_push_hook(clone_with_origin, "exit 137\n")
 
         outcome = push_branch(repo=clone_with_origin)
 
         assert not outcome.ok
-        assert outcome.failure is PushFailure.GATE_REFUSED
-        assert "pre-push" in outcome.detail
-        assert "Run the gate directly" in outcome.detail
+        assert outcome.failure is PushFailure.GATE_ABORTED
+        assert "did not reach a verdict" in outcome.detail
+        assert "infrastructure" in outcome.detail
+        assert "not a finding against the branch" in outcome.detail
+        assert "Nothing was verified and nothing was rejected" in outcome.detail
 
-    def test_a_gate_that_died_without_output_reports_the_worker_bound_it_ran_under(
-        self, clone_with_origin: Path
-    ) -> None:
-        """The helper's breadcrumb turns "an OOM cap probably killed it" into the numbers (#4589)."""
-        _install_pre_push_hook(clone_with_origin, "exit 137\n")
-        gitdir = Path(run_git(clone_with_origin, "rev-parse", "--path-format=absolute", "--git-common-dir").strip())
-        (gitdir / "t3-xdist-bound").write_text(
-            "workers=3 cap_mib=2048 reserve_mib=512 per_worker_mib=512\n", encoding="utf-8"
+    def test_a_killed_child_with_a_surviving_recording_wrapper_is_an_abort(self, clone_with_origin: Path) -> None:
+        _install_pre_push_hook(
+            clone_with_origin,
+            _recording_pre_push_hook("child_rc=0\nsh -c 'kill -KILL $$' || child_rc=$?\nexit \"$child_rc\"\n"),
         )
 
         outcome = push_branch(repo=clone_with_origin)
 
+        assert outcome.failure is PushFailure.GATE_ABORTED
+        assert "rc=137" in outcome.detail
+
+    def test_positive_oom_evidence_makes_a_finished_gate_failure_an_abort(self, clone_with_origin: Path) -> None:
+        _install_pre_push_hook(
+            clone_with_origin,
+            _recording_pre_push_hook('echo "ordinary gate progress" >&2\nexit 1\n'),
+        )
+
+        with (
+            patch.object(forge_push, "cgroup_v2_oom_kills", return_value=11),
+            patch.object(forge_push_verdict, "cgroup_v2_oom_kills", return_value=12),
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.GATE_ABORTED
+        assert "oom_kill delta: 1" in outcome.detail
+
+    def test_an_unfinished_gate_record_reports_the_stage_bound_and_oom_delta(self, clone_with_origin: Path) -> None:
+        _install_pre_push_hook(clone_with_origin, 'echo "ordinary gate progress" >&2\nexit 1\n')
+        record_path = Path(
+            run_git(
+                clone_with_origin,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-path",
+                "t3-push-gate-run",
+            ).strip()
+        )
+        started = int(time.time())
+        record_path.write_text(
+            f"started={started}\npid=41\nlock=/tmp/gate.lock\nlock_wait_s=8\n"
+            "bound=workers=2 cap_mib=6144 headroom_mib=2048 reserve_mib=512 per_worker_mib=512\n"
+            "stage=3\n",
+            encoding="utf-8",
+        )
+
+        with (
+            patch("teatree.core.forge_push.time.time", return_value=float(started)),
+            patch("teatree.core.forge_push.cgroup_v2_oom_kills", return_value=11),
+            patch("teatree.core.forge_push_verdict.cgroup_v2_oom_kills", return_value=12),
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.GATE_ABORTED
+        assert "workers=2" in outcome.detail
+        assert "cap_mib=6144" in outcome.detail
+        assert "stage=3" in outcome.detail
+        assert "oom_kill delta: 1" in outcome.detail
+
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "=== push-gate: ABORTED waiting for lock held by pid=41 ===",
+            "crashed while running",
+            "replacing crashed worker",
+            "Cannot allocate memory",
+            "MemoryError",
+        ],
+    )
+    def test_gate_abort_markers_never_become_branch_refusals(self, clone_with_origin: Path, marker: str) -> None:
+        _install_pre_push_hook(clone_with_origin, f'echo "{marker}" >&2\nexit 1\n')
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.GATE_ABORTED
+
+    def test_a_refusal_merely_naming_an_abort_stays_a_refusal(self, clone_with_origin: Path) -> None:
+        refusal = "FAILED tests/teatree_core/test_forge_push.py::test_gate_aborted_markers - assert 1 == 2"
+        _install_pre_push_hook(clone_with_origin, f'echo "{refusal}" >&2\nexit 1\n')
+
+        outcome = push_branch(repo=clone_with_origin)
+
         assert outcome.failure is PushFailure.GATE_REFUSED
-        assert "workers=3" in outcome.detail
-        assert "cap_mib=2048" in outcome.detail
+        assert refusal in outcome.detail
+
+    def test_git_push_error_combines_stdout_and_stderr_before_classifying(self, clone_with_origin: Path) -> None:
+        _install_pre_push_hook(clone_with_origin, "exit 0\n")
+        killed = subprocess.CompletedProcess(
+            args=["git", "push"],
+            returncode=1,
+            stdout="Cannot allocate memory\n",
+            stderr="error: failed to push some refs to '../origin.git'\n",
+        )
+
+        with patch("teatree.core.forge_push.run_bounded_group", return_value=killed):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.GATE_ABORTED
+        assert "Cannot allocate memory" in outcome.detail
 
     def test_a_non_fast_forward_is_not_blamed_on_the_gate(self, clone_with_origin: Path, tmp_path: Path) -> None:
         run_git(clone_with_origin, "push", "-q", "--set-upstream", "origin", "feature")
@@ -527,7 +750,7 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
             ),
         )
         _install_pre_push_hook(clone_with_origin, "exit 0\n")
-        with patch("teatree.core.forge_push.run_allowed_to_fail", return_value=declined):
+        with patch("teatree.core.forge_push.run_bounded_group", return_value=declined):
             outcome = push_branch(repo=clone_with_origin)
 
         assert outcome.failure is PushFailure.REMOTE_REJECTED
@@ -548,7 +771,7 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
             stdout="",
             stderr="fatal: could not read Username for 'https://github.com': terminal prompts disabled",
         )
-        with patch("teatree.core.forge_push.run_allowed_to_fail", return_value=blocked):
+        with patch("teatree.core.forge_push.run_bounded_group", return_value=blocked):
             outcome = push_branch(repo=clone_with_origin)
 
         assert outcome.failure is PushFailure.CREDENTIAL
@@ -595,7 +818,7 @@ class TestABranchThatDoesNotExistIsNeverTheGatesFault:
     def test_the_push_is_never_attempted_for_an_unknown_branch(self, clone_with_origin: Path) -> None:
         recorder = _RecordingRun()
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", recorder):
+        with patch("teatree.core.forge_push.run_bounded_group", recorder):
             push_branch(repo=clone_with_origin, branch="no-such-branch")
 
         assert recorder.commands == []
@@ -644,16 +867,17 @@ class TestATagSharingABranchsNameCannotBeResolvedForIt:
 
     def test_no_git_call_names_the_branch_in_its_bare_form(self, shadowed: Path) -> None:
         """The grep-proof half: a bare name left anywhere is a lookup a tag can answer."""
-        spies = [_SpyingRun(module.run_allowed_to_fail) for module in (forge_push, git_run)]
+        push_spy = _SpyingRun(forge_push.run_bounded_group)
+        git_spy = _SpyingRun(git_run.run_allowed_to_fail)
 
         with (
-            patch.object(forge_push, "run_allowed_to_fail", spies[0]),
-            patch.object(git_run, "run_allowed_to_fail", spies[1]),
+            patch.object(forge_push, "run_bounded_group", push_spy),
+            patch.object(git_run, "run_allowed_to_fail", git_spy),
         ):
             outcome = push_branch(repo=shadowed, branch="feature")
 
         assert outcome.ok, outcome.detail
-        assert [cmd for spy in spies for cmd in spy.commands if "feature" in cmd] == []
+        assert [cmd for spy in (push_spy, git_spy) for cmd in spy.commands if "feature" in cmd] == []
 
 
 class TestAPushUrlIsWhereThePushActuallyGoes:

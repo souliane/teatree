@@ -14,6 +14,7 @@ this helper covers only the shared coercion, raising a single
 :class:`ConfigWriteError` the caller formats for its surface.
 """
 
+from teatree.config.extra_headers import UNLISTED_HEADER_REFUSAL, carries_unlisted_header
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 
 # A canonical, JSON/TOML-storable config value — the shape every registry parser
@@ -38,8 +39,11 @@ def validate_config_write(key: str, raw: object) -> ConfigWriteValue:
 
     The caller MUST have already gated *key* into
     :data:`~teatree.config.known_settings.ALL_KNOWN_CONFIG_SETTINGS`; this coerces
-    a known key's value, it does not decide key-ness or any surface-specific gate.
+    a known key's value, it does not decide key-ness or any surface-specific gate. An extra-headers
+    map naming a header off its allowlist is refused here, because its parser only withholds one.
     """
+    if carries_unlisted_header(key, raw):
+        raise ConfigWriteError(UNLISTED_HEADER_REFUSAL)
     parser = ALL_KNOWN_CONFIG_SETTINGS[key]
     try:
         return parser(raw)

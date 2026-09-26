@@ -19,6 +19,10 @@ A scenario in the known-red quarantine (``evals/quarantine.yaml``) is dropped fr
 the selection and NAMED on stderr (#4173), so a tracked red stops blocking every
 PR touching the prose it grades without the shrunken lane going unnoticed.
 
+``--repo-root`` names the root the STDIN paths are relative to, for a core vendored
+below its consuming repo. ``--metadata-env`` writes ``EVAL_DEFERRED=<n>`` (the count
+the cap deferred) as a dotenv file, so a lane can report incomplete coverage.
+
 Exit 0 when at least one scenario matched (its names were printed) so the eval
 runs; exit ``--skip-code`` (default 1) when nothing matched (no scenario file
 changed) so the ``eval-pr`` workflow's eval job is skipped cleanly, no API spend.
@@ -43,11 +47,20 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Unified diff (git diff --unified=0) for the same range, to narrow section-scoped scenarios.",
     )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=REPO_ROOT,
+        help="Root the STDIN paths are relative to (a consuming repo's, when core is vendored).",
+    )
+    parser.add_argument("--metadata-env", type=Path, default=None, help="Write EVAL_DEFERRED=<n> to this dotenv file.")
     args = parser.parse_args(argv)
     sections = None
     if args.diff_file is not None:
-        sections = changed_sections_by_path(args.diff_file.read_text(encoding="utf-8"), repo_root=REPO_ROOT)
-    selection = select_changed_scenarios(sys.stdin, changed_sections=sections)
+        sections = changed_sections_by_path(args.diff_file.read_text(encoding="utf-8"), repo_root=args.repo_root)
+    selection = select_changed_scenarios(sys.stdin, repo_root=args.repo_root, changed_sections=sections)
+    if args.metadata_env is not None:
+        args.metadata_env.write_text(f"EVAL_DEFERRED={selection.deferred}\n", encoding="utf-8")
     # Surface the cap when it bites (#2737) so the CI log shows a corpus-wide PR's
     # truncated coverage instead of only the scenarios that will run.
     if note := selection.truncation_note():

@@ -10,11 +10,13 @@ structurally cold. This scanner is that missing producer: every tick it reads ea
 
 Outbound-gating floor: the ``approve`` transition fires the #961 approval
 check-mark reaction, a colleague-visible Slack post routed through the on-behalf
-gate. At default settings (``on_behalf_post_mode = draft_or_ask``) the reaction is
-SKIPPED, so this revived lane sends nothing unsanctioned — only the FSM state
-change and the best-effort bot→user waiting-digest self-DM (posted by the global
-``WaitingDigestScanner``) happen at default. The forge approval read is a plain
-GET, never a write.
+gate, so the posture alone decides whether it goes out. The shipped ``present``
+preset permits egress, so on a fresh install the reaction DOES fire alongside the
+FSM state change and the best-effort bot→user waiting-digest self-DM (posted by
+the global ``WaitingDigestScanner``); under a forbidding posture — ``afk`` or
+``maintenance``, the only two the shipped table declares ``egress = "forbid"`` —
+it is SKIPPED and only those two happen. The forge approval read is a plain GET,
+never a write.
 
 The scanner resolves its code host from its overlay (:func:`code_host_from_overlay`)
 so it can be registered through the shared single-overlay messaging builder

@@ -43,20 +43,27 @@ def test_gitlab_api_explicit_token_overrides_env(monkeypatch: pytest.MonkeyPatch
     assert client.token == "explicit-token"
 
 
-def test_resolve_token_falls_back_to_pass(monkeypatch: pytest.MonkeyPatch) -> None:
-    # ``_resolve_token`` resolves through ``GitLabTokenCredential`` (the shared
-    # credential machinery), which reads ``pass`` via the ``read_pass`` name bound
-    # in ``teatree.llm.credentials`` — the canonical mock point that machinery's
-    # own tests use (``tests/test_credential_config.py``).
+def test_resolve_token_falls_back_to_the_overlay_routed_pass_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
-    with patch("teatree.llm.credentials.read_pass", return_value="pass-token"):
+    monkeypatch.setattr("teatree.backends.gitlab.http_client.overlay_pass_key", lambda _credential: "venue/pat")
+    with patch("teatree.llm.credentials.read_pass", side_effect=lambda key: "pass-token" if key == "venue/pat" else ""):
         assert gitlab_api._resolve_token() == "pass-token"
 
 
 def test_resolve_token_returns_empty_when_pass_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+    monkeypatch.setattr("teatree.backends.gitlab.http_client.overlay_pass_key", lambda _credential: "venue/pat")
     with patch("teatree.llm.credentials.read_pass", return_value=""):
         assert gitlab_api._resolve_token() == ""
+
+
+def test_an_unconfigured_overlay_reads_no_guessed_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+    monkeypatch.setattr("teatree.backends.gitlab.http_client.overlay_pass_key", lambda _credential: "")
+    with patch("teatree.llm.credentials.read_pass", return_value="guessed") as read_pass:
+        assert gitlab_api._resolve_token() == ""
+
+    read_pass.assert_not_called()
 
 
 def test_resolve_token_prefers_env_over_pass(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -44,6 +44,7 @@ The main-clone guard blocks every mutation of the shared clone, so **all writing
 - Liveness path hard-fails a transient and locks the factory out
 - Gate classifies read-vs-write by verb instead of effective mutation
 - Feature merged but not in force
+- New configurable surface that was not earned
 - Gate performs the guarded side effect before concluding refusal
 - Destructive op reachable without its guard
 - Authorization resting on a self-declared identity string
@@ -55,6 +56,7 @@ The main-clone guard blocks every mutation of the shared clone, so **all writing
 - FloatField for currency
 - Module past the health threshold
 - File placed outside the package whose concern it shares
+- One concept edited in N files
 - Lower-level module importing a higher-level one
 - Overlay re-wraps a platform API instead of using the extension point
 - List/fetch reads only the first page
@@ -119,7 +121,7 @@ In the worktree you cut in § Environment:
 1. Implement each confirmed unit of work from § 1 through § 4, plus any new catalog entry § 3 owes. Follow `skills/code/SKILL.md` — a failing test first wherever the behaviour is testable, observed RED before the fix; a BLUEPRINT/appendix staleness fix is a prose change with no test.
 2. Commit per unit, so the history reads as one coherent change per root cause. Cite the catalog entry id (and the ticket, where one exists) in the commit body.
 3. Run the affected-tests lane (`bash dev/test-affected.sh`) and `uv run ruff check`, both green, before pushing.
-4. Push the branch — never `--no-verify`. The pre-push hook runs `t3 <overlay> pr ensure-pr`, which on a first push owes a durable `PendingPullRequest` instead of opening a PR against a remote ref that does not exist yet; re-run `t3 <overlay> pr ensure-pr` once the push lands so this pass discharges its own obligation rather than leaving it for the dispatch loop. Raw `gh pr create` stays forbidden (`skills/ship/SKILL.md` § "pr create is mandatory").
+4. Push the branch — never `--no-verify`. The pre-push hook runs `t3 <overlay> pr ensure-pr`, which on a first push owes a durable `PendingPullRequest` instead of opening a PR against a remote ref that does not exist yet; re-run it once the push lands — `t3 <overlay> pr ensure-pr --branch <branch> --repo <absolute-worktree-path>` — so this pass discharges its own obligation rather than leaving it for the dispatch loop. **`--repo` is not optional from a host worktree, and omitting it fails on exit 0**: `t3` execs into a container whose cwd is the image's `WORKDIR`, so the `.` default is not a checkout, the classification dies on `git -C . log … fatal: not a git repository`, and the reported error still **exits 0** — `ensure-pr` is exempt from the loud-refusal contract because it runs inside the pre-push hook (#792). It also has no `--base`/`--target` and opens against the default branch, so a stack layer must be retargeted straight after creation (`skills/ship/SKILL.md` § "Stacked Delivery"). Raw `gh pr create` stays forbidden (`skills/ship/SKILL.md` § "pr create is mandatory").
 5. Report the branch, the pushed SHA, the PR url, and the per-finding disposition in your result envelope.
 
 `t3 <overlay> pr create` is not this pass's path, and forcing it is not the fix. It IS the FSM ship transition, so it demands a `Worktree` row the § Environment `git worktree add` never creates, and its shipping gate requires the ticket to have visited `testing` and `reviewing` (`teatree.core.management.commands._ship.gates.check_shipping_gate`). A cadence-anchor ticket only visits `architectural_review`, which `teatree.core.modelkit.phases.normalize_phase` maps to itself — so recording a `reviewing` visit here would attest the cold review that § "Maker≠checker" deliberately puts *after* this PR exists. `pr create`'s own docstring names `pr ensure-pr` as the seam for a checkout that needs a PR without the ship transition.

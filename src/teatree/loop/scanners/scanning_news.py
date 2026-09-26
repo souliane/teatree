@@ -45,9 +45,8 @@ class ScanningNewsScanner:
     layer is the single place that resolves
     :class:`teatree.config.UserSettings` and
     :func:`teatree.config.discover_active_overlay` to scanner kwargs. The
-    on/off decision lives at the wiring layer
-    (``scanning_news_disabled`` in core config); the scanner itself
-    always scans when invoked.
+    on/off decision is the ``news`` ``Loop`` row and the active preset; the
+    scanner itself always scans when invoked.
 
     ``overlay_name`` is the resolved overlay-anchor identity for the
     placeholder ticket (#1267). The scanner never reads or assumes the

@@ -28,7 +28,7 @@ Optional: If `T3_REVIEW_SKILL` is configured (e.g., `ac-reviewing-codebase`), re
 
 Retro's behavior depends on these environment variables and on whether the current repo contains an overlay package:
 
-- **Active overlay / overlay app** — when the current repo contains an overlay package, retro writes project-specific improvements there. If no overlay is detectable, retro writes to the nearest repo-level agent instructions or user memory/config fallback.
+- **Active overlay / overlay app** — when the current repo contains an overlay package, retro writes project-specific improvements there. If no overlay is detectable, retro writes to the nearest repo-level agent instructions.
 - **`T3_CONTRIBUTE`** — `false` (default) or `true`:
   - `false`: only improve the active project overlay. Core skill gaps are noted in conversation but not acted on.
   - `true`: also improve core skills in `$T3_REPO`. Retro creates a local commit; whether it then pushes is governed by the mode resolution below.
@@ -45,8 +45,8 @@ Retro's behavior depends on these environment variables and on whether the curre
 Retro is agent-platform neutral. The workflow, environment variables, and teatree slash commands stay the same across platforms.
 
 - Platform-specific files and commands remain valid where documented.
-- Prefer the closest equivalent repo-level instructions file plus any user-level agent config or memory file available in the environment.
-- When this skill mentions repo instructions or memory files, treat them as examples of agent config/memory locations, not the only supported targets.
+- Prefer the closest equivalent repo-level instructions file plus any user-level agent config available in the environment.
+- When this skill mentions repo instructions, treat them as examples of agent config locations, not the only supported targets.
 
 Systematic review of the current conversation to extract failures, near-misses, and lessons learned, then improve the skill system so they never recur.
 
@@ -91,21 +91,21 @@ git -C "$real_path" rev-parse --git-dir >/dev/null 2>&1 && echo "editable" || ec
 | Editability | Where to write improvements |
 |---|---|
 | **Editable** (symlink → local git repo) | Improve the skill files directly (following the write rules in § Fix Skills) |
-| **Read-only** (no git repo, installed copy, or remote-only) | Write to the best available fallback: repo-level agent instructions, user-level agent config, or user memory files. Choose whichever is closest to the point of use. |
+| **Read-only** (no git repo, installed copy, or remote-only) | Record the finding with `t3 <overlay> retro finding`, naming the read-only skill in `--destination`. It lands on the gap ledger as a deduped umbrella checkbox plus a scheduled coding fix. |
 
-When writing to fallback locations, clearly mark the entry as originating from a retro finding: include the skill name and a brief rationale so the entry can be promoted to the skill later if it becomes editable.
+When writing to a repo-level fallback, clearly mark the entry as originating from a retro finding: include the skill name and a brief rationale so the entry can be promoted to the skill later if it becomes editable.
 
 ### 3. Ask when unsure
 
-If you can't determine whether a skill is editable, or if you're unsure whether an improvement belongs in the skill vs. the agent config vs. memory — **ask the user**. Retro is meta-work; human-in-the-loop is expected.
+If you can't determine whether a skill is editable, or if you're unsure whether an improvement belongs in the skill vs. the overlay vs. an enforcement gate — **ask the user**. Retro is meta-work; human-in-the-loop is expected.
 
 ## Persistence First
 
-Retro is not complete until every confirmed finding is written to a durable home in the same retro pass. Conversation output is not durable storage.
+Retro is not complete until every confirmed finding reaches a durable home in the same retro pass. Conversation output is not durable storage, and neither is a memory file — an entry that is re-read only when an agent happens to load it is the vigilance that already failed.
 
 - If a finding is project-specific, write it to the overlay or repo-level agent config now.
 - If a finding is cross-project and editable, write it to the skill or reference file now.
-- If a finding is environment- or user-specific, write it to the appropriate agent config/memory location now.
+- If a finding is environment- or user-specific, set it with `config_setting set`. If no documented knob exists, that missing knob **is** the finding — emit it with `t3 <overlay> retro finding`.
 - If a helper script was required to diagnose or fix a recurring issue, save the script path and purpose in the durable docs so the next run does not start from scratch.
 - Never end retro with “remember this later” or “note this in the summary” as the only persistence mechanism.
 
@@ -166,7 +166,7 @@ flowchart TD
   F --> EA{"Skill editable?<br/>(local git repo)"}
 
   EA -->|"Yes"| G{"Where does the fix go?"}
-  EA -->|"No (read-only)"| J["Write to agent config<br/>or memory files"]
+  EA -->|"No (read-only)"| J["t3 &lt;overlay&gt; retro finding<br/>(ledger + umbrella + coding task)"]
 
   G -->|"Project-specific"| H["Write to active overlay app<br/>(troubleshooting, playbooks, guardrails)"]
   G -->|"Core skill gap<br/>(T3_CONTRIBUTE=true)"| I["Write to $T3_REPO<br/>(skill files, references, hooks)"]
@@ -222,8 +222,8 @@ For each issue, determine **why** it happened:
 
 Before deciding the destination for a behavioral finding, retro classifies it by *recurrence*, because the destination changes once a rule has already failed once:
 
-- **First occurrence** — the rule did not yet exist as durable guidance. Writing the memory/skill entry is the appropriate fix.
-- **Recurrence of an already-persisted rule** — the finding is "the agent didn't do X" and an equivalent rule already lives in a skill, reference, or memory file and recurred anyway. This is not a missing-memory finding; it is an **enforcement-gap** finding. Re-writing the same behavioral entry is the recurrence engine, not the fix — memory-as-vigilance demonstrably loses, while a deterministic gate compounds.
+- **First occurrence** — the rule did not yet exist as durable guidance. A skill edit is the appropriate fix; a memory entry never is.
+- **Recurrence of a standing rule** — the finding is "the agent didn't do X" and an equivalent rule already lives in a skill, reference, or memory file and recurred anyway. This is not a missing-memory finding; it is an **enforcement-gap** finding. Re-writing the same behavioral entry is the recurrence engine, not the fix — memory-as-vigilance demonstrably loses, while a deterministic gate compounds.
 
 For an enforcement-gap finding, retro routes it differently from a first occurrence:
 
@@ -239,6 +239,12 @@ The three-step review-findings lane — list fingerprinted findings, classify ea
 
 The three-step gate-failures lane — read the transcript's gate BLOCKs, classify each preventable or environmental, add the anti-vacuous eval, then `--escalate` — plus its privacy boundary, is in [`skills/retro/references/recurrence-escalation-tooling.md`](references/recurrence-escalation-tooling.md).
 
+#### Tooling: `t3 <overlay> retro finding`
+
+The lane retro persists a lesson WITH when no skill edit can hold it — a read-only skill, a missing config knob, an enforcement gap. It records the rule plus its cited mistake in the consolidation ledger and drives it onto the standing umbrella as a deduped checkbox and a scheduled coding fix; the prose retires itself when that fix merges. The dedup is over the rule's text, so re-emitting a lesson whose fix is still open rides the existing gap rather than scheduling a second one. `--dry-run` previews without writing.
+
+`--destination` must name a teatree fix path (`skills/`, `src/teatree`, `scripts/`, `BLUEPRINT.md`); anything else is refused, because the ledger row is stamped a core gap and a user-specific home would make that stamp a lie. The umbrella write itself is the default-OFF `memory_promote` mechanism ([`skills/dreaming/SKILL.md`](../dreaming/SKILL.md)), so on an installation that has not opted in the finding is still recorded and the result reports `deferred` — the gap waits in the drain queue the next enabled pass reads, and nothing lands on the umbrella.
+
 ### 3. Fix Skills
 
 **Pre-write editability check:** Before writing to ANY skill, verify it is editable (see § Scope & Editability). For teatree-specific paths:
@@ -248,7 +254,7 @@ The three-step gate-failures lane — read the transcript's gate BLOCKs, classif
 git -C "$T3_REPO" rev-parse --git-dir >/dev/null 2>&1 || echo "STOP: T3_REPO is not a git repo"
 ```
 
-If a skill is not editable (no local git repo), write improvements to the best fallback location — repo-level agent instructions, user config, or memory files. See § Scope & Editability for the full decision table. In standalone mode with no overlay project, skip the overlay check.
+If a skill is not editable (no local git repo), record the finding with `t3 <overlay> retro finding` — a read-only skill's gap is a scheduled fix, not a memory note. See § Scope & Editability for the full decision table. In standalone mode with no overlay project, skip the overlay check.
 
 **Load coding skills before implementing:** Retro fixes often involve writing code (Python, Django, shell). Load the appropriate coding skill (`/ac-django`, `/ac-python`, etc.) before implementing — not just for model/view work but for any code: settings, logging, CLI commands, hook scripts. Retro is not exempt from coding standards.
 
@@ -301,11 +307,11 @@ What qualifies for removal or consolidation, what is never removed, how to simpl
 - **Respect content publication status.** Blog posts and articles with `draft: false` in frontmatter are published — never modify them. Draft content (`draft: true` or no frontmatter) may be improved.
 - **Defer structural changes to review skill.** When your fixes involve merging, splitting, or restructuring skills, suggest running the review skill first — retro is tactical; the review skill provides systematic analysis before structural changes.
 - **Never write CLI procedures into skills.** Skills must contain WHEN/WHY/WHAT (judgment, guardrails, domain knowledge) — never HOW (step-by-step commands that `t3` already executes). Before writing a finding that includes a command or procedure, check: does `t3` already handle this? If yes, the skill should say "use `t3 <command>`" — not reproduce the steps the CLI performs internally. Procedural documentation belongs in BLUEPRINT.md, AGENTS.md, CLAUDE.md, README.md, or docs/ — not in skills. Violating this tempts agents to follow the documented manual steps instead of calling the CLI.
-- **Skills over personal config.** When fixing an issue, always prefer updating **skill files** (`SKILL.md`, `references/`) over writing to user-specific config (the agent's personal config and memory files). Skills benefit ALL users; personal config only helps one machine. Memory/config files are only for: user preferences (formatting, tone), environment-specific facts (paths, usernames, credentials), and user-specific workflow choices. Guardrails, troubleshooting, patterns, and "do this not that" rules belong in skills. **Checklist before writing to memory/config:** "Would another user of these skills need this too?" — if yes, put it in a skill. When in doubt, prefer skill files over personal config — skills are portable, personal config is not.
-- **Scan personal config for promotable entries.** During every retro, read the agent's memory and personal config files. Any entry that encodes a guardrail, pattern, or "do this not that" rule (not a user preference or env-specific fact) should be **promoted to the appropriate skill file**. However, always-loaded agent config/memory files serve as a safety net — critical guardrails that are already in skills may still deserve a one-line reminder there, because skills are only available when loaded. When keeping a duplicate, mark it clearly as "Safety net — source: `<skill> § <section>`" to prevent drift. Only fully remove entries that are truly redundant (pure cross-references with no actionable content).
+- **Skills or the ledger — never personal memory.** Retro has two durable homes: an editable **skill file** (`SKILL.md`, `references/`), and `t3 <overlay> retro finding` when the skill is read-only or the gap needs enforcement rather than prose. Retro never writes a memory file — a skill is portable and a ledger row becomes a merging fix, while personal config helps one machine and re-reading it is the vigilance that already lost. A user preference or environment fact with a documented knob goes to `config_setting set`; one without a knob is itself a finding.
+- **A promotable rule in personal config belongs in a skill.** An entry that encodes a guardrail, pattern, or "do this not that" rule — rather than a user preference or an environment fact — belongs in the appropriate skill file. Retro never adds a safety-net duplicate alongside it: the enforcement artifact **is** the safety net, and a duplicate only drifts. Surfacing such entries out of the memory corpus is the weekly `memory_skim` loop's job (§ 7), never retro's.
 - **Prefer deterministic helpers over repeated manual work.** If the same audit or extraction step is likely to recur, capture it in a shell/Python helper or reusable command snippet and document where it lives.
 - **Ask about backward compatibility before adding compat shims.** When a retro fix involves renaming, removing, or changing an API, ask the user whether backward compatibility matters before adding wrappers, re-exports, or deprecation paths. Clean code is preferred over compat shims unless the user explicitly needs them.
-- **Rule, not narrative.** When promoting a session lesson to a skill, write the **rule** the lesson produced — not the lesson itself. Date-stamped incident citations (`Past failure (2026-MM-DD): …`, `Known failure (#NNN): …`), "I did X / the user did Y" anecdotes, and PR-specific case studies are personal-memory material; they identify a specific session and accumulate as session-narrative noise in a public skills repo. The rule's value is intrinsic — it should read coherently to a reader who never saw the incident. If a one-line anti-pattern bullet captures the failure mode (e.g., "returning an error string from a management command instead of raising"), keep that; otherwise, drop the citation entirely and trust the rule.
+- **Rule, not narrative.** When promoting a session lesson to a skill, write the **rule** the lesson produced — not the lesson itself. Date-stamped incident citations (`Past failure (2026-MM-DD): …`, `Known failure (#NNN): …`), "I did X / the user did Y" anecdotes, and PR-specific case studies are session narrative; they identify a specific session and accumulate as noise in a public skills repo. The rule's value is intrinsic — it should read coherently to a reader who never saw the incident. If a one-line anti-pattern bullet captures the failure mode (e.g., "returning an error string from a management command instead of raising"), keep that; otherwise, drop the citation entirely and trust the rule.
 
 ### 5. Playbook Lifecycle
 
@@ -341,7 +347,7 @@ After applying all fixes:
 
 When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, commit automatically on the session's working branch inside a worktree (never the main clone, never `main`). The commit is local-only — `/t3:contribute` handles the push.
 
-See [`references/commit-to-fork.md`](references/commit-to-fork.md) for pre-flight checks, branch selection rules, the confirmation template, and the `T3_AUTO_PUSH_FORK` exception.
+See [`references/commit-to-fork.md`](references/commit-to-fork.md) for pre-flight checks, branch selection rules, and the confirmation template; the `T3_AUTO_PUSH_FORK` exception is in [`../contribute/SKILL.md`](../contribute/SKILL.md) § 4 "Push Confirmation".
 
 ## Privacy Scan
 
@@ -349,7 +355,7 @@ Before committing to the fork or creating an upstream issue, scan **all public-f
 
 **Scan the whole branch, never just the cache (Non-Negotiable).** The diff you scan must be `git diff @{upstream}..HEAD` — the branch carries commits from prior sessions and compacted work the agent never re-read, and only that range covers every commit between the pushed base and HEAD. `git diff --cached` (and `git diff HEAD~..HEAD`) is **not enough**: it shows the most recent work only, so a leak committed earlier on the branch passes the scan unseen.
 
-The four surfaces to scan (branch-vs-base diff, commit subjects and bodies, PR/issue/comment bodies, memory and config writes), the detector set plus the Streisand-effect word grep, and the `strict` / `relaxed` `T3_PRIVACY` levels are in [`skills/retro/references/privacy-scan.md`](references/privacy-scan.md).
+The four surfaces to scan (branch-vs-base diff, commit subjects and bodies, PR/issue/comment bodies, and any memory/config writes the session made — retro itself makes none), the detector set plus the Streisand-effect word grep, and the `strict` / `relaxed` `T3_PRIVACY` levels are in [`skills/retro/references/privacy-scan.md`](references/privacy-scan.md).
 
 ## What NOT to Do
 
@@ -362,11 +368,13 @@ The four surfaces to scan (branch-vs-base diff, commit subjects and bodies, PR/i
 - Do not write step-by-step CLI procedures into skills. If `t3` handles it, say "use `t3 <command>`" — don't reproduce the steps. Procedural docs belong in BLUEPRINT.md/AGENTS.md/docs, not skills.
 - Do not push retro commits in `interactive` mode — use `/t3:contribute` for push + upstream issue creation. In `auto` mode, push directly per § Configuration.
 
-### 7. Clean Personal Config
+### 7. The Memory Corpus Belongs to `memory_skim`, Not to Retro
 
-During every retro, scan the agent's personal config and memory files.
+Retro never discovers, writes, or edits a memory file. Entries already on disk stay exactly where they are — retro deletes nothing and prunes nothing; it stops adding.
 
-How to discover memory and repo-level config files per platform, and the four actions (promote, scan for promotable entries, remove stale entries, deduplicate) are in [`skills/retro/references/personal-config-hygiene.md`](references/personal-config-hygiene.md).
+Two lanes own that corpus, and neither is retro. `t3 tool audit-memory` is the manual read-only view, available any time. The `memory_skim` mini-loop is the scheduled one: enabled, it raises one owner-facing promote-or-drop question per ISO week for every entry that reads as factory behaviour. It ships **default-OFF in every mode**, so on an installation that has not enabled it nothing sweeps the corpus on a cadence — enable the loop, or run `t3 tool audit-memory` when you want the promotable set.
+
+What retro still does with a repo-level agent config file it can read, and the three promotion classes that decide where a finding goes, are in [`skills/retro/references/personal-config-hygiene.md`](references/personal-config-hygiene.md).
 
 ### 8. Recommend Review Skill
 
@@ -379,6 +387,6 @@ If `T3_REVIEW_SKILL` is configured and skill files were modified during this ret
 
 During every retro pass, actively scan for behavior encoded **outside** the teatree framework and consider promoting it in.
 
-The scope includes: personal `~/.claude/settings.json` permissions/hooks, dotfiles hooks, shell rc files, personal memory entries, and overlay-local ad-hoc config that encodes patterns other users would benefit from.
+The scope includes: personal `~/.claude/settings.json` permissions/hooks, dotfiles hooks, shell rc files, and overlay-local ad-hoc config that encodes patterns other users would benefit from. The scan is a read; its output is a `t3 <overlay> retro finding`, never an edit to the corpus § 7 owns.
 
 The (P) promote / (C) model-as-config / (K) keep-personal classification table, the decision rule for divergent behaviour, and how this scan complements § 7 are in [`skills/retro/references/personal-config-hygiene.md`](references/personal-config-hygiene.md).

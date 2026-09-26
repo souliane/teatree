@@ -177,3 +177,46 @@ class TestReactRouted:
 
         assert SlackBotBackend().react_routed(channel="C_TEAM", ts="1.2", emoji="eyes") == {}
         assert called == []
+
+
+class TestABotRoutedSelfDmAddressesTheUser:
+    """The bot is not a member of the USER's own IM, so it cannot post into it.
+
+    `open_dm` resolves that conversation under the user's own token; the bot posting
+    there answers `channel_not_found`. Addressing the user id makes Slack open — or
+    reuse — the bot↔user IM, which is where every other bot DM already lands.
+    """
+
+    def test_a_post_to_the_self_dm_channel_is_addressed_to_the_user_id(self) -> None:
+        captured: list[_Call] = []
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True}))
+            _backend().post_routed(channel=_SELF_DM, text="hi")
+
+        assert captured[0].authorization == "Bearer xoxb-bot"
+        assert captured[0].json["channel"] == "U_ME", "the bot cannot write to the user's own IM"
+
+    def test_a_post_addressed_to_the_user_id_is_unchanged(self) -> None:
+        captured: list[_Call] = []
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True}))
+            _backend().post_routed(channel="U_ME", text="hi")
+
+        assert captured[0].json["channel"] == "U_ME"
+
+    def test_a_colleague_surface_keeps_the_channel_it_was_given(self) -> None:
+        captured: list[_Call] = []
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True}))
+            _backend().post_routed(channel="C_TEAM", text="hi")
+
+        assert captured[0].authorization == "Bearer xoxp-user"
+        assert captured[0].json["channel"] == "C_TEAM"
+
+    def test_a_reaction_keeps_its_channel_because_the_ts_lives_there(self) -> None:
+        captured: list[_Call] = []
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True}))
+            _backend().react_routed(channel=_SELF_DM, ts="1.2", emoji="eyes")
+
+        assert captured[0].json["channel"] == _SELF_DM, "a ts names a message in ONE conversation"

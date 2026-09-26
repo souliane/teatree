@@ -15,6 +15,7 @@ import pytest
 
 from teatree.backends.github import ci_eval_client
 from teatree.backends.github.ci_eval_client import GhCiEvalClient
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 
 
 class _Recorder:
@@ -118,9 +119,11 @@ class TestDownloadArtifact:
 
 
 class TestBuildFactory:
-    def test_reads_token_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("GH_TOKEN", "ghp_env")
-        assert ci_eval_client.build_ci_eval_client("owner/repo").token == "ghp_env"
+    def test_uses_owner_routed_token_and_ignores_ambient(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GH_TOKEN", "hostile-ambient")
+        routed = ForgeTokenResolution("github_token", "owner", ForgeTokenState.TOKEN, token="db-token")
+        monkeypatch.setattr("teatree.forge_credentials.resolve_slug_token", lambda *_a, **_kw: routed)
+        assert ci_eval_client.build_ci_eval_client("owner/repo").token == "db-token"
 
     def test_defaults_to_the_public_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("GH_TOKEN", raising=False)

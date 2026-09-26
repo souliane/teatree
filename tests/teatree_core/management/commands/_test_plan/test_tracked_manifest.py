@@ -59,6 +59,20 @@ class StripRunProvenanceTests(SimpleTestCase):
         assert "dev" not in data
         assert "local" not in data
 
+    def test_stack_run_provenance_is_stripped_too(self) -> None:
+        manifest = json.dumps(
+            {
+                "ticket": "8521",
+                "stack": {"commits": {"client": "eeee555"}},
+                "workflows": [{"workflow": "Login", "stack": {"images": ["stack/step1.png"]}}],
+            }
+        )
+
+        data = json.loads(strip_run_provenance(manifest))
+
+        assert "stack" not in data
+        assert data["workflows"][0]["stack"]["images"] == ["stack/step1.png"]
+
     def test_tracked_manifest_preserves_authored_intent(self) -> None:
         data = json.loads(strip_run_provenance(_run_manifest(dev_sha="a", local_sha="b", missing=[])))
 

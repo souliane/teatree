@@ -92,7 +92,12 @@ def t3_master_verdict(caller_session: str | None = None) -> T3MasterVerdict:
     if not status.is_live:
         return T3MasterVerdict(outcome=T3MasterGate.UNCLAIMED, owner_session="")
     session = loop_principal()[0] if caller_session is None else caller_session
-    if is_loop_runner_session(status.owner_session) or status.owner_session == session:
+    # The worker is the machine-wide driver, never a rival: its own caller runs too.
+    if (
+        status.owner_session == session
+        or is_loop_runner_session(session)
+        or is_loop_runner_session(status.owner_session)
+    ):
         return T3MasterVerdict(outcome=T3MasterGate.RUN, owner_session=status.owner_session)
     return T3MasterVerdict(outcome=T3MasterGate.FOREIGN_OWNER, owner_session=status.owner_session)
 

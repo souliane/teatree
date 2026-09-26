@@ -158,27 +158,32 @@ def _alias_to_module(node: ast.expr, aliases: dict[str, str]) -> str | None:
     return None
 
 
-def scan_source(source: str, path: Path) -> list[PatchTargetFinding]:
-    """Extract and resolve every resolvable patch string target in ``source``."""
+def patch_target_calls(source: str, path: Path) -> list[tuple[int, str]]:
+    """``(lineno, dotted target)`` for every resolvable patch string target in ``source``.
+
+    The extraction half, shared with the binding check in
+    :mod:`teatree.quality.patch_bindings` — which asks a different question of the same
+    targets, and must ask it of exactly the same set.
+    """
     tree = ast.parse(source, filename=str(path))
     aliases = _module_aliases(tree)
     pragma_lines = _dynamic_pragma_lines(source)
-    findings: list[PatchTargetFinding] = []
+    calls: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         target = _targets_in_call(node, aliases)
-        if target is None or node.lineno in pragma_lines:
-            continue
-        findings.append(
-            PatchTargetFinding(
-                path=path,
-                lineno=node.lineno,
-                target=target,
-                reason=resolve_patch_target(target),
-            )
-        )
-    return findings
+        if target is not None and node.lineno not in pragma_lines:
+            calls.append((node.lineno, target))
+    return calls
+
+
+def scan_source(source: str, path: Path) -> list[PatchTargetFinding]:
+    """Extract and resolve every resolvable patch string target in ``source``."""
+    return [
+        PatchTargetFinding(path=path, lineno=lineno, target=target, reason=resolve_patch_target(target))
+        for lineno, target in patch_target_calls(source, path)
+    ]
 
 
 def scan_file(path: Path) -> list[PatchTargetFinding]:

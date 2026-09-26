@@ -80,6 +80,17 @@ def _status(*, head: str, checks: str = "green") -> dict[str, object]:
         return cast("dict[str, object]", call_command("review", "status", _URL))
 
 
+def _status_text(*, head: str, checks: str = "green") -> str:
+    """The HUMAN line ``review status`` prints — what an operator actually reads."""
+    err = StringIO()
+    with (
+        patch(_HEAD_READ, return_value=LiveHeadRead.of(head)),
+        patch("teatree.core.merge.ci_rollup.CodeHostQuery.required_checks_status", return_value=checks),
+    ):
+        call_command("review", "status", _URL, stderr=err)
+    return err.getvalue()
+
+
 def _gh(*, rollup_rc: int, rollup_body: str) -> Callable[[list[str]], tuple[int, str, str]]:
     """A ``gh`` answering exactly what ``required_checks_status`` asks, over ONE required context.
 
@@ -397,3 +408,34 @@ class TestStatusDegradesOnUnrenderableFindings(TestCase):
         self._assert_findings_refuses(
             [{"severity": "blocker", "summary": "  ", "file": "a.py", "line": 1}], "empty summary"
         )
+
+
+class TestAnUnreadableHeadNamesTheMissingCredential(TestCase):
+    """#83 §3: "the forge named no head" describes the symptom and hides the cause.
+
+    Diagnosing it took a differential test across three pull requests, because the
+    message said nothing about the venue carrying no forge credential — the one
+    fact that would have made it immediately actionable.
+    """
+
+    def test_an_unreadable_head_names_the_credentials_the_read_authenticates_from(self) -> None:
+        _record()
+        with patch.dict("os.environ", {"GH_TOKEN": "", "GITHUB_TOKEN": ""}, clear=False):
+            text = _status_text(head=HEAD_SHA_UNREADABLE)
+        assert "GH_TOKEN" in text, text
+        assert "GITHUB_TOKEN" in text, text
+
+    def test_an_ambient_credential_is_not_mistaken_for_the_owning_overlay_route(self) -> None:
+        """A process-global token cannot prove that the repository owner is routed."""
+        _record()
+        with patch.dict("os.environ", {"GH_TOKEN": "a-real-token"}, clear=False):
+            text = _status_text(head=HEAD_SHA_UNREADABLE)
+        assert "GH_TOKEN" in text, text
+        assert "intentionally ignored" in text, text
+
+    def test_a_genuinely_moved_head_still_reports_stale_without_the_advisory(self) -> None:
+        """The fix must not blur the two cases — only one of them is worth retrying."""
+        _record()
+        text = _status_text(head="f" * 40)
+        assert "stale" in text, text
+        assert "GH_TOKEN" not in text, text

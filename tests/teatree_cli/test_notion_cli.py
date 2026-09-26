@@ -236,6 +236,94 @@ class TestAppend:
         assert result.exit_code == 0, result.output
         assert "verified by re-fetch" in result.output
 
+    def test_append_after_a_heading_lands_before_the_next_section(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        for name in ("Alpha", "Beta", "Gamma"):
+            notion.heading(name, level=3)
+            notion.paragraph(f"{name.lower()} body")
+        body_file = tmp_path / "body.md"
+        body_file.write_text("inserted line\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app, ["append", notion.page_id, "--body-file", str(body_file), "--after-heading", "Beta"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert notion.body_texts(notion.page_id) == [
+            "Alpha",
+            "alpha body",
+            "Beta",
+            "beta body",
+            "inserted line",
+            "Gamma",
+            "gamma body",
+        ]
+
+    def test_append_after_an_absent_heading_exits_15(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        notion.heading("Alpha", level=3)
+        body_file = tmp_path / "body.md"
+        body_file.write_text("inserted line\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app, ["append", notion.page_id, "--body-file", str(body_file), "--after-heading", "Absent"]
+        )
+
+        assert result.exit_code == 15, result.output
+        assert "Absent" in result.output
+        assert notion.body_texts(notion.page_id) == ["Alpha"]
+
+    def test_append_after_a_toggle_heading_lands_as_its_next_sibling(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        toggle_id = notion.heading("Owned", toggle=True)
+        notion.paragraph("inside the toggle", parent=toggle_id)
+        notion.heading("Next Section")
+        body_file = tmp_path / "body.md"
+        body_file.write_text("inserted line\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app, ["append", notion.page_id, "--body-file", str(body_file), "--after-heading", "Owned"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert notion.body_texts(notion.page_id) == ["Owned", "inserted line", "Next Section"]
+        assert notion.body_texts(toggle_id) == ["inside the toggle"]
+
+    def test_append_after_an_explicitly_empty_heading_exits_15_and_writes_nothing(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        """A blank ``--after-heading`` names no position, so it must refuse rather than land at the end."""
+        notion.heading("Alpha", level=3)
+        notion.paragraph("alpha body")
+        body_file = tmp_path / "body.md"
+        body_file.write_text("inserted line\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app, ["append", notion.page_id, "--body-file", str(body_file), "--after-heading", ""]
+        )
+
+        assert result.exit_code == 15, result.output
+        assert notion.body_texts(notion.page_id) == ["Alpha", "alpha body"]
+        assert ("PATCH", f"/blocks/{notion.page_id}/children") not in notion.requests
+
+    def test_append_after_a_heading_with_no_body_anchors_on_the_heading(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        notion.heading("Beta", level=3)
+        notion.heading("Gamma", level=3)
+        body_file = tmp_path / "body.md"
+        body_file.write_text("inserted line\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app, ["append", notion.page_id, "--body-file", str(body_file), "--after-heading", "Beta"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert notion.body_texts(notion.page_id) == ["Beta", "inserted line", "Gamma"]
+
 
 class TestCommentPost:
     def test_posting_lands_the_comment_and_reports_its_discussion(
@@ -415,7 +503,7 @@ class TestFailureExitCodes:
         result = typer.testing.CliRunner().invoke(notion_app, ["fetch", notion.page_id])
 
         assert result.exit_code == 3
-        assert "pass insert notion/integration-token" in result.output
+        assert "config_setting set notion_token_pass_key" in result.output
 
     def test_a_reference_that_is_not_a_notion_id_exits_as_not_found(
         self, runner: typer.testing.CliRunner, notion: FakeNotion

@@ -11,6 +11,7 @@ in-process against the ephemeral test DB, never the canonical queue.
 """
 
 import datetime as dt
+import io
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -25,11 +26,12 @@ from django.test import override_settings
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult
 
-from teatree.core.models import LoopLease
+from teatree.core.models import Loop, LoopLease
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loop.queue_drain import (
     drain_ready_batch,
     expire_stale_default_jobs,
+    expire_stale_headless_jobs,
     expire_stale_ready_jobs,
     expire_then_drain,
     stale_threshold_hours,
@@ -38,7 +40,7 @@ from teatree.loop.queue_drain import (
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
-# QUEUES mirrors the real ``settings.TASKS`` (``["default", "loops"]``): the fixture
+# QUEUES mirrors the real ``settings.TASKS`` (``["default", "loops", "cheap"]``): the fixture
 # only swaps Immediate→Database, it must not narrow the queue set. django-tasks
 # validates ``queue_name`` at Task-CREATION time (``Task.__post_init__``), so omitting
 # "loops" makes the module-level ``@task(queue_name="loops")`` ``loop_timer`` fail the
@@ -47,7 +49,7 @@ DB_BACKEND = {
     "TASKS": {
         "default": {
             "BACKEND": "django_tasks_db.backend.DatabaseBackend",
-            "QUEUES": ["default", "loops"],
+            "QUEUES": ["default", "loops", "cheap"],
         }
     }
 }
@@ -175,10 +177,42 @@ class TestExpireStaleDefaultJobs:
         assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
         assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.FAILED
 
+    def test_worker_expiry_retires_default_and_cheap_but_not_control(self) -> None:
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — enqueue a loops-queue row
+
+        refresh_followup_snapshot.enqueue()
+        refresh_followup_snapshot.using(queue_name="cheap").enqueue()
+        loop_timer.enqueue("inbox")
+        _backdate(50)
+
+        assert expire_stale_headless_jobs() == {"refresh_followup_snapshot": 2}
+        assert (
+            DBTaskResult.objects.filter(queue_name__in=["default", "cheap"], status=TaskResultStatus.FAILED).count()
+            == 2
+        )
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
 class TestDrainReadyBatch:
+    def test_cheap_review_lane_drains_before_coding_when_worker_is_absent(self) -> None:
+        refresh_followup_snapshot.enqueue()
+        refresh_followup_snapshot.using(queue_name="cheap").enqueue()
+
+        assert drain_ready_batch(max_jobs=1) == 1
+        assert DBTaskResult.objects.get(queue_name="cheap").status == TaskResultStatus.SUCCESSFUL
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.READY
+
+    def test_batch_gives_both_cheap_and_coding_a_turn(self) -> None:
+        for _ in range(2):
+            refresh_followup_snapshot.enqueue()
+            refresh_followup_snapshot.using(queue_name="cheap").enqueue()
+
+        assert drain_ready_batch(max_jobs=2) == 2
+        assert DBTaskResult.objects.filter(queue_name="cheap", status=TaskResultStatus.SUCCESSFUL).count() == 1
+        assert DBTaskResult.objects.filter(queue_name="default", status=TaskResultStatus.SUCCESSFUL).count() == 1
+
     def test_drains_and_runs_a_ready_job(self) -> None:
         refresh_followup_snapshot.enqueue()
 
@@ -323,11 +357,51 @@ class TestDrainExcludesLoopsQueue:
         assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.SUCCESSFUL
 
 
+def _admit_the_fleet() -> Loop:
+    """One loop the layering admits, so the drain's fleet gate is open.
+
+    The drain halts while the active preset admits ZERO loops, so a drain test on an
+    empty ``Loop`` table would exercise the halt path and pass for the wrong reason.
+
+    Cleared first for the same reason ``_stop_the_fleet`` clears: ``0001_initial`` seeds
+    ``dispatch`` among the default loops, so a bare create collides on ``name`` unless some
+    earlier ``transaction=True`` test's flush happened to empty the table.
+    """
+    Loop.objects.all().delete()
+    return Loop.objects.create(
+        name="dispatch", script="src/teatree/loops/dispatch/loop.py", delay_seconds=60, enabled=True
+    )
+
+
+def _stop_the_fleet() -> None:
+    """No Loop row for the layering to admit, so the drain's fleet gate is shut.
+
+    Established here rather than inherited: ``0001_initial`` seeds the default loops, and
+    only some earlier ``transaction=True`` test's flush empties them — so a halt test that
+    does not clear the table asserts a stop whichever test ran before it happened to leave.
+    """
+    Loop.objects.all().delete()
+
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
 class TestExpireThenDrain:
+    @pytest.fixture(autouse=True)
+    def _fleet(self) -> None:
+        _admit_the_fleet()
+
     def test_stale_heavy_job_is_expired_before_it_can_run(self) -> None:
         refresh_followup_snapshot.enqueue()
+        _backdate(50)
+
+        result = expire_then_drain()
+
+        assert result["retired"] == {"refresh_followup_snapshot": 1}
+        assert result["drained"] == 0
+        assert DBTaskResult.objects.get().status == TaskResultStatus.FAILED
+
+    def test_stale_cheap_job_is_expired_before_it_can_run(self) -> None:
+        refresh_followup_snapshot.using(queue_name="cheap").enqueue()
         _backdate(50)
 
         result = expire_then_drain()
@@ -410,6 +484,10 @@ class TestThresholdConfig:
 @pytest.mark.django_db(transaction=True)
 class TestDrainQueueCommand:
     """``manage.py loop_drain_queue`` — the dedicated reactive drain ``/loop`` (replaces the piggyback)."""
+
+    @pytest.fixture(autouse=True)
+    def _fleet(self) -> None:
+        _admit_the_fleet()
 
     def test_command_runs_expire_then_drain_behind_the_lease(self) -> None:
         refresh_followup_snapshot.enqueue()
@@ -495,9 +573,58 @@ class TestAdmissionPriorityAnnotation:
         # A short-verb ``plan`` row normalizes to the same auto-start band.
         assert self._rank(self._task(phase="plan")) == 1
 
+    def test_parentless_replan_on_shipped_ticket_drains_first(self) -> None:
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        replan = self._task(phase="planning")
+        Ticket.objects.filter(pk=replan.ticket_id).update(state=Ticket.State.SHIPPED)
+        assert self._rank(replan) == 0
+
     def test_downstream_phase_ranks_first(self) -> None:
         assert self._rank(self._task(phase="coding")) == 0
 
     def test_followup_planning_ranks_first(self) -> None:
         # A planning task WITH a parent is continuing work, not a new-ticket start.
         assert self._rank(self._task(phase="planning", parented=True)) == 0
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db(transaction=True)
+class TestDrainHaltsWhileTheFleetAdmitsNothing:
+    """A posture that stops the fleet stops the reactive drain too, and says what it strands (C1).
+
+    The drain ran on regardless of any stop, which is what made the retired kill-switch read
+    as a stop while work kept being claimed and run behind it. The halt is only honest if it
+    is loud, so the depth it strands is measured and reported rather than implied.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fleet(self) -> None:
+        _stop_the_fleet()
+
+    def test_it_halts_and_reports_the_queue_it_strands(self) -> None:
+        refresh_followup_snapshot.enqueue()
+        refresh_followup_snapshot.using(queue_name="cheap").enqueue()
+
+        result = expire_then_drain()
+
+        assert result == {"retired": {}, "drained": 0, "halted": True, "stranded": 2}
+        assert DBTaskResult.objects.filter(status=TaskResultStatus.READY).count() == 2
+
+    def test_an_admitting_fleet_drains_the_same_job(self) -> None:
+        # Anti-vacuity twin: the halt is the FLEET's doing, not an unrelated refusal.
+        _admit_the_fleet()
+        refresh_followup_snapshot.enqueue()
+
+        result = expire_then_drain()
+
+        assert result["halted"] is False
+        assert result["drained"] == 1
+
+    def test_the_command_names_the_halt_rather_than_reporting_a_clean_cycle(self) -> None:
+        refresh_followup_snapshot.enqueue()
+        err = io.StringIO()
+
+        call_command("loop_drain_queue", stderr=err)
+
+        assert "admits ZERO loops" in err.getvalue()

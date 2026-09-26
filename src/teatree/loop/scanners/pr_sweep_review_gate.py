@@ -6,14 +6,17 @@ mechanics each rung reaches for live beside the rule they serve.
 
 Arming is best-effort by design — every refusal degrades to "no task armed"
 rather than aborting the sweep, because the flag-level signal has already
-surfaced the PR. Three refusals are deliberate, not defensive. A missing
+surfaced the PR. Four refusals are deliberate, not defensive. A missing
 dispatcher or the flag being off means the overlay never opted in. A PR the
 operator did not author is skipped (#2210): ``list_open_prs`` returns every open
 PR in a watched repo, colleagues' included, and auto-scheduling a colleague's PR
 wastes a dispatch and risks an unattended review note on their work. A PR whose
 ticket holds a live EXTERNAL delivery lease is skipped (#2104) — a
 hand-dispatched reviewer is already on it, and the loop's own FSM never stamps
-that lease, so a genuinely unowned own green PR still arms.
+that lease, so a genuinely unowned own green PR still arms. A PR a reviewing task
+is ALREADY open on is skipped for the same reason with a different owner: the
+self-PR scanner's reviewer dedups through its own ledger, which this arm's
+per-head claim cannot see, so one green head bought two reviews of one tree.
 
 A head carrying an unreconciled HOLD never reaches here at all: the caller
 refuses first (#4380). Arming a fresh reviewer over a hold nobody took back is
@@ -27,7 +30,7 @@ from teatree.loop.scanners.pr_sweep_decision import own_or_same_repo, pr_ticket_
 from teatree.loop.scanners.pr_sweep_ports import ReviewDispatcher
 from teatree.loop.scanners.pr_sweep_types import HeadReview, MergeAttempt, PrSummary
 
-__all__ = ["ReviewArmContext", "arm_cold_review", "held_head_attempt"]
+__all__ = ["ReviewArmContext", "arm_cold_review", "held_head_attempt", "review_in_flight_for_pr"]
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,30 @@ class ReviewArmContext:
     enabled: bool
     self_identities: tuple[str, ...] = ()
     overlay: str = ""
+
+
+def review_in_flight_for_pr(*, pr_url: str) -> bool:
+    """True iff a reviewing Task is already open on the ticket that IS this PR.
+
+    Two arms reach the same head. The self-PR scanner mints its reviewer through
+    :class:`~teatree.core.models.codex_review_marker.CodexReviewMarker`; this sweep
+    arms one through :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch`.
+    Each ledger dedups per head, but they dedup INDEPENDENTLY, so a green head
+    reliably bought two cold reviews of one tree. The per-MR
+    :class:`~teatree.core.models.mr_review_lock.MRReviewLock` the arm already takes
+    says exactly this, but the other arm's task never takes it, so the question is
+    asked here rather than by admitting a second writer to that lock.
+
+    Deferring costs the sweep nothing: the in-flight reviewer records the very
+    verdict the next sweep merges (or holds) on. Only a NON-terminal task counts, so
+    a reviewer that died leaves the head armable on the next pass — this defers a
+    review, it can never latch one out.
+    """
+    from teatree.core.models import Task  # noqa: PLC0415 — lazy ORM import
+
+    if not pr_url:
+        return False
+    return Task.objects.pending_in_phase("reviewing").filter(ticket__issue_url=pr_url).exists()
 
 
 def held_head_attempt(pr: PrSummary, *, review: HeadReview) -> MergeAttempt:
@@ -76,6 +103,8 @@ def arm_cold_review(pr: PrSummary, *, ctx: ReviewArmContext) -> bool:
     if not own_or_same_repo(pr, self_identities=ctx.self_identities):
         return False
     if pr_ticket_under_external_delivery(slug=pr.slug, pr_id=pr.number, pr_url=pr.url):
+        return False
+    if review_in_flight_for_pr(pr_url=pr.url):
         return False
     try:
         return ctx.dispatcher.enqueue(

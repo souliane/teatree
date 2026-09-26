@@ -254,7 +254,7 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
                 return (0, "{}", "")
             return (0, "", "")
 
-        client = GhPrApiClient(token="")
+        client = GhPrApiClient()
         # The #18 floor re-reads the live not-draft + required-checks state at the
         # merge chokepoint; a non-draft, green head clears it so the bound merge's
         # sha-fallback contract is what gets exercised here. #3313 hardened the
@@ -289,11 +289,12 @@ class TestPrSweepListLimit(TestCase):
         class _FakeClient(GhPrApiClient):
             __slots__ = ()
 
-            def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
+            def _run_gh(self, argv: list[str], *, slug: str) -> tuple[int, str, str]:
+                del slug
                 captured.append(argv)
                 return 0, "[]", ""
 
-        _FakeClient(token="").list_open_prs(slug="owner/repo")
+        _FakeClient().list_open_prs(slug="owner/repo")
 
         assert captured, "list_open_prs never shelled out to gh"
         argv = captured[0]

@@ -9,6 +9,7 @@ from django_fsm import TransitionNotAllowed
 from django_typer.management import command
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
+from teatree.core.machine_output import MachineOutputCommand
 from teatree.core.management.commands._attachment_commands import AttachmentCommands
 from teatree.core.management.commands._clear_backfill_commands import ClearBackfillCommands
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
@@ -17,8 +18,8 @@ from teatree.core.management.commands._context_commands import ContextCommands
 from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
 from teatree.core.management.commands._plan_commands import PlanCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
-from teatree.core.management.commands._spec_coverage_commands import SpecCoverageCommands
 from teatree.core.management.commands._sweep_commands import SweepCommands
+from teatree.core.management.commands._target_branch_commands import TargetBranchCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS, TRANSITION_HELP
 from teatree.core.management.commands._transition_refusals import review_context_refusal
@@ -114,7 +115,7 @@ def _verdict_slug(request: ClearRequest, resolved_slug: str) -> str:
 # The 10-mixin base list is a django-typer requirement, not a composition-bar
 # violation: django-typer discovers ``@command``-decorated methods by walking the
 # Command class's own MRO, so each cohesive command group (rubric, plan, show,
-# context, close, attachment, merge-keystone, sweep, spec-coverage, clear-backfill) MUST be a base
+# context, close, attachment, merge-keystone, sweep, target-branch, clear-backfill) MUST be a base
 # class of the single ``Command`` rather than a plain collaborator it delegates to — a helper
 # object's methods would never register as CLI subcommands. The mixins stay
 # single-concern; only their registration is inheritance-shaped.
@@ -127,8 +128,9 @@ class Command(
     AttachmentCommands,
     MergeKeystoneCommands,
     SweepCommands,
-    SpecCoverageCommands,
+    TargetBranchCommands,
     ClearBackfillCommands,
+    MachineOutputCommand,
     # #4234: every refusal below is RETURNED so the loop can route on it —
     # `CallCommandMergeKeystone.merge_clear` reads five keys off `merge`. The base class
     # is what stops a `ship && clear` chain reading a refused CLEAR as an authorised one.

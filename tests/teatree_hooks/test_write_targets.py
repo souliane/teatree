@@ -233,3 +233,103 @@ class TestInterpreterHeredocWithAPunctuatedDelimiter:
 
     def test_a_plain_command_with_no_heredoc_is_untouched(self) -> None:
         assert bash_write_targets("git status").writes_something is False
+
+
+class TestClobberOverrideRedirect:
+    """`>|` is a redirect operator, not `>` followed by a pipe.
+
+    The lexer split at the `|`, stranding the target in a segment of its own, so
+    the resolver reported no targets AND no unresolved target — the answer both
+    gates read as "this command writes nothing". `>|` is the spelling the house
+    temp-file rule mandates against zsh `noclobber`, so the required form was the
+    one that evaded both gates.
+    """
+
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [
+            ("echo hi >| notes.txt", "notes.txt"),
+            ("echo hi >|notes.txt", "notes.txt"),
+            ("pytest -q 2>| src/app/err.log", "src/app/err.log"),
+        ],
+    )
+    def test_clobber_override_target_is_resolved(self, command: str, target: str) -> None:
+        assert bash_write_targets(command).targets == (target,)
+
+    def test_a_substituted_clobber_target_is_unresolved(self) -> None:
+        result = bash_write_targets("echo hi >| $OUT/x.py")
+        assert result.targets == ()
+        assert result.unresolved is True
+
+    def test_a_genuine_pipe_is_still_a_separator(self) -> None:
+        # The anti-vacuous companion: gluing `>|` must not turn every `|` into
+        # redirect glue, or a piped read-only command would resolve its
+        # right-hand side as a write target.
+        result = bash_write_targets("grep -rn needle src/ | head -20")
+        assert result.targets == ()
+        assert result.unresolved is False
+
+
+class TestBundledInPlaceFlags:
+    """`-i` bundled into a short-option cluster still edits in place.
+
+    getopt reads a cluster left to right, so `sed -ni` / `sed -Ei` name `-i`
+    exactly as `sed -i` does (verified on GNU sed 4.9 and busybox sed). Keying
+    on `startswith("-i")` missed every bundled spelling and reported the command
+    as writing nothing at all.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sed -ni 's/a/b/p' src/app/x.py",
+            "sed -Ei 's/a/b/' src/app/x.py",
+            "sed -rni 's/a/b/p' src/app/x.py",
+            "sed -ni.bak 's/a/b/p' src/app/x.py",
+        ],
+    )
+    def test_bundled_in_place_names_its_file(self, command: str) -> None:
+        assert bash_write_targets(command).targets == ("src/app/x.py",)
+
+    def test_an_argument_taking_flag_swallows_the_i(self) -> None:
+        # The anti-vacuous companion: `-ei` is `-e` running the script `i`, not
+        # an in-place edit — a scan that merely looks for an `i` anywhere in the
+        # cluster would deny this read-only command.
+        result = bash_write_targets("sed -ei 's/a/b/' src/app/x.py")
+        assert result.targets == ()
+        assert result.unresolved is False
+
+    def test_a_bundled_script_flag_leaves_every_positional_a_file(self) -> None:
+        command = "sed -i -ne 's/a/b/p' src/a.py src/b.py"
+        assert bash_write_targets(command).targets == ("src/a.py", "src/b.py")
+
+
+class TestPerlInPlace:
+    """`perl -pi -e` rewrites its operands in place, the same class as `sed -i`."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "perl -pi -e 's/a/b/' src/app/x.py",
+            "perl -i -pe 's/a/b/' src/app/x.py",
+            "perl -i.bak -pe 's/a/b/' src/app/x.py",
+        ],
+    )
+    def test_in_place_perl_names_its_file(self, command: str) -> None:
+        assert bash_write_targets(command).targets == ("src/app/x.py",)
+
+    def test_a_program_file_operand_is_not_a_target(self) -> None:
+        assert bash_write_targets("perl -i rewrite.pl src/app/x.py").targets == ("src/app/x.py",)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "perl -pe 's/a/b/' src/app/x.py",
+            "perl -ne 'print if /needle/' src/app/x.py",
+            "perl -e 'print 1'",
+        ],
+    )
+    def test_perl_without_in_place_is_read_only(self, command: str) -> None:
+        result = bash_write_targets(command)
+        assert result.targets == ()
+        assert result.unresolved is False

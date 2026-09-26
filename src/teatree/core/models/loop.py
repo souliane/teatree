@@ -3,8 +3,8 @@
 A :class:`Loop` row is the durable definition of one autonomous loop: a unique
 ``name``, exactly one of ``prompt`` (a nullable FK to a reusable
 :class:`teatree.core.models.prompt.Prompt`, the instruction to run the loop's
-work) or ``script`` (a path to the entry point that runs it), its cadence, an
-``enabled`` flag, and ``last_run_at``, the cadence anchor. The loop's logic
+work) or ``script`` (a path to the entry point that runs it), its cadence, the
+tri-state ``enabled`` MANUAL OVERRIDE (A3), and ``last_run_at``, the cadence anchor. The loop's logic
 stays in its existing Python code; ``prompt``/``script`` only say how to invoke
 it, so the row carries config + cadence, not behaviour. ``run_in_sub_agent`` toggles
 sub-agent dispatch, ``description`` is human context, and ``overlay`` names the
@@ -23,6 +23,14 @@ set (both ``None``) the loop is due every tick.
 A never-run loop is due immediately (interval / every-tick) or at its first
 scheduled time (daily), so a fresh install fires without waiting a whole window.
 
+``enabled`` is the manual layer and nothing else (A3). ``None`` — the normal state — means
+"no opinion, the preset decides". ``True``/``False`` is a deliberate human intervention that
+outranks the preset, carries the REASON it was set, and is NEVER cleared by anything but a
+person: an override that happens to agree with today's preset still binds tomorrow's, so
+clearing it silently would lose exactly the information that makes it an override (A4).
+``override_expected_lift_at`` is ADVISORY — it is what the watcher reminds against, never a
+TTL anything enforces (A5/A7).
+
 ``colleague_facing`` (#2904) marks the loops that reach a colleague on the owner's
 behalf. It is narrower than the ``colleague`` reach tag each ``MiniLoop`` declares in
 code (#3959) and stays a strict subset of it — ``review`` reaches colleagues yet
@@ -36,7 +44,7 @@ import datetime as dt
 from typing import ClassVar
 
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
+from django.db import models
 from django.utils import timezone
 
 from teatree.core.models.loop_state import LoopState
@@ -46,10 +54,6 @@ _SECONDS_PER_DAY = 24 * 3600
 
 class LoopManager(models.Manager["Loop"]):
     """Read/transition surface each loop tick uses to drive the autonomous loops."""
-
-    def enabled(self) -> "models.QuerySet[Loop]":
-        """The enabled loops — the candidate set the loop-table fan-out considers each pass."""
-        return self.filter(enabled=True)
 
     def mark_run(self, name: str, ts: dt.datetime) -> None:
         """Stamp ``last_run_at = ts`` for *name* — the cadence bump after a run.
@@ -90,53 +94,41 @@ class LoopManager(models.Manager["Loop"]):
         won = self.filter(name=name, last_run_at=previous_last_run_at).update(last_run_at=now, last_attempt_at=now)
         return won == 1
 
-    def set_enabled(self, name: str, *, enabled: bool) -> int:
-        """Set the ``enabled`` toggle for *name*; return the number of rows updated.
+    def set_manual_override(
+        self,
+        name: str,
+        *,
+        runs: bool | None,
+        reason: str = "",
+        expected_lift_at: dt.datetime | None = None,
+    ) -> int:
+        """The SOLE writer of the manual layer; returns the rows updated.
 
-        ``Loop.enabled`` is the row-level source of truth the #2584 loop tick
-        reads (``not row.enabled`` skips a loop, independent of the durable
-        ``LoopState`` control plane). :meth:`disable` / :meth:`enable` move this
-        column in lock-step with their ``LoopState`` write (one atomic method
-        owns the paired invariant) so both planes agree. A direct ``update`` is
-        idempotent; a name with no row is a no-op (returns ``0``) — the paired
-        methods still record their ``LoopState`` intent for a not-yet-seeded name.
+        *runs* ``None`` lifts the override and hands the loop back to the preset. Setting
+        one REQUIRES a reason: without it nothing can ever judge whether the override still
+        applies, so the only possible policy would be a timer — which is the thing A6 got
+        wrong. *expected_lift_at* is advisory: the watcher reminds against it and nothing
+        enforces it.
         """
-        return self.filter(name=name).update(enabled=enabled)
+        if runs is not None and not reason.strip():
+            msg = f"a manual override on {name!r} must carry the reason it was set"
+            raise ValueError(msg)
+        return self.filter(name=name).update(
+            enabled=runs,
+            override_reason=reason.strip() if runs is not None else "",
+            override_set_at=timezone.now() if runs is not None else None,
+            override_expected_lift_at=expected_lift_at if runs is not None else None,
+        )
 
-    def disable(self, name: str) -> None:
-        """Durably disable *name* on BOTH planes atomically (#1913, #2584).
+    @staticmethod
+    def hold(name: str) -> None:
+        """Durably hold *name* — the emergency brake, above every other layer."""
+        LoopState.objects.disable(name)
 
-        The single owner of the paired write the ``loop_state`` command used to
-        inline (holistic 3c#4): the ``DISABLED`` :class:`LoopState` kill-switch AND
-        the row-level ``enabled=False`` the #2584 tick reads move together in one
-        transaction, so no caller can leave one plane stale — the "reports enabled
-        but never ticks" bug this method exists to make impossible. A name with no
-        ``Loop`` row still records its durable ``LoopState`` intent (the row update
-        is a 0-row no-op).
-        """
-        with transaction.atomic():
-            LoopState.objects.disable(name)
-            self.set_enabled(name, enabled=False)
-
-    def enable(self, name: str) -> None:
-        """Re-enable *name* on BOTH planes atomically — clears EITHER a pause or a disable.
-
-        The inverse of :meth:`disable`: the ``ENABLED`` :class:`LoopState`
-        transition (which lifts a PAUSE or a DISABLE) AND ``enabled=True`` move
-        together, so both planes agree the loop runs again.
-        """
-        with transaction.atomic():
-            LoopState.objects.enable(name)
-            self.set_enabled(name, enabled=True)
-
-    def resume(self, name: str) -> None:
-        """Return *name* to running on BOTH planes — the pause-vocabulary alias of :meth:`enable`.
-
-        ``resume`` and ``enable`` are the one "make it run again" transition so a
-        loop is never stuck because the operator reached for the pause verb on a
-        disabled loop.
-        """
-        self.enable(name)
+    @staticmethod
+    def release(name: str) -> None:
+        """Lift a hold on *name*; the preset (or a manual override) decides again."""
+        LoopState.objects.enable(name)
 
 
 class Loop(models.Model):
@@ -156,7 +148,12 @@ class Loop(models.Model):
     overlay = models.CharField(max_length=64, blank=True, default="")
     delay_seconds = models.PositiveIntegerField(null=True, blank=True)
     daily_at = models.TimeField(null=True, blank=True)
-    enabled = models.BooleanField(default=True)
+    #: The MANUAL override layer: ``None`` = the preset decides; ``True``/``False`` = a human said so.
+    enabled = models.BooleanField(null=True, blank=True, default=None)
+    override_reason = models.TextField(blank=True, default="")
+    override_set_at = models.DateTimeField(null=True, blank=True)
+    #: When the owner EXPECTS to lift it — what the watcher reminds against, never a TTL.
+    override_expected_lift_at = models.DateTimeField(null=True, blank=True)
     colleague_facing = models.BooleanField(default=False)
     last_run_at = models.DateTimeField(null=True, blank=True)
     #: When a tick last EXECUTED, whatever it produced — the anchor no pass may withhold.
@@ -181,8 +178,8 @@ class Loop(models.Model):
         ]
 
     def __str__(self) -> str:
-        state = "enabled" if self.enabled else "disabled"
-        return f"loop<{self.name} {state} {self.cadence_label}>"
+        override = "no override" if self.enabled is None else f"forced {'on' if self.enabled else 'off'}"
+        return f"loop<{self.name} {override} {self.cadence_label}>"
 
     def clean(self) -> None:
         """Exactly one of ``prompt`` (FK) / ``script``; a script loop carries an interval."""

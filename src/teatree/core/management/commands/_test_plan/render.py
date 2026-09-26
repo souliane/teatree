@@ -13,6 +13,7 @@ import json
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 
+from teatree.core.evidence.bdd_scenario_source import render_bdd_source
 from teatree.core.management.commands._test_plan.manifest import (
     SideManifest,
     TestPlanManifest,
@@ -82,6 +83,7 @@ def merge_state(
         "mrs": list(manifest.mrs) if manifest.mrs else list(prior.get("mrs", [])),
         "dev": prior.get("dev", {"commits": {}, "missing_on_dev": [], "workflows": {}}),
         "local": prior.get("local", {"commits": {}, "workflows": {}}),
+        "stack": prior.get("stack", {"commits": {}, "workflows": {}}),
         "steps": {name: list(steps) for name, steps in prior.get("steps", {}).items()},
         "template": manifest.template,
         "blocked_workflows": dict(prior.get("blocked_workflows", {})),
@@ -95,17 +97,21 @@ def merge_state(
         }
         state["dev"] = _with_ran_at(dev, manifest.dev.ran_at, prior=prior.get("dev"))
     if manifest.local.present:
-        local: SideState = {
-            "commits": dict(manifest.local.commits),
-            "workflows": embeds.get("local", {}),
-            "env": "local",
-        }
-        state["local"] = _with_ran_at(local, manifest.local.ran_at, prior=prior.get("local"))
+        state["local"] = _run_side(manifest.local, env="local", embeds=embeds, prior=prior.get("local"))
+    if manifest.stack.present:
+        state["stack"] = _run_side(manifest.stack, env="stack", embeds=embeds, prior=prior.get("stack"))
     for name, steps in manifest.steps.items():
         state["steps"][name] = list(steps)
     for name, reason in manifest.blocked_workflows.items():
         state["blocked_workflows"][name] = reason
     return state
+
+
+def _run_side(
+    side: SideManifest, *, env: str, embeds: dict[str, dict[str, WorkflowEmbed]], prior: SideState | None
+) -> SideState:
+    fresh: SideState = {"commits": dict(side.commits), "workflows": embeds.get(env, {}), "env": env}
+    return _with_ran_at(fresh, side.ran_at, prior=prior)
 
 
 def _with_ran_at(side: SideState, ran_at: str, *, prior: SideState | None) -> SideState:
@@ -187,14 +193,14 @@ def _reconcile_line(dev: SideState, local: SideState) -> str:
     return "Dev ± Local: " + ", ".join(parts)
 
 
-def _ran_at_line(dev: SideState, local: SideState) -> str:
-    """``"Dev ran: … Local ran: …"`` for whichever sides recorded a run instant.
+def _ran_at_line(dev: SideState, local: SideState, stack: SideState) -> str:
+    """Render the run instant for every evidence side that recorded one.
 
     Environment is the side and the version is its commits; this is the third
     fact an evidence entry needs — a capture with no time cannot be reproduced
     or aged out against a later build.
     """
-    sides = (("Dev", dev), ("Local", local))
+    sides = (("Dev", dev), ("Local", local), ("Stack", stack))
     parts = [f"{label} ran: {_human_instant(side['ran_at'])}" for label, side in sides if side.get("ran_at")]
     return "  ".join(parts)
 
@@ -223,7 +229,12 @@ def _workflow_names(state: PlanState) -> list[str]:
     workflows in ``state["steps"]``, never in either side — so they must be
     enumerated here too or their steps never render.
     """
-    sources = (state["dev"].get("workflows", {}), state["local"].get("workflows", {}), state.get("steps", {}))
+    sources = (
+        state["dev"].get("workflows", {}),
+        state["local"].get("workflows", {}),
+        state["stack"].get("workflows", {}),
+        state.get("steps", {}),
+    )
     return list(dict.fromkeys(name for source in sources for name in source))
 
 
@@ -251,25 +262,31 @@ def _workflow_table(state: PlanState, workflow: str) -> list[str]:
     grid that reads as missing evidence. Such a workflow renders as its heading
     + steps only (the steps carry the ``Actual: ✅`` claim), no empty table.
     """
-    dev_video, dev_images = _cells(state["dev"], workflow)
-    local_video, local_images = _cells(state["local"], workflow)
+    sides = [("Dev", state["dev"]), ("Local", state["local"])]
+    if state["stack"].get("commits") or state["stack"].get("workflows"):
+        sides.append(("Stack", state["stack"]))
+    cells = [(label, *_cells(side, workflow)) for label, side in sides]
 
     lines = [f"### {workflow}", ""]
     lines.extend(_test_plan_block(state, workflow))
 
-    has_video = dev_video != _EMPTY_CELL or local_video != _EMPTY_CELL
-    has_images = bool(dev_images or local_images)
+    has_video = any(video != _EMPTY_CELL for _label, video, _images in cells)
+    has_images = any(images for _label, _video, images in cells)
     if not has_video and not has_images:
         lines.append("")
         return lines
 
-    lines.extend(["| Dev | Local |", "|---|---|"])
+    lines.extend(
+        [
+            "| " + " | ".join(label for label, _video, _images in cells) + " |",
+            "|" + "---|" * len(cells),
+        ]
+    )
     if has_video:
-        lines.append(f"| {dev_video} | {local_video} |")
-    for i in range(max(len(dev_images), len(local_images))):
-        left = dev_images[i] if i < len(dev_images) else _EMPTY_CELL
-        right = local_images[i] if i < len(local_images) else _EMPTY_CELL
-        lines.append(f"| {left} | {right} |")
+        lines.append("| " + " | ".join(video for _label, video, _images in cells) + " |")
+    for i in range(max(len(images) for _label, _video, images in cells)):
+        row = [images[i] if i < len(images) else _EMPTY_CELL for _label, _video, images in cells]
+        lines.append("| " + " | ".join(row) + " |")
     lines.append("")
     return lines
 
@@ -278,14 +295,16 @@ def _render_header(state: PlanState) -> list[str]:
     """Shared preamble for every template: markers, heading, MRs, commits, reconcile."""
     ticket_id = state.get("ticket", "")
     title = state.get("title", "") or ticket_id
-    dev, local = state["dev"], state["local"]
+    dev, local, stack = state["dev"], state["local"], state["stack"]
     base_index = _commit_base_index(tuple(state.get("mrs", [])))
     lines: list[str] = [
         render_ticket_marker(ticket_id=ticket_id),
         f"<!-- t3-e2e-data {json.dumps(state, separators=(',', ':'), sort_keys=True)} -->",
-        f"## Test Plan — {title}",
-        "",
     ]
+    scenario_source = state.get("scenario_source")
+    if scenario_source is not None:
+        lines.append(render_bdd_source(scenario_source))
+    lines.extend((f"## Test Plan — {title}", ""))
     mrs_line = render_mrs_line(tuple(state.get("mrs", [])))
     if mrs_line:
         lines.append(mrs_line)
@@ -296,10 +315,13 @@ def _render_header(state: PlanState) -> list[str]:
     local_line = _commits_line("Local tested", local, base_index)
     if local_line:
         lines.append(local_line)
+    stack_line = _commits_line("Stack tested", stack, base_index)
+    if stack_line:
+        lines.append(stack_line)
     reconcile = _reconcile_line(dev, local)
     if reconcile:
         lines.append(reconcile)
-    ran_at = _ran_at_line(dev, local)
+    ran_at = _ran_at_line(dev, local, stack)
     if ran_at:
         lines.append(ran_at)
     lines.append("")
@@ -340,9 +362,18 @@ def render_body(state: PlanState) -> str:
     blocked = state.get("blocked_workflows") or {}
     dev_commits = bool(state["dev"].get("commits"))
     local_commits = bool(state["local"].get("commits"))
+    stack_commits = bool(state["stack"].get("commits"))
     mrs = bool(state.get("mrs"))
     scenarios = bool(state.get("scenarios"))
-    has_content = bool(_workflow_names(state)) or bool(blocked) or dev_commits or local_commits or mrs or scenarios
+    has_content = (
+        bool(_workflow_names(state))
+        or bool(blocked)
+        or dev_commits
+        or local_commits
+        or stack_commits
+        or mrs
+        or scenarios
+    )
     if not has_content:
         msg = "empty: the test-plan state has no workflows and no blocked workflows — nothing to post."
         raise TestPlanValidationError(msg)

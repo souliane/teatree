@@ -32,8 +32,10 @@ from teatree.core.admission_pressure import (
     box_load_headroom,
     ram_headroom,
     resolve_shed_at,
+    resume_ceiling_conflict,
     weekly_pace,
 )
+from teatree.utils.ram_scope import AGENT_WORKLOAD_FLOOR_ENV, RamHeadroom
 
 _WEEK = 7 * 24 * 3600
 
@@ -336,6 +338,89 @@ class TestShedAtResolution:
         """The rollback lever: at 1.0 no value can land in SHED."""
         for value in (0.9, 0.95, 0.999):
             assert PressureBand.for_value(value, shed_at=1.0) is PressureBand.DEGRADED
+
+
+class TestTheRefusalNamesAnImpossibleCeiling:
+    """A cap at/under the RESUME floor is a one-way door, and the refusal has to say so (#4201).
+
+    A braked governor holds itself to :data:`RAM_RESUME_FLOOR_GB`, so a cgroup capped at or
+    below it can never re-admit — unsatisfiable with the container EMPTY. The measured
+    incident refused every headless task for ~14 hours behind "3.5 GB available at/under the
+    6 GB watermark", a sentence indistinguishable from back-pressure someone can wait out.
+    The predicate takes a SCOPE-QUALIFIED cap — ``None`` for a cgroup whose reading does
+    not govern — so it needs no lower bound of its own. Restating the scope test's floor
+    here instead is what #151 caught: that floor is operator-overridable, so a lowered
+    override made a small cap box-scoped and permanently braked while a restated DEFAULT
+    silently declined to name it.
+    """
+
+    def test_a_box_scoped_cap_under_the_resume_floor_is_always_named(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The invariant, swept across floor overrides: governing and unreachable is NAMED.
+
+        RED before #151 at ``floor="2"``, cap 3.0 — box-scoped (so the cgroup arithmetic
+        governs and the lane is braked forever) AND unnamed, because the predicate's
+        restated lower bound was the DEFAULT floor rather than the effective one.
+        """
+        named, unnamed, out_of_scope = 0, 0, 0
+        for floor in (None, "2", "4", "8"):
+            if floor is None:
+                monkeypatch.delenv(AGENT_WORKLOAD_FLOOR_ENV, raising=False)
+            else:
+                monkeypatch.setenv(AGENT_WORKLOAD_FLOOR_ENV, floor)
+            for cap_gb in (1.0, 3.0, 3.999, 5.0, 6.0, 6.5, 18.0):
+                headroom = RamHeadroom(available_mib=None, cgroup_limit_mib=int(cap_gb * 1024), host_available_mib=None)
+                conflict = resume_ceiling_conflict(headroom.box_watermark_cap_gb)
+                if not headroom.cgroup_is_box_scoped:
+                    out_of_scope += 1
+                    assert conflict is None, f"floor={floor} cap={cap_gb}: named a cap that does not govern"
+                elif cap_gb <= RAM_RESUME_FLOOR_GB:
+                    named += 1
+                    assert conflict is not None, f"floor={floor} cap={cap_gb}: box-scoped, braked forever, SILENT"
+                else:
+                    unnamed += 1
+                    assert conflict is None, f"floor={floor} cap={cap_gb}: named a cap above the resume floor"
+
+        # Anti-vacuity: the sweep must actually visit all three branches, or the assertions
+        # above are satisfied by never reaching them.
+        assert named, "no box-scoped sub-floor cap was visited — the invariant is untested"
+        assert unnamed, "no roomy cap was visited — the too-high control never fired"
+        assert out_of_scope, "no out-of-scope cap was visited — the scope branch is untested"
+
+    def test_a_cap_under_the_resume_floor_is_reported_as_impossible(self) -> None:
+        conflict = resume_ceiling_conflict(5.0)
+        assert conflict is not None
+        assert "5" in conflict
+        assert str(int(RAM_RESUME_FLOOR_GB)) in conflict
+
+    def test_a_cap_exactly_at_the_resume_floor_is_still_impossible(self) -> None:
+        assert resume_ceiling_conflict(RAM_RESUME_FLOOR_GB) is not None
+
+    def test_a_roomy_cap_has_no_conflict(self) -> None:
+        assert resume_ceiling_conflict(RAM_RESUME_FLOOR_GB + 4) is None
+
+    def test_an_uncapped_or_out_of_scope_reading_has_no_conflict(self) -> None:
+        assert resume_ceiling_conflict(None) is None
+
+    def test_the_memory_component_carries_the_diagnosis(self) -> None:
+        pressure = admission_pressure(quota=_quota(), machine=_machine(ram_available_gb=3.5, memory_cap_gb=5.0))
+        assert pressure.band is PressureBand.HALT
+        assert "3.5 GB available at/under the 4 GB watermark" in pressure.reason
+        assert "NEVER resume" in pressure.reason
+
+    def test_a_roomy_cap_leaves_the_pre_4508_wording_untouched(self) -> None:
+        machine = _machine(ram_available_gb=3.5, memory_cap_gb=18.0)
+        pressure = admission_pressure(quota=_quota(), machine=machine)
+        assert pressure.reason == _old_reason(_quota(), machine, braked=False)
+
+    def test_the_diagnosis_changes_the_sentence_and_never_the_scalar(self) -> None:
+        plain = admission_pressure(quota=_quota(), machine=_machine(ram_available_gb=3.5))
+        diagnosed = admission_pressure(quota=_quota(), machine=_machine(ram_available_gb=3.5, memory_cap_gb=5.0))
+        assert diagnosed.value == plain.value
+        assert diagnosed.reason != plain.reason
+
+    def test_an_unread_memory_reading_produces_no_component_to_diagnose(self) -> None:
+        pressure = admission_pressure(quota=_quota(), machine=_machine(ram_available_gb=None, memory_cap_gb=5.0))
+        assert all(component.name != "memory" for component in pressure.components)
 
 
 _QUOTA_COMPONENTS = ("accounts-exhausted", "weekly-quota", "5h-quota", "weekly-pace")

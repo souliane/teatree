@@ -35,7 +35,7 @@ def _prompt() -> Prompt:
     return prompt
 
 
-def _make_loop(name: str, cadence: int, *, last_run_at: dt.datetime | None = None, enabled: bool = True) -> Loop:
+def _make_loop(name: str, cadence: int, *, last_run_at: dt.datetime | None = None, enabled: bool | None = None) -> Loop:
     return Loop.objects.create(
         name=name,
         delay_seconds=cadence,
@@ -88,16 +88,40 @@ class TestLoopListText(django.test.TestCase):
         assert output.index("infra slots") < output.index("mini-loops")
         assert "loop-tick" in output
 
-    def test_paused_loop_shows_held_marker_despite_enabled_row(self) -> None:
-        # A PAUSED loop keeps Loop.enabled=True with a live countdown; the
-        # `held` marker is the only signal that the tick will skip it.
+    def test_released_infra_slot_renders_a_live_next_tick(self) -> None:
+        """The rendered acceptance criterion: `next` is a countdown, not `—`.
+
+        The reactive Slack-answer slot acquires its lease for one cycle and releases
+        it on the way out. It rendered `last: — next: — idle` while it was reacting
+        and dispatching on the owner's DM, which reads as "this loop has never fired"
+        — and is what got the working half of the feature reported as dead.
+        """
+        LoopLease.objects.acquire("loop-slack-answer", owner="worker-1")
+        LoopLease.objects.release("loop-slack-answer", owner="worker-1")
+
+        line = next(ln for ln in _run().splitlines() if "loop-slack-answer" in ln)
+
+        assert "in " in line, f"expected a live countdown in the Next cell, got: {line}"
+        assert line.count("—") == 0
+
+    def test_infra_slot_that_never_ran_still_renders_em_dash(self) -> None:
+        """The inverse control: a slot with no lease history is honestly never-fired."""
+        LoopLease.objects.filter(name="loop-slack-answer").delete()
+
+        line = next(ln for ln in _run().splitlines() if "loop-slack-answer" in ln)
+
+        assert line.count("—") >= 2
+
+    def test_paused_loop_reads_disabled_and_names_the_hold(self) -> None:
+        # A PAUSED loop keeps its manual override and a live cadence anchor; the State
+        # column follows the verdict the tick gates on and `held` says which layer.
         Loop.objects.all().delete()
-        _make_loop("review", 300, last_run_at=timezone.now())
+        _make_loop("review", 300, last_run_at=timezone.now(), enabled=True)
         LoopState.objects.pause("review")
         output = _run()
         line = next(ln for ln in output.splitlines() if "review" in ln)
         assert "held" in line
-        assert "enabled" in line
+        assert "disabled" in line
 
     def test_stall_warning_when_last_tick_old(self) -> None:
         # Every Loop row never ran (no mini-loop contributes a recent tick) and
@@ -177,7 +201,7 @@ class TestLoopListJson(django.test.TestCase):
         assert {"infra_slots", "mini_loops", "owner", "stalled", "tick_cadence_seconds"} <= payload.keys()
         dispatch = next(e for e in payload["mini_loops"] if e["name"] == "dispatch")
         assert dispatch["kind"] == "mini-loop"
-        assert dispatch["enabled"] is True
+        assert dispatch["enabled"] is None
         assert dispatch["never_fired"] is False
         assert payload["owner"]["session_id"] == "sess-json"
         assert payload["owner"]["pid_is_alive"] is True
@@ -200,7 +224,7 @@ class TestLoopListJson(django.test.TestCase):
         payload = json.loads(_run_json())
         review = next(e for e in payload["mini_loops"] if e["name"] == "review")
         assert review["held"] is True
-        assert review["enabled"] is True
+        assert review["enabled"] is None
 
     def test_json_running_loop_reports_held_false(self) -> None:
         Loop.objects.all().delete()
@@ -211,17 +235,17 @@ class TestLoopListJson(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
-class TestLoopListReflectsPresetMask(django.test.TestCase):
-    """#3159: the live view surfaces a preset mask, not just enabled+held.
+class TestLoopListNamesTheDecidingLayer(django.test.TestCase):
+    """#3159: the ``Held`` signal column — "why this verdict" — names the layer.
 
-    A preset can mask a base-enabled loop OFF (or force a base-disabled loop ON)
-    with no ``LoopState`` hold, so the ``Held`` signal column — "will this tick" —
-    must reflect it instead of leaving a masked loop reading plainly ``enabled``.
+    A preset can mask a loop OFF with no ``LoopState`` hold, and a manual override can
+    outrank the preset either way. Neither is visible from the State column alone, so a
+    masked loop would read plainly ``disabled`` and an override would be invisible (A7).
     """
 
     def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
         Mode.objects.create(name=preset_name, entries=entries)
-        ModeOverride.objects.set_override(preset_name)
+        ModeOverride.objects.set_override(preset_name, reason="test override")
 
     def test_masked_off_loop_shows_masked(self) -> None:
         Loop.objects.all().delete()
@@ -230,21 +254,24 @@ class TestLoopListReflectsPresetMask(django.test.TestCase):
         line = next(ln for ln in _run().splitlines() if "review" in ln)
         assert "masked" in line
 
-    def test_forced_on_base_disabled_loop_shows_forced_on(self) -> None:
+    def test_an_override_outranking_the_preset_shows_manual_on(self) -> None:
         Loop.objects.all().delete()
-        _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
-        self._activate("present", {"audit": True})
-        # ``audit`` is a registered loop, so a forced-on row with no timer chain is
+        _make_loop("audit", 300, last_run_at=timezone.now(), enabled=True)
+        self._activate("maintenance", {"audit": False})
+        # ``audit`` is a registered loop, so an admitted row with no timer chain is
         # genuinely ``starved`` and that label wins the column (#4185). Give it a driver
-        # so this stays a test of the forced-on label, not of starvation.
+        # so this stays a test of the manual label, not of starvation.
         with patch(_STARVED_SEAM, return_value=set()):
             line = next(ln for ln in _run().splitlines() if "audit" in ln)
-        assert "forced-on" in line
+        assert "manual-on" in line
+        assert "enabled" in line
 
-    def test_plain_disabled_loop_is_not_labelled_masked(self) -> None:
+    def test_an_override_forcing_a_loop_off_shows_manual_off(self) -> None:
         Loop.objects.all().delete()
         _make_loop("inbox", 300, enabled=False)
+        self._activate("present", {"inbox": True})
         line = next(ln for ln in _run().splitlines() if "inbox" in ln)
+        assert "manual-off" in line
         assert "masked" not in line
         assert "disabled" in line
 
@@ -254,7 +281,7 @@ class TestLoopListReflectsPresetMask(django.test.TestCase):
         self._activate("maintenance", {"review": False})
         review = next(e for e in json.loads(_run_json())["mini_loops"] if e["name"] == "review")
         assert review["admitted"] is False
-        assert review["enabled"] is True
+        assert review["enabled"] is None
 
 
 @django.test.override_settings(USE_TZ=True)
@@ -415,28 +442,28 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
 class TestLoopListRendersStarved(django.test.TestCase):
     """An admitted loop with no timer chain reads ``starved``, never healthy (#4185).
 
-    ``forced-on`` says the preset decided it; ``starved`` says nothing is driving it.
+    ``manual-on`` says which layer decided it; ``starved`` says nothing is driving it.
     The second is the alarming half, so it takes precedence in the one signal column.
     """
 
     def setUp(self) -> None:
         Loop.objects.all().delete()
-        _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
-        Mode.objects.create(name="present", entries={"audit": True})
-        ModeOverride.objects.set_override("present")
+        _make_loop("audit", 300, last_run_at=timezone.now(), enabled=True)
+        Mode.objects.create(name="present", entries={"audit": False})
+        ModeOverride.objects.set_override("present", reason="test override")
 
     def test_a_driverless_admitted_loop_reads_starved(self) -> None:
         with patch(_STARVED_SEAM, return_value={"audit"}):
             line = next(ln for ln in _run().splitlines() if "audit" in ln)
         assert "starved" in line
         # Precedence: the alarming state wins the column outright.
-        assert "forced-on" not in line
+        assert "manual-on" not in line
 
-    def test_a_driven_admitted_loop_keeps_its_forced_on_label(self) -> None:
+    def test_a_driven_admitted_loop_keeps_its_layer_label(self) -> None:
         with patch(_STARVED_SEAM, return_value=set()):
             line = next(ln for ln in _run().splitlines() if "audit" in ln)
         assert "starved" not in line
-        assert "forced-on" in line
+        assert "manual-on" in line
 
     def test_json_carries_the_starved_flag(self) -> None:
         with patch(_STARVED_SEAM, return_value={"audit"}):

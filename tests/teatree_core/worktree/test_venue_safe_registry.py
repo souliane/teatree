@@ -33,7 +33,10 @@ class _RegistryTestCase(TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.tmp = Path(tmp.name)
+        # Git reports physical worktree paths on macOS, where ``/var`` resolves
+        # through ``/private/var``. Start from that same spelling so the venue
+        # boundary is what the tests exercise, not the platform alias.
+        self.tmp = Path(tmp.name).resolve()
         self.canonical = self.tmp / "canonical"
         self.canonical.mkdir()
         self.clone = self.tmp / "clone"

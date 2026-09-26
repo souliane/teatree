@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ImproperlyConfigured, ValidationError
 from django_typer.management import TyperCommand, command
 
 from teatree.config import (
@@ -41,15 +41,19 @@ from teatree.config import (
     effective_default,
     get_effective_settings,
 )
-from teatree.config.feature_flags import flag_trailer, render_flags_audit
+from teatree.config.credential_pass_key import validate_pass_key_entry
+from teatree.config.feature_flags import render_flags_audit
 from teatree.config.retired_settings import retirement_notice
 from teatree.config.setting_groups import group_outline
+from teatree.config.setting_taxonomy import governance_trailer
 from teatree.config.stored_row_health import stored_row_note
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 from teatree.core.config_interchange.migration import export_db_to_toml, import_toml_to_db
 from teatree.core.factory.feature_inertness import feature_inertness, render_inertness_report
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, scope_label
+from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 
 # Every key ``config_setting`` knows — the SINGLE known-key set shared by
 # get/list/set/clear AND the MCP ``config_setting_get`` read tool
@@ -64,14 +68,25 @@ _OverlayOption = Annotated[
 ]
 
 
-def _flag_suffix(key: str) -> str:
-    """A leading-space ``[feature flag, …]`` governance trailer for *key*, or ``""``.
+def _governance_suffix(key: str) -> str:
+    """A leading-space governance trailer for *key*, or ``""`` for a plain setting.
 
-    So an operator flipping a governed, lifecycle-staged toggle sees it is a flag —
-    not a durable setting — and where its removal is tracked, without a second lookup.
+    So an operator flipping a governed key sees which classes it holds — gate, safety
+    posture, cold read, staged flag — without a second lookup.
     """
-    trailer = flag_trailer(key)
+    trailer = governance_trailer(key)
     return f"  {trailer}" if trailer else ""
+
+
+def _decider_suffix(key: str, overlay: str) -> str:
+    """A leading-space ``[decided by …]`` trailer for a STORED row, or ``""``.
+
+    Every write records who decided it, and a recorded decision nothing ever shows is a
+    column, not an audit — the operator asking "why is this off" gets the value and no
+    answer. Only a stored row has a decider: a code default was decided by the release.
+    """
+    row = ConfigSetting.objects.filter(scope=overlay, key=key).first()
+    return f"  [decided by {row.written_by}]" if row is not None and row.written_by else ""
 
 
 def _stored_row_suffix(key: str) -> str:
@@ -95,6 +110,15 @@ class Command(TyperCommand):
         """
         self.stderr.write(f"  refusing: {retirement_notice(key) or f'{key!r} is not a known config setting'}")
         raise SystemExit(2)
+
+    def _write_pass_key_resolution(self, key: str, credential: str, overlay: str) -> None:
+        try:
+            config = get_overlay(overlay or None).config
+        except ImproperlyConfigured as exc:
+            self.stderr.write(f"  cannot resolve {key!r}: {exc}")
+            raise SystemExit(2) from exc
+        resolution = config.resolve_pass_key(credential)
+        self.stdout.write(f"  {key} = {resolution.value!r}  [source: {resolution.source}]")
 
     @command()
     def set(
@@ -120,7 +144,8 @@ class Command(TyperCommand):
         raise on every later config resolution can never be stored. Validating
         on write is what keeps a bad row from bricking all reads.
         """
-        if key not in _ALLOWED_SETTINGS:
+        credential = known_pass_key_credential(key)
+        if key not in _ALLOWED_SETTINGS and credential is None:
             self._refuse_unknown_key(key)
         try:
             parsed = json.loads(value)
@@ -128,8 +153,8 @@ class Command(TyperCommand):
             self.stderr.write(f"  invalid JSON value for {key!r}: {exc}")
             raise SystemExit(2) from exc
         try:
-            canonical = validate_config_write(key, parsed)
-        except ConfigWriteError as exc:
+            canonical = validate_pass_key_entry(parsed) if credential else validate_config_write(key, parsed)
+        except ValueError as exc:
             self.stderr.write(f"  invalid value for {key!r}: {exc}")
             raise SystemExit(2) from exc
         # Persist the CANONICAL parsed value, not the raw user value, so the DB
@@ -148,9 +173,12 @@ class Command(TyperCommand):
             # repair-halt flood on every later dispatch.
             self.stderr.write(f"  refusing inconsistent config for {key!r}: {exc.messages[0]}")
             raise SystemExit(2) from exc
+        except ValueError as exc:
+            self.stderr.write(f"  refused: {exc}")
+            raise SystemExit(2) from exc
         # Verify-by-re-read: report the stored value the resolver will now see.
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
-        self.stdout.write(f"  set {key} = {stored!r}  [{scope_label(overlay)}]{_flag_suffix(key)}")
+        self.stdout.write(f"  set {key} = {stored!r}  [{scope_label(overlay)}]{_governance_suffix(key)}")
 
     @command()
     def seed(
@@ -185,16 +213,20 @@ class Command(TyperCommand):
         except ConfigWriteError as exc:
             self.stderr.write(f"  invalid value for {key!r}: {exc}")
             raise SystemExit(2) from exc
-        outcome = ConfigSetting.objects.seed(
-            key,
-            canonical,
-            code_default=effective_default(key),
-            seeded_by=seeded_by,
-            scope=overlay,
-        )
+        try:
+            outcome = ConfigSetting.objects.seed(
+                key,
+                canonical,
+                code_default=effective_default(key),
+                seeded_by=seeded_by,
+                scope=overlay,
+            )
+        except ValueError as exc:
+            self.stderr.write(f"  refused: {exc}")
+            raise SystemExit(2) from exc
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         self.stdout.write(
-            f"  seed {key}: {outcome.value}  (effective={stored!r})  [{scope_label(overlay)}]{_flag_suffix(key)}"
+            f"  seed {key}: {outcome.value}  (effective={stored!r})  [{scope_label(overlay)}]{_governance_suffix(key)}"
         )
 
     @command()
@@ -277,18 +309,24 @@ class Command(TyperCommand):
         an unknown key — a typo is loud, not a silent answer for a non-setting — but
         accepts every key ``list`` can display (the unified known-key set).
         """
+        if (credential := known_pass_key_credential(key)) is not None:
+            self._write_pass_key_resolution(key, credential, overlay)
+            return
         if key not in _ALLOWED_SETTINGS:
             self._refuse_unknown_key(key)
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
-            self.stdout.write(f"  {key} = {stored!r}  [source: db, {scope_label(overlay)}]{_flag_suffix(key)}")
+            self.stdout.write(
+                f"  {key} = {stored!r}  [source: db, {scope_label(overlay)}]"
+                f"{_governance_suffix(key)}{_decider_suffix(key, overlay)}"
+            )
             return
         cold_hook = COLD_HOOK_SETTINGS.get(key)
         if cold_hook is not None:
-            self.stdout.write(f"  {key} = {cold_hook.default!r}  [source: code default]{_flag_suffix(key)}")
+            self.stdout.write(f"  {key} = {cold_hook.default!r}  [source: code default]{_governance_suffix(key)}")
             return
         fallback = getattr(get_effective_settings(overlay or None), key, None)
-        self.stdout.write(f"  {key} = {fallback!r}  [source: env/default]{_flag_suffix(key)}")
+        self.stdout.write(f"  {key} = {fallback!r}  [source: env/default]{_governance_suffix(key)}")
 
     @command()
     def export(

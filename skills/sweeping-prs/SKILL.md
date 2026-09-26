@@ -97,6 +97,16 @@ Compare `target_branch` to the repo's default branch. If they differ, **stop and
 
 **Do not change the target branch under any circumstances** — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Never Change PR Base Branch or Dependencies".
 
+### Stack layers — skip the per-PR default-branch merge
+
+A PR targeting another open PR's source branch is a stack layer: never merge the default branch into it.
+Merge the default branch into the BOTTOM layer only, then walk bottom-up and merge each updated parent
+into its child once. Push normally and verify every target; never use a restack mode that rebases or
+force-pushes the published chain.
+When a stack's base merges, the newly retargeted layer needs a fresh FULL pipeline before it is
+eligible to merge — its newest pipeline is the cheap upper-layer one (see the ship skill's retarget-hole rule).
+See [`../ship/SKILL.md`](../ship/SKILL.md) § "Stacked Delivery — One Stack Per Repo (Default)".
+
 ### Gate 2 — Approved
 
 Check whether the PR has approvals. If approved and the merge will introduce new commits, ask before pushing:
@@ -245,9 +255,9 @@ Never reuse one worktree across multiple PRs in a sweep. Each PR gets its own wo
 
 ## Configuration
 
-| Overlay `overlays`-registry key | Purpose |
+| Setting | Purpose |
 |---|---|
-| `gitlab_username_pass_key` | Pass-store key holding the GitLab username for the overlay. Resolves to `overlay.config.get_gitlab_username()`. |
-| `github_username` | Plain GitHub login for the overlay (no secret needed). |
+| `gitlab_username_pass_key` | Pass-store key holding the GitLab username for the overlay — its own setting, `t3 <overlay> config_setting set gitlab_username_pass_key '"<entry>"' --overlay <name>`. Resolves to `overlay.config.get_gitlab_username()`. <!-- mcp-ratchet: allow — the MCP write refuses credential coordinates, so the CLI is the only writer --> |
+| `github_username` | Plain GitHub login for the overlay (no secret needed), in the `overlays` registry row. |
 
 Without a configured username, the sweep falls back to `host.current_user()` (the OAuth-authenticated identity). Set the username explicitly when the workforce identity differs from the bot identity.

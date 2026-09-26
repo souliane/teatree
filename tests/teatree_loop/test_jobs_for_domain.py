@@ -20,6 +20,7 @@ from django.test import TestCase
 from teatree.config import PrReviewBackend, UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
+from teatree.core.models import ConfigSetting
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain
 
@@ -189,6 +190,43 @@ class PrSweepShipDomainTestCase(TestCase):
         assert "PrSweepScanner" not in review
 
 
+class TriageSharesTheShipEnricherTestCase(TestCase):
+    """The triage surveyor gets a CI source, and it is the one already in scope (#4-D2).
+
+    GitLab's MR list payload carries no pipeline, so a triage scanner with no enricher
+    reads UNKNOWN for every merge request on that forge. A SECOND enricher would give it
+    one at the cost of doubling the per-tick forge reads the shared budget exists to bound.
+    """
+
+    @staticmethod
+    def _backend() -> OverlayBackends:
+        overlay = MagicMock()
+        overlay.config.get_review_broadcast_channels.return_value = []
+        overlay.config.get_review_channel.return_value = ("", "")
+        overlay.metadata.get_followup_repos.return_value = []
+        overlay.get_workspace_repos.return_value = []
+        return OverlayBackends(
+            name="t3-teatree",
+            hosts=(MagicMock(spec=CodeHostBackend),),
+            messaging=None,
+            ready_labels=("ready",),
+            overlay=overlay,
+        )
+
+    @staticmethod
+    def _enricher_of(jobs: list[Any], scanner_type: str) -> object:
+        return next(j.scanner.ci_enricher for j in jobs if type(j.scanner).__name__ == scanner_type)
+
+    def test_the_triage_scanner_shares_the_my_prs_enricher_instance(self) -> None:
+        ConfigSetting.objects.set_value("mr_triage_enabled", value=True)
+        backend = self._backend()
+        jobs = jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,))
+
+        triage = self._enricher_of(jobs, "MrTriageScanner")
+        assert triage is not None
+        assert triage is self._enricher_of(jobs, "MyPrsScanner")
+
+
 _SETTINGS_PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 _BACKEND_PATCH_TARGET = "teatree.loop.scanner_factories.resolve_pr_review_backend"
 
@@ -278,23 +316,11 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
     def test_member_of_per_overlay_partition(self) -> None:
         assert Domain.ISSUE_IMPLEMENTER in PER_OVERLAY_DOMAINS
 
-    def test_disabled_slice_is_empty_so_partition_sum_is_unchanged(self) -> None:
-        # The gate ships ON since #3895, so "disabled" is stated rather than inherited
-        # from the dataclass default.
-        backend = self._backend()
-        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(issue_implementer_enabled=False)):
-            assert jobs_for_domain(Domain.ISSUE_IMPLEMENTER, backend) == []
-            partitioned: list[Any] = []
-            for domain in PER_OVERLAY_DOMAINS:
-                partitioned.extend(jobs_for_domain(domain, backend, all_backends=(backend,)))
-            legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
-        assert sorted(map(_signature, partitioned), key=repr) == sorted(map(_signature, legacy), key=repr)
-
     def test_enabled_slice_owns_exactly_the_issue_intake_scanner(self) -> None:
         backend = self._backend()
         with patch(
             _SETTINGS_PATCH_TARGET,
-            return_value=UserSettings(issue_implementer_enabled=True, issue_implementer_label="auto-implement"),
+            return_value=UserSettings(issue_implementer_label="auto-implement"),
         ):
             slice_jobs = jobs_for_domain(Domain.ISSUE_IMPLEMENTER, backend)
             legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
@@ -309,7 +335,7 @@ class IssueImplementerDomainPartitionTestCase(TestCase):
         backend = self._backend()
         with patch(
             _SETTINGS_PATCH_TARGET,
-            return_value=UserSettings(issue_implementer_enabled=True, issue_implementer_label="auto-implement"),
+            return_value=UserSettings(issue_implementer_label="auto-implement"),
         ):
             counts: Counter[tuple[Any, ...]] = Counter()
             for domain in PER_OVERLAY_DOMAINS:
@@ -342,21 +368,9 @@ class TriageAssessorDomainPartitionTestCase(TestCase):
     def test_member_of_per_overlay_partition(self) -> None:
         assert Domain.TRIAGE_ASSESSOR in PER_OVERLAY_DOMAINS
 
-    def test_disabled_slice_is_empty_so_partition_sum_is_unchanged(self) -> None:
-        # The gate ships ON since #3895, so "disabled" is stated rather than inherited
-        # from the dataclass default.
-        backend = self._backend()
-        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(triage_assessor_enabled=False)):
-            assert jobs_for_domain(Domain.TRIAGE_ASSESSOR, backend) == []
-            partitioned: list[Any] = []
-            for domain in PER_OVERLAY_DOMAINS:
-                partitioned.extend(jobs_for_domain(domain, backend, all_backends=(backend,)))
-            legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
-        assert sorted(map(_signature, partitioned), key=repr) == sorted(map(_signature, legacy), key=repr)
-
     def test_enabled_slice_owns_exactly_the_triage_assessor_scanner(self) -> None:
         backend = self._backend()
-        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings(triage_assessor_enabled=True)):
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings()):
             slice_jobs = jobs_for_domain(Domain.TRIAGE_ASSESSOR, backend)
             legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
         assert [job.scanner.name for job in slice_jobs] == ["triage_assessor"]

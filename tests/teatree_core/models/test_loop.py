@@ -16,7 +16,7 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from teatree.core.models import Loop, LoopState, LoopStatus, Prompt
+from teatree.core.models import Loop, Prompt
 from teatree.loops.seed import DEFAULT_LOOPS
 
 
@@ -31,9 +31,9 @@ def _prompt(name: str = "demo-prompt", body: str = "do x") -> Prompt:
 
 
 class TestLoopDefaults(TestCase):
-    def test_enabled_default_last_run_absent(self) -> None:
+    def test_a_fresh_row_carries_no_manual_override(self) -> None:
         loop = Loop.objects.create(name="demo-x", delay_seconds=300, prompt=_prompt("p-x"))
-        assert loop.enabled is True
+        assert loop.enabled is None
         assert loop.last_run_at is None
         assert loop.daily_at is None
 
@@ -41,7 +41,7 @@ class TestLoopDefaults(TestCase):
         loop = Loop.objects.create(name="demo-ship", delay_seconds=300, prompt=_prompt("p-ship"))
         rendered = str(loop)
         assert "demo-ship" in rendered
-        assert "enabled" in rendered
+        assert "no override" in rendered
         assert "every 300s" in rendered
 
 
@@ -269,67 +269,11 @@ class TestLoopDailyCadenceDstSafe(TestCase):
 
 
 class TestLoopManager(TestCase):
-    def test_enabled_excludes_disabled(self) -> None:
-        Loop.objects.create(name="demo-on", delay_seconds=60, prompt=_prompt())
-        Loop.objects.create(name="demo-disabled", delay_seconds=60, prompt=_prompt(), enabled=False)
-        names = {row.name for row in Loop.objects.enabled()}
-        assert "demo-on" in names
-        assert "demo-disabled" not in names
-
     def test_mark_run_sets_last_run_at(self) -> None:
         Loop.objects.create(name="demo-mark", delay_seconds=60, prompt=_prompt())
         ts = timezone.now()
         Loop.objects.mark_run("demo-mark", ts)
         assert Loop.objects.get(name="demo-mark").last_run_at == ts
-
-    def test_set_enabled_flips_the_row_toggle(self) -> None:
-        Loop.objects.create(name="demo-toggle", delay_seconds=60, prompt=_prompt(), enabled=False)
-        updated = Loop.objects.set_enabled("demo-toggle", enabled=True)
-        assert updated == 1
-        assert Loop.objects.get(name="demo-toggle").enabled is True
-        Loop.objects.set_enabled("demo-toggle", enabled=False)
-        assert Loop.objects.get(name="demo-toggle").enabled is False
-
-    def test_set_enabled_is_a_no_op_for_an_absent_row(self) -> None:
-        assert Loop.objects.set_enabled("demo-absent", enabled=True) == 0
-
-
-class TestAtomicTwoPlaneControl(TestCase):
-    """``Loop.objects.disable/enable/resume`` own the paired two-plane write atomically.
-
-    The #2584 tick verdict gates on BOTH ``Loop.enabled`` AND the ``LoopState``
-    control tier. Before, the paired write lived in the ``loop_state`` command, so a
-    second programmatic caller of ``LoopState.objects.disable`` left ``Loop.enabled``
-    stale — the "reports enabled but never ticks" bug (holistic 3c#4). The single
-    atomic manager method makes half-application impossible.
-    """
-
-    def test_disable_writes_both_planes(self) -> None:
-        Loop.objects.create(name="demo-dis", delay_seconds=60, prompt=_prompt(), enabled=True)
-        Loop.objects.disable("demo-dis")
-        assert Loop.objects.get(name="demo-dis").enabled is False
-        assert LoopState.objects.status_of("demo-dis") is LoopStatus.DISABLED
-
-    def test_enable_writes_both_planes(self) -> None:
-        Loop.objects.create(name="demo-en", delay_seconds=60, prompt=_prompt(), enabled=False)
-        LoopState.objects.disable("demo-en")
-        Loop.objects.enable("demo-en")
-        assert Loop.objects.get(name="demo-en").enabled is True
-        assert LoopState.objects.status_of("demo-en") is LoopStatus.ENABLED
-
-    def test_resume_writes_both_planes(self) -> None:
-        Loop.objects.create(name="demo-res", delay_seconds=60, prompt=_prompt(), enabled=False)
-        LoopState.objects.pause("demo-res")
-        Loop.objects.resume("demo-res")
-        assert Loop.objects.get(name="demo-res").enabled is True
-        assert LoopState.objects.status_of("demo-res") is LoopStatus.ENABLED
-
-    def test_disable_records_loopstate_intent_for_an_unseeded_name(self) -> None:
-        # A name with no Loop row still records its durable LoopState intent (the
-        # row-level update is a 0-row no-op) — mirrors the pre-refactor command.
-        Loop.objects.disable("demo-unseeded")
-        assert LoopState.objects.status_of("demo-unseeded") is LoopStatus.DISABLED
-        assert not Loop.objects.filter(name="demo-unseeded").exists()
 
 
 class TestLoopSeed(TestCase):
@@ -344,7 +288,7 @@ class TestLoopSeed(TestCase):
         assert Loop.objects.get(name="inbox").delay_seconds == 60
         assert Loop.objects.get(name="audit").delay_seconds == 1800
         assert Loop.objects.get(name="followup").delay_seconds == 1800
-        assert Loop.objects.get(name="arch_review").delay_seconds == 10800
+        assert Loop.objects.get(name="arch_review").delay_seconds == 86400
 
     def test_orphan_slack_answer_row_is_not_seeded(self) -> None:
         # #2584: ``slack_answer`` has no registry MiniLoop, so the autonomous
@@ -357,13 +301,12 @@ class TestLoopSeed(TestCase):
         assert Loop.objects.get(name="dream").daily_at == dt.time(3, 0)
         assert Loop.objects.get(name="dogfood").delay_seconds == 86400
 
-    def test_eval_local_seeded_paused_daily(self) -> None:
-        # The #2513 cutover seeds every loop PAUSED: the seed lands each row
-        # ``enabled=False`` directly — the row IS seeded with its daily cadence,
-        # just not enabled until an operator turns it on.
+    def test_eval_local_is_seeded_weekly_with_no_manual_override(self) -> None:
+        # The row seeds with its own cadence and NO manual opinion: whether it runs is
+        # the active preset's answer, and `enabled` is the escape hatch nobody has used.
         loop = Loop.objects.get(name="eval_local")
-        assert loop.enabled is False
-        assert loop.delay_seconds == 86400
+        assert loop.enabled is None
+        assert loop.delay_seconds == 604800
 
     def test_every_loop_is_its_own_autonomous_row(self) -> None:
         # The seeded set equals the canonical ``DEFAULT_LOOPS`` (== ``iter_loops()``);

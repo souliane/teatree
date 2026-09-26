@@ -38,7 +38,7 @@ _EXPECTED_REFERENCED_SKILLS: dict[str, frozenset[str]] = {
     "overlay_django_coding_loads_companion_bible": frozenset({"t3-widget", "backend-dev", "ac-django"}),
     "overlay_python_coding_generalizes_to_python_bible": frozenset({"t3-widget", "backend-dev", "ac-python"}),
     "overlay_review_generalizes_to_declared_skill_set": frozenset({"t3-widget"}),
-    "non_overlay_review_does_not_load_overlay_skill": frozenset({"review"}),
+    "non_overlay_review_does_not_load_overlay_skill": frozenset({"ac-django"}),
     "overlay_repo_review_loads_overlay_skill_first": frozenset({"t3-widget"}),
     "workflow_spawned_review_loads_overlay_skill_set": frozenset({"t3-widget", "widget-le", "frontend-dev", "review"}),
     # Same class, surfaced by the first metered run to produce real results

@@ -1,16 +1,16 @@
-"""The tri-state on-behalf pre-gate is enforced at the ``_BaseReplier`` chokepoint (#960).
+"""The on-behalf pre-gate is enforced at the ``_BaseReplier`` chokepoint (#960).
 
 ``post_in_thread`` and ``post_comment`` post under the user's identity
 to a colleague/customer surface, so they are gated. ``post_dm`` is a
-bot→user message and must NEVER be gated. Under a blocking mode
-(``ASK`` or ``DRAFT_OR_ASK``) with no recorded approval, an on-behalf
-send must NOT record a SENT dispatch — it surfaces the blocked post
-(FAILED dispatch + the actionable approve-on-behalf message); with a
-recorded approval it proceeds. Under ``IMMEDIATE`` every send
-publishes.
+bot→user message and must NEVER be gated. Under a forbidding posture
+with no recorded approval, an on-behalf send must NOT record a SENT
+dispatch — it surfaces the blocked post (FAILED dispatch + the
+actionable approve-on-behalf message); with a recorded approval it
+proceeds. Under a permitting posture every send publishes.
 
 Reply-transport actions (``post_in_thread``, ``post_comment``) are NOT
-draft-form actions: they BLOCK identically under ASK and DRAFT_OR_ASK.
+draft-form actions, so a forbidding posture BLOCKs them rather than
+auto-drafting them.
 """
 
 import json
@@ -21,9 +21,9 @@ from unittest.mock import MagicMock
 import pytest
 from django.test import TestCase
 
-from teatree.config import OnBehalfPostMode
 from teatree.core.models import BotPing, IncomingEvent, OnBehalfApproval, OnBehalfAudit, ReplyDispatch
 from teatree.core.reply_transport import NoopReplier, ReplySpec, _BaseReplier
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 
 def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
@@ -45,15 +45,6 @@ def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_
         conn.close()
 
 
-def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
-    # ``on_behalf_post_mode`` is DB-home (#1775) — stage it via the ``T3_*`` env
-    # tier, which wins for a DB-home key and needs no DB.
-    monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode.value)
-
-
-_BLOCKING_MODES = [OnBehalfPostMode.ASK, OnBehalfPostMode.DRAFT_OR_ASK]
-
-
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestReplyTransportOnBehalfGate:
@@ -65,49 +56,46 @@ class TestReplyTransportOnBehalfGate:
     def _event(self, key: str) -> IncomingEvent:
         return IncomingEvent.objects.create(source=IncomingEvent.Source.SLACK, body="x", idempotency_key=key)
 
-    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
-    def test_post_in_thread_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=mode)
-        event = self._event(f"slack:gate-1:{mode.value}")
+    def test_post_in_thread_blocked_when_no_approval(self) -> None:
+        seed_forbidding_posture()
+        event = self._event("slack:gate-1")
         dispatch = NoopReplier().post_in_thread(
             event=event,
             target_ref="C-eng",
             thread_ref="t1",
             body="hello",
-            idempotency_key=f"slack:gate-1:reply:{mode.value}",
+            idempotency_key="slack:gate-1:reply",
         )
         assert dispatch.status == ReplyDispatch.Status.FAILED
-        assert "approve-on-behalf" in dispatch.error_message
+        assert "approve-on-behal" in dispatch.error_message
 
-    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
-    def test_post_comment_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=mode)
-        event = self._event(f"slack:gate-2:{mode.value}")
+    def test_post_comment_blocked_when_no_approval(self) -> None:
+        seed_forbidding_posture()
+        event = self._event("slack:gate-2")
         dispatch = NoopReplier().post_comment(
             event=event,
             target_ref="org/repo#7",
             body="lgtm",
-            idempotency_key=f"slack:gate-2:cmt:{mode.value}",
+            idempotency_key="slack:gate-2:cmt",
         )
         assert dispatch.status == ReplyDispatch.Status.FAILED
-        assert "approve-on-behalf" in dispatch.error_message
+        assert "approve-on-behal" in dispatch.error_message
 
-    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
-    def test_post_in_thread_proceeds_with_recorded_approval(self, mode: OnBehalfPostMode) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=mode)
-        event = self._event(f"slack:gate-3:{mode.value}")
+    def test_post_in_thread_proceeds_with_recorded_approval(self) -> None:
+        seed_forbidding_posture()
+        event = self._event("slack:gate-3")
         OnBehalfApproval.record(target="C-eng/t1", action="post_in_thread", approver_id="souliane")
         dispatch = NoopReplier().post_in_thread(
             event=event,
             target_ref="C-eng",
             thread_ref="t1",
             body="hello",
-            idempotency_key=f"slack:gate-3:reply:{mode.value}",
+            idempotency_key="slack:gate-3:reply",
         )
         assert dispatch.status == ReplyDispatch.Status.SENT
 
     def test_post_in_thread_proceeds_under_immediate(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
+        seed_permitting_posture()
         event = self._event("slack:gate-4")
         dispatch = NoopReplier().post_in_thread(
             event=event,
@@ -120,7 +108,7 @@ class TestReplyTransportOnBehalfGate:
 
     def test_post_dm_is_never_gated_even_when_blocking(self) -> None:
         """bot→user DM is out of scope — must send with the gate ON, no approval."""
-        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
+        seed_forbidding_posture()
         event = self._event("slack:gate-5")
         dispatch = NoopReplier().post_dm(
             event=event,
@@ -148,9 +136,8 @@ class TestReplyTransportAfterReceiptDm:
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # ``slack_user_id`` (global) resolves via the Django-free cold reader —
         # seed it in a config-store sqlite the reader resolves via ``T3_CONFIG_DB``.
-        # ``on_behalf_post_mode`` is DB-home (#1775) — stage it via the ``T3_*`` env tier.
         _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "immediate")
+        seed_permitting_posture()
         self.monkeypatch = monkeypatch
 
     def _event(self, key: str) -> IncomingEvent:
@@ -246,7 +233,7 @@ class TestRedeliverReusesReservation:
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _gate(tmp_path, monkeypatch, mode=OnBehalfPostMode.ASK)
+        seed_forbidding_posture()
         self.monkeypatch = monkeypatch
 
     def _event(self, key: str) -> IncomingEvent:

@@ -14,10 +14,13 @@ stamped here for downstream consumers (#1043).
 
 import logging
 from collections.abc import Callable
+from functools import partial
 from typing import cast
 
+from teatree.backends.slack.bot_errors import SlackReadRefusedError
 from teatree.backends.slack.pagination import next_cursor
 from teatree.backends.slack.self_identity import OwnSlackIdentity, is_self_authored, is_thread_root
+from teatree.backends.slack.web_reads import Getter as TokenGetter
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,9 @@ _MAX_THREAD_PAGES = 40
 # not dropped; 20 pages * 20 messages bounds it at ~400 messages.
 _MAX_DM_PAGES = 20
 _DM_PAGE_SIZE = 20
+
+# The refusals a bot gets for a channel it was never invited to, which the user's xoxp may still read.
+_BOT_NOT_A_MEMBER = frozenset({"not_in_channel", "channel_not_found"})
 
 
 def _messages(data: RawAPIDict) -> list[RawAPIDict]:
@@ -54,8 +60,9 @@ def _walk_pages(
     The one Slack read walk in this module: a caller whose dedup or delivery
     verification depends on seeing every message needs the whole read, and a
     cap hit is logged rather than passing for a complete one. A refused page
-    abandons the walk empty: what is collected is the NEWEST history, so
-    keeping it would advance the caller's cursor past the page it never read.
+    raises :class:`SlackReadRefusedError` and keeps nothing: what is collected
+    is the NEWEST history, so keeping it would advance the caller's cursor past
+    the page it never read.
     """
     collected: list[RawAPIDict] = []
     cursor: str | None = None
@@ -65,14 +72,22 @@ def _walk_pages(
             page["cursor"] = cursor
         data = get(method, page)
         if not data.get("ok"):
-            logger.warning("Slack %s refused a page on %s; the read is abandoned", method, subject)
-            return []
+            raise SlackReadRefusedError(method, subject, str(data.get("error") or "unknown_error"))
         collected.extend(_messages(data))
         cursor = next_cursor(data)
         if cursor is None:
             return collected
     logger.warning("Slack %s hit the %d-page cap on %s; the read is truncated", method, cap, subject)
     return collected
+
+
+def _read_or_abandon(walk: Callable[[], list[RawAPIDict]]) -> list[RawAPIDict]:
+    """Run *walk* for the DM poll, where one refused read must not stall the loop."""
+    try:
+        return walk()
+    except SlackReadRefusedError as refused:
+        logger.warning("%s; the read is abandoned", refused)
+        return []
 
 
 def _walk_thread(get: Getter, channel: str, thread_ts: str) -> list[RawAPIDict]:
@@ -82,7 +97,7 @@ def _walk_thread(get: Getter, channel: str, thread_ts: str) -> list[RawAPIDict]:
         "conversations.replies",
         params,
         cap=_MAX_THREAD_PAGES,
-        subject=f"thread {thread_ts}",
+        subject=f"thread {thread_ts} in {channel}",
     )
 
 
@@ -104,21 +119,26 @@ def read_single_message(*, get: Getter, channel: str, ts: str) -> RawAPIDict:
     return first
 
 
-def read_thread_replies(*, get: Getter, channel: str, thread_ts: str) -> list[RawAPIDict]:
-    """Return every message in the thread rooted at ``thread_ts`` (#2061).
+def read_thread_replies(*, get: TokenGetter, channel: str, thread_ts: str, user_token: str = "") -> list[RawAPIDict]:
+    """Return every message in the thread rooted at ``thread_ts`` (#2061), ``channel`` stamped.
 
     The canonical thread-root read used by the answer pipeline's pre-post
     dedup and post-delivery verification: a reply re-parents to the root, so
-    a read-back keyed on a non-root user-message ts misses it. ``channel`` is
-    stamped on each message; ``[]`` on any non-ok response so a transient
-    read failure is handled by the conservative-retry caller.
+    a read-back keyed on a non-root user-message ts misses it. A read Slack
+    refuses raises :class:`SlackReadRefusedError` — ``[]`` only ever means an
+    empty thread — and each caller decides what a refusal means to it. A
+    channel the bot was never invited to is re-read through *user_token*.
     """
     if not channel or not thread_ts:
         return []
-    replies: list[RawAPIDict] = []
-    for reply in _walk_thread(get, channel, thread_ts):
+    try:
+        replies = _walk_thread(get, channel, thread_ts)
+    except SlackReadRefusedError as refused:
+        if not user_token or refused.error_code not in _BOT_NOT_A_MEMBER:
+            raise
+        replies = _walk_thread(partial(get, token=user_token), channel, thread_ts)
+    for reply in replies:
         reply.setdefault("channel", channel)
-        replies.append(reply)
     return replies
 
 
@@ -139,12 +159,14 @@ def read_user_dms(
     params: dict[str, str | int] = {"channel": channel, "limit": _DM_PAGE_SIZE}
     if since:
         params["oldest"] = since
-        history = _walk_pages(
-            get,
-            "conversations.history",
-            params,
-            cap=_MAX_DM_PAGES,
-            subject=f"DM channel {channel}",
+        # Inclusive of the anchor: `oldest` is exclusive by default, and the thread
+        # fan-out below only reaches roots the history returns — so excluding the
+        # cursor message would drop replies landing under the newest known root.
+        params["inclusive"] = "true"
+        history = _read_or_abandon(
+            partial(
+                _walk_pages, get, "conversations.history", params, cap=_MAX_DM_PAGES, subject=f"DM channel {channel}"
+            )
         )
     else:
         history = _messages(get("conversations.history", params))
@@ -166,7 +188,7 @@ def _thread_replies(
     identity: OwnSlackIdentity | None,
 ) -> list[RawAPIDict]:
     replies: list[RawAPIDict] = []
-    for reply in _walk_thread(get, channel, thread_ts):
+    for reply in _read_or_abandon(partial(_walk_thread, get, channel, thread_ts)):
         if reply.get("ts") == thread_ts or (identity is not None and is_self_authored(reply, identity)):
             continue
         reply.setdefault("channel", channel)

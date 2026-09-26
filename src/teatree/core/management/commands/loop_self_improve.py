@@ -8,6 +8,7 @@ a one-line summary (or the JSON report when ``--json`` is passed).
 """
 
 import datetime as dt
+import logging
 import os
 from dataclasses import asdict
 from typing import IO, TYPE_CHECKING, Annotated, Any, cast
@@ -17,11 +18,35 @@ from django_typer.management import TyperCommand
 
 from teatree.core.gates.t3_master_gate import t3_master_verdict
 from teatree.core.machine_output import emit
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.notify_types import NotifyKind
 
 if TYPE_CHECKING:
+    from teatree.core.models.self_improve_firing import SelfImproveFiring
+    from teatree.loop.self_improve.detectors.base import DetectorReport
     from teatree.loop.self_improve.schedule import TierResult
 
 type ReportDict = dict[str, Any]
+logger = logging.getLogger(__name__)
+
+
+def _deliver_owner_alert(report: "DetectorReport", existing: "SelfImproveFiring | None") -> bool:
+    """Use the verified bot→owner egress without a reverse domain dependency."""
+    from teatree.core.notify import notify_user_outcome  # noqa: PLC0415 — keep command import light for CLI discovery
+    from teatree.loop.self_improve.actions import (  # noqa: PLC0415 — defer domain action import until command execution
+        format_slack_payload,
+        owner_alert_key,
+    )
+
+    outcome = notify_user_outcome(
+        format_slack_payload(report)["text"],
+        kind=NotifyKind.INFO,
+        idempotency_key=owner_alert_key(report, existing),
+        audience=NotifyAudience.OWNER_ESCALATION,
+    )
+    if not outcome.sent:
+        logger.warning("self-improve owner alert not delivered: %s (%s)", report.dedup_key, outcome.reason)
+    return outcome.sent
 
 
 def _result_to_dict(result: "TierResult") -> ReportDict:
@@ -32,6 +57,7 @@ def _result_to_dict(result: "TierResult") -> ReportDict:
         "skipped": result.skipped,
         "report_count": len(result.reports),
         "action_count": len(result.actions),
+        "degraded_scans": [{"detector": detector, "reason": reason} for detector, reason in result.degraded_scans],
         "reports": [asdict(r) for r in result.reports],
         "actions": [
             {
@@ -66,8 +92,10 @@ class Command(TyperCommand):
         ] = False,
     ) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+        from teatree.core.overlay_loader import get_overlay, overlay_name_of  # noqa: PLC0415 — lazy command import
         from teatree.loop.phases.render import self_improve_rerender  # noqa: PLC0415 — deferred: lazy command import
         from teatree.loop.self_improve.schedule import (  # noqa: PLC0415 — deferred: keeps command import light
+            DeliveryRoutes,
             UnimplementedTierError,
             require_implemented_tier,
             run_tier,
@@ -115,12 +143,29 @@ class Command(TyperCommand):
             )
             return
         try:
-            result = run_tier(tier, auto_fix_callable=self_improve_rerender)
+            overlay_name = overlay_name_of(get_overlay())
+            result = run_tier(
+                tier,
+                auto_fix_callable=self_improve_rerender,
+                delivery=DeliveryRoutes(owner_alert=_deliver_owner_alert, overlay_name=overlay_name),
+            )
         finally:
             LoopLease.objects.release("loop-self-improve", owner=owner)
 
         report = _result_to_dict(result)
-        if result.skipped:
+        if result.degraded_scans:
+            unknown = ",".join(f"{detector}:{reason}" for detector, reason in result.degraded_scans)
+            budget_reason = f" budget={result.budget.reason}" if result.skipped else ""
+            human = (
+                f"DEGRADED tier={result.tier} reports={len(result.reports)} "
+                f"actions={len(result.actions)} unknown_scans={unknown}{budget_reason}"
+            )
+        elif result.skipped and result.actions:
+            human = (
+                f"DEGRADED budget gate: {result.budget.reason}; "
+                f"safe reports={len(result.reports)} actions={len(result.actions)}"
+            )
+        elif result.skipped:
             human = f"SKIP  budget gate: {result.budget.reason}"
         else:
             human = f"OK    tier={result.tier} reports={len(result.reports)} actions={len(result.actions)}"

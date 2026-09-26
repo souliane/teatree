@@ -367,6 +367,36 @@ class TestInfraEntries(django.test.TestCase):
         assert tick.held is False
         assert tick.never_fired is True
 
+    def test_released_slot_still_reports_last_fire_and_next_tick(self) -> None:
+        """A cleanly-released infra slot reports when it ran and when it is next due.
+
+        The measured failure: the reactive Slack-answer cycle demonstrably fired
+        (:eyes: + :hammer_and_wrench: on the owner's DM, an ``answering`` Task
+        dispatched) while ``t3 loop list`` showed ``last: — next: — idle``, because
+        the entry read the lease CLAIM (``acquired_at``), which the release nulls.
+        The owner read that as "this loop has never fired".
+        """
+        LoopLease.objects.acquire("loop-slack-answer", owner="worker-1")
+        LoopLease.objects.release("loop-slack-answer", owner="worker-1")
+
+        report = build_report()
+        slot = next(e for e in report.infra_slots if e.name == "loop-slack-answer")
+        assert slot.held is False
+        assert slot.never_fired is False, "a released slot that just ran is not never-fired"
+        assert slot.next_fire_at is not None, "a released slot still counts down to its next fire"
+
+    def test_held_lease_prefers_the_live_claim_as_last_fire(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop-tick",
+            owner="holder",
+            acquired_at=now,
+            last_acquired_at=now - dt.timedelta(hours=1),
+            lease_expires_at=now + dt.timedelta(minutes=2),
+        )
+        tick = next(e for e in build_report(now=now).infra_slots if e.name == "loop-tick")
+        assert tick.last_fired_at == now
+
 
 @django.test.override_settings(USE_TZ=True)
 class TestMiniEntriesHeldFromLoopState(django.test.TestCase):
@@ -446,15 +476,16 @@ class TestMiniEntriesAdmittedFoldsPresetMask(django.test.TestCase):
     forced-on base-disabled loop looked dead.
     """
 
-    def _loop(self, name: str, *, enabled: bool = True) -> Loop:
+    def _loop(self, name: str, *, enabled: bool | None = None) -> Loop:
         prompt, _ = Prompt.objects.get_or_create(name="demo-admit", defaults={"body": "x"})
-        return Loop.objects.create(name=name, delay_seconds=120, prompt=prompt, enabled=enabled)
+        reason = "" if enabled is None else "test override"
+        return Loop.objects.create(name=name, delay_seconds=120, prompt=prompt, enabled=enabled, override_reason=reason)
 
     def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
         Mode.objects.create(name=preset_name, entries=entries)
-        ModeOverride.objects.set_override(preset_name)
+        ModeOverride.objects.set_override(preset_name, reason="test override")
 
-    def test_enabled_loop_with_no_preset_is_admitted(self) -> None:
+    def test_a_loop_with_no_preset_at_all_is_admitted(self) -> None:
         self._loop("demo-admit-base")
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-base")
         assert entry.admitted is True
@@ -464,17 +495,17 @@ class TestMiniEntriesAdmittedFoldsPresetMask(django.test.TestCase):
         self._activate("maintenance", {"demo-admit-masked": False})
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-masked")
         assert entry.admitted is False
-        assert entry.enabled is True
+        assert entry.enabled is None
 
-    def test_preset_forced_on_base_disabled_loop_is_admitted(self) -> None:
-        self._loop("demo-admit-forced", enabled=False)
+    def test_a_preset_admitted_loop_is_admitted(self) -> None:
+        self._loop("demo-admit-forced")
         self._activate("present", {"demo-admit-forced": True})
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-forced")
         assert entry.admitted is True
-        assert entry.enabled is False
+        assert entry.enabled is None
 
     def test_hold_wins_over_a_force_on_preset(self) -> None:
-        self._loop("demo-admit-held", enabled=False)
+        self._loop("demo-admit-held")
         LoopState.objects.disable("demo-admit-held")
         self._activate("present", {"demo-admit-held": True})
         entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-held")

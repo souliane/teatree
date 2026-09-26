@@ -19,7 +19,7 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from teatree.core.models import ConfigSetting, PullRequest, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
 from teatree.loop.question_drain import DrainReport, Verdict, drain_pending_questions, question_reachability
 from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
@@ -170,9 +170,6 @@ class TestReachability(TestCase):
 
 
 class TestAgeBackstop(TestCase):
-    def setUp(self) -> None:
-        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 3)
-
     def test_a_row_past_the_ceiling_is_escalated(self) -> None:
         question = DeferredQuestion.record("A real owner decision")
         _age(question, days=5)
@@ -245,23 +242,7 @@ class TestAgeBackstop(TestCase):
         assert (report.drained, report.escalated) == (0, 1)
 
 
-class TestAgeBackstopDisabled(TestCase):
-    def setUp(self) -> None:
-        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 0)
-
-    def test_a_zero_ceiling_disables_escalation(self) -> None:
-        question = DeferredQuestion.record("A real owner decision")
-        _age(question, days=90)
-
-        assert drain_pending_questions().escalated == 0
-        question.refresh_from_db()
-        assert question.escalated_at is None
-
-
 class TestSweepCost(TestCase):
-    def setUp(self) -> None:
-        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 3)
-
     def _sweep_queries(self) -> int:
         with CaptureQueriesContext(connection) as captured:
             drain_pending_questions()
@@ -441,10 +422,6 @@ class TestTheAgeLadderTerminates(TestCase):
     them past the ceiling, the oldest 41 days old and still being asked.
     """
 
-    def setUp(self) -> None:
-        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 3)
-        ConfigSetting.objects.set_value("deferred_question_max_escalations", 3)
-
     def test_a_row_at_the_escalation_bound_is_drained_stale(self) -> None:
         question = DeferredQuestion.record("A real owner decision")
         _age(question, days=41)
@@ -501,39 +478,17 @@ class TestTheAgeLadderTerminates(TestCase):
         question.refresh_from_db()
         assert question.is_pending
 
-    def test_a_zero_bound_keeps_the_ladder_unbounded(self) -> None:
-        ConfigSetting.objects.set_value("deferred_question_max_escalations", 0)
-        question = DeferredQuestion.record("A real owner decision")
-        _age(question, days=41)
-        _part_way_up_the_ladder(question, count=9, days_ago=4)
-
-        report = drain_pending_questions()
-
-        assert (report.escalated, report.expired) == (1, 0)
-        question.refresh_from_db()
-        assert question.escalation_count == 10
-        assert question.is_pending
-
-    def test_a_zero_ceiling_disables_the_expiry_too(self) -> None:
-        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 0)
-        question = DeferredQuestion.record("A real owner decision")
-        _age(question, days=90)
-        _part_way_up_the_ladder(question, count=9, days_ago=40)
-
-        assert drain_pending_questions() == DrainReport(drained=0, escalated=0, expired=0)
-        question.refresh_from_db()
-        assert question.is_pending
-
 
 def _halt_question(ticket_pk: int) -> DeferredQuestion:
     """The shape ``stuck_ticket_redispatch._escalate_once`` records.
 
-    The subject lives in the question TEXT — no marker, no session, no parked task —
-    so before #4706 no subject source could name it and only the backstop saw the row.
+    The subject lives in the dedupe marker alone — no session, no parked task — so
+    before #4706 no subject source could name it and only the backstop saw the row.
     """
     return DeferredQuestion.record(
-        f"{STUCK_HALT_MARKER.format(pk=ticket_pk)} Stuck ticket {ticket_pk} has no work in flight "
-        "but re-dispatch is halted. How should it proceed — investigate, rework, or ignore?"
+        f"Stuck ticket {ticket_pk} has no work in flight "
+        "but re-dispatch is halted. How should it proceed — investigate, rework, or ignore?",
+        dedupe_marker=STUCK_HALT_MARKER.format(pk=ticket_pk),
     )
 
 
@@ -549,10 +504,6 @@ class TestHaltTriggerCleared(TestCase):
     dispatch again, and every one of those questions stayed pending — moot, and escalating
     on the age timer regardless.
     """
-
-    def setUp(self) -> None:
-        # Isolate the subject stage: with no backstop, a drain here is the resolver's.
-        ConfigSetting.objects.set_value("deferred_question_age_ceiling_days", 0)
 
     def test_a_halt_question_drains_once_its_ticket_runs_a_phase_to_success(self) -> None:
         ticket = _ticket(Ticket.State.STARTED)

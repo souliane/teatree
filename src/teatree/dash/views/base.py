@@ -21,6 +21,7 @@ NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("dash:sessions", "Sessions"),
     ("dash:presets", "Schedule"),
     ("dash:settings", "Settings"),
+    ("dash:skills", "Skills"),
     ("dash:interchange", "Import / export"),
 )
 
@@ -34,6 +35,7 @@ class NavContext(TypedDict):
     nav_active: str
     instance_label: str
     brand_logo: str | None
+    skills_collision_count: int
 
 
 def brand_logo() -> str | None:
@@ -56,13 +58,14 @@ def instance_label() -> str:
     return get_effective_settings().dashboard_instance_label or socket.gethostname()
 
 
-def nav_context(active: str) -> NavContext:
+def nav_context(active: str, *, skills_collision_count: int = 0) -> NavContext:
     """Nav bar context — the item list, which one is active, which box this is, and its mark."""
     return {
         "nav_items": NAV_ITEMS,
         "nav_active": active,
         "instance_label": instance_label(),
         "brand_logo": brand_logo(),
+        "skills_collision_count": skills_collision_count,
     }
 
 

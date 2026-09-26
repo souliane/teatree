@@ -26,7 +26,7 @@ from teatree.cli.eval.metered_routing import warn_local_metered
 from teatree.cli.eval.run_dispatch import ResolvedRun, dispatch_resolved_run
 from teatree.cli.eval.run_docker import DEFAULT_JUDGE_BUDGET, RunDockerArgs, route_to_docker_if_needed
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, make_grader, require_persist_for_history_gates
-from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, TRANSCRIPT_BACKEND
+from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, FRESH_RUN_BACKENDS, TRANSCRIPT_BACKEND
 from teatree.eval.discovery import discover_specs
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.parallel import DEFAULT_PARALLEL
@@ -425,12 +425,11 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     )
     models = selection.models
     reject_multi_trial_with_model_override(model=selection.model_override, trials=trials)
-    # --benchmark (the 3-tier matrix), --model (force one model), and --preset
-    # (a named tier profile) all run a fresh metered pass, so the metered api
-    # backend is implied — a transcript grade of a freshly-forced/preset model is
-    # nonsensical. Mirror how --models always drives the api matrix lane.
+    # --benchmark/--model/--preset all grade a FRESH pass, so they imply a fresh-run
+    # LANE, not `api` specifically: only the replay backend (this flag's default) is
+    # rewritten, exactly as make_escalation_runner resolves the same question.
     if benchmark or selection.model_override is not None or selection.preset is not None:
-        backend = API_BACKEND
+        backend = backend if backend in FRESH_RUN_BACKENDS else API_BACKEND
     metered = (
         backend in FRESH_CLAUDE_BACKENDS
         or trials > 1

@@ -1,6 +1,6 @@
 """The ``worker_quiescing`` DB-home admission gate (drain-then-deploy).
 
-Ships OFF, resolves from the ``ConfigSetting`` store like ``loop_runner_enabled``,
+Ships OFF, resolves from the ``ConfigSetting`` store,
 is registered in the overridable/env registries so ``config_setting set`` /
 ``t3 worker drain`` can write it and ``T3_WORKER_QUIESCING`` can override it.
 """

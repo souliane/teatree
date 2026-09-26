@@ -58,7 +58,9 @@ from django.utils import timezone as dj_timezone
 from teatree.core.cleanup.process_table import read_process_table
 from teatree.core.gates.idle_stack import active_delivery_keep_reason
 from teatree.core.models import Worktree
+from teatree.core.worktree.clone_paths import clone_path_from_checkout
 from teatree.utils import git
+from teatree.utils.editable_pth import SitePackages, teatree_pth_path
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import CommandFailedError
 from teatree.utils.throttled_log import warn_throttled
@@ -177,6 +179,34 @@ def _git_lock_present(wt_path: Path) -> _GuardAnswer:
     return _GuardAnswer(fired=(Path(git_dir) / "index.lock").exists())
 
 
+def editable_pth_liveness(wt_path: Path) -> LivenessVerdict:
+    """Whether a venv OUTSIDE ``wt_path`` imports through it, so reaping it would break that venv.
+
+    Scanned: the uv-tool venv ``t3`` runs from, and the source clone's own ``.venv``. A venv
+    inside the checkout dies with it, so its own editable link is never a reason to keep it.
+    """
+    try:
+        tool_pth = teatree_pth_path()
+        clone = clone_path_from_checkout(str(wt_path))
+        candidates = (
+            SitePackages(tool_pth.parent) if tool_pth else None,
+            SitePackages.of_project(clone) if clone else None,
+        )
+        inside = wt_path.resolve()
+        sites = [site for site in candidates if site is not None and not site.path.resolve().is_relative_to(inside)]
+        referrers = [pth for site in sites for pth in site.referrers(wt_path)]
+    except OSError as exc:
+        return LivenessVerdict(
+            active=False, reason=f"the editable .pth files could not be read ({exc})", unverifiable=True
+        )
+    if not referrers:
+        return LivenessVerdict(active=False)
+    return LivenessVerdict(
+        active=True,
+        reason=f"an editable .pth still names this checkout: {referrers[0]} — re-sync that environment first",
+    )
+
+
 def _last_commit_at(wt_path: Path) -> datetime | None:
     """The committer timestamp of HEAD as an aware UTC datetime, or ``None``.
 
@@ -215,7 +245,7 @@ def _db_liveness_reason(worktree: Worktree, *, now: datetime | None, fsm_termina
 
 
 def _fs_liveness(*, wt_path: Path, now: datetime | None, recent_minutes: int, fsm_terminal: bool) -> LivenessVerdict:
-    """The filesystem liveness signals: CWD, git index.lock, recent HEAD commit.
+    """The filesystem liveness signals: CWD, git index.lock, an editable .pth, recent HEAD commit.
 
     A missing worktree dir contributes no filesystem signal. ``recent HEAD commit``
     is bypassed on ``fsm_terminal`` (the merge commit is the false positive); CWD
@@ -234,6 +264,11 @@ def _fs_liveness(*, wt_path: Path, now: datetime | None, recent_minutes: int, fs
             return LivenessVerdict(active=True, reason="a git index.lock is present (git mid-operation)")
         if lock.unanswered:
             blind.append(lock.obstacle)
+        pth = editable_pth_liveness(wt_path)
+        if pth.active:
+            return pth
+        if pth.unverifiable:
+            blind.append(pth.reason)
         if not fsm_terminal:
             moment = now or dj_timezone.now()
             cutoff = moment - timedelta(minutes=recent_minutes)

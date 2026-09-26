@@ -32,6 +32,17 @@ class StaleCloneReason(enum.StrEnum):
 
     DIRTY = "dirty"
     OFF_DEFAULT = "off_default"
+    CI_UNVERIFIABLE = "ci_unverifiable"
+
+
+#: The clause naming what is wrong with the clone, per reason. ``CI_UNVERIFIABLE`` is the
+#: one that does not clear on its own — unlike a red or pending verdict, an unreadable one
+#: leaves the fail-closed gate refusing forever while reporting an ordinary skip.
+_HEADLINE: dict[StaleCloneReason, str] = {
+    StaleCloneReason.DIRTY: "has uncommitted tracked changes",
+    StaleCloneReason.OFF_DEFAULT: "is off its default branch",
+    StaleCloneReason.CI_UNVERIFIABLE: "sits behind a default-branch CI verdict nothing here can read",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,21 +64,24 @@ def _idempotency_key(skip: StaleCloneSkip) -> str:
 def _remediation(skip: StaleCloneSkip) -> str:
     if skip.reason is StaleCloneReason.DIRTY:
         return "Commit, stash, or revert the tracked change, then re-run `t3 update`."
+    if skip.reason is StaleCloneReason.CI_UNVERIFIABLE:
+        return (
+            "Restore the forge read — `gh`/`glab` on PATH, a token the clone's origin accepts, "
+            "and a gating pipeline on that commit — or fast-forward it yourself with `t3 update`."
+        )
     branch = skip.default_branch or "main"
     return f"Switch it back and sync: `git switch {branch} && git pull --ff-only`, then re-run `t3 update`."
 
 
 def stale_clone_message(skip: StaleCloneSkip) -> str:
     """Build the user-facing notice body naming the repo path + remediation."""
-    headline = (
-        "has uncommitted tracked changes" if skip.reason is StaleCloneReason.DIRTY else "is off its default branch"
-    )
     detail_line = f" ({skip.detail})" if skip.detail else ""
     return (
         f"`t3 update` could not fast-forward `{skip.label}` — its clone at "
-        f"`{skip.repo_path}` {headline}{detail_line}, so it is STALE behind origin "
-        f"and the editable `t3` may be running old code (#2836). The safe "
-        f"self-update never resets/stashes to recover. {_remediation(skip)}"
+        f"`{skip.repo_path}` {_HEADLINE[skip.reason]}{detail_line}, so it is STALE behind "
+        f"origin and the editable `t3` may be running old code (#2836). The safe "
+        f"self-update never resets, stashes, or pulls onto an unproven main to recover. "
+        f"{_remediation(skip)}"
     )
 
 

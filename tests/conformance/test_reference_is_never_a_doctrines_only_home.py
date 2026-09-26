@@ -114,7 +114,6 @@ _ORPHANED_BEFORE_THIS_GUARD: frozenset[tuple[str, str]] = frozenset(
         ("skills/platforms/references/slack.md", "t3 review-request check"),
         ("skills/platforms/references/slack.md", "t3 review-request check --mr-url"),
         ("skills/platforms/references/slack.md", "t3 slack react"),
-        ("skills/retro/references/commit-to-fork.md", "t3 workspace ticket"),
         ("skills/rules/references/publishing-mode-doctrine.md", "glab mr merge"),
         ("skills/setup/references/recommended-automode-authorizations.md", "gh pr merge"),
         ("skills/workspace/references/troubleshooting.md", "gh auth git-credential"),
@@ -126,13 +125,12 @@ _ORPHANED_BEFORE_THIS_GUARD: frozenset[tuple[str, str]] = frozenset(
         ("skills/workspace/references/troubleshooting.md", "git restore --staged"),
         ("skills/workspace/references/troubleshooting.md", "git update-index --no-skip-worktree"),
         ("skills/workspace/references/troubleshooting.md", "t3 loops tick --loop"),
-        ("skills/workspace/references/troubleshooting.md", "t3 push"),
     }
 )
 
 #: The ratchet's real invariant: the list may DRAIN, never GROW. Lower this number
 #: when rows are fixed; raising it is the change reviewers must refuse.
-_CEILING = 23
+_CEILING = 21
 
 #: Anti-vacuity floor on the corpus the parser recognises, not on the baseline.
 #: Fixing an orphan moves the command INTO the spine and leaves the reference's

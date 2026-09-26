@@ -8,9 +8,11 @@ real ``/v1/messages`` call. Mock tokens are synthetic — no real credential app
 """
 
 import datetime as dt
+import pathlib
 
 import pytest
 
+from teatree import account_headroom
 from teatree.ci_oauth_switch import WEIGHT_5H as SWITCH_WEIGHT_5H
 from teatree.ci_oauth_switch import WEIGHT_7D as SWITCH_WEIGHT_7D
 from teatree.core.models.anthropic_token_usage import REJECTED_STATUS as MODEL_REJECTED_STATUS
@@ -207,9 +209,25 @@ class TestConstantParityWithCanonicalHomes:
         assert UTILIZATION_7D_LIMIT == MODEL_7D_LIMIT
         assert REJECTED_STATUS == MODEL_REJECTED_STATUS
 
-    def test_tie_break_weights_match_ci_oauth_switch(self) -> None:
-        assert WEIGHT_5H == SWITCH_WEIGHT_5H
-        assert WEIGHT_7D == SWITCH_WEIGHT_7D
+    def test_the_ranking_delegates_to_the_shared_implementation(self) -> None:
+        # IDENTITY, not equality: three equal literals in three modules are exactly the
+        # drift a parity test can only ever report after the fact.
+        assert WEIGHT_5H is account_headroom.WEIGHT_5H
+        assert WEIGHT_7D is account_headroom.WEIGHT_7D
+        assert SWITCH_WEIGHT_5H is account_headroom.WEIGHT_5H
+        assert SWITCH_WEIGHT_7D is account_headroom.WEIGHT_7D
+
+    def test_no_other_module_re_derives_the_ranking_key(self) -> None:
+        # The ordering exists ONCE. A second (-binding, -weighted, ...) sort key anywhere
+        # in src/ is a fourth copy re-appearing.
+        root = pathlib.Path(account_headroom.__file__).parent
+        rederived = [
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*.py")
+            if path.name != "account_headroom.py" and "-entry.binding_headroom" in path.read_text(encoding="utf-8")
+        ]
+
+        assert rederived == []
 
 
 class TestCandidateHealthScoring:

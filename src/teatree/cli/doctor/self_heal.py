@@ -14,10 +14,10 @@ of the stack it watches) can restart the stack and DM the owner. Each says REPAI
 - a READY loop timer stale past 2x its cadence (a wedged drain) (REPORTS),
 - a still-live ticket whose NEWEST task FAILED with no successor — the freeze signature (REPORTS),
 - a runtime clone that has drifted off its default branch (REPORTS),
-- ``loop_runner_enabled`` OFF with every enabled loop behind its cadence — a kill-switched
+- a preset admitting ZERO loops with every measured loop behind its cadence — a stopped
     fleet whose timers still go RUNNING -> SUCCESSFUL, so the heartbeat reads healthy (REPORTS),
 - a ``worker_quiescing`` gate outliving any deploy that could explain it (REPAIRS when provably dead, else REPORTS),
-- a slack-drain sidecar failing every pass or gone silent (``self_heal_slack_drain`` — REPORTS),
+- a Socket Mode listener whose heartbeat has gone silent (``self_heal_slack_listener`` — REPORTS),
 - a Slack app-config token pair aging toward its 12-hour expiry, past which it is
     unrecoverable (``self_heal_slack_config_token`` — REPAIRS, it auto-rotates),
 - a ``loop:<name>``/``t3-master`` lease held by a dead session past TTL (REPAIRS).
@@ -41,7 +41,7 @@ import typer
 from teatree.cli.doctor.self_heal_frozen_fleet import check_frozen_fleet_under_kill_switch
 from teatree.cli.doctor.self_heal_quiescing import check_stranded_quiescing_gate
 from teatree.cli.doctor.self_heal_slack_config_token import check_slack_config_token_fresh
-from teatree.cli.doctor.self_heal_slack_drain import check_slack_drain_alive
+from teatree.cli.doctor.self_heal_slack_listener import check_slack_listener_alive
 from teatree.cli.doctor.self_heal_task_activity import check_task_attempt_activity
 
 #: The compose project the box runs the factory under (``deploy/docker-compose.yml``).
@@ -122,10 +122,10 @@ class _Probe:
     """
 
     @staticmethod
-    def loop_runner_on() -> bool:
-        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps CLI startup light
+    def fleet_admits_work() -> bool:
+        from teatree.loops.enable_verdict import fleet_admits_work  # noqa: PLC0415 — deferred: pulls the ORM
 
-        return get_effective_settings().loop_runner_enabled
+        return fleet_admits_work()
 
     @staticmethod
     def worker_flock_free() -> bool:
@@ -273,8 +273,8 @@ def _check_compose_stack() -> bool:
     """FAIL when the compose init crash-loops or a long-running service is down.
 
     A non-zero init exit is a crash-looping prep container (nothing downstream
-    starts); a worker/admin container stuck ``Created``/``Exited`` while
-    ``loop_runner_enabled`` is ON is a silently dead factory. The container states
+    starts); a worker/admin container stuck ``Created``/``Exited`` while the active
+    preset admits work is a silently dead factory. The container states
     come from the watchdog handoff (:func:`_compose_states_from_handoff`) since the
     doctor runs in a socket-less app container; only when neither the handoff nor a
     local ``docker ps`` can read the daemon (a dev box) does the probe return
@@ -285,7 +285,7 @@ def _check_compose_stack() -> bool:
         states = _Probe.compose_container_states(_COMPOSE_PROJECT)
         if states is None:
             return True
-        runner_on = _Probe.loop_runner_on()
+        admits_work = _Probe.fleet_admits_work()
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
         typer.echo(f"WARN  Compose-stack check crashed: {exc.__class__.__name__}: {exc}")
         return True
@@ -300,10 +300,10 @@ def _check_compose_stack() -> bool:
                 f"`docker compose -p {_COMPOSE_PROJECT} up -d`."
             )
             ok = False
-        elif service in _LONG_RUNNING_SERVICES and runner_on and state in _DOWN_STATES:
+        elif service in _LONG_RUNNING_SERVICES and admits_work and state in _DOWN_STATES:
             typer.echo(
-                f"FAIL  Compose service {service} is {state} ({status}) while loop_runner_enabled is "
-                f"ON — the factory is silently down. Restart it: "
+                f"FAIL  Compose service {service} is {state} ({status}) while the active preset admits "
+                f"work — the factory is silently down. Restart it: "
                 f"`docker compose -p {_COMPOSE_PROJECT} up -d`."
             )
             ok = False
@@ -313,7 +313,7 @@ def _check_compose_stack() -> bool:
 def _check_loop_worker_alive() -> bool:
     """FAIL when the worker flock is free while overdue loop work is queued.
 
-    The keystone silent-freeze signature: ``loop_runner_enabled`` is ON, no
+    The keystone silent-freeze signature: the active preset admits work, no
     process holds the worker flock, AND at least one READY loop timer is overdue
     past 2x its cadence — so queued loop work exists that nothing is draining.
     Gating on the overdue-timer evidence (not the bare free flock, which the
@@ -322,7 +322,7 @@ def _check_loop_worker_alive() -> bool:
     worker is caught loudly.
     """
     try:
-        if not (_Probe.loop_runner_on() and _Probe.worker_flock_free()):
+        if not (_Probe.fleet_admits_work() and _Probe.worker_flock_free()):
             return True
         overdue = _Probe.overdue_ready_timers(_now())
     except Exception as exc:  # noqa: BLE001 — a self-heal probe must never crash the doctor run
@@ -366,7 +366,7 @@ def _check_stranded_task() -> bool:
 
 
 def _check_task_attempt_activity() -> bool:
-    return check_task_attempt_activity(now=_now(), runner_on=_Probe.loop_runner_on)
+    return check_task_attempt_activity(now=_now(), runner_on=_Probe.fleet_admits_work)
 
 
 def _check_stale_loop_timer() -> bool:
@@ -536,7 +536,7 @@ def run_self_heal_checks() -> bool:
         _check_runtime_clone_on_default_branch,
         check_frozen_fleet_under_kill_switch,
         check_stranded_quiescing_gate,
-        check_slack_drain_alive,
+        check_slack_listener_alive,
         check_slack_config_token_fresh,
         _check_dead_owner_lease,
     )

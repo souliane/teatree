@@ -24,9 +24,12 @@ WRAPPER = DEPLOY_DIR / "t3"
 DISPATCHED_ONE_OFF = "DISPATCHED-RUN"
 DISPATCHED_EXEC = "DISPATCHED-EXEC"
 SERVICE_IMAGE = "teatree-worker:local"
+# The compose SERVICE label a `docker ps` row carries, which is what the wrapper matches.
+SERVICE_NAME = "teatree-worker"
 
 # Reports which hop it was handed, and fails the daemon / image probes on demand
-# so a test can put the host in either unavailable state.
+# so a test can put the host in either unavailable state. A `ps` row is
+# `<id> <service> <oneoff>` — the label columns the wrapper's own `--format` asks for.
 DOCKER_STUB = f"""#!/usr/bin/env bash
 case "$1" in
 version) exit "${{STUB_DAEMON_EXIT:-0}}" ;;
@@ -34,7 +37,11 @@ image) exit "${{STUB_IMAGE_EXIT:-0}}" ;;
 esac
 for arg in "$@"; do
     case "$arg" in
-    ps) printf '%s' "${{STUB_RUNNING_ID:-}}"; exit 0 ;;
+    ps)
+        if [ -n "${{STUB_RUNNING_ID:-}}" ]; then
+            printf '%s {SERVICE_NAME} False\\n' "${{STUB_RUNNING_ID}}"
+        fi
+        exit 0 ;;
     config) printf '%s\\n' "${{STUB_SERVICE_IMAGE:-}}"; exit 0 ;;
     run) printf '{DISPATCHED_ONE_OFF}\\n'; exit 0 ;;
     exec) printf '{DISPATCHED_EXEC}\\n'; exit 0 ;;
@@ -148,20 +155,16 @@ class TestAStoppedStackStillDispatches:
 
 
 class TestTheOneOffFallbackAnnouncesItself:
-    """The fallback runs the CLI but not the worker's environment (souliane/teatree#4076).
+    """The fallback announces its execution venue (souliane/teatree#4076)."""
 
-    Its container never runs the entrypoint, so git has no credential helper there and a
-    push fails to authenticate. Said only afterwards, that arrives as an opaque rc=1.
-    """
-
-    def test_the_one_off_names_itself_and_its_missing_credentials_before_dispatching(
+    def test_the_one_off_names_itself_without_claiming_routed_credentials_are_missing(
         self, wrapper: Path, home: Path, tmp_path: Path
     ) -> None:
         proc = _run(wrapper, home, tmp_path)
 
         assert DISPATCHED_ONE_OFF in proc.stdout
         assert "one-off" in proc.stderr
-        assert "credential" in proc.stderr
+        assert "credential" not in proc.stderr
 
     def test_the_notice_stays_off_stdout_so_a_json_consumer_is_unaffected(
         self, wrapper: Path, home: Path, tmp_path: Path

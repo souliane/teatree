@@ -93,6 +93,16 @@ class TeatreeMetadata(OverlayMetadata):
         return slugs or list(_DEFAULT_FOLLOWUP_REPOS)
 
     @override
+    def get_e2e_config(self) -> dict[str, str]:
+        # `-n0`: the dash specs share one live_server; `no:randomly`: they seed in order.
+        return {
+            "runner": "project",
+            "test_dir": "e2e/dash",
+            "settings_module": "e2e.dash.settings",
+            "pytest_args": "-n0 -p no:randomly -p no:cacheprovider",
+        }
+
+    @override
     def get_skill_metadata(self) -> SkillMetadata:
         root = _repo_root()
         return {

@@ -97,6 +97,7 @@ class TestCodeBehindSchemaDefersTheClaim(_ProcessSkewBase):
     def test_claim_next_pending_returns_none_and_leaves_the_task_pending(self) -> None:
         TaskFactory(status=Task.Status.PENDING)
         self.record_applied("core", _FUTURE)
+        invalidate_process_freshness()
 
         assert Task.objects.claim_next_pending(claimed_by="worker") is None
         assert Task.objects.filter(status=Task.Status.PENDING).count() == 1
@@ -104,6 +105,7 @@ class TestCodeBehindSchemaDefersTheClaim(_ProcessSkewBase):
     def test_claimable_is_empty_while_this_process_is_behind(self) -> None:
         TaskFactory(status=Task.Status.PENDING)
         self.record_applied("core", _FUTURE)
+        invalidate_process_freshness()
 
         assert Task.objects.claimable().count() == 0
 

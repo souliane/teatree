@@ -19,8 +19,7 @@ Two properties worth stating, because both were failure modes on the way here:
     its owner last checked out, so linking straight at it would serve WIP to every
     agent — and would make the drift gate compare a tree against itself. The ref is
     exported into a per-``(source, commit)`` cache directory and the links point
-    there, matching what :class:`~teatree.provisioning.skill_source.MandatedSkillInstaller`
-    already does for ``apm``-declared sources.
+    there before the skills CLI installs the selected names.
 *   **Never displace what is already loadable.** A name the runtime can already
     resolve is left exactly as it is. That keeps the step idempotent for the
     container entrypoint, which runs ``t3 setup`` on every start, and keeps a
@@ -31,16 +30,18 @@ import logging
 import os
 import shutil
 import tarfile
+from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
-from operator import itemgetter
 from pathlib import Path
 
+from teatree.harness_skills import SkillsHarness
 from teatree.provisioning.skill_drift import SkillSourceClone, resolve_published_skills
+from teatree.provisioning.skills_cli import SkillAddResult, SkillAddStatus, SkillsCli, SkillsCliError
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
-_SKILL_FILE = "SKILL.md"
 _ARCHIVE_TIMEOUT_SECONDS = 120
 _STAMP = ".teatree-export-ref"
 _PARTIAL_SUFFIX = ".partial."
@@ -55,6 +56,7 @@ class CloneInstall:
     ref: str = ""
     installed: tuple[str, ...] = ()
     already_loadable: tuple[str, ...] = ()
+    excluded: tuple[str, ...] = ()
     unavailable: str = ""
 
     def render(self) -> str:
@@ -63,13 +65,46 @@ class CloneInstall:
             return f"WARN  Skill source {self.label} not provisioned: {self.unavailable}."
         where = f"Skill source {self.label} at {self.ref}"
         if not self.installed:
-            return f"OK    {where}: {len(self.already_loadable)} skill(s) already loadable."
+            if self.excluded:
+                return f"OK    {where}: {len(self.excluded)} harness skill(s) excluded."
+            if self.already_loadable:
+                return f"OK    {where}: {len(self.already_loadable)} harness skill(s) already installed."
+            return f"OK    {where}: no demanded skills published."
         sample = ", ".join(self.installed[:_MAX_NAMED])
         more = f" (+{len(self.installed) - _MAX_NAMED} more)" if len(self.installed) > _MAX_NAMED else ""
         return (
-            f"OK    {where}: installed {len(self.installed)} skill(s) — {sample}{more}; "
-            f"{len(self.already_loadable)} already loadable."
+            f"OK    {where}: installed {len(self.installed)} harness skill(s) — {sample}{more}; "
+            f"{len(self.already_loadable)} already installed."
         )
+
+
+def _selection_by_harness(
+    demand_names: set[str],
+    harness_exclusions: list[str],
+) -> tuple[dict[SkillsHarness, tuple[str, ...]], tuple[str, ...]]:
+    # Declared demands are runtime requirements, not optional harness inventory.
+    # Exclusions may remove optional skills elsewhere, but cannot disable workflow
+    # context the active overlay says every dispatch needs.
+    del harness_exclusions
+    demands = {name.rsplit(":", 1)[-1].strip().casefold() for name in demand_names if name.strip()}
+    return {harness: tuple(sorted(demands)) for harness in SkillsHarness}, ()
+
+
+def _record_results(
+    results: tuple[SkillAddResult, ...],
+    harnesses: Sequence[SkillsHarness],
+    installed: list[str],
+    already: list[str],
+    failed: list[str],
+) -> None:
+    for result in results:
+        targets = [f"{harness.value}:{result.name}" for harness in harnesses]
+        if result.status is SkillAddStatus.INSTALLED:
+            installed.extend(targets)
+        elif result.status is SkillAddStatus.SKIPPED:
+            already.extend(targets)
+        else:
+            failed.extend(targets)
 
 
 def _export_ref(repo: Path, ref: str, destination: Path) -> bool:
@@ -127,23 +162,54 @@ def _cache_name(label: str, repo: Path, ref: str) -> str:
     return f"{slug}@{resolved or ref.replace('/', '-')}"
 
 
-def _link(link: Path, target: Path) -> None:
-    """Point *link* at *target*, replacing a stale link but never a real directory."""
-    if link.is_symlink():
-        link.unlink()
-    link.symlink_to(target)
+def _install_selected(
+    export: Path,
+    selected_by_harness: dict[SkillsHarness, tuple[str, ...]],
+    cli: SkillsCli | None,
+) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+    grouped: dict[tuple[str, ...], list[SkillsHarness]] = defaultdict(list)
+    for harness, selected in selected_by_harness.items():
+        if selected:
+            grouped[selected].append(harness)
+    installed: list[str] = []
+    already: list[str] = []
+    failed: list[str] = []
+    client = cli or SkillsCli()
+    unavailable = ""
+    try:
+        for selected, harnesses in grouped.items():
+            results = client.add_selected(str(export), tuple(harnesses), selected)
+            _record_results(results, harnesses, installed, already, failed)
+    except SkillsCliError as error:
+        unavailable = str(error)
+    if failed:
+        unavailable = f"skills CLI failed to install: {', '.join(sorted(failed))}"
+    return tuple(sorted(installed)), tuple(sorted(already)), unavailable
 
 
-def install_published_skills(clone: SkillSourceClone, *, link_dir: Path, cache_root: Path) -> CloneInstall:
-    """Make every skill *clone* publishes loadable from *link_dir*.
+def install_published_skills(
+    clone: SkillSourceClone,
+    *,
+    cache_root: Path,
+    demand_names: set[str],
+    harness_exclusions: list[str],
+    cli: SkillsCli | None = None,
+) -> CloneInstall:
+    selected_by_harness, applied_exclusions = _selection_by_harness(demand_names, harness_exclusions)
+    if not any(selected_by_harness.values()):
+        return CloneInstall(label=clone.label or "skill source", excluded=applied_exclusions)
 
-    Returns what happened rather than raising: a source that cannot be resolved on
-    this box is a WARN the caller reports, not a reason to fail ``t3 setup`` — the
-    drift gate is what turns a still-absent skill into a FAIL.
-    """
     published = resolve_published_skills(clone)
     if published.unmeasurable or published.repo is None:
         return CloneInstall(label=published.label, ref=published.ref, unavailable=published.unmeasurable)
+
+    published_names = {name.casefold(): name for name in published.names.values()}
+    selected_by_harness = {
+        harness: tuple(published_names[name] for name in selected if name in published_names)
+        for harness, selected in selected_by_harness.items()
+    }
+    if not any(selected_by_harness.values()):
+        return CloneInstall(label=published.label, ref=published.ref, excluded=applied_exclusions)
 
     export = cache_root / _cache_name(published.label, published.repo, published.ref)
     if not _export_ref(published.repo, published.ref, export):
@@ -153,21 +219,19 @@ def install_published_skills(clone: SkillSourceClone, *, link_dir: Path, cache_r
             unavailable=f"could not export {published.ref} from {published.repo}",
         )
 
-    link_dir.mkdir(parents=True, exist_ok=True)
-    installed: list[str] = []
-    already: list[str] = []
-    for skill_md_path, name in sorted(published.names.items(), key=itemgetter(1)):
-        if (link_dir / name / _SKILL_FILE).is_file():
-            already.append(name)
-            continue
-        target = export / Path(skill_md_path).parent
-        if not (target / _SKILL_FILE).is_file():
-            continue
-        _link(link_dir / name, target)
-        installed.append(name)
+    installed, already, unavailable = _install_selected(export, selected_by_harness, cli)
+    if unavailable:
+        return CloneInstall(
+            label=published.label,
+            ref=published.ref,
+            already_loadable=already,
+            excluded=applied_exclusions,
+            unavailable=unavailable,
+        )
     return CloneInstall(
         label=published.label,
         ref=published.ref,
-        installed=tuple(installed),
-        already_loadable=tuple(already),
+        installed=installed,
+        already_loadable=already,
+        excluded=applied_exclusions,
     )

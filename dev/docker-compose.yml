@@ -44,8 +44,7 @@ services:
     build:
       context: ..
       dockerfile: dev/Dockerfile.e2e
-    entrypoint: ["uv", "run", "pytest",
-      "-o", "DJANGO_SETTINGS_MODULE=e2e.settings", "--no-cov",
+    entrypoint: ["uv", "run", "pytest", "--no-cov",
       "-p", "no:tach", "-v",
       "-o", "cache_dir=/tmp/.pytest_cache"]
     command: ["e2e/"]

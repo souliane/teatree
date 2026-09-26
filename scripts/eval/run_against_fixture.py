@@ -24,7 +24,15 @@ from pathlib import Path
 
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.loader import load_eval_yaml
-from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, FinalStateMatcher
+from teatree.eval.models import (
+    AnyOf,
+    AssistantTextMatcher,
+    EvalSpec,
+    ExpectItem,
+    FinalStateMatcher,
+    PlanBeforeToolMatcher,
+    SuccessfulToolCallMatcher,
+)
 from teatree.eval.report import evaluate
 
 
@@ -86,6 +94,13 @@ def _describe(matcher: ExpectItem) -> str:
         return "any_of[" + " | ".join(_describe(alt) for alt in matcher.alternatives) + "]"
     if isinstance(matcher, FinalStateMatcher):
         return f"final_state {matcher.operator} {matcher.value!r}"
+    if isinstance(matcher, AssistantTextMatcher):
+        return f"assistant_text {matcher.operator} {matcher.value!r}"
+    if isinstance(matcher, PlanBeforeToolMatcher):
+        tools = ", ".join(matcher.governed_tools)
+        return f"assistant_text.before_first_tool tools=[{tools}] patterns={len(matcher.patterns)}"
+    if isinstance(matcher, SuccessfulToolCallMatcher):
+        return f"tool_call_succeeded {matcher.tool}.{matcher.arg_path} {matcher.operator}"
     return f"{matcher.kind} {matcher.tool}.{matcher.arg_path} {matcher.operator}"
 
 

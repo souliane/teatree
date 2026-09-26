@@ -9,14 +9,15 @@ the last firing for a key).
 """
 
 import datetime as dt
+import hashlib
 import logging
 
 from django.db import transaction
-from django.db.models import F
+from django.db.models import Case, F, Value, When
 from django.utils import timezone
 
 from teatree.core.models.self_improve_firing import SelfImproveFiring
-from teatree.loop.self_improve.detectors.base import DetectorReport
+from teatree.loop.self_improve.detectors.base import DetectorReport, DetectorScan
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,35 @@ SLACK_RATE_CAP_SECONDS = 30 * 60
 def latest_firing(detector: str, dedup_key: str) -> SelfImproveFiring | None:
     """Return the persisted firing for ``(detector, dedup_key)`` or ``None``."""
     return SelfImproveFiring.objects.filter(detector=detector, dedup_key=dedup_key).first()
+
+
+def resolve_absent_firings(
+    detector: str,
+    scan: DetectorScan,
+    *,
+    observed_at: dt.datetime,
+    key_prefix: str | None = None,
+) -> None:
+    """Close only absences covered by authoritative source evidence."""
+    if not scan.complete and not (scan.protected_keys or scan.protected_prefixes or scan.candidate_keys is not None):
+        return
+    if scan.candidate_keys is not None and not scan.candidate_keys:
+        return
+    firings = SelfImproveFiring.objects.filter(
+        detector=detector,
+        resolved_at__isnull=True,
+        last_fired_at__lte=observed_at,
+    )
+    if key_prefix is not None:
+        firings = firings.filter(dedup_key__startswith=key_prefix)
+    if scan.candidate_keys is not None:
+        firings = firings.filter(dedup_key__in=scan.candidate_keys)
+    if scan.protected_keys:
+        firings = firings.exclude(dedup_key__in=scan.protected_keys)
+    for prefix in scan.protected_prefixes:
+        firings = firings.exclude(dedup_key__startswith=prefix)
+    observed_keys = {report.dedup_key for report in scan.reports} - scan.reopen_keys
+    firings.exclude(dedup_key__in=observed_keys).update(resolved_at=timezone.now())
 
 
 def record_firing(
@@ -48,11 +78,13 @@ def record_firing(
     is the post-hoc telemetry signal.
     """
     moment = now or timezone.now()
+    digest = hashlib.sha256(report.dedup_key.encode()).hexdigest()[:16]
     with transaction.atomic():
         firing, created = SelfImproveFiring.objects.get_or_create(
             detector=report.detector,
             dedup_key=report.dedup_key,
             defaults={
+                "dedup_key_digest": digest,
                 "state_hash": report.state_hash,
                 "severity": report.severity,
                 "first_fired_at": moment,
@@ -64,12 +96,19 @@ def record_firing(
         )
         if not created:
             SelfImproveFiring.objects.filter(pk=firing.pk).update(
+                dedup_key_digest=digest,
                 state_hash=report.state_hash,
                 severity=report.severity,
+                first_fired_at=Case(
+                    When(resolved_at__isnull=False, then=Value(moment)),
+                    default=F("first_fired_at"),
+                ),
                 last_fired_at=moment,
                 last_action=action,
                 payload=report.payload,
                 action_count=F("action_count") + 1,
+                ticket=Case(When(resolved_at__isnull=False, then=Value(None)), default=F("ticket")),
+                resolved_at=None,
             )
             firing.refresh_from_db()
     return firing

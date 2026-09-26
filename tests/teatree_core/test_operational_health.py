@@ -23,9 +23,9 @@ from teatree.core.factory.operational_health import (
     HealthStatus,
     SignalCollection,
     _admission_pressure_signals,
+    _consecutive_harness_crash_signals,
     _dream_staleness_signals,
     _failed_task_signals,
-    _fleet_loop_policy_signals,
     _harness_provider_consistency_signals,
     _overlay_health_signals,
     _reclaim_stall_signals,
@@ -37,6 +37,7 @@ from teatree.core.factory.operational_health import (
     reconcile_health,
 )
 from teatree.core.factory.stalled_backlog import STALLED_BACKLOG_THRESHOLD
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import ConfigSetting, Loop, LoopState, Prompt, Session, Task, Ticket
 from teatree.core.models.config_setting import GLOBAL_SCOPE
 from teatree.core.models.dream_run_marker import CRITICAL_STALE_MULTIPLE, STALE_THRESHOLD_HOURS, DreamRunMarker
@@ -86,6 +87,44 @@ class TestReadHealth:
         report = read_health()
         assert report.status is HealthStatus.YELLOW
         assert report.open_count == 1
+
+
+class TestTheVerdictCarriesWhenItWasMeasured:
+    """A verdict with no measurement time on it is read as current.
+
+    That is how a five-hour-old finding circulated as current across four sessions
+    in one day. The report dates itself so no consumer has to guess.
+    """
+
+    def test_an_empty_registry_dates_nothing_rather_than_now(self) -> None:
+        """Anti-vacuity: never round an unknown age down to fresh."""
+        assert read_health().measured_at is None
+
+    def test_a_clean_verdict_is_dated_from_the_last_reconcile(self) -> None:
+        """Green is the verdict whose age matters most — it has no open issue to date it."""
+        row = KnownIssue.objects.record_signal(HealthSignal("gone", KnownIssue.Severity.WARNING, "cleared"))
+        KnownIssue.objects.dismiss(row.pk)
+
+        report = read_health()
+
+        assert report.open_count == 0
+        assert report.measured_at is not None, "a resolved row still dates the last reconcile"
+        assert report.measured_at >= row.last_seen
+
+    def test_the_stamp_tracks_the_freshest_row_not_the_oldest(self) -> None:
+        old = KnownIssue.objects.record_signal(HealthSignal("old", KnownIssue.Severity.WARNING, "old"))
+        KnownIssue.objects.filter(pk=old.pk).update(last_seen=timezone.now() - timedelta(days=3))
+        recent = KnownIssue.objects.record_signal(HealthSignal("new", KnownIssue.Severity.WARNING, "new"))
+
+        assert read_health().measured_at == recent.last_seen
+
+    def test_a_broken_read_dates_nothing(self) -> None:
+        with patch.object(KnownIssue, "objects") as objects:
+            objects.open.side_effect = OperationalError(_DB_LOCKED)
+            report = read_health()
+
+        assert report.status is HealthStatus.GREEN
+        assert report.measured_at is None
 
 
 class TestAdmissionPressureClustersByCauseNotVolume:
@@ -260,6 +299,67 @@ class TestFailedTaskCollector:
         assert _failed_task_signals().signals == ()
 
 
+class TestConsecutiveHarnessCrashCollector:
+    """A factory that dispatches and completes nothing must never read healthy.
+
+    ``_failed_task_signals`` collapses ANY number of failures into one WARNING, and the
+    verdict needs three concurrent warnings to redden — so before this collector, 53 of 60
+    tasks dying in the harness rendered as a single yellow line for days.
+    """
+
+    def _ticket_session(self, issue_url: str) -> tuple[Ticket, Session]:
+        ticket = Ticket.objects.create(issue_url=issue_url, state=Ticket.State.STARTED)
+        return ticket, Session.objects.create(overlay="test", ticket=ticket)
+
+    def _tasks(self, *outcomes: tuple[str, str]) -> None:
+        ticket, session = self._ticket_session(f"https://example.com/issues/{Ticket.objects.count() + 100}")
+        for status, kind in outcomes:
+            Task.objects.create(ticket=ticket, session=session, status=status, failure_kind=kind)
+
+    def test_a_run_of_harness_deaths_is_critical(self) -> None:
+        self._tasks(*[(Task.Status.FAILED, FailureKind.HARNESS_CONTROL_TIMEOUT)] * 3)
+
+        signals = _consecutive_harness_crash_signals().signals
+
+        assert [s.fingerprint for s in signals] == ["consecutive-harness-crashes"]
+        assert signals[0].severity == KnownIssue.Severity.CRITICAL
+        assert FailureKind.HARNESS_CONTROL_TIMEOUT in signals[0].summary
+
+    def test_a_run_of_harness_deaths_reddens_the_chip(self) -> None:
+        self._tasks(*[(Task.Status.FAILED, FailureKind.HARNESS_CRASH)] * 3)
+
+        assert reconcile_health().status == HealthStatus.RED
+
+    def test_one_completion_inside_the_run_clears_it(self) -> None:
+        """Consecutive is the whole claim — some tasks failing is not a dead harness."""
+        self._tasks(
+            (Task.Status.FAILED, FailureKind.HARNESS_CRASH),
+            (Task.Status.COMPLETED, ""),
+            (Task.Status.FAILED, FailureKind.HARNESS_CRASH),
+        )
+
+        assert _consecutive_harness_crash_signals().signals == ()
+
+    def test_a_run_of_ordinary_defects_is_not_a_harness_fault(self) -> None:
+        self._tasks(*[(Task.Status.FAILED, FailureKind.EVIDENCE_MISSING)] * 3)
+
+        assert _consecutive_harness_crash_signals().signals == ()
+
+    def test_below_the_threshold_yields_nothing(self) -> None:
+        self._tasks(*[(Task.Status.FAILED, FailureKind.HARNESS_CRASH)] * 2)
+
+        assert _consecutive_harness_crash_signals().signals == ()
+
+    def test_a_still_running_task_does_not_break_the_run(self) -> None:
+        """The run is over TERMINAL tasks; a task claimed after the crashes has no outcome yet."""
+        self._tasks(
+            *[(Task.Status.FAILED, FailureKind.HARNESS_CRASH)] * 3,
+            (Task.Status.CLAIMED, ""),
+        )
+
+        assert [s.fingerprint for s in _consecutive_harness_crash_signals().signals] == ["consecutive-harness-crashes"]
+
+
 class TestStalledBacklogCollector:
     """Folding the stranded count into a signal; the predicate is tested beside its module."""
 
@@ -352,43 +452,6 @@ class TestHarnessProviderConsistencyCollector:
         ):
             report = reconcile_health()
         assert report.status is HealthStatus.RED
-
-
-class TestFleetLoopPolicySignals:
-    """An unsatisfiable fleet loop declaration is a durable signal, not deploy stderr.
-
-    ``deploy/entrypoint.sh`` warns and continues (crash-looping init on the config the
-    box already shipped would be worse than the mis-mask), but that warning lives only
-    in the deploy log. The collector re-derives the same verdict from the env compose
-    hands every service, so the chip stays yellow until the repo variable is fixed.
-    """
-
-    def test_contradictory_declaration_yields_one_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TEATREE_ENABLED_LOOPS", raising=False)
-        monkeypatch.setenv("TEATREE_DISABLED_LOOPS", "inbox,directive_loop")
-        signals = _fleet_loop_policy_signals().signals
-        assert len(signals) == 1
-        assert signals[0].severity == KnownIssue.Severity.WARNING
-        assert signals[0].fingerprint == "fleet-loop-policy-contradiction"
-        assert "review" in signals[0].summary
-
-    def test_sound_declaration_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TEATREE_ENABLED_LOOPS", "inbox")
-        monkeypatch.setenv("TEATREE_DISABLED_LOOPS", "review")
-        assert _fleet_loop_policy_signals().signals == ()
-
-    def test_unset_declaration_yields_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TEATREE_ENABLED_LOOPS", raising=False)
-        monkeypatch.delenv("TEATREE_DISABLED_LOOPS", raising=False)
-        assert _fleet_loop_policy_signals().signals == ()
-
-    def test_contradiction_yellows_the_chip_via_reconcile(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TEATREE_ENABLED_LOOPS", raising=False)
-        monkeypatch.setenv("TEATREE_DISABLED_LOOPS", "inbox,directive_loop")
-        with patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}):
-            report = reconcile_health()
-        assert report.status is HealthStatus.YELLOW
-        assert any(issue.fingerprint == "fleet-loop-policy-contradiction" for issue in report.open_issues)
 
 
 class _BrokenOverlay:

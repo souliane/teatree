@@ -19,7 +19,6 @@ from django.utils import timezone
 from teatree.cli.doctor.app import _check_shipped_seed_inertness
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-from teatree.loops.mode_shape import INTAKE_LOOPS
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.shipped_guard import shipped_delete_phrase
@@ -70,12 +69,12 @@ class TestAuditExitCode(django.test.TestCase):
         assert any(f["name"] == "review" and f["kind"] == "missing" for f in payload["findings"])
 
     def test_a_deliberate_note_alone_does_not_fail_the_audit(self) -> None:
-        """`always-away` is inactive by design — a note, never a non-zero exit."""
+        """`always-afk` is inactive by design — a note, never a non-zero exit."""
         err = io.StringIO()
 
         call_command("shipped_seed", "audit", stdout=io.StringIO(), stderr=err)
 
-        assert "always-away" in err.getvalue(), "the note is still reported"
+        assert "always-afk" in err.getvalue(), "the note is still reported"
 
     def test_an_operator_override_is_reported_under_the_notes_block_and_exits_zero(self) -> None:
         """The report distinguishes never-seeded from deliberately overridden (#4096)."""
@@ -94,9 +93,8 @@ class TestAuditExitCode(django.test.TestCase):
         assert "slots_overridden" in report
         assert "adds Mon,Tue,Wed,Thu,Fri 19:00 -> maintenance" in report
 
-    def test_a_mode_that_masks_delivery_while_admitting_intake_exits_non_zero(self) -> None:
-        """The 13h-a-night stall the audit used to report as OK (#4096)."""
-        Loop.objects.filter(name__in=INTAKE_LOOPS).update(enabled=True)
+    def test_a_mode_that_names_only_some_loops_exits_non_zero(self) -> None:
+        """A partial table is a fault: the loops it never names read off, unchosen (B1)."""
         Mode.objects.filter(name="maintenance").update(entries={"ship": False, "tickets": False})
         err = io.StringIO()
 
@@ -104,7 +102,7 @@ class TestAuditExitCode(django.test.TestCase):
             call_command("shipped_seed", "audit", stdout=io.StringIO(), stderr=err)
 
         assert caught.value.code == 1
-        assert "intake_without_delivery" in err.getvalue()
+        assert "not_total" in err.getvalue()
 
 
 class TestDeleteVerbs(django.test.TestCase):
@@ -134,9 +132,9 @@ class TestDeleteVerbs(django.test.TestCase):
 
     def test_deleting_a_shipped_schedule_needs_the_phrase(self) -> None:
         with pytest.raises(SystemExit):
-            call_command("shipped_seed", "delete-schedule", "always-away", stdout=io.StringIO(), stderr=io.StringIO())
+            call_command("shipped_seed", "delete-schedule", "always-afk", stdout=io.StringIO(), stderr=io.StringIO())
 
-        assert ModeSchedule.objects.filter(name="always-away").exists()
+        assert ModeSchedule.objects.filter(name="always-afk").exists()
 
     def test_deleting_a_shipped_preset_needs_the_phrase(self) -> None:
         with pytest.raises(SystemExit):

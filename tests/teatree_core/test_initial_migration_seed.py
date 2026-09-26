@@ -28,9 +28,14 @@ from teatree.core.models import Loop
 from teatree.loops.seed import ARCH_REVIEW_PROMPT_BODY, DEFAULT_LOOPS
 
 _migration = importlib.import_module("teatree.core.migrations.0001_initial")
+_squashed_migration = importlib.import_module("teatree.core.migrations.0001_squashed_0030")
 
 _SOUND_ON = frozenset(spec.name for spec in DEFAULT_LOOPS if spec.default_enabled)
 _COLLEAGUE_FACING = frozenset(spec.name for spec in DEFAULT_LOOPS if spec.colleague_facing)
+_ISSUE_DISPOSITION_DESCRIPTION = (
+    "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m, "
+    "only for t3-teatree owned repos; bounded per tick."
+)
 
 
 class TestInlinedSeedMatchesCanonicalSeed:
@@ -52,13 +57,16 @@ class TestInlinedSeedMatchesCanonicalSeed:
             )
             for spec in DEFAULT_LOOPS
         )
-        assert expected == _migration._DEFAULT_LOOPS, (
-            "Default-loops dataset drifted. The canonical set lives in THREE places that must "
-            "stay in lock-step — edit all three:\n"
+        issue_disposition = next(row for row in expected if row[0] == "issue_disposition")
+        assert issue_disposition[4] == _ISSUE_DISPOSITION_DESCRIPTION
+        assert expected == _migration._DEFAULT_LOOPS == _squashed_migration._DEFAULT_LOOPS, (
+            "Default-loops dataset drifted. The canonical set lives in FIVE places that must "
+            "stay in lock-step — edit all five:\n"
             "  1. src/teatree/loops/seed.py            (DEFAULT_LOOPS — the canonical source)\n"
             "  2. src/teatree/core/migrations/0001_initial.py  (_DEFAULT_LOOPS — inlined, frozen history)\n"
-            "  3. this pin (tests/teatree_core/test_initial_migration_seed.py) + the "
-            "registry-parity pin (tests/conformance/test_registry_parity.py)"
+            "  3. src/teatree/core/migrations/0001_squashed_0030.py  (_DEFAULT_LOOPS — frozen history)\n"
+            "  4. this pin (tests/teatree_core/test_initial_migration_seed.py)\n"
+            "  5. tests/conformance/test_registry_parity.py"
         )
 
     def test_inlined_arch_review_body_matches_the_canonical_body(self) -> None:
@@ -98,13 +106,13 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
     def test_seeds_every_default_loop_once(self) -> None:
         assert Loop.objects.count() == len(DEFAULT_LOOPS)
 
-    def test_seeds_the_sound_on_set_enabled_and_the_rest_paused(self) -> None:
-        # The single consolidated seed sets ``enabled=default_enabled`` directly;
-        # the migrate-path enabled set must equal the canonical seed's
-        # ``default_enabled`` specs — colleague-facing / heavy loops stay opt-in.
-        enabled = set(Loop.objects.filter(enabled=True).values_list("name", flat=True))
-        assert enabled == _SOUND_ON
-        assert Loop.objects.filter(enabled=False).count() == len(DEFAULT_LOOPS) - len(_SOUND_ON)
+    def test_a_migrated_box_carries_no_manual_override_on_any_loop(self) -> None:
+        # `Loop.enabled` is the MANUAL override slot, and a fresh box has taken no manual
+        # decision — whether a loop runs is the active preset's answer. The shipped
+        # `default_enabled` set survives as the seed table's own opinion, pinned by
+        # `test_sound_default_on_set_is_the_eight_local_read_only_loops`.
+        assert not Loop.objects.exclude(enabled=None).exists()
+        assert {spec.name for spec in DEFAULT_LOOPS if spec.default_enabled} == _SOUND_ON
 
     def test_seeds_colleague_facing_on_exactly_the_colleague_loops(self) -> None:
         facing = set(Loop.objects.filter(colleague_facing=True).values_list("name", flat=True))

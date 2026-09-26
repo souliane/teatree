@@ -12,7 +12,6 @@ at call-time, which both breaks the import cycle and keeps a single
 """
 
 from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider
-from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS, ColdHookSetting
 from teatree.config.discovery import (
     _active_overlay_entry,
     _canonical_active_overlay_name,
@@ -24,16 +23,7 @@ from teatree.config.discovery import (
     discover_overlays,
 )
 from teatree.config.e2e_repo import E2ERepo
-from teatree.config.enums import (
-    Autonomy,
-    CriticGateMode,
-    MissingIssuePolicy,
-    Mode,
-    OnBehalfPostMode,
-    PrReviewBackend,
-    SendProxyMode,
-    Wip,
-)
+from teatree.config.enums import Autonomy, CriticGateMode, MissingIssuePolicy, Mode, PrReviewBackend, SendProxyMode, Wip
 from teatree.config.feature_flags import (
     DURABLE_GATE_SETTINGS,
     FEATURE_FLAGS,
@@ -55,7 +45,7 @@ from teatree.config.loader import (
 )
 from teatree.config.mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
 from teatree.config.peer_instance import PeerInstance, PeerTransport, PeerTunnel
-from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
+from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_SETTINGS, ColdHookSetting
 from teatree.config.resolution import (
     _active_overlay_overrides,
     _apply_autonomy,
@@ -111,7 +101,6 @@ __all__ = [
     "MissingIssuePolicy",
     "Mode",
     "MrReminderConfig",
-    "OnBehalfPostMode",
     "OverlayEntry",
     "PeerInstance",
     "PeerTransport",

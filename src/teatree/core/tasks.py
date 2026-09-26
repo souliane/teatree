@@ -1,5 +1,6 @@
 import datetime as dt
 import logging
+from functools import partial
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from django.db import transaction
@@ -11,8 +12,10 @@ from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.deterministic_phases import run_deterministic_phase
 from teatree.core.gates.critic_gate import record_critic_findings
 from teatree.core.intake.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
-from teatree.core.intake.landscape_gather import run_landscape
-from teatree.core.models import LandscapeArtifact, Task, Ticket
+from teatree.core.intake.landscape_persist import persist_intake_landscape
+from teatree.core.managers import _claimable_now_q
+from teatree.core.managers_task_claim import claim_when_admitted
+from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import CriticGateError, InvalidTransitionError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS
@@ -34,29 +37,6 @@ logger = logging.getLogger(__name__)
 #: that dead work is live. Shared by the doctor's stranded-headless probe and
 #: :meth:`TeardownDispatch.outstanding_for`.
 STRANDED_JOB_GRACE_SECONDS = 900
-
-
-def _persist_intake_landscape(ticket: Ticket) -> None:
-    """Bake the intake landscape survey into a durable artifact (#2541).
-
-    Run after the worktrees materialise and before the planner is scheduled, so
-    the planner consumes the survey the intake FSM step produced instead of
-    re-deriving it. Best-effort context, never a gate: any gather failure (a
-    forge outage, a corrupt clone) or an empty survey degrades to a log line —
-    it must NEVER abort provisioning or block the planner (fail-open, mirroring
-    the landscape module's own degradation doctrine). A survey with only
-    warnings is still a non-empty dict, so it is persisted; a gather that raises
-    leaves no artifact.
-    """
-    try:
-        survey = run_landscape(worktree_root())
-    except Exception:
-        logger.warning("Intake landscape gather failed for ticket %s; skipping artifact", ticket.pk, exc_info=True)
-        return
-    try:
-        LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
-    except ValueError:
-        logger.info("Intake landscape survey for ticket %s was empty; no artifact recorded", ticket.pk)
 
 
 def _attachment_gate_refusal(ticket: Ticket) -> str | None:
@@ -101,20 +81,24 @@ class TaskRunResult(TypedDict, total=False):
     result: RawAPIDict
 
 
+def _not_admitted(task_id: int, reason: str) -> TaskRunResult:
+    logger.info("Task %s not admitted (%s); left for the drain to re-admit", task_id, reason)
+    return {"skipped": reason}
+
+
 @task()
 def execute_task(task_id: int, phase: str) -> TaskRunResult:
     import traceback  # noqa: PLC0415 — deferred: loaded only on this code path
 
     from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415 — deferred: call-time import
 
-    task_obj = Task.objects.get(pk=task_id)
-
     # A job enqueued before the factory froze must not run; the row stays as found.
     if blocked := headless_admission_block_reason():
-        logger.info("Task %s not admitted (%s); leaving it for a later drain", task_obj.pk, blocked)
-        return {"skipped": f"admission blocked: {blocked}"}
+        return _not_admitted(task_id, f"admission blocked: {blocked}")
 
-    # The atomic claim is the SOLE admission decision (F4). Win the compare-and-swap
+    task_obj = Task.objects.get(pk=task_id)
+
+    # The atomic claim is the sole PER-ROW admission decision (F4). Win the compare-and-swap
     # BEFORE any work runs — including the poison-pill and routing failure paths — so a
     # re-delivered COMPLETED/FAILED task, or one a live rival already holds, is a
     # successful no-op instead of a second billed execution on the same row (the
@@ -124,10 +108,15 @@ def execute_task(task_id: int, phase: str) -> TaskRunResult:
     # The heartbeat-matched lease means a starved first heartbeat cannot let the initial
     # 300s window lapse and re-queue this live task (HEARTBEAT_MATCHED_LEASE_SECONDS).
     try:
-        task_obj.claim(claimed_by="task-worker", lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)
+        refusal = claim_when_admitted(
+            partial(task_obj.claim, claimed_by="task-worker", lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)
+        )
     except InvalidTransitionError as exc:
         logger.info("Task %s not admitted (%s); skipping — claim is the sole admission decision", task_obj.pk, exc)
         return {"skipped": "not claimable (claimed elsewhere or terminal)"}
+
+    if refusal:
+        return _not_admitted(task_id, refusal)
 
     # Poison-pill guard (souliane/teatree#1959): a task whose ticket names a
     # non-empty overlay that no longer resolves crashes ``get_overlay_for_ticket``
@@ -192,7 +181,7 @@ def drain_queue_body() -> dict[str, list[int]]:
     from django.utils import timezone  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     from teatree.core.agent_admission import agent_admission_verdict  # noqa: PLC0415 — deferred: call-time
-    from teatree.core.managers import _claimable_now_q  # noqa: PLC0415 — deferred: single-source park predicate
+    from teatree.core.task_dispatch import enqueue_execution  # noqa: PLC0415 — cycle-safe queue policy
 
     # Honour ``not_before`` (F5): a usage-limit-parked task is PENDING with a future
     # ``not_before``. Draining it here would re-enqueue it, let the runner pre-flight
@@ -225,7 +214,7 @@ def drain_queue_body() -> dict[str, list[int]]:
             continue
         if blocked or not admission.admit(task_obj.pk, task_obj.phase, at="queue drain"):
             continue
-        execute_task.enqueue(task_obj.pk, task_obj.phase)
+        enqueue_execution(task_obj.pk, task_obj.phase)
         enqueued.append(task_obj.pk)
     return {"enqueued": enqueued, "failed_unknown_overlay": failed_unknown_overlay}
 
@@ -530,9 +519,10 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     result = WorktreeProvisioner(ticket).run()
     if not result.ok:
         logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
+        _record_provision_failure_question(ticket, result.detail)
         return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
-    _persist_intake_landscape(ticket)
+    persist_intake_landscape(ticket)
 
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -562,6 +552,36 @@ def execute_provision(ticket_id: int) -> TransitionResult:
             ticket.schedule_planning()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+def _record_provision_failure_question(ticket: Ticket, detail: str) -> None:
+    """Surface an un-provisionable repo as a durable, deduped ``DeferredQuestion``.
+
+    ``run()`` is all-or-nothing, so one repo out of N holds the whole ticket at
+    STARTED — and the failure path recorded only a log line while the attachment
+    gate directly below it escalated, which is how one ticket retried ~28 times
+    unnoticed. The escalation IS the bound: there is no retry count to exhaust.
+    """
+    from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
+
+    where = ticket.issue_url or f"ticket {ticket.pk}"
+    overlay = ticket.overlay or "<overlay>"
+    # `worktree provision` RESOLVES an existing checkout and runs its DB/env/setup
+    # steps — it declares no `--verbose` and has nothing to resolve when checkout
+    # CREATION itself failed. `workspace ticket` is the seam that reaches
+    # `WorktreeProvisioner` (git clone / worktree materialise) and is idempotent
+    # to re-run — but only when the ticket has a real issue_url to re-run it on.
+    retry = (
+        f"`t3 {overlay} workspace ticket {ticket.issue_url}`"
+        if ticket.issue_url
+        else f"`t3 {overlay} workspace ticket` re-run against this ticket's issue reference"
+    )
+    question = (
+        f"Provision failed on {where} (overlay {overlay}): {detail}. Every repo must provision before "
+        f"planning starts, so the ticket holds at STARTED until this one does. Retry checkout creation "
+        f"from the venue that owns the worktrees ({retry}), or drop the repo from the ticket?"
+    )
+    DeferredQuestion.record(question, dedupe_marker=f"provision-failure:{ticket.pk}")
 
 
 def _record_attachment_hold_question(ticket: Ticket, refusal: str) -> None:

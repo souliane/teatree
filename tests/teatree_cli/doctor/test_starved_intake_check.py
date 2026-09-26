@@ -59,3 +59,5 @@ class StarvedIntakeDoctorCheckTests(TestCase):
         assert "intake has no age ordering" in output
         assert "unclaimed for 2d" in output
         assert "open 5d" in output
+        assert "effective concurrency" in output
+        assert "in-flight" in output

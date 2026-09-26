@@ -1,8 +1,8 @@
 """Is this review request PAUSED right now — read live, never cached.
 
-The owner holds a review request by reacting to its Slack message with one of
-the ``review_pause_reaction_emojis``: "I have more to fix, do not count this as
-ready". The reaction IS the state. Nothing here writes a ``paused`` flag,
+The owner holds a review request by reacting to its Slack message with
+``:double_vertical_bar:`` or ``:pause_button:``: "I have more to fix, do not
+count this as ready". The reaction IS the state. Nothing here writes a ``paused`` flag,
 because a cached one is the failure where the owner lifts the reaction and the
 request stays held forever with no signal that anything is wrong — the reaction
 is gone, so there is nothing left to look at and no way to notice.
@@ -24,12 +24,15 @@ import logging
 from enum import StrEnum
 from typing import cast
 
-from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import ReviewRequestPost
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
+
+#: The reactions that mean "paused — not reviewable yet". Two glyphs for one meaning,
+#: because Slack renders the pause symbol under both names depending on the client.
+_PAUSE_REACTIONS: frozenset[str] = frozenset({"double_vertical_bar", "pause_button"})
 
 
 class PauseState(StrEnum):
@@ -63,7 +66,7 @@ def _carries_pause_reaction(message: RawAPIDict) -> bool:
     reactions = message.get("reactions")
     if not isinstance(reactions, list):
         return False
-    held_by = frozenset(get_effective_settings().review_pause_reaction_emojis)
     return any(
-        isinstance(reaction, dict) and cast("RawAPIDict", reaction).get("name") in held_by for reaction in reactions
+        isinstance(reaction, dict) and cast("RawAPIDict", reaction).get("name") in _PAUSE_REACTIONS
+        for reaction in reactions
     )

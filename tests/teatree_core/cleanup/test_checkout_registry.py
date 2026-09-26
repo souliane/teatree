@@ -46,7 +46,7 @@ def _break_the_repo(clone: Path) -> None:
 
 class TestCheckoutRegistry(TestCase):
     def setUp(self) -> None:
-        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.clone = make_git_repo(self.workspace / "org" / "repo")
         self.outside = self.workspace / "not-a-clone"
         self.outside.mkdir()
@@ -166,6 +166,69 @@ class TestCheckoutRegistry(TestCase):
         assert str(self.clone) in found.paths
         assert found.complete
 
+    def test_a_submodule_refuses_a_population_that_cannot_model_its_parent(self) -> None:
+        source = make_git_repo(self.workspace / "submodule-source")
+        run_git(
+            self.clone,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(source),
+            "vendor/dependency",
+        )
+        submodule = self.clone / "vendor" / "dependency"
+
+        registry = live_checkout_paths(self.workspace)
+
+        assert str(self.clone.resolve()) in registry.paths
+        assert str(submodule) not in registry.paths
+        assert not registry.complete
+        assert any(str(submodule) in gap and "submodule" in gap for gap in registry.gaps)
+
+    def test_a_standalone_separate_git_dir_checkout_is_reported(self) -> None:
+        checkout = self.workspace / "standalone"
+        checkout.mkdir()
+        administrative = self.workspace / "standalone.git"
+        run_git(checkout, "init", "-q", "-b", "main", f"--separate-git-dir={administrative}")
+        run_git(checkout, "commit", "-q", "--allow-empty", "-m", "initial")
+
+        registry = live_checkout_paths(self.workspace)
+
+        assert str(checkout) in registry.paths
+        assert registry.complete
+
+    def test_an_unprovable_git_file_is_a_gap(self) -> None:
+        checkout = self.workspace / "unprovable"
+        checkout.mkdir()
+        administrative = self.workspace / "not-a-git-dir"
+        administrative.mkdir()
+        (checkout / ".git").write_text(f"gitdir: {administrative}\n", encoding="utf-8")
+
+        registry = live_checkout_paths(self.workspace)
+
+        assert str(checkout) not in registry.paths
+        assert not registry.complete
+        assert any(str(checkout) in gap and "classify" in gap for gap in registry.gaps)
+
+    def test_an_undecodable_git_file_is_a_gap_rather_than_a_traceback(self) -> None:
+        """The walk answers about every dir it reaches, including ones holding rubbish.
+
+        A ``.git`` file is read as UTF-8, and ``UnicodeDecodeError`` is not an
+        ``OSError`` — it escapes the scan into ``worktree_gc``, the isolated-root
+        reaper and the owner-stamp pass as a traceback where a gap is the contract.
+        """
+        checkout = self.workspace / "undecodable"
+        checkout.mkdir()
+        (checkout / ".git").write_bytes(b"gitdir: \xff\xfe/not/utf8\n")
+
+        found = scan_checkout_paths((self.workspace,))
+
+        assert not found.complete
+        assert any(str(checkout) in gap and "classify" in gap for gap in found.gaps)
+        assert str(self.clone) in found.paths, "one unreadable marker must not abort the walk"
+
     def test_the_scan_ignores_a_plain_directory(self) -> None:
         """Anti-vacuous control: it reports checkouts, not every directory it walks."""
         found = scan_checkout_paths((self.workspace,))
@@ -181,7 +244,7 @@ class TestCheckoutRegistry(TestCase):
         evidence that authorises deleting its env dir. The host reaches its own
         teatree clone through such a link.
         """
-        elsewhere = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        elsewhere = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         make_git_repo(elsewhere / "mirrored")
         (self.workspace / "link").symlink_to(elsewhere)
 
@@ -279,7 +342,7 @@ class TestScanDepthBudget(TestCase):
     """
 
     def setUp(self) -> None:
-        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
 
     def test_a_subtree_beyond_the_depth_cap_records_a_gap(self) -> None:
         truncated = self.root / "a" / "b" / "c"
@@ -312,7 +375,7 @@ class TestLinkedWorktreePaths(TestCase):
     """
 
     def setUp(self) -> None:
-        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.clone = make_git_repo(self.workspace / "org" / "repo")
         self.outside = self.workspace / "not-a-clone"
         self.outside.mkdir()

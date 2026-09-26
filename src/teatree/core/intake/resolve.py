@@ -27,6 +27,7 @@ from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.invocation_cwd import declared_invocation_cwd
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay_for_repo, overlay_name_of
+from teatree.core.worktree.ticket_workspace import assert_joins_ticket_workspace
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from teatree.core.worktree.worktree_paths import _candidate_paths
 from teatree.utils import git
@@ -327,8 +328,13 @@ def _get_or_refresh_worktree(ticket: Ticket, repo_name: str, branch: str, cwd_pa
     """Reuse *ticket*'s row for *repo_name* (mirror ``provision.py``) or create it.
 
     The reuse is scoped to the RESOLVED ticket, so a foreign ticket's row that
-    happens to share this branch + repo basename is never stolen.
+    happens to share this branch + repo basename is never stolen. Enforces the
+    same sibling-placement invariant ``provision.py`` enforces at registration
+    (#111) — this is the OTHER seam that creates most rows (a manually-added
+    ``git worktree add``, or ``worktree provision --ticket ... --path ...``,
+    which never passes through the guarded ``WorktreeProvisioner``).
     """
+    assert_joins_ticket_workspace(ticket, cwd_path)
     wt, created = Worktree.objects.get_or_create(
         ticket=ticket,
         repo_path=repo_name,
@@ -355,10 +361,14 @@ def _refresh_reused_row(worktree: Worktree, branch: str, cwd_path: Path) -> None
     Refuses to repoint onto a ``worktree_path`` another row already owns: two
     rows claiming one directory is the collision this fix forecloses, so it
     raises :class:`WorktreePathConflictError` rather than silently steal.
+    Refuses the same way onto a path that would join the ticket from OUTSIDE
+    its established workspace (#111) — a refresh checks only path ownership,
+    never sibling placement, until now.
     """
     new_path = str(cwd_path)
     set_keys: WorktreeExtra = {}
     if (worktree.extra or {}).get("worktree_path") != new_path:
+        assert_joins_ticket_workspace(worktree.ticket, cwd_path)
         _assert_path_unclaimed(worktree, new_path)
         set_keys["worktree_path"] = new_path
     also_set: WorktreeSiblingFields = {} if worktree.branch == branch else {"branch": branch}

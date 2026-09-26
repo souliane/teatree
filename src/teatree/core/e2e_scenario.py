@@ -29,8 +29,9 @@ _API_MODALITY = "api"
 class E2eExtrasContext:
     """The resolved run context the runner hands :meth:`OverlayE2E.env_extras`.
 
-    Every field is something core resolved for this run: ``target`` (the dual-env
-    target ``"dev"`` / ``"qa"`` / ``"local"`` core routed at), ``spec_path`` (the
+    Every field is something core resolved for this run: ``target`` (the spec mode
+    ``"dev"`` / ``"qa"`` / ``"local"``; a stack execution is normalized to
+    ``"local"`` before this seam), ``spec_path`` (the
     selected Playwright spec), ``artifacts_dir`` (the out-of-repo capture root the
     runner exported as ``T3_E2E_ARTIFACTS_DIR``), ``compose_project`` (the
     teatree-managed docker-compose project), and ``base_url`` (the resolved

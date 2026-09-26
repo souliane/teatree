@@ -36,12 +36,12 @@ class TestTheContestPredicate:
     def test_two_claimants_disagreeing_on_a_gate_are_reported(self) -> None:
         found = contested_repos(
             claims=[("t3-a", ["acme/widget"]), ("t3-b", ["acme/widget"])],
-            gates={"t3-a": {"on_behalf_post_mode": "immediate"}, "t3-b": {"on_behalf_post_mode": "ask"}},
+            gates={"t3-a": {"autonomy": "full"}, "t3-b": {"autonomy": "babysit"}},
         )
         assert len(found) == 1
         assert found[0].slug == "widget"
         assert found[0].claimants == ("t3-a", "t3-b")
-        assert found[0].disagreements == (("on_behalf_post_mode", (("t3-a", "immediate"), ("t3-b", "ask"))),)
+        assert found[0].disagreements == (("autonomy", (("t3-a", "full"), ("t3-b", "babysit"))),)
 
     def test_a_bare_name_and_a_full_slug_are_the_same_claim(self) -> None:
         # The two shapes ``infer_overlay_for_url`` arbitrates between. Comparing the raw
@@ -55,14 +55,14 @@ class TestTheContestPredicate:
     def test_two_claimants_that_agree_are_silent(self) -> None:
         found = contested_repos(
             claims=[("t3-a", ["acme/widget"]), ("t3-b", ["acme/widget"])],
-            gates={"t3-a": {"on_behalf_post_mode": "ask"}, "t3-b": {"on_behalf_post_mode": "ask"}},
+            gates={"t3-a": {"autonomy": "babysit"}, "t3-b": {"autonomy": "babysit"}},
         )
         assert found == ()
 
     def test_a_single_claimant_is_never_contested(self) -> None:
         found = contested_repos(
             claims=[("t3-a", ["acme/widget"]), ("t3-b", ["acme/other"])],
-            gates={"t3-a": {"on_behalf_post_mode": "immediate"}, "t3-b": {"on_behalf_post_mode": "ask"}},
+            gates={"t3-a": {"autonomy": "full"}, "t3-b": {"autonomy": "babysit"}},
         )
         assert found == ()
 
@@ -78,9 +78,9 @@ class TestTheContestPredicate:
     def test_a_claimant_whose_settings_did_not_resolve_disagrees_with_everyone(self) -> None:
         found = contested_repos(
             claims=[("t3-a", ["acme/widget"]), ("t3-b", ["acme/widget"])],
-            gates={"t3-a": {"on_behalf_post_mode": "ask"}},
+            gates={"t3-a": {"autonomy": "babysit"}},
         )
-        assert found[0].disagreements == (("on_behalf_post_mode", (("t3-a", "ask"), ("t3-b", "<unresolved>"))),)
+        assert found[0].disagreements == (("autonomy", (("t3-a", "babysit"), ("t3-b", "<unresolved>"))),)
 
     def test_a_bool_gate_renders_and_compares_as_the_same_string(self) -> None:
         found = contested_repos(
@@ -105,19 +105,19 @@ class TestTheAdvisoryOutput:
             patch(
                 f"{_MODULE}._resolved_gates",
                 return_value={
-                    "t3-a": {"on_behalf_post_mode": "immediate"},
-                    "t3-b": {"on_behalf_post_mode": "ask"},
+                    "t3-a": {"autonomy": "full"},
+                    "t3-b": {"autonomy": "babysit"},
                 },
             ),
         ):
             output = _run()
         assert "widget is claimed by t3-a and t3-b" in output
-        assert "on_behalf_post_mode: t3-a=immediate, t3-b=ask" in output
+        assert "autonomy: t3-a=full, t3-b=babysit" in output
 
     def test_no_contest_prints_nothing(self) -> None:
         with (
             patch(f"{_MODULE}._declared_claims", return_value=[("t3-a", ["acme/widget"])]),
-            patch(f"{_MODULE}._resolved_gates", return_value={"t3-a": {"on_behalf_post_mode": "ask"}}),
+            patch(f"{_MODULE}._resolved_gates", return_value={"t3-a": {"autonomy": "babysit"}}),
         ):
             assert _run() == ""
 

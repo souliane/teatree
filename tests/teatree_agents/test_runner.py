@@ -19,7 +19,6 @@ from pydantic_ai.models.test import TestModel
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents._runner_env import system_child_env
-from teatree.agents._runner_options import _get_resume_session_id
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
@@ -35,6 +34,7 @@ from teatree.agents.runner import (
 )
 from teatree.agents.runner_result import parse_result
 from teatree.agents.runner_usage import _safe_float, _safe_int
+from teatree.agents.session_lineage import resume_session_id
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import (
     ConfigSetting,
@@ -69,8 +69,12 @@ class TestRunHeadless(TestCase):
             "files_modified": [{"path": "src/x.py", "action": "modified"}],
             "tests_passed": 5,
             "tests_failed": 0,
+            "skill_application": [{"skill": "code", "evidence": "tests/sensitive-path.py::secret"}],
         }
-        with _fake_sdk(_success_stream(result)):
+        with (
+            _fake_sdk(_success_stream(result)),
+            patch("teatree.agents.runner_outcomes.record_skill_assurance") as record_skill_assurance,
+        ):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(ticket=self.ticket, session=session)
 
@@ -80,7 +84,55 @@ class TestRunHeadless(TestCase):
         assert attempt.exit_code == 0
         assert attempt.result["summary"] == "Done"
         assert attempt.result["tests_passed"] == 5
+        assert "skill_application" not in attempt.result
+        assert attempt.result["skill_assurance"]["evidence"] == [{"skill": "code", "evidence": "provided"}]
+        assert "sensitive-path" not in str(attempt.result)
+        assert attempt.result["skill_assurance"]["status"] == "unverified"
+        assert "code" in attempt.result["skill_assurance"]["requested"]
         assert task.status == Task.Status.COMPLETED
+        record_skill_assurance.assert_called_once_with(
+            task_id=task.pk,
+            ticket_id=self.ticket.pk,
+            attempt_id=attempt.pk,
+            assurance=attempt.result["skill_assurance"],
+        )
+
+    def test_missing_mandatory_skill_refuses_before_open_and_records_the_gap(self) -> None:
+        with (
+            _fake_sdk(_success_stream({"summary": "should not run"})),
+            patch("teatree.agents.skill_assurance.harness_skills_dirs", return_value=[]),
+            patch("teatree.agents.runner_outcomes.record_skill_assurance") as record_skill_assurance,
+        ):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.exit_code == 1
+        assert attempt.result["skill_assurance"]["status"] == "missing"
+        assert "code" in attempt.result["skill_assurance"]["missing"]
+        assert attempt.input_tokens is None
+        assert task.status == Task.Status.FAILED
+        record_skill_assurance.assert_called_once_with(
+            task_id=task.pk,
+            ticket_id=self.ticket.pk,
+            attempt_id=attempt.pk,
+            assurance=attempt.result["skill_assurance"],
+        )
+
+    def test_real_coding_phase_records_full_body_or_explicit_load_per_required_skill(self) -> None:
+        result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        with _fake_sdk(_success_stream(result)):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session, phase="coding")
+
+            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
+
+        assert attempt.exit_code == 0
+        assurance = attempt.result["skill_assurance"]
+        assert assurance["status"] == "unverified"
+        assert {"code", "architecture-design", "ac-django"} <= set(assurance["requested"])
+        assert set(assurance["requested"]) <= set(assurance["injected"]) | set(assurance["explicit_load"])
 
     def test_completed_result_stamps_attempt_usage(self) -> None:
         result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
@@ -295,7 +347,11 @@ class TestNoResultEnvelopeGuard(TestCase):
         task = self._task(phase="debugging")
         harness = PydanticAiHarness(model=TestModel(custom_output_text="I cannot run commands here."))
         with (
-            patch.object(runner_mod, "resolve_harness", return_value=harness),
+            patch.object(
+                runner_mod,
+                "resolve_dispatch_harness",
+                return_value=runner_mod.DispatchHarness(harness=harness, name="fake_harness", provider=None),
+            ),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, t: TaskUsage(0, 0.0))),
         ):
             attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})
@@ -404,18 +460,16 @@ class TestRunHeadlessStageSkillResolution(TestCase):
 
 
 class TestRunHeadlessUsageLimit(TestCase):
-    """A usage/weekly-limit terminal result is surfaced as a clear limit failure."""
+    """A usage/weekly-limit result is CLASSIFIED by cause, then parked for auto-resume.
+
+    The cause is what these pin: a weekly window, a session window and an API-credit
+    exhaustion must never be laundered into one another. Only api_credit has no timed
+    reset, so only it still lands a terminal FAILED.
+    """
 
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = planned_ticket()
-
-    def setUp(self) -> None:
-        # These pin the terminal-FAILED CLASSIFICATION path; with autorecovery now
-        # default-ON a subscription-window limit would PARK instead. The park-vs-fail
-        # decision is covered by TestRunHeadlessAllAccountsExhausted's explicit pair.
-        super().setUp()
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
 
     def test_weekly_limit_error_recorded_as_usage_limit_not_generic(self) -> None:
         # is_error result whose text names a weekly limit must NOT be a silent
@@ -435,7 +489,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         assert "subscription_weekly" in attempt.error
         assert "weekly limit" in attempt.error
         assert "credit" not in attempt.error.casefold()
-        assert task.status == Task.Status.FAILED
+        assert task.status == Task.Status.PENDING, "a timed window PARKS for auto-resume"
 
     def test_usage_limit_phrase_recorded(self) -> None:
         limit_message = _result_message(
@@ -451,7 +505,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         task.refresh_from_db()
         assert "subscription_session" in attempt.error
         assert "usage limit" in attempt.error
-        assert task.status == Task.Status.FAILED
+        assert task.status == Task.Status.PENDING, "a timed window PARKS for auto-resume"
 
     def test_credit_balance_too_low_is_api_credit_not_subscription(self) -> None:
         # The billed ANTHROPIC_API_KEY at $0 surfaces HTTP 400 "credit balance
@@ -512,7 +566,7 @@ class TestRunHeadlessUsageLimit(TestCase):
         assert "subscription_session" in attempt.error
         assert "weekly" not in attempt.error.casefold()
         assert "credit" not in attempt.error.casefold()
-        assert task.status == Task.Status.FAILED
+        assert task.status == Task.Status.PENDING, "a timed window PARKS for auto-resume"
 
     def test_non_error_result_mentioning_limit_is_not_a_limit_failure(self) -> None:
         # A healthy result whose prose merely discusses a usage limit must not
@@ -633,13 +687,6 @@ class TestRunHeadlessTypedRateLimitWindow(TestCase):
     def setUpTestData(cls) -> None:
         cls.ticket = planned_ticket()
 
-    def setUp(self) -> None:
-        # Exercises the terminal-FAILED classification of a TYPED weekly window; with
-        # autorecovery now default-ON such a window would PARK instead (see the explicit
-        # flag pair in TestRunHeadlessAllAccountsExhausted).
-        super().setUp()
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
-
     def _run_with_window(self, window: RateLimitType) -> TaskAttempt:
         event = _rate_limit_event(window)
         terminal = _result_message(
@@ -650,7 +697,7 @@ class TestRunHeadlessTypedRateLimitWindow(TestCase):
             task = Task.objects.create(ticket=self.ticket, session=session)
             attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
         task.refresh_from_db()
-        assert task.status == Task.Status.FAILED
+        assert task.status == Task.Status.PENDING, "a typed window PARKS for auto-resume"
         return attempt
 
     def test_seven_day_opus_window_recorded_as_subscription_weekly(self) -> None:
@@ -670,8 +717,7 @@ class TestRunHeadlessAllAccountsExhausted(TestCase):
 
     Pre-dispatch the credential selector raises ``AllTokensExhaustedError``; the headless
     runner must PARK the task (auto-resume at the earliest reset) rather than record a
-    terminal FAILED that a human is later pinged about. Flag-off is byte-identical to today
-    (the drained lane still records a loud FAILED).
+    terminal FAILED that a human is later pinged about.
     """
 
     @classmethod
@@ -711,7 +757,6 @@ class TestRunHeadlessAllAccountsExhausted(TestCase):
     def test_all_exhausted_parks_and_auto_resumes_not_failed(self) -> None:
         from teatree.core.models import UsageWindowState  # noqa: PLC0415 — test-local
 
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
         earliest = self._configure_three_exhausted_accounts()
         with _fake_sdk([]):  # the run parks pre-dispatch; the SDK is never opened
             session = Session.objects.create(ticket=self.ticket)
@@ -725,18 +770,6 @@ class TestRunHeadlessAllAccountsExhausted(TestCase):
         window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.SUBSCRIPTION)
         assert window is not None
         assert window.resets_at == earliest
-
-    def test_flag_off_records_the_terminal_failed_as_today(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
-        self._configure_three_exhausted_accounts()
-        with _fake_sdk([]):
-            session = Session.objects.create(ticket=self.ticket)
-            task = Task.objects.create(ticket=self.ticket, session=session)
-            attempt = run_agent(task, phase="coding", overlay_skill_metadata={})
-
-        task.refresh_from_db()
-        assert task.status == Task.Status.FAILED, "flag off → byte-identical to today (loud FAILED)"
-        assert "exhausted" in attempt.error
 
 
 def test_limit_match_prefers_the_typed_window_over_the_result_text() -> None:
@@ -827,10 +860,19 @@ def test_parse_result_ignores_inner_braces_of_multiline_object() -> None:
 FAKE_SESSION_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
-class TestGetResumeSessionId(TestCase):
+class TestResumeSessionId(TestCase):
     @classmethod
     def setUpTestData(cls) -> None:
         cls.ticket = planned_ticket()
+
+    def _continuing(self, parent: Task | None, *, agent_id: str) -> Task:
+        session = Session.objects.create(ticket=self.ticket, agent_id=agent_id)
+        return Task.objects.create(
+            ticket=self.ticket,
+            session=session,
+            parent_task=parent,
+            session_continuation=Task.SessionContinuation.PARENT,
+        )
 
     def test_from_parent_attempt(self) -> None:
         """Parent task's attempt has an agent_session_id — headless should resume it."""
@@ -838,37 +880,40 @@ class TestGetResumeSessionId(TestCase):
         parent_task = Task.objects.create(ticket=self.ticket, session=parent_session)
         TaskAttempt.objects.create(task=parent_task, agent_session_id=FAKE_SESSION_UUID)
 
-        child_session = Session.objects.create(ticket=self.ticket, agent_id="coding")
-        child_task = Task.objects.create(ticket=self.ticket, session=child_session, parent_task=parent_task)
+        child_task = self._continuing(parent_task, agent_id="coding")
 
-        assert _get_resume_session_id(child_task) == FAKE_SESSION_UUID
+        assert resume_session_id(child_task) == FAKE_SESSION_UUID
 
     def test_from_parent_session_agent_id(self) -> None:
         """Parent task's session.agent_id is a UUID — headless should resume it."""
         parent_session = Session.objects.create(ticket=self.ticket, agent_id=FAKE_SESSION_UUID)
         parent_task = Task.objects.create(ticket=self.ticket, session=parent_session)
 
-        child_session = Session.objects.create(ticket=self.ticket, agent_id="review")
-        child_task = Task.objects.create(ticket=self.ticket, session=child_session, parent_task=parent_task)
+        child_task = self._continuing(parent_task, agent_id="review")
 
-        assert _get_resume_session_id(child_task) == FAKE_SESSION_UUID
+        assert resume_session_id(child_task) == FAKE_SESSION_UUID
 
     def test_returns_empty_without_parent(self) -> None:
-        """No parent task — nothing to resume."""
-        session = Session.objects.create(ticket=self.ticket)
-        task = Task.objects.create(ticket=self.ticket, session=session)
+        """A continuation whose parent is gone — nothing to resume."""
+        assert resume_session_id(self._continuing(None, agent_id="coding")) == ""
 
-        assert _get_resume_session_id(task) == ""
+    def test_an_untyped_child_does_not_resume_its_parent(self) -> None:
+        parent_session = Session.objects.create(ticket=self.ticket, agent_id=FAKE_SESSION_UUID)
+        parent_task = Task.objects.create(ticket=self.ticket, session=parent_session)
+        session = Session.objects.create(ticket=self.ticket, agent_id="coding")
+
+        child = Task.objects.create(ticket=self.ticket, session=session, parent_task=parent_task)
+
+        assert resume_session_id(child) == ""
 
     def test_skips_non_uuid_agent_ids(self) -> None:
         """Parent exists but agent_id is not a UUID — don't resume."""
         parent_session = Session.objects.create(ticket=self.ticket, agent_id="not-a-uuid")
         parent_task = Task.objects.create(ticket=self.ticket, session=parent_session)
 
-        child_session = Session.objects.create(ticket=self.ticket, agent_id="coding")
-        child_task = Task.objects.create(ticket=self.ticket, session=child_session, parent_task=parent_task)
+        child_task = self._continuing(parent_task, agent_id="coding")
 
-        assert _get_resume_session_id(child_task) == ""
+        assert resume_session_id(child_task) == ""
 
 
 class TestBuildOptionsFailLoudGate(TestCase):
@@ -901,7 +946,12 @@ class TestRunHeadlessResumesParentSession(TestCase):
             parent_task = Task.objects.create(ticket=ticket, session=parent_session)
 
             child_session = Session.objects.create(ticket=ticket, agent_id="coding")
-            child_task = Task.objects.create(ticket=ticket, session=child_session, parent_task=parent_task)
+            child_task = Task.objects.create(
+                ticket=ticket,
+                session=child_session,
+                parent_task=parent_task,
+                session_continuation=Task.SessionContinuation.PARENT,
+            )
 
             run_agent(child_task, phase="coding", overlay_skill_metadata={})
 
@@ -1214,7 +1264,7 @@ class TestDriveWithHeartbeat(TestCase):
         with (
             _fake_sdk(messages, delay=0.05),
             patch.object(runner_mod, "_HEARTBEAT_INTERVAL", 0.02),
-            patch.object(runner_mod, "logger") as mock_logger,
+            patch("teatree.agents.runner_heartbeat.logger") as mock_logger,
         ):
             outcome = asyncio.run(
                 _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
@@ -1522,6 +1572,24 @@ class TestBuildOptions(TestCase):
         options = self._options_for_phase("coding")
         assert options.permission_mode == "bypassPermissions"
 
+    def test_pydantic_lane_can_read_only_the_requested_skill_directory(self) -> None:
+        from teatree.agents._runner_options import SpawnOverrides  # noqa: PLC0415 — local option seam
+
+        session = Session.objects.create(ticket=self.ticket)
+        task = Task.objects.create(ticket=self.ticket, session=session)
+        fixture_root = Path(__file__).parents[1] / "fixtures" / "agent_skills"
+        with patch("teatree.agents._runner_options.harness_skills_dirs", return_value=[fixture_root]):
+            options = runner_mod._build_options(
+                task,
+                "ctx",
+                phase="coding",
+                skills=["ac-django"],
+                overrides=SpawnOverrides(harness_name="pydantic_ai"),
+            )
+
+        assert str(fixture_root / "ac-django") in options.add_dirs
+        assert str(fixture_root / "ac-python") not in options.add_dirs
+
     def test_frontier_phase_pins_adaptive_thinking_and_xhigh_effort(self) -> None:
         # Opus 4.8 omits thinking by default; a frontier reasoning phase pins
         # adaptive thinking explicitly AND the frontier-tier effort (xhigh).
@@ -1649,7 +1717,7 @@ class TestProviderChildEnv(TestCase):
 
     def test_subscription_oauth_pins_subscription_and_strips_api_key(self) -> None:
         with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "ANTHROPIC_API_KEY": "key-y"}):
-            env = _provider_child_env(AgentHarnessProvider.SUBSCRIPTION_OAUTH)
+            env = _provider_child_env(AgentHarnessProvider.SUBSCRIPTION_OAUTH).env
 
         assert env is not None
         assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-x"
@@ -1657,7 +1725,7 @@ class TestProviderChildEnv(TestCase):
 
     def test_api_key_pins_key_and_strips_oauth(self) -> None:
         with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "ANTHROPIC_API_KEY": "key-y"}):
-            env = _provider_child_env(AgentHarnessProvider.API_KEY)
+            env = _provider_child_env(AgentHarnessProvider.API_KEY).env
 
         assert env is not None
         assert env["ANTHROPIC_API_KEY"] == "key-y"
@@ -1676,7 +1744,20 @@ class TestProviderChildEnv(TestCase):
         # #2887: the default (no ConfigSetting row, no env var) resolves to
         # None — no explicit Layer-2 pin, so the ambient environment is used
         # unchanged rather than forcing an eager credential lookup.
-        assert _provider_child_env(None) is None
+        assert _provider_child_env(None).env is None
+
+    def test_the_routed_account_travels_beside_the_env_it_signed(self) -> None:
+        ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", ["anthropic/acct-a/oauth"])
+        with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x"}):
+            resolved = _provider_child_env(AgentHarnessProvider.SUBSCRIPTION_OAUTH)
+
+        assert resolved.account == "anthropic/acct-a/oauth", (
+            "a limit reported later must be attributable to the account this dispatch signed as"
+        )
+
+    def test_an_unrouted_dispatch_names_no_account(self) -> None:
+        with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x"}):
+            assert _provider_child_env(AgentHarnessProvider.SUBSCRIPTION_OAUTH).account == ""
 
 
 class TestSystemChildEnv(TestCase):
@@ -1765,7 +1846,7 @@ class TestVerificationPinDoesNotBreakAValidPydanticAiConfig(TestCase):
     def test_the_flipped_layer_2_pin_is_dropped_loudly(self) -> None:
         # Never silent: the operator's Layer-2 pin was made for the CONFIGURED
         # harness, so dropping it for the pinned one is warned, not swallowed.
-        with self.assertLogs("teatree.agents.harness", level="WARNING") as logs:
+        with self.assertLogs("teatree.agents.harness_dispatch", level="WARNING") as logs:
             self._dispatch("testing")
         assert any("anthropic_api" in message and "claude_sdk" in message for message in logs.output)
 

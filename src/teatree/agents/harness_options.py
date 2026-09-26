@@ -49,6 +49,7 @@ class HarnessOptions:
     *   ``system_prompt`` — the PLAIN custom system context (the SDK ``claude_code`` preset is
         already stripped in the adapter, so a backend uses this string as-is).
     *   ``cwd`` — the resolved task worktree (the Lane-B File System jail root).
+    *   ``add_dirs`` — the extra directories the spawn may read beyond ``cwd``.
     *   ``env`` — the pinned child-env overrides (merged over the ambient env by the tool layer).
     *   ``max_turns`` — the caller's hard turn cap; a POSITIVE value wins over the lane's own
         ``request_limit`` in :meth:`~teatree.agents.harness.PydanticAiHarness.open`. ``0``
@@ -60,6 +61,7 @@ class HarnessOptions:
     effort: str | None = None
     system_prompt: str = ""
     cwd: str | None = None
+    add_dirs: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
     max_turns: int = 0
 
@@ -73,6 +75,7 @@ class HarnessOptions:
             # ``ClaudeAgentOptions.cwd`` is ``str | Path | None``; the neutral type carries a
             # plain path string (a Path is more vendor/OS-coupled than its string form).
             cwd=str(options.cwd) if options.cwd else None,
+            add_dirs=tuple(str(directory) for directory in options.add_dirs),
             env=dict(options.env or {}),
             # ``ClaudeAgentOptions.max_turns`` is ``int | None``; coerce SDK-``None`` (and 0) to
             # 0 so only a genuinely positive cap wins over the lane's ``request_limit``.

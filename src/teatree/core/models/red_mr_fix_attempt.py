@@ -22,16 +22,18 @@ class RedMrFixAttempt(models.Model):
     fresh row records the new attempt — the agent runs again only on genuinely
     new breakage.
 
-    ``kind`` separates the two ways a merge request can be un-mergeable, because
-    they are independent conditions with independent remedies: CI can be red on a
-    head that merges cleanly, and a head can conflict with main while CI is green.
-    One ledger keyed on the pair keeps a conflict fix from consuming the CI fix's
-    slot (and the reverse) while both share the head-scoped dedupe.
+    ``kind`` separates the ways a merge request can fail to be mergeable as it
+    stands, because they are independent conditions with independent remedies: CI
+    can be red on a head that merges cleanly, a head can conflict with main while
+    CI is green, and a green conflict-free head can still carry a review finding
+    nobody has implemented. One ledger keyed on the triple keeps any one of those
+    fixes from consuming another's slot while all share the head-scoped dedupe.
     """
 
     class Kind(models.TextChoices):
         CI_RED = "ci_red", "CI red"
         MERGE_CONFLICT = "merge_conflict", "Merge conflict"
+        REVIEW_FINDINGS = "review_findings", "Review findings"
 
     pr_url = models.URLField(max_length=512)
     head_sha = models.CharField(max_length=64)

@@ -32,6 +32,28 @@ class TestCountDeferredImports:
         src.write_text("from teatree.core.a import x\ndef f():\n    return 1\n", encoding="utf-8")
         assert count_deferred_imports(src, "teatree.core") == 0
 
+    def test_a_sibling_package_sharing_the_prefix_is_not_counted(self, tmp_path: Path) -> None:
+        """A sibling package sharing the prefix is a different tach node.
+
+        A bare `startswith` read `teatree.loops` as inside `teatree.loop`, so a
+        cross-package import was charged to a ratchet that does not govern it and the
+        file's peg had to absorb an edge it never made.
+
+        Both halves are load-bearing: without the second the predicate could pass by
+        counting nothing at all.
+        """
+        src = tmp_path / "m.py"
+        src.write_text(
+            "def f():\n"
+            "    from teatree.loops.enable_verdict import EnablePlanes\n"  # sibling package
+            "    import teatree.loopsy\n"  # sibling module, same collision shape
+            "    from teatree.loop.scanners.base import ScanSignal\n",  # genuinely intra-package
+            encoding="utf-8",
+        )
+
+        assert count_deferred_imports(src, "teatree.loop") == 1
+        assert count_deferred_imports(src, "teatree.loops") == 1
+
 
 class TestDiffPegsAntiVacuity:
     def test_over_peg_is_flagged_and_named(self) -> None:

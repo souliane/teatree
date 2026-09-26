@@ -1,20 +1,20 @@
-"""``t3 pr post-test-plan`` is on-behalf-gated under the tri-state mode (#960).
+"""``t3 pr post-test-plan`` is on-behalf-gated by the active posture (#960).
 
 ``post-test-plan`` publishes a comment under the user's identity on a
 colleague-visible PR/MR — it is a third on-behalf chokepoint alongside
 ``_BaseReplier`` (reply transport) and ``ReviewService`` (review CLI),
-so it routes through the same satisfiable ``on_behalf_post_mode`` gate:
+so it routes through the same satisfiable posture gate:
 
-*   ``IMMEDIATE`` → publish (no approval needed);
-*   ``ASK`` / ``DRAFT_OR_ASK`` + no approval → no host call (the upload +
+*   a permitting posture → publish (no approval needed);
+*   a forbidding posture + no approval → no host call (the upload +
     comment paths MUST NOT fire); the command returns an actionable
     ``approve-on-behalf`` error message;
-*   ``ASK`` / ``DRAFT_OR_ASK`` + a recorded :class:`OnBehalfApproval`
-    scoped to ``(<repo>!<mr>, "post_evidence")`` → consume the row, write
-    an audit, proceed to upload + post.
+*   a forbidding posture + a recorded :class:`OnBehalfApproval` scoped to
+    ``(<repo>!<mr>, "post_evidence")`` → consume the row, write an audit,
+    proceed to upload + post.
 
-The action is NOT a draft-form action: it BLOCKs identically under ASK
-and DRAFT_OR_ASK.
+``post_evidence`` is not a draft-form action, so a forbidding posture BLOCKs
+it rather than auto-drafting it.
 
 The gate is inlined at the ``post_evidence`` command — not at the
 ``code_host`` layer — so PR *creation* (which is not an on-behalf
@@ -32,8 +32,8 @@ from django.core.management import call_command
 from django.test import TestCase, override_settings
 
 import teatree.core.management.commands.pr as pr_mod
-from teatree.config import OnBehalfPostMode
 from teatree.core.models import BotPing, OnBehalfApproval, OnBehalfAudit
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, SETTINGS, _patch_overlays
 
 pytestmark = pytest.mark.filterwarnings(
@@ -60,17 +60,8 @@ def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_
         conn.close()
 
 
-def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
-    # ``on_behalf_post_mode`` is DB-home (#1775) — stage it via the ``T3_*`` env
-    # tier, which wins for a DB-home key and needs no DB.
-    monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode.value)
-
-
-_BLOCKING_MODES = [OnBehalfPostMode.ASK, OnBehalfPostMode.DRAFT_OR_ASK]
-
-
 class TestPostEvidenceOnBehalfGate(TestCase):
-    """A blocking mode without an approval refuses the post at the command layer."""
+    """A forbidding posture without an approval refuses the post at the command layer."""
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,8 +70,8 @@ class TestPostEvidenceOnBehalfGate(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_post_evidence_blocked_under_ask_no_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
+    def test_post_evidence_blocked_under_forbidding_posture_no_approval(self) -> None:
+        seed_forbidding_posture()
         mock_host = MagicMock()
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
@@ -106,31 +97,8 @@ class TestPostEvidenceOnBehalfGate(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_post_evidence_blocked_under_draft_or_ask_no_approval(self) -> None:
-        """``post_evidence`` is NOT a draft-form action — DRAFT_OR_ASK still BLOCKs."""
-        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.DRAFT_OR_ASK)
-        mock_host = MagicMock()
-
-        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
-            result = cast(
-                "dict[str, object]",
-                call_command(
-                    "pr",
-                    "post-test-plan",
-                    "100",
-                    repo="my/repo",
-                    body="proof",
-                ),
-            )
-
-        assert "error" in result
-        assert "approve-on-behalf" in str(result["error"])
-        assert mock_host.method_calls == []
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_post_evidence_passes_under_immediate(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
+    def test_post_evidence_passes_under_permitting_posture(self) -> None:
+        seed_permitting_posture()
         mock_host = MagicMock()
         mock_host.post_pr_comment.return_value = {"id": 7}
         mock_host.list_pr_comments.return_value = []
@@ -152,16 +120,11 @@ class TestPostEvidenceOnBehalfGate(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_post_evidence_passes_with_recorded_approval_under_ask(self) -> None:
-        self._exercise_approval_path(OnBehalfPostMode.ASK)
+    def test_post_evidence_passes_with_recorded_approval_under_a_forbidding_posture(self) -> None:
+        self._exercise_approval_path()
 
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_post_evidence_passes_with_recorded_approval_under_draft_or_ask(self) -> None:
-        self._exercise_approval_path(OnBehalfPostMode.DRAFT_OR_ASK)
-
-    def _exercise_approval_path(self, mode: OnBehalfPostMode) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=mode)
+    def _exercise_approval_path(self) -> None:
+        seed_forbidding_posture()
         OnBehalfApproval.record(target="my/repo!100", action="post_evidence", approver_id="souliane")
         mock_host = MagicMock()
         mock_host.post_pr_comment.return_value = {"id": 8}
@@ -202,9 +165,8 @@ class TestPostEvidenceAfterReceiptDm(TestCase):
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # ``slack_user_id`` (global) resolves via the Django-free cold reader —
         # seed it in a config-store sqlite the reader resolves via ``T3_CONFIG_DB``.
-        # ``on_behalf_post_mode`` is DB-home (#1775) — stage it via the ``T3_*`` env tier.
         _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "immediate")
+        seed_permitting_posture()
         self.monkeypatch = monkeypatch
 
     @_patch_overlays(FULL_OVERLAY)
@@ -226,12 +188,10 @@ class TestPostEvidenceAfterReceiptDm(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_blocked_post_evidence_emits_no_after_receipt_dm(self) -> None:
-        """Gate refusal (DRAFT_OR_ASK, no approval) → no post, no after-receipt DM."""
+        """Gate refusal (forbidding posture, no approval) → no post, no after-receipt DM."""
         notify_backend = _notify_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: notify_backend)
-        # ``on_behalf_post_mode`` is DB-home (#1775) — flip to a blocking mode
-        # via the ``T3_*`` env tier (overrides the ``immediate`` set in _ctx).
-        self.monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "draft_or_ask")
+        seed_forbidding_posture()
         mock_host = MagicMock()
 
         with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):

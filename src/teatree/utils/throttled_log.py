@@ -45,13 +45,36 @@ def warn_throttled(
     takes them. *exc_info* forwards the active exception to the record so a
     warning carries the traceback.
     """
+    level = logging.WARNING if _window_elapsed(key, window_seconds) else logging.DEBUG
+    logger.log(level, msg, *args, exc_info=exc_info)
+
+
+def error_throttled(
+    logger: logging.Logger,
+    key: str,
+    msg: str,
+    *args: object,
+    window_seconds: float = _DEFAULT_WINDOW_SECONDS,
+    exc_info: bool = False,
+) -> None:
+    """:func:`warn_throttled` at ``error`` — for a keyed fault that is a BUG REPORT, not a warning.
+
+    The egress backstop is the case: a post refused by the posture alone means the
+    work should never have been started under it, which an operator must see, while
+    the same refusal repeated over a session must not drown the log.
+    """
+    level = logging.ERROR if _window_elapsed(key, window_seconds) else logging.DEBUG
+    logger.log(level, msg, *args, exc_info=exc_info)
+
+
+def _window_elapsed(key: str, window_seconds: float) -> bool:
+    """Has *key*'s quiet window passed? Records the emission when it has."""
     now = time.monotonic()
     last = _last_warned.get(key)
     if last is not None and now - last < window_seconds:
-        logger.debug(msg, *args, exc_info=exc_info)
-        return
+        return False
     _last_warned[key] = now
-    logger.warning(msg, *args, exc_info=exc_info)
+    return True
 
 
 def reset_throttle() -> None:

@@ -5,16 +5,15 @@ from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket, TicketTransition
 from teatree.core.selectors import build_ticket_lifecycle_mermaid
+from tests.factories import record_test_plan
 
 
 def _advance_ticket_to_tested(ticket: Ticket) -> None:
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
     ticket.scope(issue_url="https://example.com/issues/99", variant="acme", repos=["repo"])
     ticket.save()
     ticket.start()
     ticket.save()
-    PlanArtifact.record(ticket=ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
+    record_test_plan(ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
     ticket.plan()
     ticket.save()
     ticket.code()

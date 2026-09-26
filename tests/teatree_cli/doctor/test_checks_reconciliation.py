@@ -714,10 +714,11 @@ class TestReviewDispatchSaturation(TestCase):
 
 
 class AdmittedLoopFreezeTestCase(TestCase):
-    """The 24h freeze alarm covers whatever the verdict admits, not the raw column (#4185).
+    """The 24h freeze alarm covers whatever the verdict admits, not one tier of it (#4185).
 
-    A preset-forced-on loop froze invisibly — this bug's exact signature — while a
-    preset-masked-off enabled loop false-alarmed for standing still as instructed.
+    A preset-admitted loop froze invisibly — this bug's exact signature — while a
+    preset-masked-off loop false-alarmed for standing still as instructed. Both tiers are
+    exercised: the preset when nobody has overridden, and the manual override that beats it.
     """
 
     def setUp(self) -> None:
@@ -726,18 +727,29 @@ class AdmittedLoopFreezeTestCase(TestCase):
     @staticmethod
     def _activate(entries: dict[str, bool]) -> None:
         Mode.objects.create(name="preset-4185", entries=entries)
-        ModeOverride.objects.set_override("preset-4185")
+        ModeOverride.objects.set_override("preset-4185", reason="test override")
 
-    def test_a_preset_forced_on_column_disabled_loop_that_never_ticked_alarms(self) -> None:
-        Loop.objects.create(name="probe", script="src/teatree/loops/probe/loop.py", delay_seconds=60, enabled=False)
+    def test_a_preset_admitted_loop_that_never_ticked_alarms(self) -> None:
+        Loop.objects.create(name="probe", script="src/teatree/loops/probe/loop.py", delay_seconds=60)
         self._activate({"probe": True})
         finding = recon._check_enabled_loops_ticked()
         assert finding.is_alarm
         assert "`probe`" in finding.message
 
-    def test_a_preset_masked_off_column_enabled_loop_does_not_alarm(self) -> None:
+    def test_a_preset_masked_off_loop_does_not_alarm(self) -> None:
+        Loop.objects.create(name="probe", script="src/teatree/loops/probe/loop.py", delay_seconds=60)
+        self._activate({"probe": False})
+        assert recon._check_enabled_loops_ticked().level == "ok"
+
+    def test_a_manual_override_on_over_a_masking_preset_still_alarms(self) -> None:
+        """Someone asked for this loop by hand; a preset masking it does not excuse the freeze."""
         Loop.objects.create(name="probe", script="src/teatree/loops/probe/loop.py", delay_seconds=60, enabled=True)
         self._activate({"probe": False})
+        assert recon._check_enabled_loops_ticked().is_alarm
+
+    def test_a_manual_override_off_under_an_admitting_preset_does_not_alarm(self) -> None:
+        Loop.objects.create(name="probe", script="src/teatree/loops/probe/loop.py", delay_seconds=60, enabled=False)
+        self._activate({"probe": True})
         assert recon._check_enabled_loops_ticked().level == "ok"
 
     def test_a_held_loop_does_not_alarm(self) -> None:

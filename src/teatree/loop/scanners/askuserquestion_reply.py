@@ -86,6 +86,8 @@ class AskUserQuestionReplyScanner:
             raise
         if not applied:
             reply.unmark_loop_replied()
+        else:
+            reply.observe_confirmed_loop_reply()
 
     def _react_ack(self, reply: PendingChatInjection, egress: OnBehalfSlackEgress) -> bool:
         try:

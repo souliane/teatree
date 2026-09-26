@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from html import escape
 from itertools import starmap
 
-from teatree.eval.models import EvalRun, EvalToolCall
+from teatree.eval.models import EvalRun, EvalToolCall, GateEvent
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import ScenarioResult
 
@@ -77,6 +77,29 @@ def _tool_call(call: EvalToolCall) -> str:
     return f"<pre>turn {call.turn}: {escape(call.name)}({escape(rendered)})</pre>"
 
 
+def _gate_event(event: GateEvent) -> str:
+    sequence = "?" if event.sequence is None else str(event.sequence)
+    identity = " · ".join(
+        part
+        for part in (
+            event.hook_event_name,
+            event.outcome,
+            event.gate_id,
+            event.tool_name,
+            event.tool_use_id,
+        )
+        if part
+    )
+    details = [f"sequence {sequence} · {identity}"]
+    if event.assistant_text:
+        details.append(f"visible assistant text before tool:\n{event.assistant_text}")
+    if event.reason:
+        details.append(f"reason:\n{event.reason}")
+    if event.output_snippet:
+        details.append(f"hook output:\n{event.output_snippet}")
+    return f"<pre>{escape(chr(10).join(details))}</pre>"
+
+
 def _transcript(run: EvalRun) -> str:
     parts: list[str] = []
     if run.text_blocks:
@@ -85,6 +108,9 @@ def _transcript(run: EvalRun) -> str:
     if run.tool_calls:
         calls = "\n".join(_tool_call(call) for call in run.tool_calls)
         parts.append(f'<p class="label">tool calls</p>\n{calls}')
+    if run.gate_events:
+        events = "\n".join(_gate_event(event) for event in run.gate_events)
+        parts.append(f'<p class="label">production hook decisions</p>\n{events}')
     if not parts:
         parts.append('<p class="reason">(no transcript captured — the trial produced no text or tool calls)</p>')
     return "\n".join(parts)

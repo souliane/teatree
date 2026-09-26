@@ -10,8 +10,8 @@ worktree that *reads* a frozen seeded copy silently runs on stale settings, and
 one that *writes* an override parks it in a store nothing else ever reads.
 
 The Django-free cold path already encodes the right rule —
-:func:`teatree.config.cold_db.canonical_config_db` resolves the PRIMARY
-``~/.local/share/teatree/db.sqlite3`` even from inside a worktree. This module is
+:func:`teatree.config.cold_db.canonical_config_db` resolves the PRIMARY control
+DB — the named volume for the canonical data dir — even from inside a worktree. This module is
 its ORM twin: a database router that pins the ``ConfigSetting`` model, on READ as
 well as WRITE, to a :data:`CONFIG_DB_ALIAS` connection bound to that same file,
 so the two tiers can no longer disagree about where config lives.

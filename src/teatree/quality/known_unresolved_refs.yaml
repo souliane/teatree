@@ -27,8 +27,6 @@ charter:
 python_prose:
   hooks/scripts/session_start_skills.py:
   - scripts/lib/skill_loader.suggest_skills
-  hooks/scripts/worker_supervisor.py:
-  - teatree.config.settings._parse_env_bool
   src/teatree/_overlay_api.py:
   - teatree.overlays
   src/teatree/agents/envelope_refusal.py:
@@ -64,9 +62,6 @@ python_prose:
   - teatree.harnesses
   src/teatree/config/discovery.py:
   - teatree.overlays
-  src/teatree/config/fleet_policy.py:
-  - deploy/teatree.env
-  - teatree.env
   src/teatree/config/loader.py:
   - settings.T3_WORKSPACE_DIR
   - teatree.log
@@ -112,12 +107,8 @@ python_prose:
   - teatree.util.money
   src/teatree/eval/models.py:
   - teatree.eval.api_runner.resolve_max_turns_override
-  src/teatree/eval/pydantic_ai_runner.py:
-  - teatree.agents.harness._X_LANE_HEADER
   src/teatree/hooks/publish_destination.py:
   - public_visibility._destination_visibility
-  src/teatree/hooks/quote_scanner.py:
-  - hook_router._agent_prompt_skip_token
   src/teatree/loop/rendering.py:
   - teatree.loop.rendering.X
   src/teatree/loop/scanners/issue_disposition.py:

@@ -17,7 +17,7 @@ from teatree.loop.scanners.db_backup import DbBackupScanner
 
 
 def _cfg(settings: UserSettings) -> object:
-    return type("Cfg", (), {"user": settings})()
+    return settings
 
 
 class DispatchRoutingTests(TestCase):
@@ -30,32 +30,20 @@ class DispatchRoutingTests(TestCase):
 
 
 class ConfigDefaultsTests(TestCase):
-    def test_scanner_enabled_by_default(self) -> None:
-        settings = UserSettings()
-        assert settings.db_backup_disabled is False
-        assert settings.db_backup_cadence_hours == 24
-        assert settings.db_backup_retention_days == 7
+    def test_scanner_ships_a_weeks_retention(self) -> None:
+        assert UserSettings().db_backup_retention_days == 7
 
-    def test_knobs_are_overlay_overridable(self) -> None:
-        for key in ("db_backup_disabled", "db_backup_cadence_hours", "db_backup_retention_days"):
-            assert key in OVERLAY_OVERRIDABLE_SETTINGS
+    def test_the_retention_knob_is_overlay_overridable(self) -> None:
+        assert "db_backup_retention_days" in OVERLAY_OVERRIDABLE_SETTINGS
 
 
 class BuilderTests(TestCase):
     def test_builds_scanner_from_settings(self) -> None:
-        settings = UserSettings(db_backup_cadence_hours=48, db_backup_retention_days=14)
-        with patch("teatree.loop.global_scanner_factories.load_config", return_value=_cfg(settings)):
+        settings = UserSettings(db_backup_retention_days=14)
+        with patch("teatree.loop.global_scanner_factories.get_effective_settings", return_value=settings):
             scanner = _db_backup_scanner()
         assert scanner is not None
-        assert scanner.cadence_hours == 48
         assert scanner.retention_days == 14
-
-    def test_kill_switch_returns_none(self) -> None:
-        with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=_cfg(UserSettings(db_backup_disabled=True)),
-        ):
-            assert _db_backup_scanner() is None
 
     def test_build_default_jobs_wires_global_scanner(self) -> None:
         fake = DbBackupScanner(retention_days=7)

@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import deny_circuit_breaker
 from hooks.scripts.hook_router import (
     _apply_deny_circuit_breaker,
     _deny_match,
@@ -794,7 +795,7 @@ class TestCircuitBreakerRelaxesUxGate:
 
     def test_ux_gate_relaxes_at_threshold_after_denying_below_it(self) -> None:
         reason = "LOOP REGISTRATION: the teatree background loop is not registered yet. Register it with CronCreate."
-        threshold = router._deny_circuit_breaker_threshold()
+        threshold = deny_circuit_breaker._DENY_CIRCUIT_BREAKER_THRESHOLD
         below = [_apply_deny_circuit_breaker(reason) for _ in range(threshold - 1)]
         assert all(d.allow is False for d in below), (
             "BYPASS regression — the UX gate relaxed before the threshold; it must keep denying "

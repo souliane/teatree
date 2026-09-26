@@ -39,7 +39,6 @@ class Budget(NamedTuple):
 
 
 _BUDGETS: list[Budget] = [
-    Budget("deny_circuit_breaker_threshold", "_deny_circuit_breaker_threshold", 3, 1),
     Budget("orchestrator_turn_budget", "_orchestrator_turn_budget", 25, 0),
     Budget("orchestrator_turn_wall_clock_seconds", "_orchestrator_turn_wall_clock_threshold", 180, 0),
 ]

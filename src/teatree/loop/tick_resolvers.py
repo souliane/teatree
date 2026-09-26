@@ -49,9 +49,8 @@ def _allowed_url_prefixes_for_host(
         (e.g. ``gitlab.com/some-namespace/product/``) without forcing every
         overlay to repeat its namespace.
 
-    Returns an empty tuple when no overlay or repo list is configured so
-    the scanner keeps its legacy "emit all" behaviour for ad-hoc and
-    test invocations.
+    Returns an empty tuple when the repository scope cannot be resolved.
+    Scanners with externally visible effects must treat that as no scope.
     """
     overlay = backend.overlay
     if overlay is None:
@@ -59,7 +58,7 @@ def _allowed_url_prefixes_for_host(
     try:
         repos = overlay.get_workspace_repos()
     except Exception:  # noqa: BLE001 — never break a tick on a config read.
-        logger.warning("Overlay %r get_workspace_repos() failed; URL gate disabled", backend.name)
+        logger.warning("Overlay %r get_workspace_repos() failed; repository scope unresolved", backend.name)
         return ()
     if not repos:
         return ()
@@ -84,8 +83,8 @@ def _web_origin_for_host(code_host: CodeHostBackend) -> str:
     Resolved by inspecting the runtime class: GitHub is the canonical
     ``https://github.com``; GitLab strips ``/api/v4`` off the configured
     API base to recover the user-facing root (so a self-hosted GitLab is
-    honoured). Returns ``""`` when the host shape is unrecognised so the
-    URL gate degrades to ``empty prefixes → emit all``.
+    honoured). Returns ``""`` when the host shape is unrecognised, leaving
+    the repository scope unresolved.
     """
     from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415 — deferred: loaded at tick time, not import
     from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415 — deferred: loaded at tick time, not import

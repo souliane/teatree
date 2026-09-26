@@ -17,7 +17,7 @@ SHA = "feedfacecafebabe1234567890abcdef12345678"
 
 
 def _run(*args: str) -> tuple[int, str]:
-    result = CliRunner().invoke(codex_app, list(args))
+    result = CliRunner().invoke(codex_app, ["review", *args])
     if result.exit_code != 0 and result.exception is not None:
         import traceback  # noqa: PLC0415
 

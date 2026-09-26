@@ -1,16 +1,21 @@
-"""Auto-dispatch ``/codex:review`` on every PR push (#1254).
+"""Auto-dispatch ``/codex:review`` on a self-authored PR's settled head (#1254).
 
-The user's binding rule "fleet of agents with codex doublecheck" — every
-push of a self-authored PR should get an automatic codex review — was
-previously enforced as an agent-vigilance rule and silently failed
-multiple times. This scanner is the structural fix: the loop, not the
-agent, decides when to dispatch ``/codex:review``.
+The user's binding rule "fleet of agents with codex doublecheck" — a
+self-authored PR gets an automatic codex review — was previously enforced
+as an agent-vigilance rule and silently failed multiple times. This
+scanner is the structural fix: the loop, not the agent, decides when to
+dispatch ``/codex:review``.
 
 Decision per open self-authored PR:
 
 1. ``draft: true`` → skip (the user is still iterating; auto-review
     would be noise)
-2. Otherwise → emit one ``codex_review.dispatch`` ``ScanSignal`` carrying
+2. required checks pending or red → skip (:func:`head_checks_unsettled`):
+    the head is one the author is about to replace, so the review would be
+    spent on a tree nobody merges. It is a DEFERRAL — the head that merges
+    is always reviewed, because the merge keystone demands a verdict bound
+    to the live head.
+3. Otherwise → emit one ``codex_review.dispatch`` ``ScanSignal`` carrying
     the dispatch variant (``codex:review`` by default, ``codex:adversarial-review``
     when the diff touches a high-stakes path) so the dispatcher can route
     it to the codex review agent.
@@ -35,11 +40,15 @@ import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
+from teatree import forge_credentials
+from teatree.core.merge import CodeHostQuery
+from teatree.core.modelkit.forge_readability import CHECKS_FAILED
 from teatree.core.review.author_trust import classify_author
 from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr
+from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -67,6 +76,10 @@ ADVERSARIAL_PATH_MARKERS: frozenset[str] = frozenset(
         "token",
     },
 )
+
+#: The required-checks verdicts that say the head has not settled: the author is
+#: about to replace it, so a review dispatched now lands on a tree nobody merges.
+UNSETTLED_CHECK_VERDICTS = frozenset({"pending", CHECKS_FAILED})
 
 #: The default codex review slash command — for ordinary diffs.
 STANDARD_REVIEW_VARIANT = "codex:review"
@@ -101,7 +114,12 @@ class GhFileJson(TypedDict, total=False):
 
 @dataclass(frozen=True, slots=True)
 class PrSummary:
-    """Decoded subset of a PR's ``gh`` payload the scanner needs."""
+    """Decoded subset of a PR's ``gh`` payload, plus the head's required-checks standing.
+
+    ``checks_unsettled`` is the one field the ``gh`` payload does not carry: the
+    adapter stamps it from :func:`head_checks_unsettled` so both self-PR scanners
+    read one already-resolved answer instead of each probing the forge.
+    """
 
     slug: str
     number: int
@@ -111,6 +129,7 @@ class PrSummary:
     url: str = ""
     title: str = ""
     author: str = ""
+    checks_unsettled: bool = False
 
 
 @runtime_checkable
@@ -170,10 +189,10 @@ class CodexReviewScanner:
             return []
 
     def _evaluate(self, pr: PrSummary) -> ScanSignal | None:
-        if pr.is_draft:
+        if pr.is_draft or pr.checks_unsettled:
             return None
         variant = _classify_variant(pr.changed_files, slug=pr.slug, author=pr.author)
-        # The scanner emits UNCONDITIONALLY per open non-draft PR (#1 blocker):
+        # The scanner emits UNCONDITIONALLY per open non-draft SETTLED head (#1 blocker):
         # the ``CodexReviewMarker`` idempotency claim moved to persist time
         # (``persistence._handle_codex_review``) so it rides the same transaction
         # that creates the reviewer Task — a dropped/failed persist rolls the
@@ -192,6 +211,35 @@ class CodexReviewScanner:
                 "title": pr.title,
             },
         )
+
+
+def head_checks_unsettled(*, slug: str, pr_id: int) -> bool:
+    """Whether the forge REPORTED this head's required checks as pending or failing.
+
+    A cold review costs a full frontier-model run, and the factory was buying one
+    for every head a pull request ever had — 976 recorded verdicts across 97 merged
+    pull requests in 29 days. A head whose required checks are still running or
+    already red is one the author is about to replace, so the run is spent on a tree
+    nobody merges.
+
+    False whenever no such report exists — an unreadable rollup, an indeterminate
+    required set, a forge that could not be reached at all. This gate can only ever
+    DELAY a review to a later tick (a pending head settles, a red head is pushed
+    to), so missing evidence spends a run rather than silently skipping one. What
+    AUTHORISES a merge is untouched: the keystone still requires a ``merge_safe``
+    verdict bound to the live head, so a head this defers is a head that cannot
+    merge until a real review of it lands.
+
+    Routed through :meth:`CodeHostQuery.required_checks_status` — the same verdict
+    the merge keystone and the PR sweep read — so the review cadence and the merge
+    gate cannot disagree about which checks count (#12).
+    """
+    try:
+        verdict = CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=pr_id)).required_checks_status()
+    except Exception:
+        logger.exception("codex_review could not read required checks for %s#%d — reviewing anyway", slug, pr_id)
+        return False
+    return verdict in UNSETTLED_CHECK_VERDICTS
 
 
 def is_adversarial_review(changed_files: tuple[str, ...], *, slug: str = "", author: str = "") -> bool:
@@ -221,14 +269,11 @@ def _classify_variant(changed_files: tuple[str, ...], *, slug: str = "", author:
 class GhCodexPrApi:
     """``gh``-backed :class:`CodexPrApi` — lists self-authored open PRs.
 
-    *token* — when non-empty — is exported as ``GH_TOKEN`` so the scanner
-    can hit a private repo on behalf of a given overlay using that
-    overlay's PAT. Uses ``--author @me`` to scope to the authenticated
+    The target slug's owning overlay supplies ``GH_TOKEN``. Ambient authentication
+    is refused. Uses ``--author @me`` to scope to the authenticated
     user — the codex-doublecheck rule applies to the user's own PRs
     only, not to colleague PRs going through the existing review path.
     """
-
-    token: str = ""
 
     def list_open_self_prs(self, *, slug: str) -> list[PrSummary]:
         argv = [
@@ -245,7 +290,7 @@ class GhCodexPrApi:
             "--json",
             "number,headRefOid,isDraft,url,title,author,files",
         ]
-        rc, out, err = self._run_gh(argv)
+        rc, out, err = self._run_gh(argv, slug=slug)
         if rc == _GH_NOT_INSTALLED_RC:
             return []
         if rc != 0:
@@ -275,16 +320,29 @@ class GhCodexPrApi:
                 _LIST_OPEN_PRS_LIMIT,
             )
         decoded = (_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict))
-        return [pr for pr in decoded if pr is not None]
+        return [_with_head_checks(pr) for pr in decoded if pr is not None]
 
-    def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
+    @staticmethod
+    def _run_gh(argv: list[str], *, slug: str) -> tuple[int, str, str]:
+        resolution = forge_credentials.resolve_slug_token(slug, forge="github", credential="github_token")
+        if resolution.state is not forge_credentials.ForgeTokenState.TOKEN:
+            detail = f"{resolution.setting} is {resolution.state.value}: {resolution.detail}"
+            return 4, "", f"{detail}; refusing ambient gh authentication"
         gh = shutil.which("gh") or "gh"
-        env = {**os.environ, "GH_TOKEN": self.token} if self.token else None
+        env: dict[str, str] = {**os.environ, "GH_TOKEN": resolution.token}
+        env.pop("GITHUB_TOKEN", None)
         try:
             result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env)
         except FileNotFoundError:
             return 127, "", "gh not installed"
         return result.returncode, result.stdout, result.stderr
+
+
+def _with_head_checks(pr: PrSummary) -> PrSummary:
+    """Stamp the head's required-checks standing; a draft is never probed."""
+    if pr.is_draft:
+        return pr
+    return replace(pr, checks_unsettled=head_checks_unsettled(slug=pr.slug, pr_id=pr.number))
 
 
 def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary | None:
@@ -329,9 +387,11 @@ _classify_gh_stderr = classify_gh_stderr
 __all__ = [
     "ADVERSARIAL_REVIEW_VARIANT",
     "STANDARD_REVIEW_VARIANT",
+    "UNSETTLED_CHECK_VERDICTS",
     "CodexPrApi",
     "CodexReviewScanner",
     "GhCodexPrApi",
     "PrSummary",
+    "head_checks_unsettled",
     "is_adversarial_review",
 ]

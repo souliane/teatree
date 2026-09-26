@@ -29,7 +29,7 @@ from teatree.loops.statusline_refresh import (
     render_statusline,
 )
 
-_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
 
 def _set_autoload(*, on: bool) -> None:

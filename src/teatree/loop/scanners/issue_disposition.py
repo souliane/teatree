@@ -1,6 +1,6 @@
 """Codify open-issue triage: auto-close only high-confidence DEAD issues (#2122).
 
-The default-OFF :class:`IssueDispositionScanner` lists open issues carrying
+The repository-scoped :class:`IssueDispositionScanner` unconditionally lists open issues carrying
 :data:`~teatree.core.models.NEEDS_TRIAGE_LABEL` and emits a
 ``issue_disposition.close_candidate`` signal for the small set of issues that
 carry *machine-checkable* DEAD evidence — never a guess. A re-tick re-emits the
@@ -34,6 +34,7 @@ from django.apps import apps
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.forge_readback import issue_number
 from teatree.loop.scanners.needs_triage_query import _issue_body, _issue_title, _issue_url, needs_triage_issues
 from teatree.types import RawAPIDict
 
@@ -73,12 +74,16 @@ class CloseCandidate:
     url: str
     title: str
     reason: str
+    duplicate_of: str = ""
 
     def to_signal(self, *, overlay: str) -> ScanSignal:
+        payload = {"url": self.url, "reason": self.reason, "overlay": overlay}
+        if self.duplicate_of:
+            payload["duplicate_of"] = self.duplicate_of
         return ScanSignal(
             kind=CLOSE_CANDIDATE_KIND,
             summary=f"Auto-close DEAD issue ({self.reason}): {self.title}",
-            payload={"url": self.url, "reason": self.reason, "overlay": overlay},
+            payload=payload,
         )
 
 
@@ -88,25 +93,26 @@ class IssueDispositionScanner:
 
     The whole scanner is gated default-OFF one layer up (see
     :func:`teatree.loop.scanner_factories._issue_disposition_scanner_for`): with
-    ``auto_disposition_enabled = false`` no scanner is built, so this never runs.
+    a non-canonical overlay, no scanner is built, so this never runs.
     Each tick lists the operator's ``needs-triage`` issues, classifies each with
     the three deterministic buckets, and emits at most *max_closes_per_tick*
-    candidates. ``path_exists`` is the injectable obsolescence oracle (a clone-
-    relative resolver in production); leaving it ``None`` disables the
-    ``obsolete`` bucket so the scanner never guesses a path it cannot resolve.
+    candidates. ``path_exists`` is the injectable obsolescence oracle, asked about a
+    path in the candidate's OWN repo and answering ``None`` when that repo cannot be
+    judged; leaving it ``None`` disables the ``obsolete`` bucket.
     """
 
     host: CodeHostBackend
-    repo: str = ""
+    repo_slugs: tuple[str, ...] | None = None
     overlay_name: str = ""
     identities: tuple[str, ...] = field(default_factory=tuple)
+    #: Bounds ONE pass, so an auto-close run stays small enough to read afterwards.
     max_closes_per_tick: int = 5
-    path_exists: Callable[[str], bool] | None = None
+    path_exists: Callable[[str, str], bool | None] | None = None
     name: str = "issue_disposition"
 
     def scan(self) -> list[ScanSignal]:
         assignees = self._resolve_identities()
-        if not assignees:
+        if not assignees or self.repo_slugs == ():
             return []
         signals: list[ScanSignal] = []
         for issue in self._needs_triage_issues(assignees):
@@ -134,12 +140,12 @@ class IssueDispositionScanner:
         if not url:
             return None
         title = _issue_title(issue)
-        reason = (
-            self._already_shipped_reason(url)
-            or self._exact_duplicate_reason(url, title)
-            or self._obsolete_reason(_issue_body(issue))
-        )
-        return CloseCandidate(url=url, title=title, reason=reason) if reason else None
+        if shipped := self._already_shipped_reason(url):
+            return CloseCandidate(url=url, title=title, reason=shipped)
+        if survivor := self._duplicate_survivor(url, title):
+            return CloseCandidate(url=url, title=title, reason="exact_duplicate", duplicate_of=survivor)
+        obsolete = self._obsolete_reason(url, _issue_body(issue))
+        return CloseCandidate(url=url, title=title, reason=obsolete) if obsolete else None
 
     @staticmethod
     def _already_shipped_reason(url: str) -> str:
@@ -149,24 +155,45 @@ class IssueDispositionScanner:
             return ""
         return "already_shipped" if states & ticket_model.merged_states() else ""
 
-    def _exact_duplicate_reason(self, url: str, title: str) -> str:
-        fingerprint = title_fingerprint(title)
-        if not fingerprint or not self.repo:
-            return ""
-        matches = self.host.search_open_issues(repo=self.repo, query=title)
-        for other in matches:
-            other_url = _issue_url(other)
-            if other_url and other_url != url and title_fingerprint(_issue_title(other)) == fingerprint:
-                return "exact_duplicate"
-        return ""
+    def _duplicate_survivor(self, url: str, title: str) -> str:
+        """The open issue *url* duplicates, or ``""`` when *url* is the one its group keeps.
 
-    def _obsolete_reason(self, body: str) -> str:
+        Every member of an exact-title group sees the others, so each would otherwise
+        call itself the duplicate and one batch would close them all. The group keeps
+        its lowest-numbered issue; a member whose number cannot be read leaves the
+        survivor undecided, and nothing closes.
+
+        The search is bounded to the candidate's OWN repo, derived from its URL. The
+        listing spans every owned repo, so two repos can carry one title with no
+        relationship at all — and the number the group is ordered by is only
+        comparable within a single repo. An unresolvable repo returns no candidate.
+        """
+        fingerprint = title_fingerprint(title)
+        own_number = issue_number(url)
+        own_repo = self.host.repo_for_issue_url(url)
+        if not fingerprint or not own_repo or not own_number:
+            return ""
+        older: list[tuple[int, str]] = []
+        for other in self.host.search_open_issues(repo=own_repo, query=title):
+            other_url = _issue_url(other)
+            if not other_url or other_url == url or title_fingerprint(_issue_title(other)) != fingerprint:
+                continue
+            other_number = issue_number(other_url)
+            if not other_number:
+                return ""
+            if int(other_number) < int(own_number):
+                older.append((int(other_number), other_url))
+        return min(older)[1] if older else ""
+
+    def _obsolete_reason(self, url: str, body: str) -> str:
+        """``obsolete`` only when every referenced path is KNOWN absent from the candidate's own repo."""
         if self.path_exists is None:
             return ""
         paths = referenced_paths(body)
-        if not paths:
+        repo = self.host.repo_for_issue_url(url)
+        if not paths or not repo:
             return ""
-        return "obsolete" if not any(self.path_exists(path) for path in paths) else ""
+        return "obsolete" if all(self.path_exists(repo, path) is False for path in paths) else ""
 
     def _resolve_identities(self) -> tuple[str, ...]:
         if self.identities:
@@ -175,4 +202,4 @@ class IssueDispositionScanner:
         return (user,) if user else ()
 
     def _needs_triage_issues(self, assignees: tuple[str, ...]) -> list[RawAPIDict]:
-        return needs_triage_issues(self.host, assignees)
+        return needs_triage_issues(self.host, assignees, repo_slugs=self.repo_slugs or ())

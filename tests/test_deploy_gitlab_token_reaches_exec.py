@@ -9,9 +9,9 @@ which GitLab reports as ``HTTP Basic: Access denied`` — indistinguishable, fro
 outside, from a branch that does not exist.
 
 Two halves close it, and this module pins both. The compose files DECLARE
-``GITLAB_TOKEN`` per service, which is what an exec inherits; and the two host-side
-entry points (``deploy/deploy.sh``, ``deploy/t3``) resolve it from the SAME default
-``pass`` key the entrypoint already uses, so one credential is named in one place.
+``GITLAB_TOKEN`` per service, which is what an exec inherits; and the host-side
+entry points resolve it only from the SAME explicitly configured bootstrap
+``pass`` key the entrypoint uses, so no legacy default can bypass a DB route.
 
 The compose half is asserted against the parsed YAML rather than a `docker compose
 config` render: the subject is the declaration, and a render would make the check
@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from _deploy_forwarded_env import ENV_REPORT, forwarded
+from _deploy_forwarded_env import CREDENTIAL_PROBE, ENV_REPORT, argv, forwarded
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 COMPOSE = DEPLOY / "docker-compose.yml"
@@ -36,7 +36,8 @@ WRAPPER = DEPLOY / "t3"
 DEPLOY_SH = DEPLOY / "deploy.sh"
 ENTRYPOINT = DEPLOY / "entrypoint.sh"
 
-# The default the entrypoint already shipped; the host side must not invent a second one.
+# An explicit bootstrap route for the deployment boundary. There is deliberately no
+# implicit default: runtime credential routes live in the DB.
 DEFAULT_PASS_KEY = "gitlab/pat"
 PASS_KEY_OVERRIDE = "TEATREE_GITLAB_TOKEN_PASS_PATH"
 
@@ -75,8 +76,24 @@ echo "Error: $2 is not in the password store." >&2
 exit 1
 """
 
-# An authenticated host `glab`, so a test can prove `pass` is consulted FIRST rather
-# than merely consulted when nothing else answers.
+# A store that is PRESENT and BROKEN: gpg's own failure rc, the shape a locked
+# `pubring.db.lock` or an orphan keyboxd under a split GNUPGHOME produces.
+WEDGED_PASS_STUB = """#!/usr/bin/env bash
+printf '%s\\n' "$2" >>"$PASS_STUB_CALLS"
+echo "gpg: decryption failed: No Keybox daemon running" >&2
+exit 2
+"""
+
+# The other wedge: a store that never answers at all. `exec` so the deadline's TERM
+# reaches the sleeper itself — an orphan child would hold the read's stdout pipe open
+# and the caller would wait out the full sleep the bound exists to cut short.
+UNANSWERING_PASS_STUB = """#!/usr/bin/env bash
+printf '%s\\n' "$2" >>"$PASS_STUB_CALLS"
+exec sleep 30
+"""
+
+# An authenticated host `glab`, so tests prove it cannot replace an explicit pass
+# route or paper over a wedge.
 GLAB_STUB = """#!/usr/bin/env bash
 echo "  ✓ Token found: stub-glab-fallback-0000" >&2
 exit 0
@@ -101,15 +118,16 @@ def _write_stub(path: Path, body: str) -> None:
 def _invoke(
     tmp_path: Path,
     *,
-    stored_key: str = DEFAULT_PASS_KEY,
-    with_pass: bool = True,
+    pass_stub: str | None = PASS_STUB,
     with_glab: bool = False,
     env_overrides: dict[str, str] | None = None,
+    check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    """Run the genuine wrapper. ``pass_stub=None`` is a host with NO store at all."""
     stub_dir = tmp_path / "stub-bin"
     _write_stub(stub_dir / "docker", DOCKER_STUB)
-    if with_pass:
-        _write_stub(stub_dir / "pass", PASS_STUB)
+    if pass_stub is not None:
+        _write_stub(stub_dir / "pass", pass_stub)
     if with_glab:
         _write_stub(stub_dir / "glab", GLAB_STUB)
 
@@ -117,8 +135,11 @@ def _invoke(
     env["PATH"] = f"{stub_dir}{os.pathsep}{SYSTEM_PATH}"
     env["TEATREE_HOST_HOME"] = str(tmp_path / "home")
     env["PASS_STUB_CALLS"] = str(tmp_path / "pass-calls.log")
-    env["PASS_STUB_KEY"] = stored_key
+    # Which key the stub STORES; `PASS_KEY_OVERRIDE` is which key the wrapper ASKS for,
+    # and the tests below turn them against each other.
+    env["PASS_STUB_KEY"] = DEFAULT_PASS_KEY
     env["PASS_STUB_TOKEN"] = FAKE_TOKEN
+    env[PASS_KEY_OVERRIDE] = DEFAULT_PASS_KEY
     env.update(env_overrides or {})
 
     entry = tmp_path / "teatree-deploy" / "deploy" / "t3"
@@ -130,7 +151,13 @@ def _invoke(
     elsewhere.mkdir(parents=True, exist_ok=True)
     bash = shutil.which("bash", path=SYSTEM_PATH) or "bash"
     return subprocess.run(
-        [bash, str(entry), "--help"], capture_output=True, text=True, check=True, env=env, cwd=elsewhere
+        [bash, str(entry), *CREDENTIAL_PROBE],
+        capture_output=True,
+        text=True,
+        check=check,
+        env=env,
+        cwd=elsewhere,
+        timeout=120,
     )
 
 
@@ -149,7 +176,7 @@ class TestEveryExecTargetDeclaresTheToken:
     @pytest.mark.parametrize("service", EXEC_TARGET_SERVICES)
     def test_service_interpolates_and_defaults_empty(self, compose_doc: dict, service: str) -> None:
         # `:-` and not `?err`: an operator with no token on the host must still be
-        # able to bring the stack up, falling back to the entrypoint's own pass read.
+        # able to bring the stack up; an explicit bootstrap route may still be read.
         assert _service_env(compose_doc, service)["GITLAB_TOKEN"] == "${GITLAB_TOKEN:-}"
 
     def test_the_watchdog_carries_it_for_its_own_repair(self, compose_doc: dict) -> None:
@@ -168,31 +195,36 @@ class TestEveryExecTargetDeclaresTheToken:
 
 
 class TestOneCredentialNamedInOnePlace:
-    """All three deploy files must resolve the same key, or they silently diverge."""
+    """Deployment reads pass only through an explicit bootstrap route."""
 
     @pytest.mark.parametrize("script", [ENTRYPOINT, DEPLOY_SH, WRAPPER])
-    def test_script_reads_the_shared_default_key(self, script: Path) -> None:
+    def test_script_has_no_hidden_legacy_default(self, script: Path) -> None:
         body = script.read_text(encoding="utf-8")
-        assert f"${{{PASS_KEY_OVERRIDE}:-{DEFAULT_PASS_KEY}}}" in body
+        assert f"${{{PASS_KEY_OVERRIDE}:-{DEFAULT_PASS_KEY}}}" not in body
+        assert f"${{{PASS_KEY_OVERRIDE}:-}}" in body
 
 
 class TestTheWrapperResolvesTheTokenFromPass:
     def test_pass_token_is_forwarded(self, tmp_path: Path) -> None:
         assert forwarded(_invoke(tmp_path))["GITLAB_TOKEN"] == FAKE_TOKEN
 
-    def test_the_default_key_is_the_one_read(self, tmp_path: Path) -> None:
+    def test_the_explicit_bootstrap_key_is_the_one_read(self, tmp_path: Path) -> None:
         _invoke(tmp_path)
         assert _pass_keys(tmp_path) == [DEFAULT_PASS_KEY]
 
+    def test_a_populated_legacy_entry_is_ignored_without_an_explicit_route(self, tmp_path: Path) -> None:
+        proc = _invoke(tmp_path, env_overrides={PASS_KEY_OVERRIDE: ""})
+
+        assert "GITLAB_TOKEN" not in forwarded(proc)
+        assert _pass_keys(tmp_path) == []
+
     def test_the_key_is_overridable(self, tmp_path: Path) -> None:
         other = "gitlab/some-other-pat"
-        proc = _invoke(tmp_path, stored_key=other, env_overrides={PASS_KEY_OVERRIDE: other})
+        proc = _invoke(tmp_path, env_overrides={PASS_KEY_OVERRIDE: other, "PASS_STUB_KEY": other})
         assert forwarded(proc)["GITLAB_TOKEN"] == FAKE_TOKEN
         assert _pass_keys(tmp_path) == [other]
 
-    def test_pass_wins_over_the_glab_fallback(self, tmp_path: Path) -> None:
-        # The operator NAMED this key; `glab auth status` answers with whatever that
-        # CLI happens to hold, which need not be granted on the overlay's repos.
+    def test_explicit_pass_route_is_unaffected_by_an_ambient_glab_login(self, tmp_path: Path) -> None:
         assert forwarded(_invoke(tmp_path, with_glab=True))["GITLAB_TOKEN"] == FAKE_TOKEN
 
     def test_an_exported_token_still_wins_over_pass(self, tmp_path: Path) -> None:
@@ -205,10 +237,67 @@ class TestTheWrapperResolvesTheTokenFromPass:
         # A host without `pass` must fall through silently, never forward an empty
         # value — an empty GITLAB_TOKEN SHADOWS the container's own environment and
         # is exactly what made the helper authenticate with a blank password.
-        assert "GITLAB_TOKEN" not in forwarded(_invoke(tmp_path, with_pass=False))
+        assert "GITLAB_TOKEN" not in forwarded(_invoke(tmp_path, pass_stub=None))
 
     def test_unknown_key_forwards_nothing(self, tmp_path: Path) -> None:
-        assert "GITLAB_TOKEN" not in forwarded(_invoke(tmp_path, stored_key="gitlab/not-this-one"))
+        assert "GITLAB_TOKEN" not in forwarded(
+            _invoke(tmp_path, env_overrides={"PASS_STUB_KEY": "gitlab/not-this-one"})
+        )
+
+
+class TestAnAbsentStoreIsNotAWedgedOne:
+    """Three states, and collapsing any two of them breaks the CLI or hides a wedge.
+
+    NO STORE (no `pass` binary — CI, and the laptop that never set one up) and NO ENTRY
+    must both continue without a host token; a store that is PRESENT and
+    fails to answer must STOP the CLI by name. Collapsing "broken" into "absent" is the
+    original defect — an empty credential surfacing later as `HTTP Basic: Access
+    denied`. Collapsing "absent" into "broken" is what a 127 read as `> 1` did: every
+    storeless venue refused. Both directions are pinned here, together, because a fix
+    for one is exactly what re-creates the other.
+    """
+
+    @staticmethod
+    def _assert_ran_to_dispatch(proc: subprocess.CompletedProcess[str]) -> None:
+        # Anti-vacuity: "no token forwarded" is also what a wrapper that died before
+        # docker reports, and that is the failure these tests exist to tell apart.
+        assert proc.returncode == 0, proc.stderr
+        assert argv(proc), "the wrapper never reached its docker dispatch"
+
+    @staticmethod
+    def _assert_refused_loudly(proc: subprocess.CompletedProcess[str]) -> None:
+        assert proc.returncode != 0, "a wedged store let the CLI run on an empty credential"
+        assert "WEDGED" in proc.stderr, proc.stderr
+        assert DEFAULT_PASS_KEY in proc.stderr, proc.stderr
+        assert not argv(proc), "the wrapper dispatched anyway after refusing"
+
+    def test_no_store_at_all_lets_the_cli_run(self, tmp_path: Path) -> None:
+        proc = _invoke(tmp_path, pass_stub=None, check=False)
+        self._assert_ran_to_dispatch(proc)
+        assert "GITLAB_TOKEN" not in forwarded(proc)
+
+    def test_a_missing_entry_lets_the_cli_run(self, tmp_path: Path) -> None:
+        proc = _invoke(tmp_path, env_overrides={"PASS_STUB_KEY": "gitlab/not-this-one"}, check=False)
+        self._assert_ran_to_dispatch(proc)
+        assert "GITLAB_TOKEN" not in forwarded(proc)
+
+    def test_a_present_but_broken_store_stops_the_cli(self, tmp_path: Path) -> None:
+        proc = _invoke(tmp_path, pass_stub=WEDGED_PASS_STUB, check=False)
+        self._assert_refused_loudly(proc)
+        assert _pass_keys(tmp_path) == [DEFAULT_PASS_KEY]
+
+    def test_a_store_that_never_answers_stops_the_cli(self, tmp_path: Path) -> None:
+        proc = _invoke(
+            tmp_path,
+            pass_stub=UNANSWERING_PASS_STUB,
+            env_overrides={"TEATREE_SECRET_READ_DEADLINE_SECONDS": "1"},
+            check=False,
+        )
+        self._assert_refused_loudly(proc)
+        assert _pass_keys(tmp_path) == [DEFAULT_PASS_KEY]
+
+    def test_a_wedged_store_is_never_papered_over_by_an_ambient_glab_login(self, tmp_path: Path) -> None:
+        self._assert_refused_loudly(_invoke(tmp_path, pass_stub=WEDGED_PASS_STUB, with_glab=True, check=False))
 
 
 if __name__ == "__main__":

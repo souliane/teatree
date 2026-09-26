@@ -17,6 +17,7 @@ signals, and classification run against the real Django ORM + real scanner.
 """
 
 import datetime as _dt
+import inspect
 import platform
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -30,7 +31,9 @@ from django.utils import timezone
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.scanners.resource_pressure import (
     ResourcePressureScanner,
+    _disk_probe_paths,
     _parse_vm_stat_avail_gb,
+    measure_resources,
     read_disk_free_gb,
     read_ram_avail_gb,
 )
@@ -134,6 +137,138 @@ class DiskMeasurementTests(TestCase):
     def test_statvfs_oserror_returns_none(self) -> None:
         with patch("teatree.loop.scanners.resource_pressure.os.statvfs", side_effect=OSError):
             assert read_disk_free_gb("/") is None
+
+
+class CgroupProbeVisibilityTests(TestCase):
+    def test_lost_cgroup_guard_is_reported_even_when_host_ram_is_healthy(self) -> None:
+        with (
+            patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0),
+            patch(f"{_MODULE}.read_ram_avail_gb", return_value=20.0),
+            patch(f"{_MODULE}.cgroup_memory_probe_inert", return_value=True),
+        ):
+            signals = ResourcePressureScanner().scan()
+        assert len(signals) == 1
+        assert signals[0].kind == "resource.probe_inert"
+        assert signals[0].payload["resource"] == "cgroup"
+
+
+class DiskProbePathTests(TestCase):
+    """The ladder must measure the volume the checkout pool fills, not the container rootfs.
+
+    Measured on the box that produced #4244: from inside the worker container
+    ``statvfs("/")`` reports the Docker VM's own ext4 disk (384.0 GB free) while the
+    host volume the worktree root is bind-mounted from reports 42.3 GB. Probing ``/``
+    therefore classified a 5.7 GiB host as healthy and the whole disk ladder — every
+    lever on it, not just eviction — was dead at any host fullness.
+    """
+
+    def test_measure_probes_the_worktree_root(self) -> None:
+        root = Path("/some/worktree/root")
+        with (
+            patch(f"{_MODULE}.worktree_root", return_value=root),
+            patch(f"{_MODULE}.read_disk_free_gb", return_value=42.3) as read,
+            patch(f"{_MODULE}.read_ram_avail_gb", return_value=8.0),
+        ):
+            reading = measure_resources()
+        assert read.call_args.args == (str(root),)
+        assert reading.disk_free_gb == pytest.approx(42.3)
+
+    def test_an_unresolvable_worktree_root_falls_back_to_the_filesystem_root(self) -> None:
+        """A pre-Django or misconfigured venue must still get a reading, never an exception."""
+        with (
+            patch(f"{_MODULE}.worktree_root", side_effect=RuntimeError("no overlay")),
+            patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0) as read,
+            patch(f"{_MODULE}.read_ram_avail_gb", return_value=8.0),
+        ):
+            reading = measure_resources()
+        assert read.call_args.args == ("/",)
+        assert reading.disk_free_gb == pytest.approx(100.0)
+        assert not reading.disk_probe_degraded, "a venue that never named a volume is not measuring the wrong one"
+
+    def test_a_resolved_but_absent_worktree_root_falls_back_to_its_nearest_existing_ancestor(self) -> None:
+        """The half that actually happens: the resolver SUCCEEDS and names a path nothing created.
+
+        ``worktree_root()`` is a pure resolver that never touches the filesystem
+        (``config/loader.py``), with directory creation deferred to the point of use — so it
+        routinely returns a path that does not exist. Falling straight to ``/`` re-acquires
+        the founding bug on that path: inside the worker container ``/`` is the Docker VM's
+        own disk. The ancestors are on the volume that was meant, in both venues.
+        """
+        absent = Path.home() / "nonexistent-teatree-probe-4244" / "deeper"
+        with (
+            patch(f"{_MODULE}.worktree_root", return_value=absent),
+            patch(f"{_MODULE}.read_ram_avail_gb", return_value=8.0),
+        ):
+            reading = measure_resources()
+        assert reading.disk_answered_by == str(Path.home()), (
+            f"the probe skipped past the volume that was meant: {reading.disk_probed_paths}"
+        )
+        assert not reading.disk_probe_inert
+        assert not reading.disk_probe_degraded, "an ancestor on the right volume answered, so nothing is degraded"
+
+    def test_a_reading_that_had_to_come_from_the_filesystem_root_is_marked_degraded(self) -> None:
+        """A real number about the WRONG volume is confidently wrong — the ladder must say so.
+
+        This is the founding bug's shape: 384.0 GB from the container rootfs while the host
+        volume holding the checkouts had 42.3. It is used (better than none) and reported.
+        """
+        # Thresholds pinned to zero: `/` is a REAL reading here, so an ambient full disk
+        # would add a pressure_warn and decide the assertion instead of the probe.
+        scanner = ResourcePressureScanner(
+            disk_warn_free_gb=0.0,
+            disk_crit_free_gb=0.0,
+            ram_warn_avail_gb=0.0,
+            ram_crit_avail_gb=0.0,
+        )
+        with (
+            patch(f"{_MODULE}.worktree_root", return_value=Path("/nonexistent-teatree-probe-4244")),
+            patch(f"{_MODULE}.read_ram_avail_gb", return_value=8.0),
+        ):
+            signals = scanner.scan()
+            reading = measure_resources()
+
+        assert reading.disk_probe_degraded, reading
+        assert reading.disk_answered_by == "/"
+        assert [s.kind for s in signals] == ["resource.probe_degraded"], [s.kind for s in signals]
+        assert signals[0].payload["resource"] == "disk"
+        assert "/nonexistent-teatree-probe-4244" in signals[0].payload["reason"]
+
+    def test_the_inert_signal_names_the_paths_that_were_actually_probed(self) -> None:
+        """Re-deriving the ladder logs a second exception and can name a different set."""
+        with (
+            patch(f"{_MODULE}.worktree_root", return_value=Path("/nonexistent-teatree-probe-4244")),
+            patch(f"{_MODULE}.os.statvfs", side_effect=OSError),
+            patch(f"{_MODULE}.read_ram_avail_gb", return_value=8.0),
+            patch(f"{_MODULE}._disk_probe_paths", wraps=_disk_probe_paths) as ladder,
+        ):
+            signals = ResourcePressureScanner().scan()
+
+        assert ladder.call_count == 1, "the signal re-derived the ladder instead of reading the reading"
+        assert "/nonexistent-teatree-probe-4244" in signals[0].payload["reason"]
+
+    def test_a_disk_probe_no_path_can_answer_is_reported_inert(self) -> None:
+        """Unlike RAM, the disk half had no inert signal at all — it failed open and SILENTLY."""
+        with (
+            patch(f"{_MODULE}.worktree_root", return_value=Path("/nonexistent-teatree-probe-4244")),
+            patch(f"{_MODULE}.os.statvfs", side_effect=OSError),
+            patch(f"{_MODULE}.read_ram_avail_gb", return_value=8.0),
+        ):
+            signals = ResourcePressureScanner().scan()
+        assert [s.kind for s in signals] == ["resource.probe_inert"]
+        assert signals[0].payload["resource"] == "disk"
+        assert "/nonexistent-teatree-probe-4244" in signals[0].payload["reason"]
+
+    def test_the_probe_path_is_required_so_the_next_caller_cannot_re_acquire_the_bug(self) -> None:
+        """A ``"/"`` default is the bug in one keystroke — the docstring says so; the signature must too.
+
+        Asserted on the signature rather than by calling it wrongly: ``ty`` rightly refuses
+        a no-argument call at check time, so that shape would only be reachable behind a
+        suppression — and the claim here is about the DEFAULT, which is what a signature says.
+        """
+        default = inspect.signature(read_disk_free_gb).parameters["path"].default
+        assert default is inspect.Parameter.empty, (
+            f"a default probe path ({default!r}) lets the next caller silently re-acquire the container-rootfs read"
+        )
 
 
 class MacosRamMeasurementTests(TestCase):
@@ -332,12 +467,15 @@ class _ScannerHarness(TestCase):
         ram_gb: float,
         scanner: ResourcePressureScanner | None = None,
     ) -> list:
-        scanner = scanner or ResourcePressureScanner()
+        # A fresh local rather than rebinding the optional parameter: rebinding leaves
+        # the declared ``| None`` in force for a type checker, so ``.scan()`` reads as a
+        # call on ``None``.
+        subject = scanner or ResourcePressureScanner()
         with (
             patch("teatree.loop.scanners.resource_pressure.read_disk_free_gb", return_value=disk_gb),
             patch("teatree.loop.scanners.resource_pressure.read_ram_avail_gb", return_value=ram_gb),
         ):
-            return scanner.scan()
+            return subject.scan()
 
 
 class ClassificationTests(_ScannerHarness):
@@ -398,6 +536,7 @@ class LinuxRamLadderTests(TestCase):
         with (
             patch(f"{_MODULE}.platform.system", return_value="Linux"),
             patch(f"{_RAM_SCOPE}.cgroup_v2_memory_mib", return_value=None),
+            patch(f"{_MODULE}.cgroup_memory_probe_inert", return_value=False),
             patch(f"{_RAM_PROBE}._MEMINFO_PATH", str(path)),
             patch(f"{_MODULE}.read_disk_free_gb", return_value=100.0),
         ):
@@ -472,9 +611,10 @@ class RamProbeInertTests(TestCase):
         assert [s.kind for s in signals] == ["resource.probe_inert", "resource.pressure_warn"]
 
     def test_probe_inert_when_no_resource_is_readable(self) -> None:
-        """Even with the disk read also failing, the inert RAM ladder is still reported."""
+        """Both ladders inert means TWO notices — one signal cannot stand in for two dead probes."""
         signals = self._scan_without_ram_reader(disk_gb=None)
-        assert [s.kind for s in signals] == ["resource.probe_inert"]
+        assert [s.kind for s in signals] == ["resource.probe_inert", "resource.probe_inert"]
+        assert [s.payload["resource"] for s in signals] == ["disk", "ram"]
 
     def test_inert_probe_never_reads_as_zero_available(self) -> None:
         """An unanswerable probe must never trip a CRITICAL freeing pass — that is the opposite of fail-safe."""
@@ -612,18 +752,20 @@ class MeasurementUnavailableTests(TestCase):
         ):
             return ResourcePressureScanner().scan()
 
-    def test_both_measurements_none_reports_the_ram_ladder_inert(self) -> None:
-        assert [s.kind for s in self._scan_with_reads(disk=None, ram=None)] == ["resource.probe_inert"]
+    def test_both_measurements_none_reports_both_ladders_inert(self) -> None:
+        signals = self._scan_with_reads(disk=None, ram=None)
+        assert [s.payload["resource"] for s in signals] == ["disk", "ram"]
+        assert {s.kind for s in signals} == {"resource.probe_inert"}
 
     def test_missing_ram_read_does_not_trip_critical(self) -> None:
         """A missing RAM read must not spuriously trip a CRITICAL freeing pass."""
         signals = self._scan_with_reads(disk=100.0, ram=None)
         assert all(s.kind != "resource.cleanup_needed" for s in signals)
 
-    def test_missing_disk_read_still_classifies_ram(self) -> None:
+    def test_missing_disk_read_still_classifies_ram_and_says_the_disk_probe_is_inert(self) -> None:
         signals = self._scan_with_reads(disk=None, ram=1.0)
-        assert [s.payload["resource"] for s in signals] == ["ram"]
-        assert signals[0].kind == "resource.cleanup_needed"
+        assert [s.payload["resource"] for s in signals] == ["disk", "ram"]
+        assert [s.kind for s in signals] == ["resource.probe_inert", "resource.cleanup_needed"]
 
 
 class CleanupPayloadTests(_ScannerHarness):
@@ -646,6 +788,20 @@ class CleanupPayloadTests(_ScannerHarness):
         assert disk_sig.payload["disk_cache_allowlist"] == ["~/.cache/pre-commit"]
         assert disk_sig.payload["allow_destructive_disk"] is True
         assert disk_sig.payload["ram_kill_allowlist"] == ["Brave.*Renderer"]
+
+    def test_the_payload_does_not_carry_the_artifact_retention_window(self) -> None:
+        """The sweep moved off this ladder (#4244), so this signal no longer configures it.
+
+        ``free_resources`` is the only consumer of this payload and never plans an artifact
+        eviction; the retention window reaches ``sweep_artifacts`` from
+        ``ArtifactEvictionScanner``'s own signal. A key here would be live-looking config
+        wired to nothing — an operator changing it would see no effect.
+        """
+        signals = self._scan_with(disk_gb=5.0, ram_gb=100.0)
+        disk_sig = next(s for s in signals if s.kind == "resource.cleanup_needed")
+
+        assert "artifact_idle_days" not in disk_sig.payload, disk_sig.payload
+        assert not hasattr(ResourcePressureScanner(), "artifact_idle_days")
 
 
 class ResilienceTests(_ScannerHarness):

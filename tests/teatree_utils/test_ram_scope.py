@@ -23,6 +23,8 @@ from teatree.utils.ram_scope import (
     RamHeadroom,
     agent_workload_floor_gib,
     cgroup_headroom_mib,
+    cgroup_memory_probe_inert,
+    cgroup_v2_oom_kills,
     cgroup_v2_reclaimable_mib,
     read_ram_headroom,
 )
@@ -38,6 +40,26 @@ _WORKER_CURRENT_BYTES = 5916573696
 _WORKER_INACTIVE_FILE_BYTES = 832724992
 _WORKER_SLAB_RECLAIMABLE_BYTES = 268435456
 _HOST_AVAILABLE_MIB = 22557
+
+
+def test_cgroup_cap_unreadable_is_inert_even_when_host_memory_is_readable(tmp_path: Path) -> None:
+    with (
+        patch("teatree.utils.ram_scope.platform.system", return_value="Linux"),
+        patch("teatree.utils.ram_scope.cgroup_file", return_value=tmp_path / "missing"),
+        patch("teatree.utils.ram_probe.cgroup_file", return_value=tmp_path / "missing"),
+        patch("teatree.utils.ram_scope.host_available_ram_mib", return_value=20000),
+    ):
+        assert read_ram_headroom().available_mib == 20000
+        assert cgroup_memory_probe_inert()
+
+
+def test_intentionally_unlimited_cgroup_is_not_inert(tmp_path: Path) -> None:
+    (tmp_path / "memory.max").write_text("max\n")
+    with (
+        patch("teatree.utils.ram_scope.platform.system", return_value="Linux"),
+        patch("teatree.utils.ram_scope.cgroup_file", side_effect=lambda name, **_kwargs: tmp_path / name),
+    ):
+        assert not cgroup_memory_probe_inert()
 
 
 def _memory_stat(*, inactive_file: int, slab_reclaimable: int) -> str:
@@ -88,6 +110,8 @@ def _cgroup_read_text(files: dict[str, str]) -> Callable[..., str]:
     """A ``Path.read_text`` replacement keyed on the file NAME, not on call order."""
 
     def read_text(self: Path, *_args: object, **_kwargs: object) -> str:
+        if str(self) == "/proc/self/cgroup":
+            return "0::/\n"
         if self.name not in files:
             raise FileNotFoundError(self.name)
         return files[self.name]
@@ -113,6 +137,26 @@ def _cgroup_reads(values: dict[str, int | None]) -> tuple[AbstractContextManager
 
 
 class TestTheAvailableFigure:
+    def test_v1_nested_memory_cap_still_bounds_headroom(self) -> None:
+        files = {
+            "/proc/self/cgroup": "5:memory:/system.slice/worker.scope\n",
+            "/sys/fs/cgroup/memory/system.slice/worker.scope/memory.limit_in_bytes": str(8 * _GIB),
+            "/sys/fs/cgroup/memory/system.slice/worker.scope/memory.usage_in_bytes": str(6 * _GIB),
+        }
+
+        def read_text(path: Path, **_kwargs: object) -> str:
+            if str(path) in files:
+                return files[str(path)]
+            raise FileNotFoundError(str(path))
+
+        with (
+            patch("pathlib.Path.read_text", read_text),
+            patch("teatree.utils.ram_scope.host_available_ram_mib", return_value=20000),
+        ):
+            reading = read_ram_headroom()
+        assert reading.cgroup_limit_mib == 8192
+        assert reading.available_mib == 2048
+
     """A cgroup-capped worker must not size work against the host's free memory."""
 
     @pytest.fixture(autouse=True)
@@ -258,6 +302,46 @@ class TestTheReadingCarriesItsScope:
         assert headroom.box_watermark_mib == 1691
 
 
+class TestTheCapTheWatermarkIsBoundedBy:
+    """The ceiling the box figure cannot rise above — or ``None`` when nothing bounds it.
+
+    A caller comparing an absolute floor against the reading needs to know whether a fixed
+    cap makes that floor unreachable, and only the reader knows WHICH scope answered.
+    Re-deriving the scope test caller-side would be the second opinion #4125 records.
+    """
+
+    def test_a_worker_sized_cgroup_reports_the_cap_its_own_reading_is_bounded_by(self) -> None:
+        with _in_cgroup(limit_bytes=8 * _GIB, current_bytes=1 * _GIB):
+            headroom = read_ram_headroom()
+        assert headroom.cgroup_is_box_scoped is True
+        assert headroom.box_watermark_cap_gb == pytest.approx(8.0)
+
+    def test_the_measured_deployment_cap_lands_inside_the_unrecoverable_band(self) -> None:
+        # 5 GiB is ABOVE the 4 GiB agent-workload floor, so the reading is judged box-wide
+        # — and below the 6 GiB resume floor, so a braked lane can never rise past it. That
+        # gap is exactly where the fourteen-hour wedge lived.
+        with _in_cgroup(limit_bytes=5 * _GIB, current_bytes=1 * _GIB):
+            assert read_ram_headroom().box_watermark_cap_gb == pytest.approx(5.0)
+
+    def test_a_sidecar_cap_is_never_reported_because_the_host_answered(self) -> None:
+        with _in_cgroup(limit_bytes=_ADMIN_LIMIT_BYTES, current_bytes=_ADMIN_CURRENT_BYTES):
+            headroom = read_ram_headroom()
+        assert headroom.cgroup_limit_mib == 2048
+        assert headroom.cgroup_is_box_scoped is False
+        assert headroom.box_watermark_cap_gb is None
+
+    def test_an_uncapped_cgroup_has_no_cap_to_report(self) -> None:
+        with _in_cgroup(limit_bytes=None, current_bytes=None):
+            assert read_ram_headroom().box_watermark_cap_gb is None
+
+    def test_the_floor_override_moves_the_cap_boundary_with_the_scope(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(AGENT_WORKLOAD_FLOOR_ENV, "32")
+        with _in_cgroup(limit_bytes=_WORKER_LIMIT_BYTES, current_bytes=_WORKER_CURRENT_BYTES):
+            headroom = read_ram_headroom()
+        assert headroom.box_watermark_mib == _HOST_AVAILABLE_MIB
+        assert headroom.box_watermark_cap_gb is None
+
+
 class TestReclaimableCacheIsCredited:
     """``memory.current`` charges page cache the kernel hands straight back."""
 
@@ -316,6 +400,19 @@ class TestReclaimableCacheIsCredited:
     def test_an_uncapped_cgroup_has_no_headroom_figure(self) -> None:
         with patch("pathlib.Path.read_text", _cgroup_read_text({})):
             assert cgroup_headroom_mib() is None
+
+
+class TestCgroupOomKills:
+    def test_reads_the_oom_kill_counter_from_memory_events(self) -> None:
+        events = "low 0\nhigh 3\nmax 17\noom 11\noom_kill 9\noom_group_kill 0\n"
+        with patch("pathlib.Path.read_text", _cgroup_read_text({"memory.events": events})):
+            assert cgroup_v2_oom_kills() == 9
+
+    @pytest.mark.parametrize("events", [None, "oom 11\noom_kill nope\n"])
+    def test_unreadable_or_garbled_counter_is_unknown(self, events: str | None) -> None:
+        files = {"memory.events": events} if events is not None else {}
+        with patch("pathlib.Path.read_text", _cgroup_read_text(files)):
+            assert cgroup_v2_oom_kills() is None
 
 
 class TestAgentWorkloadFloor:

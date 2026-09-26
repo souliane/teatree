@@ -1,0 +1,25 @@
+Running 61 tests using 4 workers
+
+  1) [chromium] › renewal/reprice.spec.ts:42:7 › renewal › keeps the pinned rate ──
+
+    Error: expect(locator).toHaveText(expected)
+
+    Locator: getByTestId('offer-rate')
+    Expected string: "2.35 %"
+    Received string: "2.41 %"
+
+      at renewal/reprice.spec.ts:57
+
+  3 failed
+    [chromium] › renewal/reprice.spec.ts:42:7 › renewal › keeps the pinned rate ───
+    [chromium] › renewal/reprice.spec.ts:88:7 › renewal › stores the market rate ──
+    [chromium] › offers/list.spec.ts:12:5 › offers › renders the offer list ───────
+  2 flaky
+    [chromium] › offers/pdf.spec.ts:30:5 › offers › downloads the offer pdf ───────
+    [chromium] › login/sso.spec.ts:9:3 › login › signs in through sso ─────────────
+  1 skipped
+  55 passed (2.7m)
+
+To open last HTML report run:
+
+  npx playwright show-report

@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 
 from teatree.eval.command_span import executed_span
 from teatree.eval.models import EvalRun, EvalToolCall, canonicalize_tool
+from teatree.eval.text_normalization import normalize_match_text
 
 
 class UnknownArgViewError(LookupError):
@@ -178,29 +179,27 @@ def assert_no_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, re
             raise AssertionError(msg)
 
 
-def _first_matching_turn(run: EvalRun, target: CallPattern) -> int | None:
-    """The ``turn`` of the FIRST tool call matching *target*, or ``None``."""
+def _first_matching_call(run: EvalRun, target: CallPattern) -> EvalToolCall | None:
+    """The FIRST tool call matching *target*, or ``None``."""
     pattern = re.compile(target.regex)
     for call in run.tool_calls:
         if canonicalize_tool(call.name) != target.tool:
             continue
         value = _arg_text(call, target.arg_path)
         if value is not None and pattern.search(value):
-            return call.turn
+            return call
     return None
 
 
 def assert_no_tool_call_before(run: EvalRun, forbidden: CallPattern, guard: CallPattern) -> None:
     """Assert no *forbidden* call precedes the FIRST *guard* call (order-aware negative).
 
-    The forbidden call reds the run ONLY when it occurs at a turn STRICTLY BEFORE
-    the first guard call. When the guard call never fires, its turn is treated as
-    ``+inf`` so EVERY forbidden call is "before" it — the correct strict reading
-    (the guard action never happened, so nothing was allowed to precede it). A
-    forbidden call at or after the guard is permitted, so the compliant "do the
-    guard action FIRST, then the guarded one" trajectory passes.
+    A different forbidden call on the guard's turn is unsafe: tool calls on one
+    turn may run in parallel. The guard call itself is exempt even if it matches
+    both patterns. Later turns are permitted. With no guard, every forbidden
+    call fails.
     """
-    guard_turn = _first_matching_turn(run, guard)
+    guard_call = _first_matching_call(run, guard)
     pattern = re.compile(forbidden.regex)
     for call in run.tool_calls:
         if canonicalize_tool(call.name) != forbidden.tool:
@@ -208,7 +207,7 @@ def assert_no_tool_call_before(run: EvalRun, forbidden: CallPattern, guard: Call
         value = _arg_text(call, forbidden.arg_path)
         if value is None or not pattern.search(value):
             continue
-        if guard_turn is None or call.turn < guard_turn:
+        if guard_call is None or (call is not guard_call and call.turn <= guard_call.turn):
             guard_desc = f"{guard.tool}.{guard.arg_path} matching {guard.regex!r}"
             msg = (
                 f"Did not expect any {forbidden.tool} tool call with {forbidden.arg_path} "
@@ -235,7 +234,7 @@ def assert_final_state_matching(run: EvalRun, regex: str) -> None:
     if final is None:
         msg = f"Expected a final assistant message matching regex {regex!r}, but there was no final assistant message."
         raise AssertionError(msg)
-    if not re.search(regex, final):
+    if not re.search(regex, normalize_match_text(final)):
         msg = f"Expected the final assistant message to match regex {regex!r}, but it was:\n  {final!r}"
         raise AssertionError(msg)
 
@@ -246,6 +245,44 @@ def assert_final_state_contains(run: EvalRun, substring: str) -> None:
     if final is None:
         msg = f"Expected a final assistant message containing {substring!r}, but there was no final assistant message."
         raise AssertionError(msg)
-    if substring not in final:
+    if substring not in normalize_match_text(final):
         msg = f"Expected the final assistant message to contain {substring!r}, but it was:\n  {final!r}"
+        raise AssertionError(msg)
+
+
+def _assistant_response(run: EvalRun) -> str:
+    """Everything the agent SAID, in order — the subject of "in your response".
+
+    Joined rather than searched block by block, so a plan the agent laid out across
+    two messages reads as one response, which is how its author meant it.
+    """
+    return "\n".join(run.text_blocks)
+
+
+def _require_response(run: EvalRun, expectation: str) -> str:
+    """The response text, refusing a run that said nothing.
+
+    A silent run must not satisfy a positive matcher — ``""`` matches a permissive
+    regex, which would let this kind be counted as a positive anchor while a do-nothing
+    agent passed it. Mirrors :func:`assert_final_state_matching`'s no-message refusal.
+    """
+    if not run.text_blocks:
+        msg = f"Expected an agent response {expectation}, but the agent emitted no text at all."
+        raise AssertionError(msg)
+    return _assistant_response(run)
+
+
+def assert_assistant_text_matching(run: EvalRun, regex: str) -> None:
+    """Assert the agent's response — anywhere in it — matches *regex*."""
+    response = _require_response(run, f"matching regex {regex!r}")
+    if not re.search(regex, normalize_match_text(response)):
+        msg = f"Expected the agent's response to match regex {regex!r}, but it was:\n  {response!r}"
+        raise AssertionError(msg)
+
+
+def assert_assistant_text_contains(run: EvalRun, substring: str) -> None:
+    """Assert the agent's response — anywhere in it — contains *substring*."""
+    response = _require_response(run, f"containing {substring!r}")
+    if substring not in normalize_match_text(response):
+        msg = f"Expected the agent's response to contain {substring!r}, but it was:\n  {response!r}"
         raise AssertionError(msg)

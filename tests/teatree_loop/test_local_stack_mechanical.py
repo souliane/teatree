@@ -6,9 +6,11 @@
 (fail-CLOSED stale-read guard) and never tear down another ticket's stack.
 """
 
+from collections.abc import Iterator
 from datetime import timedelta
 from unittest.mock import patch
 
+import pytest
 from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
@@ -138,6 +140,20 @@ class TestNoStrayContainerAfterReap(TestCase):
 
 
 class TestDrainStackQueueItemHandler(TestCase):
+    @pytest.fixture(autouse=True)
+    def _admit_by_default(self) -> Iterator[None]:
+        """Decide admission here, not from whatever the developer's box happens to be doing.
+
+        The drainer consults the host's real RAM, so on a machine merely BUSY these
+        tests asserted a started stack and got the backoff — a red that says nothing
+        about the code. The one test that exercises the hold patches its own verdict.
+        """
+        with patch(
+            "teatree.loop.mechanical_local_stack.check_provision_admission",
+            return_value=ProvisionAdmissionVerdict.allow(),
+        ):
+            yield
+
     def test_acquires_and_starts_when_slot_free(self) -> None:
         wt = _worktree(ticket_number="820", state=Worktree.State.PROVISIONED)
         item = LocalStackQueueItem.objects.create(overlay="t3-heavy", worktree=wt)

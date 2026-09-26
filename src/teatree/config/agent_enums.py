@@ -91,6 +91,7 @@ class AgentHarnessProvider(StrEnum):
     |------------------------------|---------------------------|-----------------------------------------|
     | ``claude_sdk``                | ``subscription_oauth``    | ``AnthropicSubscriptionCredential``     |
     | ``claude_sdk``                | ``api_key``               | ``AnthropicApiKeyCredential``           |
+    | ``claude_sdk``                | ``subscription_then_api_key`` | either, resolved per dispatch       |
     | ``pydantic_ai``               | ``openai_compatible``     | ``OpenAICompatibleCredential``          |
     | ``pydantic_ai``               | ``anthropic_api``         | ``AnthropicApiKeyCredential``           |
 
@@ -106,6 +107,12 @@ class AgentHarnessProvider(StrEnum):
     *   :attr:`API_KEY` — the metered Anthropic API key
         (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`).
         Valid only under ``agent_harness=claude_sdk``.
+    *   :attr:`SUBSCRIPTION_THEN_API_KEY` — ride the plans, and fail over to the
+        metered key only while every plan is exhausted. A POLICY rather than a
+        credential: :func:`~teatree.agents.credential_policy.resolve_credential_provider`
+        resolves it per dispatch into :attr:`SUBSCRIPTION_OAUTH` or :attr:`API_KEY`
+        and never returns it, so the lane map, the child env and cost accounting only
+        ever see the two concrete values. Valid only under ``agent_harness=claude_sdk``.
     *   :attr:`OPENAI_COMPATIBLE` — the key for whichever OpenAI-compatible API
         the generic backend settings name
         (:class:`~teatree.llm.openai_compatible.OpenAICompatibleCredential`).
@@ -128,6 +135,7 @@ class AgentHarnessProvider(StrEnum):
 
     SUBSCRIPTION_OAUTH = "subscription_oauth"
     API_KEY = "api_key"
+    SUBSCRIPTION_THEN_API_KEY = "subscription_then_api_key"
     OPENAI_COMPATIBLE = "openai_compatible"
     ANTHROPIC_API = "anthropic_api"
 
@@ -163,6 +171,12 @@ _PROVIDER_VALUE_ALIASES: dict[str, str] = {"orca_router_byok": AgentHarnessProvi
 
 
 _VALID_PROVIDERS_BY_HARNESS: dict[AgentHarness, frozenset[AgentHarnessProvider]] = {
-    AgentHarness.CLAUDE_SDK: frozenset({AgentHarnessProvider.SUBSCRIPTION_OAUTH, AgentHarnessProvider.API_KEY}),
+    AgentHarness.CLAUDE_SDK: frozenset(
+        {
+            AgentHarnessProvider.SUBSCRIPTION_OAUTH,
+            AgentHarnessProvider.API_KEY,
+            AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY,
+        }
+    ),
     AgentHarness.PYDANTIC_AI: frozenset({AgentHarnessProvider.OPENAI_COMPATIBLE, AgentHarnessProvider.ANTHROPIC_API}),
 }

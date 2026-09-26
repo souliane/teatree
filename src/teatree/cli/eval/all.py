@@ -33,7 +33,7 @@ from rich.table import Table
 
 from teatree.cli.eval.corpus import corpus_grade_lane, grade_shipped_corpus
 from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
-from teatree.cli.eval.metered_routing import should_route_to_docker
+from teatree.cli.eval.metered_routing import should_route_to_docker, warn_local_metered
 from teatree.cli.eval.run_modes import RunGuards, build_transcript_manifest, render_transcript_text
 from teatree.cli.eval.skill_command_lane import skill_command_validity_lane, validate_shipped_skill_commands
 from teatree.cli.eval.skill_prose_lane import run_prose_judge, skill_prose_judge_lane
@@ -46,7 +46,7 @@ from teatree.eval.models import EvalSpec
 from teatree.eval.negative_control import NegativeControlOutcome, run_negative_control
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
 from teatree.eval.regression_corpus import RegressionReport, run_regression_corpus
-from teatree.eval.report import ScenarioResult, evaluate
+from teatree.eval.report import ScenarioResult, evaluate, render_text
 from teatree.eval.skip_guard import (
     EmptyFreshRunError,
     UnmeteredApiRunError,
@@ -348,6 +348,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     model_free: bool,
     docker: bool,
     strict: bool,
+    local: bool = False,
     parallel: int = DEFAULT_PARALLEL,
 ) -> None:
     """The single eval-suite chokepoint: run every lane and render one summary.
@@ -375,6 +376,10 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     A real FAIL always exits non-zero (fail-loud). A setup-skip stays exit 0 by
     default (the clarity is in the verdict text, not a confusing non-zero); pass
     ``--strict`` to make a setup-skipped lane exit non-zero for CI use.
+
+    ``local`` is the host escape ``t3 eval run`` already carries: a metered backend
+    otherwise re-routes to the CI container unconditionally, which no socket-less CI
+    runner and no already-containerized ``t3`` can serve. ``docker`` still wins over it.
     """
     # The fresh-run SDK AI lane + the live prose-judge run a model, so the whole
     # suite defaults to the CI container when they are in scope (`--backend api`,
@@ -382,7 +387,7 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     # forces the container for any backend; `--model-free` runs only the host-safe
     # deterministic lanes, so it never runs a model.
     metered = backend != TRANSCRIPT_BACKEND and not model_free
-    if docker or should_route_to_docker(metered=metered, local=False):
+    if docker or should_route_to_docker(metered=metered, local=local):
         passthrough = _full_suite_docker_passthrough(
             backend=backend, model_free=model_free, strict=strict, parallel=parallel
         )
@@ -391,6 +396,8 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         except DockerUnavailableError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=2) from None
+    if local:
+        warn_local_metered(metered=metered)
     ensure_django()
     target_dir = transcript_dir or Path.cwd()
     catalog = discover_catalog()
@@ -420,6 +427,10 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
         # skill_prose_judge_lane always returns passed=True, so a low prose score
         # never fails the suite.
         lanes.append(_timed(lambda: skill_prose_judge_lane(run_prose_judge())))
+    # A fresh run bills real money and the lane row carries only counts, so on its own it
+    # can name neither what failed nor what it cost — the two things a metered run is read for.
+    if metered and ai_results:
+        typer.echo(render_text(ai_results))
     Console().print(build_summary_table(lanes))
     # The fresh-run AI lane must not report a decorative green. Mirror BOTH halves of
     # the `eval run` boundary's RunGuards.api_metered, because which half can see a

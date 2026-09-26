@@ -16,12 +16,13 @@ no guarantee ``teatree`` is importable, so the module top imports only stdlib an
 the stdlib-only ``gate_result`` / ``t3_invocation`` siblings.
 """
 
+import json
 import os
 import subprocess  # noqa: S404 — the CompletedProcess return type; the spawn itself is the seam's
 import sys
 from pathlib import Path
 
-from hooks.scripts.gate_result import ValidatorTimedOut, validator_timeout_seconds
+from hooks.scripts.gate_result import GateSkipped, ValidatorTimedOut, validator_timeout_seconds
 from hooks.scripts.t3_invocation import run_t3, t3_argv
 
 # Alias the bare and ``hooks.scripts.`` identities so the helpers the router
@@ -45,25 +46,43 @@ def mr_validate_argv() -> list[str] | None:
     return t3_argv("tool", "validate-mr")
 
 
+_EXEC_FAILED_REASON = (
+    "the overlay validator could not be EXECUTED at all ({exc}), so the title and description were never checked"
+)
+
+
 def run_mr_validator(
     argv: list[str], title: str, description: str, target_repo: str | None = None, *, sections_optional: bool = False
-) -> "subprocess.CompletedProcess[str] | ValidatorTimedOut | None":
-    """Run the validator; ``ValidatorTimedOut`` if too slow, ``None`` if absent.
+) -> "subprocess.CompletedProcess[str] | ValidatorTimedOut | GateSkipped | None":
+    """Run the validator; a marker when it rendered no verdict, ``None`` if absent.
 
-    ``target_repo`` (when parseable) is forwarded as ``--repo <slug>`` so the
-    validator keys overlay resolution to the MR's TARGET, not the agent's cwd.
-    ``sections_optional`` forwards ``--sections-optional`` for a title-only
-    update whose description is untouched (#3254).
+    The title/description pair goes on STDIN as one JSON object; only the short, bounded
+    flags ride argv. GitLab accepts a 1 MiB description and a description-only edit
+    back-fills ``title=description``, so on argv the body rode the exec TWICE and
+    breached ``ARG_MAX`` (1048576 here) at roughly half the size the forge itself allows.
+    ``target_repo`` (when parseable) is forwarded as ``--repo <slug>`` so the validator
+    keys overlay resolution to the MR's TARGET, not the agent's cwd. ``sections_optional``
+    forwards ``--sections-optional`` for a title-only update whose description is
+    untouched (#3254).
+
+    A spawn that fails outright returns :class:`GateSkipped` — CANNOT_EVALUATE, which
+    the caller announces and allows. Letting the ``OSError`` propagate instead made the
+    gate fail OPEN in SILENCE: the router wraps every handler in ``except Exception:
+    continue``, so an over-``ARG_MAX`` body exited 0 with empty stdout, byte-identical
+    to a clean pass on text no validator had read.
     """
     repo_args = ["--repo", target_repo] if target_repo else []
     section_args = ["--sections-optional"] if sections_optional else []
     allowance = validator_timeout_seconds()
     try:
         return run_t3(
-            [*argv, "--title", title, "--description", description, *repo_args, *section_args],
+            [*argv, *repo_args, *section_args],
             timeout=allowance,
+            stdin_text=json.dumps({"title": title, "description": description}),
         )
     except subprocess.TimeoutExpired:
         return ValidatorTimedOut(allowance_seconds=allowance)
     except FileNotFoundError:
         return None
+    except OSError as exc:
+        return GateSkipped(reason=_EXEC_FAILED_REASON.format(exc=exc))

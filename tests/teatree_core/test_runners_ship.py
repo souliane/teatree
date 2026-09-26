@@ -5,11 +5,9 @@ the heavy I/O (push, MR creation) onto a ``@task`` worker. The worker runs
 ``ShipExecutor`` and on success advances ``SHIPPED → IN_REVIEW``.
 """
 
-import os
 import shutil
 import subprocess
 import tempfile
-from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -35,6 +33,7 @@ from teatree.core.runners.ship import (
     sanitize_close_keywords,
     should_close_ticket,
 )
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -328,10 +327,12 @@ class TestShipExecutor(TestCase):
         host.create_pr.return_value = {"web_url": "https://example.com/mr/2"}
         host.current_user.return_value = "souliane"
 
+        # Gate-receipt decoration is covered separately; isolate the body scaffold.
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.append_gate_notice", side_effect=lambda description, _repo: description),
             patch(
                 "teatree.core.runners.ship.git.last_commit_message",
                 return_value=("feat(core): add thing (https://example.com/issues/77)", "Longer body.\nMore detail."),
@@ -353,10 +354,12 @@ class TestShipExecutor(TestCase):
         host.create_pr.return_value = {"web_url": "https://example.com/mr/u"}
         host.current_user.return_value = "dev"
 
+        # Keep the assertion independent of the worktree's gate-receipt state.
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.push_branch"),
+            patch("teatree.core.runners.ship.append_gate_notice", side_effect=lambda description, _repo: description),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "")),
         ):
             ShipExecutor(ticket).run()
@@ -1451,17 +1454,6 @@ def _tmp_dir(case: TestCase) -> Path:
     return Path(tmp.name)
 
 
-def _only_teatree_named_token() -> AbstractContextManager[None]:
-    """The venue the raw push cannot serve: the token is present, but not under git's name.
-
-    Only ``GH_TOKEN`` reaches git's credential helper, so a push lands here iff the
-    caller resolves the credential itself. The value is a test sentinel.
-    """
-    env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
-    env["TEATREE_GH_TOKEN"] = "sentinel-not-a-credential"
-    return patch.dict(os.environ, env, clear=True)
-
-
 def _make_repo_with_origin(tmp_path: Path, *, branch: str) -> str:
     """A real clone on *branch*, with a real bare ``origin`` it has not pushed to yet."""
     origin = tmp_path / "origin.git"
@@ -1519,34 +1511,30 @@ class TestShipPushSuppliesTheForgeCredential(TestCase):
         host.create_pr.return_value = {"web_url": "https://example.com/mr/1"}
         host.current_user.return_value = "souliane"
         push_envs: list[dict[str, str]] = []
-        real_run = subprocess.run
+        real_popen = subprocess.Popen
 
-        def spy(
-            cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: Any
-        ) -> subprocess.CompletedProcess[str]:
+        def spy(cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: Any) -> subprocess.Popen[str]:
             if "push" in cmd:
                 push_envs.append(dict(env or {}))
-            return real_run(cmd, env=env, **kwargs)
+            return real_popen(cmd, env=env, **kwargs)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
-            patch("teatree.utils.run.subprocess.run", side_effect=spy),
+            patch(
+                "teatree.core.forge_push.resolve_repo_token",
+                return_value=ForgeTokenResolution("github_token", "test", ForgeTokenState.TOKEN, token="routed-token"),
+            ),
+            patch("teatree.utils.run.subprocess.Popen", side_effect=spy),
         ):
             return ShipExecutor(ticket).run(), host, push_envs
 
     def test_push_carries_the_resolved_credential_git_alone_cannot_see(self) -> None:
-        """A ``TEATREE_GH_TOKEN``-only venue is the one the raw push cannot serve.
-
-        Only ``GH_TOKEN`` reaches git's credential helper, so a venue carrying the
-        token under teatree's own name pushes iff the ship path resolves the
-        credential itself. Asserted on the KEY's presence — never on a value.
-        """
+        """The owner-routed DB token is handed to git under its explicit key."""
         repo = _make_repo_with_origin(_tmp_dir(self), branch="4103-feature")
         ticket = self._ticket_for(repo, "4103-feature")
 
-        with _only_teatree_named_token():
-            result, _host, push_envs = self._ship(ticket)
+        result, _host, push_envs = self._ship(ticket)
 
         assert result.ok is True
         assert push_envs, "the ship path never ran a git push"
@@ -1559,8 +1547,7 @@ class TestShipPushSuppliesTheForgeCredential(TestCase):
         _run_git("remote", "set-url", "origin", str(tmp / "gone.git"), cwd=Path(repo))
         ticket = self._ticket_for(repo, "4103-feature")
 
-        with _only_teatree_named_token():
-            result, host, _envs = self._ship(ticket)
+        result, host, _envs = self._ship(ticket)
 
         assert result.ok is False
         assert "push" in result.detail

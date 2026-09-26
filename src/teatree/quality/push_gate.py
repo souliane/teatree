@@ -44,6 +44,8 @@ _PYTEST_NO_TESTS_COLLECTED = 5
 DOCTEST_FAILURE_TAIL_LINES = 40
 
 _SETTINGS_MODULE_ENV = "DJANGO_SETTINGS_MODULE"
+_SIGNAL_EXIT_OFFSET = 128
+_SHELL_EXIT_CODE_LIMIT = 256
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,7 @@ class PushGateResult:
     astgrep_findings: tuple[dict, ...]
     astgrep_deferred: bool
     notes: tuple[str, ...]
+    exit_code: int
 
 
 def _full_plan(reason: str, *, enabled: bool) -> PushGatePlan:
@@ -205,6 +208,14 @@ def _sweep_failure_note(sweep: DoctestOutcome, targets: Sequence[Path]) -> str:
     return f"FAILED: the doctest sweep over {scope} exited {sweep.returncode}. {detail}"
 
 
+def _gate_exit_code(sweep: DoctestOutcome) -> int:
+    if sweep.returncode < 0:
+        return _SIGNAL_EXIT_OFFSET - sweep.returncode
+    if _SIGNAL_EXIT_OFFSET < sweep.returncode < _SHELL_EXIT_CODE_LIMIT:
+        return sweep.returncode
+    return 1
+
+
 def run_push_gate(
     plan: PushGatePlan,
     *,
@@ -242,4 +253,5 @@ def run_push_gate(
         astgrep_findings=tuple(findings),
         astgrep_deferred=deferred,
         notes=tuple(notes),
+        exit_code=0 if ok else _gate_exit_code(sweep),
     )

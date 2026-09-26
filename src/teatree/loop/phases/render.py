@@ -14,6 +14,7 @@ exists as one unit.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -59,6 +60,7 @@ def render_phase(
     else:
         zones = StatuslineZones()
         _populate_dashboard_head(zones, colorize=colorize)
+    _append_self_improve_firings(zones)
     _write_open_prs_cache(report.signals, target=statusline_path)
     _reconcile_manual_prs(report.signals)
     _reconcile_merged_tickets()
@@ -69,6 +71,28 @@ def render_phase(
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     if not jobs:
         _write_tick_meta(report.started_at, target=statusline_path)
+
+
+def _append_self_improve_firings(zones: StatuslineZones) -> None:
+    """Show active statusline-rung incidents on both busy and idle ticks."""
+    try:
+        from teatree.core.models.self_improve_firing import SelfImproveFiring  # noqa: PLC0415 — ORM at render time
+
+        active = SelfImproveFiring.objects.filter(
+            resolved_at__isnull=True,
+            last_action=SelfImproveFiring.Action.STATUSLINE,
+        ).order_by("-last_fired_at")[:5]
+        for firing in active:
+            payload = firing.payload if isinstance(firing.payload, dict) else {}
+            kind = payload.get("kind", "unknown")
+            cause = payload.get("cause", "unknown")
+            count = payload.get("count", 1)
+            kind = kind if isinstance(kind, str) and re.fullmatch(r"[a-z0-9_]{1,64}", kind) else "unknown"
+            cause = cause if isinstance(cause, str) and re.fullmatch(r"[a-z0-9_\-]{1,64}", cause) else "unknown"
+            count = count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 1
+            zones.action_needed.append(f"self-improve: {kind} ({cause}; {count})")
+    except Exception:  # statusline must still render if the ledger is unavailable
+        logger.debug("self-improve statusline ledger unavailable", exc_info=True)
 
 
 def _reconcile_health() -> None:
@@ -286,6 +310,7 @@ def rerender_statusline(target: Path | None = None, *, colorize: bool | None = N
     """
     zones = StatuslineZones()
     _populate_dashboard_head(zones, colorize=colorize)
+    _append_self_improve_firings(zones)
     _populate_open_prs_in_anchors(zones, target=target, colorize=colorize)
     _populate_loop_owner_anchor(zones)
     return render(zones, target=target, colorize=colorize)

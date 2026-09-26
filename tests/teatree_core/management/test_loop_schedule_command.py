@@ -1,4 +1,4 @@
-"""``manage.py loop_schedule`` — list/show/set-active/set-timezone/clear-active against a real DB."""
+"""``manage.py loop_schedule`` commands, including set-slot/delete-slot, against a real DB."""
 
 import datetime as dt
 import io
@@ -53,10 +53,22 @@ class TestLoopScheduleCommand(django.test.TestCase):
         assert any(row["active"] for row in payload["schedules"])
 
     def test_show_renders_slots(self) -> None:
-        self._schedule("standard")
+        schedule = self._schedule("standard")
+        slot = ModeScheduleSlot.objects.get(schedule=schedule)
         payload = json.loads(_run("show", "standard", json_output=True))
+        assert payload["slots"][0]["id"] == slot.pk
         assert payload["slots"][0]["preset"] == "present"
         assert payload["slots"][0]["start_time"] == "08:00"
+        assert f"[{slot.pk}]" in _run("show", "standard")
+
+    def test_set_slot_refuses_non_integer_weekdays_without_writing(self) -> None:
+        schedule = self._schedule("standard")
+
+        with pytest.raises(SystemExit) as refusal:
+            _run("set-slot", "standard", "Mon", "19:00", "present")
+
+        assert refusal.value.code == 2
+        assert ModeScheduleSlot.objects.filter(schedule=schedule).count() == 1
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")

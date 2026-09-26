@@ -204,11 +204,11 @@ def _check_dead_ticket_spend(now: dt.datetime | None = None) -> ReconciliationFi
 def _check_enabled_loops_ticked(now: dt.datetime | None = None) -> ReconciliationFinding:
     """ALARM when a verdict-ADMITTED loop's cadence anchor is older than its own cadence allows.
 
-    Query: every ``Loop`` row the effective verdict admits (hold > forced > preset >
-    ``Loop.enabled``) whose ``last_run_at`` is null or older than
+    Query: every ``Loop`` row the effective verdict admits (hold > manual override >
+    preset) whose ``last_run_at`` is null or older than
     :func:`~teatree.loops.loop_staleness.freeze_cutoff_seconds`. Keyed on the raw
-    ``enabled`` column instead, a preset-forced-on loop froze invisibly — this bug's exact
-    signature — and a preset-masked-off enabled loop false-alarmed (#4185). Deliberately
+    ``enabled`` column instead, a preset-admitted loop froze invisibly — this bug's exact
+    signature — and a preset-masked-off overridden loop false-alarmed (#4185). Deliberately
     NOT intersected with the live-tick registry: an ``off_live_tick`` loop has its own
     driver chain and freezes just as silently. An anchor exactly AT the cutoff is stale, as
     that function documents — three missed slots is a stopped loop, not the last moment

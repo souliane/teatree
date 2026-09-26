@@ -105,8 +105,8 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         absent, ``test_dir`` implies ``project`` and ``project_path`` implies
         ``external`` for compatibility.
 
-        ``--target dev|qa|local`` selects the dual-env target and is forwarded to
-        whichever runner handles the overlay (see ``external`` for semantics).
+        ``--target dev|qa|local`` selects the spec target for either runner; the external
+        runner also takes ``stack`` (the overlay's host-published frontend, local-mode specs).
         ``--branch``/``--ref`` overrides the ``external`` runner's specs ref.
 
         ``--linked-to <ticket-pk>`` (#1322): when the e2e cache repo is not
@@ -128,10 +128,14 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
             branch=branch,
         )
         if work_item:
+            opts.target = self._resolve_target(opts.target)
             return _workitem.run_work_item(
-                work_item=work_item,
-                at=at,
-                test_path=opts.test_path,
+                _workitem.WorkItemRunRequest(
+                    work_item=work_item,
+                    at=at,
+                    test_path=opts.test_path,
+                    target=opts.target,
+                ),
                 dispatch=lambda: self._dispatch_runner(opts),
                 write_err=self.stderr.write,
             )
@@ -215,6 +219,7 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
             linked_ticket,
             write=self.stderr.write,
             require_port=self._require_frontend_port,
+            e2e_config=get_overlay().metadata.get_e2e_config(),
         )
 
     def _resolve_linked_ticket(self, linked_to: int) -> Ticket | None:
@@ -251,13 +256,15 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         ``--branch``/``--ref`` overrides the specs ref (the ``--repo`` default or the
         overlay ``ref``) to run from an open MR's branch.
 
-        ``--target dev|qa|local`` is deterministic: remote targets keep the
+        ``--target dev|qa|local|stack`` is deterministic: remote targets keep the
         pre-set ``BASE_URL`` and never scan local ports; ``local`` always
         discovers the local frontend even if a stray ``BASE_URL`` is exported.
+        ``stack`` uses the overlay-declared host-published frontend port without
+        resolving a worktree, but exports ``local`` as the spec data/credential mode.
         Empty preserves back-compat: infer ``dev`` if ``BASE_URL`` is set, else ``local``.
 
-        The resolved value is exported as ``T3_E2E_TARGET`` so a dual-mode
-        spec branches on ``process.env.T3_E2E_TARGET`` rather than
+        The resolved spec mode is exported as ``T3_E2E_TARGET`` (``stack`` is
+        normalized to ``local``) so a dual-mode spec branches on that value rather than
         re-deriving the target from a ``BASE_URL`` host regex.
 
         Discovers the frontend port from docker-compose (or local process)
@@ -310,21 +317,19 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         )
         env = _build_e2e_env(
             frontend_url,
-            target=resolved_target,
-            context=_runners.make_e2e_env_context(
-                test_path,
-                worktree_compose_project,
-                env_cache_override,
+            target=_resolvers.resolve_spec_target(resolved_target),
+            context=_runners.E2eEnvContext(
+                test_path=test_path,
+                compose_project=worktree_compose_project,
+                env_cache_override=env_cache_override,
                 artifacts_dir=self._resolve_artifacts_dir(artifacts_dir),
                 capture_evidence=not no_evidence,
+                run_target=resolved_target,
             ),
         )
 
-        self.stdout.write(f"  Running from: {specs_path}")
-        self.stdout.write(f"  Target: {resolved_target}")
-        self.stdout.write(f"  BASE_URL: {env['BASE_URL']}")
-        if env.get("CUSTOMER"):
-            self.stdout.write(f"  CUSTOMER: {env['CUSTOMER']}")
+        _resolvers.require_remote_base_url(env, resolved_target, write=self.stderr.write)
+        self.stdout.write(_resolvers.run_banner(specs_path, resolved_target, env))
 
         self._run_preflight(env)
 
@@ -358,9 +363,16 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         CI runner's Chromium renders fonts at different heights than macOS, so
         locally-generated baselines mismatch in CI.
         """
+        resolved_target = self._resolve_target(target)
+        if resolved_target == "stack":
+            self.stderr.write(
+                "--target stack is only supported by the external runner; "
+                "the project runner does not resolve or probe a remote stack."
+            )
+            raise SystemExit(2)
         opts = _runners.ProjectRunOptions(
             test_path=test_path,
-            resolved_target=self._resolve_target(target),
+            resolved_target=resolved_target,
             docker=docker,
             update_snapshots=update_snapshots,
             artifacts_dir=self._resolve_artifacts_dir(""),
@@ -424,6 +436,7 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
         manifest: str = "",
         ticket: str = "",
         body_file: str = "",
+        artifacts_dir: str = "",
         skip_validation: bool = _SKIP_VALIDATION_OPTION,
         allow_no_video: bool = _ALLOW_NO_VIDEO_OPTION,
         embed_captures: bool = _EMBED_CAPTURES_OPTION,
@@ -431,24 +444,24 @@ class Command(MachineOutputCommand, RefusalExitTyperCommand):
     ) -> _test_plan_write.PlanWriteResult:
         """Write (or update) the ticket's plan at ``test-plans/<repo>-<ticket>.md`` in the e2e repo.
 
-        ONE file per ticket, in the repo that owns the specs it describes — the
-        plan is reviewed and merged with them, never posted to the forge. A
-        re-run merges the env(s) it supplies over what the file already records.
-        ``--manifest`` is the JSON path/string and the plan's only content
-        source (ticket, title, MRs, template, per-env commits + run instant, gap,
-        captures); ``--ticket`` selects the issue; ``--skip-validation`` bypasses
-        the capture preflight; ``--allow-no-video`` permits a stills-only
-        manifest (refused by default); ``--body-file`` writes a pre-authored body
-        verbatim (mutually exclusive with ``--manifest``); ``--embed-captures``
-        commits the captures beside the plan for a plan issued outside this repo.
-        Captures already committed beside the plan are re-validated on every
-        write, so a hand-placed screenshot cannot skip the preflight.
-        See :mod:`._test_plan.write`.
+        ONE file per ticket, in the repo that owns the specs it describes — the plan is reviewed and merged
+        with them, never posted to the forge. A re-run merges the env(s) it supplies over what the file already
+        records. ``--manifest`` is the JSON path/string and the plan's only content source (ticket, title, MRs,
+        template, per-env commits + run instant, gap, captures); ``--ticket`` selects the issue;
+        ``--skip-validation`` bypasses the capture preflight; ``--allow-no-video`` permits a stills-only manifest
+        (refused by default); ``--body-file`` writes a pre-authored body verbatim once every capture it links
+        under ``evidence/<plan>/`` resolves and passes the same gates (mutually exclusive with ``--manifest``);
+        ``--embed-captures`` commits the captures beside the plan for a plan issued outside this repo — a body's
+        linked captures are found under ``--artifacts-dir``; ``--artifacts-dir`` is the root a cited capture's path
+        is relative to (default ``T3_E2E_ARTIFACTS_DIR``). Captures already committed beside the plan are
+        re-validated on every write, so a hand-placed screenshot cannot skip the preflight. See
+        :mod:`._test_plan.write`.
         """
         flags = _test_plan_write.TestPlanFlags(
             ticket=ticket,
             manifest=manifest,
             body_file=body_file,
+            artifacts_dir=artifacts_dir,
             skip_validation=skip_validation,
             allow_no_video=allow_no_video,
             embed_captures=embed_captures,

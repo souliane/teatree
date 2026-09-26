@@ -21,6 +21,7 @@ artifact that deadlocks the connection — not production behaviour.
 import contextlib
 import json
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any, Self
 from unittest.mock import patch
 
@@ -29,6 +30,8 @@ from claude_agent_sdk.types import RateLimitInfo, RateLimitStatus, RateLimitType
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
+import teatree.agents.skill_assurance as skill_assurance_mod
+import teatree.agents.skill_injection as skill_injection_mod
 from teatree.agents.harness_registry import HarnessCapabilities
 from teatree.agents.runner import TaskUsage
 
@@ -173,9 +176,15 @@ def fake_sdk(
         return FakeHarnessSession(messages, delay=delay)
 
     snapshot = task_usage if task_usage is not None else TaskUsage(turns=0, cost_usd=0.0)
+    # A fake SDK models an installed external framework skill. Real dispatches
+    # remain fail-closed if the explicit stack skill is missing from the host.
+    fixture_skills = Path(__file__).parents[1] / "fixtures" / "agent_skills"
+    skill_dirs = [*skill_injection_mod.harness_skills_dirs(), fixture_skills]
     with (
         patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
         patch.object(harness_mod, "ClaudeSDKClient", _make_client),
         patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
+        patch.object(skill_injection_mod, "harness_skills_dirs", return_value=skill_dirs),
+        patch.object(skill_assurance_mod, "harness_skills_dirs", return_value=skill_dirs),
     ):
         yield FakeHarnessSession

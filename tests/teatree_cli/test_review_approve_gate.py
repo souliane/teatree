@@ -20,19 +20,18 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.core.models import ConfigSetting, OnBehalfApproval
-from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
+from teatree.core.models import OnBehalfApproval
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, on: bool) -> None:
-    # ``on_behalf_post_mode`` is DB-home (#1775) and drives the gate. Both states are
-    # an explicit row: the shipped ``autonomy = full`` collapses an UNSET mode to
-    # ``immediate`` (#3895), so clearing the row would silently mean gate-OFF. A
-    # pinned gate is never overridden by the collapse, so the pin is the gate.
-    ConfigSetting.objects.set_value("on_behalf_post_mode", "draft_or_ask" if on else "immediate")
+    # The active posture drives the gate, and each state is pinned explicitly:
+    # an unstaged posture resolves fail-closed, which would read as gate-ON for
+    # reasons the case never chose (#3895).
+    seed_forbidding_posture() if on else seed_permitting_posture()
 
 
 class _ApproveStubAPI:

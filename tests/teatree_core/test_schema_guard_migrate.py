@@ -42,8 +42,10 @@ from tests.teatree_core.conftest import SchemaGuardAlias
 # the global 60s ``pytest-timeout`` only under maximum ``-n auto --cov
 # --doctest-modules`` parallel contention. The global timeout stays 60s as the
 # hang-detector for every other test; these genuinely-slow migrations get a
-# scoped 240s bump so the load-induced flake stops blocking every PR (#1189).
-@pytest.mark.timeout(240)
+# scoped 600s bump so the load-induced flake stops blocking every PR (#1189). The
+# stale-DB case rebuilds the complete graph and has exceeded four minutes on loaded
+# shared runners; the ceiling remains finite so a real migration hang still fails.
+@pytest.mark.timeout(600)
 class TestMigrateSelfDbInProcess:
     """``migrate_self_db`` converges the connection named by its ``alias`` arg.
 

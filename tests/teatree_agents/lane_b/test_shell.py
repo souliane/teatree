@@ -1,15 +1,20 @@
 import os
+import shutil
+import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+import teatree.agents.lane_b.shell as shell_module
 from teatree.agents.harness_options import HarnessOptions
 from teatree.agents.lane_b.config import LaneBToolConfig
+from teatree.agents.lane_b.filesystem import build_filesystem_toolset
 from teatree.agents.lane_b.shell import (
     ShellDeniedError,
     ShellTimeoutError,
-    _capped,
-    _elision_marker,
+    _OutputKeeper,
     _resolve_shell,
     build_shell_toolset,
 )
@@ -17,6 +22,11 @@ from teatree.agents.lane_b.shell import (
 
 def _shell(config):
     return build_shell_toolset(config).tools["Bash"].function
+
+
+_GIT = shutil.which("git") or "git"
+_FORTY_KB = "head -c 20000 /dev/zero | tr '\\0' a; head -c 20000 /dev/zero | tr '\\0' b"
+_THIRTY_TWO_KIB = 32 * 1024
 
 
 class TestShellTool:
@@ -70,6 +80,75 @@ class TestShellTool:
         assert f"HOME={os.environ['HOME']}" in out  # ...and HOME
         assert "KEY=sk-pinned" in out  # ...and the pinned override reached the shell too
 
+    def test_output_beyond_32_kib_is_capped_head_and_tail_with_a_marker(self, tmp_path: Path) -> None:
+        cap = 32 * 1024
+        exit_line, head, marker, tail = _shell(LaneBToolConfig(fs_root=tmp_path, shell_max_output_bytes=cap))(
+            _FORTY_KB
+        ).split("\n")
+        assert exit_line == "exit=0"
+        assert set(head) == {"a"}
+        assert set(tail) == {"b"}
+        assert "32 KiB Bash output cap" in marker
+        assert "Read" in marker
+        assert len(f"{exit_line}\n{head}{tail}".encode()) == cap
+
+    def test_output_beyond_the_cap_is_kept_whole_in_the_file_the_marker_names(self, tmp_path: Path) -> None:
+        marker = _shell(LaneBToolConfig(fs_root=tmp_path))(_FORTY_KB).split("\n")[2]
+        (spilled,) = (tmp_path / ".t3-cache" / "tool-output").glob("*.log")
+        assert spilled.read_bytes() == b"exit=0\n" + b"a" * 20000 + b"b" * 20000
+        named = str(spilled.relative_to(tmp_path))
+        assert named in marker
+        assert "of 40007 bytes" in marker
+        read = build_filesystem_toolset(tmp_path).tools["Read"].function
+        assert read(named) == "exit=0\n" + "a" * 20000 + "b" * 20000
+
+    def test_separate_keepers_spilling_in_the_same_second_get_distinct_complete_files(self, tmp_path: Path) -> None:
+        class FrozenDatetime:
+            @staticmethod
+            def now(_timezone: object) -> datetime:
+                return datetime(2026, 9, 21, tzinfo=UTC)
+
+        first = b"a" * (32 * 1024 + 1)
+        second = b"b" * (32 * 1024 + 1)
+        with patch.object(shell_module, "datetime", FrozenDatetime):
+            _OutputKeeper(tmp_path, _THIRTY_TWO_KIB).cap(first.decode())
+            _OutputKeeper(tmp_path, _THIRTY_TWO_KIB).cap(second.decode())
+
+        spills = list((tmp_path / ".t3-cache" / "tool-output").glob("*.log"))
+        assert len(spills) == 2
+        assert {spill.read_bytes() for spill in spills} == {first, second}
+
+    def test_the_kept_output_never_shows_up_as_untracked_work(self, tmp_path: Path) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        subprocess.run([_GIT, "init", "-q", "-b", "main"], cwd=worktree, check=True)
+        _shell(LaneBToolConfig(fs_root=worktree))(_FORTY_KB)
+        status = subprocess.run(
+            [_GIT, "status", "--porcelain"], cwd=worktree, capture_output=True, text=True, check=True
+        )
+        assert status.stdout == ""
+
+    def test_a_spill_save_error_keeps_the_output_capped_and_explains_why(self, tmp_path: Path) -> None:
+        with patch.object(_OutputKeeper, "_keep", side_effect=OSError("spill disk unavailable")):
+            out = _shell(LaneBToolConfig(fs_root=tmp_path))(_FORTY_KB)
+
+        assert out.startswith("exit=0\n" + "a" * 100)
+        assert out.endswith("b" * 100)
+        assert len(out.encode()) < len(("exit=0\n" + "a" * 20000 + "b" * 20000).encode())
+        assert "could NOT be saved" in out
+        assert "spill disk unavailable" in out
+
+    def test_output_within_the_cap_is_returned_verbatim(self, tmp_path: Path) -> None:
+        cfg = LaneBToolConfig(fs_root=tmp_path, shell_max_output_bytes=_THIRTY_TWO_KIB)
+        out = _shell(cfg)("head -c 30000 /dev/zero | tr '\\0' a")
+        assert out == "exit=0\n" + "a" * 30000
+        assert not (tmp_path / ".t3-cache").exists()
+
+    def test_the_cap_never_splits_a_multibyte_character(self, tmp_path: Path) -> None:
+        out = _shell(LaneBToolConfig(fs_root=tmp_path))("for i in $(seq 1 4000); do printf 'éééééééééé'; done")
+        assert "bytes not shown" in out
+        assert "\N{REPLACEMENT CHARACTER}" not in out
+
     def test_resolves_an_absolute_shell_path(self) -> None:
         # AH-11: the shell is resolved to an absolute path (not the bare "bash" name),
         # so the runner does not assume bash sits first on PATH.
@@ -91,7 +170,8 @@ class TestOversizedOutputIsCapped:
 
     def test_a_huge_return_is_bounded_by_the_cap(self, tmp_path: Path) -> None:
         out = self._huge_output(tmp_path, 16 * 1024)
-        assert len(out.encode()) <= 16 * 1024 + len("exit=0\n")
+        (marker,) = (line for line in out.split("\n") if "bytes not shown" in line)
+        assert len(out.encode()) - len(marker.encode()) - 2 <= 16 * 1024
         assert len(out) < self._HUGE
 
     def test_the_default_cap_bounds_a_huge_return(self, tmp_path: Path) -> None:
@@ -100,8 +180,8 @@ class TestOversizedOutputIsCapped:
 
     def test_the_elision_names_the_dropped_bytes_and_the_recovery(self, tmp_path: Path) -> None:
         out = self._huge_output(tmp_path, 16 * 1024)
-        assert "bytes elided from the middle" in out
-        assert "re-run the command narrowed" in out
+        assert "bytes not shown" in out
+        assert "Read it with offset/limit" in out
 
     def test_head_and_tail_both_survive(self, tmp_path: Path) -> None:
         cfg = LaneBToolConfig(fs_root=tmp_path, shell_max_output_bytes=2048)
@@ -129,6 +209,3 @@ class TestOversizedOutputIsCapped:
         out = _shell(cfg)(f"python3 -c \"print('x' * {self._HUGE})\" > big.txt")
         assert out.startswith("exit=0")
         assert (tmp_path / "big.txt").stat().st_size > self._HUGE
-
-    def test_a_cap_below_the_marker_length_returns_only_the_marker(self) -> None:
-        assert _capped("x" * self._HUGE, 10) == _elision_marker(self._HUGE)

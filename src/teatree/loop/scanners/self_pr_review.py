@@ -1,4 +1,4 @@
-"""Auto-dispatch a Claude cold-review on every self-authored PR push (#3569).
+"""Auto-dispatch a Claude cold-review on a self-authored PR's settled head (#3569).
 
 The Claude counterpart to :class:`~teatree.loop.scanners.codex_review.CodexReviewScanner`.
 On a host with no ``codex`` binary the fleet-of-agents self-review doublecheck
@@ -9,11 +9,14 @@ the user's own open PRs. The factory picks this scanner over the codex one via
 box).
 
 The scanner emits one ``self_pr_review.dispatch`` :class:`ScanSignal` per open
-non-draft self-authored PR, UNCONDITIONALLY every tick — the per-SHA idempotency
-is enforced DOWNSTREAM at persist time, where ``persistence._handle_reviewer``'s
-self-PR branch claims one :class:`CodexReviewMarker` in the same transaction that
-creates the reviewing Task. A dropped/failed persist rolls the marker back and
-the next tick retries; a force-push (new head SHA) re-fires the review. This is
+non-draft self-authored PR whose required checks have SETTLED
+(``PrSummary.checks_unsettled``, stamped by the adapter from
+:func:`~teatree.loop.scanners.codex_review.head_checks_unsettled`),
+UNCONDITIONALLY every tick — the per-SHA idempotency is enforced DOWNSTREAM at
+persist time, where ``persistence._handle_reviewer``'s self-PR branch claims one
+:class:`CodexReviewMarker` in the same transaction that creates the reviewing
+Task. A dropped/failed persist rolls the marker back and the next tick retries; a
+force-push (new head SHA) re-fires the review once its checks settle. This is
 the exact idempotency shape the codex path uses — never the pre-#1254 per-tick
 flood the marker key (``slug``, ``pr_id``, ``head_sha``) forecloses.
 """
@@ -82,7 +85,7 @@ class ClaudeSelfPrReviewScanner:
             return []
 
     def _evaluate(self, pr: PrSummary) -> ScanSignal | None:
-        if pr.is_draft:
+        if pr.is_draft or pr.checks_unsettled:
             return None
         adversarial = is_adversarial_review(pr.changed_files, slug=pr.slug, author=pr.author)
         variant = CLAUDE_ADVERSARIAL_REVIEW_VARIANT if adversarial else CLAUDE_STANDARD_REVIEW_VARIANT

@@ -20,13 +20,17 @@ import json
 import os
 import sqlite3
 import subprocess
-from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.banned_terms import marker as banned_terms_marker
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree.hooks import _command_parser, _repo_visibility, banned_terms_scanner
 from teatree.hooks._command_parser import (
@@ -154,10 +158,14 @@ class TestScanText:
         # isolates case-insensitivity rather than the camelCase split.
         assert banned_terms_scanner.scan_text("ACMECORP ships", config_path=config) == "acmecorp"
 
-    def test_email_only_match_is_ignored(self, config: Path) -> None:
-        # Mirrors check-banned-terms.sh: a term only inside an email is allowed.
+    def test_term_only_inside_an_email_is_flagged(self, config: Path) -> None:
+        # Mirrors check-banned-terms.sh: an address is published text, so a term
+        # inside one is a hit; only the allowlist exempts an identifier.
         text = "ping me at dev@acmecorp.example for details"
-        assert banned_terms_scanner.scan_text(text, config_path=config) is None
+        assert banned_terms_scanner.scan_text(text, config_path=config) == "acmecorp"
+
+    def test_email_with_no_configured_term_stays_clean(self, config: Path) -> None:
+        assert banned_terms_scanner.scan_text("ping me at dev@example.org", config_path=config) is None
 
     def test_empty_text_returns_none(self, config: Path) -> None:
         assert banned_terms_scanner.scan_text("", config_path=config) is None
@@ -1494,7 +1502,7 @@ class TestScanTimeoutIsDistinctFromCrash:
         ],
     )
     def test_a_genuine_crash_keeps_the_unavailable_marker(
-        self, config: Path, monkeypatch: pytest.MonkeyPatch, raise_exc: Callable[[], BaseException]
+        self, config: Path, monkeypatch: pytest.MonkeyPatch, raise_exc: "Callable[[], object]"
     ) -> None:
         monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", lambda *_a, **_k: raise_exc())
         assert (
@@ -1663,7 +1671,7 @@ class TestUnreadableStoreFailsClosedOnThePublishSurface:
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         assert (
             banned_terms_scanner.scan_text("a perfectly ordinary line", config_path=self._corrupt_db(tmp_path))
-            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+            == banned_terms_scanner.STORE_UNREADABLE_MARKER
         )
 
     def test_table_less_store_also_fails_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1673,8 +1681,138 @@ class TestUnreadableStoreFailsClosedOnThePublishSurface:
         sqlite3.connect(str(db)).close()
         assert (
             banned_terms_scanner.scan_text("a perfectly ordinary line", config_path=db)
-            == banned_terms_scanner.SCANNER_UNAVAILABLE_MARKER
+            == banned_terms_scanner.STORE_UNREADABLE_MARKER
         )
+
+
+class TestNothingConfiguredAnywhereIsAnAnswerNotAFailedRead:
+    """No canonical DB, no projection, no row: nothing to read is an ANSWER, not a failure.
+
+    ``_absent_db_read`` reports ``readable=True`` for that gap because a fresh install
+    genuinely has nothing configured, and the two are the same bytes. Reading the gap as
+    unreadable made the gate inject its own fail-closed sentinel into every scan, so every
+    publish matched it: a fresh install, CI (which isolates ``HOME``, so the store is absent
+    by construction), and every issue the factory files. The deployment that MUST scrub says
+    so with ``banned_terms_required``, which the branch below honours — and whose env
+    spelling is the one channel that survives a store this side cannot read.
+    """
+
+    def _isolate(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
+        monkeypatch.delenv("T3_CONFIG_DB", raising=False)  # the module fixture pins one
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
+    def test_configured_check_reports_nothing_configured(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        assert banned_terms_scanner._banned_terms_configured(None) is False
+
+    def test_scan_text_is_a_clean_no_op(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        assert banned_terms_scanner.scan_text("a perfectly ordinary line") is None
+
+    def test_the_required_flag_still_fails_the_same_gap_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deployment that must scrub keeps its refusal on the very gap above."""
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
+        assert banned_terms_scanner.scan_text("a perfectly ordinary line") == (
+            banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER
+        )
+
+    def test_an_errored_read_still_fails_closed_without_the_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other direction: a blanket relaxation would pass every assertion above.
+
+        Absence is an answer; a read that ERRORED is not, and it keeps failing closed with
+        no flag set — which is what makes the branch above a fix rather than a relaxation.
+        """
+        self._isolate(monkeypatch, tmp_path)
+        corrupt = tmp_path / "corrupt.sqlite3"
+        corrupt.write_bytes(b"this is not a sqlite database")
+        monkeypatch.setenv("T3_CONFIG_DB", str(corrupt))
+        assert banned_terms_scanner.scan_text("a perfectly ordinary line") == (
+            banned_terms_scanner.STORE_UNREADABLE_MARKER
+        )
+
+    def test_a_readable_store_with_no_terms_is_still_a_clean_no_op(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A present, readable, empty store is the same no-op as an absent one."""
+        self._isolate(monkeypatch, tmp_path)
+        db = tmp_path / "empty.sqlite3"
+        with closing(sqlite3.connect(str(db))) as con:
+            con.execute(
+                "CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, key TEXT, value TEXT, scope TEXT)"
+            )
+            con.commit()
+        assert banned_terms_scanner.scan_text("a perfectly ordinary line", config_path=db) is None
+
+    def test_the_deny_message_names_a_store_that_is_here_and_will_not_read(self) -> None:
+        message = banned_terms_scanner.marker_deny_message(banned_terms_scanner.STORE_UNREADABLE_MARKER)
+        assert message is not None
+        assert "corrupt" in message
+        assert "absent" not in message
+
+
+class TestRequiredFlagReachesThePublishGate:
+    """``banned_terms_required`` is the deployment that MUST scrub, so it must reach this gate.
+
+    It is read only inside ``banned_terms_cli`` — i.e. inside the shell scanner that
+    ``_run_shell_scanner`` short-circuits past when nothing is configured — so the flag was
+    inert on exactly the path it exists for: no term list, publish allowed.
+    """
+
+    def _store(self, tmp_path: Path, *, required: bool) -> Path:
+        db = tmp_path / "required.sqlite3"
+        with closing(sqlite3.connect(str(db))) as con:
+            con.execute(
+                "CREATE TABLE teatree_config_setting ("
+                "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+            )
+            con.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms_required', ?)",
+                (json.dumps(required),),
+            )
+            con.commit()
+        return db
+
+    @pytest.fixture(autouse=True)
+    def _no_term_sources(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
+        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
+
+    def test_required_with_no_terms_fails_closed(self, tmp_path: Path) -> None:
+        db = self._store(tmp_path, required=True)
+        assert banned_terms_scanner._banned_terms_configured(db) is False
+        assert banned_terms_scanner.scan_text("ship next week", config_path=db) == (
+            banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER
+        )
+
+    def test_not_required_with_no_terms_is_a_clean_no_op(self, tmp_path: Path) -> None:
+        """The other direction: blocking on every unset list would pass the assertion above."""
+        db = self._store(tmp_path, required=False)
+        assert banned_terms_scanner.scan_text("ship next week", config_path=db) is None
+
+    def test_the_env_override_reaches_the_gate_too(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
+        db = self._store(tmp_path, required=False)
+        assert banned_terms_scanner.scan_text("ship next week", config_path=db) == (
+            banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER
+        )
+
+    def test_the_deny_message_names_the_flag(self) -> None:
+        message = banned_terms_scanner.marker_deny_message(banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER)
+        assert message is not None
+        assert "banned_terms_required" in message
+
+    def test_a_configured_list_still_enforces_the_term(self, config: Path) -> None:
+        """Anti-vacuity: the required flag must not be what makes a real term block."""
+        assert banned_terms_scanner.scan_text("ship to acmecorp", config_path=config) == "acmecorp"
 
 
 class TestMatchedTerm:
@@ -1837,13 +1975,28 @@ class TestHookHandlerEndToEnd:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_missing_config_fails_open(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_missing_config_no_ops(self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+        """A config DB that is not there has nothing to scan against, so the hook stands aside."""
+        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
         monkeypatch.setenv("T3_CONFIG_DB", "/nonexistent/config.sqlite3")
         blocked = handle_banned_terms_pretool(_bash('gh issue create --body "acmecorp"'))
         assert blocked is False
         assert capsys.readouterr().out == ""
+
+    def test_missing_config_denies_once_the_deployment_says_it_must_scrub(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The same absent store, on the box that declares it MUST scrub, denies the publish.
+
+        This is the whole safety property of the branch above: standing aside is the DEFAULT,
+        never the only available answer, and the flag that changes it travels in the env — the
+        one channel that survives a store this side cannot read.
+        """
+        monkeypatch.setenv("T3_CONFIG_DB", "/nonexistent/config.sqlite3")
+        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
+        blocked = handle_banned_terms_pretool(_bash('gh issue create --body "acmecorp"'))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_scanner_crash_fails_closed_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

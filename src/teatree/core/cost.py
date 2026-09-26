@@ -40,6 +40,17 @@ class ModelPrice:
     def cache_write_per_mtok(self) -> float:
         return self.input_per_mtok * CACHE_WRITE_MULTIPLIER
 
+    @classmethod
+    def known_for(cls, model: str | None) -> "ModelPrice | None":
+        """This model's KNOWN price, or ``None`` — never :func:`price_for_model`'s opus fallback.
+
+        A caller that must tell "priced" from "unpriceable" apart needs that ``None``.
+        """
+        override = _override_price(model, _cost_price_overrides())
+        tier = tier_of_model(model)
+        unpriced = not model or tier == UNPRICED_TIER
+        return override if override is not None else (None if unpriced else PRICE_TABLE[tier])
+
     def cost(
         self,
         *,
@@ -184,6 +195,12 @@ def _cost_price_overrides() -> dict[str, ModelPrice]:
     return overrides
 
 
+def _override_price(model: str | None, overrides: Mapping[str, ModelPrice]) -> ModelPrice | None:
+    """The first ``cost_model_prices`` entry whose model-id substring matches *model*."""
+    lowered = (model or "").lower()
+    return next((p for pattern, p in overrides.items() if lowered and pattern.lower() in lowered), None)
+
+
 def price_for_model(model: str | None, *, overrides: Mapping[str, ModelPrice] | None = None) -> ModelPrice:
     """Return the :class:`ModelPrice` for a model id / tier name.
 
@@ -192,15 +209,11 @@ def price_for_model(model: str | None, *, overrides: Mapping[str, ModelPrice] | 
     :data:`PRICE_TABLE` bucket (:func:`tier_of_model`), where an unrecognised id
     lands on the conservative :data:`UNPRICED_TIER`. *overrides* defaults to a
     fresh :func:`_cost_price_overrides` read for a standalone caller; an
-    aggregation passes a once-resolved map.
+    aggregation passes a once-resolved map. :meth:`ModelPrice.known_for` is the
+    variant that answers ``None`` instead of falling back.
     """
     resolved = _cost_price_overrides() if overrides is None else overrides
-    if model and resolved:
-        lowered = model.lower()
-        for pattern, price in resolved.items():
-            if pattern.lower() in lowered:
-                return price
-    return PRICE_TABLE[tier_of_model(model)]
+    return _override_price(model, resolved) or PRICE_TABLE[tier_of_model(model)]
 
 
 def tier_rank(model: str | None) -> int:
@@ -266,9 +279,9 @@ class AttemptUsage:
     output_tokens: int
     cache_read_tokens: int
     cache_write_tokens: int
-    # The Layer-2 lane (``"subscription"`` / ``"metered"``) this usage
-    # authenticated through, or ``""`` when the dispatch carried no explicit
-    # Layer-2 pin (see ``TaskAttempt.Lane`` / ``UNATTRIBUTED_LANE``).
+    # The Layer-2 lane (``"subscription"`` / ``"metered"`` / ``"managed"``)
+    # this usage authenticated through, or ``""`` when the dispatch carried no
+    # explicit Layer-2 pin (see ``TaskAttempt.Lane`` / ``UNATTRIBUTED_LANE``).
     lane: str = ""
     # #3157 E5: whether ``reported_cost_usd`` is a price-table ESTIMATE rather than a
     # real reported (CLI/SDK/router) figure. Threaded from ``TaskAttempt.cost_is_estimated``
@@ -437,8 +450,8 @@ class CostBreakdown:
     per_tier_usd: dict[str, float] = field(default_factory=dict)
     attempts: int = 0
     # souliane/teatree#657: GitHub's ET metric alongside the dollar figure, and
-    # the same totals split by Layer-2 lane (subscription vs metered) so the
-    # two-lane cost strategy locked in #2565 is observable.
+    # the same totals split by Layer-2 lane (subscription, metered, or managed)
+    # so routing across Claude and Codex remains observable.
     effective_tokens_total: float = 0.0
     per_lane_usd: dict[str, float] = field(default_factory=dict)
     per_lane_effective_tokens: dict[str, float] = field(default_factory=dict)

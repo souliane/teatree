@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.pr_sweep_adapters import OWNER_ESCALATION_FLAG_REASONS, SlackMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import head_review_state
@@ -31,6 +32,18 @@ PR_ID = 4380
 _ENQUEUE_ERROR = "forge unreachable"
 _EARLIER = dt.datetime(2026, 6, 19, 1, 34, 32, tzinfo=dt.UTC)
 _LATER = dt.datetime(2026, 6, 19, 2, 5, 36, tzinfo=dt.UTC)
+PR_URL = f"https://github.com/{SLUG}/pull/{PR_ID}"
+
+
+def _reviewing_task(*, status: str = Task.Status.PENDING) -> Task:
+    """One reviewing Task on the ticket that IS this PR — what the other arm mints."""
+    ticket, _ = Ticket.objects.get_or_create(issue_url=PR_URL, defaults={"role": Ticket.Role.REVIEWER})
+    return Task.objects.create(
+        ticket=ticket,
+        session=Session.objects.create(ticket=ticket),
+        phase="reviewing",
+        status=status,
+    )
 
 
 @dataclass(slots=True)
@@ -139,6 +152,47 @@ class TestArmColdReview:
             assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is False
 
         assert dispatcher.calls == []
+
+    def test_a_review_already_in_flight_is_not_armed_a_second_time(self) -> None:
+        # The self-PR scanner mints its reviewer through CodexReviewMarker and this
+        # arm through AutoReviewDispatch; the two ledgers dedup per head
+        # INDEPENDENTLY, so one green head reliably bought two cold reviews of one
+        # tree. The verdict the sweep waits for is the one already in flight.
+        dispatcher = _FakeDispatcher()
+        _reviewing_task()
+
+        with patch(
+            "teatree.loop.scanners.pr_sweep_review_gate.pr_ticket_under_external_delivery",
+            return_value=False,
+        ):
+            assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is False
+
+        assert dispatcher.calls == []
+
+    def test_a_finished_reviewer_leaves_the_head_armable(self) -> None:
+        # Anti-vacuous control for the refusal above, and the self-healing property:
+        # a reviewer that died must not latch its head out of review forever.
+        dispatcher = _FakeDispatcher()
+        _reviewing_task(status=Task.Status.FAILED)
+
+        with patch(
+            "teatree.loop.scanners.pr_sweep_review_gate.pr_ticket_under_external_delivery",
+            return_value=False,
+        ):
+            assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
+
+    def test_a_task_in_another_phase_never_blocks_the_arm(self) -> None:
+        # Only a REVIEWING task is the reviewer this refusal defers to; a coding task
+        # on the same PR ticket says nothing about whether the head was reviewed.
+        dispatcher = _FakeDispatcher()
+        ticket, _ = Ticket.objects.get_or_create(issue_url=PR_URL, defaults={"role": Ticket.Role.REVIEWER})
+        Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        with patch(
+            "teatree.loop.scanners.pr_sweep_review_gate.pr_ticket_under_external_delivery",
+            return_value=False,
+        ):
+            assert arm_cold_review(_pr(), ctx=_ctx(dispatcher)) is True
 
     def test_enqueue_error_degrades_to_not_armed(self) -> None:
         # A dispatcher failure must never abort the sweep — the flag already fired.

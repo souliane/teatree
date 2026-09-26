@@ -10,7 +10,7 @@ driver in each, echoing one line per checkout.
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from teatree.core.gates.git_checkouts import discover_checkouts
+from teatree.core.gates.git_checkouts import discover_checkouts, unavailable_linked_worktree_gitdir
 from teatree.core.git_merge_driver import install_merge_driver
 
 
@@ -29,4 +29,10 @@ class GitMergeDriverInstaller:
 
     def install(self, *, echo: Callable[[str], None]) -> None:
         for checkout in self._targets():
+            if unavailable_linked_worktree_gitdir(checkout):
+                echo(
+                    f"INFO  {checkout}: linked worktree Git metadata unavailable in this venue — "
+                    "skipped here; inspect or repair it in its owning venue."
+                )
+                continue
             echo(install_merge_driver(checkout))

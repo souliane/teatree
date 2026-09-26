@@ -19,13 +19,21 @@ nothing. The machine figure is then floored by this process's own cgroup
 headroom, because a capped container OOMs at its own ceiling while the host
 still looks roomy.
 
-A PROBE THAT CANNOT ANSWER SAYS SO (#4104). ``vm_stat`` is macOS-only, so the
-single-reader version returned ``None`` on every Linux pass and the caller
-silently skipped the whole RAM ladder — a scanner reporting "0 signals" on a
-box with 2 GB of 30 available, indistinguishable from a healthy one. When no
-scope can answer, the tick now emits ``resource.probe_inert`` instead of
-nothing. An unreadable resource is still treated as *unbounded* free (never
-0 GB) for the thresholds, so "can't tell" never fires a freeing pass either.
+A PROBE THAT CANNOT ANSWER SAYS SO (#4104), ON BOTH RESOURCES. ``vm_stat`` is
+macOS-only, so the single-reader version returned ``None`` on every Linux pass
+and the caller silently skipped the whole RAM ladder — a scanner reporting
+"0 signals" on a box with 2 GB of 30 available, indistinguishable from a healthy
+one. Disk then reacquired the same shape when the probe path moved off ``/``:
+``worktree_root()`` is a pure resolver that never touches the filesystem, so it
+routinely names a path that does not exist, ``statvfs`` raised, and the reading
+degraded to ``None`` -> ``inf`` -> healthy with no signal at all. Both halves now
+fall back where a fallback exists (disk walks the worktree root's ANCESTORS, which sit
+on the volume that was meant, before ``/``) and emit ``resource.probe_inert`` when nothing
+can answer. A reading that had to come from ``/`` after all emits
+``resource.probe_degraded``: it is a real number about the wrong volume, which is the
+container-rootfs misread this scanner exists to remove. An unreadable resource is still
+treated as *unbounded* free (never 0 GB) for the thresholds, so "can't tell"
+never fires a freeing pass either — but it is never SILENT about it.
 
 Decision ladder per tick. L0 OBSERVE — both resources above WARN and both
 readable: measure + upsert marker, emit nothing (silent tick). L1 WARN — disk OR ram in the WARN
@@ -48,13 +56,15 @@ import os
 import platform
 import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
+from teatree.config import worktree_root
 from teatree.loop.scanners.base import ScanSignal
 from teatree.utils.ram_probe import linux_mem_available_kb
-from teatree.utils.ram_scope import cgroup_headroom_mib
+from teatree.utils.ram_scope import cgroup_headroom_mib, cgroup_memory_probe_inert
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 if TYPE_CHECKING:
@@ -76,6 +86,12 @@ class ResourceReading:
 
     disk_free_gb: float | None
     ram_avail_gb: float | None
+    #: Every path the disk probe tried, in order, and the one that answered — carried so a
+    #: signal reports what was ACTUALLY probed instead of re-deriving a ladder that may
+    #: have moved since.
+    disk_probed_paths: tuple[str, ...] = ()
+    disk_answered_by: str = ""
+    cgroup_probe_inert: bool = False
 
     @property
     def disk_ladder_gb(self) -> float:
@@ -86,11 +102,25 @@ class ResourceReading:
         return self.ram_avail_gb if self.ram_avail_gb is not None else float("inf")
 
     @property
+    def disk_probe_inert(self) -> bool:
+        return self.disk_free_gb is None
+
+    @property
+    def disk_probe_degraded(self) -> bool:
+        """True iff only the filesystem root answered, on a host that meant a different volume.
+
+        The reading is then about the container's own rootfs rather than the volume the
+        checkouts fill — the 384.0-vs-42.3 GB misread this scanner exists to remove. It is
+        a real number, so it is used; but it is not the number that was asked for.
+        """
+        return self.disk_free_gb is not None and self.disk_answered_by == "/" and self.disk_probed_paths[:1] != ("/",)
+
+    @property
     def ram_probe_inert(self) -> bool:
         return self.ram_avail_gb is None
 
 
-def read_disk_free_gb(path: str = "/") -> float | None:
+def read_disk_free_gb(path: str) -> float | None:
     """Absolute free disk space in GB via ``os.statvfs`` (never percent).
 
     ``f_bavail`` is the blocks available to a non-privileged process;
@@ -98,6 +128,15 @@ def read_disk_free_gb(path: str = "/") -> float | None:
     free-byte count, NOT a fraction of the (misleading on APFS) nominal
     container total. Returns ``None`` on any OS error so the caller treats
     the measurement as unavailable rather than crashing the tick.
+
+    THE PATH IS NOT ``/`` FOR A REASON (#4244), which is why it has no default. The
+    loop runs inside a container whose ``/`` is the Docker VM's own virtual disk, not
+    the host volume the checkout pool fills. Measured in both venues: the container
+    read 384.0 GB free on a host that had 42.3 GB, so the ladder classified a nearly-full
+    box as healthy and NO lever on it could ever fire. :func:`_probe_disk_free_gb`
+    therefore probes the worktree root, which is a host-backed bind mount there. A
+    ``"/"`` default would let the next caller re-acquire that bug in one keystroke, so
+    the parameter is REQUIRED — the caller states which volume it means.
     """
     try:
         stat = os.statvfs(path)
@@ -221,9 +260,116 @@ def _vm_stat_pages_for(output: str, label: str) -> int | None:
     return None
 
 
-def _measure() -> ResourceReading:
+def measure_resources() -> ResourceReading:
     """Read both resources, recording an unmeasurable one as ``None``."""
-    return ResourceReading(disk_free_gb=read_disk_free_gb(), ram_avail_gb=read_ram_avail_gb())
+    paths = _disk_probe_paths()
+    free_gb, answered_by = _probe_disk_free_gb(paths)
+    return ResourceReading(
+        disk_free_gb=free_gb,
+        ram_avail_gb=read_ram_avail_gb(),
+        disk_probed_paths=paths,
+        disk_answered_by=answered_by,
+        cgroup_probe_inert=cgroup_memory_probe_inert(),
+    )
+
+
+def _probe_disk_free_gb(paths: tuple[str, ...]) -> tuple[float | None, str]:
+    """The first of *paths* that answers, and which one did — ``(None, "")`` when none does."""
+    for path in paths:
+        if (free_gb := read_disk_free_gb(path)) is not None:
+            return free_gb, path
+    return None, ""
+
+
+def _disk_probe_paths() -> tuple[str, ...]:
+    """The volume whose exhaustion is the incident, then each ancestor of it, ending at ``/``.
+
+    Derived, never configured: the worktree root already names where the checkouts live,
+    so a ``disk_probe_path`` setting would be surface paid at every call site to express a
+    value the code knows. A venue that cannot resolve it (a pre-Django caller, no
+    registered overlay) probes ``/`` alone rather than losing the reading.
+
+    Walking the ANCESTORS is what keeps the fallback on the right volume.
+    :func:`teatree.config.worktree_root` is a pure resolver that never touches the
+    filesystem, so it routinely names a path nothing has created yet — the half that
+    actually happens — and a ladder of ``(root, "/")`` then answers from ``/``, which
+    inside the worker container is the Docker VM's own disk (measured: 384.0 GB free while
+    the host volume had 42.3). Its parents — ``~/workspace/t3-workspaces``, then ``~`` —
+    exist and sit on the volume that was meant, in both venues. ``/`` stays last so a
+    reading is never lost, and reaching it marks the reading degraded.
+    """
+    try:
+        root = Path(worktree_root())
+    except Exception:
+        logger.exception("resource_pressure: worktree root unresolvable — measuring / instead")
+        return ("/",)
+    return tuple(dict.fromkeys([*(str(path) for path in (root, *root.parents)), "/"]))
+
+
+def _inert_signals(reading: ResourceReading) -> list[ScanSignal]:
+    """One signal per probe that could not answer, or answered about the wrong volume."""
+    signals: list[ScanSignal] = []
+    if reading.disk_probe_inert:
+        signals.append(_disk_probe_inert_signal(reading))
+    elif reading.disk_probe_degraded:
+        signals.append(_disk_probe_degraded_signal(reading))
+    if reading.ram_probe_inert:
+        signals.append(_ram_probe_inert_signal())
+    if reading.cgroup_probe_inert:
+        signals.append(
+            ScanSignal(
+                kind="resource.probe_inert",
+                summary="cgroup RAM probe INERT — worker memory cap/usage unreadable; host RAM may hide OOM risk",
+                payload={
+                    "resource": "cgroup",
+                    "level": "inert",
+                    "reason": "memory cap or usage unreadable (an explicit unlimited cap is not inert)",
+                },
+            )
+        )
+    return signals
+
+
+def _disk_probe_inert_signal(reading: ResourceReading) -> ScanSignal:
+    """Say the DISK ladder is not guarding this host — the loud half the disk arm lacked.
+
+    RAM has said so since #4104; disk said nothing. ``statvfs`` failing logged a warning
+    nobody reads, the reading resolved to unbounded free, and a full box was
+    indistinguishable from a healthy one — the same silent-inert failure #4104 named,
+    on the other resource. A gate that cannot measure fails LOUD, never crash-open.
+
+    The probed paths come from the READING rather than a second ``_disk_probe_paths()``
+    call, which would log its own exception again and can name a different ladder.
+    """
+    reason = f"os.statvfs answered for none of {', '.join(reading.disk_probed_paths)}"
+    return ScanSignal(
+        kind="resource.probe_inert",
+        summary=f"disk probe INERT — {reason}; the disk ladder is not guarding this host",
+        payload={"resource": "disk", "level": "inert", "reason": reason},
+    )
+
+
+def _disk_probe_degraded_signal(reading: ResourceReading) -> ScanSignal:
+    """Say the reading came from ``/`` rather than the volume that was asked about.
+
+    A degraded reading is confidently wrong rather than absent: inside the worker container
+    ``/`` is the Docker VM's own disk, so it reports roomy while the host volume fills. The
+    ladder still uses the number — it is better than none — but it says so, because the
+    remedy (create the worktree root, or fix the bind mount) is the operator's.
+    """
+    intended = reading.disk_probed_paths[0] if reading.disk_probed_paths else "the worktree root"
+    reason = f"nothing under {intended} could be statted, so the reading is the filesystem root's"
+    return ScanSignal(
+        kind="resource.probe_degraded",
+        summary=f"disk probe DEGRADED — {reason}; the disk ladder may be guarding the wrong volume",
+        payload={
+            "resource": "disk",
+            "level": "degraded",
+            "reason": reason,
+            "free_gb": reading.disk_ladder_gb,
+            "answered_by": reading.disk_answered_by,
+        },
+    )
 
 
 def _ram_probe_inert_signal() -> ScanSignal:
@@ -272,9 +418,7 @@ class ResourcePressureScanner:
     min_free_interval_minutes: int = 30
     disk_cache_allowlist: tuple[str, ...] = ()
     allow_destructive_disk: bool = False
-    venv_idle_days: float = 2.0
     worktree_stale_days: int = 30
-    max_worktree_gc_per_tick: int = 3
     allow_destructive_ram: bool = False
     ram_kill_allowlist: tuple[str, ...] = field(default_factory=tuple)
     scratch_retention_days: int = 0
@@ -291,7 +435,7 @@ class ResourcePressureScanner:
             return []
         if self._cadence_blocks(marker):
             return []
-        reading = _measure()
+        reading = measure_resources()
         try:
             marker.record_measurement(
                 disk_free_gb=reading.disk_free_gb,
@@ -310,7 +454,7 @@ class ResourcePressureScanner:
         return elapsed_minutes < self.cadence_minutes
 
     def _classify(self, *, reading: ResourceReading, marker: "ResourcePressureMarker") -> list[ScanSignal]:
-        inert = [_ram_probe_inert_signal()] if reading.ram_probe_inert else []
+        inert = _inert_signals(reading)
         disk_crit = reading.disk_ladder_gb < self.disk_crit_free_gb
         ram_crit = reading.ram_ladder_gb < self.ram_crit_avail_gb
         _track_consecutive_critical(marker=marker, ram_crit=ram_crit)
@@ -390,14 +534,12 @@ class ResourcePressureScanner:
                 "level": "critical",
                 "disk_cache_allowlist": list(self.disk_cache_allowlist),
                 "allow_destructive_disk": self.allow_destructive_disk,
-                "venv_idle_days": self.venv_idle_days,
-                # The freeing pass scales its reclaim criterion by how far below
-                # these the box actually is (#4644), so it needs the shape of the
-                # ladder it was dispatched from, not just the reading.
+                # The stall signal reads how far below these the box actually is (#4644),
+                # so it needs the shape of the ladder it was dispatched from, not just
+                # the reading.
                 "disk_warn_free_gb": self.disk_warn_free_gb,
                 "disk_crit_free_gb": self.disk_crit_free_gb,
                 "worktree_stale_days": self.worktree_stale_days,
-                "max_worktree_gc_per_tick": self.max_worktree_gc_per_tick,
                 "allow_destructive_ram": self.allow_destructive_ram,
                 "ram_kill_allowlist": list(self.ram_kill_allowlist),
                 "scratch_retention_days": self.scratch_retention_days,

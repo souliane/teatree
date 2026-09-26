@@ -17,7 +17,7 @@ import pytest
 from django.core.management import call_command
 
 from teatree.core.management.commands.worker import STARVED_EXIT
-from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, ExecutionContext
+from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, ExecutionContext, flock_is_held
 from teatree.utils.singleton_refusals import ESCALATION_THRESHOLD, read_streak, record_refusal
 
 _OUTSIDE_HOLDER = ExecutionContext(pid_namespace="pid:[1]", hostname="box", role="")
@@ -51,6 +51,26 @@ def test_runs_the_worker_under_the_singleton_and_installs_signals() -> None:
     assert signal_signal.call_count == 2  # SIGTERM + SIGINT
 
 
+def test_deployed_worker_holds_a_separate_health_lock_only_while_running(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    health_dir = tmp_path / "health"
+    health_dir.mkdir()
+    monkeypatch.setenv("T3_WORKER_HEALTH_DIR", str(health_dir))
+    health_lock = health_dir / "worker.pid"
+
+    def check_running() -> None:
+        assert flock_is_held("worker-health", pid_path=health_lock)
+
+    with (
+        patch("teatree.loops.worker.LoopWorker") as worker_cls,
+        patch("teatree.core.management.commands.worker.signal.signal"),
+    ):
+        worker_cls.return_value.run.side_effect = check_running
+        call_command("worker")
+    assert not flock_is_held("worker-health", pid_path=health_lock)
+
+
 def test_second_instance_refuses_with_nonzero_exit() -> None:
     def _raise(_name: str) -> None:
         name = "worker"
@@ -76,6 +96,10 @@ def test_a_successful_acquire_forgets_the_standing_streak() -> None:
 
 def test_a_refusal_names_where_the_holder_is(capsys: pytest.CaptureFixture[str]) -> None:
     with (
+        patch(
+            "teatree.utils.singleton.current_context",
+            return_value=ExecutionContext(pid_namespace="pid:[2]", hostname="this-box", role="worker"),
+        ),
         patch("teatree.utils.singleton.singleton", side_effect=_refuse_from_outside),
         pytest.raises(SystemExit),
     ):

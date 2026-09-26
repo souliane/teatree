@@ -70,7 +70,8 @@ def foreign_venv_interpreter(venv: Path, *, platform: str) -> str | None:
         return None
     if not home.is_dir():
         return f"pyvenv.cfg home={home} does not exist on this host"
-    tag = next((t for t in _UV_PLATFORM_TAGS if f"-{t}-" in home.as_posix()), None)
+    install_dir = next((part for part in (home.name, home.parent.name) if part.startswith("cpython-")), "")
+    tag = next((t for t in _UV_PLATFORM_TAGS if f"-{t}-" in install_dir), None)
     if tag is not None and _UV_PLATFORM_TAGS[tag] != platform:
         return f"pyvenv.cfg home={home} is a {tag} interpreter; this host is {platform}"
     return None

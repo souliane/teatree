@@ -3,7 +3,10 @@
 # test-path: cross-cutting
 
 import pytest
+from django.test import TestCase
 
+from teatree.config import AgentHarness, get_effective_settings
+from teatree.core.models import ConfigSetting
 from teatree.request_cache import cached_per_request, invalidate, request_scope
 
 
@@ -85,3 +88,32 @@ class TestInvalidation(RequestScopeMemoTestCase):
 
     def test_invalidate_outside_a_scope_is_a_no_op(self) -> None:
         invalidate()
+
+
+class TestARealMemoizedRead(TestCase):
+    """The memo applied to a production read — the branch a bare call never enters.
+
+    Every other test here memoizes a synthetic counter. ``get_effective_settings``
+    is one of the reads the dashboard actually repeats, and its scope-open
+    behaviour (serve the memo, honour ``invalidate``) is what the middleware's
+    read-your-own-writes guarantee rests on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+
+    def test_a_write_inside_the_scope_is_served_stale_until_the_memo_is_dropped(self) -> None:
+        with request_scope():
+            assert get_effective_settings().agent_harness == AgentHarness.CLAUDE_SDK
+            ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+            assert get_effective_settings().agent_harness == AgentHarness.CLAUDE_SDK
+
+            invalidate()
+            assert get_effective_settings().agent_harness == AgentHarness.PYDANTIC_AI
+
+    def test_the_same_write_is_visible_immediately_outside_a_scope(self) -> None:
+        assert get_effective_settings().agent_harness == AgentHarness.CLAUDE_SDK
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        assert get_effective_settings().agent_harness == AgentHarness.PYDANTIC_AI

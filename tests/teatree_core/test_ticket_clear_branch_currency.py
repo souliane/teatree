@@ -23,6 +23,7 @@ from django.test import TestCase
 from teatree.core.management.commands import _clear_branch_currency
 from teatree.core.management.commands._clear_branch_currency import check_clear_branch_currency
 from teatree.core.models import ConfigSetting, Ticket, Worktree
+from teatree.core.overlay import OverlayReview
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -116,7 +117,7 @@ def _make_behind_conflicting_sha(tmp_path: Path) -> tuple[Path, str]:
     return clone, feature_sha
 
 
-class _SafeReview:
+class _SafeReview(OverlayReview):
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         _ = changed_files
         return False
@@ -250,7 +251,10 @@ class TestCheckClearBranchCurrencyTargetResolution(TestCase):
             _ = repo, reviewed_sha
             seen["target"] = target
 
-        with mock.patch.object(_clear_branch_currency, "sha_conflicts_with_target", _fake_probe):
+        with (
+            mock.patch.object(_clear_branch_currency, "sha_conflicts_with_target", _fake_probe),
+            mock.patch("teatree.core.worktree.target_branch.git.remote_slug", return_value="acme/repo"),
+        ):
             assert check_clear_branch_currency("a" * 40, ticket) is None
         return seen["target"]
 
@@ -261,7 +265,7 @@ class TestCheckClearBranchCurrencyTargetResolution(TestCase):
     def test_a_prefixed_explicit_target_is_remote_qualified(self) -> None:
         # Returned bare, the fetch step becomes ``git fetch release`` — it fails,
         # and the probe then fails OPEN with no conflict prediction at all.
-        ticket = self._ticket_with_worktree(target_branch="release/1.2")
+        ticket = self._ticket_with_worktree(target_branch={"acme/repo": "release/1.2"})
         assert self._observed_target(ticket) == "origin/release/1.2"
 
     def test_the_integration_branch_itself_falls_back_to_the_repo_default(self) -> None:

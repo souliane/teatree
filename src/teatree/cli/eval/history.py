@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, TypedDict
 import typer
 
 from teatree.cli._format_opts import require_valid_format
+from teatree.eval.skip_guard import graded_nothing
 from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:
@@ -36,7 +37,17 @@ class HistoryRun(TypedDict):
     passed: int
     failed: int
     skipped: int
+    executed: int
+    measured_nothing: bool
     pass_rates: list[HistoryPassRate]
+
+
+def _executed(run: "EvalRunRecord") -> int:
+    return run.total - run.skipped
+
+
+def _measured_nothing(run: "EvalRunRecord") -> bool:
+    return graded_nothing(collected=run.total, executed=_executed(run))
 
 
 def mark_run_baseline(run_id: int) -> bool:
@@ -61,6 +72,8 @@ def _run_dict(run: "EvalRunRecord") -> HistoryRun:
         passed=run.passed,
         failed=run.failed,
         skipped=run.skipped,
+        executed=_executed(run),
+        measured_nothing=_measured_nothing(run),
         pass_rates=[
             HistoryPassRate(
                 scenario=r.scenario_name, model=r.model, passed=r.passed, total=r.total, pass_rate=r.pass_rate
@@ -74,16 +87,25 @@ def render_history_json(runs: list["EvalRunRecord"]) -> str:
     return json.dumps({"runs": [_run_dict(run) for run in runs]}, indent=2)
 
 
+def _tally(run: "EvalRunRecord") -> str:
+    """What the run establishes — a graded tally, or that it established nothing.
+
+    A run that graded none of what it collected renders ``0 passed, 0 failed, N
+    skipped``, which is shaped exactly like a clean sweep and was read as one for
+    five consecutive weeks. The two facts are opposite, so they get different words.
+    """
+    if _measured_nothing(run):
+        return f"— MEASURED NOTHING: 0 of {run.total} executed ({run.skipped} skipped)"
+    return f"— {run.passed} passed, {run.failed} failed, {run.skipped} skipped (of {run.total})"
+
+
 def render_history_text(runs: list["EvalRunRecord"]) -> str:
     if not runs:
         return "(no eval runs recorded)"
     lines: list[str] = []
     for run in runs:
         tag = " [baseline]" if run.is_baseline else ""
-        lines.append(
-            f"#{run.pk} {run.started_at.isoformat()} model={run.model}{tag} "
-            f"— {run.passed} passed, {run.failed} failed, {run.skipped} skipped (of {run.total})"
-        )
+        lines.append(f"#{run.pk} {run.started_at.isoformat()} model={run.model}{tag} {_tally(run)}")
         lines.extend(
             f"    {r.scenario_name}{f' [{r.model}]' if r.model else ''}: {r.passed}/{r.total} ({r.pass_rate:.0%})"
             for r in run.pass_rates()

@@ -16,6 +16,7 @@ import pytest
 from teatree.config import UserSettings
 from teatree.core.gates.integration_review_gate import IntegrationReviewError, check_integration_review, distinct_repos
 from teatree.core.models import ReviewEvidence, Ticket
+from tests.factories import waive_rubric
 
 _SHA = "a" * 40
 
@@ -98,6 +99,7 @@ class TestGateFunction:
 class TestFsmWiring:
     def test_two_repo_ticket_cannot_deliver_without_review(self, db) -> None:
         t = _ticket(db, ["org/a", "org/b"])
+        waive_rubric(t)
         with _gate(required=True), pytest.raises(IntegrationReviewError):
             t.mark_delivered()
         t.refresh_from_db()
@@ -106,6 +108,7 @@ class TestFsmWiring:
     def test_two_repo_ticket_delivers_with_review(self, db) -> None:
         t = _ticket(db, ["org/a", "org/b"])
         _integration_evidence(t, ["org/a", "org/b"])
+        waive_rubric(t)
         with _gate(required=True):
             t.mark_delivered()
             t.save()
@@ -115,6 +118,7 @@ class TestFsmWiring:
     def test_single_repo_ticket_delivers_normally(self, db) -> None:
         # The normal single-repo flow is never blocked.
         t = _ticket(db, ["org/a"])
+        waive_rubric(t)
         with _gate(required=True):
             t.mark_delivered()
             t.save()

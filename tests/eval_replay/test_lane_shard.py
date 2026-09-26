@@ -17,6 +17,7 @@ per-shard ceiling is LANE-AWARE: clean_room keeps the 14 ceiling, under_load
 drops to a much smaller one so a roster-spawning shard fits the 80min cap.
 """
 
+import datetime
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from teatree.eval.lane_shard import (
     max_scenarios_per_shard,
     parse_shard,
     plan_lane_shards,
+    resolve_rotating_shard,
     shard_count_for,
 )
 from teatree.eval.models import CLEAN_ROOM_LANE, PERMITTED_LANES, UNDER_LOAD_LANE, EvalSpec
@@ -212,3 +214,61 @@ class TestEveryEmittedLegFitsTheBudget:
         # as one 1/1 leg that hits the 80min cap (run 27995563148).
         legs = plan_lane_shards(discover_specs(), [UNDER_LOAD_LANE])
         assert len(legs) > 1, "under_load (roster-spawning, 10-45 min/scenario) must be sharded, not one 1/1 leg."
+
+
+class TestRotatingShard:
+    """A nightly lane pinned to a literal ``1/16`` runs the same sixteenth forever.
+
+    ``rotate/<total>`` walks the shards one per UTC day, so the catalog is covered
+    over time while every single run stays deterministic (one date -> one shard) and
+    reproducible (the resolved token is reported, and passing it back replays the
+    exact subset).
+    """
+
+    def test_a_fixed_token_is_returned_untouched_with_no_reason(self) -> None:
+        resolution = resolve_rotating_shard("3/16")
+        assert resolution.token == "3/16"
+        assert resolution.reason is None
+
+    def test_absent_shard_stays_absent(self) -> None:
+        assert resolve_rotating_shard(None).token is None
+        assert resolve_rotating_shard("").token == ""
+
+    def test_the_same_date_always_resolves_to_the_same_shard(self) -> None:
+        day = datetime.date(2026, 9, 2)
+        assert resolve_rotating_shard("rotate/16", today=day).token == (
+            resolve_rotating_shard("rotate/16", today=day).token
+        )
+
+    def test_consecutive_days_walk_every_shard_exactly_once_per_cycle(self) -> None:
+        total = 16
+        start = datetime.date(2026, 9, 2)
+        tokens = [
+            resolve_rotating_shard(f"rotate/{total}", today=start + datetime.timedelta(days=offset)).token
+            for offset in range(total)
+        ]
+        assert sorted(tokens) == sorted(f"{index}/{total}" for index in range(1, total + 1))
+
+    def test_the_rotation_does_not_restart_at_a_year_boundary(self) -> None:
+        last = resolve_rotating_shard("rotate/16", today=datetime.date(2026, 12, 31)).token
+        first = resolve_rotating_shard("rotate/16", today=datetime.date(2027, 1, 1)).token
+        assert first != last
+
+    def test_the_reason_states_which_shard_and_why(self) -> None:
+        day = datetime.date(2026, 9, 2)
+        reason = resolve_rotating_shard("rotate/16", today=day).reason
+        assert reason is not None
+        assert "rotate/16" in reason
+        assert day.isoformat() in reason
+        assert str(day.toordinal()) in reason
+
+    def test_a_rotating_token_selects_that_days_shard_of_the_specs(self) -> None:
+        specs = [_spec(f"s{n:03d}") for n in range(32)]
+        day = datetime.date(2026, 9, 2)
+        expected = filter_specs_by_shard(specs, resolve_rotating_shard("rotate/16", today=day).token)
+        assert [s.name for s in filter_specs_by_shard(specs, "rotate/16", today=day)] == [s.name for s in expected]
+
+    @pytest.mark.parametrize("token", ["rotate/0", "rotate/", "rotate/x", "rotate"])
+    def test_a_malformed_rotating_total_fails_loud(self, token: str) -> None:
+        with pytest.raises(ShardSpecError):
+            resolve_rotating_shard(token)

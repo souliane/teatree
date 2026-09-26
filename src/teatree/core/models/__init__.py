@@ -1,3 +1,4 @@
+from teatree.core.models.agent_route_availability import AgentRouteAvailability
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick, AnthropicActivePickManager
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, AnthropicTokenUsageManager
 from teatree.core.models.assess_finding import AssessFinding, AssessSweepRun
@@ -154,6 +155,7 @@ __all__ = [
     "NEEDS_TRIAGE_LABEL",
     "SEAT_WINDOW",
     "STARVED_AFTER",
+    "AgentRouteAvailability",
     "AnthropicActivePick",
     "AnthropicActivePickManager",
     "AnthropicTokenUsage",

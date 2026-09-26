@@ -31,6 +31,7 @@ def _repo_internal_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 SLUG = "souliane/teatree"
+SELF_LOGIN = "souliane"
 HEAD = "feedfacecafebabe1234567890abcdef12345678"
 NEW_HEAD = "1234567890abcdeffeedfacecafebabe87654321"
 
@@ -41,7 +42,7 @@ def _pr(
     head: str = HEAD,
     is_draft: bool = False,
     changed_files: tuple[str, ...] = ("src/teatree/loop/scanners/self_pr_review.py",),
-    author: str = "souliane",
+    checks_unsettled: bool = False,
 ) -> PrSummary:
     return PrSummary(
         slug=SLUG,
@@ -51,7 +52,8 @@ def _pr(
         changed_files=changed_files,
         url=f"https://github.com/{SLUG}/pull/{pr_id}",
         title=f"PR {pr_id}",
-        author=author,
+        author=SELF_LOGIN,
+        checks_unsettled=checks_unsettled,
     )
 
 
@@ -163,8 +165,53 @@ class TestFaultIsolation:
         bad = MagicMock()
         bad.slug, bad.number, bad.head_sha, bad.is_draft = SLUG, 2, HEAD, False
         bad.author, bad.changed_files, bad.url, bad.title = "souliane", None, "", ""
+        # A MagicMock attribute is truthy, so without this the unsettled-head gate
+        # would skip ``bad`` before _evaluate ever raised and the test would pass
+        # without exercising fault isolation at all.
+        bad.checks_unsettled = False
         api = FakeSelfPrApi(prs_by_slug={SLUG: [bad, _pr(pr_id=1)]})
 
         dispatched = sorted(s.payload["pr_id"] for s in _scanner(api=api).scan())
 
         assert dispatched == [1]
+
+
+class TestUnsettledHeadIsNotReviewed:
+    """A cold review is spent once the head's required checks have settled green.
+
+    The scanner still emits unconditionally per head; what changed is WHICH heads
+    are candidates. A head whose checks are pending or red is one the author is
+    about to replace, so the review would land on a tree nobody merges.
+    """
+
+    def test_unsettled_head_dispatches_no_review(self) -> None:
+        api = FakeSelfPrApi(prs_by_slug={SLUG: [_pr(checks_unsettled=True)]})
+
+        assert _scanner(api=api).scan() == []
+
+    def test_five_pushes_buy_one_review_at_the_head_that_went_green(self) -> None:
+        heads = [f"{index}eedfacecafebabe1234567890abcdef1234567" for index in range(5)]
+        api = FakeSelfPrApi()
+        scanner = _scanner(api=api)
+        dispatched = []
+
+        for index, head in enumerate(heads):
+            api.prs_by_slug = {SLUG: [_pr(head=head, checks_unsettled=index < len(heads) - 1)]}
+            dispatched.extend(scanner.scan())
+
+        assert [signal.payload["head_sha"] for signal in dispatched] == [heads[-1]]
+
+    def test_control_every_settled_push_still_buys_its_own_review(self) -> None:
+        # The pre-gate behaviour, and the anti-vacuity control for the case above:
+        # with nothing reported unsettled the same five pushes buy five reviews, so
+        # the single dispatch there is the gate acting and not the harness.
+        heads = [f"{index}eedfacecafebabe1234567890abcdef1234567" for index in range(5)]
+        api = FakeSelfPrApi()
+        scanner = _scanner(api=api)
+        dispatched = []
+
+        for head in heads:
+            api.prs_by_slug = {SLUG: [_pr(head=head)]}
+            dispatched.extend(scanner.scan())
+
+        assert [signal.payload["head_sha"] for signal in dispatched] == heads

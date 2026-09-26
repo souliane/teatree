@@ -21,6 +21,13 @@ picks the granularity it needs: ``watchdog:compose-up-failed`` pages for a dead 
 while ``watchdog:red`` — 225 of one 7-day window's 666 DMs, all reporting one recurring
 box condition — stays pull.
 
+A registry keyed on recurring signals cannot serve the ONE-OFF, though, and reading a
+never-registrable key as an unearned alarm is how a message somebody asked to be sent
+gets recorded instead of delivered, at exit 0. ``classify``'s ``requested_push`` is that
+case: set by the surface a person or an agent invokes (`t3 <overlay> notify dm`, the
+MCP `notify_user` tool), never by an alarm call site — which is why those are separate
+commands rather than one command with a flag an alarm script could set.
+
 Keying on the idempotency key is what lets the gate cover callers that declare nothing:
 the shell reaches this egress through ``t3 <overlay> notify send``, whose audience is
 fixed, and the leading segment is the naming convention every existing call site already
@@ -56,6 +63,13 @@ PUSH_SIGNALS: frozenset[str] = frozenset(
         # The claim path is refusing new work until a human runs the pending
         # migrations — the factory is parked, not merely degraded (#4524 review).
         "schema_behind_code",
+        # A failed cgroup probe disables the worker OOM guard while host RAM
+        # continues to look healthy; one alert per inert transition.
+        "self-improve:cgroup-probe-inert",
+        "self-improve:ram-probe-inert",
+        "self-improve:disk-probe-inert",
+        # An owner question has remained undelivered despite the poster's retries.
+        "self-improve:outbound-unposted",
     }
 )
 
@@ -80,12 +94,25 @@ def signal_of(idempotency_key: str) -> str:
     return idempotency_key.split(":", 1)[0]
 
 
-def classify(*, audience: NotifyAudience, idempotency_key: str) -> DmChannel:
-    """Whether this notification may interrupt the owner. Unregistered means PULL."""
-    if audience in _ALWAYS_PUSH_AUDIENCES:
-        return DmChannel.PUSH
+def classify(*, audience: NotifyAudience, idempotency_key: str, requested_push: bool = False) -> DmChannel:
+    """Whether this notification may interrupt the owner. Unregistered means PULL.
+
+    ``requested_push`` is the one-off escape the registry structurally cannot serve.
+    :data:`PUSH_SIGNALS` answers "does this RECURRING signal earn an interruption",
+    and a message someone asked to be sent right now — a progress note on one merge
+    request, an answer to a question — carries a key nobody could have registered in
+    advance, so it read as an unearned alarm and was swallowed at exit 0. It is set
+    by the surface a person or agent invokes, never by an alarm call site (which
+    declares an audience and a key and nothing else), so the flood this gate closes
+    stays closed.
+
+    Audience still outranks it: an ``INTERNAL`` notification is not for the owner at
+    all, so no request makes it an interruption.
+    """
     if audience == NotifyAudience.INTERNAL:
         return DmChannel.PULL
+    if requested_push or audience in _ALWAYS_PUSH_AUDIENCES:
+        return DmChannel.PUSH
     if PUSH_SIGNALS.intersection(signal_prefixes(idempotency_key)):
         return DmChannel.PUSH
     return DmChannel.PULL

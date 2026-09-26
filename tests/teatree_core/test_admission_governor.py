@@ -18,6 +18,8 @@ from django.utils import timezone
 from teatree.agents import _runner_env
 from teatree.agents._runner_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
+from teatree.core.admission import machine_load
+from teatree.core.admission.machine_load import read_load_and_cores
 from teatree.core.admission_governor import (
     BRAKE_LOAD_PER_CORE,
     RAM_BRAKE_FLOOR_GB,
@@ -27,6 +29,7 @@ from teatree.core.admission_governor import (
     MergeSignal,
     MeteredSignal,
     QuotaSignal,
+    SupplementalAdmissionSignals,
     YieldSignal,
     box_load_headroom,
     decide_admission,
@@ -41,7 +44,7 @@ from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.utils import ram_scope
 from teatree.utils.ram_scope import RamHeadroom
-from tests._machine_probe import PINNED_AVAILABLE_RAM_MIB
+from tests._machine_probe import PINNED_AVAILABLE_RAM_MIB, PINNED_CORES, PINNED_LOAD1
 
 _WEEK = 7 * 24 * 3600
 
@@ -86,10 +89,21 @@ def _decide(*, quota: QuotaSignal | None = None, machine: MachineSignal | None =
 
 
 class TestTokenBudgetIsPrimary:
+    def test_supplemental_signals_preserve_metered_and_yield_brakes(self) -> None:
+        decision = _decide(
+            signals=SupplementalAdmissionSignals(
+                metered=MeteredSignal(fresh=True, utilization=2.0, spend_detail="over the ceiling"),
+                yield_signal=YieldSignal(completed=0, failed=5),
+            ),
+        )
+        assert not decision.admit
+        assert decision.cause == "metered-spend"
+
     def test_idle_box_with_no_weekly_quota_admits_nothing(self) -> None:
         decision = _decide(quota=_quota(weekly_utilization=0.999), machine=_machine(load1=0.0))
         assert not decision.admit
         assert "weekly" in decision.reason
+        assert decision.cause == "weekly-quota"
 
     def test_every_account_exhausted_is_a_hard_brake(self) -> None:
         decision = _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine(load1=0.0))
@@ -113,10 +127,26 @@ class TestTokenBudgetIsPrimary:
 
 
 class TestMachinePressureIsSecondary:
+    def test_swap_brakes_and_holds_until_ten_percent(self) -> None:
+        melted = _machine(swap_used_fraction=0.26)
+        assert not _decide(machine=melted).admit
+        assert "swap" in _decide(machine=melted).reason
+        held = _machine(swap_used_fraction=0.15)
+        assert not _decide(machine=held, load_brake=MachineBrake(braked=True)).admit
+        assert _decide(machine=_machine(swap_used_fraction=0.09), load_brake=MachineBrake(braked=True)).admit
+
     def test_load_above_the_brake_denies_while_quota_is_healthy(self) -> None:
         decision = _decide(machine=_machine(load1=8 * 5.0 + 1))
         assert not decision.admit
         assert "load" in decision.reason
+        assert decision.cause == "load"
+
+    def test_token_brake_wins_over_simultaneous_machine_brake(self) -> None:
+        decision = _decide(
+            quota=_quota(weekly_utilization=0.999),
+            machine=_machine(load1=8 * 5.0 + 1),
+        )
+        assert decision.cause == "weekly-quota"
 
     def test_load_between_the_watermarks_holds_a_braked_governor_braked(self) -> None:
         mid = _machine(load1=8 * 4.0)
@@ -170,15 +200,15 @@ class TestMachineBrakeExemption:
 
 class TestYieldPerToken:
     def test_collapsed_yield_stops_admitting_rather_than_throttling(self) -> None:
-        decision = _decide(yield_signal=YieldSignal(completed=0, failed=12))
+        decision = _decide(signals=SupplementalAdmissionSignals(yield_signal=YieldSignal(completed=0, failed=12)))
         assert not decision.admit
         assert "yield" in decision.reason
 
     def test_unknown_yield_never_brakes(self) -> None:
-        assert _decide(yield_signal=YieldSignal(completed=0, failed=0)).admit
+        assert _decide(signals=SupplementalAdmissionSignals(yield_signal=YieldSignal(completed=0, failed=0))).admit
 
     def test_healthy_yield_never_brakes(self) -> None:
-        assert _decide(yield_signal=YieldSignal(completed=9, failed=1)).admit
+        assert _decide(signals=SupplementalAdmissionSignals(yield_signal=YieldSignal(completed=9, failed=1))).admit
 
 
 class TestFailSafeAndFloor:
@@ -267,6 +297,66 @@ class TestTheExportedCapRespondsToMemory:
         roomy = self._exported_workers(monkeypatch, available_gb=40.0)
         tight = self._exported_workers(monkeypatch, available_gb=6.0)
         assert tight < roomy
+
+
+class TestTheExportedCapIsBoundedByThisContainersCgroup:
+    """#151: a cgroup too small to be BOX-scoped must still bound the pool it contains.
+
+    ``box_watermark_mib`` answers "how much room does the BOX have for another agent", so
+    it DISCARDS a cgroup under the agent-workload floor and falls back to the host
+    component — correct for that question (#4217/#4252: a 2 GiB sidecar must not brake the
+    box). These workers run INSIDE this container, which is a different question, and the
+    fallback sized them against memory the cgroup cannot hand out.
+
+    Measured: a 4095 MiB cap with 8.17 GiB host MemAvailable admitted
+    floor((8.17 - 4.0) / 1.25) = 3 workers at the 1.24 GB p90 worker RSS — ~3.7 GB into a
+    4 GiB cgroup before the agent process itself, and rising with every GB the HOST had
+    free.
+    """
+
+    _SUB_FLOOR_CAP_MIB = 4095
+
+    def _exported(self, monkeypatch: pytest.MonkeyPatch, *, cap_mib: int | None, host_gb: float) -> int:
+        host_mib = round(host_gb * 1024)
+        _stub_headroom(
+            monkeypatch,
+            available_mib=host_mib if cap_mib is None else min(host_mib, cap_mib),
+            cgroup_limit_mib=cap_mib,
+            host_available_mib=host_mib,
+        )
+        capped = with_test_worker_cap(None, active_agents=1)
+        assert capped is not None
+        return int(capped[XDIST_WORKERS_VAR])
+
+    def test_a_freer_host_cannot_raise_the_pool_inside_a_fixed_cgroup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """THE anti-vacuity control: the same container, two hosts, one answer.
+
+        RED before #151 — 3 workers at 8.17 GiB free and 16 at 200 GiB free, from a
+        container whose cap never moved.
+        """
+        measured = self._exported(monkeypatch, cap_mib=self._SUB_FLOOR_CAP_MIB, host_gb=8.17)
+        roomy = self._exported(monkeypatch, cap_mib=self._SUB_FLOOR_CAP_MIB, host_gb=200.0)
+
+        assert measured == roomy
+
+    def test_a_sub_floor_cgroup_bounds_the_pool_to_what_it_can_hold(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._exported(monkeypatch, cap_mib=self._SUB_FLOOR_CAP_MIB, host_gb=200.0) == 1
+
+    def test_an_in_scope_cgroup_is_not_clamped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TOO-STRICT control: this is a BOUND, not a blanket clamp to one worker."""
+        host_gb = 8.17
+        capped = self._exported(monkeypatch, cap_mib=18 * 1024, host_gb=host_gb)
+        uncapped = self._exported(monkeypatch, cap_mib=None, host_gb=host_gb)
+
+        assert capped == uncapped > 1
+
+    def test_an_unreadable_reading_still_falls_back_to_the_cpu_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Fail-safe stays BOUNDED, not closed (#4097): no reading is not a clamp to 1."""
+        _stub_headroom(monkeypatch, available_mib=None, cgroup_limit_mib=None, host_available_mib=None)
+        capped = with_test_worker_cap(None, active_agents=1)
+
+        assert capped is not None
+        assert int(capped[XDIST_WORKERS_VAR]) > 1
 
 
 class TestTheWorkerBoundReadsMemory:
@@ -511,6 +601,13 @@ class TestWeeklyPace:
 
 
 class TestReadMachineSignal:
+    def test_core_count_follows_cgroup_quota_not_visible_host_cpus(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.utils import ram_probe  # noqa: PLC0415 — patches the live reader seam
+
+        monkeypatch.setattr(machine_load.os, "cpu_count", lambda: 10)
+        monkeypatch.setattr(ram_probe, "available_cpu_count", lambda: 3)
+        assert read_load_and_cores()[1] == 3
+
     def test_reads_the_live_load_and_cores(self) -> None:
         signal = read_machine_signal()
         assert signal.cores >= 1
@@ -523,10 +620,11 @@ class TestReadMachineSignal:
             msg = "no loadavg on this platform"
             raise OSError(msg)
 
-        monkeypatch.setattr(admission_governor.os, "getloadavg", _boom)
-        signal = read_machine_signal()
-        assert signal.load1 == pytest.approx(0.0)
-        assert signal.cores >= 1
+        monkeypatch.setattr(machine_load.os, "getloadavg", _boom)
+        # The module-level import above binds the ORIGINAL reader, past the autouse pin.
+        load1, cores = read_load_and_cores()
+        assert load1 == pytest.approx(0.0)
+        assert cores >= 1
 
 
 def _usage_row(path: str, *, utilization_7d: float, status_7d: str, valid_for: dt.timedelta) -> None:
@@ -739,8 +837,8 @@ class TestBoxLoadHeadroom:
         assert box_load_headroom(load1=None, cores=8) == pytest.approx(1.0)
 
     def test_a_platform_with_no_load_average_reads_idle_rather_than_saturated(self) -> None:
-        with patch.object(admission_governor.os, "getloadavg", side_effect=OSError):
-            assert read_machine_signal(ram_available_gb=20.0).load1 == pytest.approx(0.0)
+        with patch.object(machine_load.os, "getloadavg", side_effect=OSError):
+            assert read_load_and_cores()[0] == pytest.approx(0.0)
 
 
 class TestResumeAgentPopulation:
@@ -789,29 +887,48 @@ class TestResumeAgentPopulation:
         assert resume_shed_directive(restored=fleet, machine=_machine(cores=8, load1=30.0)) != ""
 
 
-class TestSuiteMemoryProbeIsPinned:
-    """The suite's own memory reading is fixed, so no test's verdict rides on the host's free RAM.
+class TestSuiteMachineProbeIsPinned:
+    """The suite's whole machine reading is fixed, so no test's verdict rides on the runner.
 
-    ``read_machine_signal`` reads live memory and ``_machine_brake`` denies at/under
-    ``RAM_BRAKE_FLOOR_GB``. Unpinned, a box under memory pressure therefore reds tests
-    that never mention memory — measured: 20 of 49 ``scanners/test_issue_intake`` cases
-    on a host reporting 2.5 GB available, every one of them green again once the reading
-    was pinned. A test that cares about the reading patches this same seam in its own
-    body, which lands after the autouse fixture and so still wins.
+    ``read_machine_signal`` reads memory, load and cores, and every admission verdict is
+    derived from them. Unpinned, each reds tests that never mention machine capacity:
+    memory did it first — 20 of 49 ``scanners/test_issue_intake`` cases on a host
+    reporting 2.5 GB available, every one green again once pinned — and load and cores do
+    it the same way, a busy box HALTing at ``BRAKE_LOAD_PER_CORE * cores`` and a 2-vCPU
+    runner's WRITE ceiling of ``floor(2 * 0.5) == 1`` refusing every second concurrent
+    claim. A test that cares about a reading patches the same seam in its own body, which
+    lands after the autouse fixture and so still wins.
     """
 
     def test_the_probe_is_pinned_rather_than_reading_this_host(self) -> None:
         assert ram_scope.read_ram_headroom().box_watermark_mib == PINNED_AVAILABLE_RAM_MIB
+        signal = read_machine_signal()
+        assert signal.load1 == pytest.approx(PINNED_LOAD1)
+        assert signal.cores == PINNED_CORES
 
     def test_the_pinned_reading_leaves_no_memory_brake(self) -> None:
         ram_available_gb = read_machine_signal().ram_available_gb
         assert ram_available_gb is not None
         assert ram_available_gb > RAM_RESUME_FLOOR_GB
 
+    def test_the_pinned_reading_leaves_no_load_brake(self) -> None:
+        signal = read_machine_signal()
+        assert signal.load1 < BRAKE_LOAD_PER_CORE * signal.cores
+
+    def test_the_pinned_core_count_admits_more_than_one_concurrent_dispatch(self) -> None:
+        # The WRITE ceiling IS the core count, so a small runner turns a claim-CAS test
+        # into a measurement of its own vCPU allocation.
+        decision = decide_admission(quota=_quota(fresh=False), machine=read_machine_signal())
+        assert decision.ceiling > 1
+
     def test_a_test_that_cares_still_overrides_the_pin(self, monkeypatch: pytest.MonkeyPatch) -> None:
         headroom = RamHeadroom(available_mib=1024, cgroup_limit_mib=None, host_available_mib=1024)
         monkeypatch.setattr(ram_scope, "read_ram_headroom", lambda: headroom)
-        assert read_machine_signal().ram_available_gb == pytest.approx(1.0)
+        monkeypatch.setattr(machine_load, "read_load_and_cores", lambda: (999.0, 3))
+        signal = read_machine_signal()
+        assert signal.ram_available_gb == pytest.approx(1.0)
+        assert signal.load1 == pytest.approx(999.0)
+        assert signal.cores == 3
 
 
 class TestTheQuotaBrakeSwitch(TestCase):

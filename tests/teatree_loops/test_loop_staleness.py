@@ -1,10 +1,9 @@
 """teatree.loops.loop_staleness — the "is anything actually ticking?" reading.
 
-The blind spot this closes: the worker holds the flock, ``loop_runner_enabled`` is
-ON and every ``loop_timer`` row is READY, yet a mode mask admits no loop, so no
-``Loop.last_run_at`` moves. The gate has to fire on that WITHOUT firing on the two
-benign shapes it sits next to — a fleet that simply is not due, and one loop an
-operator deliberately turned off. Integration-first against the real DB;
+The blind spot this closes: the worker holds the flock and every ``loop_timer`` row is
+READY, yet a mode mask admits no loop, so nothing moves ``Loop.last_run_at``. The gate
+has to fire on that WITHOUT firing on the two benign shapes it sits next to — a fleet
+that simply is not due, and one loop an operator deliberately turned off. Integration-first against the real DB;
 ``iter_loops`` is stubbed to a small set so the assertions do not depend on the
 seeded production loops.
 """
@@ -52,8 +51,7 @@ _MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 # The IMPORT-SITE binding, not the definition: ``enable_verdict`` binds this name at
 # module import, so a patch on ``teatree.loop.loop_state_db`` resolves fine and still
 # never reaches the read — a dead mock that only LOOKS like it stubs the planes.
-_HOLDS_SEAM = "teatree.loops.enable_verdict.control_planes_in_db"
-_RUNNER_SEAM = "teatree.loops.timer_chains.loop_runner_enabled"
+_HOLDS_SEAM = "teatree.loops.enable_verdict.held_loop_names"
 
 
 def _mini(name: str, *, off_live_tick: bool = False) -> MiniLoop:
@@ -70,7 +68,6 @@ def _loop(
     *,
     cadence: int | None = 300,
     ran_ago: dt.timedelta | None = None,
-    enabled: bool = True,
     colleague_facing: bool = False,
 ) -> Loop:
     # A ``Loop`` row must carry a prompt XOR a script (``loop_prompt_xor_script``).
@@ -78,7 +75,6 @@ def _loop(
     return Loop.objects.create(
         name=name,
         prompt=prompt,
-        enabled=enabled,
         colleague_facing=colleague_facing,
         delay_seconds=cadence,
         last_run_at=None if ran_ago is None else timezone.now() - ran_ago,
@@ -93,7 +89,9 @@ def _daily_loop(name: str, *, cadence: int, at: dt.time, ran_ago: dt.timedelta) 
 
 
 def _mode(name: str = "present", *, entries: dict[str, bool] | None = None) -> ResolvedMode:
-    return ResolvedMode(mode=Mode(name=name, entries=entries or {}), source="override", until=None)
+    return ResolvedMode(
+        mode=Mode(name=name, entries=entries or {}), source="override", until=None, fail_open=entries is None
+    )
 
 
 class _LoopTableCase(django.test.TestCase):
@@ -109,7 +107,7 @@ class TestStaleLoops(_LoopTableCase):
     def setUp(self) -> None:
         super().setUp()
         self.enterContext(patch(_MODE_SEAM, return_value=_mode()))
-        self.enterContext(patch(_HOLDS_SEAM, return_value=(set(), {})))
+        self.enterContext(patch(_HOLDS_SEAM, return_value=set()))
 
     def test_fresh_anchor_is_not_stale(self) -> None:
         _loop("tickets", cadence=300, ran_ago=dt.timedelta(seconds=120))
@@ -150,11 +148,6 @@ class TestStaleLoops(_LoopTableCase):
             stale = stale_loops(timezone.now())
         assert [loop.ever_ran for loop in stale] == [False]
         assert stale[0].age_label.startswith("never run (seeded 7h")
-
-    def test_disabled_loop_is_never_stale(self) -> None:
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=False)
-        with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
-            assert stale_loops(timezone.now()) == []
 
     def test_off_live_tick_loop_is_never_stale(self) -> None:
         # ``dream`` runs off the live tick, so the live tick leaving its
@@ -206,10 +199,10 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
 
     def _activate(self, entries: dict[str, bool]) -> None:
         Mode.objects.create(name="preset-4185", entries=entries)
-        ModeOverride.objects.set_override("preset-4185")
+        ModeOverride.objects.set_override("preset-4185", reason="test override")
 
-    def test_a_preset_forced_on_column_disabled_loop_is_measured_and_stale(self) -> None:
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=False)
+    def test_a_preset_admitted_loop_is_measured_and_stale(self) -> None:
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
         self._activate({"tickets": True})
         with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
             stale = stale_loops(timezone.now())
@@ -219,7 +212,7 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
     def test_a_preset_masked_off_column_enabled_loop_is_measured_but_suppressed(self) -> None:
         # Measured so an all-off mask still reads as a STOPPED fleet rather than an empty
         # one; suppressed so it is never reported as unexplained on its own (#4196).
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
         self._activate({"tickets": False})
         with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
             stale = stale_loops(timezone.now())
@@ -227,7 +220,7 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
         assert stale[0].suppressed is True
 
     def test_a_held_loop_is_measured_but_suppressed(self) -> None:
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
         LoopState.objects.pause("tickets")
         with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
             stale = stale_loops(timezone.now())
@@ -237,8 +230,8 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
     def test_a_forced_off_loop_is_suppressed_not_unexplained(self) -> None:
         # The FORCED plane is a deliberate operator action too; it had no arm at all, so a
         # force-OFF loop standing still hard-FAILed `t3 worker status` as unexplained.
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
-        LoopState.objects.override("tickets", on=False)
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
+        Loop.objects.set_manual_override("tickets", runs=False, reason="test override")
         with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
             stale = stale_loops(timezone.now())
         assert [loop.name for loop in stale] == ["tickets"]
@@ -248,9 +241,9 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
         # The operator ran `t3 loop override tickets on` against a preset masking it off.
         # The verdict ADMITS it, so its silence is a real fault — reading the mask alone
         # read a wedged loop the operator explicitly demanded as deliberately idle.
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
         self._activate({"tickets": False})
-        LoopState.objects.override("tickets", on=True)
+        Loop.objects.set_manual_override("tickets", runs=True, reason="test override")
         with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
             stale = stale_loops(timezone.now())
         assert [loop.name for loop in stale] == ["tickets"]
@@ -258,27 +251,28 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
 
     def test_a_hold_still_beats_a_force_on(self) -> None:
         # A durable ``LoopState`` hold is the stronger plane and keeps its explanation.
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
         self._activate({"tickets": False})
-        LoopState.objects.override("tickets", on=True)
+        Loop.objects.set_manual_override("tickets", runs=True, reason="test override")
         LoopState.objects.pause("tickets")
         with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
             stale = stale_loops(timezone.now())
         assert [loop.name for loop in stale] == ["tickets"]
         assert stale[0].suppressed is True
 
-    def test_a_column_disabled_loop_no_mode_admits_is_not_measured(self) -> None:
-        # Neither a member nor operator-enabled — nothing is supposed to drive it, so it
-        # is not part of the fleet reading at all.
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=False)
+    def test_a_force_off_loop_is_measured_but_suppressed(self) -> None:
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
+        Loop.objects.set_manual_override("tickets", runs=False, reason="test override")
         with patch(_REGISTRY_SEAM, return_value=(_mini("tickets"),)):
-            assert stale_loops(timezone.now()) == []
+            stale = stale_loops(timezone.now())
+        assert [loop.name for loop in stale] == ["tickets"]
+        assert stale[0].suppressed is True
 
     def test_a_schedule_mode_mask_suppresses_rather_than_reporting_unexplained(self) -> None:
         # The mask arm is what stops a masked loop from landing in ``unexplained`` and
         # hard-FAILing ``t3 worker status``. Exercised under a SCHEDULE slot, the config
         # where membership used to consult a resolver of its own (#4196).
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
         Mode.objects.create(name="slot-4196", entries={"tickets": False})
         schedule = ModeSchedule.objects.create(name="calendar-4196", timezone="UTC")
         ModeScheduleSlot.objects.create(
@@ -297,7 +291,7 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
         # deliberate, forgotten shutdown as a healthy zero-loop fleet (#4196).
         names = ("tickets", "dispatch", "ship")
         for name in names:
-            _loop(name, cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+            _loop(name, cadence=300, ran_ago=dt.timedelta(hours=7))
         self._activate(dict.fromkeys(names, False))
         with patch(_REGISTRY_SEAM, return_value=tuple(_mini(name) for name in names)):
             health = loop_health(timezone.now())
@@ -306,7 +300,7 @@ class TestMeasuredSetIsTheAdmissionVerdict(_LoopTableCase):
         assert not health.ok
 
     def test_admission_counts_the_admitted_total_not_the_enabled_column(self) -> None:
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(seconds=60), enabled=False)
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(seconds=60))
         self._activate({"tickets": True})
         with patch(_ADMITTED_SEAM, return_value=["tickets"]):
             verdict = admission(timezone.now())
@@ -357,7 +351,7 @@ class TestLoopHealth(_LoopTableCase):
             stack.enter_context(patch(_ADMITTED_SEAM, return_value=admitted))
             stack.enter_context(patch(_MODE_SEAM, return_value=mode))
             if stub_planes:
-                stack.enter_context(patch(_HOLDS_SEAM, return_value=(set(), {})))
+                stack.enter_context(patch(_HOLDS_SEAM, return_value=set()))
             return loop_health(timezone.now())
 
     def test_health_is_ok_when_every_loop_advances(self) -> None:
@@ -381,7 +375,7 @@ class TestLoopHealth(_LoopTableCase):
         with (
             patch(_ADMITTED_SEAM, return_value=["tickets"]),
             patch(_MODE_SEAM, return_value=_mode()),
-            patch(_HOLDS_SEAM, return_value=(set(), {})),
+            patch(_HOLDS_SEAM, return_value=set()),
         ):
             verdict = admission(timezone.now())
         assert isinstance(verdict, Admission)
@@ -390,8 +384,10 @@ class TestLoopHealth(_LoopTableCase):
         assert verdict.admitted == ("tickets",)
         assert verdict.admitted_total == 1
 
-    def test_frozen_fleet_fails_and_names_the_mode(self) -> None:
-        # The seven-hour incident: an all-off mask, forgotten, with a live worker.
+    def test_a_frozen_fleet_under_a_preset_that_admits_nothing_names_the_preset(self) -> None:
+        # The seven-hour incident: an all-off mask, forgotten, with a live worker. The
+        # preset admits zero loops, and step 0 halts every chain before admission — so the
+        # cause is the posture, and nothing about the worker.
         names = ("tickets", "dispatch", "ship")
         for name in names:
             _loop(name, ran_ago=dt.timedelta(hours=7))
@@ -403,9 +399,48 @@ class TestLoopHealth(_LoopTableCase):
         rendered = "\n".join(health.lines())
         assert not health.ok
         assert health.frozen_fleet
-        assert "ticking NOTHING" in rendered
+        assert not health.fleet_admits
+        assert "admits ZERO loops" in rendered
         assert "'off'" in rendered
-        assert "loop preset auto" in rendered
+        assert "ticking NOTHING" not in rendered
+
+    def test_a_frozen_fleet_the_preset_admits_names_the_worker_not_the_preset(self) -> None:
+        # The control the branch above must not swallow: the preset admits every loop and
+        # none has ticked, so the fault is downstream of the posture.
+        names = ("tickets", "dispatch", "ship")
+        for name in names:
+            _loop(name, ran_ago=dt.timedelta(hours=7))
+        health = self._health(
+            admitted=[],
+            mode=_mode(name="present", entries=dict.fromkeys(names, True)),
+            registry=tuple(_mini(name) for name in names),
+        )
+        rendered = "\n".join(health.lines())
+        assert health.frozen_fleet
+        assert health.fleet_admits
+        assert "ticking NOTHING" in rendered
+        assert "admits ZERO loops" not in rendered
+
+    def test_a_preset_admitting_nothing_alone_does_not_fail_a_ticking_fleet(self) -> None:
+        # Anti-vacuity: a stopping posture is a sanctioned operator action, so it is a
+        # finding only once the fleet it stopped is provably dead. A gate that reddens the
+        # moment a posture is picked is one people learn to ignore.
+        _loop("tickets", ran_ago=dt.timedelta(seconds=30))
+        health = self._health(
+            admitted=[], mode=_mode(name="off", entries={"tickets": False}), registry=(_mini("tickets"),)
+        )
+        assert health.ok
+        assert "FAIL" not in "\n".join(health.lines())
+
+    def test_the_json_carries_the_fleet_verdict_it_measured(self) -> None:
+        names = ("tickets",)
+        _loop("tickets", ran_ago=dt.timedelta(hours=7))
+        payload = self._health(
+            admitted=[],
+            mode=_mode(name="off", entries=dict.fromkeys(names, False)),
+            registry=(_mini("tickets"),),
+        ).as_json()
+        assert payload["fleet_admits"] is False
 
     def test_one_deliberately_suppressed_loop_does_not_fail(self) -> None:
         # The trust test: an operator who turned `review` off for the week must not be
@@ -432,7 +467,7 @@ class TestLoopHealth(_LoopTableCase):
         _loop("review", ran_ago=dt.timedelta(hours=7))
         # The forced plane is this test's INPUT, so it reads the real one — stubbing it
         # empty would grade the arm against a plane the test never wrote.
-        LoopState.objects.override("review", on=False)
+        Loop.objects.set_manual_override("review", runs=False, reason="test override")
         health = self._health(
             admitted=["tickets"],
             mode=_mode(),
@@ -597,7 +632,7 @@ class TestSuppressionStaysOnTheNarrowVerdict(_LoopTableCase):
     """
 
     def test_a_mask_masked_member_is_suppressed_not_unexplained(self) -> None:
-        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7), enabled=True)
+        _loop("tickets", cadence=300, ran_ago=dt.timedelta(hours=7))
         Mode.objects.create(name="slot-narrow", entries={"tickets": False})
         schedule = ModeSchedule.objects.create(name="calendar-narrow", timezone="UTC")
         ModeScheduleSlot.objects.create(
@@ -611,77 +646,3 @@ class TestSuppressionStaysOnTheNarrowVerdict(_LoopTableCase):
             health = loop_health(timezone.now())
         assert [loop.name for loop in health.stale] == ["tickets"]
         assert health.unexplained == ()
-
-
-@django.test.override_settings(USE_TZ=True)
-class TestKillSwitchIsAMeasuredCause(_LoopTableCase):
-    """The kill-switch stops every chain BEFORE admission, so the verdict must measure it.
-
-    ``loop_timer`` step 0 returns ``halted`` while ``loop_runner_enabled`` is OFF and
-    never re-enqueues a successor, while ``ensure_loop_timers`` — which the switch does
-    not gate — re-heads each drained chain every five minutes. The fleet therefore keeps
-    a full RUNNING -> SUCCESSFUL heartbeat and does no work, and the mode is untouched:
-    naming it sends the operator to ``t3 loop preset``, which stopped nothing.
-    """
-
-    def _health(
-        self,
-        *,
-        registry: tuple[MiniLoop, ...],
-        runner_on: bool,
-        admitted: list[str] | None = None,
-        mode: ResolvedMode | None = None,
-    ) -> LoopHealth:
-        with (
-            patch(_REGISTRY_SEAM, return_value=registry),
-            patch(_ADMITTED_SEAM, return_value=[loop.name for loop in registry] if admitted is None else admitted),
-            patch(_MODE_SEAM, return_value=mode or _mode()),
-            patch(_HOLDS_SEAM, return_value=(set(), {})),
-            patch(_RUNNER_SEAM, return_value=runner_on),
-        ):
-            return loop_health(timezone.now())
-
-    def test_a_frozen_fleet_under_an_off_kill_switch_names_the_kill_switch(self) -> None:
-        # The box's exact shape: every loop ADMITTED, and not one has ticked — so the
-        # mode demonstrably is not what stopped them.
-        names = ("tickets", "dispatch")
-        for name in names:
-            _loop(name, ran_ago=dt.timedelta(hours=7))
-        health = self._health(registry=tuple(_mini(name) for name in names), runner_on=False)
-        rendered = "\n".join(health.lines())
-        assert health.frozen_fleet
-        assert not health.ok
-        assert "loop_runner_enabled" in rendered
-        assert "loop preset auto" not in rendered
-
-    def test_a_frozen_fleet_with_the_kill_switch_on_still_names_the_mode(self) -> None:
-        # The control: the mode incident this cause line was written for must survive.
-        names = ("tickets", "dispatch")
-        for name in names:
-            _loop(name, ran_ago=dt.timedelta(hours=7))
-        health = self._health(
-            registry=tuple(_mini(name) for name in names),
-            runner_on=True,
-            admitted=[],
-            mode=_mode(name="offline", entries=dict.fromkeys(names, False)),
-        )
-        rendered = "\n".join(health.lines())
-        assert health.frozen_fleet
-        assert "'offline'" in rendered
-        assert "loop preset auto" in rendered
-        assert "loop_runner_enabled" not in rendered
-
-    def test_the_json_carries_the_kill_switch_the_verdict_measured(self) -> None:
-        _loop("tickets", ran_ago=dt.timedelta(hours=7))
-        payload = self._health(registry=(_mini("tickets"),), runner_on=False).as_json()
-        assert payload["loop_runner_enabled"] is False
-        assert payload["frozen_fleet"] is True
-
-    def test_an_off_kill_switch_alone_does_not_fail_a_ticking_fleet(self) -> None:
-        # Anti-vacuity: the switch is a sanctioned operator action, so it is a finding
-        # only once the fleet it stopped is provably dead. A gate that reddens the
-        # moment the switch is flipped is one people learn to ignore.
-        _loop("tickets", ran_ago=dt.timedelta(seconds=30))
-        health = self._health(registry=(_mini("tickets"),), runner_on=False)
-        assert health.ok
-        assert "FAIL" not in "\n".join(health.lines())

@@ -30,6 +30,7 @@ import typer
 from teatree.utils.editable_pth import host_root_for_checkout
 from teatree.utils.install_headroom import install_headroom_refusal
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
+from teatree.utils.uv_constraints import uv_constraints_args
 from teatree.utils.uv_overrides import uv_overrides_args
 
 type SubprocessRunner = Callable[..., CompletedProcess[str]]
@@ -89,7 +90,16 @@ def _reinstall_argv(uv_bin: str, source: Path) -> list[str]:
     dispatch. Redeclaring the host here keeps ``t3 update`` and the loop's
     deferred-reinstall drain from disarming the install they are refreshing.
     """
-    argv = [uv_bin, "tool", "install", "--editable", str(source), *uv_overrides_args(source), "--reinstall"]
+    argv = [
+        uv_bin,
+        "tool",
+        "install",
+        "--editable",
+        str(source),
+        *uv_overrides_args(source),
+        *uv_constraints_args(source),
+        "--reinstall",
+    ]
     host = host_root_for_checkout(source)
     return [*argv, "--with-editable", str(host)] if host is not None else argv
 

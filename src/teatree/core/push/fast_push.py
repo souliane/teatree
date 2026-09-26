@@ -10,7 +10,14 @@ overlay-leak terms + opaque IDs (``overlay_leak_terms`` / ``find_opaque_ids``);
 and the public-repo commit-author identity gate (#730). Author/committer email
 is commit metadata a diff never shows, so that fourth gate refuses a non-noreply
 identity on a PUBLIC GitHub remote exactly as the ``refuse-public-push-with-leak``
-pre-push hook does.
+pre-push hook does. The pushed branch NAME rides the content gates as one more
+scanned path, mirroring that hook's ref-name scan: a name is published the moment
+the push lands and survives branch deletion in ``refs/pull/*``. Scanning the name
+only holds if the push PUBLISHES that name, so the push names its destination
+explicitly (``refs/heads/x:refs/heads/x``, ``--no-follow-tags``): a
+``remote.origin.push`` remap and ``push.followTags`` would each otherwise publish a
+ref the scan never saw. Both defeat this lane alone — git hands the pre-push hook
+the real destination ref.
 
 The gates run over the PUSH RANGE, not the staged delta. ``git push`` here bypasses the
 hook chain, so it delivers every committed-but-unpushed commit on the branch — and three
@@ -45,6 +52,7 @@ from teatree.core.forge_pr_probe import forge_cli_env, probe_github_open_pr, pro
 from teatree.core.public_identity import is_noreply_email
 from teatree.core.push.push_range import PushRange
 from teatree.core.worktree.branch_landed import pr_from_branch_would_be_empty
+from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
 from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
@@ -67,6 +75,7 @@ EMPTY_DELTA_PR_SKIP: Final = "skipped-empty-delta"
 _PRIVACY_FINDINGS_EXIT_CODE = 3
 _MESSAGE_PATH = "<commit-message>"
 _RANGE_MESSAGE_PATH = "<unpushed-commit-messages>"
+_REF_NAME_PATH = "<ref-name>"
 _OVERLAY_TERMS_ENV = "TEATREE_OVERLAY_LEAK_TERMS"
 _DEFAULT_BRANCH_NAMES: Final[frozenset[str]] = frozenset({"main", "master", "development", "release"})
 
@@ -108,15 +117,21 @@ class GhForge:
         return probe_github_open_pr(self._repo, branch).url_or_empty()
 
     def create_pr(self, *, branch: str, title: str, body: str) -> str:
+        env = forge_cli_env(self._repo)
+        if env is None:
+            return ""
         result = run_checked(
             ["gh", "pr", "create", "--head", branch, "--title", title, "--body", body],
             cwd=self._repo,
-            env=forge_cli_env(),
+            env=env,
         )
         return result.stdout.strip()
 
     def update_pr(self, *, url: str, body: str) -> None:
-        run_checked(["gh", "pr", "edit", url, "--body", body], cwd=self._repo, env=forge_cli_env())
+        env = forge_cli_env(self._repo)
+        if env is None:
+            return
+        run_checked(["gh", "pr", "edit", url, "--body", body], cwd=self._repo, env=env)
 
 
 class GlabForge:
@@ -127,20 +142,34 @@ class GlabForge:
         return probe_gitlab_open_pr(self._repo, branch).url_or_empty()
 
     def create_pr(self, *, branch: str, title: str, body: str) -> str:
+        env = self._env()
+        if env is None:
+            return ""
         result = run_checked(
             ["glab", "mr", "create", "--source-branch", branch, "--title", title, "--description", body, "--yes"],
             cwd=self._repo,
-            env=forge_cli_env(),
+            env=env,
         )
         urls = [token for token in result.stdout.split() if token.startswith("http")]
         return urls[-1] if urls else ""
 
     def update_pr(self, *, url: str, body: str) -> None:
+        env = self._env()
+        if env is None:
+            return
         run_checked(
             ["glab", "mr", "update", url.rsplit("/", 1)[-1], "--description", body],
             cwd=self._repo,
-            env=forge_cli_env(),
+            env=env,
         )
+
+    def _env(self) -> dict[str, str] | None:
+        resolution = resolve_repo_token(str(self._repo), credential="gitlab_token")
+        if resolution.state is not ForgeTokenState.TOKEN:
+            return None
+        env = dict(os.environ)
+        env["GITLAB_TOKEN"] = resolution.token
+        return env
 
 
 def _empty_delta_reason(branch: str, target: str) -> str:
@@ -182,11 +211,14 @@ def _public_github_slug(repo: Path) -> str | None:
     slug = git_remote.slug_from_remote(remote)
     if "/" not in slug or shutil.which("gh") is None:
         return None
+    env = forge_cli_env(repo)
+    if env is None:
+        return None
     result = run_allowed_to_fail(
         ["gh", "repo", "view", slug, "--json", "visibility", "--jq", ".visibility"],
         expected_codes=None,
         cwd=repo,
-        env=forge_cli_env(),
+        env=env,
     )
     if result.returncode != 0:
         return None
@@ -217,7 +249,7 @@ def _push_identities(repo: Path, push_range: PushRange) -> list[str]:
 
 
 class LeakGateScan:
-    """The four leak gates, over the whole PUSH RANGE plus the staged diff and message.
+    """The four leak gates, over the whole PUSH RANGE plus the staged diff, message and branch name.
 
     The range is what ``git push`` will actually deliver; the staged diff and the
     pending message are what this invocation is about to add to it. Both are in scope
@@ -225,11 +257,20 @@ class LeakGateScan:
     earlier turn, range-only misses the commit this call has not made yet.
     """
 
-    def __init__(self, repo: Path, staged_files: list[str], message_text: str, push_range: PushRange) -> None:
+    def __init__(
+        self,
+        repo: Path,
+        staged_files: list[str],
+        message_text: str,
+        push_range: PushRange,
+        *,
+        branch: str,
+    ) -> None:
         self._repo = repo
         self._files = staged_files
         self._message_text = message_text
         self._range = push_range
+        self._branch = branch
 
     def run(self) -> list[LeakFinding]:
         lines_by_path = self._added_lines_by_path()
@@ -263,8 +304,11 @@ class LeakGateScan:
             by_path[file] = added
         for path, lines in _added_lines_from_diff(self._range.diff_text).items():
             by_path.setdefault(path, []).extend(lines)
-        by_path[_MESSAGE_PATH] = self._message_text.splitlines()
-        by_path[_RANGE_MESSAGE_PATH] = self._range.commit_messages.splitlines()
+        # setdefault, not assignment: a real file named like one of these synthetic
+        # paths would otherwise lose its own lines before the gates read them.
+        by_path.setdefault(_MESSAGE_PATH, []).extend(self._message_text.splitlines())
+        by_path.setdefault(_RANGE_MESSAGE_PATH, []).extend(self._range.commit_messages.splitlines())
+        by_path.setdefault(_REF_NAME_PATH, []).append(self._branch)
         return by_path
 
     def _full_file_lines(self, file: str) -> list[str]:
@@ -335,6 +379,7 @@ class LeakGateScan:
             pairs.extend(zip(diff_text.splitlines(), _diff_line_paths(diff_text), strict=True))
         pairs.extend((line, _MESSAGE_PATH) for line in self._message_text.splitlines())
         pairs.extend((line, _RANGE_MESSAGE_PATH) for line in self._range.commit_messages.splitlines())
+        pairs.append((self._branch, _REF_NAME_PATH))
         return pairs
 
     @staticmethod
@@ -428,14 +473,28 @@ class FastPusher:
         ).stdout.splitlines()
         message = self._message or f"chore(wip): fast-push checkpoint ({branch})"
         message_text = f"{message}\n{self._remaining}" if self._remaining else message
-        findings = LeakGateScan(self._repo, staged, message_text, push_range).run()
+        findings = LeakGateScan(self._repo, staged, message_text, push_range, branch=branch).run()
         if findings:
             return FastPushOutcome(ok=False, branch=branch, executed_gates=LEAK_GATES, findings=findings)
         outcome = FastPushOutcome(ok=True, branch=branch, executed_gates=LEAK_GATES, message=message)
         if staged:
             self._commit(message)
             outcome.committed = True
-        run_checked(["git", "push", "--no-verify", "-u", "origin", branch], cwd=self._repo)
+        run_checked(
+            # An explicit same-name refspec overrides any `remote.origin.push` remap, and
+            # `--no-follow-tags` any `push.followTags`: both would publish a ref the
+            # ref-name gate above never scanned.
+            [
+                "git",
+                "push",
+                "--no-verify",
+                "--no-follow-tags",
+                "-u",
+                "origin",
+                f"refs/heads/{branch}:refs/heads/{branch}",
+            ],
+            cwd=self._repo,
+        )
         outcome.pushed = True
         self._upsert_pr(outcome)
         return outcome

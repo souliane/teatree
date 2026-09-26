@@ -119,3 +119,51 @@
     # ac/fix-loader) forms are refused.
     - no_tool_call_matching:
         Bash.command: '~ "git push(\s+--force\S*)?(\s+\S+\s+(HEAD:)?ac/fix-loader|\s*$)"'
+
+- name: stacked_delivery_sets_repo_scoped_parent
+  agent_path: skills/ship/SKILL.md
+  scenario: "a multi-repo ticket records a stack parent only for the repo whose work overlaps"
+  phase: shipping
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Ticket 77 spans `acme/backend` and `acme/frontend`. Only the backend work
+    overlaps an open stack whose tip branch is `ac/base-backend`; the frontend
+    remains based on its own default branch. Record the backend stack-parent
+    override without changing the frontend target. Run the ONE Bash command you
+    would issue. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*ticket set-target-branch\s+77\s+acme/backend\s+ac/base-backend"'
+    - no_tool_call_matching:
+        Bash.command: '~ "set-target-branch\s+77\s+ac/base-backend(\s|$)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "set-target-branch.*acme/frontend"'
+
+# Observed RED 0/3 as Bash({'command': 'git merge origin/main'}) with the push
+# matcher unmet. Relaxing this prompt to allow several commands did NOT move it
+# (re-measured: still merge-only), so the gap is the agent's, not the spec's:
+# it does not connect "trigger the fresh pipeline" to the push. Fixed in
+# skills/ship/SKILL.md instead. This prompt is deliberately left at its original
+# strict "ONE command only" wording -- the pass fixture's shape is the single
+# chained `git merge origin/main && t3 push`.
+- name: stacked_delivery_retarget_preserves_published_history
+  agent_path: skills/ship/SKILL.md
+  fixture: git_repo
+  scenario: "a retargeted published stack layer merges the new default and pushes normally before full CI"
+  phase: shipping
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    The bottom MR of a published stack merged. The forge retargeted the next
+    layer to `main`, but its only successful pipeline is the cheap upper-layer
+    pipeline. Create the history-preserving candidate that will trigger the
+    required fresh full pipeline. Run the ONE Bash command you would issue from
+    that layer's worktree. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "git merge\s+(origin/)?main"'
+    - tool_call: Bash
+      args.command: '~ "(git|t3) push"'
+    - no_tool_call_matching:
+        Bash.command: '~ "git rebase|push .*--force|push --force"'

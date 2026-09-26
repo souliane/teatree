@@ -14,18 +14,10 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django_fsm import can_proceed
 
-from teatree.core.models import (
-    DeferredQuestion,
-    E2eMandatoryRun,
-    PlanArtifact,
-    Session,
-    Task,
-    TaskAttempt,
-    Ticket,
-    Worktree,
-)
+from teatree.core.models import DeferredQuestion, E2eMandatoryRun, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
+from tests.factories import record_test_plan, waive_rubric
 from tests.teatree_core.models._shared import (
     _advance_started_to_planned,
     _advance_ticket_to_tested,
@@ -259,6 +251,7 @@ class TestTicketTransitions(TestCase):
         ticket.save()
         ticket.retrospect()
         ticket.save()
+        waive_rubric(ticket)
         ticket.mark_delivered()
         ticket.save()
 
@@ -569,7 +562,7 @@ class TestTicketArtifacts(TestCase):
 
     def test_collects_plan_artifacts(self) -> None:
         ticket = Ticket.objects.create()
-        PlanArtifact.record(ticket=ticket, plan_text="the plan", recorded_by="planner")
+        record_test_plan(ticket, plan_text="the plan", recorded_by="planner")
 
         artifacts = ticket.artifacts()
 
@@ -618,7 +611,7 @@ class TestTicketArtifacts(TestCase):
             db_name="wt_273",
             extra={"worktree_path": "/ws/273/example-repo"},
         )
-        PlanArtifact.record(ticket=ticket, plan_text="plan", recorded_by="planner")
+        record_test_plan(ticket, plan_text="plan", recorded_by="planner")
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         Task.objects.create(ticket=ticket, session=session, phase="coding", result_artifact_path="/runs/a.jsonl")
         E2eMandatoryRun.record(

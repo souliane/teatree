@@ -62,7 +62,9 @@ def build_lane_b_toolsets(config: LaneBToolConfig, *, soft_gated: frozenset[str]
     if config.fs_root is not None:
         allow_write = allowed is None or "write_file" in allowed
         capability_toolsets.append(
-            build_filesystem_toolset(config.fs_root, allow_write=allow_write, skill_files=skill_files)
+            build_filesystem_toolset(
+                config.fs_root, allow_write=allow_write, read_roots=config.read_roots, skill_files=skill_files
+            )
         )
     elif allowed is None or "read_file" in allowed:
         capability_toolsets.append(build_skill_file_toolset(skill_files))

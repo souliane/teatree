@@ -75,6 +75,7 @@ def _call(specs: list[EvalSpec], *, summary_json: Path | None) -> None:
 
 def test_summary_json_written_before_the_red_gate_exits(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("teatree.cli.eval.single_trial.make_runner", lambda *_a, **_k: _StubRunner())
+    monkeypatch.delenv("CI_COMMIT_SHA", raising=False)
     monkeypatch.setenv("GITHUB_SHA", "deadbeef")
     out = tmp_path / "eval-heal.json"
     with pytest.raises(SystemExit) as exc:

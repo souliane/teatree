@@ -135,7 +135,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ inputs.pr_ref || github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
@@ -213,7 +213,7 @@ jobs:
             set -euo pipefail
             mkdir -p "$HEAL_DIR"
             if [ -z "$EVAL_SCENARIOS" ]; then
-              uv run t3 eval run --backend api --escalate-on-fail \
+              uv run t3 eval run --backend api --escalate-on-fail --judge \
                 --effort high --require-executed --docker --shard "$EVAL_SHARD" \
                 --transcript-html "$HEAL_DIR/eval-transcripts-$SUFFIX.html" \
                 --summary-json "$HEAL_DIR/eval-heal-shard-$SUFFIX.json"
@@ -223,7 +223,7 @@ jobs:
               for name in "${NAMES[@]}"; do
                 name="$(echo "$name" | xargs)"
                 [ -z "$name" ] && continue
-                uv run t3 eval run "$name" --backend api --escalate-on-fail \
+                uv run t3 eval run "$name" --backend api --escalate-on-fail --judge \
                   --effort high --require-executed --docker \
                   --transcript-html "$HEAL_DIR/eval-transcripts-$name.html" \
                   --summary-json "$HEAL_DIR/eval-heal-$name.json" || rc=$?
@@ -266,7 +266,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          ref: ${{ inputs.pr_ref || github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true

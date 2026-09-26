@@ -14,6 +14,7 @@ invoke the script the same way ``ToolRunner.run_script`` does so the
 entrypoint is exercised, not mocked.
 """
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -166,3 +167,44 @@ class TestDocsDescribingTheRuleDoNotTrip:
         body = "Document that `\U0001f916 Generated with` in backticks is the banned footer we reject.\n"
         result = _run(body)
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+_RULE_SKILL = Path(__file__).resolve().parents[1] / "skills" / "rules" / "references" / "on-behalf-posting.md"
+_BANNED_LIST_HEADING = "**Banned trailers and footers in any user-on-behalf artifact:**"
+_LITERAL_RE = re.compile(r"`([^`]+)`|\"([^\"]+)\"")
+
+
+def published_banned_strings() -> list[str]:
+    """Every literal the rule's own banned-trailer bullet list publishes."""
+    lines = _RULE_SKILL.read_text(encoding="utf-8").splitlines()
+    start = lines.index(_BANNED_LIST_HEADING) + 1
+    literals: list[str] = []
+    for line in lines[start:]:
+        if not line.strip():
+            if literals:
+                break
+            continue
+        if not line.startswith("- "):
+            break
+        literals += [backticked or quoted for backticked, quoted in _LITERAL_RE.findall(line)]
+    return literals
+
+
+class TestScannerCoversEveryPublishedString:
+    """The scanner and ``/t3:rules`` cannot drift apart.
+
+    The cases are DERIVED from the rule's own bullet list rather than restated
+    here, so a string added to the rule fails this test until the scanner
+    catches it — the drift that let five published footers through unscanned.
+    """
+
+    def test_the_published_list_is_readable(self) -> None:
+        published = published_banned_strings()
+        assert len(published) >= 10, f"parsed only {published!r} — the rule's list moved or changed shape"
+
+    def test_every_published_string_is_a_finding(self) -> None:
+        uncaught = [banned for banned in published_banned_strings() if _run(banned).returncode == 0]
+        assert not uncaught, (
+            f"/t3:rules publishes {uncaught} as banned trailers but the scanner passes them. "
+            f"Add a pattern to scripts/ai_signature_scan.py, or drop the string from the rule."
+        )

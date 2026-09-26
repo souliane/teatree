@@ -15,14 +15,16 @@ row is the truth, and the guarded :meth:`RubricCriterion.record_grade` factory s
 ``MergeClear``'s validation primitives (``is_commit_sha``, ``is_independent_reviewer_identity``) so
 the rubric grade contract and the CLEAR/verdict contract cannot drift apart.
 
-Population (``ticket rubric-set``) accepts EXPLICIT criteria only — auto-derivation
-from ``/plan`` is the [#2240](https://github.com/souliane/teatree/issues/2240) follow-up.
+The plan is the PRIMARY producer: ``PlanArtifact.record`` turns its manifest's
+``acceptance_criteria`` into rows via :meth:`Rubric.add_criteria`. ``ticket rubric-set``
+is the operator seam alongside it, taking explicit criteria.
 The LLM grader prior art lives in :mod:`teatree.eval.judge` (``JudgeSpec.rubric`` +
 ``ClaudeJudge.grade``, the in-process Agent SDK); it is kept SEPARATE here on
 purpose — extracting a shared grader would couple the metered-LLM path to this
 DB-record path.
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
@@ -31,10 +33,33 @@ from django.utils import timezone
 from teatree.core.models.merge_clear import SHA_FULL_LEN, is_commit_sha
 from teatree.core.models.reviewer_identity import is_independent_reviewer_identity, unrecognised_reviewer_message
 from teatree.core.models.ticket import Ticket
+from teatree.core.models.types import RubricGrade
 from teatree.quality.falsifiable_criteria import falsifiability_violation
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from django.db.models import QuerySet
+
+
+#: The probe-first standard, one gradeable criterion per phase that has one.
+#:
+#: ``core.Rubric`` shipped with a CLI, a manager, a done-gate and an error type, and zero
+#: rows — a checklist nobody writes is one nobody grades, so the gate over it could only ever
+#: be armed against an empty table. These are the content it lacked: the standard the factory
+#: has to hold itself to WITHOUT the owner in the loop, stated so a verifier can fail it.
+#:
+#: Each is positive by construction — it names something that must be PRESENT — because a
+#: criterion satisfied by inaction certifies nothing, which is what
+#: :func:`~teatree.quality.falsifiable_criteria.falsifiability_violation` refuses at
+#: population and what a seeded criterion must never be.
+PHASE_CRITERIA: dict[str, str] = {
+    "planning": "the plan cites at least one measurement of the LIVE system, with its venue named",
+    "design": "each claim about existing behaviour names the consumer that was read, not prose inferred from it",
+    "investigation": "every empty result is paired with a control proving the probe would have found something",
+    "fix": "a RED pin exists and was observed failing before the fix",
+    "coding": "changed behaviour is asserted by a test that fails without the change",
+}
 
 
 class RubricError(ValueError):
@@ -60,8 +85,8 @@ class Rubric(models.Model):
     the criteria atomically, so re-running ``rubric-set`` re-states the checklist
     rather than stacking duplicates. The done-gate (:func:`teatree.core.gates.
     rubric_gate.check_rubric_satisfied`) reads :meth:`is_fully_passed_at` against the
-    PR's live head SHA; an empty / ungraded / failed / stale-SHA / maker-graded rubric
-    is NOT fully passed — the gate fails CLOSED.
+    PR's live head SHA; an empty / ungraded / failed / uncited / stale-SHA / maker-graded
+    rubric is NOT fully passed — the gate fails CLOSED.
     """
 
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="rubrics")
@@ -120,60 +145,151 @@ class Rubric(models.Model):
             )
         return rubric
 
-    def is_fully_passed_at(self, head_sha: str) -> bool:
-        """True iff EVERY criterion is PASS by an independent grader at ``head_sha``.
+    @classmethod
+    def add_criteria(cls, ticket: Ticket, criteria: list[str]) -> "Rubric | None":
+        """ADD *criteria* to *ticket*'s rubric, idempotent on text; ``None`` when none are given.
 
-        Fail-closed by construction: an empty rubric (no criteria) is False; any
-        criterion still PENDING or FAIL is False; a criterion graded against a
-        different (stale) ``reviewed_sha`` is False; a criterion with an empty or
-        maker/coding-agent/loop ``grader_identity`` is False. The SHA compare is
-        case-insensitive on the stripped value so a mixed-case forge ``headRefOid``
-        cannot silently miss. Only an all-PASS, non-maker-graded, head-bound rubric
-        satisfies the done-gate.
+        Additive rather than :meth:`populate`'s replace, and that is the whole design: a
+        replace resets every grade, so a ticket graded on its plan would reach coding with
+        that grade silently gone, and an operator's own checklist would be overwritten.
+        The plan producer relies on both properties — ``plan-reaffirm`` re-records the
+        same manifest against a new base SHA, and must not destroy a verifier's grades.
+
+        The checklist is still refused when every criterion is satisfiable by inaction
+        (:func:`~teatree.quality.falsifiable_criteria.falsifiability_violation`), judged
+        on the criteria being ADDED: an unfalsifiable set certifies nothing whether it
+        arrives through the operator seam or the plan.
         """
-        target = head_sha.strip().lower()
-        if not target:
-            return False
-        criteria = list(self.criteria.all())
-        if not criteria:
-            return False
-        return all(criterion.is_passing_at(target) for criterion in criteria)
+        cleaned = [text.strip() for text in criteria if text.strip()]
+        if not cleaned:
+            return None
+        violation = falsifiability_violation(cleaned)
+        if violation:
+            raise RubricError(violation)
+        with transaction.atomic():
+            rubric, _ = cls.objects.get_or_create(ticket=ticket)
+            existing = set(rubric.criteria.values_list("text", flat=True))
+            ordinal = rubric.criteria.count()
+            for text in cleaned:
+                if text in existing:
+                    continue
+                RubricCriterion.objects.create(rubric=rubric, ordinal=ordinal, text=text)
+                existing.add(text)
+                ordinal += 1
+        return rubric
 
-    def block_reason(self, head_sha: str) -> str:
-        """The precise why-blocked clause for the done-gate remediation message.
+    @classmethod
+    def seed_phase_criterion(cls, ticket: Ticket, phase: str) -> "Rubric | None":
+        """ADD *phase*'s standing criterion to *ticket*'s rubric; ``None`` when it has none."""
+        text = PHASE_CRITERIA.get(phase)
+        if text is None:
+            return None
+        return cls.add_criteria(ticket, [text])
 
-        Mirrors :func:`teatree.core.gates.anti_vacuity_gate._block_reason`: it names
-        the FIRST failing condition (no criteria, an ungraded/failed criterion, a
-        maker grader, or a stale SHA) so the remediation points at exactly what to fix.
+    @staticmethod
+    def normalize_grades(payload: object) -> list[RubricGrade]:
+        """Every item of *payload* in the :class:`RubricGrade` shape, or a refusal.
+
+        The ONE per-item normaliser both producers run — the ``rubric-grade`` operator
+        command and the reviewing recorder's returned envelope. The recorder normalised
+        only the CONTAINER, so a malformed ITEM (a bare string, a ``grade`` key where
+        ``status`` belongs, an ordinal that is not a whole number) raised out of
+        :meth:`ungraded_ordinals` / :meth:`apply_grades` instead of being refused — and a
+        traceback is not a refusal any agent-facing retry can act on.
+
+        A payload that is not a list graded nothing, so it normalises to ``[]`` and the
+        caller's coverage question answers it: naming the criteria left PENDING says more
+        than a shape refusal would.
         """
-        target = head_sha.strip().lower()
+        if not isinstance(payload, list):
+            return []
+        grades: list[RubricGrade] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                msg = f"each grade must be an object, not a {type(item).__name__}: {item!r}"
+                raise RubricError(msg)
+            if item.get("ordinal") is None or item.get("status") is None:
+                msg = f"each grade needs an ordinal and a status: {item!r}"
+                raise RubricError(msg)
+            grades.append(
+                RubricGrade(
+                    ordinal=_grade_ordinal(item["ordinal"]),
+                    status=str(item["status"]),
+                    rationale=str(item.get("rationale", "")),
+                )
+            )
+        return grades
+
+    def ungraded_ordinals(self, grades: "list[RubricGrade]") -> list[int]:
+        """The criteria *grades* names no grade for, ascending — the coverage question.
+
+        Asked BEFORE anything is stamped: a verdict that leaves a criterion PENDING
+        fails the done-gate closed, so the producer refuses the whole envelope rather
+        than record a verdict the merge can never clear. An ordinal no criterion
+        carries contributes nothing — grading something that does not exist is not
+        coverage of something that does.
+        """
+        named = {int(grade["ordinal"]) for grade in grades if grade.get("ordinal") is not None}
+        return [criterion.ordinal for criterion in self.criteria.all() if criterion.ordinal not in named]
+
+    def apply_grades(self, grades: "list[RubricGrade]", *, grader_identity: str, reviewed_sha: str) -> int:
+        """Stamp every grade through the guarded factory, all-or-nothing; return the count.
+
+        ONE atomic, so a refusal on the last grade un-stamps the first: a mid-batch
+        refusal used to leave the earlier criteria graded and the rest PENDING, which
+        reads to the done-gate as a half-graded rubric nobody chose to record.
+
+        An unknown ordinal and an invalid grade (uncited PASS / maker grader / bad SHA)
+        both raise :class:`RubricError` — one refusal type, so a caller that must
+        translate a refusal into an envelope error catches once.
+        """
+        graded = 0
+        with transaction.atomic():
+            for grade in grades:
+                ordinal = grade["ordinal"]
+                try:
+                    criterion = self.criteria.get(ordinal=ordinal)
+                except RubricCriterion.DoesNotExist as exc:
+                    msg = f"no criterion with ordinal {ordinal!r} on rubric {self.pk}"
+                    raise RubricError(msg) from exc
+                criterion.record_grade(
+                    status=str(grade["status"]),
+                    grader_identity=grader_identity,
+                    reviewed_sha=reviewed_sha,
+                    rationale=str(grade.get("rationale", "")),
+                )
+                graded += 1
+        return graded
+
+    def unverified_reason(self, head_sha: str | None = None, *, waived: bool = False) -> str:
+        """The first reason this rubric is not fully verified, or ``""``.
+
+        The ONE ladder both consumers walk — the delivered-time gate passes no
+        *head_sha* (a delivered ticket's head has long since moved past the reviewed
+        one), the merge gate passes the live head so the stale rung applies. Each rung
+        NAMES the criteria that failed it, so the remediation points at what to fix
+        rather than at a count.
+
+        *waived* is the human-authorized plan-bypass, and it keeps exactly one rung: a
+        recorded FAIL. A bypass says "there was nothing to declare"; it cannot say "the
+        verifier's FAIL does not count".
+        """
         criteria = list(self.criteria.all())
-        if not criteria:
+        if not waived and not criteria:
             return "the rubric has no criteria recorded"
-        pending = [c for c in criteria if c.status == RubricCriterion.Status.PENDING]
-        if pending:
-            return (
-                f"{len(pending)} of {len(criteria)} criteria are ungraded (fail-closed) — "
-                f"every criterion must be graded"
-            )
-        failed = [c for c in criteria if c.status == RubricCriterion.Status.FAIL]
-        if failed:
-            return f"{len(failed)} of {len(criteria)} criteria are graded FAIL — every criterion must PASS"
-        maker_graded = [c for c in criteria if not is_independent_reviewer_identity(c.grader_identity)]
-        if maker_graded:
-            return (
-                f"{len(maker_graded)} of {len(criteria)} criteria were graded by an identity that is not a "
-                f"recognised independent verifier — a rubric is graded by an INDEPENDENT verifier, never the maker"
-            )
-        stale = [c for c in criteria if c.reviewed_sha != target]
-        if stale:
-            recorded = stale[0].reviewed_sha
-            return (
-                f"{len(stale)} of {len(criteria)} criteria were graded against head "
-                f"{recorded[:8] or recorded!r}, not the current head {target[:8] or target!r} — the grade is stale "
-                f"(force-push / new commits); re-grade at the current SHA"
-            )
-        return ""
+        for rung in _CRITERION_RUNGS:
+            if waived and rung is not _FAIL_RUNG:
+                continue
+            offending = [c for c in criteria if rung.matches(c)]
+            if offending:
+                return rung.message(offending, len(criteria))
+        if head_sha is None or waived:
+            return ""
+        return _stale_reason(criteria, head_sha)
+
+    def is_fully_passed_at(self, head_sha: str) -> bool:
+        """True iff EVERY criterion is a cited PASS by an independent grader at ``head_sha``."""
+        return not self.unverified_reason(head_sha)
 
 
 class RubricCriterion(models.Model):
@@ -184,8 +300,8 @@ class RubricCriterion(models.Model):
     ``reviewed_sha`` (so the head-bind compare cannot silently fail), a non-empty
     ``grader_identity`` that is NOT a maker/coding-agent/loop role (the maker can
     never self-attest a criterion — ``is_independent_reviewer_identity``), and a terminal
-    ``pass``/``fail`` status. An ungraded criterion stays PENDING and fails the
-    done-gate closed.
+    ``pass``/``fail`` status, and — for a PASS — a non-empty ``rationale`` citing what
+    proves it. An ungraded criterion stays PENDING and fails the done-gate closed.
     """
 
     class Status(models.TextChoices):
@@ -230,6 +346,15 @@ class RubricCriterion(models.Model):
             raise RubricError(msg)
         graded_status = self.Status(normalized_status)
 
+        cited = rationale.strip()
+        if graded_status == self.Status.PASS and not cited:
+            msg = (
+                "a PASS needs a rationale citing what proves the criterion — a unit, integration, functional "
+                "or e2e test, named in free-form prose. An uncited PASS is the 'declared done on an unrun test' "
+                "claim this rubric exists to refuse (a FAIL needs no citation)"
+            )
+            raise RubricError(msg)
+
         grader = grader_identity.strip()
         if not grader:
             msg = "grader_identity is required and must be non-empty"
@@ -250,21 +375,105 @@ class RubricCriterion(models.Model):
         self.status = graded_status
         self.grader_identity = grader
         self.reviewed_sha = reviewed_sha.strip().lower()
-        self.rationale = rationale.strip()
+        self.rationale = cited
         self.graded_at = timezone.now()
         self.save(update_fields=["status", "grader_identity", "reviewed_sha", "rationale", "graded_at"])
 
-    def is_passing_at(self, head_sha: str) -> bool:
-        """True iff this criterion is a PASS by an independent grader bound to ``head_sha``.
+    def unverified_reason(self) -> str:
+        """Why this criterion is not a cited PASS by an independent grader, or ``""``.
 
-        All four conditions are required: ``status == pass``; a non-empty
-        ``grader_identity`` that positively identifies an independent verifier; and the
-        recorded ``reviewed_sha`` equals ``head_sha`` (both lower-cased). Any other
-        state — PENDING, FAIL, a maker grader, or a stale SHA — is False so the
-        rubric fails the done-gate closed.
+        The single home for per-criterion truth: :meth:`is_verified`,
+        :meth:`is_passing_at` and :meth:`Rubric.unverified_reason` all read the same
+        ordered :data:`_CRITERION_RUNGS`, so the rubric-level refusal can never
+        disagree with the criterion-level predicate.
         """
-        target = head_sha.strip().lower()
-        grader = self.grader_identity.strip()
-        return (
-            self.status == self.Status.PASS and is_independent_reviewer_identity(grader) and self.reviewed_sha == target
-        )
+        for rung in _CRITERION_RUNGS:
+            if rung.matches(self):
+                return rung.reason
+        return ""
+
+    def is_verified(self) -> bool:
+        """True iff this criterion is a CITED PASS by an independent grader, ignoring the head bind."""
+        return not self.unverified_reason()
+
+    def is_passing_at(self, head_sha: str) -> bool:
+        """True iff this criterion :meth:`is_verified` AND its grade is bound to ``head_sha``."""
+        return self.is_verified() and self.reviewed_sha == head_sha.strip().lower()
+
+
+@dataclass(frozen=True)
+class _CriterionRung:
+    """One rung of the unverified ladder: what disqualifies a criterion, and how it reads."""
+
+    matches: "Callable[[RubricCriterion], bool]"
+    reason: str
+    remedy: str
+
+    def message(self, offending: "list[RubricCriterion]", total: int) -> str:
+        return f"{len(offending)} of {total} criteria are {self.reason} — {_named(offending)} — {self.remedy}"
+
+
+def _grade_ordinal(value: object) -> int:
+    """*value* as the int the criterion lookup keys on, or a refusal naming the field.
+
+    A JSON ``"0"`` is the shape a hand-written payload most often takes and means
+    exactly criterion 0, so it is coerced. Anything that is not a whole number is
+    refused rather than silently truncated — a grade aimed at a criterion nobody can
+    name is worse than no grade.
+    """
+    if isinstance(value, bool):
+        msg = f"a grade ordinal must be an integer, not a boolean: {value!r}"
+        raise RubricError(msg)
+    try:
+        return int(str(value))
+    except (TypeError, ValueError) as exc:
+        msg = f"a grade ordinal must be an integer naming a criterion: {value!r}"
+        raise RubricError(msg) from exc
+
+
+def _named(criteria: "list[RubricCriterion]") -> str:
+    return ", ".join(f"#{criterion.ordinal} {criterion.text[:60]!r}" for criterion in criteria)
+
+
+_FAIL_RUNG = _CriterionRung(
+    matches=lambda c: c.status == RubricCriterion.Status.FAIL,
+    reason="graded FAIL",
+    remedy="every criterion must PASS",
+)
+
+#: The ladder, in refusal order. ``Rubric.unverified_reason`` reports the FIRST rung any
+#: criterion trips; a waived rubric evaluates only :data:`_FAIL_RUNG`.
+_CRITERION_RUNGS: tuple[_CriterionRung, ...] = (
+    _CriterionRung(
+        matches=lambda c: c.status == RubricCriterion.Status.PENDING,
+        reason="ungraded (fail-closed)",
+        remedy="every criterion must be graded",
+    ),
+    _FAIL_RUNG,
+    _CriterionRung(
+        matches=lambda c: not c.rationale.strip(),
+        reason="graded PASS with no rationale",
+        remedy=(
+            "a PASS must cite what proves it (a unit, integration, functional or e2e test; free-form prose naming it)"
+        ),
+    ),
+    _CriterionRung(
+        matches=lambda c: not is_independent_reviewer_identity(c.grader_identity.strip()),
+        reason="graded by an identity that is not a recognised independent verifier",
+        remedy="a rubric is graded by an INDEPENDENT verifier, never the maker",
+    ),
+)
+
+
+def _stale_reason(criteria: "list[RubricCriterion]", head_sha: str) -> str:
+    """The merge-time rung: a grade bound to a head the branch has since moved off."""
+    target = head_sha.strip().lower()
+    stale = [criterion for criterion in criteria if criterion.reviewed_sha != target]
+    if not stale:
+        return ""
+    recorded = stale[0].reviewed_sha
+    return (
+        f"{len(stale)} of {len(criteria)} criteria were graded against head "
+        f"{recorded[:8] or recorded!r}, not the current head {target[:8] or target!r} — {_named(stale)} — the grade "
+        f"is stale (force-push / new commits); re-grade at the current SHA"
+    )

@@ -60,7 +60,7 @@ _REVIEW_WITH_SHELL: Final[frozenset[str]] = _READ_ONLY | _WEB | {"shell"}
 #: Every review phase whose DELIVERABLE is a recorded verdict. All four share one
 #: read-mostly-with-shell grant (:data:`_REVIEW_WITH_SHELL`), applied from this set
 #: so the entries cannot drift apart, and all four are in
-#: ``attempt_recorder._REVIEW_VERDICT_PHASES`` — one evidence contract, one seam.
+#: ``review_envelope_recorder._REVIEW_VERDICT_PHASES`` — one evidence contract, one seam.
 #: The shell stays load-bearing for the ``codex_*`` variants: the MCP post path
 #: (:class:`teatree.cli.review.service.ReviewService`) is GitLab-only, so on a
 #: GitHub PR the shell (``t3 <overlay> review record`` / ``t3 review
@@ -72,6 +72,16 @@ _REVIEW_WITH_SHELL: Final[frozenset[str]] = _READ_ONLY | _WEB | {"shell"}
 VERDICT_REVIEW_PHASES: Final[frozenset[str]] = frozenset(
     {"reviewing", "codex_reviewing", "codex_adversarial_reviewing", "e2e_reviewing"}
 )
+
+#: The phases whose HEADLESS BRIEF returns a ``review_verdict`` envelope the orchestrator
+#: records through ``review_target_for_task`` — so the head must be resolvable from the DB
+#: for the verdict to bind to anything. Deliberately narrower than
+#: :data:`VERDICT_REVIEW_PHASES`: the ``codex_*`` and ``e2e_reviewing`` lanes record through
+#: the SHELL (``t3 <overlay> review record --reviewed-sha <sha>``), which takes the head from
+#: the reviewer's own checkout and never consults ``ticket.extra``, so gating them would
+#: refuse runs that record fine. Pinned against the brief that injects the envelope-return
+#: directive by ``tests/teatree_agents/test_phase_blocks.py``.
+ENVELOPE_VERDICT_PHASES: Final[frozenset[str]] = frozenset({"reviewing"})
 
 #: Canonical phase -> the exact set of capability tool names it may call.
 #: A read-mostly phase (requesting_review, scanning_news, answering) has NO

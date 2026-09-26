@@ -17,6 +17,7 @@ from teatree.core.backend_protocols import DraftState, PrMergeState, changed_pat
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveHeadRead
 from teatree.core.models import MergeClear
+from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.throttled_log import warn_throttled
 
@@ -27,14 +28,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _code_host_for(host_kind: str) -> "CodeHostBackend":
+def _code_host_for(host_kind: str, slug: str) -> "CodeHostBackend":
     """The merge-transport backend for *host_kind*, resolved via the registry.
 
     Core never imports ``teatree.backends`` (the §17.6.2 ``core ↛ backends``
     edge); it reaches a built backend ONLY through
-    :func:`core.backend_registry.get_backend_provider`. The token/base_url are
-    left empty — the merge-RPC runners use ambient ``gh``/``glab`` auth, the
-    same as the former in-module ``_run_gh``/``_run_glab`` did. When the
+    :func:`core.backend_registry.get_backend_provider`. GitHub authentication
+    is resolved from the overlay owning *slug* and never from ambient CLI state.
+    The GitLab HTTP transport retains its existing resolution path. When the
     backends app is not installed the provider is the fail-safe
     ``_UnconfiguredProvider``, whose ``build_*`` RAISE a clear ``RuntimeError``
     (loud-failure: a merge in an unconfigured context fails visibly rather than
@@ -43,7 +44,9 @@ def _code_host_for(host_kind: str) -> "CodeHostBackend":
     provider = get_backend_provider()
     if host_kind == "gitlab":
         return provider.build_gitlab_host(token="", base_url="")
-    return provider.build_github_host(token="")
+    resolution = resolve_slug_token(slug, forge="github", credential="github_token")
+    token = resolution.token if resolution.state is ForgeTokenState.TOKEN else ""
+    return provider.build_github_host(token=token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +68,7 @@ class CodeHostQuery:
     @classmethod
     def for_ref(cls, ref: PrRef) -> "CodeHostQuery":
         """Bind a query for *ref*, resolving the merge-transport backend once."""
-        return cls(ref=ref, backend=_code_host_for(ref.host_kind))
+        return cls(ref=ref, backend=_code_host_for(ref.host_kind, ref.slug))
 
     def rebound_to(self, slug: str) -> "CodeHostQuery":
         """A sibling query for the same PR number on a different repo *slug*.
@@ -453,7 +456,7 @@ def _gitlab_pipeline_verdict(
     head = _select_gitlab_head_pipeline(list(rollup), head_sha, slug=slug, pr_id=pr_id)
     if head is None:
         return "failed"
-    return _classify_gitlab_pipeline(str(head.get("status") or ""))
+    return classify_gitlab_pipeline(str(head.get("status") or ""))
 
 
 def _expected_required_contexts_floor() -> set[str] | None:
@@ -531,7 +534,7 @@ _GITLAB_PIPELINE_PENDING_STATUSES = frozenset(
 )
 
 
-def _classify_gitlab_pipeline(status: str) -> str:
+def classify_gitlab_pipeline(status: str) -> str:
     """Map a GitLab pipeline status string to ``green`` / ``pending`` / ``failed``.
 
     GitLab pipeline statuses (per the REST API documentation): ``created``,

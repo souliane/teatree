@@ -42,7 +42,7 @@ import ast
 import tomllib
 from pathlib import Path
 
-from tests.quality._deferred_imports import diff_pegs, load_pegs, per_file_counts
+from tests.quality._deferred_imports import diff_pegs, in_package, load_pegs, per_file_counts
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LOOP_ROOT = _REPO_ROOT / "src" / "teatree" / "loop"
@@ -115,7 +115,7 @@ def _eager_loop_imports(source: Path) -> set[str]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
-        if (node.module or "").startswith("teatree.loop") and not in_function_scope(node):
+        if in_package(node.module or "", "teatree.loop") and not in_function_scope(node):
             out.add(node.module or "")
     return out
 
@@ -234,10 +234,9 @@ _SELF_IMPROVE_ROOT = _LOOP_ROOT / "self_improve"
 class TestLoopSelfImproveNode:
     """``teatree.loop.self_improve`` is a declared domain node (#2413 PR-3).
 
-    The detector package depended only on the ``scanners`` leaf and (via the
-    ``statusline`` re-export facade) on ``statusline_render.default_path``. The
-    facade hop is repointed straight at the ``statusline_render`` leaf so the
-    node's only intra-loop deps are two declared leaves — ``self_improve`` never
+    The detector package depends on the ``scanners`` and ``statusline_render``
+    leaves, while the ticket rung uses the declared ``persistence_phase_task``
+    leaf. These are the node's only intra-loop deps — ``self_improve`` never
     reaches the orchestration top, and no scanner/up-edge can sneak in.
     """
 
@@ -246,8 +245,12 @@ class TestLoopSelfImproveNode:
 
     def test_self_improve_intra_loop_deps_are_only_declared_leaves(self) -> None:
         deps = _depends_on("teatree.loop.self_improve")
-        loop_deps = {d for d in deps if d.startswith("teatree.loop")}
-        assert loop_deps == {"teatree.loop.scanners", "teatree.loop.statusline_render"}
+        loop_deps = {d for d in deps if in_package(d, "teatree.loop")}
+        assert loop_deps == {
+            "teatree.loop.persistence_phase_task",
+            "teatree.loop.scanners",
+            "teatree.loop.statusline_render",
+        }
         # The orchestration-top parent is NEVER a self_improve dep.
         assert "teatree.loop" not in deps
 
@@ -292,7 +295,7 @@ class TestLoopStatuslineLoopsNode:
         # `teatree.core.session_identity`, so it has NO intra-loop dependency.
         entry = _module_entry("teatree.loop.session_identity")
         assert entry["layer"] == "domain"
-        loop_deps = {d for d in _depends_on("teatree.loop.session_identity") if d.startswith("teatree.loop")}
+        loop_deps = {d for d in _depends_on("teatree.loop.session_identity") if in_package(d, "teatree.loop")}
         assert loop_deps == set()
 
     def test_loop_scoping_is_a_leaf_over_session_identity(self) -> None:
@@ -316,7 +319,7 @@ class TestLoopStatuslineLoopsNode:
     def test_statusline_loops_depends_only_on_declared_leaves(self) -> None:
         entry = _module_entry("teatree.loop.statusline_loops")
         assert entry["layer"] == "domain"
-        loop_deps = {d for d in _depends_on("teatree.loop.statusline_loops") if d.startswith("teatree.loop")}
+        loop_deps = {d for d in _depends_on("teatree.loop.statusline_loops") if in_package(d, "teatree.loop")}
         assert loop_deps == {
             "teatree.loop.statusline_palette",
             "teatree.loop.statusline_loop_chunks",
@@ -391,7 +394,7 @@ class TestLoopRenderingNode:
     def test_rendering_items_is_a_pure_intra_loop_leaf(self) -> None:
         # `rendering_items` has no intra-loop dependency — it is the bottom of
         # the rendering DAG (its only non-loop dep is `teatree.url_classify`).
-        loop_deps = {d for d in _depends_on("teatree.loop.rendering_items") if d.startswith("teatree.loop")}
+        loop_deps = {d for d in _depends_on("teatree.loop.rendering_items") if in_package(d, "teatree.loop")}
         assert loop_deps == set()
 
     def test_no_rendering_file_depends_on_the_orchestration_top(self) -> None:
@@ -413,7 +416,7 @@ class TestLoopRenderingNode:
         # The facade depends on its sibling rendering files plus the already-
         # declared `dispatch` / `statusline` / `pr_ticket_index` leaves — never
         # the orchestration top.
-        loop_deps = {d for d in _depends_on("teatree.loop.rendering") if d.startswith("teatree.loop")}
+        loop_deps = {d for d in _depends_on("teatree.loop.rendering") if in_package(d, "teatree.loop")}
         assert loop_deps == {
             "teatree.loop.dispatch",
             "teatree.loop.pr_ticket_index",
@@ -476,7 +479,7 @@ class TestLoopSlackAnswerNode:
 
     def test_slack_answer_intra_loop_deps_are_only_declared_leaves(self) -> None:
         deps = _depends_on("teatree.loop.slack_answer")
-        loop_deps = {d for d in deps if d.startswith("teatree.loop")}
+        loop_deps = {d for d in deps if in_package(d, "teatree.loop")}
         assert loop_deps == {
             "teatree.loop.inbound_classifier",
             "teatree.loop.inbound_reading",

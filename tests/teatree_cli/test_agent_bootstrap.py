@@ -67,7 +67,7 @@ class TestAgentCommandBootstrapsDjango:
             "    )\n"
             "    print('OUTPUT:', result.output)\n"
             "    raise SystemExit(2)\n"
-            "assert execvp.called, 'command did not reach the claude launch'\n"
+            "assert execvp.called, 'command did not reach the agent launch'\n"
             "assert result.exit_code == 0, result.output\n"
         )
         result = subprocess.run(
@@ -100,7 +100,7 @@ class TestAgentHelpIsBootstrapSafe:
             "\n"
             "result = CliRunner().invoke(app, ['agent', '--help'])\n"
             "assert result.exit_code == 0, result.output\n"
-            "assert 'Launch Claude Code' in result.output, result.output\n"
+            "assert 'Launch the configured agent' in result.output, result.output\n"
         )
         result = subprocess.run(
             [sys.executable, "-c", probe],

@@ -1,31 +1,28 @@
 """SessionStart resurrection of the singleton loop-timer worker (#1796).
 
-When ``loop_runner_enabled`` is on and no worker holds the ``worker`` flock, the
-SessionStart hook (OS-agnostic — it fires on every Claude session start) re-spawns
-a detached ``t3 worker``. This is the "at least one" half of supervision the
-at-most-one flock cannot provide: the flock gives at-most-one, the worker's own
-supervisor thread stops the executor pool on a kill-switch flip, and this
-rehydrates the whole worker after a full crash / reboot.
+When no worker holds the ``worker`` flock, the SessionStart hook (OS-agnostic — it fires
+on every Claude session start) re-spawns a detached ``t3 worker``. This is the "at least
+one" half of supervision the at-most-one flock cannot provide: the flock gives
+at-most-one, the worker's own supervisor thread quiesces its executor pool while the
+active preset admits nothing, and this rehydrates the whole worker after a full crash /
+reboot.
 
 A standalone infrastructure hook (like the sibling SessionStart ``bootstrap-cli.sh``)
 rather than a router handler: ``hook_router.py`` is a grandfathered shrink-only
 god-module, so a new SessionStart trigger lives here instead of growing it.
 
-Default-ON (PR-28) and crash-proof / fail-open / silent: any failure to read the
-``loop_runner_enabled`` flag, probe the flock, or spawn yields a no-op — never an
-exception into the SessionStart hook. The enable check boots NO Django (#2879
-parity): the DB-home flag is read via the Django-free ``teatree.config.cold_reader``
-stdlib-sqlite path, so a fresh, non-engaged session (contra #256) never pays a full
-``django.setup()`` on the session-start critical path just to read the flag. The
-cold-read default (:data:`_ENABLED_DEFAULT`) is pinned equal to the dataclass
-default, so a fresh install with no explicit row still spawns a worker. On a
-fully-headless box with no Claude session ever opening, the operator
-starts ``t3 worker`` once from a login profile (a dotfile, not a system scheduler);
-this hook only covers the session-present case.
+It reads no posture of its own, and must not: a worker whose preset admits nothing parks
+with its executors stopped and its process alive, because the schedule boundary that
+re-admits work is driven from that process — so "should anything run" is the worker's
+question, and this hook only guarantees there IS a worker to ask it. Crash-proof /
+fail-open / silent throughout: a failure to probe the flock or spawn yields a no-op,
+never an exception into the SessionStart hook, and it boots NO Django (#2879 parity). On
+a fully-headless box with no Claude session ever opening, the operator starts
+``t3 worker`` once from a login profile (a dotfile, not a system scheduler); this hook
+only covers the session-present case.
 """
 
 import argparse
-import os
 import sys
 from collections.abc import Callable
 
@@ -33,61 +30,6 @@ from collections.abc import Callable
 # importing either name operate on ONE module object (mirrors loop_registrations).
 sys.modules.setdefault("worker_supervisor", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.worker_supervisor", sys.modules[__name__])
-
-
-#: Truthy tokens for the ``T3_LOOP_RUNNER_ENABLED`` env override — mirrors the
-#: hot-path ``teatree.config.settings._parse_env_bool`` and the ``autoload`` cold reader.
-_ENABLED_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
-
-#: The cold-read default for ``loop_runner_enabled``. It MUST equal the
-#: ``UserSettings.loop_runner_enabled`` dataclass default: a fresh install has no
-#: explicit ``ConfigSetting`` row, so this Django-free cold read is what decides
-#: whether SessionStart spawns a worker. Pinning them together (PR-28 flipped both
-#: to ``True``) is what makes a fresh install actually tick — a drift here silently
-#: leaves a default-ON install with a worker that never spawns. Parity is enforced
-#: by ``tests/config/test_worker_default_parity.py``.
-_ENABLED_DEFAULT = True
-
-
-def _enabled_scope_chain() -> tuple[str, ...]:
-    """Overlay-then-global scope chain for ``loop_runner_enabled`` (global-only when unset).
-
-    The flag is per-overlay overridable (``config_setting set … --overlay <name>``),
-    so an overlay-scope row must win over the global one — exactly as
-    ``get_effective_settings`` resolves it. ``T3_OVERLAY_NAME`` names the active
-    overlay (the same env var the config resolver keys on); with none set the chain
-    is global-only.
-    """
-    overlay = os.environ.get("T3_OVERLAY_NAME", "").strip()
-    return (overlay, "") if overlay else ("",)
-
-
-def _worker_enabled() -> bool:
-    """Whether ``loop_runner_enabled`` resolves on — Django-free cold read, fail-OFF.
-
-    #2879 parity: read the DB-home flag WITHOUT booting Django.
-    ``T3_LOOP_RUNNER_ENABLED`` env wins (matching the hot-path
-    ``ENV_SETTING_OVERRIDES``); otherwise the ``ConfigSetting`` store is read via the
-    stdlib-only ``teatree.config.cold_reader`` (overlay scope, then global — the flag
-    is per-overlay overridable), defaulting to :data:`_ENABLED_DEFAULT` (kept equal to
-    the dataclass default so a fresh install with no explicit row still spawns). A
-    ``[teatree]`` TOML value is DB-home and ignored on read, so there is no TOML
-    fallback (as with ``autoload``). The cold reader itself never raises — a missing
-    DB file, an absent table (a pre-``t3 setup`` box), a locked DB, or a corrupt value
-    all fail OPEN to the default, so a fresh install resolves ON and spawns. The
-    ``except`` below is the last-resort guard for a genuine read-path failure (an
-    unimportable ``bool_setting``, a scope-chain error) → OFF, so the session never
-    crashes.
-    """
-    env = os.environ.get("T3_LOOP_RUNNER_ENABLED", "").strip().lower()
-    if env:
-        return env in _ENABLED_TRUTHY
-    try:
-        from teatree.config.cold_reader import bool_setting  # noqa: PLC0415 — deferred: cold-hook import
-
-        return bool_setting("loop_runner_enabled", default=_ENABLED_DEFAULT, scope_chain=_enabled_scope_chain())
-    except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-off.
-        return False
 
 
 def _flock_is_free() -> bool:
@@ -126,18 +68,15 @@ def _spawn_worker() -> None:
 
 def resurrect_worker(
     *,
-    enabled: Callable[[], bool] = _worker_enabled,
     flock_free: Callable[[], bool] = _flock_is_free,
     spawn: Callable[[], None] = _spawn_worker,
 ) -> str:
-    """Spawn a detached worker iff enabled AND the flock is free; return the action.
+    """Spawn a detached worker iff the flock is free; return the action.
 
-    Returns ``"disabled"`` (not opted in), ``"already-running"`` (a worker holds the
-    flock), ``"spawned"`` (a fresh worker was launched), or ``"error"`` (fail-open).
+    Returns ``"already-running"`` (a worker holds the flock), ``"spawned"`` (a fresh
+    worker was launched), or ``"error"`` (fail-open).
     """
     try:
-        if not enabled():
-            return "disabled"
         if not flock_free():
             return "already-running"
         spawn()

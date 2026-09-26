@@ -22,7 +22,6 @@ from teatree.backends.github.api import (
     _gh_api_post,
     _gh_api_search_paginated,
     _run_gh,
-    gh_ambient_auth_available,
 )
 from teatree.backends.github.projects import _gh_graphql
 
@@ -137,7 +136,7 @@ class TestRunGh:
     def test_runs_command(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "ok", "")
-            result = _run_gh("gh", "version")
+            result = _run_gh("gh", "version", token="routed-token")
         mock_run.assert_called_once()
         assert mock_run.call_args.args[0] == ["gh", "version"]
         assert result.stdout == "ok"
@@ -154,29 +153,13 @@ class TestRunGh:
         env = mock_run.call_args.kwargs.get("env") or {}
         assert env.get("GH_TOKEN") == "mytoken"
 
-    def test_no_token_does_not_set_gh_token_env(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+    def test_no_token_refuses_ambient_auth(self) -> None:
+        with (
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
+            pytest.raises(utils_run_mod.CommandFailedError, match="refusing ambient gh authentication"),
+        ):
             _run_gh("gh", "version")
-        env = mock_run.call_args.kwargs.get("env")
-        assert env is None or "GH_TOKEN" not in env
-
-
-class TestGhAmbientAuthAvailable:
-    def test_true_when_gh_auth_status_succeeds(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(["gh", "auth", "status"], 0, "", "")
-            assert gh_ambient_auth_available() is True
-        assert mock_run.call_args.args[0] == ["gh", "auth", "status"]
-
-    def test_false_when_gh_auth_status_fails(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(["gh", "auth", "status"], 1, "", "not logged in")
-            assert gh_ambient_auth_available() is False
-
-    def test_false_when_gh_not_installed(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run", side_effect=FileNotFoundError):
-            assert gh_ambient_auth_available() is False
+        mock_run.assert_not_called()
 
 
 class TestGhApiGet:
@@ -276,13 +259,13 @@ class TestRunGhTimeout:
     def test_threads_timeout_into_subprocess(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
-            _run_gh("gh", "api", "x", timeout=12.5)
+            _run_gh("gh", "api", "x", token="routed-token", timeout=12.5)
         assert mock_run.call_args.kwargs["timeout"] == pytest.approx(12.5)
 
     def test_default_leaves_the_subprocess_unbounded(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
-            _run_gh("gh", "version")
+            _run_gh("gh", "version", token="routed-token")
         assert mock_run.call_args.kwargs["timeout"] is None
 
 
@@ -290,7 +273,7 @@ class TestGhApiPost:
     def test_sends_payload_via_stdin(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, '{"id": 1}', "")
-            result = _gh_api_post("/test", {"body": "hello"})
+            result = _gh_api_post("/test", {"body": "hello"}, token="routed-token")
         assert result == {"id": 1}
         call_kwargs = mock_run.call_args[1]
         assert json.loads(call_kwargs["input"]) == {"body": "hello"}
@@ -309,12 +292,21 @@ class TestGhApiPost:
             _gh_api_post("/test", {}, token="tok")
         assert mock_run.call_args.kwargs["timeout"] == _FORGE_READ_TIMEOUT_SECONDS
 
+    def test_no_token_refuses_ambient_auth(self) -> None:
+        with (
+            patch.dict("os.environ", {"GH_TOKEN": "hostile", "GITHUB_TOKEN": "hostile"}, clear=False),
+            patch.object(utils_run_mod.subprocess, "run") as mock_run,
+            pytest.raises(utils_run_mod.CommandFailedError, match="refusing ambient gh authentication"),
+        ):
+            _gh_api_post("/test", {})
+        mock_run.assert_not_called()
+
 
 class TestGhApiPatch:
     def test_sends_patch_request(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, '{"updated": true}', "")
-            result = _gh_api_patch("/test/1", {"title": "new"})
+            result = _gh_api_patch("/test/1", {"title": "new"}, token="routed-token")
         assert result == {"updated": True}
         args = mock_run.call_args[0][0]
         assert "--method" in args
@@ -333,7 +325,7 @@ class TestGhGraphql:
     def test_executes_query(self) -> None:
         with patch.object(utils_run_mod.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, '{"data": {}}', "")
-            result = _gh_graphql("{ viewer { login } }")
+            result = _gh_graphql("{ viewer { login } }", token="routed-token")
         assert result == {"data": {}}
         args = mock_run.call_args[0][0]
         assert "graphql" in args
@@ -662,6 +654,19 @@ class TestGitHubCodeHost:
         with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]):
             host = GitHubCodeHost()
             assert host.list_assigned_issues(assignee="alice") == []
+
+    def test_list_assigned_issues_scopes_search_to_repo_slugs(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]) as mock_search:
+            host = GitHubCodeHost(token="tok")
+            host.list_assigned_issues(
+                assignee="alice",
+                repo_slugs=("souliane/teatree", "souliane/other"),
+            )
+
+        query = mock_search.call_args.args[0]
+        assert "assignee%3Aalice" in query
+        assert "repo%3Asouliane%2Fteatree" in query
+        assert "repo%3Asouliane%2Fother" in query
 
     def test_list_assigned_issues_paginates_beyond_first_page(self) -> None:
         page_one = [{"number": i} for i in range(100)]

@@ -11,16 +11,22 @@ pins. ``write_single_trial_reports`` is also exercised directly for its
 transcript-html branch.
 """
 
+import asyncio
 import dataclasses
+from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import typer
 from django.test import TestCase
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from teatree.cli.eval.app_helpers import write_single_trial_reports
 from teatree.cli.eval.single_trial import EscalationConfig, SingleTrialGates, make_escalation_runner, run_single_trial
 from teatree.eval.anthropic_api_runner import AnthropicApiKeyMissingError, AnthropicApiRunner
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON
 from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.backends import (
     ANTHROPIC_API_BACKEND,
@@ -397,3 +403,92 @@ class TestWriteSingleTrialReports:
         write_single_trial_reports([_result("alpha", passed=True)], transcript_html=None, summary_md=None)
         assert not transcript.exists()
         assert not summary.exists()
+
+
+_USAGE_LIMIT_MESSAGE = (
+    "You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC."
+)
+_METERED_LANE = _Lane(backend=ANTHROPIC_API_BACKEND, require_executed=True)
+_ESCALATE = EscalationConfig(escalate_trials=3)
+
+
+def _usage_limit_refusal() -> FunctionModel:
+    """A Claude double answering every request as the Messages API does once the usage limit is reached."""
+
+    async def refuse(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+        await asyncio.sleep(0)
+        body = {"type": "error", "error": {"type": "invalid_request_error", "message": _USAGE_LIMIT_MESSAGE}}
+        raise ModelHTTPError(400, "claude-sonnet-5", body=body)
+        yield ""
+
+    return FunctionModel(stream_function=refuse)
+
+
+def _refused_run(spec_name: str) -> EvalRun:
+    return EvalRun.skipped(spec_name, f"{USAGE_LIMIT_REACHED_REASON}: {_USAGE_LIMIT_MESSAGE}")
+
+
+def _escalate_with(monkeypatch: pytest.MonkeyPatch, run_for) -> None:
+    monkeypatch.setattr(
+        "teatree.cli.eval.single_trial.make_escalation_runner",
+        lambda **_k: _StubRunner(run_for),
+    )
+
+
+class TestTheUsageLimitIsADidNotRunNotAVerdict:
+    def test_a_usage_limit_400_exits_75(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(
+            "teatree.cli.eval.single_trial.make_runner",
+            lambda *_a, **_k: AnthropicApiRunner(model=_usage_limit_refusal()),
+        )
+        _escalate_with(monkeypatch, lambda name: pytest.fail(f"{name} never reached the model; nothing to escalate"))
+        spec = dataclasses.replace(_spec("alpha"), model="claude-sonnet-5")
+        summary = tmp_path / "s.md"
+        with pytest.raises(typer.Exit) as exc:
+            _call([spec], transcript_html=None, summary_md=summary, escalation=_ESCALATE, lane=_METERED_LANE)
+        assert exc.value.exit_code == 75
+        assert "**0 passed**, **0 failed**, **1 skipped**" in summary.read_text(encoding="utf-8")
+
+    def test_a_green_run_the_limit_cut_short_exits_75_not_green(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        outcome = {"alpha": _passing_run, "beta": _refused_run}
+        _run_with(monkeypatch, lambda name: outcome[name](name))
+        _escalate_with(monkeypatch, lambda name: pytest.fail(f"{name} did not fail; nothing to escalate"))
+        with pytest.raises(typer.Exit) as exc:
+            _call(
+                [_spec("alpha"), _spec("beta")],
+                transcript_html=None,
+                summary_md=None,
+                escalation=_ESCALATE,
+                lane=_METERED_LANE,
+            )
+        assert exc.value.exit_code == 75
+
+    def test_a_genuine_failure_stays_red_and_never_75(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _run_with(monkeypatch, _failing_run)
+        _escalate_with(monkeypatch, _failing_run)
+        with pytest.raises(SystemExit) as exc:
+            _call([_spec("alpha")], transcript_html=None, summary_md=None, escalation=_ESCALATE, lane=_METERED_LANE)
+        assert exc.value.code == 1
+
+    def test_a_scenario_that_ran_and_failed_beside_a_refused_one_is_red(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        outcome = {"alpha": _failing_run, "beta": _refused_run}
+        _run_with(monkeypatch, lambda name: outcome[name](name))
+        _escalate_with(monkeypatch, lambda name: outcome[name](name))
+        with pytest.raises(SystemExit) as exc:
+            _call(
+                [_spec("alpha"), _spec("beta")],
+                transcript_html=None,
+                summary_md=None,
+                escalation=_ESCALATE,
+                lane=_METERED_LANE,
+            )
+        assert exc.value.code == 1
+
+    def test_a_trial_that_failed_before_the_limit_refused_its_escalation_is_red(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _run_with(monkeypatch, _failing_run)
+        _escalate_with(monkeypatch, _refused_run)
+        with pytest.raises(SystemExit) as exc:
+            _call([_spec("alpha")], transcript_html=None, summary_md=None, escalation=_ESCALATE, lane=_METERED_LANE)
+        assert exc.value.code == 1

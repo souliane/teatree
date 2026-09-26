@@ -10,6 +10,7 @@ from subprocess import CompletedProcess
 
 import pytest
 
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.update_check import run_update_check
 
 
@@ -19,6 +20,17 @@ def cache_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     data_dir.mkdir()
     monkeypatch.setattr("teatree.update_check.DATA_DIR", data_dir)
     return data_dir
+
+
+@pytest.fixture(autouse=True)
+def _github_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "teatree.update_check.resolve_slug_token",
+        lambda *_args, **_kwargs: ForgeTokenResolution(
+            "github_token", "t3-teatree", ForgeTokenState.TOKEN, token="routed-token"
+        ),
+        raising=False,
+    )
 
 
 def _served_tag(monkeypatch: pytest.MonkeyPatch, tag: str) -> None:
@@ -33,6 +45,22 @@ def _installed(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
 
 
 class TestOnlyANewerReleaseIsAnnounced:
+    def test_unset_route_never_inherits_ambient_login(self, cache_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[object] = []
+        monkeypatch.setenv("GH_TOKEN", "hostile")
+        monkeypatch.setattr(
+            "teatree.update_check.resolve_slug_token",
+            lambda *_args, **_kwargs: ForgeTokenResolution("github_token", "t3-teatree", ForgeTokenState.UNSET),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "teatree.update_check.run_allowed_to_fail", lambda *args, **kwargs: calls.append((args, kwargs))
+        )
+        _installed(monkeypatch, "0.4.0")
+
+        assert run_update_check(check_updates=True) is None
+        assert calls == []
+
     def test_a_newer_tag_is_announced(self, cache_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _installed(monkeypatch, "0.4.0")
         _served_tag(monkeypatch, "v0.5.0")

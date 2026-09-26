@@ -4,15 +4,12 @@ Backs ``t3 loop {pause,resume,disable,enable,status} <name>``. ORM access lives
 here (a management command, not a plain typer command) per the project's
 "anything touching the ORM is a management command" rule.
 
-The ``enable``/``disable``/``resume`` verbs move TWO planes in lock-step: the
-durable ``LoopState`` control tier (#1913) AND the row-level ``Loop.enabled``
-column that the #2584 loop tick reads as its source of truth (``not row.enabled``
-skips a loop). The paired write is owned by ONE atomic manager method
-(``Loop.objects.disable`` / ``enable`` / ``resume``, holistic 3c#4) — the command
-only calls it, so no caller can leave one plane stale (the "reports enabled but
-never ticks" bug). ``pause`` is the reversible control-plane hold only — it does
-NOT flip the durable ``Loop.enabled`` row; ``resume`` (and ``enable``) then lift
-EITHER a pause or a disable and set ``Loop.enabled=True`` on both planes.
+Every verb here writes ONE plane — the durable ``LoopState`` hold (#1913), the
+emergency brake above every other layer. ``pause`` and ``disable`` set it;
+``resume`` and ``enable`` lift either. The manual override (``Loop.enabled``) is a
+DIFFERENT layer with its own command (``t3 loop override``) and its own sole writer
+(``Loop.objects.set_manual_override``), so lifting a hold hands the loop back to
+whatever the override — or, beneath it, the active preset — already said.
 
 The command re-reads and reports the LANDED status so the operator sees the
 verified state rather than an echo of the request.
@@ -134,17 +131,20 @@ def _report_status(command: TyperCommand, name: str, *, json_output: bool) -> No
     )
 
 
-def _report_forced(command: TyperCommand, name: str, *, json_output: bool) -> None:
-    """Re-read and report the LANDED forced plane after an override."""
-    forced = LoopState.objects.forced_of(name)
-    word = "neutral" if forced is None else ("on" if forced else "off")
+def _report_override(command: TyperCommand, name: str, *, json_output: bool) -> None:
+    """Re-read and report the LANDED manual override, plus the EFFECTIVE verdict it produced."""
+    from teatree.loops.enable_verdict import EnablePlanes  # noqa: PLC0415 — deferred: ORM-backed resolver
+
+    row = Loop.objects.get(name=name)
+    word = "none" if row.enabled is None else ("on" if row.enabled else "off")
+    admitted = EnablePlanes.resolve().admits(name)
     out, err = _out_err(command)
     emit(
-        {"name": name, "forced": word},
+        {"name": name, "override": word, "reason": row.override_reason, "admitted": admitted},
         json_output=json_output,
         out=out,
         err=err,
-        human=f"OK    loop {name!r} override is now {word}.",
+        human=f"OK    loop {name!r} override is now {word}; it {'RUNS' if admitted else 'does NOT run'}.",
     )
 
 
@@ -172,7 +172,7 @@ class Command(TyperCommand):
     ) -> None:
         """Return *name* to ENABLED, clearing a pause OR a disable — both planes."""
         _require_known_loop(self, name, json_output=json_output)
-        Loop.objects.resume(name)
+        Loop.objects.release(name)
         _reconcile_timers()
         _report(self, name, json_output=json_output)
 
@@ -185,7 +185,7 @@ class Command(TyperCommand):
     ) -> None:
         """Move *name* into the durable DISABLED kill-switch — both planes."""
         _require_known_loop(self, name, json_output=json_output)
-        Loop.objects.disable(name)
+        Loop.objects.hold(name)
         _reconcile_timers()
         _report(self, name, json_output=json_output)
 
@@ -198,7 +198,7 @@ class Command(TyperCommand):
     ) -> None:
         """Return *name* to ENABLED (alias of resume) — both planes."""
         _require_known_loop(self, name, json_output=json_output)
-        Loop.objects.enable(name)
+        Loop.objects.release(name)
         _reconcile_timers()
         _report(self, name, json_output=json_output)
 
@@ -208,11 +208,11 @@ class Command(TyperCommand):
         name: Annotated[str, typer.Argument(help="Mini-loop name.")],
         state: Annotated[str, typer.Argument(help="on | off | clear.")],
         *,
-        for_ttl: Annotated[str, typer.Option("--for", help="TTL for the override (2h/30m/1d).")] = "",
-        reason: Annotated[str, typer.Option("--reason", help="Why the override is in force.")] = "",
+        lift_by: Annotated[str, typer.Option("--lift-by", help="When you expect to lift it (2h/30m/1d).")] = "",
+        reason: Annotated[str, typer.Option("--reason", help="Why the override is in force. Required.")] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Set the emergency FORCED plane for *name* — on/off beats a preset, clear returns to neutral."""
+        """Set the MANUAL override for *name* — on/off beats the preset, clear hands it back."""
         _require_known_loop(self, name, json_output=json_output)
         out, err = _out_err(self)
         normalized = state.strip().lower()
@@ -220,27 +220,22 @@ class Command(TyperCommand):
             msg = f"invalid override state {state!r}; use on, off, or clear"
             emit({"name": name, "error": msg}, json_output=json_output, out=out, err=err, human=f"ERROR  {msg}")
             raise SystemExit(2)
-        if normalized == "clear":
-            LoopState.objects.clear_override(name)
-        else:
-            try:
-                until = _parse_for(for_ttl)
-            except ValueError as exc:
-                emit(
-                    {"name": name, "error": str(exc)},
-                    json_output=json_output,
-                    out=out,
-                    err=err,
-                    human=f"ERROR  {exc}",
-                )
-                raise SystemExit(2) from exc
-            LoopState.objects.override(name, on=normalized == "on", until=until, reason=reason)
-        # The FORCED plane outranks the mode mask in the enable verdict, so a write here
-        # changes chain membership at once — same as the enable/disable verbs above. A
-        # `--for` override that later EXPIRES has no chokepoint of its own; the 5-minute
-        # reconcile chain is its only repair, which is the bound on that direction.
+        try:
+            expected_lift_at = _parse_for(lift_by)
+            Loop.objects.set_manual_override(
+                name,
+                runs=None if normalized == "clear" else normalized == "on",
+                reason=reason,
+                expected_lift_at=expected_lift_at,
+            )
+        except ValueError as exc:
+            emit({"name": name, "error": str(exc)}, json_output=json_output, out=out, err=err, human=f"ERROR  {exc}")
+            raise SystemExit(2) from exc
+        # The manual layer outranks the preset in the enable verdict, so a write here
+        # changes chain membership at once — same as the hold verbs above. Nothing expires
+        # it: `--lift-by` is what the override watcher reminds against (A5/A7).
         _reconcile_timers()
-        _report_forced(self, name, json_output=json_output)
+        _report_override(self, name, json_output=json_output)
 
     @command(name="status")
     def status(

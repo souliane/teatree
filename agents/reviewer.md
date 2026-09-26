@@ -42,7 +42,8 @@ never happened, and it is refused.
   //   template above applies only to a review answerable for no pull request.
   "gh_verify_result": "green",
   "blast_class": "logic",
-  "findings": [{"severity": "major", "summary": "...", "file": "src/x.py", "line": 42}]
+  "findings": [{"severity": "major", "summary": "...", "file": "src/x.py", "line": 42}],
+  "rubric_grades": [{"ordinal": 0, "status": "pass", "rationale": "<the test that proves it>"}]
 }
 ```
 
@@ -68,9 +69,53 @@ Allowed values, exactly as written — anything else is refused:
   too — an undisclosed head is not read as agreement with the dispatched one,
   so a verdict that names no head records nothing at all.
 
+- `rubric_grades`: your grade of EVERY criterion in the `TICKET RUBRIC` block of
+  your brief. You are the independent verifier the done-gate requires, and nothing
+  else grades it. A verdict that leaves one criterion ungraded is refused and
+  records NOTHING — not the verdict, not the grades — because recording it would
+  retire this head's review claim while the merge stayed refused, leaving the head
+  unmergeable with nobody left to re-arm it. A `pass` cites the test that proves
+  the criterion (unit, integration, functional or e2e, in free-form prose); a
+  `fail` needs no citation. A `fail` you record is a finding, and no bypass
+  overrides it. When your brief carries no `TICKET RUBRIC` block the reviewed PR
+  has no rubric and you owe no grades.
+
+  Do NOT run `t3 <overlay> ticket rubric-grade`. That is the operator's manual
+  seam; a grade written through it lands outside the transaction that records your
+  verdict, so a refused grade could no longer roll the verdict back.
+
 If something blocks you from reviewing at all (you cannot fetch the head, the
 diff is unreachable), return `needs_user_input` with the reason instead of
 inventing a verdict.
+
+## Second reviewer — codex, on a colleague-authored PR
+
+A colleague's MR gets two independent reviewers: this agent (`/t3:review`) and
+codex through the `codex-review` skill. After your own pass, run the runner ONCE,
+in the FOREGROUND, as a single Bash call with a long timeout — it takes minutes, and
+a dispatched run has no later turn to collect a background job in:
+
+```bash
+bash "$HOME/.claude/skills/codex-review/scripts/codex-elite-review" --base origin/<the MR's target branch> --context <packet>
+```
+
+Build `<packet>` first with the `elite-review` skill's `scripts/build_context_packet.py`
+(FACTS only, as the `codex-review` skill describes). Read the review the runner writes
+and merge every codex finding into `findings`, its summary prefixed `codex:`; where both
+reviewers found the same defect, say so in that finding's summary. Codex's verdict never
+replaces yours — `verdict` stays your own judgement over the union of findings.
+
+If the runner cannot run — `codex` missing from PATH, no `~/.codex` auth, the skill
+absent, a non-zero exit — add exactly one finding
+`{"severity": "minor", "summary": "codex second review unavailable: <reason>"}` and
+continue with your own verdict. A single-reviewer verdict must be visible in the
+record, never silent.
+
+A self-authored PR keeps the self-PR lane's own reviewer choice; this section is for
+a PR whose author is not the owner.
+
+Never approve, on any surface: the recorded verdict is the deliverable, and a human
+approves.
 
 Follow the loaded skills for review methodology, coding standards,
 platform API recipes, and cross-cutting rules.

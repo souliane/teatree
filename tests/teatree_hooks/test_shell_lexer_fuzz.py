@@ -174,7 +174,7 @@ class TestShellLexerFuzzCorpus:
 # the permissive env regex, #F7.3). Any number may precede the program word.
 _ENV_PREFIXES: tuple[str, ...] = ("", "foo=1 ", "Foo_bar=2 ", "FOO=1 BAR=2 ")
 # Transparent argv wrappers -- AT MOST ONE strips (mirroring
-# ``raw_merge_detect._program_words``). ``env`` may carry its own assignment.
+# ``forge_subcommand.program_words``). ``env`` may carry its own assignment.
 _WRAPPER_PREFIXES: tuple[str, ...] = ("", "xargs ", "command ", "nohup ", "exec ", "time ", "env ", "env GH_PAGER= ")
 # Path spellings of the ``gh`` program word -- all name the same executable.
 _GH_SPELLINGS: tuple[str, ...] = ("gh", "/usr/bin/gh", "/opt/homebrew/bin/gh", "./gh")

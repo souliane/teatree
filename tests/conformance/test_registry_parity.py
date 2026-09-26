@@ -38,6 +38,11 @@ from teatree.loop.phases import orchestrate
 from teatree.loops.registry import iter_loops
 from teatree.loops.seed import DEFAULT_LOOPS
 
+_ISSUE_DISPOSITION_DESCRIPTION = (
+    "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m, "
+    "only for t3-teatree owned repos; bounded per tick."
+)
+
 
 def assert_registry_covers(
     *,
@@ -193,6 +198,8 @@ class TestLoopRegistryCoverageParity:
             consumers={loop.name for loop in iter_loops()},
             label="DEFAULT_LOOPS seed row -> registry MiniLoop",
         )
+        issue_disposition = next(spec for spec in DEFAULT_LOOPS if spec.name == "issue_disposition")
+        assert issue_disposition.description == _ISSUE_DISPOSITION_DESCRIPTION
 
     def test_cardinality_floors_anti_vacuity(self) -> None:
         assert len(PER_OVERLAY_DOMAINS) >= 10, PER_OVERLAY_DOMAINS

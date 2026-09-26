@@ -81,7 +81,7 @@ class SubjectIndex:
     #: question pk -> its parked task's ticket pk, for the rows that carry one.
     parked_task_tickets: dict[int, int]
     #: question pk -> the ticket pk its stuck-redispatch-halt TEXT names.
-    halt_text_tickets: dict[int, int]
+    halt_marker_tickets: dict[int, int]
     session_tickets: dict[int, int]
     ticket_states: dict[int, str]
     #: subject ticket pk -> the state of every pull request recorded against it.
@@ -94,7 +94,7 @@ class SubjectIndex:
         )
         parked = _parked_ticket_ids({q.pk for q in questions})
         sessions = _session_ticket_ids(_session_pks(questions))
-        halted = _halt_text_ticket_ids(questions)
+        halted = _halt_marker_ticket_ids(questions)
 
         subjects = (
             {pk for pks in markers.values() for pk in pks}
@@ -105,7 +105,7 @@ class SubjectIndex:
         return cls(
             marker_tickets=markers,
             parked_task_tickets=parked,
-            halt_text_tickets=halted,
+            halt_marker_tickets=halted,
             session_tickets=sessions,
             ticket_states=_ticket_states(subjects),
             ticket_pr_states=_ticket_pr_states(subjects),
@@ -162,20 +162,20 @@ def _parked_task_answer(index: SubjectIndex, question: DeferredQuestion) -> Subj
 
 
 def _stuck_halt_answer(index: SubjectIndex, question: DeferredQuestion) -> SubjectAnswer:
-    """The ticket a ``[stuck-redispatch-halt ticket=N]`` question names in its own text.
+    """The ticket a ``stuck-redispatch-halt:N`` question names in its dedupe marker.
 
-    ``stuck_ticket_redispatch._escalate_once`` records the question with no dedupe
-    marker, no session and no parked task, so the text is the ONLY handle on its
-    subject — which is why nine of these sat pending after their shared dispatch
-    failure was fixed, reachable by the age backstop alone.
+    ``stuck_ticket_redispatch._escalate_once`` records the question with no session and
+    no parked task, so the marker is the ONLY handle on its subject — which is why nine
+    of these sat pending after their shared dispatch failure was fixed, reachable by the
+    age backstop alone.
 
     A marker naming a ticket that no longer exists is UNDETERMINABLE, not absent: the
     row is owned by this source and kept, rather than falling through to a source that
     would answer about something else.
     """
-    if STUCK_HALT_PK_RE.search(question.question) is None:
+    if STUCK_HALT_PK_RE.match(question.dedupe_marker) is None:
         return NOT_APPLICABLE
-    ticket = index.halt_text_tickets.get(question.pk)
+    ticket = index.halt_marker_tickets.get(question.pk)
     return _resolved([ticket]) if ticket is not None else UNDETERMINABLE
 
 
@@ -212,9 +212,11 @@ def _parked_ticket_ids(question_pks: set[int]) -> dict[int, int]:
     )
 
 
-def _halt_text_ticket_ids(questions: Sequence[DeferredQuestion]) -> dict[int, int]:
+def _halt_marker_ticket_ids(questions: Sequence[DeferredQuestion]) -> dict[int, int]:
     """Question pk -> the LIVE ticket its halt marker names, in one query."""
-    named = {q.pk: int(match.group(1)) for q in questions if (match := STUCK_HALT_PK_RE.search(q.question)) is not None}
+    named = {
+        q.pk: int(match.group(1)) for q in questions if (match := STUCK_HALT_PK_RE.match(q.dedupe_marker)) is not None
+    }
     if not named:
         return {}
     live = set(Ticket.objects.filter(pk__in=set(named.values())).values_list("pk", flat=True))

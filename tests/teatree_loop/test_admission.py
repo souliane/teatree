@@ -179,3 +179,18 @@ class TestMachineSignal:
 
     def test_carries_an_injected_ram_reading(self) -> None:
         assert read_machine_signal(ram_available_gb=12.5).ram_available_gb == pytest.approx(12.5)
+
+    def test_carries_the_cap_its_own_reading_is_bounded_by(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #4201: without the cap the memory refusal is a bare number, and a cap that makes
+        # the resume floor unreachable reads exactly like back-pressure that will pass.
+        monkeypatch.setattr(
+            ram_scope,
+            "read_ram_headroom",
+            lambda: RamHeadroom(available_mib=3584, cgroup_limit_mib=5 * 1024, host_available_mib=20 * 1024),
+        )
+        assert read_machine_signal().memory_cap_gb == pytest.approx(5.0)
+
+    def test_an_injected_reading_carries_no_cap_because_its_scope_is_unknown(self) -> None:
+        # Pairing a caller's figure with THIS cgroup's cap would diagnose the wrong container,
+        # and re-probing would break the "never pay for a second probe" contract.
+        assert read_machine_signal(ram_available_gb=12.5).memory_cap_gb is None

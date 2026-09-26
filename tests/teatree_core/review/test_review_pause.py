@@ -16,7 +16,7 @@ be told apart from a fake that simply returns nothing.
 
 from django.test import TestCase
 
-from teatree.core.models import ConfigSetting, ReviewRequestPost
+from teatree.core.models import ReviewRequestPost
 from teatree.core.review.review_pause import PauseState, read_pause_state
 from teatree.types import RawAPIDict
 
@@ -78,12 +78,8 @@ class TestOnlyAConfiguredEmojiPauses(TestCase):
 
         assert read_pause_state(_post(), _Messaging(message)) is PauseState.NOT_PAUSED
 
-    def test_the_configured_list_is_what_decides_not_a_hard_coded_name(self) -> None:
-        ConfigSetting.objects.set_value("review_pause_reaction_emojis", ["on_hold"])
-        post = _post()
-
-        assert read_pause_state(post, _Messaging(_message_with("on_hold"))) is PauseState.PAUSED
-        assert read_pause_state(post, _Messaging(_message_with(_DEFAULT_PAUSE_EMOJI))) is PauseState.NOT_PAUSED
+    def test_an_unrelated_reaction_is_not_a_hold(self) -> None:
+        assert read_pause_state(_post(), _Messaging(_message_with("on_hold"))) is PauseState.NOT_PAUSED
 
     def test_one_configured_emoji_among_several_reactions_pauses(self) -> None:
         message = _message_with("eyes", "rocket", _DEFAULT_PAUSE_EMOJI)

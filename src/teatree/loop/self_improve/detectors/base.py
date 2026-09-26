@@ -14,7 +14,14 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.loop.scanners.base import ScanSignal
 
-__all__ = ["ActionRung", "DetectorReport", "SelfImproveDetector", "fresh_or_escalated"]
+__all__ = [
+    "ActionRung",
+    "ConfidenceAwareDetector",
+    "DetectorReport",
+    "DetectorScan",
+    "SelfImproveDetector",
+    "fresh_or_escalated",
+]
 
 
 class ActionRung:
@@ -67,6 +74,7 @@ class DetectorReport:
     summary: str
     payload: dict[str, Any] = field(default_factory=dict)
     auto_fix: bool = False
+    requested_rung: str = ActionRung.STATUSLINE
 
     def to_signal(self) -> ScanSignal:
         """Emit the ``ScanSignal`` the rendering layer reads.
@@ -84,10 +92,27 @@ class DetectorReport:
                 "state_hash": self.state_hash,
                 "severity": self.severity,
                 "max_rung": self.max_rung,
+                "requested_rung": self.requested_rung,
                 "auto_fix": self.auto_fix,
                 **self.payload,
             },
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorScan:
+    reports: list[DetectorReport]
+    complete: bool = True
+    reason: str | None = None
+    protected_keys: frozenset[str] = frozenset()
+    protected_prefixes: tuple[str, ...] = ()
+    candidate_keys: frozenset[str] | None = None
+    reopen_keys: frozenset[str] = frozenset()
+
+
+@runtime_checkable
+class ConfidenceAwareDetector(Protocol):
+    def detect_checked(self) -> DetectorScan: ...
 
 
 @runtime_checkable
@@ -113,5 +138,7 @@ def fresh_or_escalated(report: DetectorReport, firing: SelfImproveFiring | None)
     changed, advance one rung.
     """
     if firing is None:
+        return True
+    if firing.resolved_at is not None:
         return True
     return firing.state_hash != report.state_hash

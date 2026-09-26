@@ -101,15 +101,15 @@ class TestAShippedScheduleNeedsThePhrase(django.test.TestCase):
 
     def test_no_confirm_refuses_and_the_row_survives(self) -> None:
         with pytest.raises(PresetEditError):
-            delete_schedule("always-away")
+            delete_schedule("always-afk")
 
-        assert ModeSchedule.objects.filter(name="always-away").exists()
+        assert ModeSchedule.objects.filter(name="always-afk").exists()
 
     def test_the_exact_phrase_deletes_it_and_its_slots(self) -> None:
-        delete_schedule("always-away", confirm=shipped_delete_phrase("always-away"))
+        delete_schedule("always-afk", confirm=shipped_delete_phrase("always-afk"))
 
-        assert not ModeSchedule.objects.filter(name="always-away").exists()
-        assert not ModeScheduleSlot.objects.filter(schedule__name="always-away").exists()
+        assert not ModeSchedule.objects.filter(name="always-afk").exists()
+        assert not ModeScheduleSlot.objects.filter(schedule__name="always-afk").exists()
 
     def test_the_active_calendar_refuses_even_with_the_phrase(self) -> None:
         with pytest.raises(PresetEditError) as caught:

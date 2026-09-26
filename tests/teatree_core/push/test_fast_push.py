@@ -24,6 +24,7 @@ from teatree.core.push.fast_push import (
     LeakGateScan,
     forge_for_repo,
 )
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.utils.run import CommandFailedError, run_checked
 
 
@@ -280,6 +281,14 @@ class TestForgeResolution:
 
 
 class TestForgeCliCommands:
+    @pytest.fixture(autouse=True)
+    def _routed_tokens(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def resolve(_repo: str, *, credential: str) -> ForgeTokenResolution:
+            return ForgeTokenResolution(credential, "test", ForgeTokenState.TOKEN, token="routed-token")
+
+        monkeypatch.setattr("teatree.core.forge_pr_probe.resolve_repo_token", resolve)
+        monkeypatch.setattr("teatree.core.push.fast_push.resolve_repo_token", resolve)
+
     def _completed(self, stdout: str, returncode: int = 0) -> CompletedProcess[str]:
         return CompletedProcess(args=["stub"], returncode=returncode, stdout=stdout, stderr="")
 
@@ -299,11 +308,13 @@ class TestForgeCliCommands:
         assert updated_cmd[:3] == ["gh", "pr", "edit"]
 
     def test_glab_find_create_update(self, tmp_path: Path) -> None:
+        # ``find_pr_url`` reads over the GitLab HTTP API, not ``glab``: the deploy image
+        # declares no ``glab``, yet a bind-mounted ``~/.local/bin`` may still supply one, so a
+        # probe must not rest on absence — the writes asserted below still shell out to it.
         forge = GlabForge(tmp_path)
-        listing = json.dumps([{"web_url": "https://gl/mr/7"}])
-        with patch("teatree.core.forge_pr_probe.run_allowed_to_fail", return_value=self._completed(listing)):
+        with patch("teatree.core.forge_pr_probe._gitlab_open_mr_url", return_value="https://gl/mr/7"):
             assert forge.find_pr_url(branch="b") == "https://gl/mr/7"
-        with patch("teatree.core.forge_pr_probe.run_allowed_to_fail", return_value=self._completed("not-json")):
+        with patch("teatree.core.forge_pr_probe._gitlab_open_mr_url", return_value=None):
             assert forge.find_pr_url(branch="b") == ""
         with patch(
             "teatree.core.push.fast_push.run_checked", return_value=self._completed("created https://gl/mr/8\n")
@@ -617,3 +628,133 @@ class TestEmptyDeltaPrGuard:
         assert "t3 fast-push" in outcome.pr_skip_reason
         assert "commit it on 'feature'" in outcome.pr_skip_reason
         assert "squash-merge" not in outcome.pr_skip_reason
+
+
+class TestThePushedBranchNameIsScanned:
+    """``git push --no-verify`` skips the pre-push hook that scans the ref NAME.
+
+    The name is published the moment the push lands and survives branch deletion
+    in ``refs/pull/*``, so this lane has to scan it itself or it becomes the way
+    around the hook's ref-name gate. Every case passes an explicit clean message:
+    the auto-generated one embeds the branch name, so a refusal under
+    ``<commit-message>`` would prove nothing about the NAME being scanned.
+    """
+
+    def test_refuses_a_banned_term_in_the_branch_name(self, repo: Path, leak_env: None) -> None:
+        run_checked(["git", "checkout", "-b", "feat/forbiddenbrand-onboarding"], cwd=repo)
+        _commit(repo, "notes.md", "clean\n", "chore: clean")
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert not outcome.ok
+        assert any(
+            f.gate == "banned-terms" and f.path == "<ref-name>" and "forbiddenbrand" in f.detail
+            for f in outcome.findings
+        ), outcome.findings
+        assert not outcome.pushed
+        assert outcome.executed_gates == LEAK_GATES
+
+    def test_a_clean_branch_name_is_not_a_finding(self, repo: Path, leak_env: None) -> None:
+        _commit(repo, "notes.md", "clean\n", "chore: clean")
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert outcome.ok, outcome.findings
+        assert not any(f.path == "<ref-name>" for f in outcome.findings)
+
+    def test_an_overlay_term_in_the_branch_name_is_refused(self, repo: Path, leak_env: None) -> None:
+        run_checked(["git", "checkout", "-b", "wip/secretoverlay-spike"], cwd=repo)
+        _commit(repo, "notes.md", "clean\n", "chore: clean")
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert not outcome.ok
+        assert any(f.gate == "overlay-leak" and f.path == "<ref-name>" for f in outcome.findings), outcome.findings
+
+    def test_a_secret_shaped_branch_name_is_refused_by_the_secret_scan(self, repo: Path, leak_env: None) -> None:
+        """The hook runs the whole privacy scanner over the name, so this lane must too."""
+        planted = "ghp" + "_" + "a1b2c3d4e5f6a7b8c9d0"
+        run_checked(["git", "checkout", "-b", f"wip/{planted}"], cwd=repo)
+        _commit(repo, "notes.md", "clean\n", "chore: clean")
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert not outcome.ok
+        assert any(f.gate == "secret-scan" and f.path == "<ref-name>" for f in outcome.findings), outcome.findings
+
+
+class TestThePublishedRefIsTheScannedRef:
+    """The ref-name gate scans the CURRENT BRANCH; the push must publish that same name.
+
+    ``git push -u origin <branch>`` resolves its destination through git config, so
+    two settings let a name the gate never saw reach the remote: a
+    ``remote.origin.push`` refspec remaps the destination, and ``push.followTags``
+    publishes tags alongside it. Both defeat only this ``--no-verify`` lane — git
+    hands the pre-push hook the real destination ref — which is the lane the
+    ref-name scan exists to close. Each setting is pinned on its own so one cannot
+    regress behind the other.
+    """
+
+    def _remote_refs(self, repo: Path) -> str:
+        return run_checked(["git", "ls-remote", "origin"], cwd=repo).stdout
+
+    def test_a_remapped_push_refspec_cannot_publish_an_unscanned_name(self, repo: Path, leak_env: None) -> None:
+        run_checked(
+            ["git", "config", "remote.origin.push", "refs/heads/feature:refs/heads/forbiddenbrand-dest"],
+            cwd=repo,
+        )
+        _commit(repo, "notes.md", "clean\n", "chore: clean")
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert outcome.ok, outcome.findings
+        assert outcome.pushed
+        refs = self._remote_refs(repo)
+        assert "refs/heads/feature" in refs, refs
+        assert "forbiddenbrand-dest" not in refs, f"an unscanned ref name was published: {refs}"
+
+    def test_follow_tags_cannot_publish_an_unscanned_tag_name(self, repo: Path, leak_env: None) -> None:
+        run_checked(["git", "config", "push.followTags", "true"], cwd=repo)
+        _commit(repo, "notes.md", "clean\n", "chore: clean")
+        run_checked(["git", "tag", "-a", "forbiddenbrand-tag", "-m", "tag"], cwd=repo)
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert outcome.ok, outcome.findings
+        assert outcome.pushed
+        refs = self._remote_refs(repo)
+        assert "refs/heads/feature" in refs, refs
+        assert "refs/tags/" not in refs, f"an unscanned tag name was published: {refs}"
+
+
+class TestASyntheticPathNameDoesNotDisplaceARealFile:
+    """The gates key findings by path, and the synthetic paths are ordinary dict keys.
+
+    ``<ref-name>`` and ``<commit-message>`` are legal filenames, so a repo holding
+    one collided with the synthetic entry: assigning the key dropped the real
+    file's lines before any gate read them, and its banned term was pushed.
+    """
+
+    def test_a_real_file_named_ref_name_is_still_scanned(self, repo: Path, leak_env: None) -> None:
+        _commit(repo, "<ref-name>", "forbiddenbrand\n", "chore: add file")
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert not outcome.ok
+        assert any(
+            f.gate == "banned-terms" and f.path == "<ref-name>" and "forbiddenbrand" in f.detail
+            for f in outcome.findings
+        ), outcome.findings
+        assert not outcome.pushed
+
+    def test_a_real_file_named_commit_message_is_still_scanned(self, repo: Path, leak_env: None) -> None:
+        _commit(repo, "<commit-message>", "forbiddenbrand\n", "chore: add file")
+
+        outcome = run_fast_push(repo, FakeForge(), message="chore: checkpoint")
+
+        assert not outcome.ok
+        assert any(
+            f.gate == "banned-terms" and f.path == "<commit-message>" and "forbiddenbrand" in f.detail
+            for f in outcome.findings
+        ), outcome.findings
+        assert not outcome.pushed

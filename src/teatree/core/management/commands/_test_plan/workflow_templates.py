@@ -32,7 +32,7 @@ def render_browser_click_first(
             lines.extend(("**How to test:**", ""))
             lines.extend(f"{i}. {step}" for i, step in enumerate(steps, start=1))
             lines.append("")
-        for side in (state["dev"], state["local"]):
+        for side in (state["dev"], state["local"], state["stack"]):
             lines.extend(side.get("workflows", {}).get(workflow, {}).get("image_md", []))
         lines.append("")
     return lines
@@ -49,7 +49,7 @@ def render_link_api(
     for workflow in workflow_names(state):
         lines.extend((f"### {workflow}", ""))
         lines.extend(test_plan_block(state, workflow))
-        for side in (state["dev"], state["local"]):
+        for side in (state["dev"], state["local"], state["stack"]):
             embed = side.get("workflows", {}).get(workflow, {})
             link_md = embed.get("link_md", "") if embed else ""
             code_md = embed.get("code_md", "") if embed else ""

@@ -15,9 +15,9 @@ import json
 import os
 import shutil
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import cast
 
+from teatree.forge_credentials import ForgeTokenState, resolve_url_token
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, classify_gh_stderr
 from teatree.loop.scanners.slack_broadcasts import MrState
 from teatree.types import RawAPIDict
@@ -88,7 +88,6 @@ def _classifier_author(data: RawAPIDict, *, key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
-@dataclass(slots=True)
 class GlabGhMrStateClassifier:
     """Production :class:`MrStateClassifier` — shells out to ``glab`` / ``gh``.
 
@@ -110,13 +109,9 @@ class GlabGhMrStateClassifier:
     forge / IID) stays ``merged=False`` (it is a deterministic non-match, not
     a transient failure).
 
-    Tokens are optional: when set they're exported as ``GITLAB_TOKEN`` /
-    ``GH_TOKEN`` for each subprocess so a private-repo overlay can
-    classify on behalf of its own PAT.
+    Every token is resolved from the overlay owning the URL. Process-global
+    CLI logins and token variables are scrubbed and can never cross overlays.
     """
-
-    glab_token: str = ""
-    github_token: str = ""
 
     def __call__(self, urls: Sequence[str]) -> list[MrState]:
         return [self._classify_one(url) for url in urls]
@@ -129,7 +124,8 @@ class GlabGhMrStateClassifier:
             return self._classify_github(url)
         return MrState(url=url, merged=False, approved=False)
 
-    def _classify_gitlab(self, url: str) -> MrState:
+    @staticmethod
+    def _classify_gitlab(url: str) -> MrState:
         from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         parsed = repo_and_iid(url)
@@ -137,8 +133,15 @@ class GlabGhMrStateClassifier:
             return MrState(url=url, merged=False, approved=False)
         project, iid_num = parsed
         iid = str(iid_num)
+        resolution = resolve_url_token(url, credential="gitlab_token")
+        if resolution.state is not ForgeTokenState.TOKEN:
+            raise _classifier_error(
+                ScannerErrorClass.AUTH,
+                f"{resolution.setting} for {url!r} is {resolution.state.value}: {resolution.detail}",
+            )
         glab = shutil.which("glab") or "glab"
-        env = {**os.environ, "GITLAB_TOKEN": self.glab_token} if self.glab_token else None
+        env = dict(os.environ)
+        env["GITLAB_TOKEN"] = resolution.token
         try:
             # ``-R <project>`` makes glab resolve the MR against an explicit
             # project path instead of the current cwd's git remote — the
@@ -172,11 +175,20 @@ class GlabGhMrStateClassifier:
             head_sha=_classifier_head_sha(data, key="sha"),
         )
 
-    def _classify_github(self, url: str) -> MrState:
+    @staticmethod
+    def _classify_github(url: str) -> MrState:
         from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
+        resolution = resolve_url_token(url, credential="github_token")
+        if resolution.state is not ForgeTokenState.TOKEN:
+            raise _classifier_error(
+                ScannerErrorClass.AUTH,
+                f"{resolution.setting} for {url!r} is {resolution.state.value}: {resolution.detail}; "
+                "refusing ambient gh authentication",
+            )
         gh = shutil.which("gh") or "gh"
-        env = {**os.environ, "GH_TOKEN": self.github_token} if self.github_token else None
+        env: dict[str, str] = {**os.environ, "GH_TOKEN": resolution.token}
+        env.pop("GITHUB_TOKEN", None)
         try:
             result = run_allowed_to_fail(
                 [gh, "pr", "view", url, "--json", "state,reviewDecision,author,headRefOid"],

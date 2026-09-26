@@ -49,6 +49,10 @@ Read the issue's live state before the first edit of an implementing dispatch. C
 
 Never claim "X is covered" or "a gap" against an external reference without grepping two framings and citing `file:line` (or the missing seam); ask when you cannot grep. Full text: `skills/rules/references/verification.md`.
 
+## Nothing Is Parked on the User — You Own Everything You Know About (Non-Negotiable)
+
+Every item you know about is yours until a peer session acknowledges it or a ticket carries it. The user only answers questions: an item needing them is one question you must ask and chase, never a task on their list. Full text: `skills/rules/references/asking-questions.md`.
+
 ## User Instructions Are Priority 1
 
 Execute a direct, explicit user instruction immediately; suggest an alternative only after. Full text: `skills/rules/references/asking-questions.md`.
@@ -71,7 +75,7 @@ A failed external read must surface the failure — never an empty result a call
 
 ## Lead a Completion Report With the Assigned-Work Status
 
-Open with whether the assigned work is done and where (branch, PR, HEAD, gates); findings trail, subordinate. On a standing verified-green goal, lead with the blunt binary and keep it open. Full text: `skills/rules/references/reporting.md`.
+Open with whether the assigned work is done and where (branch, PR, HEAD, gates); findings trail, subordinate. On a standing verified-green goal, lead with the blunt binary and keep it open. Evals run via `t3 eval run`, never `t3 <overlay> run tests`. Full text: `skills/rules/references/reporting.md`.
 
 ## Keep Turn Output Terse and TTS-Ready
 
@@ -107,7 +111,7 @@ Anything published under the user's identity must never carry an AI signature �
 
 ## Ask Before Posting on the User's Behalf (Non-Negotiable)
 
-`on_behalf_post_mode` gates every colleague-visible post, approval or reaction: when it blocks, get approval first. Drafts, self-DMs and replies on your own MR are exempt. The destination picks the credential, never you: `t3 <overlay> notify post --channel <channel> --text '<message>'`, `mcp__teatree__slack_react` or `t3 slack react --channel <channel> --ts <ts> --emoji <name>`, `mcp__teatree__notify_user` or `t3 <overlay> notify send '<body>' --idempotency-key <key>`, `t3 review reply-to-discussion`. Full text: `skills/rules/references/on-behalf-posting.md`.
+The preset's egress posture (`t3 loop preset use`) gates every colleague-visible post, approval or reaction: when it blocks, get approval first. Drafts, self-DMs and replies on your own MR are exempt. The destination picks the credential, never you: `t3 <overlay> notify post --channel <channel> --text '<message>'`, `mcp__teatree__slack_react` or `t3 slack react --channel <channel> --ts <ts> --emoji <name>`, `mcp__teatree__notify_user` or `t3 <overlay> notify send '<body>' --idempotency-key <key>`, `t3 review reply-to-discussion`. Full text: `skills/rules/references/on-behalf-posting.md`.
 
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 
@@ -167,7 +171,7 @@ Do in-scope work now: run the command instead of handing back steps, never punt 
 
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 
-With `contribute` true, guardrails and rules must land in an existing teatree skill; personal memory only holds user preferences and environment facts. Full text: `skills/rules/references/do-work-now.md`.
+With `contribute` true, guardrails and rules must land in an existing teatree skill (retro findings via `t3 <overlay> retro finding`); personal memory only holds user preferences and environment facts. Full text: `skills/rules/references/do-work-now.md`.
 
 ## Never Change PR Base Branch or Dependencies (Non-Negotiable)
 

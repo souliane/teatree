@@ -35,6 +35,9 @@ pytestmark = pytest.mark.skipif(
 
 ONEOFF_ID = "teatree-worker-run-abc123"
 WORKER_ID = "teatree-worker-1"
+# The compose SERVICE both containers are listed under — the whole point being that
+# the one-off shares it, so the name can never tell them apart.
+SERVICE_NAME = "teatree-worker"
 
 DISPATCHED_EXEC = "DISPATCHED-EXEC"
 DISPATCHED_RUN = "DISPATCHED-RUN"
@@ -42,26 +45,20 @@ SERVICE_IMAGE = "teatree-worker:local"
 
 DRIFT_MARKER = "runs a DIFFERENT source tree"
 
-# Answers `compose ps`, both templated `docker inspect` reads, and the two dispatch
-# hops. The container id is the last argument of an inspect; the label read and the
-# mount read are told apart by the field each template names, never by the id.
+# Answers the `docker ps` label query, the templated `docker inspect` mount read, and
+# the two dispatch hops. A `ps` row is `<id> <service> <oneoff>` — the label columns the
+# wrapper's own `--format` asks for, which is where the one-off flag now comes from; the
+# container id is the last argument of an inspect.
 DOCKER_STUB = f"""#!/usr/bin/env bash
 last=""
 for arg in "$@"; do last="$arg"; done
 
 if [ "$1" = inspect ]; then
-    case "$*" in
-    *Mounts*)
-        if [ "$last" = {ONEOFF_ID} ]; then
-            printf 'bind %s' "${{STUB_ONEOFF_SOURCE:-}}"
-        else
-            printf 'bind %s' "${{STUB_WORKER_SOURCE:-}}"
-        fi
-        exit 0 ;;
-    *Labels*)
-        if [ "$last" = {ONEOFF_ID} ]; then printf 'True'; else printf 'False'; fi
-        exit 0 ;;
-    esac
+    if [ "$last" = {ONEOFF_ID} ]; then
+        printf 'bind %s' "${{STUB_ONEOFF_SOURCE:-}}"
+    else
+        printf 'bind %s' "${{STUB_WORKER_SOURCE:-}}"
+    fi
     exit 0
 fi
 
@@ -71,7 +68,15 @@ esac
 
 for arg in "$@"; do
     case "$arg" in
-    ps) printf '%s\\n' ${{STUB_RUNNING_IDS:-}}; exit 0 ;;
+    ps)
+        for id in ${{STUB_RUNNING_IDS:-}}; do
+            if [ "$id" = {ONEOFF_ID} ]; then
+                printf '%s {SERVICE_NAME} True\\n' "$id"
+            else
+                printf '%s {SERVICE_NAME} False\\n' "$id"
+            fi
+        done
+        exit 0 ;;
     config) printf '%s\\n' '{SERVICE_IMAGE}'; exit 0 ;;
     exec) printf '{DISPATCHED_EXEC}\\n'; exit 0 ;;
     run) printf '{DISPATCHED_RUN}\\n'; exit 0 ;;

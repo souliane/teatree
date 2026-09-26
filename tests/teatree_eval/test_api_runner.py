@@ -30,12 +30,16 @@ from teatree.eval.api_runner import (
     ClaudeCliMissingError,
     CleanRoomConfig,
     CreditExhaustedError,
+    _scenario_skill_catalog_plugins,
+    _skill_catalog_fixture_plugin,
     build_sdk_options,
     classify_terminal_error,
     is_success_result_error,
     resolve_claude_path,
 )
 from teatree.eval.models import (
+    COST_SOURCE_REPORTED,
+    COST_SOURCE_UNKNOWN,
     DEFAULT_MAX_TURNS,
     AnyOf,
     EvalSpec,
@@ -747,12 +751,23 @@ class TestBuildSdkOptionsSkillCatalog:
         assert options.plugins[0]["type"] == "local"
         assert options.plugins[0]["path"].endswith("evals/fixtures/skill_catalog")
 
+    def test_scenario_owned_catalog_plugin_supplements_the_core_fixture(self, tmp_path: Path) -> None:
+        plugin = {"type": "local", "path": str(tmp_path / "overlay-plugin")}
+        config = dataclasses.replace(
+            _skills_config(tmp_path, skills=("overlay-workspace",)),
+            skill_catalog_plugins=(plugin,),
+        )
+
+        options = build_sdk_options(config)
+
+        assert len(options.plugins) == 2
+        assert options.plugins[0]["path"].endswith("evals/fixtures/skill_catalog")
+        assert options.plugins[1] == plugin
+
     def test_fixture_plugin_path_is_a_real_local_plugin_on_disk(self, tmp_path: Path) -> None:
         # Anti-vacuity: the registered path must actually resolve to a real
         # plugin directory (a valid plugin.json + at least one skill), or the
         # widening is a no-op that still leaves the model's catalog empty.
-        from teatree.eval.api_runner import _skill_catalog_fixture_plugin  # noqa: PLC0415
-
         plugin_dir = Path(_skill_catalog_fixture_plugin()["path"])
         assert (plugin_dir / ".claude-plugin" / "plugin.json").is_file()
         assert list(plugin_dir.glob("skills/*/SKILL.md")), "fixture plugin ships no skills"
@@ -761,16 +776,18 @@ class TestBuildSdkOptionsSkillCatalog:
         # Anti-drift: every skill name any shipped scenario declares via
         # available_skills must resolve to a real fixture skill directory, or a
         # scenario author's typo silently widens the catalog with nothing.
-        from teatree.eval.api_runner import _skill_catalog_fixture_plugin  # noqa: PLC0415
         from teatree.eval.discovery import discover_specs  # noqa: PLC0415
 
         plugin_dir = Path(_skill_catalog_fixture_plugin()["path"])
-        fixture_names = {p.parent.name for p in plugin_dir.glob("skills/*/SKILL.md")}
-        declared: set[str] = set()
+        core_fixture_names = {p.parent.name for p in plugin_dir.glob("skills/*/SKILL.md")}
         for spec in discover_specs():
-            declared.update(spec.available_skills)
-        missing = declared - fixture_names
-        assert not missing, f"scenario(s) declare available_skills with no fixture entry: {sorted(missing)}"
+            supplied = set(core_fixture_names)
+            for plugin in _scenario_skill_catalog_plugins(spec):
+                supplied.update(p.parent.name for p in Path(plugin["path"]).glob("skills/*/SKILL.md"))
+            missing = set(spec.available_skills) - supplied
+            assert not missing, (
+                f"{spec.name}: available_skills has no core-fixture or scenario-owned plugin entry: {sorted(missing)}"
+            )
 
     def test_runner_threads_spec_available_skills_into_options(self, tmp_path: Path) -> None:
         # End-to-end: EvalSpec.available_skills -> CleanRoomConfig.skills ->
@@ -1336,8 +1353,11 @@ class TestApiInProcessRunnerMaxTurnsCapturesTrajectory:
         assert run.terminal_reason == "budget_exceeded"
         assert len(run.tool_calls) == 1
         assert run.is_error is False
-        # The budget amount in the message is still the recovered cost floor.
+        # The budget amount in the message is still the recovered cost floor, and the
+        # source must follow it — a stale UNKNOWN renders the run as unmeasured while
+        # counting it among the priced ones.
         assert run.cost_usd == pytest.approx(0.1)
+        assert run.cost_source == COST_SOURCE_REPORTED
 
     def test_non_terminal_error_after_partial_messages_still_propagates(self, tmp_path: Path) -> None:
         # Anti-vacuity for the partial path: a genuine error mid-stream (after some
@@ -2495,3 +2515,51 @@ class TestThrottleRetry:
         assert run.throttle_retries == 2
         assert "throttled" in run.terminal_reason
         assert sleeps == [pytest.approx(1.0), pytest.approx(2.0)]
+
+
+_OPUS = "claude-opus-4-8"
+_OPUS_USAGE = {
+    "input_tokens": 12_000,
+    "output_tokens": 3_000,
+    "cache_read_input_tokens": 40_000,
+    "cache_creation_input_tokens": 8_000,
+}
+
+
+class TestApiTransportCostIsNeverDerived:
+    """The `api` transport reports its own bill, so a silence from it is not a price."""
+
+    def test_api_transport_reporting_no_cost_yields_unknown_not_a_derived_figure(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path, model=_OPUS)
+
+        async def _query(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+            await asyncio.sleep(0)
+            yield AssistantMessage(content=[TextBlock(text="answer")], model=_OPUS)
+            yield _result(total_cost_usd=None, usage=_OPUS_USAGE, model_usage={_OPUS: {}})
+
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", _query),
+        ):
+            run = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
+
+        assert run.cost_usd == pytest.approx(0.0)
+        assert run.cost_source == COST_SOURCE_UNKNOWN
+
+    def test_a_reported_api_cost_is_still_carried(self, tmp_path: Path) -> None:
+        """Anti-vacuity: the transport's own figure is untouched by the suppression."""
+        spec = _spec(tmp_path, model=_OPUS)
+
+        async def _query(*, prompt: str, options: Any = None, **_: Any) -> AsyncIterator[Any]:
+            await asyncio.sleep(0)
+            yield AssistantMessage(content=[TextBlock(text="answer")], model=_OPUS)
+            yield _result(total_cost_usd=0.0421, usage=_OPUS_USAGE, model_usage={_OPUS: {}})
+
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", _query),
+        ):
+            run = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
+
+        assert run.cost_usd == pytest.approx(0.0421)
+        assert run.cost_source == COST_SOURCE_REPORTED

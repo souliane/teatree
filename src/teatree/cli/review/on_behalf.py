@@ -37,22 +37,21 @@ def target_overlay(repo: str) -> str | None:
     """The overlay that owns *repo*, or ``None`` when it is not exactly one.
 
     ``t3 review <cmd> <repo> <mr> …`` names its target in the invocation, so the
-    on-behalf mode governing the post is the TARGET overlay's — the same overlay
-    :mod:`teatree.cli.review.forge_target` already reads the base URL and token
-    from, so the gate can never judge a post by one overlay while addressing it
-    with another's credential. Resolved ambiently instead, the mode is decided by
-    the invoking cwd: on a multi-overlay install ``get_overlay()`` resolves
-    nothing, the shipped ``DRAFT_OR_ASK`` applies, and a repo whose owning overlay
-    is pinned ``immediate`` is refused anyway (souliane/teatree#960 seam,
-    #3793 class).
+    ``on_behalf_auto_actions`` allowlist governing the post is the TARGET overlay's —
+    the same overlay :mod:`teatree.cli.review.forge_target` already reads the base URL
+    and token from, so the gate can never judge a post by one overlay while addressing
+    it with another's credential. The posture that decides is box-global and reads the
+    same either way; the allowlist is the whole of what this resolves. Taken ambiently
+    instead, it is decided by the invoking cwd: on a multi-overlay install
+    ``get_overlay()`` resolves nothing, so the target's own carve-out data is dropped
+    in favour of an unrelated overlay's (souliane/teatree#960 seam, #3793 class).
 
     ``None`` for an unowned or ambiguously-owned slug. That is NOT a fall-through
-    to the ambient overlay's mode: :attr:`~teatree.on_behalf_gate.OnBehalfContext.target`
+    to the ambient overlay's allowlist: :attr:`~teatree.on_behalf_gate.OnBehalfContext.target`
     carries the named target alongside it, and a named target no single overlay owns
     drops the per-overlay tier (:attr:`~teatree.on_behalf_gate.OnBehalfContext.scope`)
-    rather than inheriting an ``immediate`` pin from an overlay with no claim on it.
-    The tiers ABOVE and BELOW that one still apply, so an operator's
-    ``T3_ON_BEHALF_POST_MODE`` and a global workspace default both keep governing it.
+    rather than inheriting it from an overlay with no claim on it. The tiers ABOVE
+    and BELOW that one still apply, so the global workspace default keeps governing it.
     """
     return owning_overlay_name(repo) or None
 
@@ -68,28 +67,25 @@ def on_behalf_gate_active() -> bool:
     """Whether the on-behalf pre-gate forbids unattended ``approve``/``unapprove``.
 
     An MR approval/unapproval is an outward, state-changing post made under
-    the user's identity, so it must respect the tri-state
-    ``on_behalf_post_mode`` pre-gate (souliane/teatree#960). Approve is
-    not a draft-form action: it is gated (returns ``True`` from this
-    helper) under both :attr:`~teatree.config.OnBehalfPostMode.ASK` and
-    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`, and only
-    permitted (returns ``False``) under
-    :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`.
+    the user's identity, so it must respect the posture pre-gate. Approve is not
+    a draft-form action: it is gated (returns ``True`` from this helper) under a
+    forbidding posture, and only permitted (returns ``False``) under a permitting one.
 
     Target-less by construction: it answers "is the gate armed at all" for a
     caller that holds no repo yet. A caller that DOES hold one asks
-    :func:`check_on_behalf`, which reads the target overlay's mode.
+    :func:`check_on_behalf`, which carries the target overlay's allowlist too.
 
     The import stays lazy so ``teatree.cli`` is importable before
     ``django.setup()``, but it is never guarded: an unresolvable gate must surface,
     never resolve to "gate off" — a safety gate has no fail-OPEN degradation.
     """
-    from teatree.on_behalf_gate import on_behalf_post_will_block  # noqa: PLC0415 — lazy CLI import
+    from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict  # noqa: PLC0415 — lazy CLI import
+    from teatree.on_behalf_gate import OnBehalfVerdict  # noqa: PLC0415 — lazy CLI import
 
-    # "approve" is a non-draft action: PROCEED under IMMEDIATE, BLOCK under ASK
-    # and DRAFT_OR_ASK (AUTO_DRAFT never fires for "approve"), so the proactive
-    # will-block pre-check is exactly this gate's active predicate.
-    return on_behalf_post_will_block("approve")
+    # "approve" is a non-draft action: PROCEED under a permitting posture, BLOCK
+    # under a forbidding one (AUTO_DRAFT never fires for "approve"), so the
+    # proactive will-block pre-check is exactly this gate's active predicate.
+    return resolve_posture_verdict("approve") is OnBehalfVerdict.BLOCK
 
 
 def gate_target(repo: str, mr: int) -> str:
@@ -125,7 +121,7 @@ def check_on_behalf(repo: str, mr: int, action: str, *, own_mr: bool = False) ->
     or the post fails.
 
     The gate covers colleague-VISIBLE actions only: a draft-form *action*
-    (``post_draft_note``) is exempt under every mode and always returns
+    (``post_draft_note``) is exempt under every posture and always returns
     ``""`` here — a draft is colleague-invisible and needs no approval.
 
     *own_mr* is the caller's PROVED owner-authorship of this MR
@@ -261,13 +257,22 @@ def publish_or_blocked_issue(
 
 
 def _surface(run: Callable[[], tuple[str, int]]) -> tuple[str, int]:
-    """Run an on-behalf publish, mapping a BLOCK or verify-after-post failure to ``(message, 1)``."""
+    """Run an on-behalf publish, mapping a BLOCK or verify-after-post failure to ``(message, 1)``.
+
+    A partial publish (:class:`OnBehalfPartialPublishError`) surfaces exactly like any
+    other failure — its own ``(message, code)``, naming what landed. The raise is not
+    about the caller's report; it is what lets the gate roll the approval back while
+    keeping the audit for the posts that already went out.
+    """
     from teatree.cli.review.audit import ReviewArtifactNotVerifiedError  # noqa: PLC0415 — lazy pre-django.setup import
-    from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError  # noqa: PLC0415 — lazy pre-setup import
+    from teatree.core.on_behalf_gate_recorded import (  # noqa: PLC0415 — lazy pre-setup import
+        OnBehalfPartialPublishError,
+        OnBehalfPostBlockedError,
+    )
 
     try:
         return run()
-    except _PublishRefusedError as refused:
+    except (_PublishRefusedError, OnBehalfPartialPublishError) as refused:
         return refused.result
     except OnBehalfPostBlockedError as blocked:
         return str(blocked), 1
@@ -315,9 +320,9 @@ def register(review_app: typer.Typer) -> None:
     ) -> None:
         """Record an :class:`OnBehalfApproval` that satisfies the on-behalf gate.
 
-        The recorded-approval channel is the no-TTY satisfier for the
-        ``on_behalf_post_mode`` pre-gate (#960, BLOCK verdict). It mirrors the
-        #953 ``DbApproval`` / section 17.4 ``MergeClear`` shape:
+        The recorded-approval channel is the no-TTY satisfier for the posture
+        pre-gate (BLOCK verdict). It mirrors the #953 ``DbApproval`` /
+        section 17.4 ``MergeClear`` shape:
         durable, single-use, strictly scoped to one
         ``(target, action)`` pair, maker!=checker enforced. After this
         command writes the row, the next on-behalf attempt matching

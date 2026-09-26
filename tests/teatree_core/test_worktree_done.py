@@ -23,19 +23,19 @@ from django.utils import timezone
 
 from teatree.core.cleanup.cleanup import _EffectiveTarget
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict, worktree_liveness
+from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.models import Session, Ticket, UnshippedWorkRecord, Worktree
 from teatree.core.runners import worktree_start
 from teatree.core.worktree import worktree_done
 from teatree.core.worktree.branch_classification import RedundancyVerdict
 from teatree.core.worktree.worktree_done import (
     ChangeAnalysis,
-    _effective_default_target,
-    _verdict_provenance,
     analyze_worktree_changes,
     reap_done_worktree,
     reap_done_worktrees,
     worktree_is_done,
 )
+from teatree.core.worktree.worktree_emit import _effective_default_target, _verdict_provenance
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git, forge_reporting, squash_then_base_evolved
 
 
@@ -95,7 +95,12 @@ class _ReaperFixture(TestCase):
             lambda project, **kw: self.docker_calls.append((project, bool(kw.get("remove_volumes")))),
         )
         # Neutralise the forge so the patch-id / FSM signals are the only deciders.
+        monkeypatch.setattr("teatree.core.worktree.branch_classification.forge_for_repo", lambda _repo: "github")
         monkeypatch.setattr("teatree.core.worktree.branch_classification.probe_host_cli", lambda *_a, **_k: "")
+        monkeypatch.setattr(
+            "teatree.core.worktree.branch_classification.find_open_pr_for_branch",
+            lambda *_a, **_k: PrProbe.none(),
+        )
         # These tests model SETTLED worktrees (cleanup's target), not live ones; the
         # liveness guard has its own dedicated tests, so neutralise it here.
         monkeypatch.setattr(
@@ -225,7 +230,7 @@ class TestReapTocTouGuard(_ReaperFixture):
         self._push_branch()
         worktree = self._make_worktree(Ticket.State.MERGED)
 
-        def racing_analyze(wt: Worktree, *, workspace: Path) -> ChangeAnalysis:
+        def racing_analyze(wt: Worktree, *, workspace: Path, **_row: object) -> ChangeAnalysis:
             # A new commit lands AFTER head_at_analysis was captured, BEFORE the wipe.
             (self.wt_path / "late.txt").write_text("late-landing work\n", encoding="utf-8")
             _run_git("add", "-A", cwd=self.wt_path)
@@ -285,7 +290,10 @@ class TestOpenPrRefusesSquashMergedDone(_ReaperFixture):
         assert worktree_is_done(worktree).source == "squash-merged"
 
         # The forge reports an OPEN PR for the branch → done must be refused.
-        with patch("teatree.core.worktree.branch_classification.probe_host_cli", return_value="7"):
+        with patch(
+            "teatree.core.worktree.branch_classification.find_open_pr_for_branch",
+            return_value=PrProbe.found("https://forge/pr/7"),
+        ):
             signal = worktree_is_done(worktree)
             outcome = self._reap(worktree)
 
@@ -363,8 +371,8 @@ class TestWipeRechecksTheWholeWorktreeNotJustHead(_ReaperFixture):
     def _reap_with_a_write_during_the_analysis(self, worktree: Worktree, filename: str) -> object:
         real_analyze = worktree_done.analyze_worktree_changes
 
-        def _analyze_then_an_agent_writes(wt: Worktree, *, workspace: Path) -> ChangeAnalysis:
-            analysis = real_analyze(wt, workspace=workspace)
+        def _analyze_then_an_agent_writes(wt: Worktree, *, workspace: Path, **row: object) -> ChangeAnalysis:
+            analysis = real_analyze(wt, workspace=workspace, **row)
             (self.wt_path / filename).write_text("work in flight\n", encoding="utf-8")
             return analysis
 

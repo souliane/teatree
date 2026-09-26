@@ -19,12 +19,19 @@ agents:
 # are mandatory, not suggestions — the architectural-review scanner and the
 # `architectural_review_skill` / `review_skill` settings resolve against
 # `ac-reviewing-codebase`, so a box without it runs its periodic review with no
-# skill guidance at all. Optional, provider-specific suggestions belong in
+# skill guidance at all. Only the superpowers methodology skills teatree delegates
+# to are pinned, one entry each; `architecture-design` ships in the plugin's own
+# `skills/` tree. Optional, provider-specific suggestions belong in
 # `teatree.provisioning.recommended` (doctor INFO), never here.
 dependencies:
   apm:
-  - obra/superpowers#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
-  - souliane/teatree/skills/architecture-design
+  - obra/superpowers/skills/finishing-a-development-branch#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/receiving-code-review#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/requesting-code-review#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/systematic-debugging#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/test-driven-development#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/verification-before-completion#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
+  - obra/superpowers/skills/writing-plans#1f20bef3f59b85ad7b52718f822e37c4478a3ff5  # v5.0.7
   - souliane/skills/ac-reviewing-codebase#84f075fff0187ccbdf187143a6cf3ab91711fddb
   - souliane/skills/ac-python#84f075fff0187ccbdf187143a6cf3ab91711fddb
   - souliane/skills/ac-django#84f075fff0187ccbdf187143a6cf3ab91711fddb

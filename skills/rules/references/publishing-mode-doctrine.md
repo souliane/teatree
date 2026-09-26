@@ -4,7 +4,7 @@ The full text of the `/t3:rules` sections on PR base branches, fewest PRs, § "P
 
 ## Never Change PR Base Branch or Dependencies (Non-Negotiable)
 
-When a PR targets a non-default branch, that is intentional — it means the PR is part of a dependency chain. **Never** change a PR's target branch, rebase it onto a different base, or remove PR dependencies without explicit user instruction.
+When a PR targets a non-default branch, that is intentional — it means the PR is part of a dependency chain. **Never** change a PR's target branch, rebase it onto a different base, or remove PR dependencies without explicit user instruction. One exception maintains the chain instead of destroying it: retargeting a stack layer to its new parent (or to the default branch) after the layer below merges, per `/t3:ship` § "Stacked Delivery".
 
 - If asked to "merge main" into a branch, merge the specified source — do not change what the branch is based on.
 - If a branch is based on another feature branch (not main/master), keep it that way.
@@ -14,7 +14,7 @@ Destroying PR dependency chains wastes hours of carefully organized work.
 
 ## Fewest PRs for Related Work — Splitting Requires Approval (Non-Negotiable)
 
-Ship a piece of **related** work as **one** PR. Do not preemptively carve a single coherent change into a chain of stacked or follow-up PRs. The user's standing policy: teatree ships related work in **as few PRs as possible**, and **splitting related work across multiple PRs needs the user's explicit, up-front approval**. Without that approval, the default is one PR.
+Ship a piece of **related** work as **one** PR. Do not preemptively carve a single coherent change into a chain of stacked or follow-up PRs. The user's standing policy: teatree ships related work in **as few PRs as possible**, and **splitting related work across multiple PRs needs the user's explicit, up-front approval**. Without that approval, the default is one PR. A stack created under the conflict-driven default (/t3:ship § Stacked Delivery) is one deliverable, not a split — no per-case approval needed.
 
 - The small-focused-PR habit is a human code-**review** convenience; it does not transfer to agent-driven, self-verified work. When the user is not reviewing PRs, splitting buys nothing and costs more — every extra PR multiplies CI runs, base-branch drift, stacked-rebase overhead, BLUEPRINT churn, and partial-merge states, and each seam is a fresh place for error.
 - "Related" is a judgment call: commits that serve **one goal** (one feature, one refactor, one migration — even across several files or several days) belong together. A migration that touches N fields is one PR, not N PRs.
@@ -22,7 +22,7 @@ Ship a piece of **related** work as **one** PR. Do not preemptively carve a sing
 - When you believe a split is genuinely warranted (e.g. an enormous diff, or a risky change that benefits from landing a safe prerequisite first), **ask the user first** and proceed only on an explicit yes. If you proceed without asking, ship it as one PR.
 - Per-commit granularity inside one PR is encouraged — meaningful, self-contained commits on a single branch give you reviewable history without paying the multi-PR cost.
 
-This generalises the `/t3:contribute` "bundle into a single PR by default" rule from retro commits to **all** related work, and gates the stacking option in `/t3:ship` § "One Open PR Per Ticket" behind explicit approval.
+This generalises the `/t3:contribute` "bundle into a single PR by default" rule from retro commits to **all** related work. Stacking is not gated here: `/t3:ship` § "Stacked Delivery — One Stack Per Repo (Default)" makes layering conflict-driven work onto the repo stack the default.
 
 ## Publishing Actions Are Mode-Conditional (Non-Negotiable)
 
@@ -74,7 +74,7 @@ Do not assume interactive mode. Before saying "not pushed, your call", before as
 1. `T3_MODE` environment variable (`auto` or `interactive`).
 2. Active overlay's per-overlay `mode` value in the `ConfigSetting` DB store (`config_setting set mode … --overlay <active>`, where `<active>` = `T3_OVERLAY_NAME` env var or the repo's registered overlay). The `[overlays.<active>] mode` TOML key is ignored on read.
 3. Global `mode` value in the `ConfigSetting` DB store (`config_setting set mode …`). The `[teatree] mode` TOML key is ignored on read.
-4. The DEFAULTS tier: the shipped `src/teatree/config/defaults.toml` value (`teatree.config.resolution._toml_default_rows`). This is the terminal step — there is no further fallback.
+4. The DECLARED default: the value the declaration states (`teatree.config.resolution.effective_default`), which is what `src/teatree/config/defaults.toml` is rendered from. This is the terminal step — there is no further fallback.
 
 Assistant memory (`MEMORY.md`, `~/.claude/**/memory`, a per-project memory file) is **never** a tier. Publishing/merge doctrine resolves only from teatree's own stores — `AGENTS.md` § "teatree never reads assistant memory as a functional input" and BLUEPRINT §17.1 invariant 14, pinned by `tests/test_no_agent_memory_dependency.py`. A memory line claiming "this repo is auto" is not an input; read the config.
 

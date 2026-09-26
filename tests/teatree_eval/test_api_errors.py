@@ -103,6 +103,15 @@ class TestClassifyTransientThrottle:
         # A $0 metered key has no time-based recovery — fail loud, never retry.
         assert classify_transient_throttle("credit balance is too low") is None
 
+    def test_a_provider_spend_stop_is_never_retried(self) -> None:
+        assert (
+            classify_transient_throttle("403: token cycle spend limit reached, resets at 2026-10-01T00:00:00Z") is None
+        )
+
+    def test_a_leak_block_is_never_retried(self) -> None:
+        body = "status_code: 400, body: {'error': {'code': 'guardrail_blocked', 'message': 'blocked by guardrail'}}"
+        assert classify_transient_throttle(body) is None
+
     def test_weekly_limit_is_never_retried(self) -> None:
         # A 7-day wait is never right inside a single run — surface loud, don't wait.
         assert classify_transient_throttle("weekly limit reached") is None

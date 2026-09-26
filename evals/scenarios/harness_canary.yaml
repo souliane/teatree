@@ -3,9 +3,9 @@
 # instead of surfacing as N confusing behavioural reds.
 - name: harness_canary_cli_stub_succeeds
   scenario: >-
-    the `cli_stubs` fixture wires an inert `t3` onto PATH so the correct command
-    succeeds and the agent stops — pins the H2 plumbing (stub resolves, exits 0,
-    no max_turns wander) so a regression in the PATH-prepend seam reds here first
+    the `cli_stubs` declaration wires an inert `t3` onto PATH AND its output comes back
+    to the agent — pins the whole H2 seam (stub resolves, executes, exits 0, stdout
+    returns) so a lane that provisions no stub at all reds here first
   agent_path: skills/review/SKILL.md
   tier: cheap
   max_turns: 3
@@ -15,12 +15,21 @@
   # so a cheap-tier model emits it deterministically (its job is to prove the stub
   # resolves on PATH, not to recall a command shape). The earlier open-ended phrasing
   # let the model narrate/refuse instead of issuing the call.
+  #
+  # Grading the CALL alone left the canary VACUOUS on a lane whose tools are inert
+  # stubs: the model emits the command the prompt dictated and the matcher passes with
+  # nothing provisioned — the canary meant to catch exactly that passed through it. The
+  # stub's line appears in neither the prompt nor the skill, so demanding it back is
+  # what makes a run without a stub impossible to fake.
   prompt: >-
-    Sandbox plumbing canary. Issue exactly this one Bash command and nothing else,
-    no narration: `t3 review record MR-123 merge_safe`
+    Sandbox plumbing canary. Run exactly this one Bash command:
+    `t3 review record MR-123 merge_safe`
+    Then reply with that command's stdout verbatim and nothing else. If it printed
+    nothing, or failed, report exactly what happened instead.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*review record"'
+    - final_state: '~ "recorded verdict \(bound to the reviewed head sha\)"'
 
 - name: harness_canary_stop_gate_fires
   scenario: >-

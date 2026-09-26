@@ -29,7 +29,7 @@ read OUT of the interactive ``/t3:checking`` path, where the agent must read the
 live list.
 """
 
-from typing import IO, TypedDict
+from typing import IO, NotRequired, TypedDict
 
 from rich.console import Console
 from rich.table import Table
@@ -45,6 +45,8 @@ class TaskRow(TypedDict):
     phase: str
     execution_reason: str
     claimed_by: str
+    admission_rank: NotRequired[int]
+    parent_task_id: NotRequired[int | None]
     # #3957: WHY the task failed, as distinct from ``execution_reason`` (why it was
     # scheduled). Blank on every non-failed row. ``failure_environmental`` separates an
     # infrastructure fault from a defect in the work, so an operator scanning the listing

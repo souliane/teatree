@@ -69,7 +69,7 @@ _DOUBLE_QUOTED_VAR_REF_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
-def _raw_substitution_is_live(raw: str) -> bool:
+def _raw_substitution_is_live(raw: str, value_offset: int = 0) -> bool:
     """Return True iff a ``$(...)`` in ``raw`` sits OUTSIDE a single-quoted span.
 
     A command substitution is expanded by bash only when it is unquoted or
@@ -90,13 +90,19 @@ def _raw_substitution_is_live(raw: str) -> bool:
     ``raw`` defaults to empty for in-process callers that do not carry a source
     span; an empty/absent ``raw`` is treated as live (conservative -- the gate
     keeps failing closed on an embedded ``$(...)`` it cannot prove inert).
+
+    ``value_offset`` is where the VALUE starts inside ``raw`` for a caller whose
+    span covers more than the value (a ``name=value`` field assignment). The
+    walk needs the WHOLE span to carry quote state -- the quote that makes a
+    field body inert opens in the name half -- so the offset narrows only which
+    markers are reported, never which characters are read.
     """
     if not raw:
         return True
-    return raw_substitution_sees_live(raw, ("$(",))
+    return raw_substitution_sees_live(raw, ("$(",), value_offset)
 
 
-def _var_ref_is_live(raw: str) -> bool:
+def _var_ref_is_live(raw: str, value_offset: int = 0) -> bool:
     """Return True iff a whole-value ``$VAR`` in ``raw`` is one bash would EXPAND.
 
     A ``$VAR`` / ``${VAR}`` reference is expanded by bash when it is DOUBLE-quoted
@@ -110,13 +116,19 @@ def _var_ref_is_live(raw: str) -> bool:
     as the literal token ``$LEAKVAR`` instead of the live env value -- only the
     double-quoted form was resolved before, so an unquoted live env body
     published unscanned.
+
+    Both patterns are ANCHORED, so unlike the substitution walker this check
+    wants the value's span alone: a field assignment's ``description=`` prefix
+    matches no anchor and would read every live ``description="$VAR"`` as inert.
+    ``value_offset`` slices it off.
     """
     if not raw:
         return True
-    return bool(_DOUBLE_QUOTED_VAR_REF_RE.match(raw) or _VAR_REF_RE.match(raw))
+    span = raw[value_offset:]
+    return bool(_DOUBLE_QUOTED_VAR_REF_RE.match(span) or _VAR_REF_RE.match(span))
 
 
-def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> str:
+def resolve_inline_body_value(value: str, base: Path | None, raw: str = "", value_offset: int = 0) -> str:
     """Resolve a ``--description``/``--body`` value's indirection to the real body.
 
     Three forms are resolved so the banned-terms / quote scan runs against the
@@ -159,18 +171,27 @@ def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> s
     :func:`unredirected_heredoc_bodies` already scans that exact body
     elsewhere in the same payload, so this walker defers to it instead of
     fail-closing on the outer ``$(...)`` it cannot itself expand (#1213).
+
+    ``raw`` is the whole source span of the token the value came from and
+    ``value_offset`` says where the value starts inside it. A caller whose token
+    IS the value passes the defaults. A ``name=value`` field assignment cannot:
+    the quote that decides liveness opens before ``name``, so slicing the span
+    down to the value loses the quote state and reads every single-quoted inert
+    body as live, while handing the resolver the whole span loses the anchoring
+    the ``$VAR`` patterns need. The two checks want different halves of the same
+    span, so both are handed the whole span plus the offset.
     """
     cat_match = _CAT_SUBST_RE.match(value)
-    if cat_match is not None and _raw_substitution_is_live(raw):
+    if cat_match is not None and _raw_substitution_is_live(raw, value_offset):
         path = cat_match.group("path").strip("'\"")
         content = read_file_arg(path, base)
         return content if content is not None else FAIL_CLOSED_SENTINEL
     if _CAT_HEREDOC_SUBST_RE.match(value) is not None:
         return ""
     var_match = _VAR_REF_RE.match(value)
-    if var_match is not None and _var_ref_is_live(raw):
+    if var_match is not None and _var_ref_is_live(raw, value_offset):
         resolved = os.environ.get(var_match.group("name"))
         return resolved if resolved is not None else UNAVAILABLE_BODY_SOURCE_SENTINEL
-    if "$(" in value and _raw_substitution_is_live(raw):
+    if "$(" in value and _raw_substitution_is_live(raw, value_offset):
         return FAIL_CLOSED_SENTINEL
     return value

@@ -20,11 +20,8 @@ from teatree.loop.scanners.provision_smoke import DOGFOOD_SMOKE_PHASE, Provision
 TEST_OVERLAY_NAME = "t3-teatree"
 
 
-def _scanner(*, cadence_hours: int = 24) -> ProvisionSmokeScanner:
-    return ProvisionSmokeScanner(
-        overlay_name=TEST_OVERLAY_NAME,
-        cadence_hours=cadence_hours,
-    )
+def _scanner() -> ProvisionSmokeScanner:
+    return ProvisionSmokeScanner(overlay_name=TEST_OVERLAY_NAME)
 
 
 def _last_smoke_task() -> Task | None:
@@ -60,28 +57,13 @@ class ProvisionSmokeScannerTests(TestCase):
         assert task.phase == DOGFOOD_SMOKE_PHASE
         assert task.status == Task.Status.PENDING
 
-    def test_fresh_timestamp_blocks_new_task(self) -> None:
-        """A recent prior run inside the cadence window suppresses new queueing."""
-        _scanner().scan()
-        prior = _last_smoke_task()
-        assert prior is not None
-        Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        _backdate_task(prior, hours=1)  # 1 hour ago — far inside the 24h window
-
-        second = _scanner().scan()
-
-        assert second == []
-        latest = _last_smoke_task()
-        assert latest is not None
-        assert latest.pk == prior.pk
-
     def test_stale_timestamp_fires_smoke_again(self) -> None:
-        """A prior run older than cadence_hours triggers a new task."""
+        """A prior completed run does not block the row's next fire."""
         _scanner().scan()
         prior = _last_smoke_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        _backdate_task(prior, hours=25)  # past the 24h cadence
+        _backdate_task(prior, hours=25)
 
         second = _scanner().scan()
 
@@ -129,44 +111,12 @@ class AcmeProvisionSmokeWiringTests(TestCase):
         from teatree.loop.global_scanner_factories import _dogfood_smoke_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._patched_settings(),
         ):
             scanner = _dogfood_smoke_scanner()
 
         assert scanner is not None
-        assert scanner.cadence_hours == 24
-
-    def test_disabled_in_core_config_skips_wiring(self) -> None:
-        from teatree.loop.global_scanner_factories import _dogfood_smoke_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {"user": self._patched_settings(dogfood_smoke_disabled=True)},
-            )(),
-        ):
-            scanner = _dogfood_smoke_scanner()
-
-        assert scanner is None
-
-    def test_custom_cadence_propagates_through_wiring(self) -> None:
-        from teatree.loop.global_scanner_factories import _dogfood_smoke_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {"user": self._patched_settings(dogfood_smoke_cadence_hours=12)},
-            )(),
-        ):
-            scanner = _dogfood_smoke_scanner()
-
-        assert scanner is not None
-        assert scanner.cadence_hours == 12
 
 
 class ScannerProtocolTests(TestCase):
@@ -253,10 +203,9 @@ class WiringFallbackTests(TestCase):
         from teatree.loop.scanners.provision_smoke import build_provision_smoke_scanner  # noqa: PLC0415
 
         settings = UserSettings(dogfood_smoke_overlay="pinned-overlay")
-        cfg = type("Cfg", (), {"user": settings})()
 
         scanner = build_provision_smoke_scanner(
-            load_config=lambda: cfg,
+            resolve_settings=lambda: settings,
             discover_active_overlay=lambda: None,
             canonical_fallback="t3-teatree",
         )
@@ -267,10 +216,9 @@ class WiringFallbackTests(TestCase):
         from teatree.loop.scanners.provision_smoke import build_provision_smoke_scanner  # noqa: PLC0415
 
         settings = UserSettings()
-        cfg = type("Cfg", (), {"user": settings})()
 
         scanner = build_provision_smoke_scanner(
-            load_config=lambda: cfg,
+            resolve_settings=lambda: settings,
             discover_active_overlay=lambda: None,
             canonical_fallback="t3-teatree",
         )
@@ -284,26 +232,12 @@ class WiringFallbackTests(TestCase):
             name = "active-discovered"
 
         settings = UserSettings()
-        cfg = type("Cfg", (), {"user": settings})()
 
         active_instance = _Overlay()
         scanner = build_provision_smoke_scanner(
-            load_config=lambda: cfg,
+            resolve_settings=lambda: settings,
             discover_active_overlay=lambda: active_instance,
             canonical_fallback="t3-teatree",
         )
         assert scanner is not None
         assert scanner.overlay_name == "active-discovered"
-
-    def test_disabled_returns_none(self) -> None:
-        from teatree.loop.scanners.provision_smoke import build_provision_smoke_scanner  # noqa: PLC0415
-
-        settings = UserSettings(dogfood_smoke_disabled=True)
-        cfg = type("Cfg", (), {"user": settings})()
-
-        scanner = build_provision_smoke_scanner(
-            load_config=lambda: cfg,
-            discover_active_overlay=lambda: None,
-            canonical_fallback="t3-teatree",
-        )
-        assert scanner is None

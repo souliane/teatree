@@ -17,7 +17,8 @@ from pathlib import Path
 import pytest
 from claude_agent_sdk.types import EffortLevel
 from django.test import TestCase
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
@@ -31,8 +32,11 @@ from teatree.core.models import ConfigSetting
 from teatree.eval.anthropic_api_runner import (
     AnthropicApiKeyMissingError,
     AnthropicApiRunner,
+    UsageLimitStopModel,
     build_anthropic_api_eval_runner,
+    usage_limit_stop,
 )
+from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON, UsageLimitReachedError
 from teatree.eval.backends import ANTHROPIC_API_BACKEND, KNOWN_BACKENDS, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
 from teatree.eval.pydantic_ai_runner import EVAL_CACHE_TTL, EvalDriveCaps
@@ -298,3 +302,66 @@ class TestRunnerWithSettings(TestCase):
     def test_the_build_factory_threads_the_configured_output_ceiling(self) -> None:
         ConfigSetting.objects.set_value("pydantic_ai_max_tokens", value=24576)
         assert build_anthropic_api_eval_runner()._caps.max_tokens == 24576
+
+
+_USAGE_LIMIT_MESSAGE = (
+    "You have reached your specified API usage limits. You will regain access on 2026-10-01 at 00:00 UTC."
+)
+
+
+def _api_error_body(message: str) -> dict[str, object]:
+    return {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+
+
+def _refusing_model(status_code: int, message: str) -> FunctionModel:
+    """A Claude double whose every streamed request the Messages API refuses with *status_code*."""
+
+    async def refuse(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+        await asyncio.sleep(0)
+        raise ModelHTTPError(status_code, "claude-sonnet-5", body=_api_error_body(message))
+        yield ""
+
+    return FunctionModel(stream_function=refuse)
+
+
+class TestTheUsageLimit400IsARunThatDidNotHappen:
+    _SPEC = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="pytest"))
+
+    def test_the_refused_run_is_recorded_as_did_not_run(self) -> None:
+        run = AnthropicApiRunner(model=_refusing_model(400, _USAGE_LIMIT_MESSAGE)).run(self._SPEC)
+        assert run.terminal_reason.startswith(f"skipped: {USAGE_LIMIT_REACHED_REASON}")
+        assert "regain access on 2026-10-01" in run.terminal_reason
+        assert evaluate(self._SPEC, run).verdict == "skip"
+
+    def test_another_400_stays_an_ordinary_failed_run(self) -> None:
+        run = AnthropicApiRunner(model=_refusing_model(400, "prompt is too long: 250000 tokens")).run(self._SPEC)
+        assert run.is_error is True
+        assert run.terminal_reason != USAGE_LIMIT_REACHED_REASON
+        assert not evaluate(self._SPEC, run).passed
+
+    def test_a_non_streaming_request_raises_the_same_stop(self) -> None:
+        def refuse(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+            raise ModelHTTPError(400, "claude-sonnet-5", body=_api_error_body(_USAGE_LIMIT_MESSAGE))
+
+        model = UsageLimitStopModel(FunctionModel(function=refuse))
+        with pytest.raises(UsageLimitReachedError, match="specified API usage limits"):
+            asyncio.run(model.request([ModelRequest.user_text_prompt("go")], None, ModelRequestParameters()))
+
+
+class TestOnlyTheUsageLimit400IsTheStop:
+    def test_the_usage_limit_400_is_the_stop(self) -> None:
+        stop = usage_limit_stop(ModelHTTPError(400, "m", body=_api_error_body(_USAGE_LIMIT_MESSAGE)))
+        assert isinstance(stop, UsageLimitReachedError)
+
+    @pytest.mark.parametrize(
+        ("status_code", "body"),
+        [
+            (429, _api_error_body(_USAGE_LIMIT_MESSAGE)),
+            (400, _api_error_body("Your credit balance is too low to access the Anthropic API.")),
+            (400, None),
+            (400, _USAGE_LIMIT_MESSAGE),
+            (400, {"type": "error", "error": _USAGE_LIMIT_MESSAGE}),
+        ],
+    )
+    def test_anything_else_is_not(self, status_code: int, body: object) -> None:
+        assert usage_limit_stop(ModelHTTPError(status_code, "m", body=body)) is None

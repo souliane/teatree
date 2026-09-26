@@ -23,7 +23,7 @@ def pressure_idle_days(payload: ActionPayload) -> float | None:
         free_gb=_payload_float(payload, "free_gb"),
         warn_gb=_payload_float(payload, "disk_warn_free_gb"),
         crit_gb=_payload_float(payload, "disk_crit_free_gb"),
-        idle_days=float(payload.get("venv_idle_days", 2)),
+        idle_days=float(payload.get("artifact_idle_days", 2)),
     )
 
 

@@ -8,10 +8,15 @@ in the teatree checkout instead, which is all the "poke a stuck ticket" use case
 needs and couples the dashboard to none of that removed machinery.
 """
 
+import logging
 import re
 import shutil
 
+from teatree.agents._runner_env import system_child_env
 from teatree.agents.terminal_launcher import LaunchResult, launch_ttyd
+from teatree.llm.credentials import CredentialError
+
+logger = logging.getLogger(__name__)
 
 # A Claude session id is a UUID; anything else is rejected so a card's free-form
 # label can never be shell-injected into the resume argv.
@@ -37,5 +42,21 @@ def build_claude_command(resume_session_id: str = "") -> list[str]:
 
 
 def launch_web_session(resume_session_id: str = "") -> LaunchResult:
-    """Spawn a loopback ttyd terminal wrapping a fresh or resumed ``claude`` session."""
-    return launch_ttyd(build_claude_command(resume_session_id))
+    """Spawn a loopback ttyd terminal wrapping a fresh or resumed ``claude`` session.
+
+    The session rides the SAME per-account credential a dispatched agent gets: this
+    was the one ``claude`` spawn resolving none of its own, so it authenticated with
+    whatever ambient auth the dashboard process happened to hold rather than the
+    account routing selected. ``system_child_env`` is the resolver for a spawn with
+    no task and no overlay, which is exactly this one; its ``None`` means "no
+    Layer-2 pin configured", and inheriting the ambient environment is then correct.
+    """
+    command = build_claude_command(resume_session_id)
+    try:
+        env = system_child_env()
+    except CredentialError as exc:
+        # A configured-but-unresolvable credential is an operator-fixable gap, so it
+        # degrades to the rendered hint a missing ttyd binary already produces.
+        logger.warning("web terminal could not resolve its credential: %s", exc)
+        return LaunchResult(error=str(exc))
+    return launch_ttyd(command, env=env)

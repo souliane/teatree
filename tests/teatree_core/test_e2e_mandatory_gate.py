@@ -54,6 +54,36 @@ class TestMustBlock(TestCase):
         assert "record-e2e-run" in message
         assert "e2e-bypass" in message
 
+    def test_block_message_claims_only_what_the_classifier_established(self) -> None:
+        # A fail-closed verdict says one changed path matched no non-impacting
+        # glob; it never establishes that a rendering file is present. Asserting
+        # presence sent the reader hunting for a file that was not in the diff.
+        with pytest.raises(E2EMandatoryGateError) as exc:
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+        message = str(exc.value)
+        assert "a serializer / view / frontend / template / document-generation file is in the diff" not in message
+        assert "did not match" in message
+        assert "non-impacting allowlist" in message
+
+    def test_block_message_names_the_diff_it_judged(self) -> None:
+        with pytest.raises(E2EMandatoryGateError) as exc:
+            check_e2e_mandatory(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
+        assert "app/api/serializers.py" in str(exc.value)
+
+    def test_block_message_elides_a_long_diff(self) -> None:
+        diff = [f"app/api/module_{i}.py" for i in range(13)]
+        with pytest.raises(E2EMandatoryGateError) as exc:
+            check_e2e_mandatory(_inputs(self.ticket, diff=diff, display_impacting=True))
+        message = str(exc.value)
+        assert "app/api/module_9.py" in message
+        assert "app/api/module_10.py" not in message
+        assert "(+3 more)" in message
+
+    def test_block_message_says_an_empty_diff_is_why(self) -> None:
+        with pytest.raises(E2EMandatoryGateError) as exc:
+            check_e2e_mandatory(_inputs(self.ticket, diff=[], display_impacting=True))
+        assert "enumerated NO files" in str(exc.value)
+
 
 class TestMustAllow(TestCase):
     def setUp(self) -> None:

@@ -29,6 +29,7 @@ from teatree.core.worktree.clone_paths import (
     repair_stale_clone_path,
     resolve_clone_path,
     stored_clone_path,
+    unambiguous_clone_path,
 )
 from tests.teatree_core.cleanup._shared import _run_git
 
@@ -63,6 +64,22 @@ def test_returns_none_when_no_clone_matches(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     assert find_clone_path(workspace, "absent") is None
+
+
+def test_the_unambiguous_resolution_refuses_two_same_basename_clones(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    _init_clone(workspace / "a" / "tool")
+    _init_clone(workspace / "b" / "tool")
+
+    assert find_clone_path(workspace, "tool") == workspace / "a" / "tool"
+    assert unambiguous_clone_path(workspace, "tool") is None
+
+
+def test_the_unambiguous_resolution_answers_a_single_match(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    _init_clone(workspace / "a" / "tool")
+
+    assert unambiguous_clone_path(workspace, "tool") == workspace / "a" / "tool"
 
 
 class _StoredClonePathCase(TestCase):
@@ -265,3 +282,71 @@ class TestSingleBranchRepoRedirectsTheRedundancyTarget(TestCase):
 
         assert read.call_count == 1
         reset_single_branch_cache()
+
+
+class TestAFullNamespacePathResolvesTheFlatClone:
+    """A multi-segment repo path must find the clone the container actually holds.
+
+    A GitLab repo is recorded by its FULL namespace path — ``<group>/<subgroup>/<repo>``
+    — while the containerized stack's clone root holds it FLAT, at ``<root>/<repo>``:
+    ``ensure_clone`` clones to the literal ``clone_root / repo_name`` only when it has
+    to clone at all, and a root seeded any other way (a link to a
+    mounted-at-path-identity clone, an operator's own layout) is flat.
+
+    ``find_clone_path`` probed the literal path and then ``<root>/*/<basename>`` one
+    level deep, so the one place it never looked was ``<root>/<basename>`` — the flat
+    root itself. Measured refusal, which left ``t3 <overlay> workspace ticket`` with no
+    way to provision the repo and drove agents to a raw ``git worktree add`` whose
+    orphan checkout carries no ``Worktree`` row:
+
+        No git clone found or creatable for <group>/<subgroup>/<repo> under
+        <clone-root> (looked at <clone-root>/<group>/<subgroup>/<repo> and
+        one-level subdirs)
+    """
+
+    def test_a_two_segment_slug_resolves_a_clone_at_the_root(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "workspace"
+        clone = _init_clone(workspace / "teatree")
+
+        assert find_clone_path(workspace, "souliane/teatree") == clone
+
+    def test_a_three_segment_gitlab_path_resolves_a_clone_at_the_root(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "workspace"
+        clone = _init_clone(workspace / "widgets")
+
+        assert find_clone_path(workspace, "some-group/some-subgroup/widgets") == clone
+
+    def test_the_literal_namespaced_path_still_wins_over_the_flat_root(self, tmp_path: Path) -> None:
+        """Two candidates: the exact path asked for must beat the basename fallback."""
+        workspace = tmp_path / "workspace"
+        literal = _init_clone(workspace / "souliane" / "teatree")
+        _init_clone(workspace / "teatree")
+
+        assert find_clone_path(workspace, "souliane/teatree") == literal
+
+    def test_the_flat_root_wins_over_a_one_level_basename_match(self, tmp_path: Path) -> None:
+        """The flat root is a more specific answer than a scan of every sibling namespace.
+
+        A one-level match under an unrelated namespace may be a different repo of the
+        same name (the #2276 collision), so the root — which the clone root's own
+        layout puts there — is preferred over it.
+        """
+        workspace = tmp_path / "workspace"
+        flat = _init_clone(workspace / "teatree")
+        _init_clone(workspace / "someone-else" / "teatree")
+
+        assert find_clone_path(workspace, "souliane/teatree") == flat
+
+    def test_a_bare_basename_is_unchanged(self, tmp_path: Path) -> None:
+        """Behaviour preservation: for a bare name the literal probe already IS the root."""
+        workspace = tmp_path / "workspace"
+        clone = _init_clone(workspace / "teatree")
+
+        assert find_clone_path(workspace, "teatree") == clone
+
+    def test_a_root_entry_that_is_not_a_checkout_is_not_a_match(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "workspace"
+        (workspace / "widgets").mkdir(parents=True)
+        namespaced = _init_clone(workspace / "some-group" / "widgets")
+
+        assert find_clone_path(workspace, "some-group/some-subgroup/widgets") == namespaced

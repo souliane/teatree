@@ -11,6 +11,8 @@ combined run exactly as it read a single-invocation run. ``head_sha`` /
 import json
 from pathlib import Path
 
+import pytest
+
 from teatree.eval.summary_json_merge import merge_summary_json, merge_summary_payloads, summary_json_files
 
 _SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -39,6 +41,10 @@ _SHARD_B = {
 
 
 class TestMergePayloads:
+    def test_rejects_a_shard_from_another_commit(self) -> None:
+        with pytest.raises(ValueError, match="SHA"):
+            merge_summary_payloads([{**_SHARD_A, "head_sha": "another"}], head_sha=_SHA, generated_at=_AT)
+
     def test_totals_are_summed_across_shards(self) -> None:
         merged = merge_summary_payloads([_SHARD_A, _SHARD_B], head_sha=_SHA, generated_at=_AT)
         assert merged["totals"] == {"total": 4, "passed": 2, "failed": 1, "skipped": 1}

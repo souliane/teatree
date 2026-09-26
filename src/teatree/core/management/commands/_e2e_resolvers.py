@@ -12,7 +12,8 @@ management plumbing to be exercised.
 """
 
 import os
-from collections.abc import Callable
+import socket
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from teatree.core.intake.resolve import resolve_worktree
@@ -33,7 +34,39 @@ Write = Callable[[str], None]
 RequirePort = Callable[[Worktree, "Ticket | None"], int]
 
 _REMOTE_TARGETS = frozenset({"dev", "qa"})
-_TARGETS = frozenset({"dev", "qa", "local"})
+_TARGETS = frozenset({"dev", "qa", "local", "stack"})
+_MAX_PORT = 65535
+
+
+def resolve_spec_target(resolved_target: str) -> str:
+    """Return the environment mode specs should use for an execution target."""
+    return "local" if resolved_target == "stack" else resolved_target
+
+
+def _stack_frontend_url(e2e_config: Mapping[str, str], *, write: Write) -> str:
+    """Resolve and probe an overlay-declared host-published stack frontend."""
+    raw_port = e2e_config.get("stack_frontend_port", "")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= _MAX_PORT:
+        write(
+            "--target stack requires get_e2e_config() to declare a valid 'stack_frontend_port'.",
+        )
+        raise SystemExit(2) from None
+
+    host = host_published_port_host()
+    url = f"http://{host}:{port}"
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            pass
+    except OSError as exc:
+        remedy = e2e_config.get("stack_start_command", "").strip()
+        suffix = f" Run `{remedy}` first." if remedy else " Start the overlay's stack tunnel first."
+        write(f"Stack frontend is not reachable at {url}.{suffix}")
+        raise SystemExit(1) from exc
+    return url
 
 
 def require_frontend_port(worktree: Worktree, linked_ticket: "Ticket | None", *, write: Write) -> int:
@@ -54,13 +87,14 @@ def resolve_target_env(
     *,
     write: Write,
     require_port: RequirePort,
+    e2e_config: Mapping[str, str] | None = None,
 ) -> tuple[str | None, str | None, dict[str, str] | None]:
     """Build the per-target trio passed to ``build_e2e_env``."""
     if resolved_target in _REMOTE_TARGETS:
-        if not os.environ.get("BASE_URL"):
-            write(f"--target {resolved_target} requires BASE_URL (the deployed environment URL) to be set.")
-            raise SystemExit(1)
         return None, None, None
+
+    if resolved_target == "stack":
+        return _stack_frontend_url(e2e_config or {}, write=write), None, None
 
     # The frontend port is published on the DOCKER HOST. `localhost` names that
     # host only when the CLI runs natively; from inside the containerized CLI it is
@@ -76,6 +110,24 @@ def resolve_target_env(
     worktree = resolve_worktree()
     port = require_port(worktree, linked_ticket)
     return f"http://{host}:{port}", compose_project(worktree), None
+
+
+def require_remote_base_url(env: Mapping[str, str], resolved_target: str, *, write: Write) -> None:
+    """Refuse a remote run that neither the caller nor the overlay pointed at a deployed URL."""
+    if resolved_target in _REMOTE_TARGETS and not env.get("BASE_URL"):
+        write(
+            f"--target {resolved_target} requires BASE_URL (the deployed environment URL) to be set — "
+            "export it, or run from a ticket worktree / with CUSTOMER=<tenant> so the overlay can derive it."
+        )
+        raise SystemExit(1)
+
+
+def run_banner(specs_path: Path, resolved_target: str, env: Mapping[str, str]) -> str:
+    """The lines an external run prints before Playwright starts: where, against what, for whom."""
+    lines = [f"  Running from: {specs_path}", f"  Target: {resolved_target}", f"  BASE_URL: {env['BASE_URL']}"]
+    if env.get("CUSTOMER"):
+        lines.append(f"  CUSTOMER: {env['CUSTOMER']}")
+    return "\n".join(lines)
 
 
 def resolve_linked_ticket(linked_to: int, *, write: Write) -> "Ticket | None":
@@ -123,13 +175,13 @@ def resolve_artifacts_dir(explicit: str, *, write: Write) -> str:
 def resolve_target(target: str, *, write: Write) -> str:
     """Resolve the dual-env target deterministically.
 
-    Explicit values are ``dev`` / ``qa`` / ``local``. Empty preserves the
+    Explicit values are ``dev`` / ``qa`` / ``local`` / ``stack``. Empty preserves the
     back-compat inference: ``BASE_URL`` means remote ``dev``, else ``local``.
     """
     normalized = target.strip().lower()
     if normalized in _TARGETS:
         return normalized
     if normalized:
-        write(f"--target must be 'dev', 'qa', or 'local', got {target!r}.")
+        write(f"--target must be 'dev', 'qa', 'local', or 'stack', got {target!r}.")
         raise SystemExit(2)
     return "dev" if os.environ.get("BASE_URL") else "local"

@@ -245,57 +245,36 @@ class ScanningNewsWiringTests(TestCase):
     """Confirm the tick-job builder reads core config (#1191).
 
     The scanning-news scanner is a single global scanner (``overlay=""``)
-    keyed off teatree-core platform config — disable via the
-    ``scanning_news_disabled`` escape hatch in ``[teatree]``.
+    keyed off teatree-core platform config; the ``news`` ``Loop`` row and the
+    active preset are the single switch.
     """
 
     def _patched_settings(self, **overrides: object) -> UserSettings:
         return UserSettings(**overrides)
 
     def test_default_core_config_builds_scanner(self) -> None:
-        """Default core config (disabled=False) → wiring produces a scanner."""
+        """Default core config → wiring produces a scanner."""
         from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._patched_settings(),
         ):
             scanner = _scanning_news_scanner()
         assert scanner is not None
         assert scanner.skill == "scanning-news"
         assert scanner.cadence_hours == 24
 
-    def test_disabled_in_core_config_skips_wiring(self) -> None:
-        """Escape hatch: ``scanning_news_disabled = True`` → no scanner."""
-        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
-
-        with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {"user": self._patched_settings(scanning_news_disabled=True)},
-            )(),
-        ):
-            scanner = _scanning_news_scanner()
-        assert scanner is None
-
     def test_core_config_propagates_to_scanner_kwargs(self) -> None:
         """Tuned core config flows through to the scanner kwargs."""
         from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {
-                    "user": self._patched_settings(
-                        scanning_news_skill="custom-news",
-                        scanning_news_cadence_hours=12,
-                    ),
-                },
-            )(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._patched_settings(
+                scanning_news_skill="custom-news",
+                scanning_news_cadence_hours=12,
+            ),
         ):
             scanner = _scanning_news_scanner()
         assert scanner is not None
@@ -307,8 +286,8 @@ class ScanningNewsWiringTests(TestCase):
         from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._patched_settings(),
         ):
             scanner = _scanning_news_scanner()
         assert scanner is not None
@@ -319,12 +298,8 @@ class ScanningNewsWiringTests(TestCase):
         from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type(
-                "Cfg",
-                (),
-                {"user": self._patched_settings(ask_before_creating_news_tickets=False)},
-            )(),
+            "teatree.loop.global_scanner_factories.get_effective_settings",
+            return_value=self._patched_settings(ask_before_creating_news_tickets=False),
         ):
             scanner = _scanning_news_scanner()
         assert scanner is not None
@@ -338,8 +313,8 @@ class ScanningNewsWiringTests(TestCase):
         discovered = OverlayEntry(name="t3-teatree", overlay_class="")
         with (
             patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+                "teatree.loop.global_scanner_factories.get_effective_settings",
+                return_value=self._patched_settings(),
             ),
             patch(
                 "teatree.loop.global_scanner_factories.discover_active_overlay",
@@ -368,8 +343,8 @@ class ScanningNewsWiringTests(TestCase):
         leaked = OverlayEntry(name="teatree-deploy", overlay_class="")
         with (
             patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+                "teatree.loop.global_scanner_factories.get_effective_settings",
+                return_value=self._patched_settings(),
             ),
             patch(
                 "teatree.loop.global_scanner_factories.discover_active_overlay",
@@ -394,8 +369,8 @@ class ScanningNewsWiringTests(TestCase):
 
         with (
             patch(
-                "teatree.loop.global_scanner_factories.load_config",
-                return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+                "teatree.loop.global_scanner_factories.get_effective_settings",
+                return_value=self._patched_settings(),
             ),
             patch(
                 "teatree.loop.global_scanner_factories.discover_active_overlay",

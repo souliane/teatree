@@ -32,7 +32,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.db.boundary import DbBoundaryError, control_db_unreachable_reason
+from teatree.db.boundary import ControlDbBoundary, DbBoundaryError, control_db_unreachable_reason
 from teatree.eval.regression_corpus_e2e import (
     check_e2e_test_plan_embeds_claimable_relative_ref,
     check_e2e_test_plan_uploads_to_note_project,
@@ -250,7 +250,12 @@ def _configured_db_unreachable_reason() -> str | None:
     name = str(connection.settings_dict.get("NAME") or "")
     if not name or name == ":memory:":
         return None
-    return control_db_unreachable_reason(Path(name), env=os.environ)
+    db_path = Path(name)
+    unreachable = control_db_unreachable_reason(db_path, env=os.environ)
+    if unreachable is not None:
+        return unreachable
+    boundary = ControlDbBoundary(db_path)
+    return None if boundary.read_write_allowed else boundary.refusal()
 
 
 def _preflight_row(blocked: str | None) -> CheckResult:

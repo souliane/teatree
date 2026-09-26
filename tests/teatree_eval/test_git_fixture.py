@@ -26,6 +26,7 @@ from teatree.eval.git_fixture import (
     provision_e2e_sibling_repos_fixture,
     provision_fixture,
     provision_git_fixture,
+    provision_python_parser_project_fixture,
     provision_uv_project_fixture,
 )
 from teatree.utils.git_run import run_strict as git
@@ -88,6 +89,32 @@ class TestProvisionGitFixture:
         assert "git_repo" in KNOWN_FIXTURES
         with pytest.raises(ValueError, match="nope"), provision_git_fixture("nope"):
             pass
+
+
+def test_golden_master_fixture_runs_against_every_reference_row() -> None:
+    with provision_fixture("golden_master_project") as repo:
+        reference = (repo / "Widgetplan2.txt").read_text(encoding="utf-8").splitlines()
+        assert len(reference) == 4
+        assert (repo / "tests" / "test_schedule.py").is_file()
+        result = subprocess.run(["./run_tests"], cwd=repo, capture_output=True, text=True, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Ran 1 test" in result.stderr
+        bad_flags = subprocess.run(
+            ["./run_tests", "--no-migrations", "--reuse-db"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert bad_flags.returncode != 0
+        assert "takes no arguments" in bad_flags.stderr
+        (repo / "Widgetplan2.txt").write_text(
+            "month,payment,balance\n1,992.00,9008.00\n2,992.00,8016.00\n3,992.00,7000.00\n",
+            encoding="utf-8",
+        )
+        changed_reference = subprocess.run(["./run_tests"], cwd=repo, capture_output=True, text=True, check=False)
+        assert changed_reference.returncode != 0
+        assert "7000.00" in changed_reference.stderr
 
 
 class TestProvisionE2eArtifactsFixture:
@@ -182,6 +209,26 @@ class TestProvisionUvProjectFixture:
         assert "uv_project" in KNOWN_FIXTURES
 
 
+class TestProvisionPythonParserProjectFixture:
+    def test_provisions_the_source_and_red_regression_test_the_prompt_names(self) -> None:
+        with provision_python_parser_project_fixture() as repo:
+            parser = repo / "src" / "widget" / "parser.py"
+            regression = repo / "tests" / "widget" / "test_parser.py"
+            assert parser.is_file()
+            assert regression.is_file()
+            assert "def first_token(" in parser.read_text(encoding="utf-8")
+            assert "test_first_token_ignores_leading_whitespace" in regression.read_text(encoding="utf-8")
+
+    def test_regression_is_genuinely_red_before_the_edit(self) -> None:
+        with provision_python_parser_project_fixture() as repo:
+            result = _run_pytest_isolated(repo, "tests/widget/test_parser.py")
+            assert result.returncode != 0
+            assert "1 failed" in result.stdout
+
+    def test_python_parser_project_is_a_known_kind(self) -> None:
+        assert "python_parser_project" in KNOWN_FIXTURES
+
+
 class TestProvisionE2eSiblingReposFixture:
     def test_yields_the_product_repo_cwd_with_a_sibling_e2e_repo(self) -> None:
         with provision_e2e_sibling_repos_fixture() as product:
@@ -198,7 +245,33 @@ class TestProvisionE2eSiblingReposFixture:
             assert (product / ".." / "widget-e2e" / "specs").resolve().is_dir()
 
 
+class TestProvisionAgentSkillDirFixture:
+    def test_the_scenarios_own_skill_and_its_references_are_readable(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "widget-skill"
+        (skill_dir / "references").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# widget\n", encoding="utf-8")
+        (skill_dir / "references" / "primer.md").write_text("the domain model\n", encoding="utf-8")
+        with provision_fixture("agent_skill_dir", skill_path=skill_dir / "SKILL.md") as root:
+            assert (root / "skills" / "widget-skill" / "SKILL.md").is_file()
+            assert (root / "skills" / "widget-skill" / "references" / "primer.md").read_text() == "the domain model\n"
+
+    def test_it_refuses_when_the_caller_passed_no_skill_path(self) -> None:
+        # Without one the sandbox would silently lack the very files the scenario is about.
+        with pytest.raises(ValueError, match="agent_path"), provision_fixture("agent_skill_dir"):
+            pass
+
+    def test_it_refuses_an_agent_path_that_resolves_to_nothing(self, tmp_path: Path) -> None:
+        with (
+            pytest.raises(ValueError, match="does not resolve"),
+            provision_fixture("agent_skill_dir", skill_path=tmp_path / "absent" / "SKILL.md"),
+        ):
+            pass
+
+
 class TestProvisionFixtureDispatch:
+    def test_agent_skill_dir_is_a_known_kind(self) -> None:
+        assert "agent_skill_dir" in KNOWN_FIXTURES
+
     def test_e2e_artifacts_is_a_known_kind(self) -> None:
         assert "e2e_artifacts" in KNOWN_FIXTURES
 
@@ -222,6 +295,65 @@ class TestProvisionFixtureDispatch:
             assert (repo / "pyproject.toml").is_file()
             assert (repo / "src" / "teatree" / "util" / "money.py").is_file()
 
+    def test_dispatches_python_parser_project_to_its_provisioner(self) -> None:
+        with provision_fixture("python_parser_project") as repo:
+            assert (repo / "src" / "widget" / "parser.py").is_file()
+            assert (repo / "tests" / "widget" / "test_parser.py").is_file()
+
+    def test_dispatches_failure_log_to_a_real_traceback(self) -> None:
+        with provision_fixture("failure_log") as root:
+            body = (root / "failure.log").read_text(encoding="utf-8")
+
+        assert "Traceback (most recent call last)" in body
+        assert "AttributeError" in body
+
     def test_unknown_kind_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="nope"), provision_fixture("nope"):
             pass
+
+
+class TestFixtureGitIsHermetic:
+    """The provisioned repo's shape must come from the fixture, never from the host.
+
+    Every fixture command is a plain ``git -C <repo>``, so a developer's own
+    ``~/.gitconfig`` and an outer hook's ``GIT_*`` exports reach it — the fixture
+    either crashes or provisions a repo whose state the tagged prompts no longer
+    describe, and the scenario grades the agent on that.
+    """
+
+    @staticmethod
+    def _global_gitconfig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        hooks = tmp_path / "hooks"
+        hooks.mkdir()
+        pre_commit = hooks / "pre-commit"
+        pre_commit.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        pre_commit.chmod(0o755)
+        config = tmp_path / "gitconfig"
+        config.write_text(f"[core]\n\thooksPath = {hooks}\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(config))
+
+    def test_an_ambient_gitconfig_cannot_steer_the_git_repo_fixture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._global_gitconfig(tmp_path, monkeypatch)
+
+        with provision_git_fixture("git_repo") as repo:
+            assert (repo / ".git" / "HEAD").read_text(encoding="utf-8").strip() == "ref: refs/heads/feat/example"
+
+    def test_an_ambient_gitconfig_cannot_steer_the_uv_project_fixture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._global_gitconfig(tmp_path, monkeypatch)
+
+        with provision_uv_project_fixture() as repo:
+            assert (repo / ".git" / "refs" / "remotes" / "origin" / "main").is_file()
+
+    def test_an_ambient_git_dir_cannot_hijack_the_fixture(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GIT_DIR", str(tmp_path / "hijacked.git"))
+
+        with provision_git_fixture("git_repo") as repo:
+            assert (repo / ".git" / "HEAD").read_text(encoding="utf-8").strip() == "ref: refs/heads/feat/example"
+            assert not (tmp_path / "hijacked.git").exists()

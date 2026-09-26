@@ -40,7 +40,14 @@ def _forge_answers_non_draft() -> Iterator[None]:
     would refuse ``draft_state_unknown`` and drown the behaviour under test.
     Draft-gate cases re-patch this same target with their own host.
     """
-    with patch(_FORGE, return_value=_NonDraftHost()):
+    with (
+        patch(_FORGE, return_value=_NonDraftHost()),
+        patch(
+            "teatree.core.management.commands.review_request_check._owner_authorship",
+            return_value=True,
+            create=True,
+        ),
+    ):
         yield
 
 
@@ -121,6 +128,34 @@ class TestReviewExemptRepoIsRefusedFirst(TestCase):
 
 
 class TestReviewRequestCheckCommand(TestCase):
+    def test_colleague_authorship_refuses_before_live_dedup(self) -> None:
+        with (
+            patch(
+                "teatree.core.management.commands.review_request_check._owner_authorship",
+                return_value=False,
+            ),
+            patch("teatree.core.management.commands.review_request_check.peek_should_post_review_request") as peek,
+        ):
+            result = cast("dict[str, object]", call_command("review_request_check", "--mr-url", _MR_URL))
+
+        assert result["action"] == "refused"
+        assert result["reason"] == "foreign_author"
+        peek.assert_not_called()
+
+    def test_unknown_authorship_refuses_before_live_dedup(self) -> None:
+        with (
+            patch(
+                "teatree.core.management.commands.review_request_check._owner_authorship",
+                return_value=None,
+            ),
+            patch("teatree.core.management.commands.review_request_check.peek_should_post_review_request") as peek,
+        ):
+            result = cast("dict[str, object]", call_command("review_request_check", "--mr-url", _MR_URL))
+
+        assert result["action"] == "refused"
+        assert result["reason"] == "authorship_unreadable"
+        peek.assert_not_called()
+
     def test_refuses_a_draft_mr_before_the_dedup_gate(self) -> None:
         with patch(
             "teatree.core.management.commands.review_request_check.draft_refusal_reason",
@@ -204,8 +239,7 @@ class TestReviewRequestCheckCommand(TestCase):
         assert seen["overlay_name"] == "acme"
         assert result["action"] == "post"
 
-    def test_explicit_env_overlay_defers_to_the_cli_bridge(self) -> None:
-        """``T3_OVERLAY_NAME`` wins: pass ``""`` so ``get_overlay`` consumes it."""
+    def test_explicit_env_overlay_wins_and_is_threaded_by_name(self) -> None:
         seen: dict[str, str] = {}
         target = GuardTarget(channel_id="C1", channel_name="rev", token="xoxb")
 
@@ -226,7 +260,7 @@ class TestReviewRequestCheckCommand(TestCase):
         ):
             call_command("review_request_check", "--mr-url", _MR_URL)
 
-        assert seen["overlay_name"] == ""
+        assert seen["overlay_name"] == "acme"
 
     def test_passes_through_post_decision(self) -> None:
         target = GuardTarget(channel_id="C1", channel_name="rev", token="xoxb")

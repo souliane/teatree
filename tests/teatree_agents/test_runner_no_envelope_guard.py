@@ -116,7 +116,11 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
 
         fake_harness = PydanticAiHarness(model=TestModel(custom_output_text=_PROSE))
         with (
-            patch.object(runner_mod, "resolve_harness", return_value=fake_harness),
+            patch.object(
+                runner_mod,
+                "resolve_dispatch_harness",
+                return_value=runner_mod.DispatchHarness(harness=fake_harness, name="fake_harness", provider=None),
+            ),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
             attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})

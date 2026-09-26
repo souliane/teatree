@@ -37,7 +37,25 @@ from teatree.docker.workflow import (
 
 Echo = Callable[[str], None]
 
-_BLOCKED = {LauncherInstall.REFUSED, LauncherInstall.UNWRITABLE, LauncherInstall.UNVERIFIED}
+
+def _wrapper_is_executable(repo: Path) -> bool:
+    """Whether *repo*'s ``deploy/t3`` is there to be ``exec``ed — the launcher's whole job.
+
+    Only the venue that will RUN the launcher can answer it, so it lives beside the HOST
+    install rather than in the shared workflow: a path resolved on one side of the
+    container boundary and written to the other names nothing on arrival, and bash
+    reports that as ``exec: … cannot execute`` on every single invocation of ``t3``.
+    """
+    target = wrapper_path(repo)
+    return target.is_file() and os.access(target, os.X_OK)
+
+
+_BLOCKED = {
+    LauncherInstall.REFUSED,
+    LauncherInstall.UNWRITABLE,
+    LauncherInstall.UNVERIFIED,
+    LauncherInstall.NO_TARGET,
+}
 
 
 class DockerLauncherInstaller:
@@ -67,8 +85,17 @@ class DockerLauncherInstaller:
         self._install_on_host(echo=echo)
 
     def _install_on_host(self, *, echo: Echo) -> None:
-        """Write the launcher directly, then retire the uv-installed host tool behind it."""
+        """Write the launcher directly, then retire the uv-installed host tool behind it.
+
+        The exec target is checked FIRST, which only a host can do: publishing a launcher
+        naming a ``deploy/t3`` that is not there replaces a working ``t3`` with one that
+        answers ``exec: … cannot execute`` at every later invocation — including from
+        every git hook — rather than failing at the one moment someone is watching setup.
+        """
         path = self.launcher_path()
+        if not _wrapper_is_executable(self._repo):
+            echo(_message(LauncherInstall.NO_TARGET, path, self._repo))
+            return
         outcome = install_launcher(path, self._repo)
         echo(_message(outcome, path, self._repo))
         if outcome in _BLOCKED:
@@ -140,22 +167,35 @@ def _uv_tool_installed(uv_bin: str) -> bool:
     return (Path(result.stdout.strip()) / "teatree").is_dir()
 
 
+#: The ``t3 setup`` line each launcher-install outcome renders, by outcome. A mapping
+#: rather than a branch chain so a new outcome is a row, not a seventh return.
+_MESSAGES: dict[LauncherInstall, Callable[[Path, Path], str]] = {
+    LauncherInstall.INSTALLED: (
+        lambda path, repo: f"OK    Installed the containerized t3 launcher at {path} -> {wrapper_path(repo)}."
+    ),
+    LauncherInstall.UPDATED: (lambda path, repo: f"OK    Repointed the t3 launcher at {path} -> {wrapper_path(repo)}."),
+    LauncherInstall.ALREADY_PRESENT: (
+        lambda path, _repo: f"OK    Containerized t3 launcher already current at {path}."
+    ),
+    LauncherInstall.REFUSED: lambda path, _repo: (
+        f"WARN  {path} is not a teatree-managed t3 — leaving it untouched. Move it aside "
+        f"(`mv {path} {path}.bak`) and re-run `t3 setup` to install the launcher."
+    ),
+    LauncherInstall.UNVERIFIED: lambda path, repo: (
+        f"WARN  Wrote the t3 launcher to {path} but it did not read back as an executable "
+        f"launcher for {wrapper_path(repo)} — the previous t3 is untouched; re-run `t3 setup`."
+    ),
+    LauncherInstall.NO_TARGET: lambda path, repo: (
+        f"WARN  {wrapper_path(repo)} is not an executable deploy/t3 from here, so a launcher "
+        f"naming it could not exec anything — {path} is untouched. Re-run `t3 setup` from the "
+        f"checkout that owns deploy/, or through its `deploy/t3`."
+    ),
+    LauncherInstall.UNWRITABLE: lambda path, _repo: (
+        f"WARN  Could not write the t3 launcher to {path} (not writable) — skipping; setup continues."
+    ),
+}
+
+
 def _message(outcome: LauncherInstall, path: Path, repo: Path) -> str:
     """Render the ``t3 setup`` line for a launcher-install *outcome*."""
-    if outcome is LauncherInstall.INSTALLED:
-        return f"OK    Installed the containerized t3 launcher at {path} -> {wrapper_path(repo)}."
-    if outcome is LauncherInstall.UPDATED:
-        return f"OK    Repointed the t3 launcher at {path} -> {wrapper_path(repo)}."
-    if outcome is LauncherInstall.ALREADY_PRESENT:
-        return f"OK    Containerized t3 launcher already current at {path}."
-    if outcome is LauncherInstall.REFUSED:
-        return (
-            f"WARN  {path} is not a teatree-managed t3 — leaving it untouched. Move it aside "
-            f"(`mv {path} {path}.bak`) and re-run `t3 setup` to install the launcher."
-        )
-    if outcome is LauncherInstall.UNVERIFIED:
-        return (
-            f"WARN  Wrote the t3 launcher to {path} but it did not read back as an executable "
-            f"launcher for {wrapper_path(repo)} — the previous t3 is untouched; re-run `t3 setup`."
-        )
-    return f"WARN  Could not write the t3 launcher to {path} (not writable) — skipping; setup continues."
+    return _MESSAGES[outcome](path, repo)

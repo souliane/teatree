@@ -36,6 +36,7 @@ class ScenarioRecord(TypedDict, total=False):
     """
 
     name: str
+    version: str
     lane: str
     surface: str
     verdict: str
@@ -44,6 +45,7 @@ class ScenarioRecord(TypedDict, total=False):
     matcher_failed: bool
     judge_failed: bool
     triage_class: str | None
+    outcome: str
     advisory: bool
 
 

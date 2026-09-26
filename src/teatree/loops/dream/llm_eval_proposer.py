@@ -44,7 +44,16 @@ import yaml
 
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import _parse_spec
-from teatree.eval.models import UNDER_LOAD_LANE, AnyOf, EvalSpec, FinalStateMatcher, Matcher
+from teatree.eval.models import (
+    UNDER_LOAD_LANE,
+    AnyOf,
+    AssistantTextMatcher,
+    EvalSpec,
+    FinalStateMatcher,
+    Matcher,
+    PlanBeforeToolMatcher,
+    SuccessfulToolCallMatcher,
+)
 from teatree.loops.dream._teeth_check import ToolCallShape, teeth_check_against_candidate
 
 logger = logging.getLogger(__name__)
@@ -390,6 +399,31 @@ def _matchers_to_mappings(spec: EvalSpec) -> list[Mapping[str, object]]:
             out.append({"any_of": [_positive_mapping(alt) for alt in matcher.alternatives]})
         elif isinstance(matcher, FinalStateMatcher):
             out.append({"final_state": f'{matcher.operator} "{matcher.value}"'})
+        elif isinstance(matcher, AssistantTextMatcher):
+            out.append({"assistant_text": f'{matcher.operator} "{matcher.value}"'})
+        elif isinstance(matcher, PlanBeforeToolMatcher):
+            out.append(
+                {
+                    "assistant_text": {
+                        "before_first_tool": {
+                            "governed_tools": list(matcher.governed_tools),
+                            "patterns": list(matcher.patterns),
+                        }
+                    }
+                }
+            )
+        elif isinstance(matcher, SuccessfulToolCallMatcher):
+            out.append(
+                {
+                    "tool_call_succeeded": matcher.tool,
+                    "args.command": _op(matcher),
+                    "result": f'{matcher.result_operator} "{matcher.result_value}"',
+                    "before_first": (
+                        f"{matcher.before_tool}.{matcher.before_arg_path} "
+                        f'{matcher.before_operator} "{matcher.before_value}"'
+                    ),
+                }
+            )
         elif matcher.kind == "positive":
             out.append(_positive_mapping(matcher))
         else:
@@ -401,7 +435,7 @@ def _positive_mapping(matcher: Matcher) -> Mapping[str, object]:
     return {"tool_call": matcher.tool, f"args.{matcher.arg_path}": _op(matcher)}
 
 
-def _op(matcher: Matcher) -> str:
+def _op(matcher: Matcher | SuccessfulToolCallMatcher) -> str:
     return f'{matcher.operator} "{matcher.value}"'
 
 

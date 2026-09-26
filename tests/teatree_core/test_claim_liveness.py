@@ -37,8 +37,8 @@ _NOW = datetime(2026, 6, 1, 12, tzinfo=UTC)
 
 @contextmanager
 def pinned_reader_namespace() -> Iterator[None]:
-    """Pin the namespace every liveness decision reads, at the one seam they share."""
-    with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):
+    """Pin the seam the liveness DECISIONS share; `current_owner` binds its own and is not pinned."""
+    with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):  # patch-binding: defining-module
         yield
 
 

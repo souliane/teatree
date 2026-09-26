@@ -1,18 +1,20 @@
 """What a headless run records when something INTERRUPTED it, rather than the work failing.
 
 Split out of :mod:`teatree.agents.runner` (at its module-health LOC cap): deciding whether a
-lost lease, a watchdog breach or a race with a rival worker is a failure, a no-op or a landed
-outcome is one self-contained judgement, distinct from the run/heartbeat orchestration the
-runner owns. ``_record_failure`` comes with them because it is the branch every one of those
+lost lease, a watchdog breach, a ceiling or a race with a rival worker is a failure, a no-op
+or a landed outcome is one self-contained judgement, distinct from the run/heartbeat
+orchestration the runner owns. ``_record_failure`` comes with them because it is the branch every one of those
 judgements can fall through to; the runner imports it back for its own pre-turn failures.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
-from teatree.agents.result_schema import AgentResultBlob
+from teatree.agents.result_schema import AgentResultBlob, check_evidence
+from teatree.agents.runner_usage import DispatchProvenance, UsageObservation, _attempt_usage
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, TaskAttempt
@@ -20,7 +22,7 @@ from teatree.core.models.phase_landing import phase_landing_evidence
 
 if TYPE_CHECKING:
     from teatree.agents.attempt_recorder import AttemptUsage
-    from teatree.agents.runner import HarnessOutcome
+    from teatree.agents.runner_stream import HarnessOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,45 @@ _STUCK_LOOP_PREFIX = "stuck_loop: "
 NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
 
 
+@dataclass(frozen=True, slots=True)
+class CeilingSalvage:
+    """What a Claude-lane run needs to keep the envelope it finished before something cut it off.
+
+    The turn ceiling, the runtime ceiling, a full context window and a blocked compaction all end
+    a run that may already have written its result envelope. Only that envelope counts, recorded
+    through the normal recorder against this task's own claim. The ticket's state proves nothing
+    about this run, so a cut-short run with no such envelope is recorded as its failure.
+    """
+
+    phase: str
+    lane: str
+    provenance: DispatchProvenance
+
+    def kept(self, task: Task, outcome: "HarnessOutcome") -> TaskAttempt | None:
+        """Record the envelope a cut-short run finished; ``None`` leaves the outcome to the ordinary recording."""
+        produced = _produced_result(outcome)
+        if (
+            not outcome.cut_short
+            or not produced
+            or check_evidence(produced, self.phase)
+            or Task.objects.filter(pk=task.pk, status=Task.Status.COMPLETED).exists()
+        ):
+            return None
+        from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415 — call-time import
+
+        usage = _attempt_usage(
+            outcome.result_message,
+            UsageObservation(
+                lane=self.lane,
+                reasoning_effort=self.provenance.reasoning_effort,
+                skills_loaded=self.provenance.skills_loaded,
+                tool_calls=outcome.tool_calls,
+                provenance=self.provenance,
+            ),
+        )
+        return record_result_envelope(task, produced, phase=self.phase, usage=usage)
+
+
 def _record_stuck_outcome(
     task: Task, outcome: "HarnessOutcome", *, stuck_reason: str, usage: "AttemptUsage | None" = None
 ) -> TaskAttempt:
@@ -46,9 +87,9 @@ def _record_stuck_outcome(
     auto-repair sweep a "re-do this" signal for work that is done.
 
     Short of that, only a LOST LEASE qualifies for the landed outcome (#3982) — it says the
-    lease lapsed, not that the work failed. A watchdog runtime/turns breach is a genuine
-    runaway with no such alibi, so it stays a recorded failure however far the ticket has
-    advanced.
+    lease lapsed, not that the work failed. A watchdog breach is a genuine runaway with no such
+    alibi, so it stays a recorded failure here, carrying the text the run had written; on the
+    Claude lane :class:`CeilingSalvage` has already recorded any envelope such a run finished.
     """
     if Task.objects.filter(pk=task.pk, status=Task.Status.COMPLETED).exists():
         return _record_noop_over_completed_row(
@@ -60,7 +101,9 @@ def _record_stuck_outcome(
     evidence = phase_landing_evidence(task, trust_phase_artifact=True) if outcome.lease_lost else ""
     if evidence:
         return _record_landed(task, evidence=evidence, lease_loss=stuck_reason, usage=usage)
-    return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{stuck_reason}", usage=usage)
+    return _record_failure(
+        task, error=f"{_STUCK_LOOP_PREFIX}{stuck_reason}", result=outcome.unfinished_result, usage=usage
+    )
 
 
 def _produced_result(outcome: "HarnessOutcome") -> AgentResultBlob:
@@ -145,7 +188,10 @@ def _record_interrupted_attempt(
     usage: "AttemptUsage | None" = None,
 ) -> TaskAttempt:
     """The exit-0 attempt an interruption records when it is not the verdict on the work."""
-    from teatree.agents.attempt_recorder import usage_fields  # noqa: PLC0415 — deferred: call-time import
+    from teatree.agents.attempt_recorder import (  # noqa: PLC0415 — deferred: call-time import
+        usage_fields,
+        with_transport_records,
+    )
 
     result: AgentResultBlob = {**(produced or {})}
     # The interruption is appended rather than substituted: both what the run produced and
@@ -157,7 +203,7 @@ def _record_interrupted_attempt(
         ended_at=timezone.now(),
         exit_code=0,
         error="",
-        result=result,
+        result=with_transport_records(result, usage),
         **usage_fields(usage),
     )
 
@@ -175,14 +221,17 @@ def _record_failure(
     ``usage`` is ``None`` only where the failure happened BEFORE any turn was billed, which
     keeps the spend columns NULL rather than zero (#4164) — see :func:`usage_fields`.
     """
-    from teatree.agents.attempt_recorder import usage_fields  # noqa: PLC0415 — deferred: call-time import
+    from teatree.agents.attempt_recorder import (  # noqa: PLC0415 — deferred: call-time import
+        usage_fields,
+        with_transport_records,
+    )
 
     attempt = TaskAttempt.objects.create(
         task=task,
         ended_at=timezone.now(),
         exit_code=exit_code,
         error=error,
-        result=result or {},
+        result=with_transport_records(result, usage),
         **usage_fields(usage),
     )
     task.fail(reason=error)

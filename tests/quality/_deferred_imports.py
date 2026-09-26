@@ -32,8 +32,19 @@ def _in_function_scope(node: ast.AST, parents: Mapping[ast.AST, ast.AST]) -> boo
     return False
 
 
+def in_package(module: str, prefix: str) -> bool:
+    """Whether *module* is *prefix* itself or something under it.
+
+    A bare ``startswith`` reads `teatree.loops.enable_verdict` as intra-`teatree.loop`,
+    because the sibling package's name has the prefix as a string prefix. That charges a
+    cross-package import to the wrong ratchet, so the file's peg has to absorb an edge
+    that ratchet does not govern.
+    """
+    return module == prefix or module.startswith(f"{prefix}.")
+
+
 def count_deferred_imports(source: Path, prefix: str) -> int:
-    """Function-scoped imports in *source* whose target module starts with *prefix*."""
+    """Function-scoped imports in *source* whose target module is inside the *prefix* package."""
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     parents: dict[ast.AST, ast.AST] = {}
     for node in ast.walk(tree):
@@ -43,10 +54,10 @@ def count_deferred_imports(source: Path, prefix: str) -> int:
     count = 0
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            if (node.module or "").startswith(prefix) and _in_function_scope(node, parents):
+            if in_package(node.module or "", prefix) and _in_function_scope(node, parents):
                 count += 1
         elif isinstance(node, ast.Import) and _in_function_scope(node, parents):
-            count += sum(1 for alias in node.names if alias.name.startswith(prefix))
+            count += sum(1 for alias in node.names if in_package(alias.name, prefix))
     return count
 
 

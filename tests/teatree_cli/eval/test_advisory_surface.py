@@ -25,6 +25,7 @@ from teatree.cli.eval.single_trial import SingleTrialGates, run_single_trial
 from teatree.eval.green_proof import GreenProof, evaluate_green_proof
 from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, EvalRun, EvalSpec, Matcher
 from teatree.eval.report import ScenarioResult
+from teatree.eval.summary_json import scenario_version
 from teatree.eval.summary_json_merge import merge_summary_payloads
 from teatree.eval.surface import INTERACTIVE_QUESTION_TOOL
 from teatree.loop.ci_eval_heal_advance import red_scenario_names
@@ -277,12 +278,15 @@ class TestTheGreenProofVerdict:
     """
 
     def _merged_proof(self, specs: list[EvalSpec], *, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> GreenProof:
+        monkeypatch.setenv("CI_COMMIT_SHA", "sha")
         shard = tmp_path / "shard.json"
         assert _drive_single_trial(specs, monkeypatch=monkeypatch, summary_json=shard) == 0
         merged = merge_summary_payloads(
             [json.loads(shard.read_text(encoding="utf-8"))], head_sha="sha", generated_at="t"
         )
-        return evaluate_green_proof(merged, expected_total=len(specs))
+        return evaluate_green_proof(
+            merged, expected={spec.name: scenario_version(spec) for spec in specs}, expected_sha="sha"
+        )
 
     def test_the_shard_exits_zero_yet_the_row_still_carries_a_triage_class(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -315,6 +319,7 @@ class TestTheGreenProofVerdict:
     def test_a_failing_headless_scenario_still_reds_the_merged_run(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        monkeypatch.setenv("CI_COMMIT_SHA", "sha")
         # Anti-vacuity: the identical run on the gating surface must still red the proof.
         shard = tmp_path / "shard.json"
         specs = [_interactive_tool_call_spec("slack", surface=HEADLESS_SURFACE)]
@@ -322,7 +327,9 @@ class TestTheGreenProofVerdict:
         merged = merge_summary_payloads(
             [json.loads(shard.read_text(encoding="utf-8"))], head_sha="sha", generated_at="t"
         )
-        assert not evaluate_green_proof(merged, expected_total=len(specs)).is_green
+        assert not evaluate_green_proof(
+            merged, expected={spec.name: scenario_version(spec) for spec in specs}, expected_sha="sha"
+        ).is_green
 
     def test_the_heal_loop_dispatches_no_fixer_for_an_advisory_red(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

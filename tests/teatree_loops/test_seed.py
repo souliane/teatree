@@ -74,31 +74,27 @@ class TestSeedDefaultLoops(django.test.TestCase):
         seed_default_loops_and_prompts()
         assert Loop.objects.count() == first
 
-    def test_seed_enables_the_operational_core_and_pauses_the_rest(self) -> None:
-        # The sound-defaults reversal of the #2513 all-paused cutover: a fresh
-        # seed lands the local/read-only operational core enabled and every
-        # colleague-facing / heavy loop paused — the enabled set equals the
-        # canonical ``default_enabled`` specs.
+    def test_seed_forges_no_manual_override_on_any_row(self) -> None:
+        # ``enabled`` is the manual-override layer, and it outranks the preset. Seeding
+        # a value there would forge an override with no reason on every row the seed
+        # creates, leaving the whole preset cascade inert on that box.
+        Loop.objects.all().delete()
         seed_default_loops_and_prompts()
         seeded = Loop.objects.filter(name__in=[s.name for s in DEFAULT_LOOPS])
         assert seeded.count() == len(DEFAULT_LOOPS)
-        enabled = set(seeded.filter(enabled=True).values_list("name", flat=True))
-        assert enabled == {s.name for s in DEFAULT_LOOPS if s.default_enabled}
+        assert not seeded.exclude(enabled=None).exists()
 
-    def test_seed_preserves_operator_edited_enabled_flag(self) -> None:
+    def test_seed_preserves_an_operator_override_forcing_a_loop_on(self) -> None:
         seed_default_loops_and_prompts()
-        # Operator ENABLES a paused loop, then setup runs the seed again — the
-        # seed must not clobber the operator's choice back to paused.
-        Loop.objects.filter(name="arch_review").update(enabled=True)
+        Loop.objects.set_manual_override("arch_review", runs=True, reason="reviewing a refactor")
         seed_default_loops_and_prompts()
         assert Loop.objects.get(name="arch_review").enabled is True
 
-    def test_seed_preserves_an_operator_disabled_default_on_loop(self) -> None:
+    def test_seed_preserves_an_operator_override_forcing_a_loop_off(self) -> None:
+        # The mirror never-clobber (``get_or_create`` never re-applies ``defaults``
+        # to an existing row).
         seed_default_loops_and_prompts()
-        # The mirror never-clobber: an operator DISABLES a default-on loop; a
-        # re-seed must not re-enable it (``get_or_create`` never re-applies
-        # ``defaults`` to an existing row).
-        Loop.objects.filter(name="inbox").update(enabled=False)
+        Loop.objects.set_manual_override("inbox", runs=False, reason="the connector is down")
         seed_default_loops_and_prompts()
         assert Loop.objects.get(name="inbox").enabled is False
 
@@ -215,13 +211,12 @@ class TestSeedDefaultLoops(django.test.TestCase):
         seed_default_loops_and_prompts()
         assert Loop.objects.get(name="ship").colleague_facing is False
 
-    def test_triage_assessor_seed_is_paused_and_not_colleague_facing(self) -> None:
-        # The needs-triage assessor loop is opt-in (default-off behind
-        # triage_assessor_enabled) and reads no colleague surface, so it seeds
-        # paused, script-backed, and colleague_facing=False.
+    def test_triage_assessor_seed_is_script_backed_and_not_colleague_facing(self) -> None:
+        # The needs-triage assessor reads no colleague surface, so it seeds
+        # script-backed with colleague_facing=False and no manual override.
         seed_default_loops_and_prompts()
         loop = Loop.objects.get(name="triage_assessor")
-        assert loop.enabled is False
+        assert loop.enabled is None
         assert loop.colleague_facing is False
         assert loop.script == "src/teatree/loops/triage_assessor/loop.py"
         assert loop.prompt_id is None

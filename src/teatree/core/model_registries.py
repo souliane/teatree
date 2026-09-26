@@ -46,7 +46,7 @@ def populate_model_registries() -> None:
         plan_gate,
         repro_gate,
         review_context_gate,
-        spec_coverage_gate,
+        rubric_gate,
     )
     from teatree.core.modelkit.gate_registry import register_resolver  # noqa: PLC0415 — deferred: call-time import
 

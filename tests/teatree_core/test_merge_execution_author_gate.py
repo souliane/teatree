@@ -27,6 +27,7 @@ from teatree.core.models import MergeClear, Ticket, TrustedIdentity
 from teatree.core.review import author_trust
 from teatree.utils.pr_ref import PrRef
 from tests._forge_stub import changed_files_stdout
+from tests.factories import waive_rubric
 from tests.teatree_core.conftest import CommandOverlay, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -44,6 +45,9 @@ def _seed_known() -> None:
 
 
 def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
+    # The rubric done-gate runs at this chokepoint; the real path has an independent
+    # verifier grade the rubric, so the audited bypass stands in (cf. _seed_sibling_verdict).
+    waive_rubric(ticket)
     defaults: dict[str, object] = {
         "ticket": ticket,
         "pr_id": 859,

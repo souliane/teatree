@@ -10,7 +10,7 @@ from django.test import TestCase
 
 from teatree.core.models import AutoReviewDispatch, ReviewVerdict, Session, Task, Ticket
 from teatree.core.models.auto_review_dispatch import LOOP_SCANNER_HOLDER
-from teatree.core.models.review_target import review_target_for_task, verdict_at
+from teatree.core.models.review_target import review_target_for_task, review_target_for_ticket, verdict_at
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -126,6 +126,54 @@ class TestVerdictReadBack(TestCase):
         assert target is not None
 
         assert verdict_at(target) is None
+
+
+class TestTheTicketHalfIsTheSameAnswerTheTaskHalfGives(TestCase):
+    """The pre-dispatch and mint seams read the head through THIS resolver.
+
+    A seam that re-derived ``extra["reviewed_sha"]`` itself would drift from the recorder
+    the first time the fallback changed, and the whole point of one resolver is that the
+    pre-check and the post-check cannot disagree about which PR and which head.
+    """
+
+    def test_an_unarmed_reviewer_task_resolves_identically_from_its_ticket(self) -> None:
+        task = _reviewer_task(
+            issue_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}",
+            extra={"reviewed_sha": _HEAD},
+        )
+
+        assert review_target_for_task(task) == review_target_for_ticket(task.ticket)
+
+    def test_a_ticket_whose_url_names_no_pull_request_resolves_to_none(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url=f"https://github.com/{_SLUG}/issues/{_PR_ID}",
+            overlay="teatree",
+            role=Ticket.Role.AUTHOR,
+        )
+
+        assert review_target_for_ticket(ticket) is None
+
+    def test_the_task_half_still_prefers_the_dispatch_row_over_the_ticket(self) -> None:
+        dispatch = AutoReviewDispatch.enqueue(
+            slug=_SLUG,
+            pr_id=_PR_ID,
+            head_sha=_DISPATCH_HEAD,
+            pr_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}",
+            overlay="teatree",
+        )
+        assert dispatch is not None
+        task = dispatch.task
+        assert task is not None
+        task.ticket.extra = {"reviewed_sha": _HEAD}
+        task.ticket.save(update_fields=["extra"])
+
+        task_target = review_target_for_task(task)
+        ticket_target = review_target_for_ticket(task.ticket)
+
+        assert task_target is not None
+        assert task_target.head_sha == _DISPATCH_HEAD
+        assert ticket_target is not None
+        assert ticket_target.head_sha == _HEAD
 
 
 class TestTheForgeTheLiveHeadReadAddresses(TestCase):

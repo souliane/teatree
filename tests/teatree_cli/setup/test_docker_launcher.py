@@ -59,6 +59,23 @@ class _FakeUv:
         return any(call[1:] == ["tool", "uninstall", "teatree"] for call in self.calls)
 
 
+def _real_checkout(repo: Path) -> Path:
+    """Give a SYNTHETIC *repo* an executable ``deploy/t3`` — what a host launcher execs.
+
+    The host install refuses a checkout whose entry is not there, so a fixture naming a
+    bare directory would exercise that refusal rather than the case it means to. Only a
+    path that does not exist yet is built: the runtime tests name the REAL checkout, and
+    a fixture writing into that would truncate the live wrapper.
+    """
+    if repo.exists():
+        return repo
+    wrapper = repo / "deploy" / "t3"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    wrapper.chmod(0o755)
+    return repo
+
+
 def _installed_uv_tools_dir(home: Path) -> Path:
     """A uv tools root that reports ``teatree`` as installed."""
     tools = home / ".local" / "share" / "uv" / "tools"
@@ -86,9 +103,22 @@ def _run_install(
 ) -> tuple[list[str], _FakeUv]:
     """Install into *home* as a HOST would, returning the lines and the uv stand-in."""
     fake_uv = uv if uv is not None else _FakeUv(None)
+    _real_checkout(repo)
     launcher = home / ".local" / "bin" / "t3"
     resolve = which if which is not None else (lambda tool: str(launcher) if tool == "t3" else "/usr/bin/uv")
     installer = DockerLauncherInstaller(repo, env={"HOME": str(home)}, which=resolve)
+    return _drive(installer, fake_uv), fake_uv
+
+
+def _run_install_without_building(repo: Path, home: Path, *, uv: _FakeUv | None = None) -> tuple[list[str], _FakeUv]:
+    """Install against *repo* EXACTLY as given — no ``deploy/t3`` is created for it."""
+    fake_uv = uv if uv is not None else _FakeUv(None)
+    launcher = home / ".local" / "bin" / "t3"
+    installer = DockerLauncherInstaller(
+        repo,
+        env={"HOME": str(home)},
+        which=lambda tool: str(launcher) if tool == "t3" else "/usr/bin/uv",
+    )
     return _drive(installer, fake_uv), fake_uv
 
 
@@ -135,6 +165,33 @@ class TestLauncherInstall:
         launcher = home / ".local" / "bin" / "t3"
         assert launcher_wrapper_target(launcher.read_text(encoding="utf-8")) == wrapper_path(tmp_path / "new-clone")
         assert any(m.startswith("OK") and "Repointed" in m for m in messages)
+
+    def test_refuses_a_checkout_whose_deploy_t3_is_not_there(self, tmp_path: Path) -> None:
+        # The failure this prevents is silent at install time and total afterwards: bash
+        # answers `exec: ... cannot execute` on EVERY t3, including from every git hook.
+        home = tmp_path / "home"
+        _run_install(tmp_path / "good-clone", home)
+        launcher = home / ".local" / "bin" / "t3"
+        working = launcher.read_bytes()
+
+        messages, fake_uv = _run_install_without_building(tmp_path / "no-deploy-dir", home)
+
+        assert launcher.read_bytes() == working, "a working t3 must survive a refused install"
+        warning = next(m for m in messages if m.startswith("WARN"))
+        assert str(wrapper_path(tmp_path / "no-deploy-dir")) in warning
+        assert not fake_uv.uninstalled
+
+    def test_refuses_a_deploy_t3_that_is_not_executable(self, tmp_path: Path) -> None:
+        repo, home = tmp_path / "clone", tmp_path / "home"
+        wrapper = repo / "deploy" / "t3"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        wrapper.chmod(0o644)
+
+        messages, _uv = _run_install_without_building(repo, home)
+
+        assert not (home / ".local" / "bin" / "t3").exists()
+        assert any(m.startswith("WARN") and str(wrapper) in m for m in messages)
 
     def test_refuses_an_unmanaged_file_and_names_the_manual_fix(self, tmp_path: Path) -> None:
         repo, home = tmp_path / "clone", tmp_path / "home"

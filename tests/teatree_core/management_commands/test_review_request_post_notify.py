@@ -25,7 +25,7 @@ from django.test import TestCase
 
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import BotPing, OnBehalfApproval
-from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm
+from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm
 
 
 def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
@@ -106,7 +106,7 @@ class TestReviewRequestPostAfterReceipt(_Base):
     def _gate_on(self) -> Iterator[None]:
         # The shipped autonomy collapses an unset mode to IMMEDIATE (#3895); this
         # case is about the gate BLOCKING, so it pins the mode it exercises.
-        with mode_gate_on_cm():
+        with posture_forbids_cm():
             yield
 
     def test_successful_post_emits_after_receipt_dm(self) -> None:
@@ -118,6 +118,7 @@ class TestReviewRequestPostAfterReceipt(_Base):
             # The draft gate precedes the post and fails CLOSED against the
             # unreachable forge of a test env; it has its own suite.
             patch(f"{_CMD}.draft_refusal_reason", return_value=""),
+            patch(f"{_CMD}._owner_authorship", return_value=True),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", return_value=_FakeBackend()),
@@ -136,6 +137,7 @@ class TestReviewRequestPostAfterReceipt(_Base):
         # No OnBehalfApproval recorded → the #960 pre-gate refuses; the
         # post never happens so the after-receipt DM must NOT fire.
         with (
+            patch(f"{_CMD}._owner_authorship", return_value=True),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", return_value=_FakeBackend()),

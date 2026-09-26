@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 import pytest
 
-from teatree.eval.api_errors import SuccessMislabelResultError, TerminalResultError
+from teatree.eval.api_errors import SuccessMislabelResultError, TerminalResultError, UsageLimitReachedError
 from teatree.eval.ephemeral_checkout import EphemeralCheckoutError
 from teatree.eval.models import EvalRun
 from teatree.eval.throttle_retry import (
@@ -137,6 +137,16 @@ class TestThrottleRetryDriver:
         drive, calls = _scripted_drive([CreditExhaustedError("credits gone"), []])
         sleeps: list[float] = []
         with pytest.raises(CreditExhaustedError):
+            _driver(sleeps).run(drive, _handlers())
+        assert calls["n"] == 1
+        assert sleeps == []
+
+    def test_a_usage_limit_stop_propagates_not_waited_out(self) -> None:
+        # The API's wording names a "usage limit", which the phrase taxonomy reads as a 5h window.
+        stop = UsageLimitReachedError("You have reached your specified API usage limits. You will regain access on …")
+        drive, calls = _scripted_drive([stop, []])
+        sleeps: list[float] = []
+        with pytest.raises(UsageLimitReachedError):
             _driver(sleeps).run(drive, _handlers())
         assert calls["n"] == 1
         assert sleeps == []

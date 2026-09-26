@@ -1,8 +1,10 @@
 import io
 import json
 import tempfile
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import cast
+from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +19,8 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
 from teatree.config.settings import TeaTreeConfig, UserSettings
+from teatree.core.agent_admission import AgentAdmission
+from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind, is_environmental
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
@@ -93,6 +97,10 @@ class TestLifecycleCommands(TestCase):
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
                 patch.object(worktree_cmd, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
                 patch("teatree.config.load_config", return_value=mock_config),
+                patch(
+                    "teatree.core.gates.local_stack_gate.check_provision_admission",
+                    return_value=ProvisionAdmissionVerdict.allow(),
+                ),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)
                 worktree_id = cast("int", call_command("worktree", "provision"))
@@ -1382,6 +1390,15 @@ class TestTasksCompleteCommand(TestCase):
 class TestTasksListCommand(TestCase):
     """Tests for the tasks list subcommand."""
 
+    def test_json_exposes_admission_rank_and_parentage(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        result = cast("list[dict[str, object]]", call_command("tasks", "list", json_output=True))
+        row = next(item for item in result if item["task_id"] == task.pk)
+        assert row["admission_rank"] == 1
+        assert row["parent_task_id"] is None
+
     def test_list_all_tasks(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
@@ -1509,3 +1526,55 @@ class TestResolveReason:
         from teatree.core.management.commands.tasks import _resolve_reason  # noqa: PLC0415
 
         assert _resolve_reason(reason="", reason_file=None) == ""
+
+
+class TestTheClaimSeamReadsTheSameAdmissionVerdictAsTheDrain(TestCase):
+    """Enqueue and claim are two ways to START work, so one verdict has to govern both.
+
+    ``drain_queue_body`` asked the governor per row and refused what it would not admit;
+    ``_claim_next_task`` took the head of the claimable queue whatever the box was doing. So
+    a braked box that stopped ENQUEUEING expensive work kept CLAIMING it, and the reserved
+    cheap lane the drain protects was invisible on the other seam.
+    """
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415 — deferred: local import
+
+        from teatree.core.signals import _auto_enqueue_task  # noqa: PLC0415 — deferred: local import
+
+        super().setUp()
+        post_save.disconnect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.addCleanup(post_save.connect, _auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
+        self.ticket = Ticket.objects.create(overlay="test")
+        self.session = Session.objects.create(ticket=self.ticket, overlay="test", agent_id="agent-1")
+
+    def _pending(self, phase: str) -> Task:
+        return Task.objects.create(ticket=self.ticket, session=self.session, status=Task.Status.PENDING, phase=phase)
+
+    @staticmethod
+    def _verdict(*, expensive: str | None, cheap: str | None) -> AbstractContextManager[object]:
+        return mock.patch(
+            # The binding the command READS: the `tasks` command imports it at module scope,
+            # so patching its source module leaves the command on the real verdict, and the test
+            # then asserts against an admission nobody stubbed.
+            "teatree.core.management.commands.tasks.agent_admission_verdict",
+            return_value=AgentAdmission(expensive_denied=expensive, cheap_denied=cheap),
+        )
+
+    def test_a_healthy_box_claims_the_head_of_the_queue(self) -> None:
+        head = self._pending("coding")
+        with self._verdict(expensive=None, cheap=None):
+            assert call_command("tasks", "claim", claimed_by="worker-1") == head.pk
+
+    def test_a_shed_expensive_lane_is_skipped_so_the_reserved_cheap_row_behind_it_runs(self) -> None:
+        self._pending("coding")
+        review = self._pending("reviewing")
+        with self._verdict(expensive="machine pressure", cheap=None):
+            assert call_command("tasks", "claim", claimed_by="worker-1") == review.pk
+
+    def test_a_halted_box_claims_nothing_and_leaves_the_row_claimable(self) -> None:
+        pending = self._pending("coding")
+        with self._verdict(expensive="machine pressure", cheap="machine pressure"):
+            assert call_command("tasks", "claim", claimed_by="worker-1") is None
+        pending.refresh_from_db()
+        assert pending.status == Task.Status.PENDING

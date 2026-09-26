@@ -15,6 +15,7 @@ gates #960/#949). This model only audits notifications the bot sends
 """
 
 import enum
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import ClassVar
 
@@ -227,6 +228,15 @@ class BotPing(models.Model):
             .filter(cls.redeliverable_q(now=moment))
             .filter(too_old | too_many | not_owner)
             .update(status=cls.Status.EXPIRED)
+        )
+
+    @classmethod
+    def delivered_keys(cls, keys: Iterable[str]) -> set[str]:
+        """Which of *keys* the ledger has DELIVERED; an undelivered one stays a candidate to retry."""
+        return set(
+            cls.objects.filter(idempotency_key__in=list(keys), status=cls.Status.SENT).values_list(
+                "idempotency_key", flat=True
+            )
         )
 
     @classmethod

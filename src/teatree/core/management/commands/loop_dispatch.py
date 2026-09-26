@@ -9,6 +9,7 @@ each via ``spawn-claim`` so the next tick doesn't see them as pending.
 
 import contextlib
 import logging
+from functools import partial
 from typing import IO, Annotated, Any, cast
 
 import typer
@@ -17,9 +18,11 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import UserSettings, cadence_seconds, get_effective_settings
 from teatree.core.machine_output import emit
+from teatree.core.managers_task_claim import claim_when_admitted, redispatch_window
 from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
 from teatree.core.models import Task
 from teatree.core.models.task_claim import claim_generation
+from teatree.core.models.task_handoff import dispatch_reason
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.loop.admission import governor_verdict
 from teatree.loop.admit_budget import read_admit_budget
@@ -87,7 +90,7 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         # slot passes to its Agent tool, so every spawn is attributable at a
         # glance and never an anonymous general-purpose one.
         "display_name": spawn_display_name(subagent, int(task.pk)),
-        "execution_reason": task.execution_reason,
+        "execution_reason": dispatch_reason(task),
         "issue_url": ticket.issue_url,
         "ticket_role": ticket.role,
         "ticket_state": ticket.state,
@@ -335,8 +338,9 @@ class Command(TyperCommand):
         # CAS — a no-op when nothing is stale, and it leaves a still-live lease
         # untouched (the WHERE re-asserts ``lease_expires_at < now``). Best-effort
         # so a DB-blocked harness still claims (parity with the tick sweep).
-        with contextlib.suppress(RuntimeError):
-            Task.objects.reclaim_orphaned_claims()
+        with contextlib.suppress(RuntimeError), redispatch_window() as refusal:
+            if not refusal:
+                Task.objects.reclaim_orphaned_claims()
 
         session = current_session_id() if claimed_by_session is None else claimed_by_session
         if _admit_budget_exhausted():
@@ -395,8 +399,11 @@ class Command(TyperCommand):
             self.stderr.write(f"Task {task_id} not found.")
             raise SystemExit(1) from None
         try:
-            task.claim(claimed_by=claimed_by)
+            refusal = claim_when_admitted(partial(task.claim, claimed_by=claimed_by))
         except Exception as exc:  # noqa: BLE001 — a claim failure surfaces as a clean SystemExit, never a traceback
             self.stderr.write(f"Cannot claim task {task_id}: {exc}")
             raise SystemExit(1) from None
+        if refusal:
+            self.stderr.write(f"Cannot claim task {task_id}: {refusal}")
+            raise SystemExit(1)
         self.stdout.write(f"Claimed task {task_id} for {claimed_by}. claim_token={claim_generation(task)}")

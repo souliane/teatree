@@ -126,5 +126,7 @@ t3-my-project = "my_project.overlay:MyProjectOverlay"
 ## Settings Resolution Order
 
 1. `overlay_settings.py` constants (code defaults)
-2. The DB `overlays` registry row for `<name>` (user overrides)
-3. `*_PASS_KEY` convention auto-generates `get_*()` methods reading from `pass` store
+2. The DB `overlays` registry row for `<name>` (user overrides) — never a credential's `pass` entry
+3. `*_PASS_KEY` convention auto-generates `get_*()` methods reading from `pass` store; the entry each reads
+   resolves per venue from its own `<credential>_pass_key` `ConfigSetting` row (overlay scope, then global),
+   then the `*_PASS_KEY` constant; `mcp__teatree__config_setting_get` reports which one answered

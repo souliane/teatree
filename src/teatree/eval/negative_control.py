@@ -51,7 +51,7 @@ class NegativeControlOutcome:
 
     @property
     def caught(self) -> bool:
-        return not self.result.passed
+        return not self.result.skipped and not self.result.passed
 
     @property
     def violated_rule(self) -> str:

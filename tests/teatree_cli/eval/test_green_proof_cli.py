@@ -11,12 +11,32 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.eval.discovery import CORE_CATALOG_FLOOR, ScenarioCatalog
+from teatree.eval.models import EvalSpec
+from teatree.eval.summary_json import scenario_version
 
 _SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.fixture(autouse=True)
+def _checked_out_sha(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CI_COMMIT_SHA", raising=False)
+    monkeypatch.setenv("GITHUB_SHA", _SHA)
+
+
+def _spec(name: str) -> EvalSpec:
+    return EvalSpec(
+        name=name,
+        scenario=name,
+        agent_path="skills/code/SKILL.md",
+        prompt="run",
+        matchers=(),
+        source_path=Path("proof-synthetic.yaml"),
+    )
 
 
 def _write(tmp_path: Path, payload: dict[str, object]) -> Path:
@@ -30,15 +50,32 @@ def _green_payload() -> dict[str, Any]:
         "head_sha": _SHA,
         "totals": {"total": 2, "passed": 2, "failed": 0, "skipped": 0},
         "scenarios": [
-            {"name": "a", "lane": "clean_room", "verdict": "pass", "triage_class": None},
-            {"name": "b", "lane": "clean_room", "verdict": "pass", "triage_class": None},
+            {
+                "name": "a",
+                "version": scenario_version(_spec("a")),
+                "lane": "clean_room",
+                "verdict": "pass",
+                "outcome": "PASS",
+                "triage_class": None,
+            },
+            {
+                "name": "b",
+                "version": scenario_version(_spec("b")),
+                "lane": "clean_room",
+                "verdict": "pass",
+                "outcome": "PASS",
+                "triage_class": None,
+            },
         ],
     }
 
 
 def _catalog_of(size: int, *, degraded: dict[str, str] | None = None):
-    """Pin the expected scenario count the CLI derives from the live catalog."""
-    catalog = ScenarioCatalog(specs=[object()] * size, degraded=degraded or {}, core_count=CORE_CATALOG_FLOOR)
+    """Pin the expected catalog identities the CLI derives from the checkout."""
+    names = ["a", "b", *(f"s{i}" for i in range(2, size))][:size]
+    catalog = ScenarioCatalog(
+        specs=[_spec(name) for name in names], degraded=degraded or {}, core_count=CORE_CATALOG_FLOOR
+    )
     return patch("teatree.cli.eval.green_proof.discover_catalog", return_value=catalog)
 
 
@@ -49,6 +86,13 @@ class TestGreenProofCli:
             result = CliRunner().invoke(app, ["eval", "green-proof", str(path)])
         assert result.exit_code == 0, result.output
         assert "GREEN PROOF" in result.output
+
+    def test_explicit_sha_binds_proof_to_checked_out_ref(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        path = _write(tmp_path, _green_payload())
+        monkeypatch.setenv("GITHUB_SHA", "workflow_dispatch_sha")
+        with _catalog_of(2):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path), "--sha", _SHA])
+        assert result.exit_code == 0, result.output
 
     def test_a_run_covering_less_than_the_catalog_exits_nonzero(self, tmp_path: Path) -> None:
         # Seven of eight shards uploaded nothing; the survivor is all-green and
@@ -63,6 +107,7 @@ class TestGreenProofCli:
         payload = _green_payload()
         payload["totals"] = {"total": 2, "passed": 1, "failed": 1, "skipped": 0}
         payload["scenarios"][1]["verdict"] = "fail"
+        payload["scenarios"][1]["outcome"] = "BEHAVIOR_FAIL"
         payload["scenarios"][1]["triage_class"] = "behavioral"
         path = _write(tmp_path, payload)
         with _catalog_of(2):

@@ -15,8 +15,7 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.config import OnBehalfPostMode
-from teatree.core.models import ConfigSetting
+from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -26,7 +25,7 @@ _INLINE_DRAFT = {"id": 1, "note": "fix this", "position": {"new_path": "a.py", "
 
 
 def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
+    seed_permitting_posture()
 
 
 class _StubAPI:

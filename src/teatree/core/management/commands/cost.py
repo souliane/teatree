@@ -8,8 +8,8 @@ end-of-cycle projection.
 
 Also reports GitHub's agentic-workflow ET (effective tokens) metric
 (souliane/teatree#657) and splits both dollars and ET by Layer-2 lane
-(subscription vs metered, souliane/teatree#2887) so the two-lane cost
-strategy locked in #2565 is observable.
+(subscription, metered, or managed, souliane/teatree#2887) so routing across
+Claude and Codex remains observable.
 
 The lane split only covers HEADLESS attempts, matching this command's
 existing scope. Under the default ambient-credential dispatch (no explicit

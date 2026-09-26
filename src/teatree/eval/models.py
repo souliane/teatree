@@ -85,8 +85,9 @@ class Matcher:
 
     A negative matcher may carry an optional ORDER guard (the ``guard_*`` fields,
     parsed from the YAML ``before_first`` sibling key): when set, the forbidden
-    call reds the run ONLY when it occurs at a turn STRICTLY BEFORE the first
-    call matching the guard (or when no guard call exists at all). This expresses
+    call reds the run when it occurs before or on the same turn as the first
+    call matching the guard (except when both patterns match that same call),
+    or when no guard call exists at all. This expresses
     "X must not happen BEFORE Y" — e.g. "no MR-diff read before the overlay skill
     loads" — where a plain order-agnostic negative wrongly reds the correct
     load-skill-THEN-read trajectory. Empty guard fields (the default) leave the
@@ -123,6 +124,22 @@ class Matcher:
 
 
 @dataclasses.dataclass(frozen=True)
+class SuccessfulToolCallMatcher:
+    """A completed, successful call whose result proves the named requirement before a forbidden act."""
+
+    tool: str
+    arg_path: str
+    operator: str
+    value: str
+    result_operator: str
+    result_value: str
+    before_tool: str
+    before_arg_path: str
+    before_operator: str
+    before_value: str
+
+
+@dataclasses.dataclass(frozen=True)
 class AnyOf:
     """A disjunction of positive matchers — passes when ANY alternative holds.
 
@@ -152,9 +169,34 @@ class FinalStateMatcher:
     value: str
 
 
+@dataclasses.dataclass(frozen=True)
+class AssistantTextMatcher:
+    """An assertion about ANY of the run's assistant text — what the agent SAID, anywhere.
+
+    :class:`FinalStateMatcher`'s subject is the terminal message alone, which is the
+    right subject for "the answer ends with X" and the wrong one for "X appears in your
+    response": an agent that states the thing and then closes on a handoff sentence has
+    complied and is graded red. Where the scenario's own prose says *in your response*,
+    this is the matcher that grades it.
+    """
+
+    operator: str
+    value: str
+
+
+@dataclasses.dataclass(frozen=True)
+class PlanBeforeToolMatcher:
+    """Require plan evidence in the response or the first governed tool's audit."""
+
+    governed_tools: tuple[str, ...]
+    patterns: tuple[str, ...]
+
+
 # An ``expect`` entry is a single tool-call matcher, a disjunction of them, or an
-# assertion about the run's final assistant message (the end state).
-ExpectItem = Matcher | AnyOf | FinalStateMatcher
+# assertion about the agent's text — its final message, or anywhere in its response.
+ExpectItem = (
+    Matcher | SuccessfulToolCallMatcher | AnyOf | FinalStateMatcher | AssistantTextMatcher | PlanBeforeToolMatcher
+)
 
 #: The SINGLE SOURCE OF TRUTH for the matcher grammar, read by every place that has
 #: to agree on it: the loader compiles ``_OP_PATTERN`` from ``MATCHER_OPERATORS`` and
@@ -167,10 +209,17 @@ ExpectItem = Matcher | AnyOf | FinalStateMatcher
 #: of silently re-opening the drift.
 #:
 #: ``MATCHER_OPERATORS`` are the operator tokens an ``op "value"`` expression may use
-#: (``contains`` substring / ``~`` regex). ``MATCHER_KINDS`` are the four
+#: (``contains`` substring / ``~`` regex). ``MATCHER_KINDS`` are the
 #: ``expect``-entry kinds, ordered as the synthesizer prompt teaches them.
 MATCHER_OPERATORS: tuple[str, ...] = ("contains", "~")
-MATCHER_KINDS: tuple[str, ...] = ("tool_call", "no_tool_call_matching", "any_of", "final_state")
+MATCHER_KINDS: tuple[str, ...] = (
+    "tool_call",
+    "tool_call_succeeded",
+    "no_tool_call_matching",
+    "any_of",
+    "final_state",
+    "assistant_text",
+)
 
 #: Case aliases mapping a tool name's lowercase form to its canonical name. The
 #: single source of truth so the grader (``report._canonicalize_tool``) and the
@@ -235,16 +284,22 @@ class GateEvent:
     that COMPLETED; ``hook_started`` is lifecycle noise the mapper drops).
     ``outcome``/``output_snippet`` come from the CLI's ``hook_response`` ``data``.
 
-    It is a REPORT-ANNOTATION + fail-loud channel, never a per-scenario pass
-    condition: :attr:`is_stop_block` tells the report whether a #807-class Stop
-    *block* carried a pass (rendered ``pass (gate-assisted)``), and the runner's
-    zero-hook-events fail-loud uses the PRESENCE of any hook event to prove the
-    shipped hook chain registered under the eval wiring.
+    It is a durable audit + fail-loud channel. :attr:`is_stop_block` tells the
+    report whether a #807-class Stop *block* carried a pass (rendered ``pass
+    (gate-assisted)``), trajectory matchers may prove that a governed tool was
+    allowed only after its required visible evidence, and the runner's hook-event
+    checks prove that the shipped hook chain registered under the eval wiring.
     """
 
     hook_event_name: str
     outcome: str
     output_snippet: str
+    sequence: int | None = None
+    tool_name: str = ""
+    tool_use_id: str = ""
+    gate_id: str = ""
+    reason: str = ""
+    assistant_text: str = ""
 
     @property
     def is_block(self) -> bool:
@@ -383,6 +438,15 @@ class EvalToolCall:
     name: str
     input: dict[str, Any]
     turn: int
+    call_id: str | None = None
+    is_error: bool | None = None
+    exit_code: int | None = None
+    result_excerpt: str = ""
+    # Stream event positions preserve the order in which a call was issued and
+    # its result became available. A backend can emit two calls from one model
+    # response as separate assistant events, so `turn` alone is insufficient.
+    event_index: int | None = None
+    result_event_index: int | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -436,6 +500,23 @@ class TokenUsage:
         )
 
 
+#: The provider's own ``total_cost_usd`` — a figure the transport billed and reported.
+COST_SOURCE_REPORTED = "reported"
+#: Priced from THIS run's own token usage at the billed model's list rate, because the
+#: transport reports no cost of its own (``anthropic_api`` / ``pydantic_ai``).
+COST_SOURCE_DERIVED = "derived"
+#: No model ran — a recorded-transcript replay or a skip — so ``$0.00`` is the measured truth.
+COST_SOURCE_NOT_METERED = "not_metered"
+#: The run executed and its cost was never established: nothing observable at all, or a
+#: transport that reports its own bill stayed silent and is deliberately not priced from its
+#: usage. Reported as *unknown*, never as ``$0.00``: an unmeasured value that renders as a
+#: measured zero is the reassurance that stops someone noticing runaway spend.
+COST_SOURCE_UNKNOWN = "unknown"
+
+#: The sources under which a ``0.0`` is a MEASURED zero rather than an absent measurement.
+MEASURED_COST_SOURCES = (COST_SOURCE_REPORTED, COST_SOURCE_DERIVED, COST_SOURCE_NOT_METERED)
+
+
 @dataclasses.dataclass(frozen=True)
 class EvalRun:
     """Captured output of one eval-runner invocation against a spec."""
@@ -448,6 +529,10 @@ class EvalRun:
     raw_stdout: str
     raw_stderr: str
     cost_usd: float = 0.0
+    #: How ``cost_usd`` was observed — one of the ``COST_SOURCE_*`` values above. Defaults
+    #: to UNKNOWN so a run whose producer says nothing about cost can never be read as a
+    #: measured ``$0.00``.
+    cost_source: str = COST_SOURCE_UNKNOWN
     usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
     billed_model: str | None = None
     #: Whether the REQUESTED main model was substituted (a fallback). ``True`` =
@@ -493,6 +578,7 @@ class EvalRun:
             is_error=False,
             raw_stdout="",
             raw_stderr="",
+            cost_source=COST_SOURCE_NOT_METERED,
         )
 
     @classmethod
@@ -513,4 +599,6 @@ class EvalRun:
             raw_stdout="",
             raw_stderr="",
             cost_usd=cost_usd,
+            # A cap reports what it floored; a timeout paid nothing and observed nothing.
+            cost_source=COST_SOURCE_REPORTED if cost_usd else COST_SOURCE_UNKNOWN,
         )

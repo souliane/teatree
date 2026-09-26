@@ -51,6 +51,14 @@ _SCOPE_RE = re.compile(r"[a-z][a-z0-9]*\((?P<scope>[^)]*)\)!?:\s")
 # every merge request it opens. Grouping on either fuses unrelated work.
 _NON_FLAG_LITERALS = frozenset({"none", "aikido"})
 
+# The conventional-commit scopes a work group must NOT be keyed on: two changes sharing
+# ``chore`` say nothing about being one unit of work in any repo, so keying a group on
+# one would batch unrelated merge requests and hold each behind the others. Passed IN to
+# the grouper rather than read by it, so this module stays stdlib-only and table-testable.
+GENERIC_SCOPES: frozenset[str] = frozenset(
+    {"build", "chore", "ci", "config", "deps", "docs", "infra", "test", "tooling"}
+)
+
 
 def signals_for(title: str, *, generic_scopes: frozenset[str]) -> frozenset[GroupSignal]:
     return frozenset(_signals(title, frozenset(scope.casefold() for scope in generic_scopes)))

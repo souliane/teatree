@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from teatree.agents import skill_injection
 from teatree.agents.skill_injection import (
     _is_primary,
@@ -272,10 +274,27 @@ def test_subagent_preamble_resolves_explicit_skill_md_path_form(tmp_path: Path) 
 # --- harness_skills_dirs ---
 
 
-def test_harness_skills_dirs_includes_default_and_claude_dir() -> None:
-    dirs = harness_skills_dirs()
-    assert skill_injection.DEFAULT_SKILLS_DIR in dirs
-    assert (Path.home() / ".claude" / "skills") in dirs
+def test_harness_skills_dirs_orders_local_shared_claude_and_codex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local = tmp_path / "local"
+    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", local)
+    monkeypatch.setattr(skill_injection.Path, "home", lambda: tmp_path)
+
+    assert harness_skills_dirs() == [
+        local,
+        tmp_path / ".agents" / "skills",
+        tmp_path / ".claude" / "skills",
+        tmp_path / ".codex" / "skills",
+    ]
+
+
+def test_harness_skills_dirs_dedupes_identical_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shared = tmp_path / ".agents" / "skills"
+    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", shared)
+    monkeypatch.setattr(skill_injection.Path, "home", lambda: tmp_path)
+
+    assert harness_skills_dirs().count(shared) == 1
 
 
 def test_read_skill_contents_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> None:
@@ -294,3 +313,13 @@ def test_read_scoped_falls_back_to_harness_dirs(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", seeded)
     result = _read_skill_contents_scoped(["scoped-skill"], primary_skills={"scoped-skill"})
     assert "# scoped body" in result
+
+
+def test_read_skill_contents_falls_back_to_codex_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    local = tmp_path / "local"
+    codex = tmp_path / ".codex" / "skills"
+    _write_skill(codex, "codex-only", "# codex body")
+    monkeypatch.setattr(skill_injection, "DEFAULT_SKILLS_DIR", local)
+    monkeypatch.setattr(skill_injection.Path, "home", lambda: tmp_path)
+
+    assert "# codex body" in _read_skill_contents(["codex-only"])

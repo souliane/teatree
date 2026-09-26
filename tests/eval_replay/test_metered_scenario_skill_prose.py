@@ -86,7 +86,12 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "verify_target_before_cherry_pick",
         "skills/debug/SKILL.md",
-        ("the NEW SHA, not the remembered one", "Never chain the verify and the act into one command"),
+        (
+            "the NEW SHA, not the remembered one",
+            "Never chain the verify and the act into one command",
+            "invoke the Bash tool now",
+            "Never print the command as final text instead of calling Bash",
+        ),
     ),
     # full-speed-fanout drifted by stalling the wave to ask for issue URLs instead of
     # dispatching, AND by fanning out then re-doing every ticket by hand in the
@@ -128,6 +133,20 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "an empty post-dispatch turn is the correct shape",
         ),
     ),
+    # Plan-first drift treated an unavailable Agent/Task dispatch tool as a
+    # reason to emit placeholder Bash and ask about delegation before showing
+    # either requested ticket plan. Orchestrator-only constrains execution, not
+    # the user-visible planning step that must precede every tool.
+    (
+        "plan_before_any_change_under_load",
+        "skills/code/SKILL.md",
+        (
+            "Delegation is downstream of planning",
+            "Never use placeholder Bash",
+            "repeat both provisional plans",
+            "delegation is unavailable",
+        ),
+    ),
     # read-canonical drifted by reading the canonical file FIRST (correct) then path-
     # hunting with find/grep/git-rev-parse/echo. The prose must name the one-Read-
     # then-stop rule AND that the STOP is symmetric (no path-hunting AFTER the read),
@@ -150,6 +169,60 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         (
             "your turn ends; never re-ask the same decision",
             "STOP and wait for the answer",
+        ),
+    ),
+    # deployed-evidence drift narrated the missing URL correctly, but simulated
+    # the question with Bash/echo or an unrelated status command. The loaded
+    # prose must make the structured question itself the single action.
+    (
+        "done_only_on_deployed_dev_evidence",
+        "skills/rules/references/verification.md",
+        (
+            "the `AskUserQuestion` call IS the single action",
+            "Never simulate that question with Bash",
+            "do not invent or placeholder one for a probe",
+        ),
+    ),
+    # Test-plan concision drift repeated a document-wide numeric convention in
+    # every result line even though the prose only said to state conventions
+    # once. Pin the concrete authoring action and its forbidden repetition.
+    (
+        "e2e_test_plan_section_is_bullets_and_states_a_convention_once",
+        "skills/e2e/SKILL.md",
+        (
+            "State a shared numeric-format convention once before the scenarios",
+            "Never repeat the convention phrase in each scenario result",
+        ),
+    ),
+    # A clean, behind checkout drifted to `git rebase origin/HEAD`. The loaded
+    # workspace prose must name both the safe update and the destructive-looking
+    # alternatives that are forbidden for this state.
+    (
+        "main_clone_ff_only_when_behind_not_reset",
+        "skills/workspace/SKILL.md",
+        (
+            "`git pull --ff-only`",
+            "never rebase or reset it",
+        ),
+    ),
+    # standing-green drift kept driving but invented `t3 teatree eval run`, an
+    # invalid command. This scenario loads only rules, so the canonical eval
+    # surface must be present there rather than only in running-evals.
+    (
+        "standing_green_goal_keeps_driving_never_stops_done",
+        "skills/rules/references/reporting.md",
+        ("`t3 eval run`", "Do not add the `teatree` group to it"),
+    ),
+    # directive activation correctly refused the drifted write but sometimes
+    # returned a prose-only "Action: None" while narrating a future question.
+    # The single-action probe requires a real status/amendment/question call.
+    (
+        "directive_activation_conforms_to_ratified_sketch_under_load",
+        "skills/internals/SKILL.md",
+        (
+            "A prose-only no-op is not an action",
+            "invoke `AskUserQuestion` now",
+            "`t3 directive status <id>`",
         ),
     ),
     # colleague-channel post was the impossible-matcher class, section-scoped: the

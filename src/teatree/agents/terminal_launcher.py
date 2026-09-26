@@ -92,13 +92,17 @@ def _arm_connect_grace_reaper(proc: Popen[str], port: int) -> None:
     timer.start()
 
 
-def launch_ttyd(command: list[str]) -> LaunchResult:
+def launch_ttyd(command: list[str], *, env: dict[str, str] | None = None) -> LaunchResult:
     """Spawn ``ttyd --writable --once`` on a free loopback port wrapping *command*.
 
     Returns a :class:`LaunchResult` with the ``launch_url`` on success, or one
     carrying an ``error`` when ttyd is not installed — never raises, so a missing
     binary degrades to a rendered hint rather than a 500. A connect-grace reaper is
     armed so an unconnected ttyd is bounded, not left listening indefinitely.
+
+    *env* is the child's whole environment, already resolved by the caller — which
+    credential the wrapped command authenticates with is the caller's decision, not
+    this launcher's. ``None`` inherits this process's environment.
     """
     ttyd_bin = shutil.which("ttyd")
     if not ttyd_bin:
@@ -111,6 +115,7 @@ def launch_ttyd(command: list[str]) -> LaunchResult:
     # liveness probe is an independent loopback ``lsof`` on the port, not ttyd's stderr.
     proc = spawn(
         [ttyd_bin, "--writable", "--interface", _LOOPBACK, "--port", str(port), "--once", *command],
+        env=env,
         stdout=DEVNULL,
         stderr=DEVNULL,
     )

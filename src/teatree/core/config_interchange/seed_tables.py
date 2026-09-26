@@ -80,10 +80,20 @@ def seed_models() -> dict[str, type[Loop] | type[Mode] | type[ModeSchedule]]:
 
 
 def live_seed_rows(table: str) -> dict[str, dict[str, ConfigValue]]:
-    """Every row of *table*'s model as ``{name: {seed field: value}}``."""
+    """Every row of *table*'s model as ``{name: {seed field: value}}``, nulls omitted.
+
+    TOML has no null, so a nullable column sitting empty has nothing to write — and the
+    importer reads an absent key as "leave this alone", which is what an empty column
+    means. Carrying the ``None`` through instead raised ``ConvertError`` and took the
+    WHOLE export with it, so one cleared ``daily_at`` cost the operator every other row.
+    """
     fields = SEED_ROW_FIELDS[table]
     return {
-        row.name: {seed_field: getattr(row, attr) for seed_field, (attr, _type) in fields.items()}
+        row.name: {
+            seed_field: value
+            for seed_field, (attr, _type) in fields.items()
+            if (value := getattr(row, attr)) is not None
+        }
         for row in _SEED_MODELS[table].objects.all()
     }
 
@@ -179,8 +189,20 @@ def write_seed_field(table: str, name: str, field: str, value: ConfigValue) -> N
     An import RESTORES an operator's tuning onto objects the install seed already made; it
     never conjures a loop teatree does not ship (the classifier refuses an entry the file
     does not carry, and the caller refuses one whose row is not seeded yet).
+
+    The written column is validated by its OWN field validators before it lands, so a value
+    the classifier's type check admits but the column refuses — an ``egress`` outside its
+    choices, a string past its length — raises ``ValidationError`` instead of being stored as
+    something every later reader silently mis-resolves. Scoped to the one column being
+    written: a whole-row ``full_clean`` would assert cross-field invariants about state this
+    write never touched, so an unrelated pre-existing problem would refuse a good write.
     """
     attr, _type = SEED_ROW_FIELDS[table][field]
     row = _SEED_MODELS[table].objects.get(name=name)
     setattr(row, attr, value)
+    row.clean_fields(exclude=[name for name in _column_names(row) if name != attr])
     row.save(update_fields=[attr, "updated_at"])
+
+
+def _column_names(row: Loop | Mode | ModeSchedule) -> list[str]:
+    return [field.name for field in row._meta.get_fields() if hasattr(field, "attname")]  # noqa: SLF001 — Django's own model metadata API

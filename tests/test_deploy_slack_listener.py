@@ -1,4 +1,4 @@
-# test-path: cross-cutting — drives deploy/entrypoint.sh + docker-compose.yml + the doctor drain-heartbeat contract.
+# test-path: cross-cutting — drives deploy/entrypoint.sh + docker-compose.yml.
 """The Slack Socket-Mode receiver runs as its own Docker service.
 
 Inbound Slack (a DM reply, a mention, an emoji reaction) only reaches the loop
@@ -14,10 +14,6 @@ Structure is parsed from the deploy sources directly (the source of truth),
 mirroring `tests/test_deploy_bindmount_compose.py`.
 """
 
-import json
-import os
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -41,71 +37,26 @@ class TestInitInstallsSlackExtra:
         assert '--editable "${CLONE_DIR}[slack]"' in ENTRYPOINT
 
 
-_BASH = shutil.which("bash") or "bash"
-_TIMEOUT = shutil.which("timeout") or "timeout"
-
-
-def _drain_loop_body() -> str:
-    """The verbatim source of the top-level ``slack_drain_loop`` shell function."""
-    lines: list[str] = []
-    capturing = False
-    for line in ENTRYPOINT.splitlines():
-        if line.startswith("slack_drain_loop() {"):
-            capturing = True
-        if capturing:
-            lines.append(line)
-            if line == "}":
-                return "\n".join(lines)
-    not_found = "slack_drain_loop function not found in entrypoint.sh"
-    raise AssertionError(not_found)
-
-
 class TestSlackListenerRole:
     @property
     def _arm(self) -> str:
         return ENTRYPOINT.split("slack-listener)", 1)[1].split(";;", 1)[0]
 
+    @property
+    def _arm_commands(self) -> str:
+        """The arm with its comments stripped — what the role actually RUNS."""
+        return "\n".join(ln for ln in self._arm.splitlines() if not ln.lstrip().startswith("#"))
+
     def test_role_execs_slack_listen(self) -> None:
         assert "slack-listener)" in ENTRYPOINT
         assert "exec t3 slack listen" in self._arm
 
-    def test_role_drains_captured_dms_on_a_cadence(self) -> None:
-        # The reactive loop-drain-queue slot is not bootstrapped under `t3
-        # worker` in headless, so without a periodic `t3 slack check` the
-        # listener's captured DMs never reach an observable (👀-acked) state.
-        # `t3 slack check` drains the JSONL queue and is NOT worker-singleton
-        # gated (unlike the drain-queue loop).
-        body = _drain_loop_body()
-        assert "t3 slack check" in body
-        assert "while true; do" in body, "the drain must run on a repeating cadence, not once"
-
-    def test_drain_loop_is_backgrounded_before_the_foreground_exec(self) -> None:
-        # `slack_drain_loop &` backgrounds the cadence so `exec t3 slack listen`
-        # stays the foreground process; it must start BEFORE the exec, or exec
-        # would replace the shell before the loop is ever launched.
-        arm = self._arm
-        assert "slack_drain_loop &" in arm
-        assert "&\n" in arm, "the drain loop must be backgrounded"
-        # `rindex` for the exec: an earlier mention lives in the explanatory comment.
-        assert arm.index("slack_drain_loop &") < arm.rindex("exec t3 slack listen")
-
-    def test_drain_failures_are_surfaced_not_swallowed(self) -> None:
-        # #3443: the old `>/dev/null 2>&1 || true` hid every error. The loop must
-        # now log real failures to stderr with a consecutive-failure counter and
-        # never re-introduce the output-swallowing form in the active loop body.
-        body = _drain_loop_body()
-        assert "t3 slack check >/dev/null 2>&1 || true" not in body
-        assert ">&2" in body, "drain failures must be logged to stderr"
-        assert "consecutive" in body, "the loop must track a consecutive-failure counter"
-
-    def test_drain_writes_a_heartbeat_doctor_reads(self) -> None:
-        # The heartbeat filename is the doctor↔entrypoint contract; the doctor
-        # side (`self_heal_slack_drain._HEARTBEAT_FILENAME`) must name the same file.
-        from teatree.cli.doctor.self_heal_slack_drain import _HEARTBEAT_FILENAME  # noqa: PLC0415 — test-local import
-
-        body = _drain_loop_body()
-        assert _HEARTBEAT_FILENAME in body
-        assert "consecutive_failures" in body, "the heartbeat must carry the failure count doctor gates on"
+    def test_the_role_schedules_no_drain_sidecar(self) -> None:
+        # The listener records inbound DMs and wakes the answer cycle itself, so a
+        # `t3 slack check` cadence buys nothing — and having one back would restore
+        # both the second 👀 source and the racing consumer of slack-events.jsonl.
+        assert "slack_drain_loop" not in ENTRYPOINT
+        assert "t3 slack check" not in self._arm_commands
 
     def test_role_is_documented_and_validated(self) -> None:
         # The required-role prompt and the unknown-role guard both name it, so a
@@ -140,108 +91,6 @@ class TestComposeSlackListenerService:
             if isinstance(entry, dict) and entry.get("type") == "bind"
         }
         assert SHARED_DB_MOUNT in targets
-
-
-@pytest.mark.skipif(
-    shutil.which("bash") is None or shutil.which("timeout") is None,
-    reason="needs bash + timeout (present in the deploy image and CI)",
-)
-class TestSlackDrainLoopExecution:
-    """Run the REAL `slack_drain_loop` (extracted verbatim) with a stub `t3`.
-
-    `t3 slack check` exits 1-with-no-output on an empty queue (healthy) and
-    non-zero-with-output on a real failure; the loop must tell them apart, log
-    only real failures to stderr, and record the streak in the heartbeat doctor
-    reads.
-    """
-
-    def _run(self, tmp_path: Path, check_body: str) -> tuple[str, dict]:
-        bin_dir = tmp_path / "bin"
-        bin_dir.mkdir()
-        t3 = bin_dir / "t3"
-        # The stub answers only `t3 slack check`; anything else is a no-op success.
-        t3.write_text(
-            '#!/usr/bin/env bash\nif [ "$1 $2" = "slack check" ]; then\n' + check_body + "\nfi\nexit 0\n",
-            encoding="utf-8",
-        )
-        t3.chmod(0o755)
-        heartbeat = tmp_path / "hb.json"
-        harness = tmp_path / "harness.sh"
-        harness.write_text(f"set -euo pipefail\n{_drain_loop_body()}\nslack_drain_loop\n", encoding="utf-8")
-        env = dict(os.environ)
-        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-        env["SLACK_CHECK_INTERVAL_SECONDS"] = "0.2"
-        env["SLACK_DRAIN_HEARTBEAT"] = str(heartbeat)
-        proc = subprocess.run(
-            [_TIMEOUT, "1", _BASH, str(harness)],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-        )
-        beat = json.loads(heartbeat.read_text(encoding="utf-8")) if heartbeat.exists() else {}
-        return proc.stderr, beat
-
-    def test_real_failure_is_logged_and_counted(self, tmp_path: Path) -> None:
-        # rc=3: an arbitrary non-{0,2} exit distinct from the rc=1 crash
-        # collision case below — any such code with error output is a failure.
-        stderr, beat = self._run(tmp_path, 'echo "Traceback: DB unreachable" >&2\nexit 3')
-        assert "FAILED" in stderr
-        assert "Traceback: DB unreachable" in stderr, "the real error output must reach the logs"
-        assert beat.get("consecutive_failures", 0) >= 1
-
-    def test_empty_queue_is_not_a_failure(self, tmp_path: Path) -> None:
-        # exit 2 with NO output = empty queue on a quiet box; must not count/log.
-        stderr, beat = self._run(tmp_path, "exit 2")
-        assert "FAILED" not in stderr
-        assert beat.get("consecutive_failures", -1) == 0
-
-    def test_benign_stderr_warning_on_empty_queue_is_not_a_failure(self, tmp_path: Path) -> None:
-        # Every t3 invocation emits a benign WARNING to STDERR (e.g. an overlay's
-        # skills-root notice). On a genuinely empty queue (rc=2) that warning
-        # must NOT be mistaken for a failure — the healthy check keys on the
-        # exit code, not on stderr folded in via 2>&1.
-        stderr, beat = self._run(
-            tmp_path,
-            'echo "WARNING teatree.cli.overlay skills root declared but no tool-commands.json found" >&2\nexit 2',
-        )
-        assert "FAILED" not in stderr
-        assert beat.get("consecutive_failures", -1) == 0
-
-    def test_a_crashing_drain_with_empty_stdout_is_counted_as_a_failure(self, tmp_path: Path) -> None:
-        # rc=1 with EMPTY stdout used to double as the "empty queue" signal —
-        # byte-identical to a crashing `t3 slack check` (Django boot failure, a
-        # DB error) that also exits 1 with nothing on stdout and a traceback on
-        # stderr. The empty-queue signal moved to rc=2 specifically so this
-        # collision now reads as the failure it is.
-        stderr, beat = self._run(tmp_path, 'echo "Traceback" >&2\nexit 1')
-        assert "FAILED" in stderr
-        assert beat.get("consecutive_failures", 0) >= 1
-
-    def test_rc1_with_stdout_content_is_a_failure(self, tmp_path: Path) -> None:
-        # rc=1 with stdout content is a real failure (a crash that printed to
-        # stdout then exited 1), not an empty-queue poll.
-        stderr, beat = self._run(tmp_path, 'echo "boot error on stdout"\nexit 1')
-        assert "FAILED" in stderr
-        assert "boot error on stdout" in stderr
-        assert beat.get("consecutive_failures", 0) >= 1
-
-    def test_drained_messages_reset_the_streak(self, tmp_path: Path) -> None:
-        stderr, beat = self._run(tmp_path, 'echo "{\\"overlay\\": \\"acme\\"}"\nexit 0')
-        assert "FAILED" not in stderr
-        assert beat.get("consecutive_failures", -1) == 0
-
-    def test_singleton_stand_down_is_not_a_failure(self, tmp_path: Path) -> None:
-        # The `check` command's own singleton guard stands down (exit 0, a
-        # stderr message, empty stdout) when a concurrent drain already holds
-        # the lock — a wrong healthy-set would flip this into a false alarm on
-        # a perfectly healthy box.
-        stderr, beat = self._run(
-            tmp_path,
-            'echo "Another slack drain is in progress; standing down." >&2\nexit 0',
-        )
-        assert "FAILED" not in stderr
-        assert beat.get("consecutive_failures", -1) == 0
 
 
 if __name__ == "__main__":

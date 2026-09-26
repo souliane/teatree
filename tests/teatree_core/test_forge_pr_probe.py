@@ -24,14 +24,26 @@ from teatree.core.forge_pr_probe import (
     PrProbeOutcome,
     find_open_pr_for_branch,
     forge_cli_env,
+    gitlab_cli_env,
     probe_github_open_pr,
     probe_gitlab_open_pr,
 )
-from teatree.core.forge_push import CredentialSource, ForgeCredential
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from tests._git_repo import make_git_repo, run_git
 
 _GH_URL = "https://github.com/acme/widgets/pull/7"
 _MR_URL = "https://gitlab.com/acme/widgets/-/merge_requests/7"
+
+
+@pytest.fixture(autouse=True)
+def _routed_github_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        forge_pr_probe,
+        "resolve_repo_token",
+        lambda *_a, **_k: ForgeTokenResolution(
+            "github_token", "owner", ForgeTokenState.TOKEN, token="routed-owner-token"
+        ),
+    )
 
 
 def _repo(tmp_path: Path, *, remote: str) -> Path:
@@ -65,6 +77,18 @@ def _fake_cli(
 
     monkeypatch.setattr(forge_pr_probe, "run_allowed_to_fail", _run)
     return seen
+
+
+def _fake_gitlab_http(monkeypatch: pytest.MonkeyPatch, answer: str | None) -> list[tuple[str, str]]:
+    """Fake the GitLab HTTP open-MR read, recording what it was asked."""
+    asked: list[tuple[str, str]] = []
+
+    def _read(repo_dir: object, branch: str) -> str | None:
+        asked.append((str(repo_dir), branch))
+        return answer
+
+    monkeypatch.setattr(forge_pr_probe, "_gitlab_open_mr_url", _read)
+    return asked
 
 
 class TestPrProbeMappers:
@@ -101,12 +125,12 @@ class TestFindOpenPrForBranch:
 
     def test_gitlab_found(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo(tmp_path, remote="https://gitlab.com/acme/widgets.git")
-        seen = _fake_cli(monkeypatch, _completed(json.dumps([{"web_url": _MR_URL}])))
+        seen = _fake_cli(monkeypatch, AssertionError("the GitLab arm must shell out to nothing"))
+        _fake_gitlab_http(monkeypatch, _MR_URL)
         probe = find_open_pr_for_branch(repo, "feature")
         assert probe.outcome is PrProbeOutcome.FOUND
         assert probe.url == _MR_URL
-        assert seen[0][0] == "glab"
-        assert "--source-branch" in seen[0]
+        assert seen == []
 
     def test_empty_array_is_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = _repo(tmp_path, remote="git@github.com:acme/widgets.git")
@@ -169,32 +193,30 @@ class TestProbeRunsWithTheWriterCredential:
     """
 
     def test_forge_cli_env_is_none_when_nothing_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An ambient ``gh auth login`` is a credential of its own — never overridden."""
+        """An unset owner route never inherits a logged-in gh account."""
         monkeypatch.setattr(
             forge_pr_probe,
-            "resolve_forge_credential",
-            lambda: ForgeCredential(token="", source=CredentialSource.AMBIENT),
+            "resolve_repo_token",
+            lambda *_a, **_k: ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET),
         )
+        monkeypatch.setenv("GH_TOKEN", "hostile")
         assert forge_cli_env() is None
 
     def test_forge_cli_env_extends_rather_than_replaces_the_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """``gh`` still needs PATH, HOME and the rest — the token is added, not substituted."""
         monkeypatch.setenv("SOME_AMBIENT_VAR", "kept")
-        monkeypatch.setattr(
-            forge_pr_probe,
-            "resolve_forge_credential",
-            lambda: ForgeCredential(token="tok-writer", source=CredentialSource.OVERLAY_PASS_STORE),
-        )
 
         env = forge_cli_env()
 
         assert env is not None
-        assert env["GH_TOKEN"] == "tok-writer"
+        assert env["GH_TOKEN"] == "routed-owner-token"
         assert env["SOME_AMBIENT_VAR"] == "kept"
 
     def test_env_carries_the_resolved_token(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("GH_TOKEN", raising=False)
-        monkeypatch.setenv("TEATREE_GH_TOKEN", "tok-from-the-writer-chain")
+        monkeypatch.setenv("GH_TOKEN", "hostile-gh")
+        monkeypatch.setenv("GITHUB_TOKEN", "hostile-github")
+        monkeypatch.setenv("GITLAB_TOKEN", "hostile-gitlab")
+        monkeypatch.setenv("GLAB_CONFIG_DIR", "/hostile/stored-glab-login")
         captured: dict[str, object] = {}
 
         def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -206,11 +228,52 @@ class TestProbeRunsWithTheWriterCredential:
 
         env = captured.get("env")
         assert isinstance(env, dict)
-        assert env["GH_TOKEN"] == "tok-from-the-writer-chain"
+        assert env["GH_TOKEN"] == "routed-owner-token"
+        assert "GITHUB_TOKEN" not in env
+        assert "GITLAB_TOKEN" not in env
+        assert "GLAB_CONFIG_DIR" not in env
+
+    @pytest.mark.parametrize("state", [ForgeTokenState.UNSET, ForgeTokenState.UNREADABLE])
+    def test_gitlab_env_fails_closed_without_a_db_routed_token(
+        self, state: ForgeTokenState, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            forge_pr_probe,
+            "resolve_repo_token",
+            lambda *_a, **_k: ForgeTokenResolution("gitlab_token", "owner", state),
+        )
+        monkeypatch.setenv("GITLAB_TOKEN", "hostile-ambient")
+        monkeypatch.setenv("GLAB_CONFIG_DIR", "/hostile/stored-glab-login")
+
+        assert gitlab_cli_env("/repo") is None
+
+    def test_gitlab_env_uses_only_the_db_route_and_scrubs_github(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        requested: list[str] = []
+
+        def _resolve(*_args: object, credential: str) -> ForgeTokenResolution:
+            requested.append(credential)
+            return ForgeTokenResolution(
+                "gitlab_token", "owner", ForgeTokenState.TOKEN, token="db-gitlab", route_source="overlay-db"
+            )
+
+        monkeypatch.setattr(forge_pr_probe, "resolve_repo_token", _resolve)
+        monkeypatch.setenv("GITLAB_TOKEN", "hostile-ambient")
+        monkeypatch.setenv("GH_TOKEN", "hostile-gh")
+        monkeypatch.setenv("GITHUB_TOKEN", "hostile-github")
+        monkeypatch.setenv("GLAB_CONFIG_DIR", "/hostile/stored-glab-login")
+
+        env = gitlab_cli_env("/repo")
+
+        assert requested == ["gitlab_token"]
+        assert env is not None
+        assert env["GITLAB_TOKEN"] == "db-gitlab"
+        assert "GH_TOKEN" not in env
+        assert "GITHUB_TOKEN" not in env
+        assert "GLAB_CONFIG_DIR" not in env
 
     def test_token_gated_forge_is_found_not_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A ``gh`` that refuses an unauthenticated read — every private repo — still answers."""
-        monkeypatch.setenv("GH_TOKEN", "tok-writer")
+        monkeypatch.setenv("GH_TOKEN", "hostile-gh")
 
         def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
             env = kwargs.get("env")
@@ -236,8 +299,57 @@ class TestForgeSpecificProbes:
         assert seen[0][0] == "gh"
         assert seen[0][seen[0].index("--head") + 1] == "feature"
 
-    def test_probe_gitlab_uses_glab_source_branch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        seen = _fake_cli(monkeypatch, _completed(json.dumps([{"web_url": _MR_URL}])))
+    def test_probe_gitlab_reads_over_http_never_glab(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen = _fake_cli(monkeypatch, AssertionError("the GitLab arm must shell out to nothing"))
+        asked = _fake_gitlab_http(monkeypatch, _MR_URL)
         assert probe_gitlab_open_pr(tmp_path, "feature").url == _MR_URL
-        assert seen[0][0] == "glab"
-        assert seen[0][seen[0].index("--source-branch") + 1] == "feature"
+        assert asked == [(str(tmp_path), "feature")]
+        assert seen == []
+
+
+class TestTheGitlabArmNeedsNoGlabBinary:
+    """#151: a probe must not depend on a binary a host happens to supply.
+
+    The deploy image declares no ``glab`` (``deploy/Dockerfile``), but an operator's
+    ``~/.local/bin`` bind mount can put an executable, authenticated one on PATH inside the
+    container — so absence is not a property this arm may rest on.
+
+    Every assertion here is about the SEAM, not the CLI: the arm answers its full tri-state
+    with the forge subprocess runner rigged to raise, which is what "shells out to nothing"
+    means operationally. Before this, the same three cases all collapsed to UNKNOWN inside
+    the container and ``pr ensure-pr`` reported ``owed: True`` forever.
+    """
+
+    def test_found_without_any_subprocess(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen = _fake_cli(monkeypatch, FileNotFoundError("glab"))
+        _fake_gitlab_http(monkeypatch, _MR_URL)
+
+        probe = probe_gitlab_open_pr(tmp_path, "feature")
+
+        assert probe.outcome is PrProbeOutcome.FOUND
+        assert probe.url == _MR_URL
+        assert seen == []
+
+    def test_absence_is_none_not_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _fake_cli(monkeypatch, FileNotFoundError("glab"))
+        _fake_gitlab_http(monkeypatch, "")
+
+        assert probe_gitlab_open_pr(tmp_path, "feature").outcome is PrProbeOutcome.NONE
+
+    def test_an_unanswerable_read_stays_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _fake_cli(monkeypatch, FileNotFoundError("glab"))
+        _fake_gitlab_http(monkeypatch, None)
+
+        assert probe_gitlab_open_pr(tmp_path, "feature").outcome is PrProbeOutcome.UNKNOWN
+
+    def test_a_backend_that_cannot_be_built_is_unknown(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The probe runs inside a git pre-push hook — it must never raise into one."""
+        _fake_cli(monkeypatch, FileNotFoundError("glab"))
+
+        def _explode(_repo_dir: object, _branch: str) -> str | None:
+            message = "backend unavailable"
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(forge_pr_probe, "_gitlab_open_mr_url", _explode)
+
+        assert probe_gitlab_open_pr(tmp_path, "feature").outcome is PrProbeOutcome.UNKNOWN

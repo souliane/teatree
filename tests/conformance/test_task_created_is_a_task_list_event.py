@@ -153,6 +153,7 @@ _ANCHOR_FILE_INVENTORY: Final[frozenset[str]] = frozenset(
         "tests/quality/test_no_flat_core_regrowth.py",
         "tests/teatree_hooks/test_hook_router_dispatch_quote_scanner.py",
         "tests/teatree_hooks/test_run_hook_outage_is_loud.py",
+        "tests/teatree_cli/setup/test_portable_plugin_package.py",
         "tests/test_gate_liveness_corpus.py",
         "tests/test_lockout_regression_corpus.py",
         "tests/test_hook_router_task_created_never_blocks.py",
@@ -545,9 +546,11 @@ class TestEveryRegisteredHandlersDenyTextIsPinned:
 
     @pytest.mark.parametrize("name", sorted(_DENY_DRIVERS))
     def test_the_driver_is_what_makes_the_deny_happen(self, name: str, tmp_path: Path) -> None:
-        # Control: strip the settings and the same payload is inert, so the pins above
-        # are decided by the driver rather than by an ambient default.
-        inert = dataclasses.replace(_DENY_DRIVERS[name], settings={})
+        # Control: explicitly disable the shipped-on gate so the same payload is inert.
+        inert = dataclasses.replace(
+            _DENY_DRIVERS[name],
+            settings={"dispatch_quote_gate_on_task_create_enabled": False},
+        )
         verdict, out, err = _drive_the_deny(name, inert, tmp_path)
         assert verdict is not True
         assert _surfaced_deny_text(out, err) == ""

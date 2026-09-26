@@ -164,6 +164,8 @@ class Command(RefusalExitTyperCommand):
         read leaves the MR unannotated rather than wedging discovery.
         """
         from teatree.core.gates.review_request_guard import (  # noqa: PLC0415 — deferred: keeps command import light
+            ReconcileStatus,
+            overlay_for_mr_url,
             reconcile_out_of_band,
             resolve_guard_target,
         )
@@ -171,12 +173,13 @@ class Command(RefusalExitTyperCommand):
         url = mr.get("url")
         if not isinstance(url, str) or not url:
             return mr
-        target = resolve_guard_target()
+        overlay_name = overlay_for_mr_url(url)
+        target = resolve_guard_target(overlay_name=overlay_name)
         if target is None:
             return mr
-        permalink = reconcile_out_of_band(mr_url=url, target=target)
-        mr["review_already_requested"] = bool(permalink)
-        mr["review_permalink"] = permalink
+        result = reconcile_out_of_band(mr_url=url, target=target, overlay=overlay_name)
+        mr["review_already_requested"] = result.status is ReconcileStatus.RECONCILED
+        mr["review_permalink"] = result.permalink
         return mr
 
     @command()

@@ -8,10 +8,8 @@ every case here asks whether an unanswerable table is reported as unanswerable,
 not merely whether the happy path resolves.
 """
 
-import subprocess
-import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
+import errno
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,27 +18,16 @@ import pytest
 from teatree.core.cleanup import process_table
 from teatree.core.cleanup.checkout_registry import one_spelling_each
 from teatree.core.cleanup.process_table import ProcessTable, read_process_table
-
-
-@contextmanager
-def _child_working_in(directory: Path) -> Iterator[int]:
-    """A real child placed in *directory*, so the kernel canonicalises its cwd for us."""
-    child = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(300)"], cwd=directory, stdin=subprocess.DEVNULL
-    )
-    try:
-        yield child.pid
-    finally:
-        child.kill()
-        child.wait()
+from tests._process_table_venue import THIS_PROCESS_PID, holding, this_process_in
 
 
 def _proc_with(root: Path, placements: dict[str, Path]) -> Path:
-    """A fake process table: ``{pid: cwd}``, plus a non-numeric entry to skip."""
+    """A fake process table: ``{pid: cwd}``, plus this process, which never counts."""
     for pid, cwd in placements.items():
         (root / pid).mkdir(parents=True)
         (root / pid / "cwd").symlink_to(cwd)
-    (root / "self").mkdir(exist_ok=True)
+        (root / pid / "exe").symlink_to(cwd / "bin" / "process")
+    this_process_in(root)
     return root
 
 
@@ -74,8 +61,7 @@ class TestHolds:
         (real / "src").mkdir(parents=True)
         link = tmp_path / "link"
         link.symlink_to(real)
-        with _child_working_in(real / "src") as pid:
-            table = ProcessTable(frozenset({Path(f"/proc/{pid}/cwd").readlink()}), "/proc")
+        table = ProcessTable(frozenset({(real / "src").resolve()}), "/proc")
 
         assert table.holds(real.resolve()) is True, "the control: the probe can detect what it looks for"
         assert table.holds(link) is True, "a live agent inside was queued for deletion under this spelling"
@@ -86,7 +72,7 @@ class TestHolds:
 
 class TestRefuseReason:
     def test_a_usable_table_refuses_nothing(self) -> None:
-        assert ProcessTable(frozenset(), "/proc", ("2 of 9 process(es) did not say",)).refuse_reason() == ""
+        assert ProcessTable(frozenset(), "/proc", ("2 of 9 process(es) are unknowable",)).refuse_reason() == ""
 
     def test_an_unusable_table_refuses_with_its_gaps(self) -> None:
         assert ProcessTable(frozenset(), "", ("no readable table",)).refuse_reason() == "no readable table"
@@ -143,22 +129,91 @@ class TestPartialVisibility:
         """Listed-but-mute is the blind case, and it must not read as "nobody is inside"."""
         host = tmp_path / "host-proc"
         (host / "42").mkdir(parents=True)  # a pid dir with no cwd/exe link at all
+        this_process_in(host)
         with patch.object(process_table, "_HOST_PROC_ROOT", host):
             table = read_process_table()
 
         assert not table.usable
-        assert any("would say where it is running" in gap for gap in table.gaps)
+        assert any("no pid" in gap and "answered" in gap for gap in table.gaps)
 
-    def test_some_processes_declining_is_a_gap_not_a_refusal(self, tmp_path: Path) -> None:
-        """Only the pid's own uid may read its links, so a shared box always has mute pids."""
+    def test_one_unreadable_pid_is_a_gap_not_a_refusal(self, tmp_path: Path) -> None:
+        """``fd`` sits behind ``ptrace_may_access``, so a shared box always has mute pids.
+
+        Demanding every answer refuses forever — 35 of 325 pids on the measured host
+        are unreadable — and takes the artifact pass, the ``clean-all`` liveness guard
+        and the worktree GC down with it. The cost of a mute pid is reclaim, not safety.
+        """
         host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "checkout"})
-        (host / "12").mkdir()
+        hidden = host / "12" / "fd" / "0"
+        hidden.parent.mkdir(parents=True)
+        hidden.symlink_to(tmp_path / "unknown")
+        readlink = Path.readlink
+        unreadable = PermissionError()
+
+        def _readlink(path: Path) -> Path:
+            if path == hidden:
+                raise unreadable
+            return readlink(path)
+
+        with patch.object(process_table, "_HOST_PROC_ROOT", host), patch.object(Path, "readlink", _readlink):
+            table = read_process_table()
+
+        assert table.usable
+        assert table.refuse_reason() == ""
+        assert table.holds(tmp_path / "checkout")
+        assert any("unknowable" in gap for gap in table.gaps), "what went unread is still reported"
+
+    @pytest.mark.parametrize(
+        "unreadable",
+        [PermissionError(errno.EACCES, "Permission denied"), OSError(errno.EIO, "Input/output error")],
+    )
+    def test_an_unreadable_executable_is_a_gap_not_a_refusal(
+        self,
+        tmp_path: Path,
+        unreadable: OSError,
+    ) -> None:
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "checkout"})
+        hidden = host / "11" / "exe"
+        readlink = Path.readlink
+
+        def _readlink(path: Path) -> Path:
+            if path == hidden:
+                raise unreadable
+            return readlink(path)
+
+        with patch.object(process_table, "_HOST_PROC_ROOT", host), patch.object(Path, "readlink", _readlink):
+            table = read_process_table()
+
+        assert table.usable
+        assert any("executable" in gap and "11" in gap for gap in table.gaps)
+
+    def test_an_executable_that_disappears_with_its_pid_is_benign(self, tmp_path: Path) -> None:
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "checkout"})
+        (host / "11" / "exe").unlink()
+
         with patch.object(process_table, "_HOST_PROC_ROOT", host):
             table = read_process_table()
 
         assert table.usable
+        assert table.gaps == ()
+
+    @pytest.mark.parametrize("source", ["fd", "map_files"])
+    def test_an_open_path_holds_its_checkout_when_cwd_and_exe_are_elsewhere(
+        self,
+        tmp_path: Path,
+        source: str,
+    ) -> None:
+        host = _proc_with(tmp_path / "host-proc", {"7": tmp_path / "elsewhere"})
+        held = tmp_path / "checkout" / "node_modules" / "library.js"
+        held.parent.mkdir(parents=True)
+        held.touch()
+        links = host / "7" / source
+        links.mkdir()
+        (links / "0").symlink_to(held)
+        with patch.object(process_table, "_HOST_PROC_ROOT", host):
+            table = read_process_table()
+
         assert table.holds(tmp_path / "checkout")
-        assert any("did not say where they run" in gap for gap in table.gaps)
 
     def test_the_binary_a_process_runs_places_it_too(self, tmp_path: Path) -> None:
         """A daemon started from a venv keeps its cwd elsewhere; its ``exe`` is the tell."""
@@ -166,7 +221,73 @@ class TestPartialVisibility:
         (host / "7").mkdir(parents=True)
         (host / "7" / "cwd").symlink_to(tmp_path / "elsewhere")
         (host / "7" / "exe").symlink_to(tmp_path / "checkout" / ".venv" / "bin" / "python")
+        this_process_in(host)
         with patch.object(process_table, "_HOST_PROC_ROOT", host):
             table = read_process_table()
 
         assert table.holds(tmp_path / "checkout")
+
+
+class TestThisProcessIsNeverItsOwnWitness:
+    """The reaper holds a descriptor on what it is about to delete (#4244 round 4)."""
+
+    def test_this_processs_own_descriptor_does_not_hold_a_directory(self, tmp_path: Path) -> None:
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "elsewhere"})
+        holding(host / THIS_PROCESS_PID, tmp_path / "checkout" / ".venv")
+
+        with patch.object(process_table, "_HOST_PROC_ROOT", host):
+            table = read_process_table()
+
+        assert table.usable
+        assert not table.holds(tmp_path / "checkout")
+
+    def test_the_same_descriptor_under_another_pid_does_hold_it(self, tmp_path: Path) -> None:
+        """The control: it is WHOSE descriptor it is that decides, not the descriptor."""
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "elsewhere"})
+        holding(host / "12", tmp_path / "checkout" / ".venv")
+
+        with patch.object(process_table, "_HOST_PROC_ROOT", host):
+            table = read_process_table()
+
+        assert table.holds(tmp_path / "checkout")
+
+    def test_the_pid_dropped_is_the_one_the_table_calls_self_not_os_getpid(self, tmp_path: Path) -> None:
+        """A bind-mounted host table numbers this process by its HOST pid."""
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "elsewhere"})
+        (host / str(os.getpid())).mkdir()
+        holding(host / str(os.getpid()), tmp_path / "checkout" / ".venv")
+
+        with patch.object(process_table, "_HOST_PROC_ROOT", host):
+            table = read_process_table()
+
+        assert table.holds(tmp_path / "checkout"), "the container's own pid names another process on the host"
+
+    def test_this_processs_executable_does_not_place_it_either(self, tmp_path: Path) -> None:
+        """``exe`` points into the venv the pass itself runs from, in every checkout it sweeps."""
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "elsewhere"})
+        (host / THIS_PROCESS_PID / "exe").symlink_to(tmp_path / "checkout" / ".venv" / "bin" / "python")
+
+        with patch.object(process_table, "_HOST_PROC_ROOT", host):
+            table = read_process_table()
+
+        assert not table.holds(tmp_path / "checkout")
+
+    def test_a_table_that_will_not_say_which_process_this_is_is_unusable(self, tmp_path: Path) -> None:
+        host = _proc_with(tmp_path / "host-proc", {"11": tmp_path / "checkout"})
+        (host / "self").unlink()
+
+        with patch.object(process_table, "_HOST_PROC_ROOT", host):
+            table = read_process_table()
+
+        assert not table.usable
+        assert any("which process this is" in gap for gap in table.gaps)
+
+    def test_a_table_holding_only_this_process_has_told_us_nothing(self, tmp_path: Path) -> None:
+        host = tmp_path / "host-proc"
+        host.mkdir()
+        this_process_in(host)
+
+        with patch.object(process_table, "_HOST_PROC_ROOT", host):
+            table = read_process_table()
+
+        assert not table.usable

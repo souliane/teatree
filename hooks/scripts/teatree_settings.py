@@ -196,8 +196,8 @@ def section_int_setting(section: str, name: str, *, default: int, minimum: int |
     ``ConfigSetting`` store — ``section`` ``teatree`` maps to the GLOBAL scope, the
     only section the cold budgets use — else *default*. Only a real int (never a
     bool) is honoured. A value below *minimum* is malformed and degrades to *default*
-    so the bound it encodes can't be mistyped away (a ``deny_circuit_breaker_threshold``
-    of ``0`` never disables the breaker); ``minimum=0`` keeps ``0`` valid so an
+    so the bound it encodes can't be mistyped away (a ``hook_validator_timeout_seconds``
+    of ``0`` never disables the timeout); ``minimum=0`` keeps ``0`` valid so an
     explicit "off" budget survives. A missing/unreadable DB row resolves to *default*.
     A non-``teatree`` section has no DB scope and always resolves to *default*.
     """

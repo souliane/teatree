@@ -110,7 +110,7 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
 
     def test_a_capped_run_is_recorded_failed_naming_the_ceiling(self) -> None:
         task = self._task()
-        with patch("teatree.agents.runner.alert_owner_max_turns_truncation"):
+        with patch("teatree.agents.runner_outcomes.alert_owner_max_turns_truncation"):
             attempt = _outcome_failure(task, _harness_outcome(_result(TURN_CEILING_SUBTYPE)), phase="coding")
         assert attempt is not None
         assert attempt.exit_code == 1
@@ -138,7 +138,7 @@ class TestReachingTheCeilingIsVisible(_Dispatch):
         # reason keeps it deterministic, so the repair sweep escalates it durably instead
         # of silently re-spending the run.
         task = self._task()
-        with patch("teatree.agents.runner.alert_owner_max_turns_truncation"):
+        with patch("teatree.agents.runner_outcomes.alert_owner_max_turns_truncation"):
             attempt = _outcome_failure(task, _harness_outcome(_result(TURN_CEILING_SUBTYPE)), phase="coding")
         assert attempt is not None
         assert recovery_strategy(classify_failure(attempt.error)) is not RecoveryStrategy.RETRY

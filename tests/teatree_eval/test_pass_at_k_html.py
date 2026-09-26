@@ -6,9 +6,10 @@ calls) — the evidence a maintainer reads to diagnose a red lane. These tests p
 that the transcript actually appears in the output and that markup is escaped.
 """
 
+import dataclasses
 from pathlib import Path
 
-from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
+from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, GateEvent, Matcher
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.pass_at_k_html import render_pass_at_k_html
 from teatree.eval.report import MatcherResult, ScenarioResult
@@ -25,7 +26,13 @@ def _spec(name: str) -> EvalSpec:
     )
 
 
-def _run(spec: EvalSpec, *, text: tuple[str, ...] = (), tool_calls: tuple[EvalToolCall, ...] = ()) -> EvalRun:
+def _run(
+    spec: EvalSpec,
+    *,
+    text: tuple[str, ...] = (),
+    tool_calls: tuple[EvalToolCall, ...] = (),
+    gate_events: tuple[GateEvent, ...] = (),
+) -> EvalRun:
     return EvalRun(
         spec_name=spec.name,
         tool_calls=tool_calls,
@@ -34,6 +41,7 @@ def _run(spec: EvalSpec, *, text: tuple[str, ...] = (), tool_calls: tuple[EvalTo
         is_error=False,
         raw_stdout="",
         raw_stderr="",
+        gate_events=gate_events,
     )
 
 
@@ -110,6 +118,30 @@ class TestRendersPerTrialTranscript:
         result = PassAtKResult(spec_name="s", trials=2, passes=1, require="any", skipped=False, trial_results=trials)
         html = render_pass_at_k_html([result])
         assert "1/2 trials passed" in html
+
+    def test_production_hook_decision_renders_pretool_visible_text(self) -> None:
+        spec = _spec("plan_before_any_change_under_load")
+        event = GateEvent(
+            hook_event_name="PreToolUse",
+            outcome="allow",
+            output_snippet="decision: allow <safe>",
+            sequence=1,
+            tool_name="Bash",
+            tool_use_id="call-1",
+            gate_id="visible_plan_gate",
+            assistant_text="Plan <one>: implement, test, verify.",
+        )
+        trial = _scenario_result(spec, passed=True)
+        trial = dataclasses.replace(trial, run=dataclasses.replace(trial.run, gate_events=(event,)))
+        html = render_pass_at_k_html([_pass_at_k(spec, passes=1, trials=1, trial_results=(trial,))])
+
+        assert "production hook decisions" in html
+        assert "sequence 1" in html
+        assert "PreToolUse" in html
+        assert "visible_plan_gate" in html
+        assert "Bash" in html
+        assert "Plan &lt;one&gt;: implement, test, verify." in html
+        assert "decision: allow &lt;safe&gt;" in html
 
 
 class TestSelfContainedAndEscaped:

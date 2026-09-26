@@ -44,34 +44,37 @@ account.
 """
 
 import datetime as dt
+import json
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Protocol
 
+from teatree.account_headroom import WEIGHT_5H, WEIGHT_7D, AccountHeadroom, headroom_at, rank
 from teatree.credential_config import TokenKind
+from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
+from teatree.llm.rate_limits import used_fraction
 from teatree.token_report import TokenAccountRow, TokenSource, TokenStatus
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import redact_secrets, run_allowed_to_fail
 from teatree.utils.secrets import read_pass
 
 #: The repo Actions secret the eval workflows authenticate with.
 CI_OAUTH_SECRET = "CLAUDE_CODE_OAUTH_TOKEN"  # noqa: S105 — a secret's NAME, not its value
+CI_OAUTH_POOL_SECRET = "EVAL_OAUTH_TOKENS"  # noqa: S105 — a secret's NAME, not its value
+CI_OAUTH_POOL_VARIABLE = "EVAL_OAUTH_POOL_ACCOUNTS"
 
 #: The plain (non-secret) repo variable naming which account :data:`CI_OAUTH_SECRET`
 #: currently holds. A secret is write-only, so this readable companion is both the
 #: idempotency key and the cost-basis attribution a benchmark run records.
 CI_ACCOUNT_VARIABLE = "CLAUDE_CODE_OAUTH_ACCOUNT"
 
-#: The TIE-BREAK blend, as one visible knob — applied only between accounts whose binding
-#: window is equally free. The weekly window weighs more because a multi-hour benchmark
-#: outlasts several 5h windows but never the weekly one.
-WEIGHT_5H = 0.4
-WEIGHT_7D = 0.6
-
 #: Why each non-healthy status disqualifies a candidate, in operator language.
 _REJECTION_REASON: dict[TokenStatus, str] = {
     TokenStatus.MISSING: "no token stored at this pass entry",
     TokenStatus.UNREACHABLE: "health probe did not reach Anthropic",
     TokenStatus.OUT_OF_CREDITS: "prepaid credits are depleted",
+    TokenStatus.UNCACHED: "no probed health on record",
 }
 
 _NO_CANDIDATES = "no OAuth accounts are configured — set anthropic_oauth_pass_paths before switching the CI secret"
@@ -102,28 +105,6 @@ class NoEligibleAccountError(CiAccountSwitchError):
     def __init__(self, message: str, *, rejected: tuple["Rejection", ...] = ()) -> None:
         super().__init__(message)
         self.rejected = rejected
-
-
-@dataclass(frozen=True)
-class AccountHeadroom:
-    """One eligible account's headroom as of the run's start, and its resulting score."""
-
-    account: str
-    utilization_5h: float
-    utilization_7d: float
-    headroom_5h: float
-    headroom_7d: float
-    resets_before_run: bool
-
-    @property
-    def binding_headroom(self) -> float:
-        """The scarcer window's free fraction — what actually throttles the run."""
-        return min(self.headroom_5h, self.headroom_7d)
-
-    @property
-    def weighted_headroom(self) -> float:
-        """Total headroom, blended — the tie-break between equally-constrained accounts."""
-        return WEIGHT_5H * self.headroom_5h + WEIGHT_7D * self.headroom_7d
 
 
 @dataclass(frozen=True)
@@ -168,22 +149,13 @@ class SwitchOutcome:
     rejected: tuple[Rejection, ...]
 
 
-def _headroom(utilization: float, reset: dt.datetime | None, run_start: dt.datetime) -> tuple[float, bool]:
-    """The window's free fraction at *run_start*, and whether it resets by then.
-
-    A window resetting at or before the run's start is fully free when the run begins,
-    however spent it reads now — that projection is the whole point of taking the reset
-    timestamps into account.
-    """
-    if reset is not None and reset <= run_start:
-        return 1.0, True
-    return max(0.0, 1.0 - utilization), False
-
-
 def _rejection_for(row: TokenAccountRow) -> Rejection | None:
     """Why *row* cannot serve the run, or ``None`` when it is eligible."""
     if row.status is TokenStatus.EXHAUSTED:
-        reason = f"exhausted — 5h {row.utilization_5h * 100:.0f}% used, weekly {row.utilization_7d * 100:.0f}% used"
+        reason = (
+            f"exhausted — 5h {used_fraction(row.utilization_5h) * 100:.0f}% used, "
+            f"weekly {used_fraction(row.utilization_7d) * 100:.0f}% used"
+        )
         return Rejection(row.account, reason)
     fixed_reason = _REJECTION_REASON.get(row.status)
     if fixed_reason is not None:
@@ -192,12 +164,15 @@ def _rejection_for(row: TokenAccountRow) -> Rejection | None:
 
 
 def _headroom_for(row: TokenAccountRow, run_start: dt.datetime) -> AccountHeadroom:
-    headroom_5h, resets_before_run = _headroom(row.utilization_5h, row.next_window_reset, run_start)
-    headroom_7d, _ = _headroom(row.utilization_7d, row.weekly_reset, run_start)
+    headroom_5h, resets_before_run = headroom_at(row.utilization_5h, row.next_window_reset, run_start)
+    headroom_7d, _ = headroom_at(row.utilization_7d, row.weekly_reset, run_start)
     return AccountHeadroom(
         account=row.account,
-        utilization_5h=row.utilization_5h,
-        utilization_7d=row.utilization_7d,
+        # A uniform order reduces the shared key to this module's historical
+        # (-binding, -weighted, account).
+        order=0,
+        utilization_5h=used_fraction(row.utilization_5h),
+        utilization_7d=used_fraction(row.utilization_7d),
         headroom_5h=headroom_5h,
         headroom_7d=headroom_7d,
         resets_before_run=resets_before_run,
@@ -219,13 +194,18 @@ def select_account(rows: Sequence[TokenAccountRow], *, run_start: dt.datetime) -
     rejected = tuple(rejection for rejection in map(_rejection_for, candidates) if rejection is not None)
     rejected_accounts = {rejection.account for rejection in rejected}
     eligible = [_headroom_for(row, run_start) for row in candidates if row.account not in rejected_accounts]
-    ranked = sorted(eligible, key=lambda entry: (-entry.binding_headroom, -entry.weighted_headroom, entry.account))
-    return Selection(ranked=tuple(ranked), rejected=rejected)
+    return Selection(ranked=rank(eligible), rejected=rejected)
 
 
-def _default_gh(args: list[str], *, stdin_text: str | None = None) -> tuple[int, str]:
+def _default_gh(repo: str, args: list[str], *, stdin_text: str | None = None) -> tuple[int, str]:
     """Run ``gh <args>``; a non-zero exit is a verdict to classify, not an error to raise on."""
-    result = run_allowed_to_fail(["gh", *args], expected_codes=None, stdin_text=stdin_text)
+    resolution = resolve_slug_token(repo, forge="github", credential="github_token")
+    if resolution.state is not ForgeTokenState.TOKEN:
+        return 4, f"{resolution.setting} is {resolution.state.value}: {resolution.detail}"
+    env = dict(os.environ)
+    env.pop("GITHUB_TOKEN", None)
+    env["GH_TOKEN"] = resolution.token
+    result = run_allowed_to_fail(["gh", *args], expected_codes=None, stdin_text=stdin_text, env=env, timeout=60)
     return result.returncode, f"{result.stdout}\n{result.stderr}"
 
 
@@ -239,7 +219,7 @@ class CiAccountSwitcher:
 
     def __init__(self, *, repo: str, gh: GhClient | None = None, secret_reader: SecretReader | None = None) -> None:
         self._repo = repo
-        self._gh: GhClient = gh or _default_gh
+        self._gh: GhClient = gh or partial(_default_gh, repo)
         self._secret_reader = secret_reader or read_pass
 
     def active_account(self) -> str:
@@ -250,6 +230,64 @@ class CiAccountSwitcher:
         """
         code, out = self._gh(["api", f"repos/{self._repo}/actions/variables/{CI_ACCOUNT_VARIABLE}", "--jq", ".value"])
         return out.strip() if code == 0 else ""
+
+    def active_pool_accounts(self) -> tuple[str, ...] | None:
+        """Read the non-secret identity receipt for the write-only eval pool."""
+        code, out = self._gh(
+            ["api", f"repos/{self._repo}/actions/variables/{CI_OAUTH_POOL_VARIABLE}", "--jq", ".value"]
+        )
+        if code != 0:
+            return None
+        try:
+            accounts = json.loads(out)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(accounts, list) or any(not isinstance(account, str) for account in accounts):
+            return None
+        return tuple(accounts)
+
+    def reconcile_pool(self, rows: Sequence[TokenAccountRow]) -> tuple[str, ...]:
+        """Replace CI's eval pool with every configured pass-backed OAuth account.
+
+        The GitHub secret is write-only, so refresh it every reconciliation cycle.
+        All pass entries are resolved before the first write; one missing token cannot
+        silently shrink the pool. A readable identity variable is written only after
+        the secret succeeds, letting doctor detect configuration drift.
+        """
+        accounts = tuple(sorted({row.account for row in rows if _is_candidate(row)}))
+        if not accounts:
+            raise CiAccountSwitchError(_NO_CANDIDATES)
+        tokens: list[str] = []
+        for account in accounts:
+            token = self._secret_reader(account)
+            if not token:
+                message = f"no token stored at {account!r} — the CI pool was left untouched"
+                raise CiAccountSwitchError(message)
+            if "\n" in token or "\r" in token:
+                message = f"token at {account!r} contains a newline — the CI pool was left untouched"
+                raise CiAccountSwitchError(message)
+            tokens.append(token)
+        body = "\n".join(tokens)
+        code, out = self._gh(
+            ["secret", "set", CI_OAUTH_POOL_SECRET, "--repo", self._repo, "--body-file", "-"],
+            stdin_text=body,
+        )
+        if code != 0:
+            detail = redact_secrets(out.strip())
+            for token in tokens:
+                detail = detail.replace(token, "[REDACTED]")
+            message = f"`gh secret set {CI_OAUTH_POOL_SECRET}` failed on {self._repo} (exit {code}): {detail[:500]}"
+            raise CiAccountSwitchError(message)
+        code, out = self._gh(
+            ["variable", "set", CI_OAUTH_POOL_VARIABLE, "--repo", self._repo, "--body", json.dumps(accounts)]
+        )
+        if code != 0:
+            message = (
+                f"CI OAuth pool updated but `gh variable set {CI_OAUTH_POOL_VARIABLE}` failed on "
+                f"{self._repo} (exit {code}): {redact_secrets(out.strip())[:500]}"
+            )
+            raise CiAccountSwitchError(message)
+        return accounts
 
     def switch(
         self, rows: Sequence[TokenAccountRow], *, run_start: dt.datetime, dry_run: bool = False
@@ -295,13 +333,14 @@ class CiAccountSwitcher:
         if not token:
             empty = f"no token stored at {account!r} — the CI secret was left untouched"
             raise CiAccountSwitchError(empty)
-        code, _out = self._gh(
+        code, out = self._gh(
             ["secret", "set", CI_OAUTH_SECRET, "--repo", self._repo, "--body-file", "-"], stdin_text=token
         )
         if code != 0:
-            # The command's output is deliberately dropped: it is the one place a token
-            # value could be echoed back into an exception message.
-            failed = f"`gh secret set {CI_OAUTH_SECRET}` failed on {self._repo} (exit {code})"
+            # Keep the actionable gh stderr, but never echo the value supplied on stdin.
+            # The shared sanitizer additionally strips NAME=value/header/query secrets.
+            detail = redact_secrets(out.replace(token, "[REDACTED]").strip())[:500]
+            failed = f"`gh secret set {CI_OAUTH_SECRET}` failed on {self._repo} (exit {code}): {detail}"
             raise CiAccountSwitchError(failed)
 
     def _record_account(self, account: str) -> None:
@@ -317,6 +356,8 @@ class CiAccountSwitcher:
 
 __all__ = [
     "CI_ACCOUNT_VARIABLE",
+    "CI_OAUTH_POOL_SECRET",
+    "CI_OAUTH_POOL_VARIABLE",
     "CI_OAUTH_SECRET",
     "WEIGHT_5H",
     "WEIGHT_7D",

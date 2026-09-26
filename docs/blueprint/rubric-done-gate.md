@@ -32,35 +32,56 @@ The record follows the durable, compaction-surviving pattern of `ReviewVerdict` 
 
 ### The fail-closed predicate
 
-`Rubric.is_fully_passed_at(head_sha)` is `True` **iff** there is ≥1 criterion AND every criterion is PASS, graded by a non-maker identity, with `reviewed_sha == head_sha` (both lower-cased). Any other state is `False`: an empty rubric, any PENDING or FAIL criterion, a maker/empty grader, or a stale SHA. `Rubric.block_reason(head_sha)` names the first failing condition for the remediation message.
+`Rubric.unverified_reason(head_sha=None, *, waived=False)` is the ONE ladder both gates walk, and it names the first failing rung: no criteria -> PENDING -> FAIL -> uncited PASS -> non-independent grader -> stale-vs-head. The stale rung applies only when a `head_sha` is given, which is what separates the merge gate (bound to the live head) from the delivered gate (whose head has long since moved). Every rung NAMES the criteria that tripped it (`#<ordinal> '<text>'`), so a refusal points at what to fix rather than at a count. `waived=True` -- the human-authorized plan-bypass -- keeps exactly one rung, FAIL: a bypass says there was nothing to declare, never that the verifier's FAIL does not count.
+
+`Rubric.is_fully_passed_at(head_sha)` is the one-line wrapper (`not unverified_reason(head_sha)`). Per-criterion truth lives once in `RubricCriterion.unverified_reason()`, which walks the same rungs, so `is_verified` / `is_passing_at` and the rubric-level refusal cannot disagree.
 
 ## The gate (`core/gates/rubric_gate.py`)
 
 A pure function over the durable rubric row plus the live head SHA, mirroring `core/gates/anti_vacuity_gate.py`:
 
-- `rubric_gate_required()` → `get_effective_settings().require_rubric_verification` (the new knob).
-- `check_rubric_satisfied(ticket, head_sha, *, transition)` — NO-OP when the knob is off; otherwise passes only when the ticket's active rubric `is_fully_passed_at(head_sha)`, else raises `RubricNotSatisfiedError` with a remediation naming the `rubric-set` / `rubric-grade` CLIs.
+- `check_rubric_satisfied(ticket, head_sha, *, transition)` — the MERGE gate: passes only when the ticket's active rubric `is_fully_passed_at(head_sha)`, else raises `RubricNotSatisfiedError` with a remediation naming the `rubric-grade` CLI, and `plan-bypass` for a ticket with genuinely nothing to grade.
+- `check_rubric_verified(ticket)` — the `mark_delivered` gate, registered as `rubric_verified`. Same ladder minus the head bind (a delivered ticket's head has moved on), so a missing rubric blocks exactly as the deleted spec-coverage manifest did.
+- The audited waiver is the **human-authorized `ticket plan-bypass`** — the all-negatives manifest only `PlanArtifact.record_bypass` can write (`record` refuses that shape and names the escape). It waives a missing or ungraded rubric, including the phase-seeded process criteria the ticket never declared, but NEVER a recorded FAIL. A `none_reason` on an ordinary plan's `acceptance_criteria` is a reasoned negative like any other: it writes no rows and waives nothing.
+- A PR **no ticket owns** is outside the gate's subject. `pr create` records every factory PR on the `PullRequest` ledger with its owning ticket, and a keystone CLEAR carries one, so an unresolvable ticket means a PR the factory did not author — no plan to grade and no ticket a bypass could be recorded on. `core/merge/ticket_gates.py` therefore SKIPS the rubric gate there; the setting-scoped anti-vacuity refusal still fires, because that one has an operator remedy.
 - `_assert_rubric_satisfied(clear, head_sha)` (in `core/merge/authorization.py`) — NO-OP when the CLEAR has no ticket; else re-wraps `RubricNotSatisfiedError` as `MergePreconditionError` so the merge command's single re-escalation path surfaces it (the loop never self-issues a replacement CLEAR).
 
 The gate **fails loud, never skip-as-pass**: a rubric that cannot be confirmed fully-passed blocks the merge. This is the standing "gate must fail loud" rule, and the anti-vacuous regression test pins it — with the gate call removed, the blocks-on-FAIL test goes RED.
 
 ## Configuration
 
-`require_rubric_verification` (default `False` = NO-OP, purely additive — matches every other opt-in gate). Registered in `OVERLAY_OVERRIDABLE_SETTINGS`, so it is DB-home and per-overlay overridable — set it in the `ConfigSetting` store:
+None. The gate is unconditional on both transitions — there is no setting that disables it, because a flag is what let the behaviour ship inert. The escapes are the audited, recorded ones:
 
-```bash
-# global default stays off; dogfood the gate on one overlay only:
-t3 <overlay> config_setting set require_rubric_verification true --overlay t3-teatree
-```
+- `ticket plan-bypass <id> --human-authorize <who> --reason <why>` — **the only rubric waiver**, and it never overrides a recorded FAIL.
+- `ticket skip-planning <id> --reason <why>` — escapes the PLAN gate only. The rubric gate still grades whatever criteria the ticket carries.
+
+## The producer
+
+The gate is unconditional, so a rubric nobody grades refuses the merge forever. The **cold reviewer is the producer**, and it is the only automatic one: it already IS the independent verifier the gate requires (grader != maker, one per dispatched head), it is the one actor that read the tree, and it runs on every PR the factory opens — so nothing extra has to be dispatched.
+
+It returns its grades in the SAME envelope as its verdict. `agents/result_schema.ReviewVerdictEnvelope` carries `rubric_grades: list[RubricGrade]`, and `agents/review_envelope_recorder.record_returned_review_envelope` — the orchestrator, a different actor than the reviewer — stamps them through `Rubric.apply_grades`. `rubric_grades` is deliberately NOT in the schema's `required` list: whether the reviewed ticket HAS a rubric is a DB question only the recorder can answer.
+
+Three properties carry the design:
+
+- **The graded ticket is resolved from the PR identity.** `core/merge/ticket_resolution.gated_ticket_for_review_task` calls the IDENTICAL `resolve_gated_ticket` this gate reads at merge time. A reviewing task's own `task.ticket` is a REVIEWER-ROLE row keyed by the PR url (`core/models/auto_review_dispatch.py`, `loop/persistence_self_pr_review.py`), so the rubric the merge will grade is unreachable from it. Writer's key == reader's key, or the grade lands where no gate looks.
+- **Coverage is checked BEFORE any write.** `ReviewVerdict.record` retires the per-head dispatch claim and releases the `MRReviewLock` in the same transaction that records the verdict. A verdict written over a half-graded rubric would therefore leave nothing to re-arm review while this gate went on refusing the merge — the head unmergeable forever, with no reviewer left to fix it. So a returned grade set that leaves any criterion PENDING records NOTHING.
+- **The verdict and the grades share ONE atomic.** A grade the guarded factory refuses (an uncited PASS, a maker grader) rolls the verdict, the claim retirement and the lock release back with it, so the head stays re-reviewable.
+
+The grader identity is the verdict's own (`reviewer_identity`, defaulting to `headless-reviewer`) and the SHA is the DISPATCH head, never the reviewer's self-asserted one — a grade can never vouch for a tree the verdict does not.
+
+A refusal is stamped with `agents/envelope_refusal.MALFORMED_RUBRIC_GRADES_PREFIX`, a member of `_RECORDER_REFUSAL_MARKERS` beside `MALFORMED_FIX_RECORD_PREFIX`, so the taxonomy classes it an ENVELOPE refusal earning `transient_requeue`'s one-shot corrective retry rather than paging a human over a defect.
+
+The reviewer is TOLD the checklist, not just told to grade one: `agents/dispatch_preflight.rubric_brief_lines` renders a `TICKET RUBRIC (ticket <pk>)` block listing each `#<ordinal> <text>` into the reviewing brief, resolved through the same `gated_ticket_for_review_task`. No block means no rubric and no grades owed.
+
+A PR **no ticket owns** and a **rubric-less ticket** owe no grades at all — byte-for-byte the subject `core/merge/ticket_gates.py` already skips.
 
 ## CLI seams
 
-- `t3 <overlay> ticket rubric-set <ticket_id> --criteria-json '["AC1", "AC2"]'` (or `--criteria-file <path>`) — sets the criteria from EXPLICIT input. Auto-derivation from `/plan` is the [#2240](https://github.com/souliane/teatree/issues/2240) follow-up and is out of scope here. Accepts a JSON array of strings or of `{"text": ...}` objects; an empty / malformed / non-array payload is refused.
-- `t3 <overlay> ticket rubric-grade <ticket_id> --grader-identity <verifier> --reviewed-sha <full-40-char-sha> --grades-json '[{"ordinal": 0, "status": "pass"}, ...]'` — records the verifier's per-criterion PASS/FAIL through the guarded factory. Criteria not named in the grades stay PENDING (fail-closed).
+- The PRIMARY producer is the plan: `PlanArtifact.record` turns the manifest's `acceptance_criteria` into rubric rows (`Rubric.add_criteria`, additive and idempotent on text, so a `plan-reaffirm` never resets a grade).
+- `t3 <overlay> ticket rubric-set <ticket_id> --criteria-json '["AC1", "AC2"]'` (or `--criteria-file <path>`) — RESTATES the criteria from explicit input, resetting every grade. Accepts a JSON array of strings or of `{"text": ...}` objects; an empty / malformed / non-array payload is refused.
+- `t3 <overlay> ticket rubric-grade <ticket_id> --grader-identity <verifier> --reviewed-sha <full-40-char-sha> --grades-json '[{"ordinal": 0, "status": "pass", "rationale": "<what proves it>"}, ...]'` — the OPERATOR's manual seam beside the reviewer producer above, for a rubric no review will grade. It is not the reviewer's path: a grade written here lands outside the transaction that records the verdict, so a refused grade could not roll the verdict back. It records the verifier's per-criterion PASS/FAIL through the guarded factory. A PASS without a rationale is refused; the rationale is free-form and may cite any test kind. Criteria not named in the grades stay PENDING (fail-closed).
 
 ## Out of scope (follow-ups)
 
-- Auto-deriving the rubric from `/plan` → [#2240](https://github.com/souliane/teatree/issues/2240) (this MR accepts explicit criteria only).
-- Automating WHO dispatches the verifier sub-agent — this MR records a verdict; orchestration can reuse the existing review-dispatch machinery later.
 - Sharing a grader with the eval LLM-judge (`eval/judge.py`'s `ClaudeJudge.grade`, an in-process `claude-agent-sdk` call). The two are kept SEPARATE on purpose: extracting a shared grader would couple the metered-LLM path to this durable-record path.
 - Re-pending rubric grades on `reopen()` — out of scope for this first MR; the SHA-bind already invalidates stale grades when a new workstream moves the head.

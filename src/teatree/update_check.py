@@ -13,9 +13,11 @@ delegates here with ``check_updates`` already resolved.
 
 import importlib.metadata
 import json
+import os
 import time
 from pathlib import Path
 
+from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
 from teatree.paths import DATA_DIR
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
@@ -45,17 +47,7 @@ def run_update_check(*, check_updates: bool, force: bool = False) -> str | None:
             pass
 
     current = importlib.metadata.version("teatree")
-
-    try:
-        result = run_allowed_to_fail(
-            ["gh", "api", "repos/souliane/teatree/releases/latest", "--jq", ".tag_name"],
-            expected_codes=None,
-            timeout=10,
-        )
-        tag = result.stdout.strip()
-    except (TimeoutExpired, FileNotFoundError):
-        return None
-
+    tag = _latest_release_tag()
     if not tag:
         return None
 
@@ -66,6 +58,25 @@ def run_update_check(*, check_updates: bool, force: bool = False) -> str | None:
     message = f"teatree {tag} available (you have {current}). Run: uv pip install --upgrade teatree"
     _write_update_cache(cache_path, message)
     return message
+
+
+def _latest_release_tag() -> str:
+    resolution = resolve_slug_token("souliane/teatree", forge="github", credential="github_token")
+    if resolution.state is not ForgeTokenState.TOKEN:
+        return ""
+    env = dict(os.environ)
+    env.pop("GITHUB_TOKEN", None)
+    env["GH_TOKEN"] = resolution.token
+    try:
+        result = run_allowed_to_fail(
+            ["gh", "api", "repos/souliane/teatree/releases/latest", "--jq", ".tag_name"],
+            expected_codes=None,
+            timeout=10,
+            env=env,
+        )
+    except (TimeoutExpired, FileNotFoundError):
+        return ""
+    return result.stdout.strip()
 
 
 def _release_tuple(version: str) -> tuple[int, ...] | None:

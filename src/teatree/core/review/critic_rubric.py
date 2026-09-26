@@ -11,7 +11,7 @@ predicate over delivered artifacts:
 DETERMINISTIC (the blocking teeth)
     ``spec_not_plan``, ``done_not_done``, ``completeness`` — a pure predicate over
     REAL artifacts (PlanArtifact adequacy, keystone MergeAudit + worktree state,
-    the spec_coverage manifest). Each REUSES its sibling gate rather than
+    the ticket's graded Rubric). Each REUSES its sibling gate rather than
     re-implementing it, and fires on ABSENCE so an empty delivery cannot wave it
     through. These are the items that BLOCK when enforcement is live — no LLM in
     the blocking path.
@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.gates.merge_evidence_gate import has_merge_evidence
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
-from teatree.core.gates.spec_coverage_gate import acceptance_criteria, override_reason, uncovered_acs
+from teatree.core.gates.rubric_gate import RubricNotVerifiedError, check_rubric_verified
 from teatree.core.models.plan_adequacy import is_adequate
 from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths
 
@@ -130,8 +130,8 @@ def spec_not_plan(ticket: "Ticket") -> "str | None":
         return "delivered with no PlanArtifact — no plan bound the work at all"
     if not is_adequate(artifact.adequacy):
         return (
-            "the governing plan has no adequate four-section manifest (design, integration_seams, "
-            "edge_cases, test_strategy) — a thin/underspecified spec passed as a plan"
+            "the governing plan has no adequate five-section manifest (design, integration_seams, "
+            "edge_cases, test_strategy, acceptance_criteria) — a thin/underspecified spec passed as a plan"
         )
     return None
 
@@ -152,20 +152,14 @@ def done_not_done(ticket: "Ticket") -> "str | None":
 def completeness(ticket: "Ticket") -> "str | None":
     """Is every acceptance criterion delivered, or was the scope silently reduced to a subset?
 
-    Matches the real ``check_spec_coverage`` gate: a recorded ``spec_coverage_override``
-    reason passes; a MISSING manifest is itself a FAIL (declaring done on zero proven
-    ACs is the partial-subset claim), not a pass-clean; an uncovered AC is a FAIL.
+    REUSES the real delivered-time gate rather than restating it, so the critic's finding
+    and the block can never disagree: a missing rubric, an ungraded/failed/uncited
+    criterion, or a maker grader is a FAIL; the plan's reasoned negative passes.
     """
-    if override_reason(ticket):
-        return None
-    if not acceptance_criteria(ticket):
-        return (
-            "delivered with no spec-coverage manifest — zero acceptance criteria proven is the "
-            "partial-subset claim done cannot be declared on (record extra['spec_coverage'] or an override)"
-        )
-    uncovered = uncovered_acs(ticket)
-    if uncovered:
-        return f"{len(uncovered)} acceptance criterion(s) have no backing test — scope reduced: {', '.join(uncovered)}"
+    try:
+        check_rubric_verified(ticket)
+    except RubricNotVerifiedError as exc:
+        return str(exc)
     return None
 
 

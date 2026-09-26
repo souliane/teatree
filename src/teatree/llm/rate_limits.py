@@ -26,14 +26,20 @@ real network; the default transport uses ``httpx``.
 
 The header names follow Anthropic's response-header conventions and are centralised as
 module constants so a naming drift is a one-line fix. ``utilization`` is a 0.0-1.0
-fraction; ``*-reset`` is Unix epoch seconds parsed to a tz-aware UTC ``datetime``;
-``retry-after`` is whole seconds.
+fraction — ``None`` when the header is absent, because an unreported window is UNKNOWN
+and rendering it as ``0 %`` reads as measured headroom; ``*-reset`` is Unix epoch seconds
+parsed to a tz-aware UTC ``datetime``; ``retry-after`` is whole seconds.
+
+Beyond the two windows the same response carries the account-wide
+``anthropic-ratelimit-unified-status`` plus ``-representative-claim``, which names WHICH
+window that verdict speaks for, and the ``-overage-*`` set describing the extra-usage
+balance (:class:`OverageUsage`).
 """
 
 import datetime as dt
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 import httpx
@@ -59,12 +65,24 @@ _CREDIT_BALANCE_MARKER = "credit balance"
 # incoming header key so a case-variant or an httpx.Headers both resolve).
 _ORG_ID = "anthropic-organization-id"
 _RETRY_AFTER = "retry-after"
+_UNIFIED_STATUS = "anthropic-ratelimit-unified-status"
+_REPRESENTATIVE_CLAIM = "anthropic-ratelimit-unified-representative-claim"
 _5H_STATUS = "anthropic-ratelimit-unified-5h-status"
 _5H_UTILIZATION = "anthropic-ratelimit-unified-5h-utilization"
 _5H_RESET = "anthropic-ratelimit-unified-5h-reset"
 _7D_STATUS = "anthropic-ratelimit-unified-7d-status"
 _7D_UTILIZATION = "anthropic-ratelimit-unified-7d-utilization"
 _7D_RESET = "anthropic-ratelimit-unified-7d-reset"
+_5H_SURPASSED = "anthropic-ratelimit-unified-5h-surpassed-threshold"
+_7D_SURPASSED = "anthropic-ratelimit-unified-7d-surpassed-threshold"
+_FALLBACK = "anthropic-ratelimit-unified-fallback"
+
+# Extra-usage (overage) headers — the same probe response carries them.
+_OVERAGE_STATUS = "anthropic-ratelimit-unified-overage-status"
+_OVERAGE_UTILIZATION = "anthropic-ratelimit-unified-overage-utilization"
+_OVERAGE_RESET = "anthropic-ratelimit-unified-overage-reset"
+_OVERAGE_IN_USE = "anthropic-ratelimit-unified-overage-in-use"
+_OVERAGE_DISABLED_REASON = "anthropic-ratelimit-unified-overage-disabled-reason"
 
 # Metered API-key per-minute headers (a funded key emits these on the 200 probe).
 _REQUESTS_REMAINING = "anthropic-ratelimit-requests-remaining"
@@ -103,24 +121,53 @@ type Transport = Callable[[Mapping[str, str], Mapping[str, object]], ProbeRespon
 
 
 @dataclass(frozen=True)
+class OverageUsage:
+    """The account's extra-usage (overage) balance, parsed from the ``-overage-*`` headers.
+
+    ``disabled_reason`` names why extra usage cannot absorb work (``org_level_disabled`` /
+    ``out_of_credits`` / ``org_spend_cap_reached``) and is ``""`` while it can.
+    """
+
+    status: str = ""
+    utilization: float | None = None
+    reset: dt.datetime | None = None
+    in_use: bool = False
+    disabled_reason: str = ""
+
+    @property
+    def is_available(self) -> bool:
+        return not self.disabled_reason
+
+
+@dataclass(frozen=True)
 class RateLimitSnapshot:
     """One account's unified rate-limit health, parsed from the response headers.
 
     Deliberately token-free: the credential value that signed the probe is never
     carried here. ``*_status`` is the raw status word (e.g. ``allowed`` /
-    ``rejected``); ``*_utilization`` is a 0.0-1.0 fraction; ``*_reset`` is a
-    tz-aware UTC datetime (``None`` when the header is absent/unparsable);
-    ``retry_after`` is whole seconds (``None`` when absent).
+    ``rejected``); ``*_utilization`` is a 0.0-1.0 fraction, ``None`` when the header is
+    absent/unparsable (unknown, NOT idle); ``*_reset`` is a tz-aware UTC datetime
+    (``None`` when the header is absent/unparsable); ``retry_after`` is whole seconds
+    (``None`` when absent). :attr:`representative_claim` names which window
+    :attr:`unified_status` speaks for — ``five_hour`` or ``seven_day``.
     """
 
     organization_id: str
     unified_5h_status: str
-    unified_5h_utilization: float
+    unified_5h_utilization: float | None
     unified_5h_reset: dt.datetime | None
     unified_7d_status: str
-    unified_7d_utilization: float
+    unified_7d_utilization: float | None
     unified_7d_reset: dt.datetime | None
     retry_after: int | None
+    unified_status: str = ""
+    representative_claim: str = ""
+    #: The warning thresholds the API itself applies to each window, when it reports them —
+    #: authoritative where teatree's shipped bands are only a guess at the same line.
+    warn_above_5h: float | None = None
+    warn_above_7d: float | None = None
+    fallback: str = ""
+    overage: OverageUsage = field(default_factory=OverageUsage)
 
     @classmethod
     def from_headers(cls, headers: Mapping[str, str]) -> "RateLimitSnapshot":
@@ -129,12 +176,18 @@ class RateLimitSnapshot:
         return cls(
             organization_id=lower.get(_ORG_ID, ""),
             unified_5h_status=lower.get(_5H_STATUS, ""),
-            unified_5h_utilization=_parse_fraction(lower.get(_5H_UTILIZATION)),
+            unified_5h_utilization=_parse_optional_fraction(lower.get(_5H_UTILIZATION)),
             unified_5h_reset=_parse_reset(lower.get(_5H_RESET)),
             unified_7d_status=lower.get(_7D_STATUS, ""),
-            unified_7d_utilization=_parse_fraction(lower.get(_7D_UTILIZATION)),
+            unified_7d_utilization=_parse_optional_fraction(lower.get(_7D_UTILIZATION)),
             unified_7d_reset=_parse_reset(lower.get(_7D_RESET)),
             retry_after=_parse_int(lower.get(_RETRY_AFTER)),
+            unified_status=lower.get(_UNIFIED_STATUS, ""),
+            representative_claim=lower.get(_REPRESENTATIVE_CLAIM, ""),
+            warn_above_5h=_parse_optional_fraction(lower.get(_5H_SURPASSED)),
+            warn_above_7d=_parse_optional_fraction(lower.get(_7D_SURPASSED)),
+            fallback=lower.get(_FALLBACK, ""),
+            overage=_overage_from(lower),
         )
 
 
@@ -300,13 +353,32 @@ def _lower_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {key.lower(): value for key, value in headers.items()}
 
 
-def _parse_fraction(raw: str | None) -> float:
+def used_fraction(utilization: float | None) -> float:
+    """A window's used fraction for arithmetic — an unreported window reads as fully free."""
+    return 0.0 if utilization is None else utilization
+
+
+def _overage_from(lower: Mapping[str, str]) -> OverageUsage:
+    return OverageUsage(
+        status=lower.get(_OVERAGE_STATUS, ""),
+        utilization=_parse_optional_fraction(lower.get(_OVERAGE_UTILIZATION)),
+        reset=_parse_reset(lower.get(_OVERAGE_RESET)),
+        in_use=_parse_bool(lower.get(_OVERAGE_IN_USE)),
+        disabled_reason=lower.get(_OVERAGE_DISABLED_REASON, ""),
+    )
+
+
+def _parse_optional_fraction(raw: str | None) -> float | None:
     if not raw:
-        return 0.0
+        return None
     try:
         return float(raw)
     except ValueError:
-        return 0.0
+        return None
+
+
+def _parse_bool(raw: str | None) -> bool:
+    return (raw or "").strip().lower() == "true"
 
 
 def _parse_int(raw: str | None) -> int | None:

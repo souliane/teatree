@@ -14,8 +14,8 @@ The contract:
     helper here and the breaker the router invokes are the same object;
 * the router re-exports the breaker entry points under their original underscore
     names, so ``_apply_deny_circuit_breaker`` / ``_reset_deny_streak`` /
-    ``_deny_circuit_breaker_threshold`` / ``_deny_circuit_breaker_enabled`` /
-    ``_deny_is_ux_gate`` resolve via the router exactly as before the move;
+    ``_deny_circuit_breaker_enabled`` / ``_deny_is_ux_gate`` resolve via the router
+    exactly as before the move;
 * the sibling cold-imports with stdlib + already-extracted siblings only — no
     Django, no ``teatree.core`` at module top (the live PreToolUse hook is a bare
     ``python3`` subprocess with no Django configured).
@@ -48,7 +48,6 @@ class TestRouterReExportReachable:
     def test_reexports_are_the_same_objects(self) -> None:
         assert router._apply_deny_circuit_breaker is dcb.apply_deny_circuit_breaker
         assert router._reset_deny_streak is dcb.reset_deny_streak
-        assert router._deny_circuit_breaker_threshold is dcb.deny_circuit_breaker_threshold
         assert router._deny_circuit_breaker_enabled is dcb.deny_circuit_breaker_enabled
         assert router._deny_is_ux_gate is dcb.deny_is_ux_gate
 
@@ -91,6 +90,14 @@ class TestLeakGateNeverGranted:
         self._ctx(monkeypatch, tmp_path, "glab mr note 1 -m body [fp-confirmed: not a leak]")
         decision = dcb.apply_deny_circuit_breaker(banned_terms_scanner.format_block_message("acme"))
         assert decision.allow is False, "a leak deny is never grantable, token or not"
+
+    def test_a_non_grantable_gate_id_with_fp_confirmed_token_still_denies(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._ctx(monkeypatch, tmp_path, "git push --force origin HEAD:main [fp-confirmed: mine]")
+        for gate_id in dcb.NON_GRANTABLE_GATE_IDS:
+            decision = dcb.apply_deny_circuit_breaker("BLOCKED: force push to a colleague's branch.", gate_id=gate_id)
+            assert decision.allow is False, gate_id
 
     def test_non_leak_deny_with_fp_confirmed_token_is_suppressed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

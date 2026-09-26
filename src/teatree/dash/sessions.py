@@ -19,7 +19,7 @@ from django.db.models.functions import RowNumber
 
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.selectors._helpers import _humanize_duration
-from teatree.dash.skills import skill_bundle
+from teatree.dash.skills import SkillAssurance, skill_assurance, skill_bundle
 
 #: Sessions listed per page. The attempt table grows without bound (340k rows on the
 #: deployed box), so the index is a recent window, not a full history.
@@ -45,6 +45,7 @@ class SessionRow:
     #: like the phase intended, and looks identical here without this.
     skills: tuple[str, ...] = ()
     skills_fault: bool = False
+    assurance: SkillAssurance | None = None
 
 
 def build_session_index() -> tuple[SessionRow, ...]:
@@ -81,6 +82,7 @@ def _row(attempt: TaskAttempt) -> SessionRow:
         duration=_duration(attempt),
         skills=skills,
         skills_fault=skills_fault,
+        assurance=skill_assurance(attempt.result),
     )
 
 

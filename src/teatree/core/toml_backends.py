@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend, MessagingBackend
-from teatree.core.backend_registry import get_backend_provider
+from teatree.core.backend_registry import SlackMessagingSpec, get_backend_provider, parse_slack_scope_profile
 from teatree.paths import find_overlay_db
 from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
@@ -140,11 +140,14 @@ def _messaging_from_toml(cfg: OverlayTomlConfig) -> MessagingBackend | None:
         # Loop construction path — a malformed user token degrades to
         # bot-only instead of crashing the tick (see ``get_messaging``).
         backend = get_backend_provider().build_slack_messaging(
-            bot_token=bot_token,
-            app_token=app_token or "",
-            user_token=user_token,
-            user_id=user_id,
-            dm_channel_id=dm_channel_id,
+            SlackMessagingSpec(
+                bot_token=bot_token,
+                app_token=app_token or "",
+                user_token=user_token,
+                user_id=user_id,
+                dm_channel_id=dm_channel_id,
+                owner_dm_only=parse_slack_scope_profile(cfg.get("slack_scope_profile", "")) == "dm_only",
+            )
         )
         _apply_voice_classifier_mode(backend)
         return backend

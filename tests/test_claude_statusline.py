@@ -60,7 +60,12 @@ def _run(
     # segment under test is exactly what the `…` cuts off. The cap itself is covered
     # by TestWidthCap, which builds its own env and sets COLUMNS per case.
     env["COLUMNS"] = "1000"
+    # These assert CONTENT, not latency: pin the enriched-tail deadline wide open so a
+    # busy CI box never drops the tail and turns a content assertion into a flake.
+    # TestTheCheapLineIsUnconditional sets it low on purpose to exercise the deadline.
+    env.setdefault("TEATREE_STATUSLINE_BUDGET", "30")
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+    env["XDG_DATA_HOME"] = str(state_dir / "xdg")
     # Isolate the harness config dir onto the test's state dir so the developer's
     # real ~/.claude/settings.json effortLevel never bleeds into these tests; the
     # effort tests plant a settings.json here to drive the fallback (#2214).
@@ -94,6 +99,36 @@ def _run(
 
 
 class TestStatuslineHook:
+    def test_macos_render_publishes_fresh_host_pressure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OSTYPE", "darwin")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        sysctl = bin_dir / "sysctl"
+        sysctl.write_text(
+            "#!/bin/sh\nprintf '1073741824\\n10\\n{ 109.45 12.00 8.00 }\\n"
+            "total = 1000.00M used = 500.00M free = 500.00M\\n'\n",
+            encoding="utf-8",
+        )
+        sysctl.chmod(0o755)
+        vm_stat = bin_dir / "vm_stat"
+        vm_stat.write_text(
+            "#!/bin/sh\nprintf 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\\n"
+            "Pages free: 20000.\\nPages inactive: 10000.\\n'\n",
+            encoding="utf-8",
+        )
+        vm_stat.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+        state = tmp_path / "state"
+        state.mkdir()
+        result = _run({"session_id": "host-feed"}, state_dir=state)
+        assert result.returncode == 0
+        feed = json.loads((state / "xdg" / "teatree" / "host-pressure.json").read_text(encoding="utf-8"))
+        assert feed["cores"] == 10
+        assert feed["load1"] == pytest.approx(109.45)
+        assert feed["ram_available_mib"] == 117
+        assert feed["swap_used_mib"] == 500
+        assert feed["swap_total_mib"] == 1000
+
     def test_displays_loaded_skills_from_session_file(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -797,7 +832,7 @@ class TestFreshnessInlineRefresh:
 
         result = _run({"model": {"display_name": "Claude Opus"}}, state_dir=state_dir, statusline_file=sl)
         plain = _strip_ansi(result.stdout)
-        assert "repo=99" in plain
+        assert "repo git-behind=99" in plain
 
     def test_recomputes_when_fetch_head_is_newer(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
@@ -821,8 +856,8 @@ class TestFreshnessInlineRefresh:
 
         result = _run({"model": {"display_name": "Claude Opus"}}, state_dir=state_dir, statusline_file=sl)
         plain = _strip_ansi(result.stdout)
-        assert "repo=2" in plain
-        assert "repo=99" not in plain
+        assert "repo git-behind=2" in plain
+        assert "repo git-behind=99" not in plain
 
     def test_no_path_field_falls_back_to_cached_behind(self, tmp_path: Path) -> None:
         # Older tick-meta.json without `path` should still render (no crash).
@@ -837,7 +872,7 @@ class TestFreshnessInlineRefresh:
 
         result = _run({"model": {"display_name": "Claude Opus"}}, state_dir=state_dir, statusline_file=sl)
         plain = _strip_ansi(result.stdout)
-        assert "old=5" in plain
+        assert "old git-behind=5" in plain
 
 
 class TestCpuSegment:
@@ -1369,8 +1404,13 @@ class TestStaleStatuslineBanner:
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
         assert "statusline STALE" in plain, plain
-        # The banner leads — it appears before the frozen loop line it qualifies.
+        # The banner leads the frozen loop line it qualifies.
         assert plain.index("statusline STALE") < plain.index("next tick 4m"), plain
+        # ...but it never leads the CHEAP line. Nothing writes ``rendered_at``
+        # while the loop fleet is parked, so this banner is the steady state of a
+        # deliberately-off fleet — and while it led the whole bar it pushed
+        # model/RAM/CPU/disk off line 1, which reads as "the statusline is gone".
+        assert plain.index("model=Claude Opus") < plain.index("statusline STALE"), plain
 
     def test_fresh_render_no_banner(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -1859,3 +1899,102 @@ class TestMultibyteAwkSafety:
         )
         assert ok.returncode == 0, ok.stderr
         assert "a · b" in ok.stdout
+
+
+class TestTheCheapLineIsUnconditional:
+    """The header the owner watches renders even when every enriched source dies.
+
+    Model, effort, context, rate limits, RAM, CPU and disk come from stdin and
+    three local syscalls. Everything else — the control DB, ``tick-meta.json``,
+    the loop registry, the zones file, chained third-party scripts — is read in
+    a subshell under a deadline, because on a loaded box those reads are what
+    took the hook from 0.3s to 5-8s and Claude Code renders NOTHING for a
+    statusline that overruns.
+    """
+
+    def _run_with(self, tmp_path: Path, env_extra: dict[str, str]) -> subprocess.CompletedProcess:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        env = os.environ.copy()
+        env["T3_AUTOLOAD"] = "1"
+        env["COLUMNS"] = "1000"
+        env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+        env["CLAUDE_CONFIG_DIR"] = str(state_dir)
+        env["CLAUDE_TASKS_DIR"] = str(state_dir / "_harness_tasks")
+        env.update(env_extra)
+        return subprocess.run(
+            [str(SCRIPT)],
+            input=json.dumps({"session_id": "cheap-sess", "model": {"display_name": "Claude Opus"}}),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+
+    def _slow_chain(self, tmp_path: Path) -> Path:
+        """A chained statusline script that never returns in time."""
+        xdg = tmp_path / "xdg" / "teatree"
+        xdg.mkdir(parents=True, exist_ok=True)
+        slow = tmp_path / "slow-chip.sh"
+        slow.write_text("#!/usr/bin/env bash\nsleep 30\nprintf never\n", encoding="utf-8")
+        slow.chmod(0o755)
+        (xdg / "host-projection.json").write_text(
+            json.dumps({"settings": {"": {"autoload": True, "statusline_chain": [str(slow)]}}}),
+            encoding="utf-8",
+        )
+        (xdg / "statusline.txt").write_text("t3-teatree 3m . next tick 4m\n", encoding="utf-8")
+        (xdg / "tick-meta.json").write_text(
+            json.dumps({"rendered_at": int(time.time()), "cadence": 720}) + "\n", encoding="utf-8"
+        )
+        return tmp_path / "xdg"
+
+    def test_a_hung_enriched_source_still_leaves_the_cheap_line(self, tmp_path: Path) -> None:
+        xdg = self._slow_chain(tmp_path)
+
+        started = time.monotonic()
+        result = self._run_with(tmp_path, {"XDG_DATA_HOME": str(xdg)})
+        elapsed = time.monotonic() - started
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # The values the owner actually reads survive a source that never returns.
+        assert "model=Claude Opus" in plain, plain
+        assert "ram=" in plain, plain
+        # ...and the drop is declared rather than passed off as "nothing to report".
+        assert "details dropped" in plain, plain
+        # The chained script sleeps 30s; anything near that means nothing bounded it.
+        assert elapsed < 10, f"took {elapsed:.1f}s — the tail deadline did not fire"
+
+    def test_the_tail_is_not_dropped_when_nothing_is_slow(self, tmp_path: Path) -> None:
+        """Anti-vacuity for the case above: the deadline must not fire routinely."""
+        xdg = tmp_path / "xdg" / "teatree"
+        xdg.mkdir(parents=True)
+        (xdg / "host-projection.json").write_text(
+            json.dumps({"settings": {"": {"autoload": True, "statusline_chain": []}}}), encoding="utf-8"
+        )
+        (xdg / "statusline.txt").write_text("t3-teatree 3m . next tick 4m\n", encoding="utf-8")
+        (xdg / "tick-meta.json").write_text(
+            json.dumps({"rendered_at": int(time.time()), "cadence": 720}) + "\n", encoding="utf-8"
+        )
+
+        result = self._run_with(tmp_path, {"XDG_DATA_HOME": str(tmp_path / "xdg"), "TEATREE_STATUSLINE_BUDGET": "30"})
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "details dropped" not in plain, plain
+        # The enriched content the deadline would have cost us is all there.
+        assert "next tick 4m" in plain, plain
+
+    def test_every_enriched_source_absent_still_renders_the_cheap_line(self, tmp_path: Path) -> None:
+        """No control DB, no projection, no sidecar, no registry, no zones file."""
+        empty = tmp_path / "empty-xdg"
+        empty.mkdir()
+
+        result = self._run_with(tmp_path, {"XDG_DATA_HOME": str(empty), "TEATREE_STATUSLINE_BUDGET": "30"})
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "model=Claude Opus" in plain, plain
+        assert "ram=" in plain, plain
+        assert "disk=" in plain, plain

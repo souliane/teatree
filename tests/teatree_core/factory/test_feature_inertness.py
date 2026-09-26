@@ -1,6 +1,6 @@
 """The standing feature-inertness report (#4189).
 
-The anchor is :class:`TestItRediscoversTheTwelve`: a report that cannot re-find the twelve
+The anchor is :class:`TestItRediscoversTheStillGatedOnes`: a report that cannot re-find the
 gates whose silent months motivated it is not working, whatever else it passes. Everything
 else is the pair of directions that keep it from being a wall nobody reads — a deliberately
 staged gate is a note, an undecided one is a fault, and evidence in the observable clears a
@@ -19,6 +19,7 @@ from teatree.core.factory.feature_inertness import (
     DECISION_TRAILER,
     FAULT_BANNER,
     KIND_NEVER_FIRED,
+    KIND_OFF_WITH_EVIDENCE,
     KIND_UNOBSERVABLE,
     SATISFIER_MARKER,
     InertFeature,
@@ -31,9 +32,10 @@ from tests.factories import TicketFactory
 # Fixed so the report's age arithmetic is pinned rather than drifting with the wall clock.
 TODAY = dt.date(2026, 8, 9)
 
-# #4189's list, verbatim. Not derived from the registry — a list derived from the thing under
-# test would pass no matter what the registry drifted to.
-THE_TWELVE = (
+# #4189's list, less the three whose behaviour is now unconditional (their settings are
+# deleted, so there is nothing left to leave off). Not derived from the registry — a list
+# derived from the thing under test would pass no matter what the registry drifted to.
+STILL_GATED = (
     "critic_gate_mode",
     "require_anti_vacuity_attestation",
     "require_debt_delta",
@@ -41,10 +43,7 @@ THE_TWELVE = (
     "require_integration_review",
     "require_merge_evidence",
     "require_merge_quality_verdict",
-    "require_plan_adequacy",
     "require_review_context",
-    "require_rubric_verification",
-    "require_spec_coverage",
     "require_work_group_batch",
 )
 
@@ -69,22 +68,22 @@ def _entry(
     )
 
 
-class TestItRediscoversTheTwelve(TestCase):
+class TestItRediscoversTheStillGatedOnes(TestCase):
     """Criterion 3: the anti-vacuity anchor, against the live declaration."""
 
-    def test_every_one_of_the_twelve_is_reported(self) -> None:
+    def test_every_still_gated_one_is_reported(self) -> None:
         reported = {finding.setting for finding in feature_inertness(now=TODAY)}
-        assert set(THE_TWELVE) <= reported, f"lost from the report: {sorted(set(THE_TWELVE) - reported)}"
+        assert set(STILL_GATED) <= reported, f"lost from the report: {sorted(set(STILL_GATED) - reported)}"
 
-    def test_all_twelve_are_faults_not_notes(self) -> None:
+    def test_all_of_them_are_faults_not_notes(self) -> None:
         """Nobody ever decided to leave these off, so none may report as a deliberate stage."""
-        notes = {f.setting for f in feature_inertness(now=TODAY) if not f.is_fault} & set(THE_TWELVE)
+        notes = {f.setting for f in feature_inertness(now=TODAY) if not f.is_fault} & set(STILL_GATED)
         assert notes == set()
 
     def test_each_detail_names_what_is_not_happening(self) -> None:
         """A finding whose detail only restates its kind gives the operator nothing to act on."""
         for finding in feature_inertness(now=TODAY):
-            assert finding.kind in {KIND_NEVER_FIRED, KIND_UNOBSERVABLE}
+            assert finding.kind in {KIND_NEVER_FIRED, KIND_OFF_WITH_EVIDENCE, KIND_UNOBSERVABLE}
             assert finding.detail != finding.kind
             assert "off for" in finding.detail
 
@@ -111,11 +110,15 @@ class TestTheNoteVersusFaultSplit(TestCase):
         assert "deliberately staged" in finding.detail
 
 
-class TestEvidenceClearsAGateEvenWhileOff(TestCase):
-    """Criterion 4: the evidence proves it ran, whatever the flag says."""
+class TestEvidenceClearsAStagedGateEvenWhileOff(TestCase):
+    """Criterion 4, narrowed to the case it was written for: the decision already exists.
+
+    A STAGED gate cites when the call was made, so evidence that its behaviour runs leaves
+    nothing to report. The undecided half of the same rule is the defect below.
+    """
 
     def test_a_populated_ticket_extra_observable_is_not_reported(self) -> None:
-        registry = {"require_review_context": _entry("require_review_context", target="review_context")}
+        registry = {"require_review_context": _entry("require_review_context", intent=ActivationIntent.STAGED)}
         assert [f.setting for f in feature_inertness(registry, now=TODAY)] == ["require_review_context"]
 
         TicketFactory(extra={"review_context": {"work_item": "x"}})
@@ -123,9 +126,14 @@ class TestEvidenceClearsAGateEvenWhileOff(TestCase):
 
     def test_a_populated_model_observable_is_not_reported(self) -> None:
         registry = {
-            "require_plan_adequacy": _entry("require_plan_adequacy", kind=ObservableKind.MODEL, target="core.Ticket")
+            "require_merge_evidence": _entry(
+                "require_merge_evidence",
+                kind=ObservableKind.MODEL,
+                target="core.Ticket",
+                intent=ActivationIntent.STAGED,
+            )
         }
-        assert [f.setting for f in feature_inertness(registry, now=TODAY)] == ["require_plan_adequacy"]
+        assert [f.setting for f in feature_inertness(registry, now=TODAY)] == ["require_merge_evidence"]
 
         TicketFactory()
         assert feature_inertness(registry, now=TODAY) == ()
@@ -133,20 +141,74 @@ class TestEvidenceClearsAGateEvenWhileOff(TestCase):
     def test_a_filter_keeps_a_shared_table_from_clearing_the_wrong_gate(self) -> None:
         """Two gates write ``CriticVerdict``; without the narrowing, either one clears both."""
         narrowed = GateEvidence(
-            setting="require_plan_adequacy",
+            setting="require_merge_evidence",
             off_value=False,
             kind=ObservableKind.MODEL,
             target="core.Ticket",
             shipped=dt.date(2026, 1, 1),
-            intent=ActivationIntent.UNDECIDED,
+            intent=ActivationIntent.STAGED,
             rationale="fixture — souliane/teatree#4189",
             satisfier="fixture satisfier",
             filters={"variant": "never-set"},
         )
         TicketFactory()
-        assert [f.setting for f in feature_inertness({"require_plan_adequacy": narrowed}, now=TODAY)] == [
-            "require_plan_adequacy"
+        assert [f.setting for f in feature_inertness({"require_merge_evidence": narrowed}, now=TODAY)] == [
+            "require_merge_evidence"
         ]
+
+
+class TestEvidenceNeverSilencesAnUndecidedGate(TestCase):
+    """The clearing rule swallowed the loudest lines it had (#122).
+
+    A gate that is off, undecided, and dropped from the report the day its producer first
+    wrote a row becomes one nobody can see — which is how the oldest undecided gates on the
+    box went quiet.
+    """
+
+    def test_a_populated_ticket_extra_observable_still_reports_a_fault(self) -> None:
+        registry = {"require_review_context": _entry("require_review_context")}
+        TicketFactory(extra={"review_context": {"work_item": "x"}})
+
+        (finding,) = feature_inertness(registry, now=TODAY)
+
+        assert (finding.kind, finding.is_fault) == (KIND_OFF_WITH_EVIDENCE, True)
+        assert "nobody decided" in finding.detail
+
+    def test_a_populated_model_observable_still_reports_a_fault(self) -> None:
+        registry = {
+            "require_merge_evidence": _entry("require_merge_evidence", kind=ObservableKind.MODEL, target="core.Ticket")
+        }
+        TicketFactory()
+
+        (finding,) = feature_inertness(registry, now=TODAY)
+
+        assert (finding.kind, finding.is_fault) == (KIND_OFF_WITH_EVIDENCE, True)
+
+    def test_the_detail_carries_the_count_instead_of_claiming_it_never_fired(self) -> None:
+        registry = {"require_review_context": _entry("require_review_context")}
+        TicketFactory(extra={"review_context": {"a": 1}})
+        TicketFactory(extra={"review_context": {"b": 2}})
+
+        (finding,) = feature_inertness(registry, now=TODAY)
+
+        assert "2 rows" in finding.detail
+        assert "never fired" not in finding.detail
+
+    def test_a_single_row_reads_as_one_row(self) -> None:
+        registry = {"require_review_context": _entry("require_review_context")}
+        TicketFactory(extra={"review_context": {"a": 1}})
+
+        (finding,) = feature_inertness(registry, now=TODAY)
+
+        assert "1 row in" in finding.detail
+
+    def test_it_still_names_the_next_action(self) -> None:
+        registry = {"require_review_context": replace(_entry("require_review_context"), satisfier="`t3 x record`")}
+        TicketFactory(extra={"review_context": {"a": 1}})
+
+        (finding,) = feature_inertness(registry, now=TODAY)
+
+        assert finding.detail.endswith(f"{SATISFIER_MARKER}`t3 x record`")
 
 
 class TestWhatTheReportDeliberatelyStaysQuietAbout(TestCase):

@@ -55,6 +55,11 @@ RESUME_LOAD_PER_CORE = 3.0
 RAM_BRAKE_FLOOR_GB = 4.0
 RAM_RESUME_FLOOR_GB = 6.0
 
+# Host swap is a lagging but decisive sign of thrash on macOS: Docker's VM may
+# still claim many GiB free while the physical machine has paged out heavily.
+SWAP_BRAKE_USED_FRACTION = 0.25
+SWAP_RESUME_USED_FRACTION = 0.10
+
 #: A 5h window this spent is an imminent hard rate-limit; retrying into one is pure burn.
 SHORT_WINDOW_BRAKE = 0.95
 #: Weekly headroom below this is spent — nothing left to admit against.
@@ -87,7 +92,9 @@ BRAKE_PRECEDENCE = (
     "metered-spend",
     "load",
     "memory",
+    "swap",
 )
+MACHINE_BRAKE_CAUSES = frozenset(("load", "memory", "swap"))
 
 
 @dataclass(frozen=True)
@@ -133,11 +140,23 @@ class MeteredSignal:
 
 @dataclass(frozen=True)
 class MachineSignal:
-    """Box pressure — the SECONDARY brake. ``ram_available_gb`` is ``None`` when unread."""
+    """Box pressure — the SECONDARY brake. ``ram_available_gb`` is ``None`` when unread.
+
+    ``memory_cap_gb`` is the cgroup ceiling ``ram_available_gb`` was measured INSIDE, and
+    is a configuration fact rather than pressure: it is carried so the memory component
+    can say *why* a refusal is unrecoverable (see :func:`resume_ceiling_conflict`) instead
+    of repeating a number that looks like ordinary back-pressure. ``None`` means either
+    uncapped or "this reading is not cgroup-scoped", and the reader is the one that knows
+    which — :func:`~teatree.core.admission_governor.read_machine_signal` supplies the cap
+    only when the reading it took actually came from that cgroup, since pairing a
+    host-scoped reading with a container's cap would diagnose the wrong thing.
+    """
 
     cores: int
     load1: float
     ram_available_gb: float | None
+    memory_cap_gb: float | None = None
+    swap_used_fraction: float | None = None
 
 
 @dataclass(frozen=True)
@@ -328,6 +347,41 @@ def ram_headroom(ram_available_gb: float | None) -> float:
     return _headroom(_ram_pressure(ram_available_gb, braked=False))
 
 
+def resume_ceiling_conflict(cap_gb: float | None) -> str | None:
+    """Why *cap_gb* makes :data:`RAM_RESUME_FLOOR_GB` unreachable, or ``None`` when it does not.
+
+    A braked governor holds itself to the RESUME floor, so a cgroup capped at or below
+    that floor can never re-admit: the condition is unsatisfiable even with the container
+    completely EMPTY. That is an impossible CONFIGURATION rather than pressure, and no
+    amount of waiting or idling clears it — which is why it has to be named rather than
+    discovered from a queue that never drains.
+
+    ``RamHeadroom.box_watermark_mib`` already drops a cgroup below the agent-workload
+    floor (4 GiB) as out of scope, so the unrecoverable band this names is the gap
+    between that floor and :data:`RAM_RESUME_FLOOR_GB` — a cap of 5 GiB is judged
+    box-wide AND can never rise above a 6 GiB resume floor, which is exactly the
+    measured incident. ``None`` for *cap_gb* is uncapped or out-of-scope, neither of
+    which conflicts.
+
+    The band has ONE end, and *cap_gb* must already be SCOPE-QUALIFIED — ``None`` for a
+    cgroup whose reading does not govern. That question has exactly one owner,
+    :attr:`~teatree.utils.ram_scope.RamHeadroom.cgroup_is_box_scoped`, surfaced as
+    ``box_watermark_cap_gb``; every caller passes it through that. Closing this band at a
+    LOWER end instead would restate the scope test's floor here, and that floor is
+    operator-overridable (``TEATREE_WORKER_MEMORY_FLOOR_GIB``) — a lowered override makes
+    a small cap box-scoped and permanently braked while a restated default silently
+    declines to name it (#151).
+    """
+    if cap_gb is None or cap_gb > RAM_RESUME_FLOOR_GB:
+        return None
+    return (
+        f"impossible admission ceiling: the cgroup memory cap is {cap_gb:.3g} GiB but a braked "
+        f"governor only re-admits above RAM_RESUME_FLOOR_GB={RAM_RESUME_FLOOR_GB:.0f} GiB, so once "
+        "braked this lane can NEVER resume. Raise the container mem_limit above the resume floor "
+        "(or lower the floor)."
+    )
+
+
 def admission_pressure(
     *,
     quota: QuotaSignal,
@@ -407,11 +461,25 @@ def _machine_components(machine: MachineSignal, *, braked: bool) -> list[Pressur
     ]
     if machine.ram_available_gb is not None:
         floor = _ram_floor(braked=braked)
+        detail = f"{machine.ram_available_gb:.1f} GB available at/under the {floor:.0f} GB watermark"
+        # A bare number reads as back-pressure someone can wait out. When the cap makes the
+        # resume floor unsatisfiable the wait is infinite, so the refusal carries its own
+        # diagnosis — this detail is what the CRITICAL admission-pressure KnownIssue prints.
+        conflict = resume_ceiling_conflict(machine.memory_cap_gb)
         components.append(
             PressureComponent(
                 name="memory",
                 value=_ram_pressure(machine.ram_available_gb, braked=braked),
-                detail=f"{machine.ram_available_gb:.1f} GB available at/under the {floor:.0f} GB watermark",
+                detail=f"{detail} ({conflict})" if conflict else detail,
+            )
+        )
+    if machine.swap_used_fraction is not None:
+        swap_watermark = SWAP_RESUME_USED_FRACTION if braked else SWAP_BRAKE_USED_FRACTION
+        components.append(
+            PressureComponent(
+                name="swap",
+                value=_clamp(machine.swap_used_fraction / swap_watermark),
+                detail=f"host swap {machine.swap_used_fraction:.0%} at/over the {swap_watermark:.0%} watermark",
             )
         )
     return components
@@ -468,5 +536,6 @@ __all__ = [
     "box_load_headroom",
     "ram_headroom",
     "resolve_shed_at",
+    "resume_ceiling_conflict",
     "weekly_pace",
 ]

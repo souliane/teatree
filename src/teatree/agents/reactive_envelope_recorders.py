@@ -15,15 +15,8 @@ from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
-from teatree.agents.result_schema import (
-    AgentResultBlob,
-    AnswerEnvelope,
-    ArticleSuggestion,
-    TriageRecommendation,
-    answer_text,
-    recommendation_issue_url,
-    suggestion_url,
-)
+from teatree.agents.result_payloads import answer_text, recommendation_issue_url, suggestion_url
+from teatree.agents.result_schema import AgentResultBlob, AnswerEnvelope, ArticleSuggestion, TriageRecommendation
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, PendingTriageRecommendation, Task

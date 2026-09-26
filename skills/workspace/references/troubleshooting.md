@@ -157,7 +157,7 @@ See your [issue tracker platform reference](../../platforms/references/) § "Kno
 
 ## Integration Tests Corrupt `.git/config` When Run Under Pre-Commit Hooks
 
-- **Symptom:** `git status` fails with `fatal: Invalid path '/private/.../pytest-of-.../pytest-NNN'`, or `user.name`/`user.email` are silently overwritten to test values like "Test User".
+- **Symptom:** `git status` fails with `fatal: Invalid path '/private/.../pytest-of-.../pytest-NNN'`, or `user.name`/`user.email` are silently overwritten to test values like "Test User". The other shape writes BOTH `core.bare = true` and a `core.worktree` pointing at a temp dir that no longer exists, and reads as something milder than a broken repo: every command needing a working tree (`status`, `diff`, `grep`, `rev-parse --show-toplevel`) exits 128 on `warning: core.bare and core.worktree do not make sense` then `fatal: unable to set up work tree using invalid config`, while the object database still answers normally (`log`, `show`, `ls-files` all exit 0) and the clone's worktrees are untouched. A clone that answers `git log` but not `git status` is this, not a missing file.
 - **Cause:** Tests that spawn `git` subprocesses (e.g., `subprocess.run(["git", "init", ...])`) inherit `GIT_*` environment variables from the parent process. When pre-commit hooks run pytest, prek sets `GIT_INDEX_FILE`, `GIT_DIR`, etc. The test's git commands then operate on the **real repo's** config/index instead of the temp repo's — writing `core.worktree`, `user.name`, and other settings to the wrong `.git/config`.
 - **Fix:** Strip ALL `GIT_*` env vars from subprocess calls in tests:
 
@@ -169,7 +169,7 @@ See your [issue tracker platform reference](../../platforms/references/) § "Kno
       return subprocess.run(["git", "-C", str(repo), *args], env=_GIT_ENV, ...)
   ```
 
-- **Recovery:** If already corrupted, edit `.git/config` directly (git commands may fail). Remove the stale `core.worktree` line and any overwritten `[user]` section.
+- **Recovery:** If already corrupted, edit `.git/config` directly (git commands may fail). Remove the stale `core.worktree` line, the injected `core.bare = true`, and any overwritten `[user]` section — `core.worktree` alone leaves the clone unusable.
 - **Prevention:** Every test helper that calls git subprocesses must use a sanitized env. `GIT_CONFIG_GLOBAL=/dev/null` alone is insufficient — `GIT_INDEX_FILE` and `GIT_DIR` also leak.
 
 ## Pre-Commit Fails with `ImportError` When Committing to a Different Repo

@@ -8,9 +8,11 @@ say what shipping it already said.
 
 The method is the hand audit that found the twelve, automated: for each gate that is off
 everywhere, query the observable it would populate; zero rows means it has never fired. Two
-things keep it honest in the other direction — a populated observable clears a gate even
-while its flag is off (the evidence proves it ran, whatever the flag says), and a gate merged
-less than :data:`~teatree.config.gate_evidence.INERT_AFTER_DAYS` ago is too young to judge.
+things keep it honest in the other direction — a populated observable clears a STAGED gate
+(the decision exists and the evidence proves the behaviour runs), and a gate merged less than
+:data:`~teatree.config.gate_evidence.INERT_AFTER_DAYS` ago is too young to judge. Evidence
+never clears an UNDECIDED one: a gate whose producer demonstrably runs while the gate stays
+off is the loudest line the report has, and clearing it is how two of the oldest went silent.
 
 Severity is :mod:`~teatree.loops.seed_inertness`'s doctrine translated: a gate the owner
 deliberately staged is a NOTE, a gate nobody ever decided to leave off is a FAULT. Without
@@ -29,6 +31,7 @@ from teatree.core.models import ConfigSetting
 
 KIND_NEVER_FIRED = "never_fired"
 KIND_UNOBSERVABLE = "unobservable"
+KIND_OFF_WITH_EVIDENCE = "off_with_evidence"
 
 #: The loud prefix a fault carries in the rendered report — a gate nobody decided to leave off.
 FAULT_BANNER = "NOBODY DECIDED"
@@ -50,6 +53,7 @@ __all__ = [
     "DECISION_TRAILER",
     "FAULT_BANNER",
     "KIND_NEVER_FIRED",
+    "KIND_OFF_WITH_EVIDENCE",
     "KIND_UNOBSERVABLE",
     "SATISFIER_MARKER",
     "InertFeature",
@@ -114,8 +118,19 @@ def _finding(entry: GateEvidence, today: dt.date) -> InertFeature | None:
             ),
             is_fault=fault,
         )
-    if observed_rows(entry):
+    rows = observed_rows(entry)
+    if rows and not fault:
         return None
+    if rows:
+        return InertFeature(
+            setting=entry.setting,
+            kind=KIND_OFF_WITH_EVIDENCE,
+            detail=(
+                f"off for {age}d with {_rows_clause(rows)} in {_observable_label(entry)} — its producer "
+                f"runs and the gate is still off ({_intent_clause(entry)}){_satisfier_clause(entry)}"
+            ),
+            is_fault=True,
+        )
     return InertFeature(
         setting=entry.setting,
         kind=KIND_NEVER_FIRED,
@@ -125,6 +140,10 @@ def _finding(entry: GateEvidence, today: dt.date) -> InertFeature | None:
         ),
         is_fault=fault,
     )
+
+
+def _rows_clause(rows: int) -> str:
+    return f"{rows} row" if rows == 1 else f"{rows} rows"
 
 
 def _satisfier_clause(entry: GateEvidence) -> str:

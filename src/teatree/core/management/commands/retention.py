@@ -1,4 +1,10 @@
-"""``manage.py retention`` — prune the high-churn control-DB tables (#3693, #3871).
+"""``manage.py retention`` — the retention windows, and the dry runs that precede them.
+
+Three lanes: ``prune`` for the high-churn control-DB tables (#3693, #3871),
+``scratch`` for stale agent scratch (#4165), and ``artifacts`` for the checkout pool's
+dormant build products (#4244). All three are DRY-RUN by default and delete only under
+``--apply``, because each removes something and none of the three is worth running
+against a population nobody has read.
 
 ``prune`` is DRY-RUN by default: it reports what retention WOULD delete and
 touches nothing. Deleting requires the explicit ``--apply`` flag. Both the plan
@@ -9,10 +15,11 @@ lane reaches only rows OLDER than a per-table window. The park lane
 billed telemetry, aged on ``ended_at`` — because a park RETURNS its task to the
 queue, which makes the terminal-owned guard structurally unable to see one.
 
-The retention windows are the DB-home ``task_attempt_retention_days`` /
-``park_attempt_retention_days`` / ``incoming_event_retention_days`` (defaults 30 / 7 /
-30) and ``task_result_retention_days`` (default 1) settings — per-overlay overridable,
-``0`` disables that lane. Set them with ``t3 <overlay> config_setting set``.
+The retention windows are the DB-home ``task_attempt_retention_days`` (default 30) and
+``task_result_retention_days`` (default 1) settings — per-overlay overridable, ``0``
+disables that lane. Set them with ``t3 <overlay> config_setting set``. The
+``IncomingEvent`` and park lanes carry no window setting: they are the fixed
+``INCOMING_EVENT_RETENTION_DAYS`` / ``PARK_ATTEMPT_RETENTION_DAYS``.
 
 The ``TicketTransition`` lane has no window: it fires when the owning ticket CLOSES,
 and it removes only rows that are not state edges (``from_state == to_state``), so a
@@ -35,7 +42,13 @@ from typing import IO, Annotated, TypedDict, cast
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.config import get_effective_settings
+from teatree.config import get_effective_settings, worktree_root
+from teatree.core.cleanup.artifact_eviction import (
+    ArtifactEvictionPlan,
+    EvictionOutcome,
+    evict_artifacts,
+    plan_artifact_eviction,
+)
 from teatree.core.machine_output import emit
 from teatree.core.retention.prune import PARK_TABLE, apply_retention, plan_retention
 from teatree.core.retention.scratch import ScratchEntry, ScratchSweepPlan, sweep_scratch
@@ -103,6 +116,28 @@ class _ScratchRow(TypedDict):
     age_days: float
     removable: bool
     reason: str
+
+
+class _ArtifactRow(TypedDict):
+    path: str
+    size_bytes: int
+    #: EVICT / STOPPED / KEEP / DEFER — four outcomes a boolean cannot carry, and the one
+    #: it used to flatten is the part-deleted artifact an operator must rebuild before use.
+    verdict: str
+    reason: str
+
+
+class ArtifactReport(TypedDict):
+    applied: bool
+    refused: bool
+    refusal: str
+    idle_days: float
+    considered: int
+    estimated_bytes: int
+    freed_bytes: int
+    evicted_count: int
+    gaps: list[str]
+    entries: list[_ArtifactRow]
 
 
 class ScratchReport(TypedDict):
@@ -179,6 +214,72 @@ class Command(TyperCommand):
         )
 
     @command()
+    def artifacts(
+        self,
+        *,
+        days: Annotated[
+            float,
+            typer.Option("--days", help="Idle window in days. Default: the configured artifact_idle_days."),
+        ] = -1.0,
+        apply: Annotated[
+            bool,
+            typer.Option("--apply", help="Actually evict the planned artifacts. Without it, this is a dry run."),
+        ] = False,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the eviction report as JSON on stdout instead of the human view."),
+        ] = False,
+    ) -> None:
+        """Reclaim dormant rebuildable build artifacts from the checkout pool (dry-run unless --apply).
+
+        The dry run is the inspection the autonomous pass structurally cannot offer: it
+        plans and prints, deleting nothing, so every symlinked artifact, every shared
+        symlink target and every artifact the guards could not clear can be READ under
+        KEEP. It answers "what would this reclaim on THIS host, and what is it leaving
+        alone" — a question worth asking on a host whose overlay points every worktree's
+        ``node_modules``/``.venv`` at one directory in the main clone.
+
+        It gates nothing. The autonomous pass runs on its own cadence and deletes only
+        what it has PROVED reconstructible, keeping anything it cannot; this command is
+        the operator's own view of the same plan, on demand.
+        """
+        idle_days = days if days >= 0 else get_effective_settings().artifact_idle_days
+        plan = plan_artifact_eviction(worktree_root(), idle_days=idle_days)
+        outcome = evict_artifacts(plan) if apply and not plan.refusal else EvictionOutcome()
+        refusal = plan.refusal or outcome.refusal
+        payload: ArtifactReport = {
+            "applied": apply,
+            "refused": bool(refusal),
+            "refusal": refusal,
+            "idle_days": idle_days,
+            "considered": plan.considered,
+            "estimated_bytes": plan.estimated_bytes,
+            "freed_bytes": outcome.freed_bytes,
+            "evicted_count": len(outcome.evicted),
+            "gaps": list(plan.gaps),
+            "entries": _artifact_rows(plan, outcome),
+        }
+        logger.info(
+            "retention artifacts: considered %d, %s %d byte(s)",
+            plan.considered,
+            "freed" if apply else "would free",
+            outcome.freed_bytes if apply else plan.estimated_bytes,
+        )
+
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: _render_artifacts(payload, stream, applied=apply),
+        )
+        if refusal:
+            # The payload is written first: an unattended caller that only sees a
+            # non-zero exit with empty streams learns less than the exit 0 it replaces.
+            raise SystemExit(1)
+
+    @command()
     def scratch(
         self,
         *,
@@ -250,6 +351,77 @@ class Command(TyperCommand):
             # The payload is written first: an unattended caller that only sees a
             # non-zero exit with empty streams learns less than the exit 0 it replaces.
             raise SystemExit(1)
+
+
+def _artifact_rows(plan: ArtifactEvictionPlan, outcome: EvictionOutcome) -> list[_ArtifactRow]:
+    """Every artifact the pass looked at, with the verdict that decided it.
+
+    A stopped candidate carries its OWN reason and its own verdict, never the eligibility
+    line it was planned under. Rendering a part-way-failed ``rmtree`` as
+    ``KEEP — dormant, rebuildable`` is exactly the "refused means untouched" misreading
+    :func:`~teatree.core.cleanup.artifact_removal._failed_delete_state` exists to prevent,
+    and it hid that state on the one surface an operator reads.
+    """
+    stopped = {path: reason for path, _, reason in (line.partition(": ") for line in outcome.skipped)}
+    rows: list[_ArtifactRow] = [
+        {
+            "path": str(candidate.artifact),
+            "size_bytes": candidate.size_bytes,
+            "verdict": "STOPPED" if str(candidate.artifact) in stopped else "EVICT",
+            "reason": stopped.get(str(candidate.artifact), "dormant, rebuildable, nothing depends on it"),
+        }
+        for candidate in plan.candidates
+    ]
+    rows += [
+        {"path": path, "size_bytes": 0, "verdict": "KEEP", "reason": reason}
+        for path, _, reason in (line.partition(": ") for line in plan.kept)
+    ]
+    rows += [
+        {"path": path, "size_bytes": 0, "verdict": "DEFER", "reason": reason}
+        for path, _, reason in (line.partition(": ") for line in plan.deferred)
+    ]
+    return rows
+
+
+def _human_bytes(count: int) -> str:
+    size = float(count)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":  # noqa: PLR2004 — the unit ladder's own base
+            return f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}GB"
+
+
+def _render_artifacts(payload: ArtifactReport, stream: IO[str], *, applied: bool) -> None:
+    verb = "Evicted" if applied else "Would evict"
+    reclaim = payload["freed_bytes"] if applied else payload["estimated_bytes"]
+    title = (
+        f"Artifact eviction — considered {payload['considered']}, "
+        f"{verb.lower()} {_human_bytes(reclaim)} (idle > {payload['idle_days']:.1f}d)"
+    )
+    if payload["refused"]:
+        if payload["evicted_count"]:
+            title += f" — STOPPED after evicting {payload['evicted_count']} artifact(s): {payload['refusal']}"
+        else:
+            title += f" — REFUSED, nothing was removed: {payload['refusal']}"
+    elif not applied:
+        title += " (dry run — pass --apply to reclaim)"
+    rows = [
+        [
+            row["path"],
+            _human_bytes(row["size_bytes"]),
+            f"{row['verdict']} — {row['reason']}",
+        ]
+        for row in payload["entries"]
+    ]
+    rows += [["(enumeration)", "", f"ERROR incomplete — {gap}"] for gap in payload["gaps"]]
+    print_table(
+        ["Artifact", "Size", "Verdict"],
+        rows,
+        title=title,
+        stream=stream,
+        justify=["left", "right", "left"],
+    )
 
 
 def _scratch_row(entry: ScratchEntry) -> list[str]:

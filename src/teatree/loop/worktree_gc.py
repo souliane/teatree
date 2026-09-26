@@ -48,6 +48,9 @@ logger = logging.getLogger(__name__)
 #: How long a worktree must sit untouched before the heuristic will consider it.
 _DEFAULT_STALE_DAYS = 30
 
+#: How many worktrees one GC pass may reap; the rest are deferred to the next tick.
+_MAX_GC_PER_TICK = 3
+
 
 @dataclass(frozen=True, slots=True)
 class GcSurvey:
@@ -75,7 +78,7 @@ class GcOutcome:
 def survey_worktrees(payload: ActionPayload) -> GcSurvey:
     """Which worktrees are eligible for GC, and the reason each of the rest is kept."""
     stale_days = int(payload.get("worktree_stale_days", _DEFAULT_STALE_DAYS))
-    cap = int(payload.get("max_worktree_gc_per_tick", 3))
+    cap = _MAX_GC_PER_TICK
     cwd = safe_cwd()
     table = read_process_table()
     if refusal := table.refuse_reason():

@@ -49,7 +49,11 @@ class PhaseCadence:
 
     overlay_name: str
     phase: str
-    cadence_hours: int
+    #: A SECOND, different quantity on top of the ``Loop`` row's own timer — the weekly
+    #: gate ``arch_review`` checks from its daily row. Zero is the ordinary case: the row
+    #: IS the cadence, so a fire that reaches here is due by construction and the trigger
+    #: only names WHY (first run, or the row's own slot).
+    cadence_hours: int = 0
 
     def in_flight_exists(self) -> bool:
         """True iff a pending/claimed task for this overlay+phase already exists."""
@@ -62,8 +66,8 @@ class PhaseCadence:
         """Most recent task's ``Session.started_at``, or ``None`` (bootstrap).
 
         ``statuses`` narrows to the given ``Task.Status`` set; ``None`` counts a
-        task in any status. The ``architectural_review`` variant reads two clocks
-        off this via :meth:`last_completed_run_at` and :meth:`last_terminal_run_at`.
+        task in any status; :meth:`last_completed_run_at` is the cadence clock
+        every periodic scanner gates on.
         """
         task_model = _task_model()
         if task_model is None:
@@ -76,13 +80,6 @@ class PhaseCadence:
         if task_model is None:
             return None
         return self.last_run_at(statuses=frozenset({task_model.Status.COMPLETED}))
-
-    def last_terminal_run_at(self) -> dt.datetime | None:
-        """Newest COMPLETED-or-FAILED run — the post-failure backoff clock."""
-        task_model = _task_model()
-        if task_model is None:
-            return None
-        return self.last_run_at(statuses=task_model.Status.terminal())
 
     def evaluate_trigger(self, *, now: dt.datetime, last_run_at: dt.datetime | None) -> str | None:
         """Return the trigger name (``bootstrap`` / ``cadence``) or ``None``.

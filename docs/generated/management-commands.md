@@ -46,6 +46,7 @@ Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 | `approve` | Record a single-use ``DbApproval`` that satisfies the #777 gate without a TTY (#953/#126) |
 | `query` | Run a read-only SQL query against the control DB; emit rows as JSON |
 | `shell` | Drop into a Django shell against the resolved (gate) control DB |
+| `seed-loops` | Seed the shipped loops, prompts, modes and schedules into the control DB |
 | `restore-ci` | Restore the worktree database from the latest CI dump |
 | `migrate-app` | Apply pending migrations to the worktree's APP database, without re-importing it |
 | `reset-passwords` | Reset all user passwords to a known dev value |
@@ -264,16 +265,16 @@ List/show/use/auto/create/edit/delete loop presets (#3159).
 | Subcommand | Description |
 | --- | --- |
 | `show` | Show a named preset, or (no arg) the active preset + WHY + per-loop verdict table |
-| `use` | Activate *name* as the L3 manual override (default: until the next scheduled boundary) |
+| `use` | Activate *name* as the manual override — it holds until someone clears it |
 | `auto` | Clear the manual override so the active schedule / default mode decides again |
-| `create` | Create a new preset from ``--set`` entries and an optional overlay scope |
-| `edit` | Edit a preset's entries / description / scope in place |
+| `create` | Create a new preset from its ``--set`` entries |
+| `edit` | Edit a preset's entries and description in place |
 | `delete` | Delete a preset — refused while anything still names it; a shipped one needs ``--confirm`` |
 | `list` | List every preset with its scope, entry count, and the ACTIVE marker |
 
 ## `loop_schedule`
 
-List/show/set-active/clear-active loop schedules (#3159).
+Read and edit loop schedules and their slots (#3159).
 
 | Subcommand | Description |
 | --- | --- |
@@ -282,6 +283,8 @@ List/show/set-active/clear-active loop schedules (#3159).
 | `list` | List every schedule with its timezone, slot count, and the ACTIVE marker |
 | `set-active` | Activate *name* — the single ``active_loop_schedule`` write that switches calendars |
 | `set-timezone` | Set *name*'s slot timezone — the lever that makes its wall-clock slots fire locally |
+| `set-slot` | Create a schedule slot, or update the slot named by ``--slot-id`` |
+| `delete-slot` | Delete one slot owned by a schedule |
 | `clear-active` | Clear the active schedule so no L2 layer applies (presets only via override) |
 
 ## `loop_self_improve`
@@ -302,7 +305,7 @@ Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913).
 | `resume` | Return *name* to ENABLED, clearing a pause OR a disable — both planes |
 | `disable` | Move *name* into the durable DISABLED kill-switch — both planes |
 | `enable` | Return *name* to ENABLED (alias of resume) — both planes |
-| `override` | Set the emergency FORCED plane for *name* — on/off beats a preset, clear returns to neutral |
+| `override` | Set the MANUAL override for *name* — on/off beats the preset, clear hands it back |
 | `status` | Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it |
 
 ## `loop_tick`
@@ -342,7 +345,8 @@ Creates new migration(s) for apps.
 
 | Subcommand | Description |
 | --- | --- |
-| `send` | Send a bot→user Slack DM (exit 0 on delivery, 1 otherwise) |
+| `send` | Raise a STATUS SIGNAL for the owner (exit 0 on delivery, 1 otherwise) |
+| `dm` | DM the owner something that was ASKED FOR (exit 0 on delivery, 1 otherwise) |
 | `digest` | Read the status signals the classifier kept off the DM channel (#4524) |
 | `post` | Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
 | `react` | React on a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
@@ -402,6 +406,10 @@ List reusable prompts: name, params, version, description (read-only; #2513).
 
 Render a reusable prompt by name with its declared params (read-only; #2513).
 
+## `provision_declared_notion_routing`
+
+Persist declared Notion pass-key routes without replacing database overrides.
+
 ## `questions`
 
 ``t3 teatree questions`` group root.
@@ -454,6 +462,7 @@ Group root — forces sub-commands to be addressed by name.
 | Subcommand | Description |
 | --- | --- |
 | `prune` | Prune old rows from the high-churn tables, then reclaim the disk (dry-run unless --apply) |
+| `artifacts` | Reclaim dormant rebuildable build artifacts from the checkout pool (dry-run unless --apply) |
 | `scratch` | Reclaim stale agent scratch under the temp root (dry-run unless --apply) |
 
 ## `retro`
@@ -462,6 +471,7 @@ Group root — forces sub-commands to be addressed by name.
 
 | Subcommand | Description |
 | --- | --- |
+| `finding` | Record one retro finding in the ledger and drive it to a scheduled fix |
 | `review-findings` | Classify a PR's review findings A/B/C and file class-C enforcement issues |
 | `gate-failures` | Extract a session's gate failures, classify them, record, and optionally escalate |
 
@@ -501,6 +511,7 @@ Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
 | `services` |  |
 | `backend` | Start the backend via docker-compose. Host port is auto-mapped |
 | `tests` | Run the project test suite |
+| `e2e` | Run one targeted E2E spec through the overlay's configured runner |
 | `lint` | Run the overlay's lint pipeline on this worktree |
 | `build-frontend` | Build the frontend app for production/testing |
 
@@ -523,6 +534,10 @@ Session-lifecycle operations.
 | `todo-list` | List this session's working items, in working order |
 | `todo-set` | Move one working item to *status* |
 
+## `settings_compare`
+
+Render the same settings comparison as the dashboard, including peers and saved snapshots.
+
 ## `shipped_seed`
 
 Audit the shipped loop/preset/schedule seed set, and delete from it with a typed confirm (#3842).
@@ -540,7 +555,7 @@ Print the five factory signals over the trailing window vs its baseline.
 
 ## `snapshot_settings_defaults`
 
-Propose a snapshot of the live global settings onto config/defaults.toml (owner-approved).
+Report which live global settings differ from the shipped defaults (writes nothing).
 
 ## `speak`
 
@@ -589,13 +604,13 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
 | `plan` | Record a PlanArtifact and advance the ticket STARTED → PLANNED |
-| `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore, unignore |
+| `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `comment` | Post a comment to an issue or work item by its URL |
 | `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
 | `list-clears` | List every unconsumed merge authorisation, each with the standing that hides it |
 | `reconcile-clears` | Consume every standing merge authorisation whose PR already merged or closed |
-| `record-spec-coverage` | Record the spec-coverage manifest the delivery DoD gate reads (#2232) |
+| `set-target-branch` | Point *repo*'s future PR at *branch* (its stack parent) instead of the repo default |
 | `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
@@ -673,6 +688,8 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `clean-all` | Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR |
 | `release-dead-rows` | Release registered rows whose checkout is provably dead — ROWS ONLY (dry run unless --apply) |
 | `repair-branch-upstreams` | Point every branch tracking someone else's ref back at its own, or untrack it (#4225) |
+| `prek-patches` | Which prek patches hold work that is nowhere else, and put one back (#144) |
+| `repair-split` | Move a ticket's divergent worktrees into its canonical workspace dir |
 
 ## `worktree`
 

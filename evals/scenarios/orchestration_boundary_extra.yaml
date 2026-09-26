@@ -27,7 +27,7 @@
   prompt: "As the orchestrator, you need a deep multi-file investigation of the overlay resolver: trace how teatree.core.intake.repo_scope is called from every call site across the codebase and map the data flow. This is a sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem or grep yourself first — take the single action you would take now to get this investigation done off the foreground."
   expect:
     - tool_call: Task
-      args.prompt: '~ "investigat"'
+      args.prompt: '~ "(?i)investigat"'
     - no_tool_call_matching:
         Bash.command: '~ "grep -r.*src"'
 

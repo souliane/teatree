@@ -186,11 +186,14 @@ def _gh_push(repo: str, branch: str) -> bool:
 
 def _gh_open_pr(repo: str, branch: str, target: str) -> str:
     base = target.removeprefix("origin/")
+    env = forge_cli_env(repo)
+    if env is None:
+        return ""
     result = run_allowed_to_fail(
         ["gh", "pr", "create", "--head", branch, "--base", base, "--fill"],
         cwd=repo,
         expected_codes=None,
-        env=forge_cli_env(),
+        env=env,
     )
     return result.stdout.strip() if result.returncode == 0 else ""
 

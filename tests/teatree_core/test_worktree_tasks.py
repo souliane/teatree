@@ -1,6 +1,7 @@
 """Per-worktree FSM task workers — state guard, runner dispatch, result shape."""
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -9,6 +10,8 @@ from django.test import TestCase, TransactionTestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.base import RunnerResult
+from teatree.core.runners.worktree_start import docker_compose_stop
+from teatree.core.worktree.worktree_env import compose_project as worktree_compose_project
 from teatree.core.worktree.worktree_tasks import (
     execute_worktree_provision,
     execute_worktree_start,
@@ -320,6 +323,82 @@ class TestWorkerRunsRunnerOutsideClaimLock(TransactionTestCase):
         def _spy_down(_project: str) -> None:
             seen["in_atomic"] = connection.in_atomic_block
 
-        with patch("teatree.core.worktree.worktree_tasks.docker_compose_down", _spy_down):
+        with (
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_down", _spy_down),
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_stop", return_value=None),
+        ):
             execute_worktree_stop.call(wt.pk)
         assert seen["in_atomic"] is False
+
+
+class TestStoppingQuietsTheTestSibling(_WorktreeTaskTest):
+    """A stopped worktree takes its ``<checkout>-test`` sibling with it (#4682).
+
+    The idle reaper demoted the worktree and left the harness stack brought up beside
+    it running, so the RAM the demotion existed to free stayed held.
+    """
+
+    def _at_checkout(self, checkout: str) -> Worktree:
+        wt = self._worktree(state=Worktree.State.PROVISIONED)
+        wt.extra = {**(wt.extra or {}), "worktree_path": checkout}
+        wt.save()
+        return wt
+
+    def test_the_test_sibling_is_stopped_alongside(self) -> None:
+        wt = self._at_checkout("/w/t3-workspaces/backend/1234-a-ticket")
+        with (
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_down", return_value=None),
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_stop", return_value=None) as stop,
+        ):
+            execute_worktree_stop.call(wt.pk)
+        stop.assert_called_once()
+        assert stop.call_args.args[0] == "1234-a-ticket-test"
+
+    def test_the_sibling_is_stopped_never_downed(self) -> None:
+        """``down`` takes the anonymous volume holding the test DB — a full replay to rebuild."""
+        wt = self._at_checkout("/w/t3-workspaces/backend/1234-a-ticket")
+        with (
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_down", return_value=None) as down,
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_stop", return_value=None),
+        ):
+            execute_worktree_stop.call(wt.pk)
+        assert [call.args[0] for call in down.call_args_list] == [worktree_compose_project(wt)]
+
+    def test_a_row_with_no_recorded_checkout_stops_nothing_extra(self) -> None:
+        """Without a directory there is no name to predict — guessing one aims at a stranger."""
+        wt = self._worktree(state=Worktree.State.PROVISIONED)
+        wt.extra = {}
+        wt.save()
+        with (
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_down", return_value=None),
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_stop") as stop,
+        ):
+            execute_worktree_stop.call(wt.pk)
+        stop.assert_not_called()
+
+    def test_a_stubborn_sibling_does_not_fail_the_demotion(self) -> None:
+        wt = self._at_checkout("/w/t3-workspaces/backend/1234-a-ticket")
+        with (
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_down", return_value=None),
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_stop", return_value="exit 1: nope"),
+        ):
+            result = execute_worktree_stop.call(wt.pk)
+        assert result["ok"] is True
+
+
+class TestDockerComposeStopNeverRemovesAnything:
+    """The stop helper's argv carries no removal flag — the property #4682 turns on."""
+
+    @pytest.mark.parametrize("forbidden", ["down", "--volumes", "-v", "--remove-orphans", "rm"])
+    def test_the_argv_carries_no_removal_verb_or_flag(self, forbidden: str) -> None:
+        seen: list[list[str]] = []
+
+        def _record(cmd, **_kwargs):
+            seen.append(list(cmd))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch("teatree.core.runners.worktree_start.run_allowed_to_fail", _record):
+            docker_compose_stop("some-test")
+
+        assert seen == [["docker", "compose", "-p", "some-test", "stop"]]
+        assert forbidden not in seen[0]

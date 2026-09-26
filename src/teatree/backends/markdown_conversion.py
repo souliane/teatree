@@ -17,10 +17,14 @@ shipping attachment bytes to a third-party endpoint.
 from pathlib import Path
 from typing import Protocol
 
+from teatree.utils.uv_constraints import uv_tool_install_hint
+
+_MARKDOWN_INSTALL = uv_tool_install_hint(
+    "uv tool install --editable . --overrides uv-overrides.txt --with 'markitdown[pdf,docx,xlsx,pptx]'"
+)
 INSTALL_HINT = (
     "markitdown is not installed. Install the optional 'markdown' extra to "
-    "enable attachment conversion, e.g. `uv tool install --editable . --overrides uv-overrides.txt "
-    "--with 'markitdown[pdf,docx,xlsx,pptx]'` or `pip install "
+    f"enable attachment conversion, e.g. `{_MARKDOWN_INSTALL}` or `pip install "
     "'markitdown[pdf,docx,xlsx,pptx]'`."
 )
 

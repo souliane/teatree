@@ -73,6 +73,19 @@ _TRAILER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "emoji-bot-footer",
         re.compile(r"^\U0001f916\s*\S"),
     ),
+    (
+        # Whole-line only, so body prose that merely mentions an assistant or AI passes.
+        "via-the-assistant",
+        re.compile(r"^\(?via (?:ai|the assistant)\)?[.!]?\s*$", re.IGNORECASE),
+    ),
+    (
+        "ai-generated",
+        re.compile(r"^\(?ai[- ]generated\)?[.!]?\s*$", re.IGNORECASE),
+    ),
+    (
+        "written-by-footer",
+        re.compile(r"^this message was written by\b", re.IGNORECASE),
+    ),
 ]
 
 

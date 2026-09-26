@@ -30,7 +30,9 @@ from teatree.core.factory.factory_signals import SIGNALS
 #: :mod:`teatree.eval.cost_bounds` — so it reaches the repo root at ``parents[4]``.
 RECIPE_PATH = Path(__file__).resolve().parents[4] / "evals" / "recipe.yaml"
 
-#: The registry ids the recipe must name — exactly, no more and no fewer.
+#: The registry ids the recipe must name — exactly, no more and no fewer. GRADED
+#: signals only: a ``VISIBILITY_SIGNALS`` row is reported, never weighted, so naming
+#: one here would force a weight rebalance for a reading that scores nothing.
 _REGISTRY_IDS: frozenset[str] = frozenset(spec.provider_id for spec in SIGNALS)
 
 #: The magnitude signals whose readings are not a 0..1 rate (``merge_latency`` in
