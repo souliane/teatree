@@ -11949,6 +11949,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              criteria (#2241).                               │
 │ rubric-grade                 Record a verifier's per-criterion PASS/FAIL on  │
 │                              the rubric (#2241).                             │
+│ rubric-show                  Print a ticket's rubric — criteria, ordinals,   │
+│                              grades, graded SHA (#4832).                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -12836,6 +12838,29 @@ Usage: t3 teatree ticket rubric-grade [OPTIONS] TICKET_ID
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree ticket rubric-show`
+
+```
+Usage: t3 teatree ticket rubric-show [OPTIONS] TICKET_ID
+
+ Print a ticket's rubric — criteria, ordinals, grades, and the graded SHA
+ (#4832).
+
+ The read seam beside ``rubric-set`` / ``rubric-grade``: a reviewer that must
+ GRADE
+ a checklist could previously only verify it, with no command to see the
+ criteria it
+ was never briefed inline. Refuses when the ticket has no rubric, the same way
+ ``rubric-grade`` does.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree review`
 
 ```
@@ -12921,6 +12946,18 @@ Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
 │                                       not the branch checkout alone. Without │
 │                                       it such a finding cannot carry         │
 │                                       blocking severity (#4251).             │
+│ --rubric-grades-json         TEXT     JSON: '[{"ordinal": 0, "status":       │
+│                                       "pass", "rationale": "..."}]'. Stamps  │
+│                                       the PR's gated ticket's rubric in the  │
+│                                       SAME transaction as the verdict,       │
+│                                       through the same                       │
+│                                       coverage/contradiction validator the   │
+│                                       reviewing-phase envelope runs — so a   │
+│                                       human transcribing an agent's grades   │
+│                                       can never accept a grading the agent's │
+│                                       own path would refuse. Omit it and     │
+│                                       this command behaves exactly as before │
+│                                       rubrics existed (#4832).               │
 │ --json                                Emit the record result as JSON on      │
 │                                       stdout.                                │
 │ --help                                Show this message and exit.            │

@@ -149,6 +149,17 @@ class Command(ReviewerPolicyCommands, MachineOutputCommand, RefusalExitTyperComm
                 "checkout alone. Without it such a finding cannot carry blocking severity (#4251).",
             ),
         ] = False,
+        rubric_grades_json: Annotated[
+            str,
+            typer.Option(
+                "--rubric-grades-json",
+                help='JSON: \'[{"ordinal": 0, "status": "pass", "rationale": "..."}]\'. Stamps the PR\'s '
+                "gated ticket's rubric in the SAME transaction as the verdict, through the same "
+                "coverage/contradiction validator the reviewing-phase envelope runs — so a human "
+                "transcribing an agent's grades can never accept a grading the agent's own path would "
+                "refuse. Omit it and this command behaves exactly as before rubrics existed (#4832).",
+            ),
+        ] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit the record result as JSON on stdout.")] = False,
     ) -> RecordResult:
         """Persist a cold-review verdict for a PR at an exact reviewed SHA.
@@ -176,6 +187,7 @@ class Command(ReviewerPolicyCommands, MachineOutputCommand, RefusalExitTyperComm
                 ticket_id=ticket_id,
                 lock_holder=lock_holder,
                 merge_result_retake=merge_result_retake,
+                rubric_grades_json=rubric_grades_json,
             ),
         )
         self._emit(result, human, json_output=json_output)

@@ -1285,6 +1285,10 @@
           "name": "rubric-grade"
         },
         {
+          "help": "Print a ticket's rubric \u2014 criteria, ordinals, grades, and the graded SHA (#4832)",
+          "name": "rubric-show"
+        },
+        {
           "help": "Record the DoD local-E2E gate escape hatch for a ticket (#88)",
           "name": "dod-override"
         },

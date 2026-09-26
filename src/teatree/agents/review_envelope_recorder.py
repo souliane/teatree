@@ -27,7 +27,6 @@ from teatree.core.models import (
     ReviewVerdict,
     ReviewVerdictError,
     Rubric,
-    RubricCriterion,
     RubricError,
     Task,
 )
@@ -40,6 +39,7 @@ from teatree.core.models.reviewer_identity import (
 )
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
+from teatree.core.review.rubric_grading import validate_rubric_grades
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
 
@@ -122,18 +122,14 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
 
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
-    returned = envelope.get("rubric_grades")
-    try:
-        # Scoped to a rubric that EXISTS, like both refusals below — with none, nothing is stamped.
-        grades: list[RubricGrade] = [] if rubric is None else Rubric.normalize_grades(returned)
-    except RubricError as exc:
-        return f"{MALFORMED_RUBRIC_GRADES_PREFIX}{exc}"
-    return (
-        _rubric_coverage_error(rubric, grades, returned=returned)
-        or _merge_safe_over_fail_error(rubric, envelope, grades)
-        or _record_verdict_and_grades(task, envelope, target=target, rubric=rubric, grades=grades)
-        or _settle_recorded_verdict(task, target, rubric=rubric, dispatch_head=dispatch_head)
+    coverage_error, grades = validate_rubric_grades(
+        rubric, envelope.get("rubric_grades"), verdict=str(envelope.get("verdict", ""))
     )
+    if coverage_error:
+        return f"{MALFORMED_RUBRIC_GRADES_PREFIX}{coverage_error}"
+    return _record_verdict_and_grades(
+        task, envelope, target=target, rubric=rubric, grades=grades
+    ) or _settle_recorded_verdict(task, target, rubric=rubric, dispatch_head=dispatch_head)
 
 
 def _recorded_reviewer_identity(target: ReviewTarget, envelope: "ReviewVerdictEnvelope") -> str:
@@ -151,81 +147,6 @@ def _recorded_reviewer_identity(target: ReviewTarget, envelope: "ReviewVerdictEn
     if returned and (is_independent_reviewer_identity(returned) or is_non_reviewer_role(returned)):
         return returned
     return assigned_reviewer_identity(target.pr_id)
-
-
-def _rubric_coverage_error(rubric: "Rubric | None", grades: "list[RubricGrade]", *, returned: object) -> str:
-    """Refuse a verdict that leaves any criterion of *rubric* ungraded, or ``""``.
-
-    ORDERING IS LOAD-BEARING, which is why this runs BEFORE any write.
-    ``ReviewVerdict.record`` retires the per-head claim and releases the review lock in
-    the same transaction that records the verdict — so a verdict written over a
-    half-graded rubric leaves nothing to re-arm review, while the done-gate goes on
-    refusing the merge for the PENDING criterion. The head is then unmergeable forever.
-
-    A ticket with no rubric, and a PR no ticket owns, owe no grades at all: that is
-    byte-for-byte the subject ``core.merge.ticket_gates`` already skips, and widening it
-    here would refuse a colleague's PR the merge gate never grades.
-    """
-    if rubric is None:
-        return ""
-    ungraded = rubric.ungraded_ordinals(grades)
-    if not ungraded:
-        return ""
-    named = ", ".join(f"#{ordinal}" for ordinal in ungraded)
-    return (
-        f"{MALFORMED_RUBRIC_GRADES_PREFIX}criteria {named} of ticket {rubric.ticket.pk} are ungraded "
-        f"({_returned_grades_phrase(returned)}) — "
-        f"a verdict that leaves a criterion PENDING records nothing, because recording it would retire "
-        f"this head's review claim while the done-gate still refuses the merge, leaving the head "
-        f"unmergeable with no reviewer left to re-arm. You are the independent verifier: grade EVERY "
-        f"criterion and return the verdict again, as "
-        f'"rubric_grades": [{{"ordinal": <int>, "status": "pass"|"fail", "rationale": "<what proves it>"}}] '
-        f"— a PASS cites the test that proves it, a FAIL needs no citation"
-    )
-
-
-def _returned_grades_phrase(returned: object) -> str:
-    """What the envelope actually carried under ``rubric_grades`` — the actionable half.
-
-    Naming only the criteria leaves a reviewer that returned ``{"0": "pass"}`` reading a
-    refusal about coverage when its payload was never a list of grades at all.
-    """
-    if returned is None:
-        return 'you returned no "rubric_grades" at all'
-    if isinstance(returned, list):
-        return f'your "rubric_grades" carried {len(returned)} grade(s)'
-    return f'your "rubric_grades" was a {type(returned).__name__}, not a JSON array'
-
-
-def _merge_safe_over_fail_error(
-    rubric: "Rubric | None", envelope: "ReviewVerdictEnvelope", grades: "list[RubricGrade]"
-) -> str:
-    """Refuse a ``merge_safe`` verdict carrying a criterion the same envelope grades FAIL.
-
-    The sibling of ``ReviewVerdict._assert_checks_admit_merge_safe`` one field over: that
-    one refuses merge_safe over checks the reviewer itself reported RED, this one over an
-    acceptance criterion the reviewer itself grades unmet. Both are a contradiction between
-    two fields ONE reviewer wrote in ONE envelope, and neither is a statement about the tree.
-
-    Recorded, it retires the per-head claim and releases the lock, and the done-gate then
-    refuses the merge on a FAIL no bypass overrides — recoverable only by a push that mints
-    a new head. Refusing before the write keeps the head re-reviewable instead.
-
-    Scoped to a rubric that EXISTS, like the coverage refusal beside it: with no rubric the
-    grade is stamped nowhere, so there is no FAIL for the done-gate to refuse the merge on.
-    """
-    if rubric is None or str(envelope.get("verdict", "")).strip().lower() != ReviewVerdict.Verdict.MERGE_SAFE:
-        return ""
-    failed = [grade["ordinal"] for grade in grades if grade["status"].strip().lower() == RubricCriterion.Status.FAIL]
-    if not failed:
-        return ""
-    named = ", ".join(f"#{ordinal}" for ordinal in failed)
-    return (
-        f"{MALFORMED_RUBRIC_GRADES_PREFIX}your verdict is merge_safe but you graded criteria {named} FAIL — "
-        f"one envelope cannot both vouch for the head and record an unmet acceptance criterion, and a FAIL is "
-        f"never overridable, so recording this would retire the review claim onto a merge the done-gate refuses "
-        f"forever. Return `hold` if the criteria really are unmet, or re-grade them honestly if they are not"
-    )
 
 
 def _record_verdict_and_grades(

@@ -1,18 +1,22 @@
-"""The ``ticket rubric-set`` / ``rubric-grade`` operator commands, factored out of ``ticket.py`` (#2241).
+"""The ``ticket rubric-set`` / ``rubric-grade`` / ``rubric-show`` operator commands (#2241, #4832).
 
-The two rubric commands live here as a :class:`RubricCommands` mixin that the
+The three rubric commands live here as a :class:`RubricCommands` mixin that the
 ``ticket`` :class:`~django_typer.management.TyperCommand` inherits from, so they
-mount under ``t3 <overlay> ticket rubric-set`` / ``rubric-grade`` while their LOC
-stays out of the (already cap-bound) ``ticket.py`` god-module. django-typer
+mount under ``t3 <overlay> ticket rubric-set`` / ``rubric-grade`` / ``rubric-show`` while
+their LOC stays out of the (already cap-bound) ``ticket.py`` god-module. django-typer
 collects ``@command`` methods from every ``TyperCommand`` base in the MRO, so the
 mixin is the idiomatic split — the CLI surface is unchanged.
 
 ``rubric-set`` takes EXPLICIT acceptance criteria (a JSON array of strings or
 ``{"text": ...}`` objects) beside the plan producer; ``rubric-grade``
 records a verifier's per-criterion PASS/FAIL through the guarded
-:meth:`RubricCriterion.record_grade` factory. The pure parse/validate/mutate
-helpers raise :class:`RubricCommandError` (or :class:`RubricError`) on a refusal,
-which the command translates to a ``stderr`` line + a nonzero exit.
+:meth:`RubricCriterion.record_grade` factory; ``rubric-show`` is the read seam a
+reviewer needs to grade the checklist it was never handed inline (souliane/teatree#4832 —
+a cold-reviewer sub-agent could verify every criterion but had no way to SEE the
+rubric it must grade, short of an operator transcribing it by hand). The pure
+parse/validate/mutate helpers raise :class:`RubricCommandError` (or
+:class:`RubricError`) on a refusal, which the command translates to a ``stderr``
+line + a nonzero exit.
 """
 
 import json
@@ -43,6 +47,22 @@ class RubricGradeResult(TypedDict, total=False):
     rubric_id: int
     graded_count: int
     fully_passed: bool
+    error: str
+
+
+class RubricCriterionResult(TypedDict):
+    ordinal: int
+    text: str
+    status: str
+    grader_identity: str
+    reviewed_sha: str
+    rationale: str
+
+
+class RubricShowResult(TypedDict, total=False):
+    ticket_id: int
+    rubric_id: int
+    criteria: list[RubricCriterionResult]
     error: str
 
 
@@ -209,12 +229,47 @@ class RubricCommands(TyperCommand):
             "fully_passed": fully_passed,
         }
 
+    @command(name="rubric-show")
+    def rubric_show(self, ticket_id: int) -> RubricShowResult:
+        """Print a ticket's rubric — criteria, ordinals, grades, and the graded SHA (#4832).
+
+        The read seam beside ``rubric-set`` / ``rubric-grade``: a reviewer that must GRADE
+        a checklist could previously only verify it, with no command to see the criteria it
+        was never briefed inline. Refuses when the ticket has no rubric, the same way
+        ``rubric-grade`` does.
+        """
+        ticket = self._resolve_rubric_ticket(ticket_id)
+        rubric = Rubric.objects.active_for_ticket(ticket)
+        if rubric is None:
+            self.stderr.write(f"  rubric-show refused: ticket {ticket.pk} has no rubric (set one with rubric-set)")
+            raise SystemExit(1)
+        criteria: list[RubricCriterionResult] = [
+            {
+                "ordinal": criterion.ordinal,
+                "text": criterion.text,
+                "status": criterion.status,
+                "grader_identity": criterion.grader_identity,
+                "reviewed_sha": criterion.reviewed_sha,
+                "rationale": criterion.rationale,
+            }
+            for criterion in rubric.criteria.all()
+        ]
+        for entry in criteria:
+            graded_sha = f" @{entry['reviewed_sha'][:8]}" if entry["reviewed_sha"] else ""
+            self.stdout.write(
+                f"  #{entry['ordinal']} [{entry['status']}]{graded_sha} {entry['text']}"
+                + (f" — {entry['rationale']}" if entry["rationale"] else "")
+            )
+        return {"ticket_id": int(ticket.pk), "rubric_id": int(rubric.pk), "criteria": criteria}
+
 
 __all__ = [
     "RubricCommandError",
     "RubricCommands",
+    "RubricCriterionResult",
     "RubricGradeResult",
     "RubricSetResult",
+    "RubricShowResult",
     "parse_criteria",
     "parse_grades",
     "set_rubric",

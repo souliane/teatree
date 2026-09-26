@@ -624,6 +624,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
 | `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |
+| `rubric-show` | Print a ticket's rubric — criteria, ordinals, grades, and the graded SHA (#4832) |
 | `dod-override` | Record the DoD local-E2E gate escape hatch for a ticket (#88) |
 | `e2e-bypass` | Record a single-use user bypass of the mandatory-E2E gate (#1967) |
 | `create-sub` | Create a child work item nested under a parent issue/work item |

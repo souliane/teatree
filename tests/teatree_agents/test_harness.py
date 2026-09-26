@@ -1228,9 +1228,9 @@ class TestPydanticAiStepCap(TestCase):
         assert asyncio.run(drive()) is True
 
     def test_default_setting_is_a_real_turn_budget(self) -> None:
-        # A live Lane-B task runs ~16 model requests, so the cap is a generous budget
-        # well above that reality (the old 5 refused mid-task before ``open()``).
-        assert get_effective_settings().pydantic_ai_request_limit == 40
+        # A live coding run's median is ~139 requests; a capped run is recorded FAILED
+        # with its spend lost, so the shipped default is generous headroom above that.
+        assert get_effective_settings().pydantic_ai_request_limit == 3000
 
 
 class TestPydanticAiMaxTokens(TestCase):

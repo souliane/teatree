@@ -395,6 +395,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("attachments", "Print (and with --fetch download) a ticket's referenced attachments."),
             ("rubric-set", "Restate a ticket's rubric from explicit JSON criteria (#2241)."),
             ("rubric-grade", "Record a verifier's per-criterion PASS/FAIL on the rubric (#2241)."),
+            ("rubric-show", "Print a ticket's rubric — criteria, ordinals, grades, graded SHA (#4832)."),
         ],
         core_dispatch=True,
     ),

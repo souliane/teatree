@@ -180,16 +180,17 @@ class _ModeHarnessSettings:
     # ``UsageLimits(request_limit=...)`` on every ``PydanticAiHarnessSession`` run
     # so a cheap-model maker cannot drift on a long tool loop — the FSM already
     # chunks work into phases and the orchestrator re-dispatches, so a per-run cap
-    # composes with orchestration rather than killing tasks. The default is a REAL
-    # turn budget: a live Lane-B task runs ~16 model requests, so the earlier cap of
-    # 5 refused mid-task before the run ever reached ``open()``. 40 clears that
-    # measured reality with generous headroom; a positive caller ``max_turns`` (an
+    # composes with orchestration rather than killing tasks. A capped run is
+    # recorded FAILED with its spend lost, and a live coding run's median is ~139
+    # model requests — far above the earlier 40, which stranded most runs mid-task
+    # before ``open()`` ever returned. 3000 clears that measured reality with
+    # generous headroom; a positive caller ``max_turns`` (an
     # ``OneShotSpec`` cap, an eval override) still wins over it (``harness.py`` /
     # ``eval/pydantic_ai_runner.py``). Applies ONLY to the ``pydantic_ai`` harness
     # (the default ``claude_sdk`` harness is bounded by the loop watchdog instead),
     # so it is inert until an overlay opts into ``agent_harness=pydantic_ai``. ``0``
     # disables the cap (the escape hatch). Per-overlay overridable.
-    pydantic_ai_request_limit: int = 40
+    pydantic_ai_request_limit: int = 3000
     # Per-request output-token ceiling for the ``pydantic_ai`` harness, passed as the base
     # ``max_tokens`` ``ModelSettings`` key on every run (both the OpenAI-compatible and native Anthropic
     # bindings honour it). pydantic_ai's Anthropic binding otherwise defaults to 4096, which
@@ -250,7 +251,7 @@ class _ModeHarnessSettings:
     # only when the config value is still at its default. ``0`` disables a dimension —
     # matching the shipped-off turn/cost caps (only the generous runtime ceiling is
     # armed by default). Per-overlay overridable.
-    watchdog_max_runtime_seconds: int = 3 * 60 * 60
+    watchdog_max_runtime_seconds: int = 24 * 60 * 60
     watchdog_max_turns: int = 0
     watchdog_max_cost_usd: float = 0.0
     # Per-TICKET cumulative cost cap for the agent lane (#885 / #398-4, F9.5), folded
@@ -282,7 +283,7 @@ class _ModeHarnessSettings:
     # (``agents/runner_truncation``), so the ceiling is raised deliberately rather
     # than the work being quietly truncated. ``0`` leaves the spawn uncapped (the
     # escape hatch, matching the ceilings above). Per-overlay overridable.
-    agent_max_turns: int = 250
+    agent_max_turns: int = 3000
 
 
 @dataclass
@@ -887,12 +888,12 @@ class _RetentionSettings:
     # ``max_concurrent_local_stacks`` slot, and ``workspace relocate`` — busy
     # forever. An open Session whose last recorded activity (its own
     # ``started_at``, its tasks' heartbeats, its attempts' start times) is older
-    # than this many hours is NOT live. 12h is 4x the ``watchdog_max_runtime_seconds``
+    # than this many hours is NOT live. 96h is 4x the ``watchdog_max_runtime_seconds``
     # hard cap on a single agent run, so it cannot mask real in-flight work — and
     # an active (PENDING/CLAIMED) task keeps a ticket busy with NO time bound at
     # all, independently of this. ``0`` disables the bound (every open Session is
     # live). Per-overlay overridable.
-    session_stale_after_hours: int = 12
+    session_stale_after_hours: int = 96
 
 
 @dataclass

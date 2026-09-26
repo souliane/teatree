@@ -71,9 +71,9 @@ class TestTierConstantIsSingleSource:
     def test_three_named_tiers(self) -> None:
         assert set(TIER_MODELS) == {"frontier", "balanced", "cheap"}
 
-    def test_frontier_tier_is_opus_5(self) -> None:
-        assert TIER_MODELS["frontier"] == "claude-opus-5"
-        assert resolve_tier("frontier") == "claude-opus-5"
+    def test_frontier_tier_is_opus_5_5(self) -> None:
+        assert TIER_MODELS["frontier"] == "claude-opus-5-5"
+        assert resolve_tier("frontier") == "claude-opus-5-5"
 
     def test_resolve_tier_reads_the_constant(self) -> None:
         for tier, model in TIER_MODELS.items():
@@ -104,6 +104,7 @@ class TestDefaultPhaseTiers:
             "debugging": "frontier",
             "reviewing": "frontier",
             "retrospecting": "frontier",
+            "architectural_review": "frontier",
             "testing": "balanced",
             "shipping": "balanced",
             "requesting_review": "cheap",
@@ -344,7 +345,7 @@ class TestTierEffortConstantIsSingleSource:
     def test_only_reasoning_tiers_carry_effort(self) -> None:
         # frontier + balanced carry an effort; cheap (Haiku) is deliberately absent
         # so it inherits the SDK default (Haiku rejects the effort lever).
-        assert TIER_EFFORT == {"frontier": "xhigh", "balanced": "xhigh"}
+        assert TIER_EFFORT == {"frontier": "xhigh", "balanced": "medium"}
 
     def test_resolve_tier_effort_reads_the_constant(self) -> None:
         for tier, effort in TIER_EFFORT.items():
@@ -450,7 +451,7 @@ class TestHarnessScopedEffort:
         assert "max" not in HARNESS_EFFORT_SCALE[AgentHarness.PYDANTIC_AI]
 
     def test_shipped_defaults_are_valid_on_both_harnesses(self) -> None:
-        # The no-op guarantee: the shipped xhigh/high values never get dropped
+        # The no-op guarantee: the shipped per-tier effort values never get dropped
         # by the harness-scale check on either harness.
         for harness in AgentHarness:
             for tier, effort in TIER_EFFORT.items():

@@ -82,12 +82,6 @@ _SDK_BUNDLED_CLI_VERSION = "2.1.277"
 #: The deployed runtime's pin: the version the factory host runs today.
 _RUNTIME_CLI_VERSION = "2.1.277"
 
-_FRONTIER_MODEL = TIER_MODELS["frontier"]
-_FRONTIER_MODEL_CLI_FLOOR = MODEL_MINIMUM_CLI_VERSIONS[_FRONTIER_MODEL]
-
-#: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
-_PYRIGHT_VERSION = "1.1.411"
-
 #: Fork delta: this fork runs the eval lanes from its own root pipeline, so the vendored
 #: core carries no `.gitlab-ci.yml`. Upstream's copy of this set keeps that entry.
 #: The oldest CLI the API accepts for the models teatree dispatches. Under it every
@@ -98,6 +92,17 @@ _PYRIGHT_VERSION = "1.1.411"
 #: sat under it with this suite green (souliane/teatree#4704). Raise it only from an
 #: observed API refusal, never speculatively.
 _MODEL_MINIMUM_CLI_VERSION = "2.1.251"
+
+_FRONTIER_MODEL = TIER_MODELS["frontier"]
+#: A frontier model with no dedicated entry in ``MODEL_MINIMUM_CLI_VERSIONS`` (a brand
+#: new id the installed CLI's bundled catalog doesn't list yet — see
+#: ``model_tiering.MODEL_MINIMUM_CLI_VERSIONS``'s own "known to serve" scope) falls back
+#: to the generic API floor rather than raising: absence of a decoded floor is not
+#: evidence of incompatibility, and this file must never assert a version speculatively.
+_FRONTIER_MODEL_CLI_FLOOR = MODEL_MINIMUM_CLI_VERSIONS.get(_FRONTIER_MODEL, _MODEL_MINIMUM_CLI_VERSION)
+
+#: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
+_PYRIGHT_VERSION = "1.1.411"
 
 _EVAL_TEST_SITES = frozenset(
     {

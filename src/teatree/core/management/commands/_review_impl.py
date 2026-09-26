@@ -16,14 +16,19 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NoReturn, TypedDict
 
+from django.db import transaction
+
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import CodeHostQuery, _looks_like_owner_repo
 from teatree.core.merge.head_read_diagnosis import read_credential_state
+from teatree.core.merge.ticket_resolution import resolve_gated_ticket
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE
-from teatree.core.models import ReviewVerdict, ReviewVerdictError, Ticket
+from teatree.core.models import ReviewVerdict, ReviewVerdictError, Rubric, RubricError, Ticket
 from teatree.core.models.review_verdict import Finding, FindingDict
+from teatree.core.models.types import RubricGrade
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
+from teatree.core.review.rubric_grading import validate_rubric_grades
 from teatree.core.review.verdict_findings import (
     FindingsRenderError,
     findings_payload,
@@ -47,6 +52,7 @@ class RecordResult(TypedDict, total=False):
     findings_count: int
     findings_published: bool
     findings_publish_note: str
+    rubric_graded_count: int
 
 
 class StatusResult(TypedDict, total=False):
@@ -140,6 +146,39 @@ class RecordRequest:
     ticket_id: int = 0
     lock_holder: str = ""
     merge_result_retake: bool = False
+    rubric_grades_json: str = ""
+
+
+def _resolve_requested_rubric_grades(
+    command: "TyperCommand", request: RecordRequest
+) -> tuple[Rubric | None, list[RubricGrade]]:
+    """Validate ``--rubric-grades-json`` against the PR's gated ticket, or refuse.
+
+    ``""`` (the default) is a no-op — BYTE-IDENTICAL to before this flag existed, so an
+    existing caller that has never heard of rubrics keeps recording verdicts unchanged.
+    Only an explicit payload resolves the gated ticket (:func:`resolve_gated_ticket` — the
+    SAME resolver the reviewing-phase recorder uses) and runs it through the shared
+    coverage/contradiction validator, so a human operator transcribing an agent's grades
+    can never accept a grading the agent's own envelope path would refuse.
+    """
+    if not request.rubric_grades_json.strip():
+        return None, []
+    try:
+        payload = json.loads(request.rubric_grades_json)
+    except json.JSONDecodeError as exc:
+        _refuse(command, f"record refused: --rubric-grades-json is not valid JSON ({exc})")
+    gated_ticket = resolve_gated_ticket(slug=request.slug, pr_id=request.pr_id)
+    rubric = Rubric.objects.active_for_ticket(gated_ticket) if gated_ticket is not None else None
+    if rubric is None:
+        _refuse(
+            command,
+            f"record refused: --rubric-grades-json was given but {request.slug}#{request.pr_id}'s gated "
+            "ticket has no rubric to grade",
+        )
+    coverage_error, grades = validate_rubric_grades(rubric, payload, verdict=request.verdict)
+    if coverage_error:
+        _refuse(command, f"record refused: {coverage_error}")
+    return rubric, grades
 
 
 def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[RecordResult, str]:
@@ -162,23 +201,33 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
     except (TypeError, ValueError) as exc:
         _refuse(command, f"record refused: {exc}")
 
+    rubric, grades = _resolve_requested_rubric_grades(command, request)
+
     try:
-        recorded = ReviewVerdict.record(
-            pr_id=request.pr_id,
-            slug=request.slug,
-            reviewed_sha=request.reviewed_sha,
-            verdict=request.verdict,
-            reviewer_identity=request.reviewer_identity,
-            findings=findings,
-            blast_class=request.blast_class,
-            gh_verify_result=request.gh_verify_result,
-            ticket=resolved_ticket,
-            lock_holder=request.lock_holder,
-            changed_files=changed_file_set_for_findings(findings, slug=request.slug, pr_id=request.pr_id),
-            merge_result_retake=request.merge_result_retake,
-            live_checks=live_checks_at,
-        )
+        with transaction.atomic():
+            recorded = ReviewVerdict.record(
+                pr_id=request.pr_id,
+                slug=request.slug,
+                reviewed_sha=request.reviewed_sha,
+                verdict=request.verdict,
+                reviewer_identity=request.reviewer_identity,
+                findings=findings,
+                blast_class=request.blast_class,
+                gh_verify_result=request.gh_verify_result,
+                ticket=resolved_ticket,
+                lock_holder=request.lock_holder,
+                changed_files=changed_file_set_for_findings(findings, slug=request.slug, pr_id=request.pr_id),
+                merge_result_retake=request.merge_result_retake,
+                live_checks=live_checks_at,
+            )
+            graded_count = 0
+            if rubric is not None:
+                graded_count = rubric.apply_grades(
+                    grades, grader_identity=request.reviewer_identity, reviewed_sha=recorded.reviewed_sha
+                )
     except ReviewVerdictError as exc:
+        _refuse(command, f"record refused: {exc}")
+    except RubricError as exc:
         _refuse(command, f"record refused: {exc}")
 
     published, publish_line = _publish_on_record(recorded)
@@ -187,6 +236,7 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
             f"  recorded {recorded.verdict} verdict {recorded.pk} for "
             f"{recorded.slug}#{recorded.pr_id}@{recorded.reviewed_sha[:8]} ({len(findings)} finding(s))"
         ),
+        *([f"  graded {graded_count} rubric criteria"] if rubric is not None else []),
         *emit_review_done_signal(recorded),
         *trigger_sweep(recorded),
         publish_line,
@@ -200,6 +250,7 @@ def record_result(command: "TyperCommand", request: RecordRequest) -> tuple[Reco
         "findings_count": len(findings),
         "findings_published": published,
         "findings_publish_note": publish_line.strip(),
+        **({"rubric_graded_count": graded_count} if rubric is not None else {}),
     }
     return payload, "\n".join(line for line in lines if line)
 

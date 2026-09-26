@@ -268,6 +268,55 @@ class TestRubricGradeCommand(TestCase):
         ]
 
 
+class TestRubricShowCommand(TestCase):
+    """`t3 ticket rubric-show` — the read seam a reviewer needs to see what it must grade (#4832)."""
+
+    def _ticket_with_rubric(self) -> Ticket:
+        ticket = _ticket()
+        call_command("ticket", "rubric-set", str(ticket.pk), "--criteria-json", json.dumps(["AC1", "AC2"]))
+        return ticket
+
+    def test_show_lists_every_criterion_pending(self) -> None:
+        ticket = self._ticket_with_rubric()
+        result = cast("dict[str, object]", call_command("ticket", "rubric-show", str(ticket.pk)))
+        criteria = cast("list[dict[str, object]]", result["criteria"])
+        assert [c["text"] for c in criteria] == ["AC1", "AC2"]
+        assert [c["ordinal"] for c in criteria] == [0, 1]
+        assert all(c["status"] == RubricCriterion.Status.PENDING for c in criteria)
+        assert all(c["reviewed_sha"] == "" for c in criteria)
+
+    def test_show_reflects_a_recorded_grade(self) -> None:
+        ticket = self._ticket_with_rubric()
+        call_command(
+            "ticket",
+            "rubric-grade",
+            str(ticket.pk),
+            "--grades-json",
+            json.dumps([{"ordinal": 0, "status": "pass", "rationale": _CITATION}]),
+            "--grader-identity",
+            "cold-reviewer",
+            "--reviewed-sha",
+            _SHA,
+        )
+        result = cast("dict[str, object]", call_command("ticket", "rubric-show", str(ticket.pk)))
+        criteria = cast("list[dict[str, object]]", result["criteria"])
+        graded, pending = criteria[0], criteria[1]
+        assert graded["status"] == RubricCriterion.Status.PASS
+        assert graded["reviewed_sha"] == _SHA
+        assert graded["grader_identity"] == "cold-reviewer"
+        assert graded["rationale"] == _CITATION
+        assert pending["status"] == RubricCriterion.Status.PENDING
+
+    def test_show_refuses_when_no_rubric(self) -> None:
+        ticket = _ticket()
+        with pytest.raises(SystemExit):
+            call_command("ticket", "rubric-show", str(ticket.pk))
+
+    def test_show_unknown_ticket_exits_nonzero(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("ticket", "rubric-show", "999999")
+
+
 class TestParseGrades(TestCase):
     """The CLI parser yields the same :class:`RubricGrade` shape the envelope carries.
 

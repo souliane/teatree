@@ -21,7 +21,7 @@ from teatree.utils.thread_db import close_thread_db_connections
 # "Claude session spins on the same error" symptom. Absolute turn/cost budget
 # caps are #398-4's responsibility, so they default off here.
 _DEFAULT_WATCHDOG = {
-    "max_runtime_seconds": 3 * 60 * 60,  # 3h — well past any healthy phase task
+    "max_runtime_seconds": 24 * 60 * 60,  # 24h — matches UserSettings.watchdog_max_runtime_seconds
     "max_turns": 0,  # 0 = disabled
     "max_cost_usd": 0.0,  # 0 = disabled
 }

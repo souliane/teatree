@@ -80,6 +80,7 @@ _KILL_SWITCH_MODELS: frozenset[str] = frozenset(
         "claude-opus-4-7",
         "claude-opus-4-8",
         "claude-opus-5",
+        "claude-opus-5-5",  # dated point-release of a native-1M base; every such pair here stays native-1M
         "claude-sonnet-5",
         "claude-fable-5",
         "claude-fable-5-1",

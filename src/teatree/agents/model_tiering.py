@@ -80,7 +80,7 @@ from teatree.core.cost import FAMILY_TO_TIER, PRICE_TABLE, tier_of_model, tier_r
 # (merged OVER this default), so adopting a new model is one edit here or one
 # DB row — no scenario, test, or dispatch edit.
 TIER_MODELS: dict[str, str] = {
-    "frontier": "claude-opus-5",
+    "frontier": "claude-opus-5-5",
     "balanced": "claude-sonnet-5",
     "cheap": "claude-haiku-4-5",
 }
@@ -112,7 +112,7 @@ PYDANTIC_AI_TIER_MODELS: dict[str, str] = {}
 # its spawns run effortless (inherit the SDK default, emit no ``--effort``).
 TIER_EFFORT: dict[str, str] = {
     "frontier": "xhigh",
-    "balanced": "xhigh",
+    "balanced": "medium",
 }
 
 # HARNESS-SCOPED effort vocabularies ([#2885](https://github.com/souliane/teatree/issues/2885)):
@@ -149,16 +149,17 @@ DEFAULT_TIER = "balanced"
 _NON_THINKING_TIER = "haiku"
 
 # Default phase -> abstract TIER mapping. The genuine-reasoning phases
-# (planning, coding, debugging, reviewing, retrospecting) get ``frontier``; the
-# mechanical-but-non-trivial phases (testing, shipping) get ``balanced``; the
-# pure-handoff phase (requesting_review) gets ``cheap``. A phase NOT in this dict
-# resolves to :data:`DEFAULT_TIER`.
+# (planning, coding, debugging, reviewing, retrospecting, architectural_review) get
+# ``frontier``; the mechanical-but-non-trivial phases (testing, shipping) get
+# ``balanced``; the pure-handoff phase (requesting_review) gets ``cheap``. A phase
+# NOT in this dict resolves to :data:`DEFAULT_TIER`.
 DEFAULT_PHASE_MODELS: dict[str, str] = {
     "planning": "frontier",
     "coding": "frontier",
     "debugging": "frontier",
     "reviewing": "frontier",
     "retrospecting": "frontier",
+    "architectural_review": "frontier",
     "testing": "balanced",
     "shipping": "balanced",
     "requesting_review": "cheap",
