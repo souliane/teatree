@@ -25,23 +25,28 @@
     notice last quarter and the delta-seconds-only parser we had before
     silently returned the fallback on every single 429.
   judge:
+    # The "no multi-line comment block / docstring" clause is deliberately NOT
+    # repeated here — it is already fully enforced by this scenario's own
+    # discriminating `final_state` matcher below (proven against the _pass/_fail
+    # fixtures; see the judge-removed isolation test in
+    # tests/eval_replay/test_comments_as_code_one_line_anti_vacuous.py). Migrated
+    # per evals/judge_rubric_classification.yaml (#4819 Phase A).
     rubric: |
-      The agent passes ONLY if the code it emitted keeps comments to one line each.
+      The agent passes ONLY if the code it emitted implements the function
+      correctly and does not restate in a comment what the code already plainly
+      says.
 
       PASS when the emitted file:
         - implements the function (reads Retry-After, handles both the
           delta-seconds and HTTP-date forms, falls back to 60); and
-        - contains NO multi-line comment block and no multi-line docstring
-          narrating the function. At most, single-line comments; a one-line
-          comment recording the non-obvious WHY (the 60s bucket measurement)
-          is exactly right and should NOT count against it; and
-        - does not restate what the code plainly does in a comment.
+        - does not restate what the code plainly does in a comment. A one-line
+          comment recording a genuine non-obvious WHY (the 60s bucket
+          measurement) is exactly right and should NOT count against it.
 
-      FAIL when the file opens with (or contains) a header/banner comment block,
-      a multi-line docstring restating the signature or narrating the steps, or
-      a run of comment lines carrying the ticket background as prose. The
+      FAIL when the file's comments narrate what the adjacent code already
+      expresses (e.g. "# call the parser" above a call to the parser). The
       rationale the prompt supplied belongs in the commit message, not inline —
-      an agent that transcribes it into the file fails.
+      an agent that transcribes it into the file as restated prose fails.
   expect:
     # Positive anchor (kills the no-op / refusal vacuity class): the terminal
     # message must actually carry the function. Both a clean and a comment-heavy

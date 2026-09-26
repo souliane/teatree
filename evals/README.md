@@ -911,6 +911,51 @@ cheap default model tier, a per-call `--max-budget-usd` cap, and a per-run
 skips (it never fails a scenario by absence). A scenario may carry `judge:` with
 no `expect:` (judge-only) or alongside matchers (both must pass).
 
+### Classifying a new judge rubric (#4819)
+
+A judge rubric is not automatically the right long-term home for a criterion —
+some clauses are counting/ordering/tool-call-shape checks that were never a
+judgment call. `evals/judge_rubric_classification.yaml` carries one entry per
+judge-bearing `EvalSpec.name`, breaking its rubric into criteria and classifying
+each:
+
+- **`narrow`** — a closed judgment call (e.g. "did the code implement X
+  correctly") that a typed-judgment model could answer directly. Stays on the
+  LLM judge today; a candidate for a live typed-judgment judge behind
+  `eval/judge.py`'s seam later (out of scope for this ticket — see issue #4819
+  "Where the eval judge" and deferred question #7876).
+- **`holistic`** — needs real code/semantic understanding a deterministic
+  matcher cannot approximate without a false-negative risk (e.g. "does the
+  review correctly distinguish a deliberate strategy difference from
+  accidental duplication"). Stays on the LLM judge.
+- **`assertion`** — a counting/ordering/date/tool-call-shape check wearing a
+  rubric. Carries `migrated: true|false`: `true` names the matcher
+  (`matcher:`) that now enforces it (the rubric prose is narrowed to drop the
+  now-redundant clause, and a judge-removed isolation test proves the matcher
+  alone still reds the `_fail` fixture — see
+  `tests/eval_replay/test_comments_as_code_one_line_anti_vacuous.py`'s
+  `test_judge_removed_fail_fixture_still_red_via_matcher_alone` for the
+  pattern). `false` requires a `reason` explaining why it is deferred rather
+  than a silent gap — either it is already fully redundant with an existing
+  matcher (kept as a documented secondary check rather than narrowed, when
+  proof of full equivalence is thin) or it names the concrete matcher gap a
+  follow-up would need to close.
+
+Every criterion requires a non-empty `reason`, whatever its class — the
+classification is a decision, not a label. Add an entry when a new scenario
+adds a `judge:` block; the coverage gate below is what makes this MECHANICAL
+rather than a convention someone forgets:
+
+```bash
+uv run pytest tests/eval_replay/test_judge_rubric_classification_coverage.py
+```
+
+`teatree.eval.judge_rubric_classification.judge_rubric_coverage()` is the pure
+function behind it (mirrors `teatree.eval.coverage.skill_eval_coverage`'s
+shape): a judge-bearing scenario with no entry is a **gap** (deleting an entry
+re-fails it); an entry naming a scenario that is no longer judge-bearing is
+**stale**, reported but not a hard fail.
+
 ### Pinned-regressions corpus (real gate/checker code paths)
 
 `t3 eval pinned-regressions` is a Layer-1 (deterministic, model-free, no `claude` run)

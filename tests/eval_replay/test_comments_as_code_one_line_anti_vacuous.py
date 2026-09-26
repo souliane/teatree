@@ -81,3 +81,20 @@ def test_removing_only_the_discriminating_tooth_turns_fail_green(name: str, tmp_
 @pytest.mark.parametrize("name", _NAMES)
 def test_lane_is_clean_room(name: str) -> None:
     assert _spec(name).lane == "clean_room"
+
+
+def test_judge_removed_fail_fixture_still_red_via_matcher_alone(tmp_path: Path) -> None:
+    """Proves the #4819 rubric narrowing lost no coverage.
+
+    comments_as_code_one_line_author's judge was narrowed (#4819 Phase A): the
+    "no multi-line comment block" clause was dropped from the rubric because the
+    discriminating `final_state` matcher already enforces it. With the judge
+    removed entirely, the matcher alone must still red the _fail fixture (the
+    block-comment author).
+    """
+    spec = _spec("comments_as_code_one_line_author")
+    judgeless = dataclasses.replace(spec, judge=None)
+    assert _grade(judgeless, "fail", tmp_path) is False, (
+        "comments_as_code_one_line_author's _fail fixture went GREEN with the judge removed — "
+        "the matcher alone no longer enforces the migrated 'no multi-line comment block' clause"
+    )
