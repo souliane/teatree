@@ -11894,11 +11894,10 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                              → PLAN_RECORDED (`plan <id> "<text>"`).         │
 │ plan-bypass                  Record an audited PlanArtifact bypass and       │
 │                              advance to PLAN_RECORDED (--human-authorize).   │
-│ skip-planning                Mark a trivial ticket to skip planning and      │
-│                              advance to PLAN_RECORDED (--reason, no          │
-│                              artifact).                                      │
+│ skip-planning                Skip planning on a trivial ticket, advancing to │
+│                              PLAN_RECORDED (--reason, no artifact).          │
 │ plan-reconcile-inflight      Retroactively advance WORK_STARTED tickets to   │
-│                              PLAN_RECORDED after the gate was added.         │
+│                              PLAN_RECORDED.                                  │
 │ plan-reaffirm                Re-bind a plan to a new base — the              │
 │                              plan-currency gate's never-lockout escape.      │
 │ e2e-bypass                   Record a single-use user bypass of the          │
