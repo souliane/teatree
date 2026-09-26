@@ -150,7 +150,7 @@ class EvalLocalWiringTests(TestCase):
         ):
             scanner = _eval_local_scanner()
         assert scanner is not None
-        assert scanner.skill == "eval"
+        assert scanner.skill == "running-evals"
 
     def test_tuned_core_config_propagates_to_scanner_kwargs(self) -> None:
         from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415

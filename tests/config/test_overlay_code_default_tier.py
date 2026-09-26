@@ -54,9 +54,9 @@ class TestOverlayCodeDefaultTier(TestCase):
         # default without changing the effective value (default == dataclass default).
         settings = get_effective_settings()
         assert settings.scanning_news_skill == "scanning-news"
-        assert settings.eval_local_skill == "eval"
+        assert settings.eval_local_skill == "running-evals"
         assert settings.backlog_sweep_skill == "sweeping-tickets"
-        assert settings.dogfood_smoke_skill == "dogfood-smoke"
+        assert settings.dogfood_smoke_skill == "dogfooding"
         assert settings.architectural_review_skill == "ac-reviewing-codebase"
 
     def test_field_only_key_db_row_still_overrides(self) -> None:

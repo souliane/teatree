@@ -126,9 +126,9 @@ class _ModeHarnessSettings:
     # Skill selectors are also read by the cross-cutting skill-supply inventory,
     # so they belong with the agent harness rather than below any one loop.
     scanning_news_skill: str = "scanning-news"
-    eval_local_skill: str = "eval"
+    eval_local_skill: str = "running-evals"
     backlog_sweep_skill: str = "sweeping-tickets"
-    dogfood_smoke_skill: str = "dogfood-smoke"
+    dogfood_smoke_skill: str = "dogfooding"
     # Layer 1 of the two-layer harness config model (#2887): which in-process
     # TRANSPORT an agent run uses — the transport that opens the agent session behind the
     # ``teatree.agents.harness.Harness`` protocol. ``claude_sdk`` (default, today's

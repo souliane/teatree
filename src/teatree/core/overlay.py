@@ -199,9 +199,9 @@ class OverlayConfig(BaseModel):
     review_skill_alternates: list[str] = Field(default_factory=list)
     architectural_review_skill: str = "ac-reviewing-codebase"
     scanning_news_skill: str = "scanning-news"
-    eval_local_skill: str = "eval"
+    eval_local_skill: str = "running-evals"
     backlog_sweep_skill: str = "sweeping-tickets"
-    dogfood_smoke_skill: str = "dogfood-smoke"
+    dogfood_smoke_skill: str = "dogfooding"
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
     # The dashboard header mark, as a static path; an overlay ships its own logo in
     # its package's ``static/`` dir and names it here.
