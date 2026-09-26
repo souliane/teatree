@@ -335,6 +335,96 @@ def test_base_detected_skills_includes_overlay_skill_when_active(tmp_path: Path)
     assert ordered == ["t3:acme"]
 
 
+def _overlay_skill_entries(tmp_path: Path, skill_path: str) -> list[str]:
+    return SkillLoadingPolicy()._base_detected_skills(
+        cwd=tmp_path,
+        overlay_skill_metadata={"skill_path": skill_path},
+        overlay_active=True,
+    )
+
+
+def test_a_directory_skill_path_is_dropped_with_a_warning(tmp_path: Path, caplog):
+    skills_tree = tmp_path / "skills"
+    skills_tree.mkdir()
+
+    with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
+        ordered = _overlay_skill_entries(tmp_path, str(skills_tree))
+
+    assert ordered == []
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if str(skills_tree) in r.getMessage() and "is not a <skill>/SKILL.md file" in r.getMessage()
+    ]
+
+
+def test_an_existing_absolute_skill_md_is_kept(tmp_path: Path, caplog):
+    skill_md = tmp_path / "skills" / "acme" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text("# acme\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
+        ordered = _overlay_skill_entries(tmp_path, str(skill_md))
+
+    assert ordered == [str(skill_md)]
+    assert not caplog.records
+
+
+def test_a_missing_absolute_skill_md_is_dropped_with_a_warning(tmp_path: Path, caplog):
+    ghost = tmp_path / "skills" / "gone" / "SKILL.md"
+
+    with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
+        ordered = _overlay_skill_entries(tmp_path, str(ghost))
+
+    assert ordered == []
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if str(ghost) in r.getMessage() and "names a SKILL.md that does not exist" in r.getMessage()
+    ]
+
+
+def test_a_non_skill_md_file_is_dropped_with_a_warning(tmp_path: Path, caplog):
+    readme = tmp_path / "README.md"
+    readme.write_text("# readme\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
+        ordered = _overlay_skill_entries(tmp_path, str(readme))
+
+    assert ordered == []
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if str(readme) in r.getMessage() and "is not a <skill>/SKILL.md file" in r.getMessage()
+    ]
+
+
+@pytest.mark.parametrize("skill_path", ["skills/t3-acme/SKILL.md", "t3:acme", "t3-acme"])
+def test_generator_relative_and_name_shaped_skill_paths_are_kept_silently(tmp_path: Path, caplog, skill_path):
+    with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
+        ordered = _overlay_skill_entries(tmp_path, skill_path)
+
+    assert ordered == [skill_path]
+    assert not caplog.records
+
+
+def test_a_skill_md_path_whose_directory_is_indexed_raises_no_missing_warning(caplog):
+    index = [{"skill": "internals", "requires": []}]
+
+    with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
+        resolved = SkillLoadingPolicy._resolve_requires_chain(["/repo/skills/internals/SKILL.md"], index)
+
+    assert resolved == ["/repo/skills/internals/SKILL.md"]
+    assert not [r for r in caplog.records if "has no SKILL.md" in r.getMessage()]
+
+
+def test_an_unindexed_skill_md_path_still_warns(caplog):
+    with caplog.at_level("WARNING", logger=skill_loading_mod.__name__):
+        SkillLoadingPolicy._resolve_requires_chain(["/repo/skills/ghost/SKILL.md"], [])
+
+    assert [r for r in caplog.records if "has no SKILL.md" in r.getMessage()]
+
+
 # ── overlay-companion skills are scoped to overlay work ─────────────
 
 
@@ -583,6 +673,12 @@ def test_dedupe_preserves_order():
 
 def test_dedupe_empty():
     assert _dedupe([]) == []
+
+
+def test_dedupe_collapses_a_skill_md_path_onto_its_directory_name_keeping_namespaces():
+    skills = ["/a/skills/internals/SKILL.md", "internals", "t3:code", "code"]
+
+    assert _dedupe(skills) == ["/a/skills/internals/SKILL.md", "t3:code", "code"]
 
 
 # ── _matches_any_remote ─────────────────────────────────────────────

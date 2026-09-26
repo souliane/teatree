@@ -295,10 +295,11 @@ class DbImportStrategy(TypedDict, total=False):
 
 
 class SkillMetadata(TypedDict, total=False):
-    # ``skill_path`` is the overlay's PRIMARY lifecycle ``SKILL.md`` reference —
-    # the single skill injected when the overlay is in scope (consumed by
-    # ``skill_support.loading``). ``skill_root`` is the DIRECTORY holding the
-    # overlay's per-skill subdirs (each ``<name>/SKILL.md``); the overlay-tool /
+    # ``skill_path`` is the overlay's PRIMARY lifecycle skill — a skill name or a
+    # ``<skill>/SKILL.md`` path — injected when the overlay is in scope; any other
+    # shape is dropped with a warning (``skill_support.loading``). ``skill_root``
+    # is the DIRECTORY holding the overlay's per-skill subdirs (each
+    # ``<name>/SKILL.md``); the overlay-tool /
     # skill-preamble / doctor discovery sites resolve their search root through it
     # (falling back to ``<project>/skills``). The two are deliberately distinct so
     # "a single skill file" and "the tree of all skills" never collide (#3355).

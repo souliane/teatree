@@ -135,7 +135,7 @@ class TestWriteSkillMetadataCache:
     def test_writes_json_with_skill_index(self, tmp_path: Path) -> None:
         skills_dir = _make_skills_dir(tmp_path, {"example": _FRONTMATTER})
         overlay = MagicMock()
-        overlay.metadata.get_skill_metadata.return_value = {"skill_path": "skills/foo"}
+        overlay.metadata.get_skill_metadata.return_value = {"skill_path": "skills/foo/SKILL.md"}
         data_dir = tmp_path / "data"
         with (
             patch.object(skill_cache_mod, "_CLAUDE_SKILLS_DIR", skills_dir),
@@ -148,7 +148,7 @@ class TestWriteSkillMetadataCache:
         cache_file = data_dir / "skill-metadata.json"
         assert cache_file.is_file()
         payload = json.loads(cache_file.read_text(encoding="utf-8"))
-        assert payload["skill_path"] == "skills/foo"
+        assert payload["skill_path"] == "skills/foo/SKILL.md"
         assert payload["skill_index"][0]["skill"] == "example"
         assert payload["skill_index"][0]["requires"] == ["rules", "workspace"]
         assert "teatree_version" in payload

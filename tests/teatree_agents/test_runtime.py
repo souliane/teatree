@@ -5,12 +5,15 @@ import pytest
 from teatree.agents.skill_bundle import resolve_skill_bundle
 
 
-def test_resolve_skill_bundle_with_overlay_and_phase() -> None:
+def test_resolve_skill_bundle_with_overlay_and_phase(tmp_path: Path) -> None:
+    skill_md = tmp_path / "skills" / "acme" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text("# acme\n", encoding="utf-8")
     bundle = resolve_skill_bundle(
         phase="coding",
-        overlay_skill_metadata={"skill_path": "/skills/acme/SKILL.md"},
+        overlay_skill_metadata={"skill_path": str(skill_md)},
     )
-    assert "/skills/acme/SKILL.md" in bundle
+    assert str(skill_md) in bundle
     assert "code" in bundle
 
 
