@@ -25,7 +25,7 @@ from teatree.core.management.commands._e2e_specs_checkout import release_process
 from teatree.core.models.types import reset_stripped_key_warnings
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
-from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
+from teatree.quality.pytest_resource_contract import bounded_auto_workers, local_run_is_scoped, whole_tree_refusal
 from teatree.utils import ram_scope
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
@@ -105,8 +105,12 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     config = session.config
     if hasattr(config, "workerinput"):
         return
-    sharded = bool(getattr(config.option, "splits", 0) and getattr(config.option, "group", 0)) or bool(
-        os.environ.get("CI_NODE_TOTAL") and os.environ.get("CI_NODE_INDEX")
+    sharded = local_run_is_scoped(
+        splits=getattr(config.option, "splits", 0),
+        group=getattr(config.option, "group", 0),
+        tach=bool(getattr(config.option, "tach", False)),
+        ci_node_total=os.environ.get("CI_NODE_TOTAL"),
+        ci_node_index=os.environ.get("CI_NODE_INDEX"),
     )
     refusal = whole_tree_refusal(config.args, root=config.rootpath, sharded=sharded)
     if refusal:

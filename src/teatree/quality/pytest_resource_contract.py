@@ -25,6 +25,27 @@ def bounded_auto_workers(*, cores: int, memory_mib: int | None, explicit: str | 
     return max(1, min(_LOCAL_MAX_WORKERS, max(1, cores), memory_workers))
 
 
+def local_run_is_scoped(
+    *,
+    splits: int,
+    group: int,
+    tach: bool,
+    ci_node_total: str | None,
+    ci_node_index: str | None,
+) -> bool:
+    """True when this invocation is known to not collect+run the unbounded whole tree.
+
+    Either CI's pytest-split sharding (``--splits``/``--group``, corroborated by the
+    node-index env pair) or a local ``--tach``-scoped run counts: a ``--tach``
+    invocation names ``tests`` as a collection root whenever a changed src module
+    needs ``--doctest-modules`` parity (``Selection.pytest_args``), but the tach
+    plugin's own ``pytest_collection_modifyitems`` deselects everything the diff
+    cannot reach — the opposite of the unbounded whole-tree run
+    :func:`whole_tree_refusal` defends against.
+    """
+    return bool(splits and group) or bool(ci_node_total and ci_node_index) or tach
+
+
 def whole_tree_refusal(args: list[str], *, root: Path, sharded: bool) -> str:
     """Explain an unsharded whole-tree selection before pytest begins collection."""
     if sharded:
@@ -41,4 +62,4 @@ def whole_tree_refusal(args: list[str], *, root: Path, sharded: bool) -> str:
     return ""
 
 
-__all__ = ["bounded_auto_workers", "whole_tree_refusal"]
+__all__ = ["bounded_auto_workers", "local_run_is_scoped", "whole_tree_refusal"]
