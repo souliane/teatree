@@ -27,6 +27,7 @@ from teatree.core.models import ConfigSetting, MergeClear, ReviewVerdict, Ticket
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_substrate import solo_overlay_substrate_authorized
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.utils.pr_ref import PrRef
 from tests.factories import waive_rubric
 
@@ -126,9 +127,9 @@ class _FakeApi:
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
         return False
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_pr_calls.append((slug, pr_id, expected_head_oid))
-        return True, MERGED_SHA
+        return BoundMergeResult(merged=True, merged_sha=MERGED_SHA)
 
 
 @dataclass(slots=True)

@@ -31,6 +31,7 @@ from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSign
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.loop.scanners.pr_sweep import PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient, NullMergeNotifier
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.loop.tick import TickRequest, run_tick
 from teatree.types import RawAPIDict
 
@@ -133,9 +134,9 @@ class TestPrSweepScannerPropagatesError:
                 _ = (slug, check_name)
                 return False
 
-            def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+            def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
                 _ = (slug, pr_id, expected_head_oid)
-                return False, ""
+                return BoundMergeResult(merged=False)
 
         class _NullKeystone:
             def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:

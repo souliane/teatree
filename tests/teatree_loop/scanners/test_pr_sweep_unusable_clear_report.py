@@ -15,6 +15,7 @@ from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.pr_sweep import CLEAR_PRESENT_UNUSABLE_REASON, PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import OWNER_ESCALATION_FLAG_REASONS, NullMergeNotifier, SlackMergeNotifier
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.types import RawAPIDict
 
 SLUG = "souliane/teatree"
@@ -47,9 +48,9 @@ class _Api:
         _ = (slug, check_name)
         return False
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_calls.append((slug, pr_id, expected_head_oid))
-        return True, MERGED_SHA
+        return BoundMergeResult(merged=True, merged_sha=MERGED_SHA)
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
         _ = (slug, pr_id, expected_head_oid)

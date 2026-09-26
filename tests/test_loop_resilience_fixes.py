@@ -271,11 +271,11 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
             patch.object(author_trust, "repo_is_internal", return_value=True),
         ):
-            ok, sha = client.merge_pr_squash_bound(slug="owner/repo", pr_id=42, expected_head_oid=expected)
+            result = client.merge_pr_squash_bound(slug="owner/repo", pr_id=42, expected_head_oid=expected)
 
-        assert ok is True
-        assert sha != "", "merge_pr_squash_bound returned an empty SHA on a successful merge"
-        assert sha == expected
+        assert result.merged is True
+        assert result.merged_sha != "", "merge_pr_squash_bound returned an empty SHA on a successful merge"
+        assert result.merged_sha == expected
 
 
 class TestPrSweepListLimit(TestCase):

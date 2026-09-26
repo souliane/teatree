@@ -164,3 +164,35 @@ class MergeAttempt:
     base_current: bool = True
     held_verdicts: tuple[tuple[int, str], ...] = ()
     authorizing_verdict: tuple[int, str] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BoundMergeResult:
+    """The outcome of :meth:`PrApiClient.merge_pr_squash_bound` (#4856).
+
+    Replaces the former ``(ok, sha)`` tuple, whose failure slot carried nothing —
+    both forge adapters caught ``MergePreconditionError`` and discarded ``str(exc)``,
+    so every refusal (a stale rubric, a moved head, a policy hold) surfaced as the
+    same opaque ``solo_overlay_gh_fallback_failed`` label. ``refusal`` carries that
+    text through to the scanner's ``MergeAttempt.reason``.
+    """
+
+    merged: bool
+    merged_sha: str = ""
+    refusal: str = ""
+
+
+def blocked_merge_attempt(
+    pr: PrSummary, *, reason_prefix: str, refusal: str, default_reason: str | None = None
+) -> MergeAttempt:
+    """A ``"blocked"`` :class:`MergeAttempt` naming *refusal*'s cause, or a default when empty (#4856).
+
+    The default is *default_reason*, or bare *reason_prefix* when the caller has no
+    distinct fallback of its own. Only *refusal*'s first line is kept so a multi-line
+    ``MergePreconditionError`` message never lands raw in a ``ScanSignal`` payload.
+    """
+    if refusal:
+        reason = f"{reason_prefix}: {refusal.splitlines()[0]}"
+    else:
+        reason = reason_prefix if default_reason is None else default_reason
+    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="blocked", reason=reason)
