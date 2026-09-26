@@ -351,7 +351,11 @@ def test_a_directory_skill_path_is_dropped_with_a_warning(tmp_path: Path, caplog
         ordered = _overlay_skill_entries(tmp_path, str(skills_tree))
 
     assert ordered == []
-    assert [r.getMessage() for r in caplog.records if str(skills_tree) in r.getMessage()]
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if str(skills_tree) in r.getMessage() and "is not a <skill>/SKILL.md file" in r.getMessage()
+    ]
 
 
 def test_an_existing_absolute_skill_md_is_kept(tmp_path: Path, caplog):
@@ -373,7 +377,11 @@ def test_a_missing_absolute_skill_md_is_dropped_with_a_warning(tmp_path: Path, c
         ordered = _overlay_skill_entries(tmp_path, str(ghost))
 
     assert ordered == []
-    assert [r.getMessage() for r in caplog.records if str(ghost) in r.getMessage()]
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if str(ghost) in r.getMessage() and "names a SKILL.md that does not exist" in r.getMessage()
+    ]
 
 
 def test_a_non_skill_md_file_is_dropped_with_a_warning(tmp_path: Path, caplog):
@@ -384,7 +392,11 @@ def test_a_non_skill_md_file_is_dropped_with_a_warning(tmp_path: Path, caplog):
         ordered = _overlay_skill_entries(tmp_path, str(readme))
 
     assert ordered == []
-    assert [r.getMessage() for r in caplog.records if str(readme) in r.getMessage()]
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if str(readme) in r.getMessage() and "is not a <skill>/SKILL.md file" in r.getMessage()
+    ]
 
 
 @pytest.mark.parametrize("skill_path", ["skills/t3-acme/SKILL.md", "t3:acme", "t3-acme"])

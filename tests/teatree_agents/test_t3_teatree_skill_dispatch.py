@@ -49,8 +49,10 @@ class TestT3TeatreeSkillDispatch(TestCase):
         return prepare_run(self._task(phase), preflight, phase=phase, handoff=None, credential=DispatchCredential())
 
     def test_dispatch_requests_no_phantom_skill(self) -> None:
+        overlay_skill_path = TeatreeOverlay().metadata.get_skill_metadata()["skill_path"]
         for phase in _DISPATCHED_PHASES:
             with self.subTest(phase=phase):
+                assert overlay_skill_path in self._bundle(phase, _TEATREE_CHECKOUT)
                 assurance = self._prepare(phase, _TEATREE_CHECKOUT).skill_assurance
 
                 assert assurance["missing"] == []

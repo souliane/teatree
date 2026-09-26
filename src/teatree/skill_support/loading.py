@@ -405,10 +405,11 @@ def _overlay_skill_reference(raw: str) -> str:
     path = Path(raw)
     if path.name == _SKILL_FILE and (not path.is_absolute() or path.is_file()):
         return raw
+    problem = "names a SKILL.md that does not exist" if path.name == _SKILL_FILE else "is not a <skill>/SKILL.md file"
     logger.warning(
-        "Overlay skill_path %r is not a <skill>/SKILL.md file — the overlay skill is NOT loaded; "
-        "fix get_skill_metadata()['skill_path']",
+        "Overlay skill_path %r %s — the overlay skill is NOT loaded; fix get_skill_metadata()['skill_path']",
         raw,
+        problem,
     )
     return ""
 
