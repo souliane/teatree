@@ -28,6 +28,14 @@ logger = logging.getLogger(__name__)
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
 
+#: Stamped into a no-op recovery attempt's ``result['summary']`` (#4834 periodic review).
+#: Public so a consumer can tell "the claim CAS held — a rival's row was already done"
+#: apart from a genuine second success: :func:`_record_noop_over_completed_row` never
+#: drives new work, so counting it as a SUCCESS toward "this task ran twice" is exactly
+#: the false alarm ``teatree.cli.doctor.checks_reconciliation._check_duplicate_execution``
+#: exists to catch, not an instance of it.
+NOOP_OVER_COMPLETED_MARKER = "the row had already completed — "
+
 
 @dataclass(frozen=True, slots=True)
 class CeilingSalvage:
@@ -123,7 +131,7 @@ def _record_noop_over_completed_row(
     """
     logger.info("Task %s was interrupted after its row completed: %s", task.pk, interruption)
     return _record_interrupted_attempt(
-        task, summary=f"the row had already completed — {interruption}", produced=produced, usage=usage
+        task, summary=f"{NOOP_OVER_COMPLETED_MARKER}{interruption}", produced=produced, usage=usage
     )
 
 

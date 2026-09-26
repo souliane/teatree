@@ -346,27 +346,37 @@ def _check_open_question_age(now: dt.datetime | None = None) -> ReconciliationFi
 
 
 def _check_duplicate_execution(now: dt.datetime | None = None) -> ReconciliationFinding:
-    """ALARM when any task recorded more than one successful attempt in 24h.
+    """ALARM when any task recorded more than one GENUINE successful attempt in 24h.
 
     Query: ``TaskAttempt`` rows with ``outcome=SUCCESS`` and ``started_at`` within
-    24h, grouped by ``task_id`` having ``count > 1``. Any such task alarms — this
-    is the F4/idempotency signature and the OUTSIDE cross-validation of Wave A's
-    claim-CAS fix (which should keep this at zero).
+    24h, grouped by ``task_id``, excluding a
+    :data:`~teatree.agents.runner_interruption.NOOP_OVER_COMPLETED_MARKER` recovery
+    attempt. That marker is stamped when a rival's interrupted run finds its row
+    already COMPLETED (#4100/#4834) — proof the claim CAS held (only one run's
+    result landed), not a second success; counting it toward "this task ran twice"
+    is the exact false alarm this check exists to avoid manufacturing. Any task
+    with >1 REMAINING success alarms — the F4/idempotency signature and the
+    OUTSIDE cross-validation of Wave A's claim-CAS fix (which should keep this at
+    zero).
     """
     check_id = "duplicate_execution_count"
     try:
-        from django.db.models import Count  # noqa: PLC0415 — deferred: Django import at call time
-
+        from teatree.agents.runner_interruption import (  # noqa: PLC0415 — deferred: agents import at call time
+            NOOP_OVER_COMPLETED_MARKER,
+        )
         from teatree.core.models import TaskAttempt  # noqa: PLC0415 — ORM import needs the app registry
 
         cutoff = _now(now) - _DAY
-        count = (
-            TaskAttempt.objects.filter(outcome=TaskAttempt.Outcome.SUCCESS, started_at__gte=cutoff)
-            .values("task_id")
-            .annotate(successes=Count("id"))
-            .filter(successes__gt=1)
-            .count()
+        successes_by_task: dict[int, int] = {}
+        rows = TaskAttempt.objects.filter(outcome=TaskAttempt.Outcome.SUCCESS, started_at__gte=cutoff).values_list(
+            "task_id", "result"
         )
+        for task_id, result in rows:
+            summary = str((result or {}).get("summary") or "")
+            if NOOP_OVER_COMPLETED_MARKER in summary:
+                continue
+            successes_by_task[task_id] = successes_by_task.get(task_id, 0) + 1
+        count = sum(1 for successes in successes_by_task.values() if successes > 1)
     except Exception as exc:  # noqa: BLE001 — a reconciliation read must never crash the doctor run
         return _degraded(check_id, exc)
     if count == 0:
