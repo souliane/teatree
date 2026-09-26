@@ -192,12 +192,25 @@ class GitLabApiMergeRpc:
         """GitLab has no branch-protection-required-status-checks gate on this path.
 
         The GitLab §17.4.3 verdict is the head pipeline's overall status (see
-        :func:`core.merge.ci_rollup.classify_gitlab_pipeline`), which already
+        :func:`core.merge.gitlab_pipeline.classify_gitlab_pipeline`), which already
         aggregates the required jobs server-side. Core never calls this on the
         GitLab path; the method exists only to satisfy the ``CodeHostBackend``
         Protocol surface. Returns ``[]`` (no separate required-context gate).
         """
         del slug, pr_id
+        return []
+
+    @staticmethod
+    def fetch_workflow_runs_at_head(*, slug: str, head_sha: str) -> list[RawAPIDict]:
+        """GitLab has no Actions-API-equivalent gate on this path.
+
+        The GitHub-Free plan-restriction fallback is GitHub-Free-specific; GitLab
+        gates on the head pipeline's overall status instead (see
+        :func:`core.merge.gitlab_pipeline.classify_gitlab_pipeline`). Core never calls this
+        on the GitLab path; the method exists only to satisfy the
+        ``CodeHostBackend`` Protocol surface. Returns ``[]``.
+        """
+        del slug, head_sha
         return []
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:

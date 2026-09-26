@@ -512,7 +512,7 @@ Every external API concern is a `@runtime_checkable Protocol` in `teatree.core.b
 
 | Protocol | Implementations |
 |---|---|
-| `CodeHostBackend` — PR/issue/comment (incl. `list`/`update_issue_comment`)/upload/review-state + the §17.4.3 merge-RPC surface (`fetch_live_head_sha`, `fetch_pr_merge_state`, `fetch_pr_draft_state`, `fetch_required_checks_rollup`, `merge_pr_squash_bound` — raw forge I/O resolved via `core.backend_registry`; `merge.execution`/`merge.ci_rollup` keep the verdict/error classification) | `GitHubCodeHost`, `GitLabCodeHost` |
+| `CodeHostBackend` — PR/issue/comment (incl. `list`/`update_issue_comment`)/upload/review-state + the §17.4.3 merge-RPC surface (`fetch_live_head_sha`, `fetch_pr_merge_state`, `fetch_pr_draft_state`, `fetch_required_checks_rollup`, `fetch_required_status_check_contexts`, `fetch_workflow_runs_at_head` — the GitHub-Free plan-restriction Actions-API fallback (#4844), a GitLab no-op stub — `merge_pr_squash_bound` — raw forge I/O resolved via `core.backend_registry`; `merge.execution`/`merge.ci_rollup` keep the verdict/error classification) | `GitHubCodeHost`, `GitLabCodeHost` |
 | `CIService` — pipeline cancel/trigger/quality-check | `GitLabCIService` |
 | `MessagingBackend` — mentions/DMs/post/reply/react | `SlackBotBackend`, `NoopMessagingBackend` |
 

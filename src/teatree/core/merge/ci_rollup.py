@@ -13,10 +13,18 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from teatree.core.backend_protocols import DraftState, PrMergeState, changed_paths_unavailable, rollup_query_failed
+from teatree.core.backend_protocols import (
+    DraftState,
+    PrMergeState,
+    changed_paths_unavailable,
+    plan_restricted_no_protection,
+    rollup_query_failed,
+)
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.merge.gitlab_pipeline import _gitlab_pipeline_verdict
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveHeadRead
 from teatree.core.models import MergeClear
+from teatree.core.review.head_workflow_runs import WorkflowRun, classify_workflow_runs, newest_run_per_workflow
 from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.throttled_log import warn_throttled
@@ -421,42 +429,29 @@ def failing_required_names(rollup: "list[RawAPIDict]", required_names: set[str])
     return {name for name, verdict in reported.items() if verdict == "failed"}
 
 
-def _required_context_names(backend: "CodeHostBackend", *, slug: str, pr_id: int) -> set[str] | None:
-    """The branch-protection required context names, or ``None`` when indeterminate.
-
-    ``None`` is the fail-CLOSED signal (the required-status-check endpoint could
-    not be read); an EMPTY set is the determinate "no required gate configured".
-    Both the keystone verdict and the sweep gate read the required set through
-    this one extractor so they share the same fail-closed / no-gate semantics.
-    """
-    required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
-    if rollup_query_failed(required):
-        return None
+def _extract_required_names(required: "list[RawAPIDict]") -> set[str]:
+    """The ``{"context": <name>}`` entries' names — the shared parse both callers share."""
     return {str(entry["context"]) for entry in required if isinstance(entry, dict) and entry.get("context")}
 
 
-def _gitlab_pipeline_verdict(
-    backend: "CodeHostBackend",
-    rollup: "list[RawAPIDict]",
-    *,
-    slug: str,
-    pr_id: int,
-) -> str:
-    """GitLab §17.4.3 verdict: the head pipeline's overall status (aggregates required jobs)."""
-    if not rollup:
-        # No pipeline ran for this MR — that is NOT proof the required jobs passed
-        # (a project could have CI disabled, or the head pipeline is not created
-        # yet). Fail closed to ``pending`` so an empty pipeline list never merges as
-        # "all checks passed"; a genuinely CI-less project is unblocked by the same
-        # required-context floor the GitHub path uses.
-        return "pending"
-    # Normalised, never raw: an UNREADABLE head must reach the pipeline picker as
-    # the same empty string an unnamed head does, not as a sentinel oid to match on.
-    head_sha = LiveHeadRead.of(backend.fetch_live_head_sha(slug=slug, pr_id=pr_id)).sha
-    head = _select_gitlab_head_pipeline(list(rollup), head_sha, slug=slug, pr_id=pr_id)
-    if head is None:
-        return "failed"
-    return classify_gitlab_pipeline(str(head.get("status") or ""))
+def _required_context_names(backend: "CodeHostBackend", *, slug: str, pr_id: int) -> set[str] | None:
+    """The branch-protection required context names, or ``None`` when indeterminate.
+
+    ``None`` is the fail-CLOSED signal — either the required-status-check endpoint
+    could not be read, OR the repo is on a plan that cannot answer branch protection
+    at all (:func:`plan_restricted_no_protection`): the SWEEP's CI gate has no
+    Actions-API fallback (only the keystone's :func:`_github_required_checks_verdict`
+    does, reading the sentinel itself before it reaches here), so this extractor
+    keeps folding that state into the same fail-closed ``None`` it already returns
+    for a genuine transport failure — the sweep's behaviour is unchanged. An EMPTY
+    set is the determinate "no required gate configured". Both the keystone verdict
+    and the sweep gate read the required set through this one extractor so they
+    share the same fail-closed / no-gate semantics.
+    """
+    required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+    if rollup_query_failed(required) or plan_restricted_no_protection(required):
+        return None
+    return _extract_required_names(required)
 
 
 def _expected_required_contexts_floor() -> set[str] | None:
@@ -501,13 +496,24 @@ def _github_required_checks_verdict(
     green. Only a determinate-EMPTY floor over an empty required set is genuinely
     "no gate" → the shared :func:`classify_required_rollup` verdict runs (an empty
     required set → ``green``, a non-required check never blocks).
+
+    Fetches the raw required-contexts list directly (rather than through
+    :func:`_required_context_names`) so it can see the
+    :func:`~teatree.core.backend_protocols.plan_restricted_no_protection` sentinel
+    BEFORE that extractor folds it into the same ``None`` a genuine transport
+    failure produces — a repo on GitHub Free with no way to answer branch
+    protection at all falls back to :func:`_github_actions_runs_verdict` instead of
+    refusing forever (issue #4844).
     """
-    required_names = _required_context_names(backend, slug=slug, pr_id=pr_id)
-    if required_names is None:
+    raw_required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+    if plan_restricted_no_protection(raw_required):
+        return _github_actions_runs_verdict(backend, slug=slug, pr_id=pr_id)
+    if rollup_query_failed(raw_required):
         # Fail CLOSED, and say WHY: the branch-protection required set could not be
         # read, so no verdict about the checks exists. Refused on the same terms as a
         # red (``REFUSING_CHECK_VERDICTS``) — only the word the operator sees differs.
         return CHECKS_UNREADABLE
+    required_names = _extract_required_names(raw_required)
     if not required_names:
         floor = _expected_required_contexts_floor()
         if floor is None:
@@ -528,87 +534,51 @@ def _github_required_checks_verdict(
     return classify_required_rollup(rollup, required_names)
 
 
-_GITLAB_PIPELINE_GREEN_STATUSES = frozenset({"success"})
-_GITLAB_PIPELINE_PENDING_STATUSES = frozenset(
-    {"pending", "running", "preparing", "scheduled", "waiting_for_resource", "created", "manual", "skipped"},
-)
+def _github_actions_runs_verdict(backend: "CodeHostBackend", *, slug: str, pr_id: int) -> str:
+    """GitHub §17.4.3 verdict via the Actions API — the GitHub-Free plan-restriction fallback.
 
+    ``repos/<slug>/rules/branches/<base>`` and the legacy protection endpoint both
+    403 with GitHub's plan-restriction body on GitHub Free — there is no
+    branch-protection required set to scope a rollup to, so this reads whether
+    anything reported at the live head SHA at all, via ``actions/runs?head_sha=``,
+    the same live-CI surface #4554 built for the cold-review flow (its PURE
+    classification helpers are reused as-is; see
+    ``core.review.head_workflow_runs``'s own docstring for why the module's
+    ``live_checks_at`` entry point itself is NOT reused here — it answers a
+    different question, at the reviewed SHA, with ambient ``gh`` auth).
 
-def classify_gitlab_pipeline(status: str) -> str:
-    """Map a GitLab pipeline status string to ``green`` / ``pending`` / ``failed``.
-
-    GitLab pipeline statuses (per the REST API documentation): ``created``,
-    ``waiting_for_resource``, ``preparing``, ``pending``, ``running``,
-    ``success``, ``failed``, ``canceled``, ``skipped``, ``manual``,
-    ``scheduled``. ONLY ``success`` is green.
-
-    ``manual`` and ``skipped`` are NOT green — they are pending. A ``manual``
-    pipeline is blocked on a manual gate whose later (required) stages have not
-    run, and a ``skipped`` pipeline never ran its required jobs; classifying
-    either as green merged a keystone MR on not-passed CI (the §17.4.3
-    fail-toward-green hole). ``failed`` / ``canceled`` are failed; everything
-    else is pending.
+    Never fails open: no runs at the head is UNREADABLE (eventual-consistency lag
+    is not proof nothing is required), and a green Actions read still respects the
+    ``expected_required_contexts`` floor exactly as the branch-protection path does
+    — an unreadable floor fails closed, and a floor-named workflow that never ran
+    is UNREADABLE (its absence is not proof it passed).
     """
-    s = status.lower()
-    if s in _GITLAB_PIPELINE_GREEN_STATUSES:
-        return "green"
-    if s in _GITLAB_PIPELINE_PENDING_STATUSES:
-        return "pending"
-    return "failed"
-
-
-class _GitlabPipeline(TypedDict, total=False):
-    """One entry of ``glab api .../merge_requests/<iid>/pipelines``."""
-
-    id: object
-    sha: object
-    ref: object
-    source: object
-    status: object
-
-
-def _is_merge_train_pipeline(pipeline: _GitlabPipeline) -> bool:
-    ref = str(pipeline.get("ref") or "")
-    source = str(pipeline.get("source") or "")
-    return source == "merge_train" or "/train" in ref
-
-
-def _select_gitlab_head_pipeline(
-    pipelines: list[object],
-    head_sha: str,
-    *,
-    slug: str,
-    pr_id: int,
-) -> _GitlabPipeline | None:
-    """Pick the pipeline for the MR head commit, ignoring merge-train pipelines.
-
-    The ``…/merge_requests/<iid>/pipelines`` endpoint interleaves merge-train
-    pipelines (each on a transient train SHA, often canceled the moment the
-    train re-bases) ahead of the real head-branch pipeline, so ``pipelines[0]``
-    is not reliably the head pipeline. Match on the MR head SHA instead. When
-    the head SHA is known but no pipeline matches it, the head commit has no
-    pipeline of its own — return ``None`` so the caller fails closed rather
-    than reading an unrelated commit's pipeline. The newest non-train pipeline
-    is used only when the head SHA could not be fetched at all.
-    """
-    entries = [cast("_GitlabPipeline", p) for p in pipelines if isinstance(p, dict)]
-    candidates = [e for e in entries if not _is_merge_train_pipeline(e)]
-    if head_sha:
-        for pipeline in candidates:
-            if str(pipeline.get("sha") or "") == head_sha:
-                return pipeline
-        logger.info(
-            "merge_execution: no GitLab pipeline matches MR head %s for %s#%s "
-            "(non-train candidates: %s) — failing closed",
-            head_sha,
+    head = LiveHeadRead.of(backend.fetch_live_head_sha(slug=slug, pr_id=pr_id))
+    if head.unreadable:
+        return CHECKS_UNREADABLE
+    raw_runs = backend.fetch_workflow_runs_at_head(slug=slug, head_sha=head.sha)
+    if rollup_query_failed(raw_runs):
+        return CHECKS_UNREADABLE
+    runs = cast("list[WorkflowRun]", raw_runs)
+    read = classify_workflow_runs(runs)
+    if read.status != MergeClear.VerifyResult.GREEN.value:
+        return read.status
+    floor = _expected_required_contexts_floor()
+    if floor is None:
+        logger.warning(
+            "ci_rollup: %s#%s is plan-restricted and the expected_required_contexts floor "
+            "could not be read — failing closed (indeterminate)",
             slug,
             pr_id,
-            [str(p.get("sha") or "") for p in candidates],
         )
-        return None
-    logger.info(
-        "merge_execution: GitLab MR head SHA unavailable for %s#%s — falling back to newest non-train pipeline",
-        slug,
-        pr_id,
-    )
-    return candidates[0] if candidates else None
+        return "failed"
+    if floor:
+        ran_names = {str(run.get("name") or "") for run in newest_run_per_workflow(runs)}
+        if not floor <= ran_names:
+            logger.warning(
+                "ci_rollup: %s#%s is plan-restricted and a floor-required workflow never ran at the head",
+                slug,
+                pr_id,
+            )
+            return CHECKS_UNREADABLE
+    return read.status

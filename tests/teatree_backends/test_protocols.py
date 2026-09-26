@@ -234,6 +234,10 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return []
 
+    def fetch_workflow_runs_at_head(self, *, slug: str, head_sha: str) -> list[dict[str, object]]:
+        _ = (slug, head_sha)
+        return []
+
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         _ = (slug, pr_id)
         return []

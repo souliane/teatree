@@ -219,6 +219,26 @@ def rollup_query_failed(rollup: "list[RawAPIDict]") -> bool:
     return any(entry.get(_ROLLUP_QUERY_FAILED_KEY) is True for entry in rollup)
 
 
+_PLAN_RESTRICTED_NO_PROTECTION_KEY = "_teatree_plan_restricted_no_protection"
+PLAN_RESTRICTED_NO_PROTECTION: "RawAPIDict" = {_PLAN_RESTRICTED_NO_PROTECTION_KEY: True}
+"""Sentinel required-context entry — the repo's plan cannot answer branch protection at all.
+
+``fetch_required_status_check_contexts`` returns ``[PLAN_RESTRICTED_NO_PROTECTION]`` when
+BOTH the rules and legacy protection endpoints answer GitHub Free's plan-restriction 403
+("Upgrade to GitHub Pro or make this repository public to enable this feature.") for every
+token — a DETERMINATE fact ("no branch protection is possible on this plan"), distinct from
+the INDETERMINATE :data:`ROLLUP_QUERY_FAILED` sentinel (a permission gap or transport
+failure). ``_github_required_checks_verdict`` falls back to the Actions API for this specific
+state; ``_required_context_names`` (the public ``required_context_names()``/``pr_sweep``
+path) still folds it into ``None`` so the sweep's existing fail-closed behavior is unchanged.
+"""
+
+
+def plan_restricted_no_protection(required: "list[RawAPIDict]") -> bool:
+    """True iff *required* carries the :data:`PLAN_RESTRICTED_NO_PROTECTION` sentinel."""
+    return any(entry.get(_PLAN_RESTRICTED_NO_PROTECTION_KEY) is True for entry in required)
+
+
 CHANGED_PATHS_UNAVAILABLE = "\x00_teatree_changed_paths_unavailable\x00"
 """Sentinel path — the backend could NOT read the PR/MR changed-file list to completion.
 
@@ -467,6 +487,13 @@ class CodeHostBackend(Protocol):
         *,
         slug: str,
         pr_id: int,
+    ) -> list[RawAPIDict]: ...
+
+    def fetch_workflow_runs_at_head(  # pragma: no branch
+        self,
+        *,
+        slug: str,
+        head_sha: str,
     ) -> list[RawAPIDict]: ...
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]: ...  # pragma: no branch

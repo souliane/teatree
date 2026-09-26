@@ -38,6 +38,10 @@ _MERGE_RPC_SIGNATURES: dict[str, list[tuple[str, inspect._ParameterKind]]] = {
         ("slug", inspect.Parameter.KEYWORD_ONLY),
         ("pr_id", inspect.Parameter.KEYWORD_ONLY),
     ],
+    "fetch_workflow_runs_at_head": [
+        ("slug", inspect.Parameter.KEYWORD_ONLY),
+        ("head_sha", inspect.Parameter.KEYWORD_ONLY),
+    ],
     "fetch_pr_changed_paths": [
         ("slug", inspect.Parameter.KEYWORD_ONLY),
         ("pr_id", inspect.Parameter.KEYWORD_ONLY),

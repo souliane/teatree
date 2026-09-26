@@ -259,7 +259,9 @@ def _glab_pipelines(*, repo: Path, sha: str) -> list[_GitlabPipeline] | None:
 
 def _classify_pipelines(pipelines: list[_GitlabPipeline]) -> CiVerdict:
     """Classify the newest GATING pipeline; no gating pipeline is ``unknown``, never green."""
-    from teatree.core.merge.ci_rollup import classify_gitlab_pipeline  # noqa: PLC0415 — deferred: pulls the merge stack
+    from teatree.core.merge.gitlab_pipeline import (  # noqa: PLC0415 — deferred: pulls the merge stack
+        classify_gitlab_pipeline,
+    )
 
     gating = [p for p in pipelines if str(p.get("source") or "") in _GATING_PIPELINE_SOURCES]
     if not gating:

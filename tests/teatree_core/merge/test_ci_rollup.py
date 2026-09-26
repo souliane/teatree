@@ -25,7 +25,12 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.backends.forge_merge_rpc import GhMergeRpc
-from teatree.core.backend_protocols import CHANGED_PATHS_UNAVAILABLE, changed_paths_unavailable, rollup_query_failed
+from teatree.core.backend_protocols import (
+    CHANGED_PATHS_UNAVAILABLE,
+    changed_paths_unavailable,
+    plan_restricted_no_protection,
+    rollup_query_failed,
+)
 from teatree.core.merge import CodeHostQuery, classify_required_rollup, failing_required_names
 from teatree.core.merge.ci_rollup import (
     _check_identity,
@@ -34,9 +39,9 @@ from teatree.core.merge.ci_rollup import (
     _expected_required_contexts_floor,
     _required_contexts_verdict,
     attach_touched_paths,
-    classify_gitlab_pipeline,
 )
-from teatree.core.modelkit.forge_readability import REFUSING_CHECK_VERDICTS
+from teatree.core.merge.gitlab_pipeline import classify_gitlab_pipeline
+from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, REFUSING_CHECK_VERDICTS
 from teatree.core.models import MergeClear
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.utils.pr_ref import PrRef
@@ -201,6 +206,56 @@ def _verdict(
     )
     with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
         return CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_checks_status()
+
+
+# GitHub Free's exact plan-restriction 403 body (souliane/teatree#4844's OWNER-confirmed
+# root cause) — the specific phrase that must be told apart from a generic 403.
+_PLAN_RESTRICTED_BODY = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+
+
+def _plan_restricted_gh_stub(
+    *,
+    actions_runs: list[dict[str, object]] | None = None,
+    actions_rc: int = 0,
+    head_sha: str = "deadbeef",
+    head_rc: int = 0,
+) -> Callable[[list[str]], tuple[int, str, str]]:
+    """A ``gh`` runner for a GitHub-Free repo.
+
+    Both protection endpoints answer the plan-restriction 403, then the
+    Actions-API fallback queries (``headRefOid``, ``actions/runs``) are scripted.
+    """
+
+    def run(argv: list[str]) -> tuple[int, str, str]:
+        joined = " ".join(argv)
+        if "statusCheckRollup" in joined:
+            return (0, "[]", "")
+        if "baseRefName" in joined:
+            return (0, "main", "")
+        if "rules/branches" in joined or "required_status_checks" in joined:
+            return (1, "", _PLAN_RESTRICTED_BODY)
+        if "headRefOid" in joined:
+            return (head_rc, head_sha, "") if head_rc == 0 else (head_rc, "", "head sha error")
+        if "actions/runs" in joined:
+            return (
+                (actions_rc, "", "actions api error")
+                if actions_rc != 0
+                else (0, json.dumps([{"workflow_runs": actions_runs or []}]), "")
+            )
+        return (0, "", "")
+
+    return run
+
+
+def _workflow_run(name: str, *, conclusion: str = "success", status: str = "completed") -> dict[str, object]:
+    return {
+        "name": name,
+        "workflow_id": name,
+        "event": "push",
+        "status": status,
+        "conclusion": conclusion,
+        "created_at": _T0,
+    }
 
 
 def _check_run(
@@ -383,6 +438,57 @@ class TestRulesEndpointRequiredSetResolution:
         )
         assert verdict == "unreadable"
         assert verdict in REFUSING_CHECK_VERDICTS
+
+
+class TestPlanRestrictedActionsAPIFallback(TestCase):
+    """GitHub Free plan restriction (#4844).
+
+    Both branch-protection endpoints 403 with the plan-restriction body → the
+    keystone gates via ``actions/runs?head_sha=`` instead of refusing forever.
+    The 4 cases the issue itself prescribes.
+    """
+
+    def _verdict(self, stub: Callable[[list[str]], tuple[int, str, str]]) -> str:
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
+            return CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_checks_status()
+
+    def test_all_success_runs_at_head_is_green(self) -> None:
+        stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("test")])
+        assert self._verdict(stub) == "green"
+
+    def test_one_failed_run_among_several_is_failed(self) -> None:
+        stub = _plan_restricted_gh_stub(
+            actions_runs=[_workflow_run("test"), _workflow_run("lint", conclusion="failure")],
+        )
+        assert self._verdict(stub) == "failed"
+
+    def test_zero_actions_runs_at_head_is_unreadable(self) -> None:
+        # Eventual-consistency lag (nothing has reported yet) is NOT proof nothing
+        # is required — never green on no evidence.
+        stub = _plan_restricted_gh_stub(actions_runs=[])
+        assert self._verdict(stub) == CHECKS_UNREADABLE
+
+    def test_floor_named_workflow_never_ran_is_unreadable(self) -> None:
+        # An operator-configured floor names a workflow that never ran at this head
+        # — its ABSENCE is not proof it passed.
+        call_command("config_setting", "set", "expected_required_contexts", '["test (3.13)"]')
+        stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("some-other-workflow")])
+        assert self._verdict(stub) == CHECKS_UNREADABLE
+
+    def test_unreadable_head_sha_is_unreadable(self) -> None:
+        stub = _plan_restricted_gh_stub(head_rc=1)
+        assert self._verdict(stub) == CHECKS_UNREADABLE
+
+    def test_actions_api_read_failure_is_unreadable(self) -> None:
+        stub = _plan_restricted_gh_stub(actions_rc=1)
+        assert self._verdict(stub) == CHECKS_UNREADABLE
+
+    def test_unreadable_floor_over_green_runs_fails_closed(self) -> None:
+        # Mirrors the sibling floor-unreadable branch: an unresolvable floor over an
+        # otherwise-green Actions read must not classify as green.
+        with patch("teatree.core.merge.ci_rollup._expected_required_contexts_floor", return_value=None):
+            stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("test")])
+            assert self._verdict(stub) == "failed"
 
 
 class TestDedupeNewestPerName:
@@ -678,6 +784,15 @@ class TestSharedClassifierHelpers:
         ):
             assert CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_context_names() == set()
 
+    def test_fetch_required_context_names_none_when_plan_restricted(self) -> None:
+        # The fail-open trap (#4844): the SWEEP's public API must never see an empty
+        # (determinate "no gate") set for a plan-restricted repo — only the keystone's
+        # own verdict function gets the Actions-API fallback; the sweep stays
+        # fail-closed exactly as it does for a genuine transport failure.
+        stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("test")])
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
+            assert CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_context_names() is None
+
 
 class TestRequiredStatusCheckContextsTransport:
     """``GhMergeRpc.fetch_required_status_check_contexts`` — the branch-protection lookup.
@@ -737,6 +852,10 @@ class TestRequiredStatusCheckContextsTransport:
     def test_generic_protection_error_fails_closed(self) -> None:
         result = self._contexts(_contexts_runner(protection=(1, "", "HTTP 403: Forbidden")))
         assert rollup_query_failed(result)
+        # Regression pin (#4844): a GENERIC 403 must NEVER be misclassified as the
+        # GitHub-Free plan restriction — only the exact "upgrade to github pro"
+        # phrasing does, and this fixture is deliberately generic.
+        assert not plan_restricted_no_protection(result)
 
     def test_malformed_protection_json_fails_closed(self) -> None:
         result = self._contexts(_contexts_runner(protection=(0, "{not json", "")))
@@ -808,6 +927,7 @@ class TestRequiredStatusCheckContextsTransport:
             ),
         )
         assert rollup_query_failed(result)
+        assert not plan_restricted_no_protection(result)
 
     def test_unparseable_rules_falls_back_to_protection(self) -> None:
         # The rules endpoint returns garbage (indeterminate for that source), but
@@ -819,6 +939,53 @@ class TestRequiredStatusCheckContextsTransport:
             ),
         )
         assert sorted(str(entry["context"]) for entry in result) == ["lint"]
+
+    def test_plan_restricted_403_on_both_endpoints(self) -> None:
+        # GitHub Free's exact plan-restriction body on BOTH endpoints — a
+        # DETERMINATE fact, distinct from the genuinely-indeterminate cases above.
+        result = self._contexts(
+            _contexts_runner(
+                protection=(1, "", _PLAN_RESTRICTED_BODY),
+                rules=(1, "", _PLAN_RESTRICTED_BODY),
+            ),
+        )
+        assert plan_restricted_no_protection(result)
+        assert not rollup_query_failed(result)
+
+    def test_one_source_plan_restricted_other_determinate_wins(self) -> None:
+        # Only the protection endpoint hits the plan-restriction 403; the rules
+        # endpoint IS readable and determinate → the determinate read wins, no
+        # plan-restriction classification at all.
+        result = self._contexts(
+            _contexts_runner(
+                protection=(1, "", _PLAN_RESTRICTED_BODY),
+                rules=(0, _rules_payload("lint", "sbom"), ""),
+            ),
+        )
+        assert sorted(str(entry["context"]) for entry in result) == ["lint", "sbom"]
+        assert not plan_restricted_no_protection(result)
+
+
+class TestFetchWorkflowRunsAtHeadTransport:
+    """``GhMergeRpc.fetch_workflow_runs_at_head`` — the Actions-API raw fetch (#4844)."""
+
+    def test_success_multi_run_passthrough(self) -> None:
+        runs = [_workflow_run("lint"), _workflow_run("test", conclusion="failure")]
+        runner = _seq_runner([(0, json.dumps([{"workflow_runs": runs}]), "")])
+        result = GhMergeRpc(runner).fetch_workflow_runs_at_head(slug=_SLUG, head_sha="deadbeef")
+        assert result == runs
+
+    def test_non_zero_rc_fails_closed(self) -> None:
+        runner = _seq_runner([(1, "", "HTTP 500: server error")])
+        result = GhMergeRpc(runner).fetch_workflow_runs_at_head(slug=_SLUG, head_sha="deadbeef")
+        assert rollup_query_failed(result)
+
+    def test_zero_runs_fails_closed(self) -> None:
+        # Eventual-consistency lag — nothing has reported yet at this head, which is
+        # NOT proof nothing is required.
+        runner = _seq_runner([(0, json.dumps([{"workflow_runs": []}]), "")])
+        result = GhMergeRpc(runner).fetch_workflow_runs_at_head(slug=_SLUG, head_sha="deadbeef")
+        assert rollup_query_failed(result)
 
 
 class TestChangedPathsTransport:

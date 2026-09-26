@@ -17,10 +17,12 @@ import json
 import os
 import shutil
 from collections.abc import Callable
+from typing import cast
 
 from teatree.core.backend_protocols import (
     CHANGED_PATHS_UNAVAILABLE,
     HEAD_SHA_UNREADABLE,
+    PLAN_RESTRICTED_NO_PROTECTION,
     ROLLUP_QUERY_FAILED,
     DraftState,
     ForgeMergeResult,
@@ -137,6 +139,19 @@ def _github_protection_required_contexts(rc: int, out: str, err: str) -> set[str
         if isinstance(check, dict) and isinstance(check.get("context"), str) and check["context"]:
             contexts.add(check["context"])
     return contexts
+
+
+def _is_github_free_plan_403(rc: int, out: str, err: str) -> bool:
+    """True iff *rc*/*out*/*err* is GitHub Free's plan-restriction 403, not a generic one.
+
+    The exact phrase GitHub returns on a private repo without the paid plan branch
+    protection requires: "Upgrade to GitHub Pro or make this repository public to
+    enable this feature." A generic permission 403 (e.g. "HTTP 403: Forbidden") must
+    NOT match — that case stays the existing INDETERMINATE fail-closed read.
+    """
+    if rc == 0:
+        return False
+    return "upgrade to github pro" in f"{out}\n{err}".lower()
 
 
 def _gh_conflict_state(data: RawAPIDict) -> MergeConflictState:
@@ -311,6 +326,11 @@ class GhMergeRpc:
         set is genuinely indeterminate: the base branch cannot be read, or NEITHER
         endpoint could be read (both error non-deterministically / unparsable). A
         real inability to determine the required set must still refuse the merge.
+
+        Returns ``[PLAN_RESTRICTED_NO_PROTECTION]`` when BOTH endpoints answer GitHub
+        Free's plan-restriction 403 — a DETERMINATE fact distinct from the above
+        genuinely-indeterminate case; ``_github_required_checks_verdict`` falls back
+        to the Actions API for it rather than refusing forever.
         """
         rc, out, _ = self._run(
             ["pr", "view", str(pr_id), "--repo", slug, "--json", "baseRefName", "--jq", ".baseRefName"],
@@ -326,6 +346,13 @@ class GhMergeRpc:
         protection_contexts = _github_protection_required_contexts(prot_rc, prot_out, prot_err)
         determinate = [contexts for contexts in (rules_contexts, protection_contexts) if contexts is not None]
         if not determinate:
+            if _is_github_free_plan_403(rules_rc, rules_out, rules_err) or _is_github_free_plan_403(
+                prot_rc, prot_out, prot_err
+            ):
+                # Both sources hit GitHub Free's plan-restriction 403 — a determinate
+                # "no branch protection possible on this plan", not an indeterminate
+                # permission gap; the keystone falls back to the Actions API for it.
+                return [PLAN_RESTRICTED_NO_PROTECTION]
             # Neither the rules endpoint nor the legacy protection endpoint could be
             # read — the required set is genuinely indeterminate → fail CLOSED.
             return [ROLLUP_QUERY_FAILED]
@@ -333,6 +360,33 @@ class GhMergeRpc:
         for contexts in determinate:
             union |= contexts
         return [{"context": ctx} for ctx in sorted(union)]
+
+    def fetch_workflow_runs_at_head(self, *, slug: str, head_sha: str) -> list[RawAPIDict]:
+        """Every workflow run at *head_sha* — the Actions-API fallback for a plan-restricted repo.
+
+        Reuses :func:`core.review.head_workflow_runs.workflow_runs_argv`/
+        ``parse_workflow_run_pages`` (#4554) so the argv and pagination logic stay in
+        one place; routed through this merge-RPC's own per-slug token (never ambient
+        ``gh`` auth) and the existing :data:`_FORGE_MERGE_TIMEOUT_SECONDS` bound.
+        Returns :data:`ROLLUP_QUERY_FAILED` (fail CLOSED) on a non-zero rc or on zero
+        returned runs — the latter is eventual-consistency lag, not proof that nothing
+        is required.
+        """
+        # Deferred: `head_workflow_runs` imports `core.models` (a Django ORM model),
+        # and this module loads during CLI bootstrap before `django.setup()` runs —
+        # a top-level import here raised `AppRegistryNotReady` on every `t3` command.
+        from teatree.core.review.head_workflow_runs import (  # noqa: PLC0415 — deferred: see above
+            parse_workflow_run_pages,
+            workflow_runs_argv,
+        )
+
+        rc, out, _ = self._run(workflow_runs_argv(slug=slug, head_sha=head_sha))
+        if rc != 0:
+            return [ROLLUP_QUERY_FAILED]
+        runs = parse_workflow_run_pages(out)
+        if runs is None:
+            return [ROLLUP_QUERY_FAILED]
+        return cast("list[RawAPIDict]", runs)
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         """Every changed path on the PR — PAGINATED to completion (§17.4.3, substrate detector).

@@ -238,6 +238,9 @@ class TestFetchRequiredChecks:
     def test_no_separate_required_context_gate_on_gitlab(self) -> None:
         assert _rpc().fetch_required_status_check_contexts(slug=_SLUG, pr_id=_IID) == []
 
+    def test_no_actions_api_equivalent_on_gitlab(self) -> None:
+        assert _rpc().fetch_workflow_runs_at_head(slug=_SLUG, head_sha="deadbeef") == []
+
 
 class TestFetchPrChangedPaths:
     def test_new_path_wins_and_old_path_is_the_fallback(self) -> None:
