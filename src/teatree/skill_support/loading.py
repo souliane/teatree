@@ -91,6 +91,8 @@ INTERNALS_SKILL_NAME = "internals"
 #: and in any worktree of it, absent from a repo that merely depends on teatree.
 _INTERNALS_MARKER = Path("src") / "teatree" / "__init__.py"
 
+_SKILL_FILE = "SKILL.md"
+
 #: Skills the policy DETECTS rather than reads from the index. Absence from the
 #: index is normal ONLY for these — they ship outside this repo, so a missing
 #: entry is not drift. ``internals`` is deliberately EXCLUDED: it ships a
@@ -153,7 +155,7 @@ class SkillLoadingPolicy:
         resolved = resolve_requires(skills, skill_index)
         known = {str(e.get("skill", "")) for e in skill_index if e.get("skill")}
         for skill in resolved:
-            if skill not in known and skill not in _DETECTED_SKILL_NAMES:
+            if _skill_identity(skill) not in known and skill not in _DETECTED_SKILL_NAMES:
                 logger.warning("Required skill %r has no SKILL.md — continuing", skill)
         return resolved
 
@@ -329,7 +331,7 @@ class SkillLoadingPolicy:
             overlay_active=overlay_active,
         )
         if overlay_in_scope:
-            skill_path = str(overlay_skill_metadata.get("skill_path", "")).strip()
+            skill_path = _overlay_skill_reference(str(overlay_skill_metadata.get("skill_path", "")).strip())
             if skill_path:
                 ordered.append(skill_path)
         ordered.extend(self.detect_internals_skill(cwd))
@@ -393,12 +395,37 @@ class SkillLoadingPolicy:
         return []
 
 
+def _overlay_skill_reference(raw: str) -> str:
+    """*raw* when it names a skill or a ``<skill>/SKILL.md`` file, else ``""`` with a warning.
+
+    A relative ``SKILL.md`` path is kept unresolved: it is relative to the overlay repo, not to cwd.
+    """
+    if not raw or "/" not in raw:
+        return raw
+    path = Path(raw)
+    if path.name == _SKILL_FILE and (not path.is_absolute() or path.is_file()):
+        return raw
+    logger.warning(
+        "Overlay skill_path %r is not a <skill>/SKILL.md file — the overlay skill is NOT loaded; "
+        "fix get_skill_metadata()['skill_path']",
+        raw,
+    )
+    return ""
+
+
+def _skill_identity(skill: str) -> str:
+    """A ``<dir>/SKILL.md`` path is the skill named by its directory; any other reference is itself."""
+    suffix = f"/{_SKILL_FILE}"
+    return skill.removesuffix(suffix).rsplit("/", 1)[-1] if skill.endswith(suffix) else skill
+
+
 def _dedupe(skills: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for skill in skills:
-        if skill not in seen:
-            seen.add(skill)
+        identity = _skill_identity(skill)
+        if identity not in seen:
+            seen.add(identity)
             result.append(skill)
     return result
 

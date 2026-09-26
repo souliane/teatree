@@ -242,11 +242,15 @@ class TestGetSkillMetadata:
         assert "remote_patterns" in metadata
         assert metadata["remote_patterns"] == ["souliane/teatree"]
 
-    def test_skill_path_points_to_existing_directory(self) -> None:
-        overlay = TeatreeOverlay()
-        metadata = overlay.metadata.get_skill_metadata()
+    def test_skill_path_is_the_internals_skill_md(self) -> None:
+        metadata = TeatreeOverlay().metadata.get_skill_metadata()
         skill_path = Path(str(metadata["skill_path"]))
-        assert skill_path.is_dir()
+
+        assert skill_path.is_absolute()
+        assert skill_path.name == "SKILL.md"
+        assert skill_path.is_file()
+        assert skill_path.parent.name == "internals"
+        assert skill_path.parent.parent == Path(str(metadata["skill_root"]))
 
 
 class TestGetEvalScenariosDir:

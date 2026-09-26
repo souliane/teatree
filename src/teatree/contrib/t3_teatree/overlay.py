@@ -106,7 +106,7 @@ class TeatreeMetadata(OverlayMetadata):
     def get_skill_metadata(self) -> SkillMetadata:
         root = _repo_root()
         return {
-            "skill_path": str(root / "skills"),
+            "skill_path": str(root / "skills" / "internals" / "SKILL.md"),
             "skill_root": str(root / "skills"),
             "remote_patterns": ["souliane/teatree"],
         }
