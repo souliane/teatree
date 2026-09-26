@@ -44,12 +44,12 @@ from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
-from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import dispatch
 from teatree.loop.mechanical import HANDLERS
 from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner, _orphaned_task_signals
 from teatree.types import RawAPIDict
+from tests._pr_open_state_stub import mint_open_pr_review
 
 
 @dataclass
@@ -263,7 +263,7 @@ class TestWedgeIntegrationSingleTick(TestCase):
         already advanced past it.
         """
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
-        first = schedule_external_review(ticket)
+        first = mint_open_pr_review(ticket)
         assert first is not None
         first.complete()
         ticket.refresh_from_db()

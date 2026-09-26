@@ -6,6 +6,7 @@ from django.test import TestCase
 from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_external_review import schedule_external_review
+from tests._pr_open_state_stub import mint_open_pr_review
 
 
 class TestTicketRoleField(TestCase):
@@ -30,7 +31,7 @@ class TestScheduleExternalReview(TestCase):
             role=Ticket.Role.REVIEWER,
         )
 
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
 
         assert task.phase == "reviewing"
         # (reviewer, reviewing) → t3:reviewer is loop-dispatched → in-session.
@@ -51,8 +52,8 @@ class TestScheduleExternalReview(TestCase):
             role=Ticket.Role.REVIEWER,
         )
 
-        first = schedule_external_review(ticket)
-        second = schedule_external_review(ticket)
+        first = mint_open_pr_review(ticket)
+        second = mint_open_pr_review(ticket)
 
         assert second.pk == first.pk
         assert Task.objects.filter(ticket=ticket, phase="reviewing").count() == 1
@@ -64,10 +65,10 @@ class TestScheduleExternalReview(TestCase):
             issue_url="https://example.com/pr/8",
             role=Ticket.Role.REVIEWER,
         )
-        first = schedule_external_review(ticket)
+        first = mint_open_pr_review(ticket)
         first.fail(reason="the reviewer sub-agent crashed")
 
-        second = schedule_external_review(ticket)
+        second = mint_open_pr_review(ticket)
 
         assert second.pk != first.pk
 
@@ -91,7 +92,7 @@ class TestMarkReviewedExternally(TestCase):
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": "deadbeef"},
         )
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
 
         task.complete()
 
@@ -134,7 +135,7 @@ class TestMarkReviewNoAction(TestCase):
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": "sha1"},
         )
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
         assert task.status == Task.Status.PENDING
 
         ticket.mark_review_no_action()
@@ -166,7 +167,7 @@ class TestMarkReviewNoAction(TestCase):
             issue_url="https://gitlab/x/-/merge_requests/1078",
             role=Ticket.Role.REVIEWER,
         )
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
 
         ticket.mark_review_no_action()
         ticket.save()

@@ -20,7 +20,7 @@ import logging
 from teatree.core.gates.review_recordability_gate import unrecordable_review_mint_refusal
 from teatree.core.modelkit.review_state import DISCHARGED_REVIEW_STATES
 from teatree.core.models import DeferredQuestion, Task, Ticket
-from teatree.core.models.ticket_external_review import schedule_external_review
+from teatree.core.models.ticket_external_review import ReviewDeclined, schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_tables import ActionPayload
 from teatree.loop.persistence import _owning_overlay, _reconcile_existing_overlay
@@ -108,9 +108,14 @@ def _mint_reviewer_task(ticket: Ticket, *, payload: ActionPayload, head_sha: str
     if unrecordable is not None:
         _escalate_unrecordable_review(ticket, reason=unrecordable)
         return None
-    task = schedule_external_review(ticket)
-    _link_broadcast_reviewer_task(payload, task)
-    return task
+    result = schedule_external_review(ticket)
+    if result is ReviewDeclined.PR_STATE_UNKNOWN:
+        # Unrecording the head lets ReviewerPrsScanner re-offer it next tick instead of stranding the review.
+        ticket.merge_extra(pop_keys=["reviewed_sha"])
+    if isinstance(result, ReviewDeclined):
+        return None
+    _link_broadcast_reviewer_task(payload, result)
+    return result
 
 
 def _escalate_unrecordable_review(ticket: Ticket, *, reason: str) -> None:
@@ -138,7 +143,7 @@ def _escalate_unrecordable_review(ticket: Ticket, *, reason: str) -> None:
     )
 
 
-def _link_broadcast_reviewer_task(payload: ActionPayload, task: Task | None) -> None:
+def _link_broadcast_reviewer_task(payload: ActionPayload, task: Task) -> None:
     """Record the covering reviewer task on the ``ScannedBroadcast`` row that emitted it.
 
     Closes the broadcast ledger's emission gate: until the row knows which task
@@ -147,7 +152,7 @@ def _link_broadcast_reviewer_task(payload: ActionPayload, task: Task | None) -> 
     deleted must never break the dispatch it is auditing.
     """
     broadcast_id = payload.get("broadcast_id")
-    if not broadcast_id or task is None:
+    if not broadcast_id:
         return
     from teatree.core.models import ScannedBroadcast  # noqa: PLC0415 — lazy: avoids the models import cycle
 

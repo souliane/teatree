@@ -1,9 +1,15 @@
 """The model-callable registries: lookup, idempotent re-population, re-ready safety (#2385)."""
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 
+from teatree.core.backend_protocols import PrOpenState
 from teatree.core.model_registries import populate_model_registries
 from teatree.core.modelkit import gate_registry
+
+_PR = "https://ex.com/o/a/pull/1"
 
 
 class TestGateRegistry:
@@ -42,8 +48,15 @@ class TestPopulateModelRegistries:
         assert gate_registry.get_gate("review_context_satisfied") is not None
         assert gate_registry.get_resolver("infer_overlay_for_url") is not None
         assert gate_registry.get_resolver("resolve_overlay_name") is not None
+        assert gate_registry.get_resolver("pr_open_state") is not None
         assert gate_registry.get("cost", "AttemptUsage") is not None
         assert gate_registry.get("cost", "CostBreakdown") is not None
+
+    def test_the_pr_open_state_resolver_reads_the_module_attribute_at_call_time(self) -> None:
+        with patch("teatree.core.review.pr_open_state.read_pr_open_state", return_value=PrOpenState.MERGED):
+            resolved = gate_registry.get_resolver("pr_open_state")(SimpleNamespace(issue_url=_PR))
+
+        assert resolved == PrOpenState.MERGED
 
     def test_re_population_is_a_noop_not_a_duplicate_key_error(self) -> None:
         # Mirrors a second AppConfig.ready (test re-entry, in-process call_command).

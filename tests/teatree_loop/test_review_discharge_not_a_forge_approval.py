@@ -23,13 +23,14 @@ swallows the re-review the dismissal signal exists to request.
 
 from django.test import TestCase
 
-from teatree.core.backend_protocols import ReviewState
+from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models import Session, Task, Ticket
 from teatree.loop.dispatch import dispatch
 from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner, mark_reviewed
+from tests._pr_open_state_stub import pr_open_state
 from tests.teatree_loop.test_scanners import FakeCodeHost
 
 _URL = "https://gitlab/x/-/merge_requests/7057"
@@ -131,7 +132,8 @@ class DischargeIsNotReadBackAsAForgeApproval(TestCase):
 
         signals = ReviewerPrsScanner(host=host).scan()
         assert [s.kind for s in signals] == ["reviewer_pr.approval_dismissed"]
-        persist_agent_actions(dispatch(signals))
+        with pr_open_state(PrOpenState.OPEN):
+            persist_agent_actions(dispatch(signals))
 
         assert Task.objects.filter(ticket=ticket, phase="reviewing", status=Task.Status.PENDING).exists(), (
             "the dismissal was emitted and then swallowed by the at-head dedup"

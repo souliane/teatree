@@ -30,10 +30,10 @@ from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
-from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.mechanical import reviewer_task_orphaned, reviewer_task_self_authored
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.types import RawAPIDict
+from tests._pr_open_state_stub import mint_open_pr_review
 
 _IDENTITIES = ("user-gl", "user-gh-a", "user-gh-b")
 _SLUG = "souliane/teatree"
@@ -142,7 +142,7 @@ class TestArmedReviewSurvivesSelfAuthoredSweep(TestCase):
         """#1321 non-regression — a reviewing task with no dispatch row is still a stray."""
         url = "https://github.com/souliane/teatree/pull/3800"
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
-        stray = schedule_external_review(ticket)
+        stray = mint_open_pr_review(ticket)
 
         signals = ReviewerPrsScanner(host=_self_authored_host(url), identities=_IDENTITIES).scan()
         assert [s.kind for s in signals if s.kind == "reviewer_pr.task_self_authored"], (
@@ -161,7 +161,7 @@ class TestArmedReviewSurvivesSelfAuthoredSweep(TestCase):
         # That order is also how the deadlock arose — the #1321 task was already
         # sitting there when the ship loop armed its review.
         url = f"https://github.com/{_SLUG}/pull/3887"
-        stray = schedule_external_review(Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER))
+        stray = mint_open_pr_review(Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER))
         _url, ticket, armed = _arm_auto_review(3887)
         assert armed.pk != stray.pk, "the mixed ticket needs two distinct reviewing tasks"
 
@@ -195,7 +195,7 @@ class TestOrphanReasonIsReportedHonestly(TestCase):
     def test_terminal_ticket_orphan_signal_carries_its_own_reason(self) -> None:
         url = "https://github.com/souliane/teatree/pull/3895"
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_POSTED)
-        schedule_external_review(ticket)
+        mint_open_pr_review(ticket)
         assert ticket.is_terminal
 
         host = FakeCodeHost(user="user-gl", pr_open_state_default=PrOpenState.OPEN)
@@ -208,7 +208,7 @@ class TestOrphanReasonIsReportedHonestly(TestCase):
     def test_merged_pr_orphan_signal_carries_the_forge_reason(self) -> None:
         url = "https://github.com/souliane/teatree/pull/3896"
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
-        schedule_external_review(ticket)
+        mint_open_pr_review(ticket)
 
         host = FakeCodeHost(user="user-gl", pr_open_state_default=PrOpenState.MERGED)
         signals = ReviewerPrsScanner(host=host, identities=_IDENTITIES).scan()
@@ -220,7 +220,7 @@ class TestOrphanReasonIsReportedHonestly(TestCase):
     def test_handler_logs_the_signal_reason_not_a_hardcoded_one(self) -> None:
         url = "https://github.com/souliane/teatree/pull/3897"
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_POSTED)
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
 
         with self.assertLogs("teatree.loop.mechanical", level="INFO") as captured:
             reviewer_task_orphaned({"ticket_id": ticket.pk, "url": url, "reason": "ticket terminal: review_posted"})

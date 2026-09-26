@@ -21,10 +21,10 @@ from teatree.core.admission_governor import governor_enabled
 from teatree.core.models import ConfigSetting, ModeOverride, Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.task_claim import claim_generation
-from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.admit_budget import BUDGET_KEY, WRITTEN_AT_KEY, write_admit_budget
 from teatree.loop.drain import set_worker_quiescing
 from tests._loop_principal_env import pinned_loop_principal
+from tests._pr_open_state_stub import mint_open_pr_review
 
 
 def _seed_cold_config(db: Path, key: str, value: object) -> None:
@@ -54,7 +54,7 @@ class _LoopDispatchTest(TestCase):
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": head_sha},
         )
-        return schedule_external_review(ticket)
+        return mint_open_pr_review(ticket)
 
     def _author_task(self, *, url: str = "https://example.com/issues/9") -> Task:
         ticket = Ticket.objects.create(overlay="acme", issue_url=url, role=Ticket.Role.AUTHOR)
@@ -159,7 +159,7 @@ class TestPendingSpawn(_LoopDispatchTest):
             role=Ticket.Role.REVIEWER,
             extra={"reviewed_sha": "x"},
         )
-        schedule_external_review(ticket)
+        mint_open_pr_review(ticket)
         stdout = StringIO()
         with (
             patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}),

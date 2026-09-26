@@ -28,6 +28,7 @@ from teatree.loop.dispatch import dispatch
 from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.types import RawAPIDict
+from tests._pr_open_state_stub import pr_open_state
 
 OLD_SHA = "a" * 40
 NEW_SHA = "b" * 40
@@ -83,6 +84,9 @@ def _seed_approved_reviewer_ticket() -> Ticket:
 
 
 class TestNewHeadOnAnApprovedMrSchedulesAReview(TestCase):
+    def setUp(self) -> None:
+        self.enterContext(pr_open_state(PrOpenState.OPEN))
+
     def test_a_reviewing_task_is_created(self) -> None:
         _seed_approved_reviewer_ticket()
 

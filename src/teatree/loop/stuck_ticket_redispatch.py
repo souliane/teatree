@@ -32,6 +32,10 @@ what stops a repair storm: re-dispatching into a deterministic defect reproduces
 while an environmental fault is the environment's and stays retryable up to the cap.
 A ticket with an open task is already being worked and is left alone.
 
+A reviewer re-dispatch mints nothing unless
+:func:`~teatree.core.models.ticket_external_review.reviewer_dispatch_decline` says a
+review is still owed.
+
 Lives in ``teatree.loop`` (orchestration): it composes the ``core`` ticket-
 scheduling methods with the ``core`` repair-loop budget over a housekeeping sweep.
 """
@@ -42,7 +46,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from django.conf import settings
-from django.db.models import Max, Q
+from django.db.models import Count, Max, Q
 from django.utils import timezone
 
 from teatree.core.managers_task_claim import redispatch_window
@@ -52,7 +56,12 @@ from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.phase_landing import phase_landing_evidence
-from teatree.core.models.ticket_external_review import schedule_external_review
+from teatree.core.models.review_target import review_target_for_task
+from teatree.core.models.ticket_external_review import (
+    ReviewDeclined,
+    reviewer_dispatch_decline,
+    schedule_external_review,
+)
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import IterationStalled, MaxIterationsExceeded, requeue_verdict
 from teatree.llm.anthropic_limits import recoverable_exhaustion_cause
@@ -100,6 +109,7 @@ def redispatch_stuck_tickets() -> int:
 
     Returns the number of tickets re-dispatched (a fresh phase task scheduled).
     """
+    _warn_unknown_states()
     now = timezone.now()
     threshold = _idle_threshold_hours()
     already_escalated = _already_escalated_ticket_pks()
@@ -128,12 +138,19 @@ def _redispatch_one(candidate: _Candidate) -> int:
     Isolated per candidate so :func:`redispatch_stuck_tickets` can wrap it in a single
     ``try`` and keep sweeping when one row raises. The single path both classes take,
     so no re-dispatch can reach the scheduler without passing the budget.
+    A halted reviewer ticket whose PR settled is retired instead of escalated.
     """
     halt = _budget_halt_reason(candidate.ticket, phase=candidate.phase)
     if halt is not None:
+        if _settled_instead_of_stuck(candidate.ticket):
+            return 0
         _escalate_once(candidate.ticket, reason=halt)
         return 0
     return _redispatch(candidate)
+
+
+def _settled_instead_of_stuck(ticket: Ticket) -> bool:
+    return ticket.role == Ticket.Role.REVIEWER and reviewer_dispatch_decline(ticket) is ReviewDeclined.RETIRED
 
 
 def _already_escalated_ticket_pks() -> set[int]:
@@ -160,7 +177,8 @@ def _stuck_candidates(*, now: datetime, threshold_hours: int) -> list[_Candidate
         phase = _implied_phase(ticket)
         if phase is None or ticket.newest_task_was_cancelled():
             continue
-        if _phase_is_failing(ticket, phase=phase) or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
+        failing = _phase_is_failing(ticket, phase=phase) and not _review_has_no_head(ticket, phase=phase)
+        if failing or _is_idle(ticket, now=now, threshold_hours=threshold_hours):
             candidates.append(_Candidate(ticket=ticket, phase=phase))
     return candidates
 
@@ -172,9 +190,12 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
     is in flight, whereas a reviewer ticket's PR IS its subject — every reviewer ticket
     has one open by definition, so excluding on it would silently re-narrow the sweep
     back to author-only.
+
+    Both roles admit an explicit list of KNOWN states, so a state value the code does not
+    know is never read as live. The reviewer list is every state a finished review advances.
     """
     author = Q(role=Ticket.Role.AUTHOR, state__in=tuple(_STATE_PHASE))
-    reviewer = Q(role=Ticket.Role.REVIEWER) & ~Q(state__in=tuple(_REVIEWER_DONE_STATES))
+    reviewer = Q(role=Ticket.Role.REVIEWER, state__in=tuple(Ticket.pre_ship_states()))
     open_pr = Q(role=Ticket.Role.AUTHOR, pull_requests__state__in=_OPEN_PR_STATES)
     return list(
         Ticket.objects.filter(author | reviewer)
@@ -182,6 +203,15 @@ def _live_tickets_with_nothing_in_flight() -> list[Ticket]:
         .exclude(open_pr)
         .distinct()
     )
+
+
+def _warn_unknown_states() -> None:
+    unknown = (
+        Ticket.objects.exclude(state__in=Ticket.State.values).values("state").annotate(n=Count("pk")).order_by("state")
+    )
+    counts = ", ".join(f"{row['state']!r} x{row['n']}" for row in unknown)
+    if counts:
+        logger.warning("stuck-redispatch: tickets in unknown states are never re-dispatched: %s", counts)
 
 
 def _implied_phase(ticket: Ticket) -> str | None:
@@ -223,15 +253,19 @@ def _phase_is_failing(ticket: Ticket, *, phase: str) -> bool:
     return not phase_landing_evidence(latest.task, trust_phase_artifact=latest.failure_kind == FailureKind.LEASE_LOST)
 
 
+def _review_has_no_head(ticket: Ticket, *, phase: str) -> bool:
+    """A review with no recorded head can only be refused, so only the idle class may retry it."""
+    if ticket.role != Ticket.Role.REVIEWER or normalize_phase(phase) != "reviewing":
+        return False
+    latest = ticket.tasks.filter(phase__in=phase_spellings("reviewing")).order_by("-pk").first()  # Django reverse FK
+    target = review_target_for_task(latest) if latest is not None else None
+    return target is not None and not target.head_sha
+
+
 #: PR states that count as "open" (a merged PR does not keep a ticket alive).
 _OPEN_PR_STATES = frozenset(
     {PullRequest.State.OPEN, PullRequest.State.REVIEW_REQUESTED, PullRequest.State.APPROVED},
 )
-
-#: States a REVIEWER ticket has nothing left to do in. ``marker_release_states()``
-#: carries the reviewer terminal (REVIEW_POSTED); RETROSPECTED is added for the same
-#: reason the failed-task doctor probe adds it — a retrospected ticket is finished.
-_REVIEWER_DONE_STATES = Ticket.marker_release_states() | {Ticket.State.RETROSPECTED}
 
 
 def _is_idle(ticket: Ticket, *, now: datetime, threshold_hours: int) -> bool:
@@ -257,18 +291,22 @@ def _last_activity(ticket: Ticket) -> datetime | None:
 
 
 def _redispatch(candidate: _Candidate) -> int:
-    """Schedule the candidate's phase task; escalate on a scheduling refusal. Returns 0/1."""
+    """Schedule the candidate's phase task; escalate on a scheduling refusal. Returns 0/1.
+
+    A declined reviewer mint is not a refusal: the PR settled (ticket retired) or the
+    forge could not be read (re-admitted next pass), so it burns no repair budget.
+    """
     ticket = candidate.ticket
     try:
-        _schedule_for_candidate(candidate)
+        task = _schedule_for_candidate(candidate)
     except InvalidTransitionError as exc:
         _escalate_once(ticket, reason=f"could not schedule {candidate.phase!r}: {exc}")
         return 0
-    return 1
+    return 0 if task is None else 1
 
 
-def _schedule_for_candidate(candidate: _Candidate) -> Task:
-    """Mint the candidate's phase task through the seam that owns that phase.
+def _schedule_for_candidate(candidate: _Candidate) -> Task | None:
+    """Mint the candidate's phase task through the seam that owns that phase, or ``None`` when none is owed.
 
     Every seam here — the author FSM mints, :func:`create_phase_task` and
     :func:`schedule_external_review` — is CAS-guarded and returns an in-flight sibling
@@ -279,7 +317,10 @@ def _schedule_for_candidate(candidate: _Candidate) -> Task:
     if ticket.role != Ticket.Role.REVIEWER:
         return _schedule_for_state(ticket)
     if normalize_phase(phase) == "reviewing":
-        return schedule_external_review(ticket)
+        result = schedule_external_review(ticket)
+        return None if isinstance(result, ReviewDeclined) else result
+    if reviewer_dispatch_decline(ticket) is not None:
+        return None
     return create_phase_task(
         ticket,
         phase=phase,
