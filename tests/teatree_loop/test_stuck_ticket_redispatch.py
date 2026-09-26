@@ -20,8 +20,9 @@ from django.utils import timezone
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.runner import HarnessOutcome
 from teatree.agents.runner_interruption import _record_stuck_outcome
+from teatree.core.backend_protocols import PrOpenState
 from teatree.core.mode_resolution import set_mode_override
-from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, REVIEW_UNRECORDABLE_PREFIX, FailureKind
 from teatree.core.models import Mode, PullRequest, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -36,8 +37,11 @@ from teatree.loop.stuck_ticket_redispatch import (
     redispatch_stuck_tickets,
 )
 from teatree.loop.tick_recovery import _reap_stale_task_claims
+from tests._pr_open_state_stub import pr_open_state
 
 _REVIEWED_HEAD = "a1b2c3d4" * 5
+_REAL_DEFECT = "the review found a real defect in the diff"
+_ALREADY_LANDED = "the push gate refused the branch: its content already landed"
 
 
 def _stuck_ticket(*, state: str = Ticket.State.WORK_STARTED, idle_hours: int = 48) -> Ticket:
@@ -261,6 +265,9 @@ class TestStuckTicketRedispatch(TestCase):
 class TestReviewerRoleCandidates(TestCase):
     """#3958 gap 1: reviewer-role tickets were excluded outright by a ``role=author`` filter."""
 
+    def setUp(self) -> None:
+        self.enterContext(pr_open_state(PrOpenState.OPEN))
+
     def _reviewer_ticket(self) -> Ticket:
         # A reviewer ticket is minted at NOT_STARTED and stays there until REVIEW_DELIVERED,
         # so no author state→phase mapping can name its implied phase.
@@ -393,6 +400,208 @@ class TestReviewerRoleCandidates(TestCase):
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+_NO_HEAD_REFUSAL = (
+    "review verdict cannot be persisted: this review is answerable for org/app#7 but no pull request "
+    "head is recorded for it, so the verdict would bind to no tree and no merge guard could ever read it"
+)
+
+
+class TestFinishedPrsMintNothing(TestCase):
+    """#4847: the sweep minted reviews for merged/closed PRs and for states it did not know."""
+
+    def _failed_reviewer(self, *, phase: str = "reviewing") -> Ticket:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url="https://ex.com/org/app/pull/7",
+            extra={"reviewed_sha": _REVIEWED_HEAD},
+        )
+        _finished_task(ticket, phase=phase, status=Task.Status.FAILED, error="result_error: no verdict")
+        return ticket
+
+    def test_a_reviewer_ticket_whose_pr_is_merged_mints_no_task_and_is_retired(self) -> None:
+        ticket = self._failed_reviewer()
+
+        with pr_open_state(PrOpenState.MERGED):
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_a_reviewer_ticket_whose_pr_is_closed_mints_no_task_and_is_retired(self) -> None:
+        ticket = self._failed_reviewer()
+
+        with pr_open_state(PrOpenState.CLOSED):
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_an_open_pr_still_gets_its_review(self) -> None:
+        ticket = self._failed_reviewer()
+
+        with pr_open_state(PrOpenState.OPEN) as host:
+            assert redispatch_stuck_tickets() == 1
+
+        assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).count() == 1
+        assert len(host.calls) == 1
+
+    def _halted_reviewer(self, *, issue_url: str = "https://ex.com/org/app/pull/7") -> Ticket:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.REVIEWER,
+            issue_url=issue_url,
+            extra={"reviewed_sha": _REVIEWED_HEAD},
+        )
+        for _ in range(3):
+            _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error=_REAL_DEFECT, hours_ago=48)
+        return ticket
+
+    def test_an_unknown_state_reviewer_ticket_is_never_admitted_even_with_its_budget_spent(self) -> None:
+        ticket = self._halted_reviewer()
+        Ticket.objects.filter(pk=ticket.pk).update(state="retired_state_zz")
+
+        with pr_open_state(PrOpenState.OPEN) as host:
+            assert redispatch_stuck_tickets() == 0
+
+        assert DeferredQuestion.objects.count() == 0
+        assert host.calls == []
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_a_halted_reviewer_ticket_whose_pr_merged_is_retired_not_escalated(self) -> None:
+        for iid, state in enumerate((PrOpenState.MERGED, PrOpenState.CLOSED)):
+            with self.subTest(state=state):
+                ticket = self._halted_reviewer(issue_url=f"https://ex.com/org/app/pull/{iid}")
+
+                with pr_open_state(state) as host:
+                    assert redispatch_stuck_tickets() == 0
+
+                ticket.refresh_from_db()
+                assert ticket.state == Ticket.State.IGNORED
+                assert DeferredQuestion.objects.count() == 0
+                assert host.calls == [ticket.issue_url]
+
+    def test_a_halted_reviewer_ticket_whose_pr_is_open_is_still_escalated(self) -> None:
+        ticket = self._halted_reviewer()
+
+        with pr_open_state(PrOpenState.OPEN) as host:
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert DeferredQuestion.objects.count() == 1
+        assert len(host.calls) == 1
+
+    def test_a_halted_reviewer_ticket_whose_pr_state_is_unreadable_is_still_escalated(self) -> None:
+        ticket = self._halted_reviewer()
+
+        with pr_open_state(PrOpenState.UNKNOWN):
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert DeferredQuestion.objects.count() == 1
+
+    def test_a_ticket_in_an_unknown_state_mints_no_task_and_warns(self) -> None:
+        ticket = self._failed_reviewer()
+        Ticket.objects.filter(pk=ticket.pk).update(state="retired_state_zz")
+
+        with (
+            pr_open_state(PrOpenState.OPEN),
+            self.assertLogs("teatree.loop.stuck_ticket_redispatch", level="WARNING") as logs,
+        ):
+            assert redispatch_stuck_tickets() == 0
+
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        assert any("retired_state_zz" in line for line in logs.output)
+
+    def test_an_author_ticket_in_an_unknown_state_mints_no_task_and_warns(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
+        Ticket.objects.filter(pk=ticket.pk).update(state="retired_state_zz")
+
+        with self.assertLogs("teatree.loop.stuck_ticket_redispatch", level="WARNING") as logs:
+            assert redispatch_stuck_tickets() == 0
+
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        assert any("retired_state_zz" in line for line in logs.output)
+
+    def test_an_unreadable_pr_state_mints_nothing_and_stays_admitted(self) -> None:
+        ticket = self._failed_reviewer()
+
+        with pr_open_state(PrOpenState.UNKNOWN):
+            assert redispatch_stuck_tickets() == 0
+        with pr_open_state(raises=True):
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.NOT_STARTED
+        assert DeferredQuestion.objects.count() == 0
+        with pr_open_state(PrOpenState.OPEN):
+            assert redispatch_stuck_tickets() == 1
+
+    def test_a_codex_review_on_a_merged_pr_mints_nothing(self) -> None:
+        ticket = self._failed_reviewer(phase="codex_reviewing")
+
+        with pr_open_state(PrOpenState.MERGED):
+            assert redispatch_stuck_tickets() == 0
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_a_codex_review_on_an_unreadable_pr_mints_nothing(self) -> None:
+        ticket = self._failed_reviewer(phase="codex_reviewing")
+
+        with pr_open_state(PrOpenState.UNKNOWN):
+            assert redispatch_stuck_tickets() == 0
+
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def _refused_for_no_head(self, *, hours_ago: int) -> Ticket:
+        ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url="https://ex.com/org/app/pull/7")
+        task = _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error=_NO_HEAD_REFUSAL)
+        TaskAttempt.objects.filter(task=task).update(started_at=timezone.now() - timedelta(hours=hours_ago))
+        return ticket
+
+    def test_a_review_refused_for_no_recorded_head_does_not_requalify_immediately(self) -> None:
+        ticket = self._refused_for_no_head(hours_ago=0)
+
+        with pr_open_state(PrOpenState.OPEN):
+            assert redispatch_stuck_tickets() == 0
+
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+
+    def test_a_headless_refusal_requalifies_once_it_has_aged_past_the_idle_threshold(self) -> None:
+        ticket = self._refused_for_no_head(hours_ago=DEFAULT_STUCK_IDLE_HOURS + 1)
+
+        with pr_open_state(PrOpenState.OPEN):
+            assert redispatch_stuck_tickets() == 1
+
+        assert ticket.tasks.filter(phase="reviewing", status=Task.Status.PENDING).count() == 1
+
+    def test_an_author_ticket_with_a_merged_pr_and_no_open_one_is_still_redispatched(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        ticket.pull_requests.create(
+            url="https://ex.com/org/app/pull/8", repo="org/app", iid="8", state=PullRequest.State.MERGED
+        )
+
+        assert redispatch_stuck_tickets() == 1
+
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_an_author_ticket_with_only_a_closed_pr_is_still_redispatched(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.CODED)
+        ticket.pull_requests.create(
+            url="https://ex.com/org/app/pull/8", repo="org/app", iid="8", state=PullRequest.State.CLOSED
+        )
+
+        assert redispatch_stuck_tickets() == 1
+        assert ticket.tasks.filter(phase="testing", status=Task.Status.PENDING).count() == 1
 
 
 class TestFailingCandidates(TestCase):
@@ -616,6 +825,17 @@ class TestFailingCandidates(TestCase):
         assert redispatch_stuck_tickets() == 1
         assert ticket.tasks.filter(phase="shipping", status=Task.Status.PENDING).count() == 1
 
+    def test_a_repeating_shipping_failure_after_a_merged_pr_is_halted_by_the_budget(self) -> None:
+        ticket = _stuck_ticket(state=Ticket.State.SELF_REVIEWED, idle_hours=0)
+        ticket.pull_requests.create(
+            url="https://ex.com/o/a/pull/9", repo="o/a", iid="9", state=PullRequest.State.MERGED
+        )
+        for _ in range(2):
+            _finished_task(ticket, phase="shipping", status=Task.Status.FAILED, error=_ALREADY_LANDED)
+
+        assert redispatch_stuck_tickets() == 0
+        assert DeferredQuestion.objects.count() == 1
+
 
 class TestEveryClassPassesTheBudget(TestCase):
     """#3958 acceptance: no re-dispatch path reaches a scheduler without the repair budget.
@@ -627,12 +847,19 @@ class TestEveryClassPassesTheBudget(TestCase):
     Halting the budget for every candidate is what makes a bypass observable.
     """
 
+    def setUp(self) -> None:
+        self.enterContext(pr_open_state(PrOpenState.OPEN))
+
     def _candidates_of_every_class(self) -> None:
         frozen_author = _stuck_ticket(state=Ticket.State.PLAN_RECORDED)
         failing_author = _stuck_ticket(state=Ticket.State.CODED, idle_hours=0)
         _finished_task(failing_author, phase="testing", status=Task.Status.FAILED, error="outage_death: refused")
         for phase in ("reviewing", "codex_reviewing"):
-            reviewer = Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url=f"https://ex.com/o/a/pull/{phase}")
+            reviewer = Ticket.objects.create(
+                role=Ticket.Role.REVIEWER,
+                issue_url=f"https://ex.com/o/a/pull/{phase}",
+                extra={"reviewed_sha": _REVIEWED_HEAD},
+            )
             _finished_task(reviewer, phase=phase, status=Task.Status.FAILED, error="outage_death: refused")
         assert Ticket.objects.count() == 4
         assert frozen_author.tasks.count() == 0
@@ -728,6 +955,103 @@ class TestOperatorCancelledTickets(TestCase):
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
 
 
+class TestAHaltEscalationIsAboutTheBoxNotTheOwner(TestCase):
+    """A halt escalation is the box reporting its OWN health — the class is already INTERNAL.
+
+    `repair-stall`, `repair-cap` and `reoffer-budget` all record `INTERNAL` with an indexed
+    `dedupe_marker`; the stuck-redispatch halt was the sibling that did neither. It DM'd the
+    owner a question about a re-dispatch budget they cannot answer, and deduped by scanning
+    the question TEXT — so the marker had to live in the human-facing sentence and every
+    sweep paid an unindexed `contains` over every question ever recorded.
+    """
+
+    def _escalated_ticket(self) -> Ticket:
+        ticket = _stuck_ticket(state=Ticket.State.WORK_STARTED)
+        for i in range(max_phase_iterations()):
+            session = Session.objects.create(ticket=ticket, agent_id="planning")
+            task = Task.objects.create(ticket=ticket, session=session, phase="planning", status=Task.Status.FAILED)
+            attempt = TaskAttempt.objects.create(
+                task=task, ended_at=timezone.now(), exit_code=1, error=f"planning failed run {'x' * (i + 1)}"
+            )
+            TaskAttempt.objects.filter(pk=attempt.pk).update(started_at=timezone.now() - timedelta(hours=48))
+        redispatch_stuck_tickets()
+        return ticket
+
+    def test_the_escalation_is_internal_so_it_never_reaches_the_owner_feed(self) -> None:
+        self._escalated_ticket()
+        row = DeferredQuestion.objects.get()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+
+    def test_it_dedupes_on_the_indexed_marker_rather_than_the_question_text(self) -> None:
+        ticket = self._escalated_ticket()
+        row = DeferredQuestion.objects.get()
+        assert row.dedupe_marker == f"stuck-redispatch-halt:{ticket.pk}"
+
+    def test_a_second_sweep_after_the_question_is_answered_files_nothing(self) -> None:
+        # The escalate-ONCE property the text scan bought, kept on the indexed marker.
+        self._escalated_ticket()
+        DeferredQuestion.objects.update(answered_at=timezone.now())
+        assert redispatch_stuck_tickets() == 0
+        assert DeferredQuestion.objects.count() == 1
+
+
+class TestRepeatedUnrecordableReviewsHaltTheRedispatch(TestCase):
+    """While the refusal was ``unclassified``, ``stall_kinds`` DROPPED it.
+
+    The two seams that refuse an unrecordable review word it differently — the gate refuses
+    a dispatch, the recorder refuses a returned verdict on the mid-run stamp race — so two
+    of them fingerprint differently and the TEXT stall cannot see them. Only the shared
+    KIND makes them comparable, which is what naming it buys; the pair below is therefore
+    deliberately NOT text-identical, or the fingerprint stall would halt regardless and the
+    test would prove nothing.
+    """
+
+    def _reviewer_ticket_with_no_head(self) -> Ticket:
+        return Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url="https://ex.com/org/app/pull/4225")
+
+    def _gate_refusal(self) -> str:
+        return f"{REVIEW_UNRECORDABLE_PREFIX}refusing to dispatch the reviewer for org/app#4225 — no head recorded"
+
+    def _recorder_refusal(self) -> str:
+        return (
+            f"{REVIEW_UNRECORDABLE_PREFIX}review verdict cannot be persisted: this review is answerable for "
+            "org/app#4225 but no pull request head is recorded for it"
+        )
+
+    def _fail(self, ticket: Ticket, error: str) -> None:
+        task = _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error=error)
+        TaskAttempt.objects.filter(task=task).update(
+            started_at=timezone.now() - timedelta(hours=DEFAULT_STUCK_IDLE_HOURS + 1)
+        )
+
+    def test_two_differently_worded_refusals_still_halt_because_the_kind_is_shared(self) -> None:
+        ticket = self._reviewer_ticket_with_no_head()
+        self._fail(ticket, self._recorder_refusal())
+        self._fail(ticket, self._gate_refusal())
+
+        with pr_open_state(PrOpenState.OPEN):
+            assert redispatch_stuck_tickets() == 0
+        assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+    def test_the_pair_is_genuinely_not_text_identical(self) -> None:
+        """Guards the guard: if the two texts ever converge, the test above goes vacuous."""
+        ticket = self._reviewer_ticket_with_no_head()
+        self._fail(ticket, self._recorder_refusal())
+        self._fail(ticket, self._gate_refusal())
+
+        fingerprints = {attempt.error_fingerprint for attempt in TaskAttempt.objects.all()}
+        assert len(fingerprints) == 2
+
+    def test_one_refusal_alone_does_not_halt(self) -> None:
+        """The halt is two CONSECUTIVE ones — a single refusal must not freeze the ticket."""
+        ticket = self._reviewer_ticket_with_no_head()
+        self._fail(ticket, self._gate_refusal())
+
+        with pr_open_state(PrOpenState.OPEN):
+            assert redispatch_stuck_tickets() == 1
+
+
 class TestAFrozenFactoryAndTheCancelRace(TestCase):
     """#4834: a cancel stays a cancel through a lease loss, and escalation survives a freeze."""
 
@@ -756,8 +1080,8 @@ class TestAFrozenFactoryAndTheCancelRace(TestCase):
                 ticket, phase="planning", status=Task.Status.FAILED, error=f"planning failed run {'x' * (i + 1)}"
             )
             TaskAttempt.objects.filter(task=task).update(started_at=timezone.now() - timedelta(hours=48))
-        Mode.objects.create(name="frozen-redispatch-test", entries={"dispatch": False})
-        set_mode_override("frozen-redispatch-test")
+        Mode.objects.create(name="frozen-redispatch-test", entries={"dispatch": False, "dream": True})
+        set_mode_override("frozen-redispatch-test", reason="test")
 
         assert redispatch_stuck_tickets() == 0
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1

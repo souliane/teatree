@@ -75,11 +75,11 @@ class TestLoopStateCli:
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loop_state", "override", "review", "on")
 
-    def test_override_passes_ttl_and_reason(self) -> None:
+    def test_override_passes_the_advisory_lift_and_the_required_reason(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:
-            result = runner.invoke(loop_app, ["override", "news", "off", "--for", "2h", "--reason", "noisy"])
+            result = runner.invoke(loop_app, ["override", "news", "off", "--lift-by", "2h", "--reason", "noisy"])
         assert result.exit_code == 0, result.stdout
-        call.assert_called_once_with("loop_state", "override", "news", "off", for_ttl="2h", reason="noisy")
+        call.assert_called_once_with("loop_state", "override", "news", "off", lift_by="2h", reason="noisy")
 
     def test_loop_state_status_delegates(self) -> None:
         with patch("django.setup"), patch("django.core.management.call_command") as call:

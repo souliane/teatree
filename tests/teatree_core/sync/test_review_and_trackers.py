@@ -310,11 +310,18 @@ class TestFetchNotionStatuses(TestCase):
     def test_update_page_status_gated_by_write_back_flag(self) -> None:
         patches: list[str] = []
 
+        workspace = {"type": "workspace", "workspace": True}
+
         def handler(request: httpx.Request) -> httpx.Response:
             patches.append(request.method)
+            if request.url.path.startswith("/v1/blocks/"):
+                return httpx.Response(200, json={"object": "block", "id": _PAGE_ID, "parent": workspace})
             return httpx.Response(200, json={"object": "page", "id": _PAGE_ID})
 
         _patch_notion_transport(self._monkeypatch, handler)
+        self._monkeypatch.setattr(
+            "teatree.backends.notion.write_guard.notion_write_roots", lambda _overlay: ([_PAGE_ID], [])
+        )
 
         with _patch_overlay(SyncOverlay(notion_token="ntn_secret", notion_write_back=False)):
             assert push_notion_status(_PAGE_ID, "Merged") is False
@@ -322,7 +329,8 @@ class TestFetchNotionStatuses(TestCase):
 
         with _patch_overlay(SyncOverlay(notion_token="ntn_secret", notion_write_back=True)):
             assert push_notion_status(_PAGE_ID, "Merged") is True
-        assert patches == ["GET", "PATCH"]  # the liveness probe reads the page before the mirror is written
+        # The liveness probe reads the page and the write guard reads its parent before the mirror is written.
+        assert patches == ["GET", "GET", "PATCH"]
 
     def test_push_notion_status_write_back_on_but_no_token_is_noop(self) -> None:
         with _patch_overlay(SyncOverlay(notion_token="", notion_write_back=True)):

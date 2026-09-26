@@ -10,11 +10,19 @@ artifact governs; storing previous versions preserves an immutable audit trail.
 Mirrors the MergeClear/DbApproval pattern: a dedicated row alongside Ticket,
 never a session-volatile JSON file.
 
-SELFCATCH-3 hardened the vacuity hole: a row now carries the ``base_sha`` the
-plan was authored against and a four-section ``adequacy`` manifest. Under
-``require_plan_adequacy`` (opt-in), :meth:`record` refuses a new row without a
-40-char base SHA and a complete manifest — so a scope+acceptance thin spec can no
-longer pass as a plan, and a plan bound to a stale base is detectable downstream.
+SELFCATCH-3 hardened the vacuity hole: a row carries the ``base_sha`` the plan was
+authored against and a five-section ``adequacy`` manifest, and :meth:`record` refuses
+a new row without a 40-char base SHA and a complete manifest — so a scope+acceptance
+thin spec cannot pass as a plan, and a plan bound to a stale base is detectable
+downstream. There is no setting that relaxes this; the audited escapes are
+:meth:`record_bypass` (the human-authorized plan-bypass, and the only writer of the
+all-negatives manifest the rubric gate reads as a waiver) and ``skip-planning``.
+
+The fifth section makes the plan a PRODUCER as well as a record: its
+``acceptance_criteria`` become the ticket's ``core.Rubric`` rows in the same atomic,
+so the acceptance-criteria list has exactly one home and arming the done-gate can
+never mean arming it against an empty table. A ``none_reason`` there is an ordinary
+reasoned negative — it writes no rows and waives nothing.
 """
 
 from typing import TYPE_CHECKING, ClassVar
@@ -22,16 +30,18 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
-from teatree.config import get_effective_settings
 from teatree.core.modelkit.db_retry import retry_on_locked
 from teatree.core.models.errors import NoPlanArtifactError  # noqa: F401 (re-exported for caller convenience)
-from teatree.core.models.plan_adequacy import all_negated_adequacy, is_adequate, is_valid_base_sha
+from teatree.core.models.plan_adequacy import (
+    all_negated_adequacy,
+    declared_acceptance_criteria,
+    is_adequate,
+    is_plan_bypass_shaped,
+    is_valid_base_sha,
+)
+from teatree.core.models.rubric import Rubric
+from teatree.core.models.ticket import Ticket
 from teatree.core.models.types import PlanAdequacy
-
-
-def plan_adequacy_required(overlay_name: str | None = None) -> bool:
-    """Whether the plan-adequacy/currency gate is in force for *overlay_name* (overlay → global)."""
-    return bool(get_effective_settings(overlay_name).require_plan_adequacy)
 
 
 class PlanArtifact(models.Model):
@@ -44,7 +54,7 @@ class PlanArtifact(models.Model):
     """
 
     ticket = models.ForeignKey(
-        "core.Ticket",
+        Ticket,
         on_delete=models.CASCADE,
         related_name="plan_artifacts",
     )
@@ -55,8 +65,8 @@ class PlanArtifact(models.Model):
     # against. Blank on legacy rows (pre-migration) — treated as stale under the
     # flag (fail-safe). New rows under the flag require a full 40-char hex SHA.
     base_sha = models.CharField(max_length=64, blank=True, default="")
-    # SELFCATCH-3 plan-adequacy: the four-section manifest (design,
-    # integration_seams, edge_cases, test_strategy). Empty on legacy rows.
+    # SELFCATCH-3 plan-adequacy: the five-section manifest (design, integration_seams,
+    # edge_cases, test_strategy, acceptance_criteria). Empty on legacy rows.
     adequacy = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -76,7 +86,7 @@ class PlanArtifact(models.Model):
     def record(
         cls,
         *,
-        ticket: "models.Model",
+        ticket: Ticket,
         plan_text: str,
         recorded_by: str,
         base_sha: str = "",
@@ -92,27 +102,31 @@ class PlanArtifact(models.Model):
         rather than a vacuous or unattributable artifact. Construction is
         atomic so a rejected artifact leaves no partial row.
 
-        SELFCATCH-3: when ``require_plan_adequacy`` is on for the ticket's
-        overlay, a new row additionally requires a 40-char hex ``base_sha`` and a
-        complete four-section ``adequacy`` manifest. A scope+acceptance-only thin
-        spec — no seams/edge-cases/test-strategy claims — is refused here, before
-        any row is written. The audited-bypass carve-out is the sibling
-        :meth:`record_bypass`, exempt from this enforcement.
+        A new row requires a 40-char hex ``base_sha`` and a complete five-section
+        ``adequacy`` manifest, unconditionally. A scope+acceptance-only thin spec — no
+        seams/edge-cases/test-strategy claims — is refused here, before any row is
+        written, and so is a manifest that declares nothing at all: that shape waives the
+        rubric gate, so only the audited :meth:`record_bypass` may write it.
+
+        The manifest's ``acceptance_criteria`` are added to the ticket's rubric in the
+        same atomic, so a refused rubric (one satisfiable by inaction) rolls the plan
+        back with it — the plan and the criteria it declares land together or not at all.
         """
         cleaned_text, cleaned_author = _clean_required(plan_text, recorded_by)
         cleaned_sha = base_sha.strip() if base_sha else ""
         manifest: dict = dict(adequacy) if adequacy else {}
-        if plan_adequacy_required(getattr(ticket, "overlay", "") or None):
-            _require_adequate_bound_plan(cleaned_sha, manifest)
+        _require_adequate_bound_plan(cleaned_sha, manifest)
         return cls._create_row(ticket, cleaned_text, cleaned_author, cleaned_sha, manifest)
 
     @classmethod
-    def record_bypass(cls, *, ticket: "models.Model", plan_text: str, recorded_by: str) -> "PlanArtifact":
+    def record_bypass(cls, *, ticket: Ticket, plan_text: str, recorded_by: str) -> "PlanArtifact":
         """Audited-bypass factory — records a plan EXEMPT from adequacy enforcement.
 
         The sibling of :meth:`record` for the human-authorized ``plan-bypass`` and
-        the retroactive reconcile. It writes an all-negatives manifest (a
-        ``no_seams`` plan) so the row is structurally adequate and declares no seams.
+        the retroactive reconcile, and the ONLY writer of the all-negatives manifest
+        (:func:`all_negated_adequacy`) — :meth:`record` refuses that shape. The manifest
+        is therefore the durable proof a human authorized the bypass, which is what the
+        rubric gate reads as its one waiver signal.
         Because it has no declared seams, the currency gate finds nothing to guard —
         ``check_plan_current`` passes it DIRECTLY (a ``no_seams`` plan can never be
         stale on a seam), so a bypassed plan reaches CODED with no ``plan-reaffirm``
@@ -125,19 +139,21 @@ class PlanArtifact(models.Model):
 
     @classmethod
     def _create_row(
-        cls, ticket: "models.Model", plan_text: str, recorded_by: str, base_sha: str, adequacy: dict
+        cls, ticket: Ticket, plan_text: str, recorded_by: str, base_sha: str, adequacy: dict
     ) -> "PlanArtifact":
         """Atomic, lock-retried row write shared by :meth:`record` and :meth:`record_bypass`."""
 
         def _create() -> "PlanArtifact":
             with transaction.atomic():
-                return cls.objects.create(
+                artifact = cls.objects.create(
                     ticket=ticket,
                     plan_text=plan_text,
                     recorded_by=recorded_by,
                     base_sha=base_sha,
                     adequacy=adequacy,
                 )
+                Rubric.add_criteria(ticket, list(declared_acceptance_criteria(adequacy)))
+                return artifact
 
         return retry_on_locked(_create)
 
@@ -156,21 +172,29 @@ def _clean_required(plan_text: str, recorded_by: str) -> tuple[str, str]:
 
 
 def _require_adequate_bound_plan(base_sha: str, adequacy: dict) -> None:
-    """Refuse a thin/unbound plan under ``require_plan_adequacy`` (raises ValueError)."""
+    """Refuse a thin/unbound plan, or one shaped like the human-authorized bypass (raises ValueError)."""
+    if is_plan_bypass_shaped(adequacy):
+        msg = (
+            "this manifest declares NOTHING — no seams, no edge cases, no test strategy, no acceptance "
+            "criteria. That shape is the human-authorized plan-bypass and it waives the rubric gate, so it "
+            "is recorded only through an audited authorization: a plan with nothing to declare is "
+            "`ticket plan-bypass <id> --human-authorize <who> --reason <why>`."
+        )
+        raise ValueError(msg)
     if not is_valid_base_sha(base_sha):
         msg = (
-            "require_plan_adequacy: a plan needs base_sha = the 40-char hex target-branch "
-            "HEAD it was authored against (got "
-            f"{base_sha[:12]!r}). Pass it so the plan can be bound to the base it planned "
-            "against and detected as stale when the base moves."
+            "a plan needs base_sha = the 40-char hex target-branch HEAD it was authored "
+            f"against (got {base_sha[:12]!r}). Pass it so the plan can be bound to the base "
+            "it planned against and detected as stale when the base moves. For work with no "
+            "plan to record, use `ticket skip-planning` or `ticket plan-bypass`."
         )
         raise ValueError(msg)
     if not is_adequate(adequacy):
         msg = (
-            "require_plan_adequacy: a plan needs a complete four-section adequacy manifest "
-            "(design, integration_seams, edge_cases, test_strategy); each section must be "
-            "substantive OR carry an explicit reasoned negative (e.g. no_seams: <reason>). A "
-            "scope+acceptance-only thin spec has no seams/edge-cases/test-strategy claims and "
-            "is refused — write a real plan or record explicit negatives."
+            "a plan needs a complete five-section adequacy manifest (design, integration_seams, "
+            "edge_cases, test_strategy, acceptance_criteria); each section must be substantive OR "
+            "carry an explicit reasoned negative (e.g. no_seams: <reason>). A scope-only thin spec "
+            "has no seams/edge-cases/test-strategy claims and is refused — write a real plan, record "
+            "explicit negatives, or use `ticket skip-planning` / `ticket plan-bypass`."
         )
         raise ValueError(msg)

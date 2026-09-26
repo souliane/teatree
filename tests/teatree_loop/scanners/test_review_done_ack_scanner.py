@@ -34,7 +34,7 @@ from teatree.core.models.ticket import Ticket
 from teatree.loop.review_done_reactions import _egress_react, _slack_message_for_pr, emit_review_done_reactions
 from teatree.loop.scanners.review_done_ack import ReviewDoneAckScanner
 from teatree.types import RawAPIDict
-from tests.teatree_core._on_behalf_gate_helpers import mode_immediate_cm
+from tests.teatree_core._on_behalf_gate_helpers import posture_permits_cm
 
 MR_URL = "https://gitlab.example.com/team/project/-/merge_requests/6613"
 SLUG = "team/project"
@@ -93,7 +93,7 @@ class TestReviewDoneAckScanner(TestCase):
         _seed_broadcast_post()
         messaging = FakeMessaging()
 
-        with mode_immediate_cm():
+        with posture_permits_cm():
             signals = ReviewDoneAckScanner(messaging=messaging, overlay_name="team-overlay").scan()
 
         assert messaging.emojis == ["eyes"]
@@ -116,7 +116,7 @@ class TestReviewDoneAckScanner(TestCase):
         )
         messaging = FakeMessaging()
 
-        with mode_immediate_cm():
+        with posture_permits_cm():
             ReviewDoneAckScanner(messaging=messaging, overlay_name="team-overlay").scan()
 
         assert messaging.emojis == list(recorded.done_reaction_emojis())
@@ -128,7 +128,7 @@ class TestReviewDoneAckScanner(TestCase):
         messaging = FakeMessaging()
         scanner = ReviewDoneAckScanner(messaging=messaging, overlay_name="team-overlay")
 
-        with mode_immediate_cm():
+        with posture_permits_cm():
             scanner.scan()
             second = scanner.scan()
 

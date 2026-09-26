@@ -11,6 +11,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.agent_admission import AgentAdmission
 from teatree.core.deterministic_phases import deterministic_phase_runner, register_phase_runner, run_deterministic_phase
 from teatree.core.models import Session, Task, Ticket
 
@@ -129,6 +130,13 @@ class TestBothHeadlessEntryPointsShortCircuit(TestCase):
         with (
             patch(_SUMMARIZE, return_value="dark mode toggle"),
             patch("teatree.agents.runner.run_agent", side_effect=AssertionError("agentic runner reached")),
+            # The claim seam asks the governor before claiming, so a shed box claims nothing
+            # and this lane never runs. The precondition was always "the box admits work" —
+            # it is stated here rather than inherited from whatever the host happens to be.
+            patch(
+                "teatree.core.agent_admission.agent_admission_verdict",
+                return_value=AgentAdmission(expensive_denied=None, cheap_denied=None),
+            ),
         ):
             # ``call_command`` is annotated as returning None upstream; this command
             # returns its result mapping, so the boundary is stated rather than assumed.

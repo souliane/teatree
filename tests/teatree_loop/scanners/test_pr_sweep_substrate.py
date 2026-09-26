@@ -28,6 +28,7 @@ from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_substrate import solo_overlay_substrate_authorized
 from teatree.utils.pr_ref import PrRef
+from tests.factories import waive_rubric
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -187,6 +188,7 @@ def _substrate_clear() -> MergeClear:
         issue_url=f"https://github.com/{SLUG}/pull/{PR_ID}",
         state=Ticket.State.REVIEW_REQUESTED,
     )
+    waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
     return MergeClear.objects.create(
         ticket=ticket,
         pr_id=PR_ID,

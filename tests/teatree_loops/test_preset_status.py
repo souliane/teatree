@@ -9,9 +9,8 @@ tick's own admission also reads.
 import datetime as dt
 
 import django.test
-from django.utils import timezone
 
-from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.preset_status import (
     active_summary,
@@ -31,8 +30,8 @@ def _loop(name: str, *, enabled: bool = True) -> Loop:
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestActiveSummary(django.test.TestCase):
     def test_summary_reports_active_preset(self) -> None:
-        Mode.objects.create(name="maintenance", entries={})
-        ModeOverride.objects.set_override("maintenance")
+        Mode.objects.update_or_create(name="maintenance", defaults={"entries": {}})
+        ModeOverride.objects.set_override("maintenance", reason="test override")
         summary = active_summary()
         assert summary is not None
         assert summary.name == "maintenance"
@@ -52,16 +51,14 @@ class TestStatuslineChunk(django.test.TestCase):
     def test_manual_override_reads_mode_manual(self) -> None:
         # A manual override (#3494, #61) reads ``mode: manual`` — the layer, not
         # the mode name — so the operator sees the schedule is not governing.
-        Mode.objects.create(name="maintenance", entries={})
-        ModeOverride.objects.set_override("maintenance")
+        Mode.objects.update_or_create(name="maintenance", defaults={"entries": {}})
+        ModeOverride.objects.set_override("maintenance", reason="test override")
         assert statusline_chunk() == "mode: manual"
 
-    def test_manual_override_includes_the_boundary_when_bounded(self) -> None:
-        Mode.objects.create(name="maintenance", entries={})
-        until = timezone.now() + dt.timedelta(hours=3)
-        ModeOverride.objects.create(preset_name="maintenance", until=until)
-        chunk = statusline_chunk()
-        assert chunk.startswith("mode: manual →")
+    def test_a_manual_override_reads_as_manual(self) -> None:
+        Mode.objects.update_or_create(name="maintenance", defaults={"entries": {}})
+        ModeOverride.objects.set_override("maintenance", reason="test override")
+        assert statusline_chunk() == "mode: manual"
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
@@ -77,38 +74,43 @@ class TestScheduleAndOverrideChunks(django.test.TestCase):
 
     def test_manual_override_entries_only_divergent_forced_loops(self) -> None:
 
-        _loop("ov-review", enabled=True)
-        _loop("ov-news", enabled=True)
-        Mode.objects.create(name="present", entries={"ov-news": False})
-        ModeOverride.objects.set_override("present")
-        # review forced OFF (diverges from base ON); news forced ON (diverges
-        # from the preset's OFF).
-        LoopState.objects.override("ov-review", on=False)
-        LoopState.objects.override("ov-news", on=True)
+        _loop("ov-review")
+        _loop("ov-news")
+        Mode.objects.update_or_create(name="present", defaults={"entries": {"ov-review": True, "ov-news": False}})
+        ModeOverride.objects.set_override("present", reason="test override")
+        # review forced OFF and news forced ON both diverge from the preset's own opinion.
+        Loop.objects.set_manual_override("ov-review", runs=False, reason="test override")
+        Loop.objects.set_manual_override("ov-news", runs=True, reason="test override")
         assert manual_override_entries() == [("ov-news", True), ("ov-review", False)]
 
     def test_manual_override_entries_excludes_non_divergent(self) -> None:
 
-        _loop("ov-same", enabled=True)
-        # Forced ON matches the base ENABLED — not a divergence, so omitted.
-        LoopState.objects.override("ov-same", on=True)
+        _loop("ov-same")
+        Mode.objects.update_or_create(name="present", defaults={"entries": {"ov-same": True}})
+        ModeOverride.objects.set_override("present", reason="test override")
+        # Forced ON matches what the preset already says — not a divergence, so omitted.
+        Loop.objects.set_manual_override("ov-same", runs=True, reason="test override")
         assert manual_override_entries() == []
 
     def test_manual_override_chunk_spells_out_forced_state(self) -> None:
 
-        _loop("ov-a", enabled=True)
-        _loop("ov-b", enabled=True)
-        LoopState.objects.override("ov-a", on=False)
-        LoopState.objects.override("ov-b", on=True)
-        # ov-b forced-on matches base → not divergent; only ov-a (forced OFF) shows.
+        _loop("ov-a")
+        _loop("ov-b")
+        Mode.objects.update_or_create(name="present", defaults={"entries": {"ov-a": True, "ov-b": True}})
+        ModeOverride.objects.set_override("present", reason="test override")
+        Loop.objects.set_manual_override("ov-a", runs=False, reason="test override")
+        Loop.objects.set_manual_override("ov-b", runs=True, reason="test override")
+        # ov-b forced-on matches the preset → not divergent; only ov-a (forced OFF) shows.
         assert manual_override_chunk() == "forced OFF: ov-a"
 
     def test_manual_override_chunk_groups_on_and_off(self) -> None:
 
-        _loop("ov-on", enabled=False)
-        _loop("ov-off", enabled=True)
-        LoopState.objects.override("ov-on", on=True)  # diverges from base OFF
-        LoopState.objects.override("ov-off", on=False)  # diverges from base ON
+        _loop("ov-on")
+        _loop("ov-off")
+        Mode.objects.update_or_create(name="present", defaults={"entries": {"ov-on": False, "ov-off": True}})
+        ModeOverride.objects.set_override("present", reason="test override")
+        Loop.objects.set_manual_override("ov-on", runs=True, reason="test override")  # diverges from the preset's OFF
+        Loop.objects.set_manual_override("ov-off", runs=False, reason="test override")  # diverges from the preset's ON
         assert manual_override_chunk() == "forced ON: ov-on · forced OFF: ov-off"
 
 
@@ -120,11 +122,11 @@ class TestPresetLineChunk(django.test.TestCase):
         assert preset_line_chunk() == "schedule: none active · mode: present"
 
     def test_preset_line_handles_resolves_the_three_handles(self) -> None:
-        _loop("plh-review", enabled=True)
+        _loop("plh-review")
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
-        Mode.objects.create(name="maintenance", entries={})
-        ModeOverride.objects.set_override("maintenance")
-        LoopState.objects.override("plh-review", on=False)
+        Mode.objects.update_or_create(name="maintenance", defaults={"entries": {"plh-review": True}})
+        ModeOverride.objects.set_override("maintenance", reason="test override")
+        Loop.objects.set_manual_override("plh-review", runs=False, reason="test override")
         handles = preset_line_handles()
         assert handles.schedule == "schedule: standard"
         assert handles.mode == "mode: manual"
@@ -137,16 +139,16 @@ class TestPresetLineChunk(django.test.TestCase):
         assert handles.override == ""
 
     def test_composes_schedule_mode_and_overrides(self) -> None:
-        _loop("pl-review", enabled=True)
+        _loop("pl-review")
         ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "standard")
-        Mode.objects.create(name="maintenance", entries={})
-        ModeOverride.objects.set_override("maintenance")
-        LoopState.objects.override("pl-review", on=False)
+        Mode.objects.update_or_create(name="maintenance", defaults={"entries": {"pl-review": True}})
+        ModeOverride.objects.set_override("maintenance", reason="test override")
+        Loop.objects.set_manual_override("pl-review", runs=False, reason="test override")
         chunk = preset_line_chunk()
         assert chunk == "schedule: standard · mode: manual · forced OFF: pl-review"
 
     def test_schedule_governed_names_the_mode_not_manual(self) -> None:
-        Mode.objects.create(name="present", entries={})
+        Mode.objects.update_or_create(name="present", defaults={"entries": {}})
         schedule = ModeSchedule.objects.create(name="standard", timezone="UTC")
         ModeScheduleSlot.objects.create(
             schedule=schedule, days=[0, 1, 2, 3, 4, 5, 6], start_time=dt.time(0, 0), preset_name="present"

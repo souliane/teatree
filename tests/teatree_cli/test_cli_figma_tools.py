@@ -21,7 +21,32 @@ class TestFigmaClientFactory:
 
         assert result.exit_code == 1
         assert "FIGMA_TOKEN" in result.output
-        assert "pass insert figma/pat" in result.output
+        assert "figma_token_pass_key" in result.output
+
+    def test_an_unconfigured_overlay_reads_no_guessed_entry(self) -> None:
+        with (
+            patch("teatree.cli.figma_tools.overlay_pass_key", return_value=""),
+            patch("teatree.llm.credentials.read_pass", return_value="guessed") as read_pass,
+            patch.dict("os.environ", {}, clear=False) as env,
+        ):
+            env.pop("FIGMA_TOKEN", None)
+            result = runner.invoke(app, ["tool", "figma-frames", "abc123", "1:1"])
+
+        assert result.exit_code == 1
+        read_pass.assert_not_called()
+
+    def test_the_overlay_routed_entry_supplies_the_token(self) -> None:
+        with (
+            patch("teatree.cli.figma_tools.overlay_pass_key", return_value="venue/figma"),
+            patch("teatree.llm.credentials.read_pass", side_effect=lambda key: "tok" if key == "venue/figma" else ""),
+            patch.dict("os.environ", {}, clear=False) as env,
+            patch("teatree.cli.figma_tools.FigmaClient") as client_cls,
+        ):
+            env.pop("FIGMA_TOKEN", None)
+            client_cls.return_value.list_frame_children.return_value = []
+            runner.invoke(app, ["tool", "figma-frames", "abc123", "1:1"])
+
+        client_cls.assert_called_once_with(token="tok")
 
 
 class TestFigmaScreenshotCLI:

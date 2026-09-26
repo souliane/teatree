@@ -117,3 +117,12 @@ class TestSourceSecretFromPass:
         )
         assert rc == 0
         assert value == "s3cr3t-admin"
+
+
+class TestGitHubBootstrapRoute:
+    def test_github_pass_is_read_only_when_its_bootstrap_path_is_explicit(self) -> None:
+        body = ENTRYPOINT.read_text(encoding="utf-8")
+
+        assert "${TEATREE_GH_TOKEN_PASS_PATH:-github/souliane/pat}" not in body
+        assert 'if [ -n "${TEATREE_GH_TOKEN_PASS_PATH:-}" ]; then' in body
+        assert 'source_secret_from_pass TEATREE_GH_TOKEN "$TEATREE_GH_TOKEN_PASS_PATH"' in body

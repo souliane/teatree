@@ -1,6 +1,6 @@
 """``_check_mode_override_staleness`` — the `t3 doctor` stale-mode-override alarm (#3274, #61).
 
-A no-expiry away-class mode override silently suppresses the colleague-facing loops
+A standing AFK-class mode override silently suppresses the colleague-facing loops
 (and parks the self-pump for a pump-pausing mode) for as long as it sits — the
 incident that motivated the finding left one active for ~30h. Post-merge the finding
 keys on the DB ``ModeOverride.set_at`` + the resolved mode's intrinsic booleans. The
@@ -46,12 +46,12 @@ class AvailabilityOverrideDoctorCheckTestCase(TestCase):
 
     def test_old_no_expiry_suppressing_override_warns_and_names_loops(self) -> None:
         self._seed_review_loop()
-        Mode.objects.update_or_create(name="away", defaults={"entries": {"review": False}})
-        ModeOverride.objects.set_override("away")
+        Mode.objects.update_or_create(name="afk", defaults={"entries": {"review": False}})
+        ModeOverride.objects.set_override("afk", reason="test override")
         _backdate_override(30)
         out = _run()
         assert "WARN" in out
-        assert "away" in out
+        assert "afk" in out
         assert "review" in out
 
     def test_no_override_is_silent(self) -> None:
@@ -59,15 +59,15 @@ class AvailabilityOverrideDoctorCheckTestCase(TestCase):
 
     def test_recent_override_is_silent(self) -> None:
         self._seed_review_loop()
-        Mode.objects.update_or_create(name="away", defaults={"entries": {"review": False}})
-        ModeOverride.objects.set_override("away")
+        Mode.objects.update_or_create(name="afk", defaults={"entries": {"review": False}})
+        ModeOverride.objects.set_override("afk", reason="test override")
         _backdate_override(1)
         assert _run() == ""
 
     def test_a_mode_that_suppresses_nothing_is_silent(self) -> None:
         self._seed_review_loop()
         Mode.objects.update_or_create(name="present", defaults={"entries": {"review": True}})
-        ModeOverride.objects.set_override("present")
+        ModeOverride.objects.set_override("present", reason="test override")
         _backdate_override(30)
         assert _run() == ""
 
@@ -82,19 +82,16 @@ class TestStaleOverrideFinding:
         self,
         *,
         suppressed: tuple[str, ...] = _LOOPS,
-        has_expiry: bool = False,
         set_at: datetime | None,
-        mode_name: str = "away",
+        mode_name: str = "afk",
     ) -> str | None:
-        posture = OverridePosture(
-            mode_name=mode_name, suppressed_loops=suppressed, has_expiry=has_expiry, set_at=set_at
-        )
+        posture = OverridePosture(mode_name=mode_name, suppressed_loops=suppressed, set_at=set_at)
         return stale_override_finding(posture, now=self._NOW)
 
-    def test_old_no_expiry_suppressing_is_flagged(self) -> None:
+    def test_an_old_suppressing_override_is_flagged(self) -> None:
         msg = self._finding(set_at=self._NOW - timedelta(hours=30))
         assert msg is not None
-        assert "away" in msg
+        assert "afk" in msg
         assert "followup, review" in msg
         # The remediation points at the real mode-set command (``t3 mode`` is not a
         # typer leaf; the mode IS the loop preset post-merge).
@@ -102,9 +99,6 @@ class TestStaleOverrideFinding:
 
     def test_recent_override_is_not_flagged(self) -> None:
         assert self._finding(set_at=self._NOW - timedelta(hours=1)) is None
-
-    def test_bounded_override_is_not_flagged(self) -> None:
-        assert self._finding(has_expiry=True, set_at=self._NOW - timedelta(hours=30)) is None
 
     def test_a_mode_that_suppresses_nothing_is_not_flagged(self) -> None:
         assert self._finding(suppressed=(), set_at=self._NOW - timedelta(hours=30)) is None

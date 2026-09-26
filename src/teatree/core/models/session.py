@@ -1,6 +1,7 @@
 import logging
+from collections.abc import Iterable
 from datetime import datetime
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import ClassVar, cast
 
 from django.apps import apps
 from django.db import models, transaction
@@ -9,10 +10,8 @@ from django.utils import timezone
 from teatree.core.managers import SessionManager
 from teatree.core.modelkit.phases import CANONICAL_PHASES, normalize_phase
 from teatree.core.models.errors import QualityGateError
+from teatree.core.models.rubric import Rubric
 from teatree.core.models.ticket import Ticket
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +64,7 @@ class Session(models.Model):
         force_insert: bool = False,  # noqa: FBT001, FBT002 — Django's Model.save declares these positionally; keyword-only breaks the override.
         force_update: bool = False,  # noqa: FBT001, FBT002 — Django's Model.save declares these positionally; keyword-only breaks the override.
         using: str | None = None,
-        update_fields: "Iterable[str] | None" = None,
+        update_fields: Iterable[str] | None = None,
     ) -> None:
         # A blank overlay is indistinguishable from a legacy pre-multi-overlay row, which is
         # why `overlay_scope_q` had to admit such a session for EVERY overlay to stay visible.
@@ -138,6 +137,23 @@ class Session(models.Model):
                 visited_phases=visited,
                 phase_visits=visits,
             )
+        self._seed_phase_rubric(canonical)
+
+    def _seed_phase_rubric(self, phase: str) -> None:
+        """Give the ticket the standing criterion for *phase*, so its rubric has content.
+
+        Here because this is the one boundary that owns the canonical phase token — a seed
+        keyed on a caller's raw spelling would silently miss. Outside the visit transaction:
+        a rubric is a checklist, and failing to add one must never roll back the record that
+        the phase was entered.
+        """
+        ticket = self.ticket
+        if ticket is None:
+            return
+        try:
+            Rubric.seed_phase_criterion(ticket, phase)
+        except Exception:
+            logger.exception("could not seed the %r rubric criterion for ticket %s", phase, ticket.pk)
 
     def has_visited(self, phase: str) -> bool:
         return phase in self._visited_phases()

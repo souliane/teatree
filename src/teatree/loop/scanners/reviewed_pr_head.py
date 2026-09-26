@@ -19,9 +19,11 @@ radius for a reviewer-only concern.
 
 Instead this scanner leans on machinery the FSM already has:
 
-* ``Ticket.extra["reviewed_sha"]`` / ``["last_review_state"]`` — the durable
-    "reviewed at SHA X" record, written by ``mark_reviewed_externally`` /
-    ``mark_review_no_action`` and the ``ReviewerPrsScanner`` cache.
+* ``Ticket.extra["discharged_sha"]`` — the durable "the factory reviewed SHA X"
+    record, written by ``mark_reviewed_externally`` / ``mark_review_no_action``. It is
+    deliberately NOT ``last_review_state``: that key is the ``ReviewerPrsScanner``
+    cache of what the FORGE reported and is overwritten with the live value on every
+    scan, so a local act stored there survives exactly one pass.
 * ``reviewer_pr.new_sha`` — the existing signal kind, already routed to
     ``t3:reviewer`` in ``dispatch_tables``.
 * ``persistence._handle_reviewer`` — already re-stamps ``reviewed_sha``,
@@ -36,11 +38,12 @@ Why ``ReviewerPrsScanner`` cannot do this
 -----------------------------------------
 
 That scanner lists ``host.list_review_requested_prs`` — a forge
-reviewer-*assignment* filter. A colleague MR discovered from a Slack review
-broadcast never gets a forge assignment, so it is permanently absent from
-that scan (its own ``_orphaned_task_signals`` docstring says exactly this).
-Every MR in the incident arrived that way. This scanner is keyed on the local
-reviewer tickets instead, so it covers every discovery route uniformly.
+reviewer-*assignment* filter, so it sees a colleague MR only once something has
+assigned the user as reviewer on the forge. A broadcast-discovered MR is absent
+from it until the #1295 cap-B ``assign_gitlab_reviewer`` handler does exactly
+that, and whether that handler has run yet is not something a re-review watch
+can depend on. This scanner is keyed on the local reviewer tickets instead, so
+it covers every discovery route uniformly and at the same time.
 
 Loop-safety
 -----------
@@ -65,8 +68,9 @@ from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
-from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
+from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
 from teatree.core.modelkit.forge_readability import LiveHeadRead
+from teatree.core.modelkit.review_state import DISCHARGED_REVIEW_STATES
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.utils.url_slug import pr_ref_from_url
@@ -75,13 +79,6 @@ if TYPE_CHECKING:
     from teatree.core.models import Task, Ticket
 
 logger = logging.getLogger(__name__)
-
-# Only a TERMINAL review observation means "this review is discharged". An
-# in-progress or absent state is the ``ReviewerPrsScanner`` / broadcast
-# path's business, not a re-review.
-_DISCHARGED_REVIEW_STATES: frozenset[str] = frozenset(
-    {ReviewState.APPROVED.value, ReviewState.REVIEWED_NO_ACTION.value},
-)
 
 
 def _discharged_sha(ticket: "Ticket") -> str:
@@ -93,7 +90,10 @@ def _discharged_sha(ticket: "Ticket") -> str:
     must never act on.
     """
     extra = ticket.extra or {}
-    if extra.get("last_review_state") not in _DISCHARGED_REVIEW_STATES:
+    local = extra.get("discharged_sha")
+    if isinstance(local, str) and local:
+        return local
+    if extra.get("last_review_state") not in DISCHARGED_REVIEW_STATES:
         return ""
     sha = extra.get("reviewed_sha")
     return sha if isinstance(sha, str) else ""
@@ -137,8 +137,10 @@ class ReviewedPrHeadScanner:
                 logger.exception("ReviewedPrHeadScanner failed on %s", ticket.issue_url)
                 continue
             finally:
-                # Stamped even on a raise, so a ticket whose forge read keeps
-                # failing rotates to the back instead of re-claiming the window.
+                # Stamped for every watched ticket, emitting or not — including on a raise —
+                # so a ticket whose forge read keeps failing rotates to the back of the
+                # ``max_checks`` window instead of re-claiming it. A refreshed
+                # ``head_checked_at`` therefore means "looked at", never "emitted".
                 _stamp_head_check(ticket)
             if signal is not None:
                 signals.append(signal)

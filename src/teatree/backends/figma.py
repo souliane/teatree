@@ -31,11 +31,7 @@ class FigmaTokenCredential(Credential):
     resolving to an empty token.
     """
 
-    spec = CredentialSpec(
-        env_var="FIGMA_TOKEN",
-        conflicting_vars=(),
-        pass_path="figma/pat",  # noqa: S106 — pass entry path, not a secret value
-    )
+    spec = CredentialSpec(env_var="FIGMA_TOKEN", conflicting_vars=(), routing_setting="figma_token_pass_key")
 
 
 class FigmaComponentPropertyDefinition(TypedDict, total=False):

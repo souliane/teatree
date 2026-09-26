@@ -12,9 +12,8 @@ orchestration, never a colleague-visible post.
 
 The Slack reaction boundary is patched (``add_approval_reaction`` /
 ``add_reactions_for_transition``); the ``notify_user`` orchestration and
-the BotPing ledger run for real. The on-behalf pre-gate is set to
-``immediate`` via the test config so these tests isolate the
-*after*-receipt behaviour.
+the BotPing ledger run for real. The active posture is staged to PERMIT
+so these tests isolate the *after*-receipt behaviour.
 """
 
 import json
@@ -29,6 +28,7 @@ from django.test import TestCase
 
 import teatree.core.signals as signals_mod
 from teatree.core.models import BotPing, PullRequest, Ticket
+from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 
 def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
@@ -88,11 +88,9 @@ class TestSignalsAfterReceiptDm(TestCase):
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # ``slack_user_id`` (global) resolves via the Django-free cold reader —
         # notify_user resolves the user id from it; seed it in a config-store
-        # sqlite the reader resolves via ``T3_CONFIG_DB``. ``on_behalf_post_mode``
-        # is DB-home (#1775) — stage the immediate (gate-off) mode via the ``T3_*``
-        # env tier instead.
+        # sqlite the reader resolves via ``T3_CONFIG_DB``.
         _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
-        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "immediate")
+        seed_permitting_posture()
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", _notify_backend)
         self.monkeypatch = monkeypatch
 

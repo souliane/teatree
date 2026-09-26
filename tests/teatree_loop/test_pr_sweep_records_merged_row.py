@@ -26,6 +26,7 @@ from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient, NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, PrApiClient
 from teatree.types import RawAPIDict
+from tests.factories import waive_rubric
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -108,9 +109,7 @@ class _SweepApi:
 
     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
         self.merge_calls.append((slug, pr_id, expected_head_oid))
-        return GhPrApiClient(token="").merge_pr_squash_bound(
-            slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid
-        )
+        return GhPrApiClient().merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
 
 
 @dataclass(slots=True)
@@ -148,6 +147,7 @@ class _GhStub:
 
 def _seed_ledger() -> tuple[Ticket, PullRequest]:
     ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, issue_url=ISSUE_URL)
+    waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
     row = PullRequest.objects.create(
         ticket=ticket,
         overlay="t3-teatree",

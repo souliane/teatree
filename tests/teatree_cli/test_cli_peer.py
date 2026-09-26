@@ -16,7 +16,7 @@ from typer.testing import CliRunner
 from teatree.cli.admin import ADMIN_PATH, BROWSE_URL_FILE, DASHBOARD_PATH
 from teatree.cli.peer import peer_app
 from teatree.config import PeerInstance, PeerTransport, PeerTunnel
-from teatree.core.peer_forward import PLAN_FILE
+from teatree.core.host_hop.peer_forward import PLAN_FILE
 
 runner = CliRunner()
 
@@ -45,7 +45,7 @@ def containerized(tmp_path: Path):
     """The deployed venue: the CLI resolves the plan, the host wrapper carries it out."""
     with (
         patch("teatree.utils.ports.running_in_container", return_value=True),
-        patch("teatree.core.peer_forward.data_dir_root", return_value=tmp_path),
+        patch("teatree.core.host_hop.peer_forward.data_dir_root", return_value=tmp_path),
         patch("teatree.paths.data_dir_root", return_value=tmp_path),
     ):
         yield tmp_path

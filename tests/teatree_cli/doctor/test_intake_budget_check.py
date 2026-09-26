@@ -22,8 +22,8 @@ from tests.factories import ImplementedIssueMarkerFactory, PullRequestFactory, T
 _SETTINGS_TARGET = "teatree.config.get_effective_settings"
 
 
-def _settings(*, enabled: bool = True, limit: int = 2) -> UserSettings:
-    return UserSettings(issue_implementer_enabled=enabled, issue_implementer_max_concurrent=limit)
+def _settings(*, limit: int = 2) -> UserSettings:
+    return UserSettings(issue_implementer_max_concurrent=limit)
 
 
 def _held(url: str, *, state: str = Ticket.State.NOT_STARTED) -> ImplementedIssueMarker:
@@ -77,11 +77,6 @@ class TestIntakeBudgetDoctorCheck(django.test.TestCase):
         assert "FAIL" in reported
         assert "acme" in reported
         assert url in reported
-
-    def test_disabled_intake_is_not_a_deadlock(self) -> None:
-        _held("https://github.com/o/r/issues/7")
-        with patch(_SETTINGS_TARGET, return_value=_settings(enabled=False, limit=1)):
-            assert _check_intake_budget_deadlock() is True
 
     def test_a_crashed_read_never_reddens_the_run(self) -> None:
         _held("https://github.com/o/r/issues/8")

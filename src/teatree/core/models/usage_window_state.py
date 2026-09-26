@@ -48,7 +48,7 @@ class UsageWindowState(models.Model):
 
     lane = models.CharField(max_length=16, blank=True, default="")
     #: The ``LimitCause`` value string (``subscription_session`` / ``subscription_weekly`` /
-    #: ``rate_limit`` / ``api_credit``) — audit + the recovery notification wording.
+    #: ``rate_limit`` / ``api_credit`` / ``provider_budget``) — audit + the recovery notification wording.
     cause = models.CharField(max_length=32, blank=True, default="")
     detected_at = models.DateTimeField()
     #: The effective instant the window re-arms — the SDK's structured ``resets_at`` when it

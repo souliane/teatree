@@ -46,7 +46,7 @@ class TestRenderIsWidthIndependent:
 
 
 class TestRenderIsHomePathIndependent:
-    _ABS_HOME_DOTFILE = re.compile(r"(?:/[^/\s│\]]+)+/\.claude\b")
+    _ABS_HOME_DOTFILE = re.compile(r"(?:/[^/\s│\]]+)+/\.(?:claude|codex)\b")
 
     def test_no_absolute_home_rooted_config_path_in_output(self, real_app: typer.Typer) -> None:
         markdown = render_cli_reference_deterministic(real_app)

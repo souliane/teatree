@@ -22,7 +22,7 @@ agent_harness_provider = "openai_compatible"
 
 _TWO_ROWS = """
 [teatree]
-backlog_sweep_cadence_hours = 9
+directive_intake_per_tick = 9
 bulk_close_threshold = 7
 """
 
@@ -64,5 +64,5 @@ class TestImportWriteAtomicity(TestCase):
         ):
             import_toml_to_db(_TWO_ROWS, allow_safety_posture=True)
 
-        assert ConfigSetting.objects.get_effective("backlog_sweep_cadence_hours") is None
+        assert ConfigSetting.objects.get_effective("directive_intake_per_tick") is None
         assert ConfigSetting.objects.get_effective("bulk_close_threshold") is None

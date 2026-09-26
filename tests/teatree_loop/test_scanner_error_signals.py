@@ -63,7 +63,7 @@ class TestPrSweepGhApiClientAuthFailure:
             )
 
         monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
-        api = GhPrApiClient(token="")
+        api = GhPrApiClient()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_prs(slug="owner/repo")
         assert excinfo.value.error_class == ScannerErrorClass.AUTH
@@ -78,7 +78,7 @@ class TestPrSweepGhApiClientAuthFailure:
             )
 
         monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
-        api = GhPrApiClient(token="x")
+        api = GhPrApiClient()
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_prs(slug="owner/repo")
         assert excinfo.value.error_class == ScannerErrorClass.RATE_LIMIT
@@ -97,7 +97,7 @@ class TestPrSweepGhApiClientAuthFailure:
             raise FileNotFoundError(msg)
 
         monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
-        api = GhPrApiClient(token="x")
+        api = GhPrApiClient()
         assert api.list_open_prs(slug="owner/repo") == []
 
     def test_gh_returns_genuinely_empty_list_no_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -112,7 +112,7 @@ class TestPrSweepGhApiClientAuthFailure:
             return _FakeCompleted(returncode=0, stdout="[]", stderr="")
 
         monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
-        api = GhPrApiClient(token="x")
+        api = GhPrApiClient()
         assert api.list_open_prs(slug="owner/repo") == []
 
 
@@ -241,7 +241,7 @@ class TestGitLabApprovalsScannerAuthFailure(TestCase):
 
     def test_gitlab_401_raises_scanner_error(self) -> None:
         host = _AuthFailingCodeHost(prs=[_gitlab_mr(iid=42, sha="abc123")])
-        scanner = GitLabApprovalsScanner(host=host)
+        scanner = GitLabApprovalsScanner(host=host, allowed_url_prefixes=("https://gitlab.com/acme/",))
 
         with pytest.raises(ScannerError) as excinfo:
             scanner.scan()

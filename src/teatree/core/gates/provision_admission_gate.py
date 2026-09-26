@@ -15,9 +15,11 @@ a bounded pool (souliane/teatree#2949). Two knobs govern admission:
     own retry cadence and the request drains automatically once RAM frees.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from teatree.config import get_effective_settings
+from teatree.utils.disk_probe import disk_crit_percent, read_disk_used_percent
 from teatree.utils.ram_probe import default_provision_concurrency, read_ram_used_percent
 
 
@@ -53,12 +55,21 @@ class ProvisionAdmissionVerdict:
         return cls(ok=True, reason="")
 
 
-def check_provision_admission(*, ram_used_percent: float | None = None) -> ProvisionAdmissionVerdict:
-    """Return ``hold(reason)`` when RAM is at/above the ceiling, else ``allow()``.
+def check_provision_admission(
+    *,
+    ram_used_percent: float | None = None,
+    disk_used_percent: float | None = None,
+    disk_probe: Callable[[], float | None] | None = None,
+) -> ProvisionAdmissionVerdict:
+    """Hold on critical disk or RAM pressure; an unreadable disk is unknown, not full.
 
     Tests inject *ram_used_percent* directly rather than mocking the platform
     probe (mirrors :func:`teatree.loop.self_improve.budget.precheck_budget`).
     """
+    disk_sample = disk_used_percent if disk_used_percent is not None else (disk_probe or read_disk_used_percent)()
+    disk_ceiling = disk_crit_percent()
+    if disk_sample is not None and disk_sample >= disk_ceiling:
+        return ProvisionAdmissionVerdict.hold(f"disk_pressure (used={disk_sample:.0f}% >= ceiling={disk_ceiling}%)")
     sample = ram_used_percent if ram_used_percent is not None else read_ram_used_percent()
     ceiling = resolve_provision_ram_ceiling_percent()
     if sample >= ceiling:

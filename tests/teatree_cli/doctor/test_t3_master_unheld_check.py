@@ -40,16 +40,16 @@ class TestT3MasterUnheldDoctorCheck(django.test.TestCase):
         # Wired into the aggregation, not merely defined: a check that no orchestration
         # list evaluates is dead authority, and its FAIL would never reach an operator.
         #
-        # The three sibling gates in the ``and`` chain are pinned GREEN because one of
-        # them, ``_check_loop_schedule_liveness``, already reads False on the empty test
-        # DB — so a bare ``assert _run_loop_intent_gates() is False`` held with this check
-        # unwired, and even with no finding at all (proved live: probe printed
-        # "aggregate with NO finding -> False"). Both arms below are asserted so the
-        # aggregate can only flip on THIS check's own verdict.
+        # The sibling gates are pinned GREEN because two of them,
+        # ``_check_loop_schedule_liveness`` and ``_check_shipped_seed_inertness``, already
+        # read False on the empty test DB — so a bare ``assert _run_loop_intent_gates() is
+        # False`` held with this check unwired, and even with no finding at all. Both arms
+        # below are asserted so the aggregate can only flip on THIS check's own verdict.
         with (
             patch.object(doctor_runner, "_check_intent_freshness", return_value=True),
             patch.object(doctor_runner, "_check_intake_budget_deadlock", return_value=True),
             patch.object(doctor_runner, "_check_loop_schedule_liveness", return_value=True),
+            patch.object(doctor_runner, "_check_shipped_seed_inertness", return_value=True),
         ):
             with patch(_TARGET, return_value=None):
                 assert _run_loop_intent_gates() is True

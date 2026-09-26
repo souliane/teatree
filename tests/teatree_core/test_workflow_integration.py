@@ -12,12 +12,12 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import QualityGateError, Session, Task, Ticket, Worktree
-from teatree.core.models.plan_artifact import PlanArtifact
+from tests.factories import record_test_plan, waive_rubric
 
 
 def _plan(ticket: Ticket) -> None:
     """Record a PlanArtifact and drive WORK_STARTED → PLAN_RECORDED so code() can run."""
-    PlanArtifact.record(ticket=ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
+    record_test_plan(ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
     ticket.plan()
     ticket.save()
 
@@ -112,6 +112,7 @@ class TestTicketLifecycle(TestCase):
         ticket.request_review()
         ticket.mark_merged()
         ticket.retrospect()
+        waive_rubric(ticket)
         ticket.mark_delivered()
         ticket.save()
         assert ticket.state == "delivered"

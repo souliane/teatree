@@ -21,6 +21,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.config import cold_reader
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.review_request_merge_react import MERGE_REACTION_EMOJI, ReviewRequestMergeReactScanner
@@ -31,6 +32,7 @@ from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 @pytest.fixture(autouse=True)
 def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+    monkeypatch.setattr(cold_reader, "mapping_setting", lambda _key: {})
 
 
 @dataclass
@@ -56,8 +58,8 @@ class FakeHost:
     states_by_url: dict[str, PrOpenState] = field(default_factory=dict)
     raise_on_lookup: Exception | None = None
     lookups: list[str] = field(default_factory=list)
-    user: str = ""
-    author: str = ""
+    user: str = "undeclared-credential"
+    author: str = "undeclared-credential"
     authors_by_url: dict[str, str] = field(default_factory=dict)
     raise_on_author: Exception | None = None
 
@@ -92,6 +94,7 @@ class _SeedMixin:
         created_at = timezone.now() - dt.timedelta(days=spec["days_old"])
         return ReviewRequestPost.objects.create(
             mr_url=spec["url"],
+            overlay="",
             slack_channel_id=spec["channel"],
             slack_thread_ts=spec["thread_ts"],
             created_at=created_at,

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e_stops_and_asks_when_bdd_is_draft-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "e2e/playwright/login.spec.ts", "content": "import { test, expect } from '@playwright/test';\n\ntest('login reaches the dashboard', async ({ page }) => {\n  await page.goto('/');\n  await page.getByRole('button', { name: 'Login' }).click();\n  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();\n});\n"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "File created successfully at: e2e/playwright/login.spec.ts"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

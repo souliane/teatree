@@ -19,7 +19,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents import attempt_recorder
+from teatree.agents import review_envelope_recorder
 from teatree.agents.attempt_recorder import record_result_envelope, validate_result_keys
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.core.modelkit.diff_scope import ChangedFileSet
@@ -278,7 +278,7 @@ class TestAnEmittedVerdictIsPersistedOrTheTaskFails(TestCase):
 
     def test_a_verdict_the_read_back_cannot_find_fails_instead_of_completing(self) -> None:
         task, _ = _reviewing_task_via_dispatch()
-        with patch("teatree.agents.attempt_recorder.ReviewVerdict.record", return_value=None):
+        with patch("teatree.agents.review_envelope_recorder.ReviewVerdict.record", return_value=None):
             attempt = record_result_envelope(task, _verdict_envelope(), phase="reviewing")
 
         task.refresh_from_db()
@@ -368,7 +368,7 @@ class TestBranchOnlyProbeIsRefused(TestCase):
         }
         envelope: dict[str, object] = {"summary": "Cold review of the pull request.", "review_verdict": verdict}
         with patch(
-            "teatree.agents.attempt_recorder.changed_file_set_for_findings",
+            "teatree.agents.review_envelope_recorder.changed_file_set_for_findings",
             return_value=changed,
         ):
             attempt = record_result_envelope(task, envelope, phase="reviewing")
@@ -448,7 +448,7 @@ def _live_ci_is_red(monkeypatch: pytest.MonkeyPatch) -> None:
     The heads these tests describe genuinely were red, so corroboration is the honest
     default; the cases where the forge says otherwise patch it per test.
     """
-    monkeypatch.setattr(attempt_recorder, "live_checks_at", _LIVE_RED)
+    monkeypatch.setattr(review_envelope_recorder, "live_checks_at", _LIVE_RED)
 
 
 def _expire_every_claim(*, pr_id: int = _PR_ID) -> None:
@@ -648,7 +648,7 @@ class TestTheLatchNeedsALiveConfirmedRed(TestCase):
     def test_a_live_green_refuses_the_verdict_but_spends_no_terminal(self) -> None:
         dispatch = self._spent_head()
 
-        with patch.object(attempt_recorder, "live_checks_at", _LIVE_GREEN):
+        with patch.object(review_envelope_recorder, "live_checks_at", _LIVE_GREEN):
             attempt = record_result_envelope(task_of(dispatch), _contradiction_envelope(), phase="reviewing")
 
         self._assert_refused_but_not_latched(dispatch, attempt)
@@ -657,7 +657,7 @@ class TestTheLatchNeedsALiveConfirmedRed(TestCase):
     def test_an_unreadable_live_read_spends_no_terminal_either(self) -> None:
         dispatch = self._spent_head()
 
-        with patch.object(attempt_recorder, "live_checks_at", _LIVE_UNREADABLE):
+        with patch.object(review_envelope_recorder, "live_checks_at", _LIVE_UNREADABLE):
             attempt = record_result_envelope(task_of(dispatch), _contradiction_envelope(), phase="reviewing")
 
         self._assert_refused_but_not_latched(dispatch, attempt)
@@ -671,7 +671,7 @@ class TestTheLatchNeedsALiveConfirmedRed(TestCase):
             seen.append((slug, head_sha))
             return LiveChecksRead(status="failed", detail="failing workflow run(s): test (3.13)")
 
-        with patch.object(attempt_recorder, "live_checks_at", probe):
+        with patch.object(review_envelope_recorder, "live_checks_at", probe):
             record_result_envelope(task_of(dispatch), _contradiction_envelope(), phase="reviewing")
 
         assert seen == [(_SLUG, _HEAD)]
@@ -689,7 +689,7 @@ class TestTheLatchNeedsALiveConfirmedRed(TestCase):
             verdict="hold",
             findings=[{"severity": "high", "summary": "required check `test (3.13)` is red"}],
         )
-        with patch.object(attempt_recorder, "live_checks_at", probe):
+        with patch.object(review_envelope_recorder, "live_checks_at", probe):
             attempt = record_result_envelope(task, envelope, phase="reviewing")
 
         assert attempt.error == ""

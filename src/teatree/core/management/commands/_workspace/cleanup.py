@@ -28,7 +28,8 @@ from teatree.core.worktree.branch_classification import (
     reset_forge_probe_cache,
 )
 from teatree.core.worktree.branch_verdict import branch_landed_for_teardown
-from teatree.core.worktree.clone_paths import repair_stale_clone_path, resolve_clone_path
+from teatree.core.worktree.broken_checkout import is_pure_ghost
+from teatree.core.worktree.clone_paths import repair_stale_clone_path
 from teatree.core.worktree.venue_safe_registry import prune_worktrees, worktree_branches, worktree_map
 from teatree.core.worktree.worktree_env import write_env_cache
 from teatree.utils import git
@@ -516,23 +517,17 @@ def _teardown_dir_gone_row(row: Worktree, path: Path) -> str:
     :func:`cleanup_worktree` so every data-loss guard still applies: a surviving
     branch ref with unpushed commits (#706) or a live worktree keeps the row.
 
-    A PURE ghost — clone resolved, dir gone, and NO local branch ref — has
+    A PURE ghost — dir gone, no local branch ref, no surviving registration — has
     positively nothing on disk to lose, so it tears down with ``force=True``:
     the #706 probe on a nonexistent ref fails closed (it cannot prove commits
     shipped for a branch that never existed) and would otherwise pin the ghost
     forever. Anything short of that positive proof takes the fully-guarded path.
+
+    The predicate is :func:`is_pure_ghost` — the SAME one the sweep reaper acts on,
+    so `--fix` and `clean-all` can never drift into two standards for one deletion.
     """
-    clone = resolve_clone_path(clone_root(), row)
-    pure_ghost = (
-        clone is not None
-        and not path.is_dir()
-        and not git.check(
-            repo=str(clone),
-            args=["show-ref", "--verify", "--quiet", f"refs/heads/{row.branch}"],
-        )
-    )
     try:
-        if pure_ghost:
+        if is_pure_ghost(row, workspace=clone_root()):
             cleanup_worktree(row, force=True)
             return f"tore down ghost wt#{row.pk} (path gone: {path})"
         cleanup_worktree(row)

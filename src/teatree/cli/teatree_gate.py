@@ -36,6 +36,7 @@ import typer
 GATE_KEY = "orchestrator_bash_gate_enabled"
 SKILL_GATE_KEY = "skill_loading_gate_enabled"
 PLAN_GATE_KEY = "plan_edit_gate_enabled"
+VISIBLE_PLAN_GATE_KEY = "visible_plan_gate_enabled"
 CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
 CRON_LOOP_SHELL_GATE_KEY = "cron_loop_shell_gate_enabled"
 COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
@@ -47,12 +48,15 @@ MEMORY_RECALL_GATE_KEY = "memory_recall_enabled"
 SNAPSHOT_BASELINE_GATE_KEY = "snapshot_baseline_gate_enabled"
 GATE_RELAXATION_GATE_KEY = "gate_relaxation_gate_enabled"
 OUT_OF_BAND_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
+RAW_PR_CREATE_GATE_KEY = "raw_pr_create_gate_enabled"
 STANDING_GOAL_GATE_KEY = "standing_goal_stop_gate_enabled"
 GLAB_STALE_BASE_REMOTE_GATE_KEY = "glab_stale_base_remote_gate_enabled"
 GIT_ADD_ALL_GATE_KEY = "git_add_all_gate_enabled"
+FOREIGN_BRANCH_PUSH_GATE_KEY = "foreign_branch_push_gate_enabled"
 GENERAL_PURPOSE_AGENT_GATE_KEY = "general_purpose_agent_gate_enabled"
 VERBATIM_PASTE_GATE_KEY = "verbatim_paste_gate_enabled"
 MERGED_DETECTION_GATE_KEY = "merged_detection_gate_enabled"
+ORCHESTRATOR_DELEGATION_GATE_KEY = "orchestrator_delegation_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
@@ -243,6 +247,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
 
     _register_keyed_gate(
         gate_group,
+        name="visible-plan",
+        key=VISIBLE_PLAN_GATE_KEY,
+        label="Visible per-target plan-first gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
         name="config-overwrite",
         key=CONFIG_OVERWRITE_GATE_KEY,
         label="Read-before-overwrite config/dotfile gate",
@@ -320,6 +331,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
 
     _register_keyed_gate(
         gate_group,
+        name="raw-pr-create",
+        key=RAW_PR_CREATE_GATE_KEY,
+        label="Raw MR/PR-create gate (an owner-authored MR nobody can approve)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
         name="standing-goal",
         key=STANDING_GOAL_GATE_KEY,
         label="Standing verified-green stop-gate",
@@ -341,6 +359,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
 
     _register_keyed_gate(
         gate_group,
+        name="foreign-push",
+        key=FOREIGN_BRANCH_PUSH_GATE_KEY,
+        label="Foreign-branch push gate (never push onto a branch another author owns)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
         name="general-purpose",
         key=GENERAL_PURPOSE_AGENT_GATE_KEY,
         label="Blank general-purpose sub-agent dispatch gate",
@@ -350,6 +375,12 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="verbatim-paste",
         key=VERBATIM_PASTE_GATE_KEY,
         label="Verbatim operator-paste publish gate",
+    )
+    _register_keyed_gate(
+        gate_group,
+        name="delegation",
+        key=ORCHESTRATOR_DELEGATION_GATE_KEY,
+        label="Orchestrator delegation gate (an unbounded read belongs in a sub-agent)",
     )
 
     _register_keyed_gate(

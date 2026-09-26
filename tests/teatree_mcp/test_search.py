@@ -10,6 +10,7 @@ import logging
 import pytest
 from django.test import TestCase
 
+from teatree.core.factory.factory_signals import SIGNALS, VISIBILITY_SIGNALS
 from teatree.core.models import IncomingEvent, PullRequest, Task, Ticket
 from teatree.mcp import search
 from teatree.mcp.search import CappedLimit
@@ -213,17 +214,13 @@ class TestLoopStats(TestCase):
 
 
 class TestFactorySignals(TestCase):
-    def test_returns_the_five_signal_report_shape(self) -> None:
+    def test_returns_the_registered_signal_report_shape(self) -> None:
         report = search.factory_signals()
 
         assert report["window_days"] == 28
         assert report["verdict"] in {"ok", "regressing", "red"}
         assert {row["provider_id"] for row in report["signals"]} == {
-            "first_try_green",
-            "defect_escape",
-            "review_catch",
-            "merge_latency",
-            "repair_burn",
+            spec.provider_id for spec in (*SIGNALS, *VISIBILITY_SIGNALS)
         }
 
     def test_window_days_flows_through(self) -> None:

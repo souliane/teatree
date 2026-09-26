@@ -2,7 +2,7 @@
 
 Two consumers needed this answer and each grew its own half. The READER
 (:func:`~teatree.core.models.phase_landing.phase_landing_evidence`) carried both sources; the
-WRITER (:mod:`teatree.agents.attempt_recorder`) read only the linked
+WRITER (:mod:`teatree.agents.review_envelope_recorder`) read only the linked
 :class:`~teatree.core.models.auto_review_dispatch.AutoReviewDispatch`, so a reviewing task
 without one silently DISCARDED a well-formed ``review_verdict`` envelope and completed exit
 0 — a real HOLD surviving only inside a ``TaskAttempt.result`` no merge guard reads, on a PR
@@ -27,6 +27,7 @@ from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
+    from teatree.core.models.ticket import Ticket
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,13 +64,31 @@ class ReviewTarget:
     armed_by: "type[AutoReviewDispatch | CodexReviewMarker]" = CodexReviewMarker
 
 
+def review_target_for_ticket(ticket: "Ticket") -> ReviewTarget | None:
+    """The PR + head *ticket* itself is, or ``None`` when its ``issue_url`` names no PR.
+
+    A reviewer-role ticket IS the PR — its ``issue_url`` names it and
+    ``extra["reviewed_sha"]`` names the head a later push rewrites, so the answer is always
+    about a head some reviewer actually judged. Split out of :func:`review_target_for_task`
+    so the seams that MINT a reviewing task, where no dispatch row exists yet, read the
+    head through this same resolver rather than re-deriving it.
+    """
+    reviewed_pr = pr_ref_from_url(ticket.issue_url)
+    if reviewed_pr is None:
+        return None
+    return ReviewTarget(
+        slug=reviewed_pr.slug,
+        pr_id=reviewed_pr.pr_id,
+        head_sha=str((ticket.extra or {}).get("reviewed_sha", "")).strip(),
+        host_kind=reviewed_pr.host_kind,
+    )
+
+
 def review_target_for_task(task: "Task") -> ReviewTarget | None:
     """The PR + head *task*'s review is answerable for, or ``None`` when it is answerable for none.
 
     Most-authoritative first: the #68 auto-review dispatch carries ``(slug, pr_id,
-    head_sha)`` and holds the per-MR lock. Failing that, a reviewer-role ticket IS the PR —
-    its ``issue_url`` names it and ``extra["reviewed_sha"]`` names the head a later push
-    rewrites, so the answer is always about a head some reviewer actually judged.
+    head_sha)`` and holds the per-MR lock. Failing that, the ticket itself is the answer.
     """
     dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
     if dispatch is not None:
@@ -82,15 +101,7 @@ def review_target_for_task(task: "Task") -> ReviewTarget | None:
             lock_holder=LOOP_SCANNER_HOLDER,
             armed_by=AutoReviewDispatch,
         )
-    reviewed_pr = pr_ref_from_url(task.ticket.issue_url)
-    if reviewed_pr is None:
-        return None
-    return ReviewTarget(
-        slug=reviewed_pr.slug,
-        pr_id=reviewed_pr.pr_id,
-        head_sha=str((task.ticket.extra or {}).get("reviewed_sha", "")).strip(),
-        host_kind=reviewed_pr.host_kind,
-    )
+    return review_target_for_ticket(task.ticket)
 
 
 def assigned_reviewer_identity_for(task: "Task") -> str:
@@ -117,4 +128,4 @@ def verdict_at(target: ReviewTarget) -> ReviewVerdict | None:
     return ReviewVerdict.objects.for_pr(target.slug, target.pr_id).filter(reviewed_sha=target.head_sha.lower()).first()
 
 
-__all__ = ["ReviewTarget", "review_target_for_task", "verdict_at"]
+__all__ = ["ReviewTarget", "review_target_for_task", "review_target_for_ticket", "verdict_at"]

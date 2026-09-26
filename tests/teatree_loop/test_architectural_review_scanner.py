@@ -6,10 +6,9 @@ review older than ``architectural_review_cadence_hours``) and a
 merge-count (``architectural_review_after_merge_count`` ticket merges
 since the last queued review). The architectural review is a teatree-CORE
 platform behaviour — it always applies uniformly to every overlay; the
-only opt-out is the ``architectural_review_disabled`` escape hatch in
-teatree-core config (a DB-home ``ConfigSetting`` row, per-overlay
-overridable). The on/off decision lives at the wiring layer; the scanner
-itself always scans when invoked.
+only opt-out is the ``arch_review`` Loop row (or a preset masking it). The
+cadence and skill are teatree-core config (DB-home ``ConfigSetting`` rows,
+per-overlay overridable); the scanner itself always scans when invoked.
 
 Integration-style with real Django ORM rows. Times are backdated with
 ``QuerySet.update()`` so we avoid an extra dep on a time-travel library
@@ -89,14 +88,12 @@ def _scanner(
     *,
     skill: str = "ac-reviewing-codebase",
     cadence_hours: int = 168,
-    retry_backoff_hours: int = 12,
     after_merge_count: int = 25,
 ) -> ArchitecturalReviewScanner:
     return ArchitecturalReviewScanner(
         overlay_name=OVERLAY,
         skill=skill,
         cadence_hours=cadence_hours,
-        retry_backoff_hours=retry_backoff_hours,
         after_merge_count=after_merge_count,
     )
 
@@ -300,40 +297,39 @@ class ArchitecturalReviewScannerTests(TestCase):
 
         assert second == []
 
-    def test_recent_failure_suppresses_via_backoff(self) -> None:
-        """A FAILED review inside the retry_backoff window blocks a bootstrap re-fire."""
+    def test_a_recent_failure_does_not_suppress_the_cadence_trigger(self) -> None:
+        """A FAILED attempt suppresses nothing — the cadence is the only clock.
+
+        The inverse of the retired 12h post-failure backoff: a failed review leaves
+        the COMPLETED clock untouched, so the next re-fire is the loop's own cadence.
+        Re-introducing an attempt-recency gate turns this red.
+        """
         _seed_terminal_review(Task.Status.FAILED, hours_ago=1)
 
-        assert _scanner(retry_backoff_hours=12).scan() == []
+        signals = _scanner().scan()
 
-    def test_merge_count_backstop_gated_behind_backoff(self) -> None:
-        """A failing review can't storm the merge-count backstop while inside the backoff.
+        assert len(signals) == 1
+        assert signals[0].payload["trigger"] == "bootstrap"
 
-        The last COMPLETED review is 13h old (cadence not elapsed at 999h), three
-        merges land after it (merge-count trigger armed), but a FAILED attempt 1h
-        ago sits inside the 12h backoff → suppressed. Without the backoff gate the
-        merge-count trigger would re-fire the expensive review every tick.
-        """
-        completed = _seed_terminal_review(Task.Status.COMPLETED, hours_ago=13)
-        assert completed is not None
+    def test_a_recent_failure_does_not_suppress_the_merge_count_backstop(self) -> None:
+        """Same for the backstop: a fresh FAILED attempt no longer gates it."""
+        _seed_terminal_review(Task.Status.COMPLETED, hours_ago=13)
         for _ in range(3):
             _make_merge_after(OVERLAY, after_hours=0)
         _seed_terminal_review(Task.Status.FAILED, hours_ago=1)
 
-        assert _scanner(cadence_hours=999, retry_backoff_hours=12, after_merge_count=2).scan() == []
+        signals = _scanner(cadence_hours=999, after_merge_count=2).scan()
 
-    def test_merge_count_backstop_fires_once_backoff_elapsed(self) -> None:
-        """Past the backoff, the merge-count backstop still fires (anti-vacuous pair).
+        assert len(signals) == 1
+        assert signals[0].payload["trigger"] == "after_merge_count"
 
-        Same shape as above but with no fresher failed attempt — the newest
-        terminal attempt is the COMPLETED review 13h ago, past the 12h backoff, so
-        the merge-count backstop is free to fire.
-        """
+    def test_merge_count_backstop_fires(self) -> None:
+        """The merge-count backstop fires past the last completed review."""
         _seed_terminal_review(Task.Status.COMPLETED, hours_ago=13)
         for _ in range(3):
             _make_merge_after(OVERLAY, after_hours=0)
 
-        signals = _scanner(cadence_hours=999, retry_backoff_hours=12, after_merge_count=2).scan()
+        signals = _scanner(cadence_hours=999, after_merge_count=2).scan()
 
         assert len(signals) == 1
         assert signals[0].payload["trigger"] == "after_merge_count"
@@ -349,8 +345,6 @@ class ArchitecturalReviewScannerTests(TestCase):
         prior = _last_review_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        # 13h ago — past the 12h backoff, so only the "merges predate the review"
-        # rule suppresses here.
         _backdate_task(prior, hours=13)
 
         # Old merge predates the review — should not count.
@@ -365,7 +359,6 @@ class ArchitecturalReviewScannerTests(TestCase):
         prior = _last_review_task()
         assert prior is not None
         Task.objects.filter(pk=prior.pk).update(status=Task.Status.COMPLETED)
-        # 13h ago — past the 12h backoff, so only overlay-isolation suppresses.
         _backdate_task(prior, hours=13)
 
         # Three merges on a *different* overlay — must not count.
@@ -398,8 +391,7 @@ class ArchitecturalReviewWiringTests(TestCase):
 
     The architectural-review scanner is always-on for every registered
     overlay — the cadence + skill are teatree-core platform config, NOT
-    a per-overlay opt-in. The only escape hatch is the
-    ``architectural_review_disabled`` flag in core config.
+    a per-overlay opt-in. Turning the review off is the ``arch_review`` Loop row.
     """
 
     def _patched_settings(self, **overrides: object) -> UserSettings:
@@ -407,7 +399,7 @@ class ArchitecturalReviewWiringTests(TestCase):
         return UserSettings(**overrides)
 
     def test_default_core_config_builds_scanner(self) -> None:
-        """Default core config (disabled=False) → wiring produces a scanner.
+        """Default core config → wiring produces a scanner.
 
         Anti-vacuousness: this used to require an explicit per-overlay
         opt-in on OverlayConfig. With the core re-architecture (#1152)
@@ -427,21 +419,7 @@ class ArchitecturalReviewWiringTests(TestCase):
         assert scanner.overlay_name == "acme"
         assert scanner.skill == "ac-reviewing-codebase"
         assert scanner.cadence_hours == 168
-        assert scanner.retry_backoff_hours == 12
         assert scanner.after_merge_count == 25
-
-    def test_disabled_in_core_config_skips_wiring(self) -> None:
-        """Escape hatch: ``architectural_review_disabled = True`` → no scanner."""
-        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.scanner_factories import _architectural_review_scanner_for  # noqa: PLC0415
-
-        backend = OverlayBackends(name="acme", overlay=None)
-        with patch(
-            "teatree.loop.scanner_factories._effective_settings_for_overlay",
-            return_value=self._patched_settings(architectural_review_disabled=True),
-        ):
-            scanner = _architectural_review_scanner_for(backend)
-        assert scanner is None
 
     def test_core_config_propagates_to_scanner_kwargs(self) -> None:
         """Tuned core config flows through to the scanner kwargs."""
@@ -454,7 +432,6 @@ class ArchitecturalReviewWiringTests(TestCase):
             return_value=self._patched_settings(
                 architectural_review_skill="ac-custom",
                 architectural_review_cadence_hours=72,
-                architectural_review_retry_backoff_hours=6,
                 architectural_review_after_merge_count=10,
             ),
         ):
@@ -463,7 +440,6 @@ class ArchitecturalReviewWiringTests(TestCase):
         assert scanner.overlay_name == "acme"
         assert scanner.skill == "ac-custom"
         assert scanner.cadence_hours == 72
-        assert scanner.retry_backoff_hours == 6
         assert scanner.after_merge_count == 10
 
     def test_overlay_without_python_class_still_wires(self) -> None:

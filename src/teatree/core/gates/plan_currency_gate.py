@@ -10,9 +10,9 @@ structurally, before any coder runs.
 It mirrors ``anti_vacuity_gate`` file-for-file:
 
 ``is_adequate``
-    the plan's four-section manifest (design, integration_seams, edge_cases,
-    test_strategy) is complete — each section substantive OR an explicit reasoned
-    negative. Silence never passes. (The pure validator lives in
+    the plan's five-section manifest (design, integration_seams, edge_cases,
+    test_strategy, acceptance_criteria) is complete — each section substantive OR an
+    explicit reasoned negative. Silence never passes. (The pure validator lives in
     ``models.plan_adequacy``; re-exported here so the gate reads like its sibling.)
 
 ``is_bound_to``
@@ -20,9 +20,9 @@ It mirrors ``anti_vacuity_gate`` file-for-file:
     ``MergeClear.reviewed_sha`` / ``anti_vacuity_gate.is_bound_to``.
 
 ``check_plan_current``
-    the gate: when ``require_plan_adequacy`` is on, the latest plan must be adequate
-    AND current. STALE-IS-ABSENT — a plan whose base moved off the live target HEAD
-    and whose intervening commits touch a DECLARED integration seam (computed via
+    the gate: the latest plan must be adequate AND current. STALE-IS-ABSENT — a plan
+    whose base moved off the live target HEAD and whose intervening commits touch a
+    DECLARED integration seam (computed via
     ``git log base_sha..HEAD -- <seam paths>`` through ``branch_currency``'s fetch
     machinery) is treated as ABSENT, exactly the replay-closure semantics of the
     anti-vacuity/rubric SHA-binds. On a block it raises :class:`NoCurrentPlanError`
@@ -30,9 +30,9 @@ It mirrors ``anti_vacuity_gate`` file-for-file:
 
 Wired as a SECOND condition on ``Ticket.code()`` (PLAN_RECORDED→CODED) AND called at the
 top of ``Ticket.schedule_coding()`` — closing the coder-dispatch leak where a
-coding task is minted outside the ``code()`` transition. ``require_plan_adequacy``
-ships OFF (opt-in) so the generic FSM is never blocked; it is a NO-OP until an
-operator flips it on per-overlay.
+coding task is minted outside the ``code()`` transition. There is no setting that
+relaxes it; the audited escapes are ``skip-planning``, ``plan-bypass`` and
+``plan-reaffirm``.
 
 Fail-open on an inconclusive probe (no worktree, failed fetch, unresolvable range)
 — same network posture as ``branch_currency``/``clone_guard``: a network outage
@@ -45,7 +45,7 @@ from teatree.core.modelkit.gate_registry import get_gate, register_gate
 from teatree.core.models.directive import Directive
 from teatree.core.models.errors import NoCurrentPlanError
 from teatree.core.models.plan_adequacy import declared_seam_paths, is_adequate, mechanism_conforms
-from teatree.core.models.plan_artifact import PlanArtifact, plan_adequacy_required
+from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.ticket_worktree_checks import _resolve_base_branch, dispatch_worktree_path
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.worktree.branch_currency import commits_between_touching_paths, fetch_target_head
@@ -82,17 +82,16 @@ def check_plan_current(ticket: "Ticket") -> bool:
     :class:`NoCurrentPlanError` (an ``InvalidTransitionError`` subclass) on a block
     so callers get a typed exception with the ``plan-reaffirm`` remediation.
 
-    The general ADEQUATE-and-CURRENT teeth are NO-OP when ``require_plan_adequacy``
-    is off (the opt-in default) or when a trivial-skip marker carries the ticket (a
-    trivial mechanical edit has no plan or seams to bind); when on, the latest plan
-    must be ADEQUATE and CURRENT, and inconclusive probes (no worktree, failed
-    fetch, unresolvable range) fail OPEN.
+    The latest plan must be ADEQUATE and CURRENT; inconclusive probes (no worktree,
+    failed fetch, unresolvable range) fail OPEN. A trivial-skip marker carries the
+    ticket past the general teeth — a trivial mechanical edit has no plan or seams to
+    bind.
 
-    The directive ``mechanism_conforms`` teeth run REGARDLESS of that flag (H3): a
-    directive-linked plan is checked against its ratified sketch unconditionally,
-    matching ``merge_quality_gate``'s "directive tickets unconditionally" doctrine.
-    The check is a no-op for ordinary work (no linked directive), so ordinary
-    tickets are never over-blocked.
+    The directive ``mechanism_conforms`` teeth additionally run on a ticket a
+    trivial-skip would otherwise carry: a directive-linked plan is checked against its
+    ratified sketch unconditionally, matching ``merge_quality_gate``'s "directive
+    tickets unconditionally" doctrine. The check is a no-op for ordinary work (no
+    linked directive), so ordinary tickets are never over-blocked.
 
     Also arms the ADVISORY design critic here (north-star PR-5) — this is the plan
     seam every directive-implementation ticket flows through (``schedule_coding`` +
@@ -105,18 +104,12 @@ def check_plan_current(ticket: "Ticket") -> bool:
 
     artifact = latest_plan_artifact(ticket)
 
-    # H3 — directive plan teeth are decoupled from ``require_plan_adequacy``: a
-    # directive-linked plan is checked against its ratified sketch even when the
-    # general plan-adequacy flag is off, matching ``merge_quality_gate``'s
-    # "directive tickets unconditionally" doctrine. The check is a strict no-op for
-    # ordinary work (no linked directive) and for a not-yet-interpreted directive
-    # (no sketch to conform to), so ordinary tickets are never over-blocked.
+    # Ahead of the trivial-skip carve-out: a directive plan is checked against its
+    # ratified sketch even when a skip marker would carry the ticket past the general
+    # teeth. A strict no-op for ordinary work and for a not-yet-interpreted directive.
     if artifact is not None:
         _check_mechanism_placement(ticket, artifact)
 
-    overlay = getattr(ticket, "overlay", "") or None
-    if not plan_adequacy_required(overlay):
-        return True
     if is_trivial_plan_skip(ticket):
         return True
 
@@ -182,14 +175,14 @@ def _inadequate_reason(ticket: "Ticket") -> str:
     # An INADEQUATE plan cannot be fixed by carrying it forward — the remediation is
     # to SUPPLY a manifest (or bypass / disable), distinct from the STALE case below.
     return (
-        f"Refusing to advance ticket {ticket.pk} to CODED — its latest plan is not adequate "
-        f"(require_plan_adequacy). A plan must carry a complete four-section manifest "
-        f"(design, integration_seams, edge_cases, test_strategy). A legacy/thin plan is treated as absent. "
+        f"Refusing to advance ticket {ticket.pk} to CODED — its latest plan is not adequate. "
+        f"A plan must carry a complete five-section manifest (design, integration_seams, edge_cases, "
+        f"test_strategy, acceptance_criteria). A legacy/thin plan is treated as absent. "
         f"Supply a real manifest (which also re-binds the base) with "
         f"`t3 <overlay> ticket plan-reaffirm {ticket.pk} --base-sha <current-40-char-HEAD> "
-        f"--adequacy-json '<four-section manifest>'`, OR record an audited bypass "
+        f"--adequacy-json '<five-section manifest>'`, OR record an audited bypass "
         f"(`t3 <overlay> ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`), OR "
-        f"disable the gate (`t3 <overlay> config_setting set require_plan_adequacy false --overlay <name>`)."
+        f"mark genuinely trivial work with `t3 <overlay> ticket skip-planning {ticket.pk} --reason <why>`."
     )
 
 
@@ -197,10 +190,8 @@ def _mechanism_reason(ticket: "Ticket", finding: str) -> str:
     # A non-conformant mechanism_placement is TWO-SIDED, mirroring the plan gate's escape:
     # fix the plan to conform, OR amend the directive (re-interpret → re-ratify) if the
     # ratified shape was wrong. A genuine no-mechanism plan waives via a mechanism_placement
-    # reasoned negative; the flag kill-switch is the always-available never-lockout.
-    # Directive mechanism teeth are UNCONDITIONAL (H3) — ``require_plan_adequacy`` no
-    # longer disables them, so it is NOT offered as the escape here. The escapes are
-    # fix-the-plan, amend-the-directive, or the audited all-reasoned-negative bypass.
+    # reasoned negative. The escapes are fix-the-plan, amend-the-directive, or the
+    # audited all-reasoned-negative bypass.
     return (
         f"Refusing to advance ticket {ticket.pk} to CODED — its plan's mechanism_placement does not conform to "
         f"the ratified sketch (directive tickets are checked unconditionally, north-star PR-5): {finding}. Fix the "
@@ -217,14 +208,14 @@ def _stale_reason(ticket: "Ticket", base_sha: str, head: str, seams: tuple[str, 
     # the full 40-char HEAD so the command is copy-paste runnable (reaffirm rejects a
     # short SHA).
     return (
-        f"Refusing to advance ticket {ticket.pk} to CODED — its plan is STALE (require_plan_adequacy). "
+        f"Refusing to advance ticket {ticket.pk} to CODED — its plan is STALE. "
         f"The plan was authored against base {base_sha[:8]} but the target HEAD is now {head[:8]}, and "
         f"{len(commits)} intervening commit(s) touched a declared integration seam "
         f"({', '.join(seams) or '<none>'}). A stale plan is treated as ABSENT — coding against a moved "
         f"base is the named root cause of the integration-bug campaign. Reaffirm at the new base with "
         f"`t3 <overlay> ticket plan-reaffirm {ticket.pk} --base-sha {head} --disposition <per-commit "
-        f"disposition>`, or disable the gate: "
-        f"`t3 <overlay> config_setting set require_plan_adequacy false --overlay <name>`."
+        f"disposition>`, or record an audited bypass "
+        f"(`t3 <overlay> ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`)."
     )
 
 

@@ -144,6 +144,18 @@ class TestProhibitionAndPragma:
     def test_ubiquitous_prose_word_is_not_a_marker(self) -> None:
         assert not is_prohibition("Never pull fresh tickets; fall back to `gh issue list` when down.")
 
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "pass `egress_forbidden=…` when you run `t3 review-request post`",
+            "read `forbidden_egress` before you run `t3 review-request post`",
+            "read `egress-forbidden` before you run `t3 review-request post`",
+        ],
+    )
+    def test_a_marker_inside_an_identifier_does_not_suppress(self, line: str) -> None:
+        """A marker matching inside a symbol name would drop that line's raw calls from the ledger."""
+        assert not is_prohibition(line)
+
 
 class TestGenuineProhibitionStillIgnored:
     @pytest.mark.parametrize(

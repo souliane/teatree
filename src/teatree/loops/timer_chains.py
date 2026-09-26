@@ -9,25 +9,29 @@ the task runs a five-step body that re-schedules its own successor BEFORE doing
 the tick work, so a crash mid-tick always leaves a queued successor and the chain
 never stalls.
 
-The tick body is gated by the ``loop_runner_enabled`` kill-switch (step 0): a fire while
-the switch is OFF returns immediately without re-enqueueing a successor, so flipping the
-switch off terminates the chain at its source (not only at the worker supervisor). When
-the switch is ON the five fixed steps run:
+The tick body is gated by the FLEET verdict (step 0): a fire while the active preset
+admits zero loops returns immediately without re-enqueueing a successor, so switching to
+a stopping posture terminates the chain at its source (not only at the worker supervisor).
+When the fleet admits work the five fixed steps run:
 
-Step 1 — self-dedup: a second pending ``loop_timer`` for the same loop already
-carries the chain, OR a concurrently-RUNNING duplicate with a lower id outranks this
-fire, so this one stops without chaining (collapses duplicates to one — the "exactly
-one live timer per loop" invariant self-heals; the id tiebreak lets exactly one of two
-racing RUNNING timers proceed).
-
-Step 2 — successor-first re-enqueue: schedule the next timer BEFORE running the
-tick, so a crash during the tick leaves a queued successor (crash-safe). The
+Step 1 — successor-first re-enqueue: schedule the next timer BEFORE the dedup and
+before running the tick, so neither a crash during the tick nor a collapse into another
+fire can leave the loop with nothing queued (crash-safe). A pending READY successor is
+already that guarantee and gets no second row. The
 ``run_after`` is floored at ``now + IDLE_POLL_FLOOR_SECONDS``: an already-due
 successor scheduled at ``now`` is immediately READY, so a second ``loops`` executor
 claims it and spawns a duplicate tick subprocess while this one is still in flight —
 the floor holds the successor back until this tick has moved the anchor. A future
 interval/daily slot beyond the floor still fires at that slot; step 5 refines the
 successor to the precise next slot once the tick's CAS moves the anchor.
+
+Step 2 — self-dedup: a pending ``loop_timer`` for the same loop already carries the
+chain, OR a LIVE concurrently-RUNNING duplicate with a lower id outranks this fire, so
+this one stops (collapses duplicates to one — the "exactly one live timer per loop"
+invariant self-heals; the id tiebreak lets exactly one of two racing RUNNING timers
+proceed). A RUNNING row past its tick deadline is a corpse and never outranks anything:
+deferring to a dead worker is how a chain was dropped while its loop kept a recent
+anchor and read healthy (#4140).
 
 Step 3 — admission check: the unified enabled+due+reachable verdict
 (:func:`teatree.loops.loop_table.admitted_loop_names`). A held/disabled/not-due loop
@@ -57,7 +61,6 @@ successors, so a double delivery never doubles the chain.
 """
 
 import datetime as dt
-import enum
 import logging
 import uuid
 from typing import TYPE_CHECKING, TypedDict
@@ -66,6 +69,7 @@ from django.tasks import task
 from django.utils import timezone
 
 from teatree.loops.deadlined_tick import run_deadlined_tick
+from teatree.loops.enable_verdict import fleet_admits_work
 
 if TYPE_CHECKING:
     from django_tasks_db.models import DBTaskResult
@@ -106,54 +110,6 @@ DEADLINE_CADENCE_MULTIPLIER = 3
 #: script loop to carry, not the schedule the loop actually runs on. Daily ticks get
 #: their own deadline; a genuine overrun past it escalates loudly.
 DAILY_TICK_DEADLINE_SECONDS = 1800.0
-
-
-class LoopRunnerState(enum.Enum):
-    """The three-valued kill-switch verdict (F7).
-
-    A bare boolean cannot distinguish a legitimate OFF from a transient read
-    FAILURE, so a failed DB read of the switch looked identical to "operator turned
-    it off" — the worker then clean-exited 0 and ``restart: on-failure`` never
-    restarted a worker downed by a blip. ``UNREADABLE`` names the "cannot confirm"
-    case so UNREADABLE exits non-zero for supervisor restart while a genuine OFF
-    cleanly idles in-process with executor dispatch paused.
-    """
-
-    ON = "on"
-    OFF = "off"
-    UNREADABLE = "unreadable"
-
-
-def read_loop_runner_state() -> LoopRunnerState:
-    """The ``loop_runner_enabled`` kill-switch as ON / OFF / UNREADABLE (F7).
-
-    A successful read maps to ON/OFF. A read that RAISES (a transient sqlite error, a
-    connector blip) is ``UNREADABLE`` — NOT collapsed to OFF — logged at WARNING so the
-    failure is loud, never a silent DEBUG line. The worker treats ``UNREADABLE`` as a
-    retry-then-crash so the supervisor restarts it; the chain's fail-safe wrapper
-    (:func:`loop_runner_enabled`) maps ``UNREADABLE`` to "not ON" so it still refuses
-    to perpetuate a chain it cannot confirm should run.
-    """
-    try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred read
-
-        return LoopRunnerState.ON if get_effective_settings().loop_runner_enabled else LoopRunnerState.OFF
-    except Exception:
-        logger.warning("loop_runner_enabled read failed — cannot confirm kill-switch state", exc_info=True)
-        return LoopRunnerState.UNREADABLE
-
-
-def loop_runner_enabled() -> bool:
-    """Whether the kill-switch resolves ON (fail-safe: anything but ON is OFF).
-
-    The single boolean reader every work-driving chain fire consults — :func:`loop_timer`
-    and :func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops` — so the
-    kill-switch can never be honoured by one path and silently bypassed by another. A
-    read failure (``UNREADABLE``) degrades to False here: a kill-switch that cannot
-    confirm it is ON must not keep the chain alive. The worker instead consults
-    :func:`read_loop_runner_state` directly so it can tell OFF from UNREADABLE (F7).
-    """
-    return read_loop_runner_state() is LoopRunnerState.ON
 
 
 def _loop_timer_path() -> str:
@@ -303,8 +259,10 @@ def _loop_admitted(name: str, now: dt.datetime) -> bool:
     return name in admitted_loop_names(now, only=name)
 
 
-def _outranked_by_running(running: "list[DBTaskResult]", *, my_id: str | uuid.UUID) -> bool:
-    """Whether any RUNNING duplicate in *running* outranks this fire (lower id wins the tiebreak).
+def _outranked_by_running(
+    running: "list[DBTaskResult]", *, my_id: str | uuid.UUID, loop_row: "Loop", now: dt.datetime
+) -> bool:
+    """Whether any LIVE running duplicate outranks this fire (lower id wins the tiebreak).
 
     Both this fire AND a concurrent duplicate are RUNNING rows; excluding this fire's
     own id, the lowest-id running timer survives and every other one dedups — so a slow
@@ -313,11 +271,20 @@ def _outranked_by_running(running: "list[DBTaskResult]", *, my_id: str | uuid.UU
     ids strictly below mine count, so the minimum-id fire sees none. Both sides are
     normalized to the dashed-hex form so ``<`` is a stable total order regardless of the
     raw id spelling.
+
+    A row past its tick deadline is a CORPSE, not a duplicate: its worker died holding
+    it, so it will never reach the successor enqueue, and deferring to it hands the chain
+    to something that cannot carry it (#4140). Corpses are disqualified through
+    :func:`~teatree.loops.schedule_liveness.is_stranded` — the one predicate the reaper
+    and the liveness alarm already share, so all three agree on which rows are dead.
     """
     from django_tasks_db.models import normalize_uuid  # noqa: PLC0415 — deferred: Django import at call time
 
+    from teatree.loops.schedule_liveness import is_stranded  # noqa: PLC0415 — deferred: cycle-safe at call time
+
     me = normalize_uuid(my_id)
-    return any(normalize_uuid(row.id) < me for row in running)
+    live = (row for row in running if not is_stranded(row, loop_row, now))
+    return any(normalize_uuid(row.id) < me for row in live)
 
 
 @task(queue_name=LOOPS_QUEUE, takes_context=True)
@@ -337,30 +304,36 @@ def loop_timer(context: object, name: str) -> TimerResult:
     now = timezone.now()
     my_id = context.task_result.id  # ty: ignore[unresolved-attribute]  # django-tasks TaskContext
 
-    # (0) kill-switch — the loop runner is OFF, so terminate the chain at its source:
-    # do NOT re-enqueue a successor. The worker supervisor also stops on a flip-off, but
-    # honouring the switch here means a timer claimed just before the flip cannot
-    # perpetuate the chain, and neither can a stray inline drain of a loops-queue row.
-    if not loop_runner_enabled():
+    # (0) fleet verdict — the active preset admits nothing, so terminate the chain at its
+    # source: do NOT re-enqueue a successor. The worker supervisor also quiesces on it, but
+    # honouring it here means a timer claimed just before the switch cannot perpetuate the
+    # chain, and neither can a stray inline drain of a loops-queue row.
+    if not fleet_admits_work(now):
         return {"loop": name, "action": "halted"}
 
-    # (1) self-dedup — a queued (READY) successor OR a lower-id concurrent RUNNING
-    # duplicate already carries the chain. One query fetches both.
     live = _live_loop_timers(name)
     pending = [row for row in live if row.status == TaskResultStatus.READY]
     running = [row for row in live if row.status == TaskResultStatus.RUNNING]
-    if pending or _outranked_by_running(running, my_id=my_id):
-        return {"loop": name, "action": "deduped"}
 
     row = Loop.objects.filter(name=name).first()
     if row is None:
         # The loop was deleted; do not re-chain (the reconciler prunes stragglers).
         return {"loop": name, "action": "unknown"}
 
-    # (2) successor-first re-enqueue — crash-safe, BEFORE any tick work. Floored so an
-    # already-due successor at ``now`` cannot be claimed by a second executor and run
-    # a duplicate tick subprocess while this tick is still in flight.
-    enqueue_loop_timer(name, run_after=_idle_successor_run_after(row, now))
+    # (1) successor-first re-enqueue — crash-safe, BEFORE the dedup and before any tick
+    # work. Floored so an already-due successor at ``now`` cannot be claimed by a second
+    # executor and run a duplicate tick subprocess while this tick is still in flight.
+    # It precedes the dedup because collapsing into another fire is a BET that the other
+    # fire will carry the chain, and a fire that returns before enqueuing a successor
+    # loses that bet silently — the loop keeps a recent anchor and never fires again
+    # (#4140). A READY successor is already the guarantee, so it needs no second row.
+    if not pending:
+        enqueue_loop_timer(name, run_after=_idle_successor_run_after(row, now))
+
+    # (2) self-dedup — a queued (READY) successor OR a lower-id LIVE concurrent RUNNING
+    # duplicate already carries the chain, and this fire has guaranteed one either way.
+    if pending or _outranked_by_running(running, my_id=my_id, loop_row=row, now=now):
+        return {"loop": name, "action": "deduped"}
 
     # (3) admission — a held/disabled/not-due loop is a free no-op.
     if not _loop_admitted(name, now):

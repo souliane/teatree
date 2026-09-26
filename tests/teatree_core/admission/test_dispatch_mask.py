@@ -25,8 +25,8 @@ class TestHeadlessAdmissionBlockReason(django.test.TestCase):
         assert headless_admission_block_reason() != ""
 
     def test_mode_override_masking_dispatch_off_blocks_it(self) -> None:
-        Mode.objects.create(name="frozen-headless-test", entries={"dispatch": False})
-        set_mode_override("frozen-headless-test")
+        Mode.objects.create(name="frozen-headless-test", entries={"dispatch": False, "dream": True})
+        set_mode_override("frozen-headless-test", reason="test")
 
         reason = headless_admission_block_reason()
 
@@ -34,8 +34,8 @@ class TestHeadlessAdmissionBlockReason(django.test.TestCase):
         assert "dispatch" in reason
 
     def test_clearing_the_override_re_admits(self) -> None:
-        Mode.objects.create(name="frozen-headless-test2", entries={"dispatch": False})
-        set_mode_override("frozen-headless-test2")
+        Mode.objects.create(name="frozen-headless-test2", entries={"dispatch": False, "dream": True})
+        set_mode_override("frozen-headless-test2", reason="test")
         assert headless_admission_block_reason() != ""
 
         clear_mode_override()

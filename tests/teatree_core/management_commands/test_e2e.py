@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from io import StringIO
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -25,8 +26,10 @@ import teatree.core.management.commands._e2e_runners as e2e_runners_mod
 import teatree.core.management.commands._e2e_specs_checkout as e2e_specs_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.utils.run as utils_run_mod
+from teatree.core.intake.e2e_workitem import load_recipe
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.management_commands._overlays import (
+    _DERIVED_BASE_URL_OVERLAY,
     _EXTERNAL_RUNNER_OVERLAY,
     _INFER_EXTERNAL_OVERLAY,
     _INFER_PROJECT_OVERLAY,
@@ -170,6 +173,21 @@ class TestE2eTriggerCi(TestCase):
 
 
 class TestE2eProject(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_refuses_stack_target_before_running(self) -> None:
+        stderr = StringIO()
+        with (
+            patch.object(_resolvers_mod, "resolve_worktree", return_value=None),
+            patch.object(e2e_runners_mod, "run_project_suite") as run_suite,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("e2e", "project", target="stack", docker=False, stderr=stderr)
+
+        assert exc_info.value.code == 2
+        assert "--target stack is only supported by the external runner" in stderr.getvalue()
+        run_suite.assert_not_called()
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_playwright_locally(self) -> None:
@@ -334,12 +352,50 @@ class TestE2eRunWorkItem(TestCase):
 
         assert "passed" in result.lower()
         run_existing.assert_called_once()
-        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
-
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
         assert recipe.last_run["result"] == "green"
         assert recipe.last_run["per_repo_shas"] == {"backend": sha}
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_stack_target_is_recorded_truthfully(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(str(d), ignore_errors=True))
+        wt_dir = d / "backend"
+        self._make_repo(wt_dir)
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/o/r/issues/795")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feat",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+        with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
+            call_command("e2e", "run", "795", target="stack")
+
+        recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
+        assert recipe.last_run is not None
+        assert recipe.last_run["env"] == "stack"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_stack_target_runs_and_records_without_a_local_workspace(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/o/r/issues/4796")
+        ticket.repos = ["backend"]
+        ticket.save(update_fields=["repos"])
+
+        with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed.") as dispatch:
+            call_command("e2e", "run", "4796", target="stack")
+
+        dispatch.assert_called_once()
+        recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
+        assert recipe.last_run is not None
+        assert recipe.last_run["env"] == "stack"
+        assert recipe.last_run["result"] == "green"
+        assert recipe.last_run["per_repo_shas"] == {}
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -566,6 +622,90 @@ class TestE2eExternal(_ResolvedSpecsDir):
             with pytest.raises(SystemExit) as exc_info:
                 call_command("e2e", "external", target="dev")
         assert exc_info.value.code == 1
+
+    @_patch_overlays(_DERIVED_BASE_URL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_target_dev_without_base_url_runs_against_the_overlay_derived_url(self) -> None:
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch.dict("os.environ", {}, clear=False),
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+        ):
+            os.environ.pop("BASE_URL", None)
+            result = cast("str", call_command("e2e", "external", target="dev"))
+
+        assert "passed" in result
+        assert mock_run.call_args[1]["env"]["BASE_URL"] == "https://derived.example"
+
+    @_patch_overlays(_DERIVED_BASE_URL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_an_explicit_base_url_beats_the_overlay_derived_one(self) -> None:
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch.dict("os.environ", {"BASE_URL": "https://explicit.example"}, clear=False),
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+        ):
+            call_command("e2e", "external", target="dev")
+
+        assert mock_run.call_args[1]["env"]["BASE_URL"] == "https://explicit.example"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_target_qa_with_no_url_from_anywhere_names_the_missing_base_url(self) -> None:
+        stderr = StringIO()
+        with patch.dict("os.environ", {}, clear=False), patch.object(utils_run_mod, "Popen") as mock_run:
+            os.environ.pop("BASE_URL", None)
+            with pytest.raises(SystemExit) as exc_info:
+                call_command("e2e", "external", target="qa", stderr=stderr)
+
+        assert exc_info.value.code == 1
+        assert "--target qa requires BASE_URL" in stderr.getvalue()
+        mock_run.assert_not_called()
+
+    @_patch_overlays(_EXTERNAL_RUNNER_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_stack_target_uses_host_published_overlay_port_and_local_spec_mode(self) -> None:
+        mock_result = MagicMock(returncode=0)
+        with (
+            patch.dict(
+                "os.environ",
+                {
+                    "E2E_TARGET": "dev",
+                    "CUSTOMER": "ambient-remote",
+                    "E2E_BROKERAGE_PASSWORD": "remote-password",
+                    "E2E_SELFSERVICE_USER": "chosen-user",
+                },
+            ),
+            patch.object(_resolvers_mod, "host_published_port_host", return_value="host.docker.internal"),
+            patch.object(_resolvers_mod, "resolve_worktree", side_effect=AssertionError("stack resolved a worktree")),
+            patch("socket.create_connection"),
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+        ):
+            result = cast("str", call_command("e2e", "external", target="stack"))
+
+        assert "passed" in result.lower()
+        env = mock_run.call_args.kwargs["env"]
+        assert env["BASE_URL"] == "http://host.docker.internal:4200"
+        assert env["T3_E2E_TARGET"] == "local"
+        assert env["E2E_TARGET"] == "local"
+        assert "CUSTOMER" not in env
+        assert "E2E_BROKERAGE_PASSWORD" not in env
+        assert env["E2E_SELFSERVICE_USER"] == "chosen-user"
+
+    @_patch_overlays(_EXTERNAL_RUNNER_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_stack_target_refuses_an_unreachable_port_with_the_start_remedy(self) -> None:
+        stderr = StringIO()
+        with (
+            patch.object(_resolvers_mod, "host_published_port_host", return_value="host.docker.internal"),
+            patch("socket.create_connection", side_effect=OSError("connection refused")),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("e2e", "external", target="stack", stderr=stderr)
+
+        assert exc_info.value.code == 1
+        assert "http://host.docker.internal:4200" in stderr.getvalue()
+        assert "t3 test tool stack up" in stderr.getvalue()
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1249,6 +1389,16 @@ class TestLocalBaseUrlNamesTheHost(TestCase):
         expected = "http://host.docker.internal:62674"
         assert self._frontend_url(host="host.docker.internal", linked=False) == expected
         assert self._frontend_url(host="host.docker.internal", linked=True) == expected
+
+
+class TestTheRunBanner:
+    def test_it_names_the_checkout_the_target_and_the_url(self) -> None:
+        banner = _resolvers_mod.run_banner(Path("/specs"), "dev", {"BASE_URL": "https://dev.example"})
+        assert banner.splitlines() == ["  Running from: /specs", "  Target: dev", "  BASE_URL: https://dev.example"]
+
+    def test_it_names_the_tenant_only_when_one_is_set(self) -> None:
+        banner = _resolvers_mod.run_banner(Path("/specs"), "qa", {"BASE_URL": "https://qa.example", "CUSTOMER": "acme"})
+        assert banner.splitlines()[-1] == "  CUSTOMER: acme"
 
 
 # ── _clone_or_update_e2e_repo ─────────────────────────────────────────
@@ -1970,9 +2120,11 @@ class TestE2EResolveTarget(TestCase):
             ("dev", "dev"),
             ("qa", "qa"),
             ("local", "local"),
+            ("stack", "stack"),
             ("DEV", "dev"),
             (" QA ", "qa"),
             (" Local ", "local"),
+            (" Stack ", "stack"),
         ]:
             with self.subTest(raw=raw):
                 assert cmd._resolve_target(raw) == expected

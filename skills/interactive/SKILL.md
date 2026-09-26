@@ -1,17 +1,17 @@
 ---
 name: interactive
-description: "ENGAGES TEATREE FOR THE SESSION, and holds the standing rule that no work-bearing state is terminal. Loading this skill — or any skill declaring `requires: interactive` — writes the `.teatree-active` marker, one of the two conditions in `_loop_auto_load_active()` that arm the loop and statusline (#256); a session that never loads it stays unengaged, by design. Also holds teatree's Claude Code harness wiring: how skills are selected, how plugin hooks are registered, and which output belongs to the headless pipeline. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. Teatree's own architecture and coding rules are `/t3:internals`; the dogfooding procedure is `/t3:dogfooding`."
+description: "Shared Claude Code and Codex contract for an attended TeaTree session: no work-bearing state is terminal, skills are selected explicitly, and interactive output stays human-readable. Claude Code plugin hooks additionally mark the session engaged; Codex loads this as an ordinary skill and does not emulate those hooks or arm loops. Load it when ending an interactive session, when a session-end report names stranded work, or when deciding what to do with uncommitted, unpushed, untracked or unmerged work. TeaTree's own architecture and coding rules are `t3:internals`; the dogfooding procedure is `t3:dogfooding`."
 compatibility: any
 requires:
   - rules
 eval_exempt: harness-wiring reference plus one invariant that points at the four mechanisms enforcing it deterministically; the engagement behaviour is pinned by tests/test_teatree_opt_in.py and each mechanism by its own tests, not by an agent trajectory
 metadata:
-  version: 0.0.1
+  version: 0.0.2
 ---
 
 # TeaTree — Interactive Session
 
-The Claude Code side of teatree: what engages a session, how skills reach an agent, how hooks are registered — and the one rule an attended session must not break. Loading this skill is itself the engagement act.
+The shared Claude Code and Codex side of teatree: how skills reach an attended agent and the one rule that session must not break. Runtime-specific automation is called out explicitly below; reading this skill in Codex does not activate Claude's plugin hooks or start a loop.
 
 ## This session does not implement — it files and enqueues (Non-Negotiable)
 
@@ -53,6 +53,32 @@ The deterministic backstop is the PreToolUse authoring gate
 (`hooks/scripts/headless_authoring_gate.py`), which refuses an interactive session's edit,
 commit or push against a teatree-managed repo. It applies unconditionally — there is no
 setting to flip — and carries both exemptions above.
+
+## And it does not investigate inline — a sub-agent does (Non-Negotiable)
+
+The rule above says who WRITES the code. This one says who READS. An attended session
+orchestrates: it dispatches, collects, routes, decides, advances the FSM and communicates.
+It does not build understanding in its own context.
+
+The distinction is one line: **routing reads a fact; investigation builds understanding.**
+A single bounded call answering "what is the state of X" routes, and is always allowed —
+`git status`, `docker ps`, a forge PR/MR state read, `t3 … list --json`, `| jq '.field'`, `head -50`,
+`sed -n '1,80p'`. A sweep, a parse, or a chain that produces a conclusion is investigation,
+and belongs in a sub-agent: `Explore` for a read-only code search, `t3:debugger` to diagnose,
+`t3:bughunter` to reproduce, `t3:reviewer` to read a diff. The sub-agent reads the whole
+tree; you read one answer.
+
+Context is the orchestrator's scarce resource, and it is what an unbounded read spends.
+That is why `run_in_background: true` does not settle this the way it settles a slow
+command — a backgrounded sweep still lands in your context the moment you collect it.
+
+The deterministic backstop is the PreToolUse delegation gate
+(`hooks/scripts/orchestrator_delegation_gate.py`), which refuses a Bash call whose shape has
+no ceiling: a recursive search with no `-m`/`--max-count` and no `| head`, or an output piped
+into an interpreter. It reads Bash only, so every dispatch, task write, `SendMessage`,
+`AskUserQuestion` and MCP connector call is untouched. A sub-agent is never gated — sweeping
+is its job. Escapes: `[delegate-ok: <reason>]` on the one call, and
+`t3 <overlay> gate delegation disable` to turn it off.
 
 ## If it does code, it plans first (Non-Negotiable)
 
@@ -108,7 +134,18 @@ The invariant is not kept by remembering it. Four mechanisms enforce it, each ve
 
 ### Using it
 
-When a session-end report names stranded work, run the command it prints for each item. The states are ordered, so an item usually needs its own next step and nothing more — commit, push, `t3 teatree pr ensure-pr --branch <name>`, or let the ship loop take the PR (`t3 loops tick --loop ship`).
+When a session-end report names stranded work, run the command it prints for each item. The states are ordered, so an item usually needs its own next step and nothing more — commit, push, `t3 teatree pr ensure-pr --branch <name> --repo <absolute-worktree-path>`, or let the ship loop take the PR (`t3 loops tick --loop ship`).
+
+**Add `--repo` yourself — the printed command omits it, and omitting it fails on EXIT 0.** The `.` default is right only for the pre-push hook, which runs in-process on the host with the repo as its cwd. Invoked by hand, `t3` execs into a container whose cwd is the image's own `WORKDIR` and never the host's, so `.` is not a checkout at all and the classification dies:
+
+```text
+{'branch': '<name>', 'error': "could not determine sync status of '<name>' in '.': command failed
+ (rc=128): git -C . log <name> --not origin/main … fatal: not a git repository"}
+```
+
+That is the whole failure — **no PR created, and the process exits 0**. `ensure-pr` is the sole subcommand exempted from the loud-refusal contract, because it runs inside the pre-push hook where reporting and letting the push through is the designed behaviour (`/t3:internals` § `soft_refusal_commands`, #792) — so by hand the refusal reads as success and nothing downstream catches it. Pass the worktree's ABSOLUTE filesystem path; a forge slug (`owner/repo`) is refused up front (#2937).
+
+**`ensure-pr` has no `--base`/`--target` — it opens against the repo's DEFAULT branch.** A target is read from the owning ticket, and an orphan branch (the case this command exists for) has no `Worktree` row to carry one. On a stack that is a silent wrong target rather than an error, so retarget the layer in the same turn you create it — `/t3:ship` § "Stacked Delivery — One Stack Per Repo (Default)" carries the command.
 
 Deleting an item is a decision, not a default: `/t3:sweeping-worktrees` covers salvaging unmerged work to a fresh PR versus deleting something demonstrably shipped. The reaper refuses a dirty checkout for that reason, so a kept worktree is not a finished one.
 
@@ -124,11 +161,13 @@ The rule is one line: **a status is evidence about the reporter, not about the t
 
 ## Skill Loading
 
-Skill loading is fully explicit — there is no free-text scan of the prompt. Skills load via slash commands (`/t3:code`), phase mapping (`t3 agent --phase coding`), ticket status, the transitive `requires:` dependency chain, and cwd/overlay context. TeaTree's UserPromptSubmit hook surfaces only the skills a prompt's cwd/overlay context implies — framework skills (`ac-django`/`ac-python`), the active overlay's own skill, and its `companion_skills`. A PreToolUse hook blocks Python code edits until those load.
+Skill loading is fully explicit — there is no free-text scan of the prompt. Skills load via the runtime's native syntax (`/t3:code` in Claude Code, `$t3:code` in Codex), phase mapping (`t3 agent --phase coding`), ticket status, the transitive `requires:` dependency chain, and cwd/overlay context. `t3 agent` resolves that selection before launching either runtime and injects the selected skill names through the runtime's native context channel.
 
 The `SkillLoadingPolicy` class resolves which skills to load from an explicit phase / ticket-status / cwd-overlay context and expands each root's `requires:` chain transitively.
 
-**Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing the plugin does NOT force teatree onto every session. A fresh session is *not engaged*: the UserPromptSubmit suggester (and the T3 CLI reminder) is suppressed, `<session>.pending` stays empty so the PreToolUse gate never blocks, and SessionStart shows a one-line how-to advisory instead of arming the loop. A session engages teatree when any of: the owner set `[teatree] autoload = true` (or `T3_AUTOLOAD=1`); a teatree-requiring skill loaded (the `<session>.teatree-active` marker); or **any** `t3:` skill loaded (the `<session>.t3-engaged` marker, set by `handle_track_skill_usage`). The cold-hook seam is `hook_router._teatree_engaged` = `_autoload_enabled() OR _teatree_active() OR <session>.t3-engaged`. Note the two markers differ: `.t3-engaged` engages only the suggester, while loop scheduling still gates exclusively on `.teatree-active` (so a plain lifecycle skill never arms loops). Explicitly running `/t3:interactive` engages the session for the next prompt.
+**Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing either runtime's skills does NOT force teatree onto every session. The engagement markers and loop scheduling described here are Claude-only hook automation: Claude's `InstructionsLoaded` hook writes `<session>.teatree-active` when this skill (or a requiring skill) loads, while `handle_track_skill_usage` writes `<session>.t3-engaged` for any `t3:` skill. Codex has no equivalent plugin-hook adapter today, so loading `$t3:interactive` adopts this contract but does not write either marker, deliver standing directives, or arm loops. That absence is fail-safe: no loop starts merely because Codex can read the skill.
+
+In Claude Code, a fresh session is *not engaged*: the UserPromptSubmit suggester (and the T3 CLI reminder) is suppressed, `<session>.pending` stays empty so the PreToolUse gate never blocks, and SessionStart shows a one-line how-to advisory instead of arming the loop. A session engages when any of: the owner set `[teatree] autoload = true` (or `T3_AUTOLOAD=1`); a teatree-requiring skill loaded; or any `t3:` skill loaded. The cold-hook seam is `hook_router._teatree_engaged` = `_autoload_enabled() OR _teatree_active() OR <session>.t3-engaged`. The two markers differ: `.t3-engaged` engages only the suggester, while loop scheduling gates exclusively on `.teatree-active`. Explicitly running `/t3:interactive` engages a Claude session for the next prompt.
 
 ## Standing directives
 
@@ -139,7 +178,7 @@ so the repetition is automated rather than remembered.
 | Slot | Cadence | Reaches | What it holds |
 |---|---|---|---|
 | `standing-golden-rule` | 300s | every attended session, costing no turn | PLAN → IMPLEMENT → COLD REVIEW, and the orchestrate-only boundary: never dispatch an implementing agent on unplanned work, and never implement it yourself. |
-| `standing-todo-consolidate` | 1800s | an attended session that drives itself | Every user request is captured as a task; reconcile from durable state first, rescan the transcript only if something is unaccounted for; then implement the outstanding requests, oldest first. |
+| `standing-todo-consolidate` | 1800s | an attended session that drives itself | Every user request is captured as a task, and every OPEN task is drained — closed when durable state already satisfies it; reconcile from durable state first, rescan the transcript only if unaccounted for; then implement the outstanding requests, oldest first. |
 | `standing-pr-board` | 600s | ONE attended session per host | Every open PR advances every pass — review, fix, update, or merge via the keystone — promptly, with every merge guard intact. |
 
 The third column is the cost story. A rule that only has to be in context when you next act
@@ -169,9 +208,9 @@ scoping rule and the per-slot delivery cost, and each harness supplies its own d
 adapter over the JSON contract above. They are advisory — repeated prose, not a gate. A
 rule that is repeated is one the session still holds; it is not one it cannot break.
 
-## Plugin Hooks Architecture
+## Claude-only hook automation
 
-Hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is the **sole source** for hook registrations — do NOT duplicate hooks in the user's `~/.claude/settings.json`. When migrating hooks to the plugin, remove the `settings.json` equivalents in the same change to avoid double execution.
+Claude hooks are registered in `hooks/hooks.json` (shipped with the plugin). This is the **sole source** for Claude hook registrations — do NOT duplicate hooks in the user's `~/.claude/settings.json`. When migrating hooks to the plugin, remove the `settings.json` equivalents in the same change to avoid double execution. Codex does not consume this file; shared behavior must live in the skill or CLI seam, never rely silently on a Claude hook.
 
 ## Interactive vs Headless Output
 

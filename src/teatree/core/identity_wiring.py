@@ -16,7 +16,7 @@ Neither surfaces until a merge is refused or somebody reads ``author.username`` 
 open. Both questions are asked here so ``t3 doctor check`` fails on either.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -106,6 +106,77 @@ def authoring_identity_fault(*, remote: str, identity: AuthoringIdentity) -> Ide
         remedy=(
             "provision the overlay's scoped forge credential in this venue's secret store (a "
             "container seeds its own store at start-up and must seed this entry too)"
+        ),
+    )
+
+
+def unapprovable_author_fault(*, remote: str, authenticated: str, approvers: Iterable[str]) -> IdentityFault | None:
+    """The fault when the credential about to author *remote* is one the approver set relies on.
+
+    A forge bars an MR's author from approving it, so a repo whose MRs only the owner can approve
+    must not be written under the owner's own credential. Read back BEFORE the create, because
+    afterwards the only remedy is to close the MR and open it again.
+
+    An unreadable identity on such a repo is a fault too: the author cannot be proved right, and
+    the cost of refusing is one retry against an MR nobody can approve.
+    """
+    if not authenticated.strip():
+        return IdentityFault(
+            summary=(
+                f"could not read back which identity would author MRs on {remote}, which is declared "
+                f"to be authored under a non-owner credential — refusing rather than opening an MR "
+                f"that may turn out to be unapprovable"
+            ),
+            remedy=(
+                "check the scoped forge credential is readable from this venue "
+                "(`t3 doctor check` reports the same fault), then retry"
+            ),
+        )
+    normalized = " ".join(authenticated.split()).casefold()
+    if normalized not in {" ".join(entry.split()).casefold() for entry in approvers if entry.strip()}:
+        return None
+    return IdentityFault(
+        summary=(
+            f"{remote} would be authored by {authenticated!r}, who is also this deployment's approver "
+            f"— a forge refuses an approval from an MR's own author, so the MR would be unapprovable"
+        ),
+        remedy=(
+            "provision the repo's declared non-owner forge credential in this venue's secret store, "
+            "or drop the identity from the approver allowlist so somebody else can approve"
+        ),
+    )
+
+
+def unapprovable_open_mr_fault(
+    *, remote: str, authors_by_ref: Mapping[str, str], approvers: Iterable[str]
+) -> IdentityFault | None:
+    """The fault when *remote* already carries OPEN MRs authored by an approver identity.
+
+    :func:`unapprovable_author_fault` refuses such an MR before it exists; this is the
+    after-the-fact half, for the ones opened before that refusal existed or through a surface it
+    cannot reach (the web UI). They sit open looking healthy and answer an approval attempt with
+    401 — a status indistinguishable from a dead credential — so they are worth naming here
+    rather than at the moment somebody needs the merge.
+
+    Scoped to remotes that DECLARE a non-owner author: on an ordinary repo the owner authors his
+    own MRs and approves nothing, so a check over those would be permanently red.
+    """
+    eligible = {" ".join(entry.split()).casefold() for entry in approvers if entry.strip()}
+    unapprovable = sorted(
+        ref for ref, author in authors_by_ref.items() if " ".join(author.split()).casefold() in eligible
+    )
+    if not unapprovable:
+        return None
+    return IdentityFault(
+        summary=(
+            f"{remote} has {len(unapprovable)} OPEN merge request(s) authored by this deployment's own "
+            f"approver, who a forge bars from approving them — they cannot be merged as they stand: "
+            f"{', '.join(unapprovable)}"
+        ),
+        remedy=(
+            "close each one and re-open it through `t3 <overlay> pr create <ticket-id>` (or "
+            "`t3 <overlay> pr ensure-pr --repo <abs-path> --branch <branch>`), which writes under the "
+            "repo's declared non-owner credential"
         ),
     )
 

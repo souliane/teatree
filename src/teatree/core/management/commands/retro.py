@@ -1,6 +1,16 @@
-"""``t3 <overlay> retro review-findings`` — classify A/B/C and file class-C gates.
+"""``t3 <overlay> retro`` — the deterministic scaffolding behind the retro skill.
 
-The deterministic scaffold behind the retro skill's enforcement-retrospective
+Three lanes, each turning a retrospective finding into a durable mechanism rather
+than more prose: ``review-findings`` (classify a PR's findings A/B/C and file
+class-C enforcement issues), ``gate-failures`` (extract, classify and escalate a
+session's gate BLOCKs), and ``finding`` (record one confirmed lesson in the
+consolidation ledger and drive it onto the standing umbrella as a scheduled coding
+fix). ``finding`` is what retro persists a lesson WITH — retro writes no memory
+file, so a lesson lands as work that merges and then retires itself. The umbrella
+write is the default-OFF ``memory_promote`` mechanism, so with that toggle off the
+finding is recorded and its promotion deferred onto the drain queue Pass 2 reads.
+
+``review-findings`` is the enforcement-retrospective scaffold
 (``skills/retro/SKILL.md`` § "Recurrence → Escalation", #1573). It fetches a
 PR's review comments through the existing
 :class:`~teatree.core.backend_protocols.CodeHostBackend`, fingerprints each finding
@@ -49,6 +59,9 @@ from teatree.eval.gate_failures import (
 )
 from teatree.eval.session_transcript import parse_session_jsonl
 from teatree.eval.transcript_resolver import resolve_transcript
+from teatree.loops.dream.destination import points_at_core_fix
+from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL
+from teatree.loops.dream.retro_finding import promote_finding, record_finding
 from teatree.types import RawAPIDict
 from teatree.url_classify import repo_and_iid
 
@@ -211,6 +224,68 @@ class Command(TyperCommand):
             }
             for item in filed
         ]
+
+    @command(name="finding")
+    def finding(
+        self,
+        *,
+        rule: Annotated[str, typer.Option(help="The rule this session's lesson produced.")] = "",
+        citation: Annotated[str, typer.Option(help="The cited mistake from this session that grounds the rule.")] = "",
+        destination: Annotated[
+            str, typer.Option(help="The durable home the rule belongs in, e.g. skills/ship/SKILL.md.")
+        ] = "",
+        dry_run: Annotated[bool, typer.Option(help="Report what would be promoted; write nothing.")] = False,
+    ) -> str:
+        """Record one retro finding in the ledger and drive it to a scheduled fix.
+
+        This is what retro persists a lesson WITH: the finding becomes a VERIFIED
+        core-gap ledger row and rides the standing umbrella as a deduped checkbox
+        plus a coding task — the same drain dreaming Pass 2 uses, so the prose
+        retires itself once that fix merges. With ``memory_promote`` off the row is
+        still recorded and the promotion reported ``deferred``, reaching no umbrella.
+        Emits the result as JSON; a refusal prints its payload and raises
+        ``SystemExit`` (``typer.Exit`` exits 0 under ``call_command``, so a real
+        failure would report green).
+        """
+        result = self._run_finding(rule=rule, citation=citation, destination=destination, dry_run=dry_run)
+        code = refusal_exit_code(result)
+        if code and self._called_from_command_line:
+            self.stdout.write(json.dumps(result))
+            raise SystemExit(code)
+        return json.dumps(result)
+
+    def _run_finding(self, *, rule: str, citation: str, destination: str, dry_run: bool) -> RawAPIDict:
+        missing = [
+            name
+            for name, value in (("rule", rule), ("citation", citation), ("destination", destination))
+            if not value.strip()
+        ]
+        if missing:
+            return {"error": f"retro finding requires: {', '.join(missing)}"}
+        if not points_at_core_fix(destination):
+            return {
+                "error": "retro finding needs a teatree fix path as --destination "
+                f"(skills/, src/teatree, scripts/, BLUEPRINT.md), not {destination!r}"
+            }
+
+        if not dry_run:
+            record_finding(rule=rule, citation=citation, destination=destination)
+        outcome = promote_finding(
+            self._resolve_host(UMBRELLA_ISSUE_URL), rule=rule, umbrella_url=UMBRELLA_ISSUE_URL, dry_run=dry_run
+        )
+        self.stdout.write(
+            f"  {outcome.gap_key[:12]}: checkbox={outcome.checkbox_added} scheduled={outcome.scheduled}"
+            f" withheld={outcome.withheld} deferred={outcome.deferred} — {outcome.reason}"
+        )
+        return {
+            "cluster_key": outcome.gap_key,
+            "umbrella_url": UMBRELLA_ISSUE_URL,
+            "checkbox_added": outcome.checkbox_added,
+            "scheduled": outcome.scheduled,
+            "withheld": outcome.withheld,
+            "deferred": outcome.deferred,
+            "reason": outcome.reason,
+        }
 
     def _run(self, pr_url: str, *, classification: str, repo: str, label: str) -> RawAPIDict:
         ref = repo_and_iid(pr_url)

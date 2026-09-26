@@ -290,7 +290,8 @@ def _dispatch_fix(
         proposal = fixer.propose(claimed)
     except Exception as exc:
         logger.exception("ci_eval_heal: fixer propose failed for %s", claimed.pr_ref)
-        return _halt_red(claimed, escalate=escalate, detail=f"autonomous fixer dispatch failed: {type(exc).__name__}")
+        detail = f"autonomous fixer dispatch failed: {type(exc).__name__}: {exc}"
+        return _halt_red(claimed, escalate=escalate, detail=detail)
     if not proposal.changed_paths:
         fixer.discard(proposal)
         return _halt_red(

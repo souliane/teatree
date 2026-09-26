@@ -100,6 +100,10 @@
           "name": "shell"
         },
         {
+          "help": "Seed the shipped loops, prompts, modes and schedules into the control DB",
+          "name": "seed-loops"
+        },
+        {
           "help": "Restore the worktree database from the latest CI dump",
           "name": "restore-ci"
         },
@@ -512,7 +516,7 @@
           "name": "show"
         },
         {
-          "help": "Activate *name* as the L3 manual override (default: until the next scheduled boundary)",
+          "help": "Activate *name* as the manual override \u2014 it holds until someone clears it",
           "name": "use"
         },
         {
@@ -520,11 +524,11 @@
           "name": "auto"
         },
         {
-          "help": "Create a new preset from ``--set`` entries and an optional overlay scope",
+          "help": "Create a new preset from its ``--set`` entries",
           "name": "create"
         },
         {
-          "help": "Edit a preset's entries / description / scope in place",
+          "help": "Edit a preset's entries and description in place",
           "name": "edit"
         },
         {
@@ -538,7 +542,7 @@
       ]
     },
     {
-      "help": "List/show/set-active/clear-active loop schedules (#3159).",
+      "help": "Read and edit loop schedules and their slots (#3159).",
       "name": "loop_schedule",
       "subcommands": [
         {
@@ -560,6 +564,14 @@
         {
           "help": "Set *name*'s slot timezone \u2014 the lever that makes its wall-clock slots fire locally",
           "name": "set-timezone"
+        },
+        {
+          "help": "Create a schedule slot, or update the slot named by ``--slot-id``",
+          "name": "set-slot"
+        },
+        {
+          "help": "Delete one slot owned by a schedule",
+          "name": "delete-slot"
         },
         {
           "help": "Clear the active schedule so no L2 layer applies (presets only via override)",
@@ -598,7 +610,7 @@
           "name": "enable"
         },
         {
-          "help": "Set the emergency FORCED plane for *name* \u2014 on/off beats a preset, clear returns to neutral",
+          "help": "Set the MANUAL override for *name* \u2014 on/off beats the preset, clear hands it back",
           "name": "override"
         },
         {
@@ -656,8 +668,12 @@
       "name": "notify",
       "subcommands": [
         {
-          "help": "Send a bot\u2192user Slack DM (exit 0 on delivery, 1 otherwise)",
+          "help": "Raise a STATUS SIGNAL for the owner (exit 0 on delivery, 1 otherwise)",
           "name": "send"
+        },
+        {
+          "help": "DM the owner something that was ASKED FOR (exit 0 on delivery, 1 otherwise)",
+          "name": "dm"
         },
         {
           "help": "Read the status signals the classifier kept off the DM channel (#4524)",
@@ -792,6 +808,11 @@
       "subcommands": []
     },
     {
+      "help": "Persist declared Notion pass-key routes without replacing database overrides.",
+      "name": "provision_declared_notion_routing",
+      "subcommands": []
+    },
+    {
       "help": "``t3 teatree questions`` group root.",
       "name": "questions",
       "subcommands": [
@@ -889,6 +910,10 @@
           "name": "prune"
         },
         {
+          "help": "Reclaim dormant rebuildable build artifacts from the checkout pool (dry-run unless --apply)",
+          "name": "artifacts"
+        },
+        {
           "help": "Reclaim stale agent scratch under the temp root (dry-run unless --apply)",
           "name": "scratch"
         }
@@ -898,6 +923,10 @@
       "help": "``t3 <overlay> retro`` group root.",
       "name": "retro",
       "subcommands": [
+        {
+          "help": "Record one retro finding in the ledger and drive it to a scheduled fix",
+          "name": "finding"
+        },
         {
           "help": "Classify a PR's review findings A/B/C and file class-C enforcement issues",
           "name": "review-findings"
@@ -986,6 +1015,10 @@
           "name": "tests"
         },
         {
+          "help": "Run one targeted E2E spec through the overlay's configured runner",
+          "name": "e2e"
+        },
+        {
           "help": "Run the overlay's lint pipeline on this worktree",
           "name": "lint"
         },
@@ -1028,6 +1061,11 @@
       ]
     },
     {
+      "help": "Render the same settings comparison as the dashboard, including peers and saved snapshots.",
+      "name": "settings_compare",
+      "subcommands": []
+    },
+    {
       "help": "Audit the shipped loop/preset/schedule seed set, and delete from it with a typed confirm (#3842).",
       "name": "shipped_seed",
       "subcommands": [
@@ -1055,7 +1093,7 @@
       "subcommands": []
     },
     {
-      "help": "Propose a snapshot of the live global settings onto config/defaults.toml (owner-approved).",
+      "help": "Report which live global settings differ from the shipped defaults (writes nothing).",
       "name": "snapshot_settings_defaults",
       "subcommands": []
     },
@@ -1167,7 +1205,7 @@
           "name": "plan"
         },
         {
-          "help": "Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, mark_review_no_action, reconcile_reviewed, ignore, unignore",
+          "help": "Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore",
           "name": "transition"
         },
         {
@@ -1191,8 +1229,8 @@
           "name": "reconcile-clears"
         },
         {
-          "help": "Record the spec-coverage manifest the delivery DoD gate reads (#2232)",
-          "name": "record-spec-coverage"
+          "help": "Point *repo*'s future PR at *branch* (its stack parent) instead of the repo default",
+          "name": "set-target-branch"
         },
         {
           "help": "Reconcile the ticket board against forge truth and advance what has landed",
@@ -1407,6 +1445,14 @@
         {
           "help": "Point every branch tracking someone else's ref back at its own, or untrack it (#4225)",
           "name": "repair-branch-upstreams"
+        },
+        {
+          "help": "Which prek patches hold work that is nowhere else, and put one back (#144)",
+          "name": "prek-patches"
+        },
+        {
+          "help": "Move a ticket's divergent worktrees into its canonical workspace dir",
+          "name": "repair-split"
         }
       ]
     },

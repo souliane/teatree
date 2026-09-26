@@ -489,6 +489,7 @@ class ReviewerPrsScanner:
                         "head_sha": head,
                         "previous_state": previous.state,
                         "current_state": current.value,
+                        "invalidates_discharge": True,
                         "raw": pr,
                     },
                 ),
@@ -540,12 +541,17 @@ def mark_reviewed(*, url: str, sha: str, state: str = "") -> None:
 
     Called from ``Ticket.mark_reviewed_externally`` when a reviewer-role
     ticket's reviewing task completes — the model layer doesn't need to
-    instantiate a backend just to record one observation. ``state`` defaults
-    to ``"approved"`` when not supplied so the next scan can detect a
-    dismissal of the recorded approval.
+    instantiate a backend just to record one observation.
+
+    ``state`` is a FORGE observation and nothing else, and is REQUIRED: defaulting it
+    to APPROVED let the next scan read an approval nobody made back as one it could
+    then see dismissed, on every tick, forever. A local disposition belongs in
+    ``extra["discharged_sha"]``, written by the model's own discharge transitions.
     """
     ticket_model = _ticket_model()
     if ticket_model is None:
         return
-    resolved_state = state or ReviewState.APPROVED.value
-    _persist_entry(ticket_model, url, CacheEntry(sha=sha, state=resolved_state))
+    if not state:
+        msg = "mark_reviewed records an OBSERVED forge state; it cannot default to one"
+        raise ValueError(msg)
+    _persist_entry(ticket_model, url, CacheEntry(sha=sha, state=state))

@@ -23,18 +23,17 @@ import httpx
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.config import OnBehalfPostMode
-from teatree.core.models import ConfigSetting, OutboundClaim
-from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
+from teatree.core.models import OutboundClaim
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
 def _gate_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The on-behalf gate is OFF when the DB-home ``on_behalf_post_mode`` is
+    # The on-behalf gate is OFF when the active posture is
     # IMMEDIATE (#1775), resolved from the ``ConfigSetting`` store.
-    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
+    seed_permitting_posture()
 
 
 def _http_404() -> httpx.HTTPStatusError:
@@ -241,7 +240,7 @@ class TestVerifyFailRollsBackOnBehalfConsume:
     ) -> None:
         from teatree.core.models import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415
 
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
+        seed_forbidding_posture()
         approval = OnBehalfApproval.record(
             target=f"{OWNED_REPO}!11", action="publish_draft_notes", approver_id="souliane"
         )

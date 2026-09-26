@@ -12,7 +12,7 @@ naturally (a reap, a teardown) and re-fires ``start``.
 Statuses: ``QUEUED`` (just enqueued, due immediately) → ``RETRYING`` (a
 backoff attempt is scheduled) → ``READY`` (a slot freed and ``start`` was
 re-fired) → ``DONE`` (terminal success bookkeeping) or ``DEAD`` (gave up
-after ``local_stack_queue_max_attempts``). A partial ``UniqueConstraint``
+after ``MAX_QUEUE_ATTEMPTS`` retries). A partial ``UniqueConstraint``
 over ``(worktree)`` while the status is QUEUED/RETRYING makes enqueue
 idempotent — re-firing ``start`` against an already-queued worktree returns
 the existing row rather than stacking duplicates.
@@ -26,6 +26,10 @@ from django.utils import timezone
 
 from teatree.core.modelkit.fibonacci import fibonacci_minutes
 from teatree.core.models.worktree import Worktree
+
+#: How many Fibonacci-minute retries a queued acquisition gets before it is marked DEAD.
+#: Equals the length of the backoff ladder, so the sequence is walked to its end.
+MAX_QUEUE_ATTEMPTS = 13
 
 
 class LocalStackQueueItemQuerySet(models.QuerySet["LocalStackQueueItem"]):
@@ -127,7 +131,7 @@ class LocalStackQueueItem(models.Model):
         *,
         error: str = "",
         now: datetime | None = None,
-        max_attempts: int = 13,
+        max_attempts: int = MAX_QUEUE_ATTEMPTS,
     ) -> None:
         """Advance to RETRYING with a Fibonacci-minute backoff, or DEAD if exhausted.
 

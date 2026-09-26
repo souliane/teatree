@@ -31,6 +31,10 @@ reviewer dispatch (per ``feedback_review_request_already_done_green_check``).
 ``pending`` — at least one MR is still open. The scanner posts ``:eyes:`` and
 dispatches a reviewer task scoped to the open subset.
 
+``taken`` — somebody else already holds the review (a colleague's reaction or thread
+reply on the broadcast, a non-self note or any approval on the MR, #159). Pinned through
+:meth:`mark_manually_classified` so the row is never re-probed nor dispatched.
+
 ``mixed`` is folded into ``pending`` — the only behavioural distinction the
 broadcast scanner needs is "is there work left for the reviewer?" Once the
 last open MR closes, a later scan flips the row to ``all_merged`` and
@@ -87,6 +91,7 @@ class ScannedBroadcast(models.Model):
     class Classification(models.TextChoices):
         ALL_MERGED = "all_merged"
         PENDING = "pending"
+        TAKEN = "taken"
 
     overlay = models.CharField(max_length=64, blank=True, default="")
     channel = models.CharField(max_length=64)

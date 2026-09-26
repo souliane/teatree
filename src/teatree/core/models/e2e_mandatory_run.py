@@ -19,6 +19,7 @@ rather than appending a duplicate, so a red→green (or unposted→posted) rerun
 the same spec at the same tree leaves a single, current artifact (idempotent).
 """
 
+from dataclasses import dataclass
 from typing import ClassVar
 
 from django.db import models, transaction
@@ -27,6 +28,15 @@ from django.utils import timezone
 from teatree.core.models.ticket import Ticket
 
 GREEN_RESULT = "green"
+
+
+@dataclass(frozen=True, slots=True)
+class E2eRunEvidence:
+    """The mutable facts recorded for one spec execution."""
+
+    result: str
+    posted_url: str = ""
+    target: str = "unknown"
 
 
 def _canonical_sha(head_sha: str) -> str:
@@ -40,6 +50,13 @@ class E2eMandatoryRun(models.Model):
         GREEN = "green", "Green"
         RED = "red", "Red"
 
+    class Target(models.TextChoices):
+        UNKNOWN = "unknown", "Unknown"
+        DEV = "dev", "Dev"
+        QA = "qa", "QA"
+        LOCAL = "local", "Local"
+        STACK = "stack", "Stack"
+
     ticket = models.ForeignKey(
         Ticket,
         on_delete=models.CASCADE,
@@ -48,6 +65,7 @@ class E2eMandatoryRun(models.Model):
     head_sha = models.CharField(max_length=64)
     spec = models.CharField(max_length=512)
     result = models.CharField(max_length=16, choices=Result.choices)
+    target = models.CharField(max_length=16, choices=Target.choices, default=Target.UNKNOWN)
     # Where this run's evidence lives — the ticket's ``test-plans/<repo>-<ticket>.md``.
     # Empty means recorded-but-unpublished: the run does NOT satisfy the gate
     # (#1967 — published proof is required, a DB record is not enough).
@@ -65,11 +83,37 @@ class E2eMandatoryRun(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"e2e-run<ticket={self.ticket_id}@{self.head_sha[:8]} {self.spec}={self.result}>"  # ty: ignore[unresolved-attribute]
+        return (
+            f"e2e-run<ticket={self.ticket_id}@{self.head_sha[:8]} target={self.target} "  # ty: ignore[unresolved-attribute]
+            f"{self.spec}={self.result}>"
+        )
 
     @classmethod
     def record(
-        cls, *, ticket: Ticket, head_sha: str, spec: str, result: str, posted_url: str = ""
+        cls,
+        *,
+        ticket: Ticket,
+        head_sha: str,
+        spec: str,
+        result: str,
+        posted_url: str = "",
+    ) -> "E2eMandatoryRun":
+        """Record evidence from a caller that cannot name the execution target."""
+        return cls.record_evidence(
+            ticket=ticket,
+            head_sha=head_sha,
+            spec=spec,
+            evidence=E2eRunEvidence(result=result, posted_url=posted_url),
+        )
+
+    @classmethod
+    def record_evidence(
+        cls,
+        *,
+        ticket: Ticket,
+        head_sha: str,
+        spec: str,
+        evidence: E2eRunEvidence,
     ) -> "E2eMandatoryRun":
         """Record (or update) the E2E run for ``(ticket, head_sha, spec)``.
 
@@ -80,13 +124,22 @@ class E2eMandatoryRun(models.Model):
         ``posted_url`` is recorded but does NOT satisfy the gate.
         """
         clean_sha = _canonical_sha(head_sha)
-        normalized = result.strip().lower()
+        normalized = evidence.result.strip().lower()
+        normalized_target = evidence.target.strip().lower() or cls.Target.UNKNOWN
+        if normalized_target not in cls.Target.values:
+            msg = f"Unknown E2E target {evidence.target!r}; expected one of {', '.join(cls.Target.values)}."
+            raise ValueError(msg)
         with transaction.atomic():
             row, _created = cls.objects.update_or_create(
                 ticket=ticket,
                 head_sha=clean_sha,
                 spec=spec.strip(),
-                defaults={"result": normalized, "posted_url": posted_url.strip(), "recorded_at": timezone.now()},
+                defaults={
+                    "result": normalized,
+                    "target": normalized_target,
+                    "posted_url": evidence.posted_url.strip(),
+                    "recorded_at": timezone.now(),
+                },
             )
             return row
 

@@ -12,6 +12,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.models import Task, Ticket, Worktree
+from tests.factories import record_test_plan
 
 
 def _start_with_provision(test_case: TestCase, ticket: Ticket) -> None:
@@ -63,9 +64,7 @@ def _advance_ticket_to_tested(ticket: Ticket, test_case: TestCase | None = None)
 
 def _advance_work_started_to_plan_recorded(ticket: Ticket) -> None:
     """Record a PlanArtifact and drive WORK_STARTED → PLAN_RECORDED so code() can run."""
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
-    PlanArtifact.record(ticket=ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
+    record_test_plan(ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
     ticket.plan()
     ticket.save()
 

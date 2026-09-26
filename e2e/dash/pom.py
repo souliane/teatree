@@ -62,8 +62,8 @@ class BoardPage:
     page: Page
     base_url: str
 
-    def open(self) -> None:
-        self.page.goto(f"{self.base_url}/dash/board/")
+    def open(self) -> Response | None:
+        return self.page.goto(f"{self.base_url}/dash/board/")
 
     @property
     def rail_nodes(self) -> Locator:
@@ -88,6 +88,9 @@ class BoardPage:
 
     def card_in_column(self, state: str, ticket_id: int) -> Locator:
         return self.column(state).locator(f'.card[data-ticket="{ticket_id}"]')
+
+    def failure_chip_on(self, ticket_id: int) -> Locator:
+        return self.card_by_id(ticket_id).locator(".chip.failure")
 
     def enqueue_buttons_on(self, ticket_id: int) -> Locator:
         return self.card_by_id(ticket_id).locator('form[action*="/enqueue/"] button')
@@ -123,6 +126,10 @@ class DrawerPanel:
     @property
     def mermaid_svg(self) -> Locator:
         return self.page.locator("#drawer .mermaid svg")
+
+    @property
+    def attempt_errors(self) -> Locator:
+        return self.page.locator("#drawer .attempt-error")
 
     @property
     def history_rows(self) -> Locator:

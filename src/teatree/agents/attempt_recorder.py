@@ -16,7 +16,8 @@ the two dispatch backends.
 
 import dataclasses
 import json
-from typing import TypedDict, cast
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from django.utils import timezone
 
@@ -26,38 +27,19 @@ from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.agents.landing_verification import landing_verification_error
 from teatree.agents.outage_classifier import outage_signature
+from teatree.agents.plan_artifact_recorder import record_returned_plan
 from teatree.agents.reactive_envelope_recorders import record_reactive_envelopes
-from teatree.agents.result_schema import (
-    RESULT_JSON_SCHEMA,
-    AgentResultBlob,
-    JSONSchema,
-    ReviewVerdictEnvelope,
-    check_evidence,
-)
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, JSONSchema, check_evidence
+from teatree.agents.review_envelope_recorder import record_returned_review_envelope
 from teatree.core.answering.work_intent import missing_work_item_error
 from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.modelkit.phases import normalize_phase
-from teatree.core.models import (
-    ChecksContradictionError,
-    DeferredQuestion,
-    Finding,
-    ReviewVerdict,
-    ReviewVerdictError,
-    Task,
-    TaskAttempt,
-)
-from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
-from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
-from teatree.core.models.reviewer_identity import (
-    assigned_reviewer_identity,
-    is_independent_reviewer_identity,
-    is_non_reviewer_role,
-)
-from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
-from teatree.core.review.head_workflow_runs import live_checks_at
-from teatree.core.review.verdict_head_binding import resolve_verdict_head
-from teatree.utils.pr_ref import PrRef
+from teatree.core.models import Task, TaskAttempt
+
+if TYPE_CHECKING:
+    from teatree.agents.pydantic_ai_turn import ToolCallEntry
+    from teatree.llm.usage_tee import RequestRecord
 
 
 @dataclasses.dataclass(frozen=True)
@@ -91,12 +73,25 @@ class AttemptUsage:
     # that has no dispatch context (e.g. an in-session record-attempt).
     reasoning_effort: str = ""
     skills_loaded: list[str] = dataclasses.field(default_factory=list)
+    skill_assurance: Mapping[str, object] | None = None
+    selected_harness: str = ""
+    selected_provider: str = ""
+    selected_model: str = ""
+    route_candidate_index: int | None = None
+    route_source_skill: str = ""
+    fallback_reason: str = ""
+    fallback_from_attempt_id: int | None = None
     # Tool calls the run emitted. ``None`` means UNMEASURED — the in-session
     # ``record-attempt`` path hands over a sub-agent's envelope and never saw its
     # tool stream — and is deliberately distinct from a measured ``0``, which is
     # the positive evidence that the run could not act
     # (:mod:`teatree.agents.action_verification`).
     tool_calls: int | None = None
+    # The per-request usage records the run's transport measured (``teatree.llm.usage_tee``);
+    # empty on a lane that measures none.
+    usage_per_request: "list[RequestRecord]" = dataclasses.field(default_factory=list)
+    # The run's tool-call trajectory (``pydantic_ai_session._StreamedToolCapture``); empty when unmeasured.
+    trajectory: "list[ToolCallEntry]" = dataclasses.field(default_factory=list)
 
 
 class ResultEnvelopeError(ValueError):
@@ -150,7 +145,8 @@ def record_result_envelope(
 
     Validation order: schema-key check → OUTAGE check (#1764) → ACTION check
     (an acting phase must have touched a tool) → per-phase evidence gate (#1284) →
-    LANDING check (coding/debugging must have committed) —
+    LANDING check (coding/debugging must have committed) → the PLAN record (a planning
+    envelope whose plan is refused fails the attempt, never the recorder) —
     a failure on any records a FAILED attempt and fails the task (``exit_code=0``
     so it reads as a clean refusal, not a crash). The action check runs BEFORE the
     evidence gate so a toolless run never reaches the coding salvage below: on a
@@ -192,14 +188,17 @@ def record_result_envelope(
     if server_side_error:
         return _record_failure(task, error=server_side_error, result=result, usage=usage)
 
-    _maybe_record_plan_artifact(task, result, phase=phase)
+    plan_refusal = record_returned_plan(task, result, phase=phase)
+    if plan_refusal:
+        return _record_failure(task, error=plan_refusal, result=result, usage=usage)
+
     record_reactive_envelopes(task, result, phase=phase)
 
     attempt = TaskAttempt.objects.create(
         task=task,
         ended_at=timezone.now(),
         exit_code=0,
-        result=result,
+        result=with_transport_records(result, usage),
         **usage_fields(usage),
     )
     task.complete(result_artifact_path="")
@@ -222,6 +221,13 @@ class SpendColumns(TypedDict, total=False):
     usage_unknown: bool
     reasoning_effort: str
     skills_loaded: list[str]
+    selected_harness: str
+    selected_provider: str
+    selected_model: str
+    route_candidate_index: int | None
+    route_source_skill: str
+    fallback_reason: str
+    fallback_from_attempt_id: int | None
 
 
 def usage_fields(usage: AttemptUsage | None) -> SpendColumns:
@@ -252,7 +258,30 @@ def usage_fields(usage: AttemptUsage | None) -> SpendColumns:
         usage_unknown=usage.usage_unknown,
         reasoning_effort=usage.reasoning_effort,
         skills_loaded=list(usage.skills_loaded),
+        selected_harness=usage.selected_harness,
+        selected_provider=usage.selected_provider,
+        selected_model=usage.selected_model,
+        route_candidate_index=usage.route_candidate_index,
+        route_source_skill=usage.route_source_skill,
+        fallback_reason=usage.fallback_reason,
+        fallback_from_attempt_id=usage.fallback_from_attempt_id,
     )
+
+
+def with_transport_records(result: AgentResultBlob | None, usage: AttemptUsage | None) -> AgentResultBlob:
+    """*result* plus the per-request usage and tool trajectory the run measured — beside the envelope, never in it."""
+    blob: AgentResultBlob = dict(result or {})
+    # Every recorder path (success, salvage, lease loss, pre-run refusal) lands
+    # through here. Never persist agent-supplied application references; the
+    # bounded assurance receipt stores only a declaration marker.
+    blob.pop("skill_application", None)
+    if usage is not None and usage.usage_per_request:
+        blob["usage_per_request"] = list(usage.usage_per_request)
+    if usage is not None and usage.trajectory:
+        blob["tool_calls"] = list(usage.trajectory)
+    if usage is not None and usage.skill_assurance is not None:
+        blob["skill_assurance"] = dict(usage.skill_assurance)
+    return blob
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -320,7 +349,7 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
     error string when the returned artifact is malformed or maker-graded — the first
     such error stops the chain so the caller fails the task and the block surfaces.
     """
-    review_error = _maybe_record_review_verdict(task, result, phase=phase)
+    review_error = record_returned_review_envelope(task, result, phase=phase)
     if review_error:
         return review_error
     critic_error = record_returned_critic_verdict(task, result)
@@ -328,271 +357,6 @@ def _record_returned_envelopes(task: Task, result: AgentResultBlob, *, phase: st
         return critic_error
     fix_error = record_returned_fix_record(task, result)
     return fix_error or record_returned_directive_interpretation(task, result)
-
-
-#: Reviewing phases whose returned ``review_verdict`` the orchestrator records
-#: server-side (corr-11) — the shell-free envelope seam. Both members now ALSO
-#: carry the shell (``phase_tools.VERDICT_REVIEW_PHASES``). ``reviewing`` still
-#: hands the verdict back through this seam: its headless brief
-#: (``phase_blocks._review_verdict_return_lines``) returns the envelope rather than
-#: shelling out. ``e2e_reviewing``'s live recording path is instead the shell
-#: ``t3 <overlay> review record`` from its ``/t3:e2e-review`` skill; its envelope
-#: membership here is currently dormant (nothing in production returns an
-#: ``e2e_reviewing`` verdict), so exactly one recording path fires per run and no
-#: double-record occurs. The
-#: ``codex_*`` variants are deliberately absent: no server-side envelope seam,
-#: shell-only.
-_REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
-
-
-def _recorded_reviewer_identity(target: ReviewTarget, envelope: "ReviewVerdictEnvelope") -> str:
-    """Which identity the verdict lands under — the returned one, or the dispatch's (#2663).
-
-    A returned identity the gate cannot admit is REPLACED, not refused: the dispatch already
-    named one, so discarding a finished review over the agent's spelling buys nothing (22
-    attempts and $104 in one billing cycle, 17 of them the single word ``claude:review``).
-    An admitted identity is kept verbatim, so two genuine reviewers at one head stay two rows
-    and a second reviewer cannot overwrite the first one's hold. A maker/review-authoring role
-    is kept too — that is the agent declaring itself the author, which no dispatch may overrule,
-    and ``ReviewVerdict.record`` still refuses it.
-    """
-    returned = str(envelope.get("reviewer_identity") or "").strip()
-    if returned and (is_independent_reviewer_identity(returned) or is_non_reviewer_role(returned)):
-        return returned
-    return assigned_reviewer_identity(target.pr_id)
-
-
-def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: str) -> str:
-    """Record a reviewing task's returned ``review_verdict`` server-side (corr-11).
-
-    The orchestrator half of the headless review lane: a Bash-denied reviewer
-    RETURNS a typed ``review_verdict``; this records the ``ReviewVerdict`` (which
-    resolves the per-MR :class:`MRReviewLock`) — maker≠checker holds because THIS
-    actor is not the author. Returns an error string when the verdict is malformed, the
-    reviewer identity is a maker/loop role, the reviewer's self-asserted head diverges
-    from the dispatch head, or the recorded row is unreachable by read-back (the caller
-    fails the task so the block surfaces), else ``""``.
-
-    A non-reviewing phase, or a result without a ``review_verdict``, is a no-op. So is a
-    task answerable for NO pull request — an author-role reviewing task keyed by an issue
-    URL is a self-review with no merge guard behind it, and refusing it would strand the
-    author lane rather than protect anything. A task that IS answerable for one and cannot
-    persist there fails loudly instead (#4308).
-    """
-    envelope = _returned_review_verdict(result, phase=phase or task.phase)
-    if envelope is None:
-        return ""
-    target = review_target_for_task(task)
-    if target is None:
-        return ""
-    if not target.head_sha:
-        return (
-            f"review verdict cannot be persisted: this review is answerable for "
-            f"{target.slug}#{target.pr_id} but no pull request head is recorded for it, so the "
-            f"verdict would bind to no tree and no merge guard could ever read it"
-        )
-
-    binding = resolve_verdict_head(
-        asserted=str(envelope.get("reviewed_sha") or "").strip(),
-        dispatch_head=target.head_sha,
-        pr=PrRef(slug=target.slug, pr_id=target.pr_id, host_kind=target.host_kind),
-    )
-    if binding.error:
-        if binding.superseded:
-            _supersede_moved_head(target)
-        return binding.error
-    dispatch_head = target.head_sha
-    target = dataclasses.replace(target, head_sha=binding.head)
-    raw_findings = envelope.get("findings", [])
-    findings = (
-        [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
-        if isinstance(raw_findings, list)
-        else []
-    )
-    try:
-        ReviewVerdict.record(
-            pr_id=target.pr_id,
-            slug=target.slug,
-            reviewed_sha=target.head_sha,
-            verdict=str(envelope.get("verdict", "")),
-            reviewer_identity=_recorded_reviewer_identity(target, envelope),
-            findings=findings,
-            gh_verify_result=str(envelope.get("gh_verify_result") or "green"),
-            blast_class=str(envelope.get("blast_class") or "logic"),
-            ticket=task.ticket,
-            lock_holder=target.lock_holder,
-            changed_files=changed_file_set_for_findings(findings, slug=target.slug, pr_id=target.pr_id),
-            merge_result_retake=bool(envelope.get("merge_result_retake")),
-            live_checks=live_checks_at,
-        )
-    except ReviewVerdictError as exc:
-        # The one refusal class a re-dispatch can never satisfy at this head is latched;
-        # every other one names something the next reviewer could get right, so it keeps
-        # the ordinary retry. The discrimination is the EXCEPTION TYPE — the raise site
-        # itself — never the message text a reword would detach this from.
-        if isinstance(exc, ChecksContradictionError):
-            _latch_checks_contradiction(target, task=task, reason=str(exc))
-        return f"review verdict recording refused: {exc}"
-    _rebind_claim_to_recorded_head(task, target, dispatch_head=dispatch_head)
-    return _unpersisted_verdict_error(target)
-
-
-#: Prefix of the refusal question's dedupe marker, per head. Distinct from
-#: ``transient_requeue``'s ticket-agnostic ``repair-halt:`` marker on purpose: that one
-#: collapses every deterministic halt sharing a failure fingerprint into ONE question, so
-#: any other pull request contradicting its own checks would be silently folded into the
-#: first one's page. The head IS the subject here, and each one needs its own answer.
-_REFUSAL_MARKER_PREFIX = "review-refusal:"
-
-#: How much of the head the marker carries. ``dedupe_marker`` is a 64-char indexed
-#: column and the full 40-char SHA does not fit beside a slug, so the head is abbreviated
-#: rather than truncated off the end — an over-long slug must never cost the marker the
-#: one component that makes it per-head. Twelve hex chars is git's own long-abbreviation
-#: length, well past the collision floor for one repository.
-_REFUSAL_MARKER_HEAD_LEN = 12
-
-
-def _refusal_marker(target: ReviewTarget) -> str:
-    """The escalate-once key for a checks-contradiction refusal — one per reviewed head.
-
-    Bounded to the ``dedupe_marker`` column's own ``max_length`` read off the field, never
-    a hand-copied 64, and composed so the head survives the bound: the SLUG is what gives
-    way when there is not room for everything.
-    """
-    limit = DeferredQuestion._meta.get_field("dedupe_marker").max_length or 64  # noqa: SLF001 — Django's documented Model._meta API
-    tail = f"#{target.pr_id}@{target.head_sha.strip().lower()[:_REFUSAL_MARKER_HEAD_LEN]}"
-    room = max(limit - len(_REFUSAL_MARKER_PREFIX) - len(tail), 0)
-    return f"{_REFUSAL_MARKER_PREFIX}{target.slug.strip()[:room]}{tail}"
-
-
-def _latch_checks_contradiction(target: ReviewTarget, *, task: Task, reason: str) -> None:
-    """Name the cause when this head's LAST retry is spent, and page once (#4522, #4530).
-
-    The refusal is correct and stays. What this adds is a distinction the operator could
-    not otherwise make: a claim that stops at ``refused`` says the last reviewer
-    contradicted its own checks report, where one that stops saturated says only that three
-    attempts ran out — which is also what three crashed reviewers look like.
-
-    Two deliberate narrowings, both from #4530:
-
-    ONE claim, not both. ``target.armed_by`` is the table that armed THIS run; a refusal is
-    run-scoped, so it may not touch the sibling claim on the same head. Walking both let a
-    codex-path refusal latch a dispatch claim whose reviewer had not run and free the review
-    lock it held.
-
-    ONLY at the bound. ``mark_refused`` no-ops below :data:`MAX_DISPATCH_ATTEMPTS`, so every
-    ordinary retry survives — which matters because 6 of the 9 heads that hit this refusal
-    recovered at that same head. The page follows the latch rather than the refusal: below
-    the bound there is nothing terminal to report, and a run holding no claim at all has
-    nothing re-arming it, so neither is worth waking the owner for.
-
-    A push mints a new head, which has no claim and no marker, and re-arms review normally.
-    """
-    latched = target.armed_by.mark_refused(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
-    if not latched:
-        return
-    DeferredQuestion.record(
-        _refusal_question(target, reason=reason),
-        session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
-        dedupe_marker=_refusal_marker(target),
-    )
-
-
-def _refusal_question(target: ReviewTarget, *, reason: str) -> str:
-    """The owner-facing statement of a head that spent its last retry on a refused verdict."""
-    return (
-        f"[review-refusal {target.slug}#{target.pr_id}@{target.head_sha[:8]}] This head has used all "
-        f"{MAX_DISPATCH_ATTEMPTS} auto-review attempts, and the last one returned a merge_safe verdict "
-        f"over checks a LIVE workflow-run read at this head confirms are RED: {reason} "
-        f"Auto-review is done for this head — not because the tree is unreviewable, but because the "
-        f"retries are spent. A new push re-arms review by itself. Fix the red checks and push, land a "
-        f"human verdict, or close the PR?"
-    )
-
-
-def _returned_review_verdict(result: AgentResultBlob, *, phase: str) -> "ReviewVerdictEnvelope | None":
-    """The typed verdict *result* hands back on a verdict-recording phase, else ``None``."""
-    if normalize_phase(phase) not in _REVIEW_VERDICT_PHASES:
-        return None
-    raw = result.get("review_verdict")
-    return cast("ReviewVerdictEnvelope", raw) if isinstance(raw, dict) else None
-
-
-def _unpersisted_verdict_error(target: ReviewTarget) -> str:
-    """Refuse a recording the consumers' own lookup cannot find, or ``""`` (#4308).
-
-    The write reporting success is not the same fact as the row being readable under the
-    key the merge guard and the landed-work guard query, and only a read-back distinguishes
-    them. Without it a reviewing task completed exit 0 over a verdict that reached nothing —
-    indistinguishable from a review that ran and approved.
-    """
-    if verdict_at(target) is not None:
-        return ""
-    return (
-        f"review verdict recorded but not persisted: no verdict is readable for "
-        f"{target.slug}#{target.pr_id} at the reviewed head {target.head_sha[:8]} on read-back, so "
-        f"nothing downstream can see this judgement"
-    )
-
-
-def _supersede_moved_head(target: ReviewTarget) -> None:
-    """Retire the claim for a head the PR has advanced past, so review re-arms at the new one.
-
-    Scoped to the #68 dispatch ledger on purpose: it is the only per-head claim the PR sweep
-    re-arms, so superseding a codex marker would release a review lock nothing re-takes.
-    """
-    if target.armed_by is not AutoReviewDispatch:
-        return
-    AutoReviewDispatch.mark_superseded(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
-
-
-def _rebind_claim_to_recorded_head(task: Task, target: ReviewTarget, *, dispatch_head: str) -> None:
-    """Point whatever key the resolver reads at the head the verdict landed on; no-op when unmoved.
-
-    ``ReviewVerdict.record`` retires the claim keyed on the RECORDED head, which is not the
-    pinned one once the branch advanced — so without this the spent claim stays in flight and
-    the landed-work guard keeps looking up a tree nobody ended up reviewing.
-
-    Both resolver keys are stamped, because :func:`review_target_for_task` reads a different
-    one on each path and only the dispatch path carried a writer: on the 1454 of 2152
-    verdict-review tasks holding no dispatch row the verdict landed at the live head while
-    ``extra["reviewed_sha"]`` still named the pinned one, so the resolver re-read a tree the
-    row is not on and the system could not find its own verdict.
-    """
-    if target.head_sha == dispatch_head:
-        return
-    if target.armed_by is AutoReviewDispatch:
-        AutoReviewDispatch.mark_recorded_at(
-            slug=target.slug,
-            pr_id=target.pr_id,
-            head_sha=dispatch_head,
-            recorded_head_sha=target.head_sha,
-        )
-        return
-    task.ticket.merge_extra(set_keys={"reviewed_sha": target.head_sha})
-
-
-def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415 — deferred: ORM/app-registry
-
-    effective_phase = normalize_phase(phase or task.phase)
-    plan_text = result.get("plan_text")
-    if effective_phase != "planning" or not isinstance(plan_text, str) or not plan_text.strip():
-        return
-    recorded_by = (task.session.agent_id or "").strip() or "planning"
-    # SELFCATCH-3: the planner envelope carries the base SHA it planned against and
-    # the four-section adequacy manifest. Under require_plan_adequacy, record()
-    # refuses a thin plan missing them — a planner that produced a scope-only spec
-    # fails loud here rather than dispatching a coder against nothing.
-    base_sha = result.get("base_sha")
-    adequacy = result.get("adequacy")
-    PlanArtifact.record(
-        ticket=task.ticket,
-        plan_text=plan_text,
-        recorded_by=recorded_by,
-        base_sha=base_sha if isinstance(base_sha, str) else "",
-        adequacy=adequacy if isinstance(adequacy, dict) else None,
-    )
 
 
 def _record_failure(
@@ -607,7 +371,7 @@ def _record_failure(
         ended_at=timezone.now(),
         exit_code=0,
         error=error,
-        result=result or {},
+        result=with_transport_records(result, usage),
         **usage_fields(usage),
     )
     task.fail_claimed(reason=error)

@@ -12,26 +12,31 @@ same way :class:`FakeHarnessSession` proves it for the generic seam.
 """
 
 import asyncio
+import dataclasses
 import json
 import os
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 
+import httpx2
 import pytest
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock
 from django.test import TestCase
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart
-from pydantic_ai.models import ModelRequestParameters, StreamedResponse
+from pydantic_ai.models import ModelRequestParameters, StreamedResponse, override_allow_model_requests
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import FunctionToolset
 
 import teatree.agents.harness as harness_mod
+import teatree.agents.harness_dispatch as harness_dispatch_mod
 import teatree.agents.pydantic_ai_config as pyconfig_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents import harness_registry
@@ -42,12 +47,12 @@ from teatree.agents.harness import (
     PydanticAiHarness,
     PydanticAiHarnessSession,
     pydantic_ai_thread,
-    resolve_dispatch_provider,
     resolve_effort,
     resolve_harness,
 )
+from teatree.agents.harness_dispatch import resolve_dispatch_harness
 from teatree.agents.harness_options import HarnessOptions
-from teatree.agents.harness_registry import InvalidHarnessProviderError, register_harness
+from teatree.agents.harness_registry import HarnessSpec, InvalidHarnessProviderError, register_harness
 from teatree.agents.model_tiering import UnconfiguredOpenAICompatibleModelError
 from teatree.agents.pydantic_ai_config import (
     LANE_BULK,
@@ -58,13 +63,19 @@ from teatree.agents.pydantic_ai_config import (
     build_openai_compatible_provider,
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
+from teatree.agents.pydantic_ai_turn import SessionRun
 from teatree.agents.runner import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_agent
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, UsageWindowState
 from teatree.llm.credentials import CredentialError
 from teatree.llm.openai_compatible import OpenAICompatibleBackend
-from tests.factories import planned_ticket
+from teatree.mcp.agent_mailbox import MailboxClient
+from tests.factories import _FORTY_HEX, TEST_ADEQUACY, planned_ticket
+from tests.teatree_agents._router_fake import RESOLVED_MODEL, text_reply
 from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assistant_text, result_message
+
+if TYPE_CHECKING:
+    from claude_agent_sdk.types import McpStdioServerConfig
 
 
 def test_concrete_impls_satisfy_the_harness_protocols() -> None:
@@ -165,7 +176,12 @@ class TestResolveHarnessRehydratesPydanticAiThread(TestCase):
         self.ticket = planned_ticket()
         self.session = Session.objects.create(ticket=self.ticket)
         self.parked = Task.objects.create(ticket=self.ticket, session=self.session)
-        self.resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=self.parked)
+        self.resumed = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            parent_task=self.parked,
+            session_continuation=Task.SessionContinuation.PARENT,
+        )
 
     def test_no_task_opens_an_empty_conversation(self) -> None:
         harness = resolve_harness()
@@ -234,6 +250,36 @@ class TestDriveThroughInjectedHarness(TestCase):
         assert outcome.result_message is not None
         assert outcome.result_message.session_id == "s1"
 
+    def test_driver_binds_and_revokes_the_live_mailbox_during_open(self) -> None:
+        class InspectHarness(FakeHarness):
+            bound_env: dict[str, str]
+
+            @asynccontextmanager
+            async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[Any]:
+                assert isinstance(options.mcp_servers, dict)
+                teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
+                self.bound_env = dict(teatree["env"])
+                async with super().open(options) as session:
+                    yield session
+
+        options = _build_options(self.task, "ctx", phase="coding", skills=[])
+        harness = InspectHarness([result_message(session_id="s1")])
+        watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
+        with patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))):
+            asyncio.run(_drive_with_heartbeat(self.task, "p", options, harness, watchdog=watchdog))
+
+        assert harness.bound_env["T3_AGENT_MAILBOX_SOCKET"]
+        assert harness.bound_env["T3_AGENT_MAILBOX_TOKEN"]
+        assert isinstance(options.mcp_servers, dict)
+        teatree = cast("McpStdioServerConfig", options.mcp_servers["teatree"])
+        assert "env" not in teatree
+        client = MailboxClient(
+            Path(harness.bound_env["T3_AGENT_MAILBOX_SOCKET"]),
+            harness.bound_env["T3_AGENT_MAILBOX_TOKEN"],
+        )
+        with pytest.raises(ToolError, match="Invalid mailbox identity"):
+            asyncio.run(client.peers())
+
     def test_driver_drives_a_real_pydantic_ai_harness_end_to_end(self) -> None:
         # A REAL PydanticAiHarness (real pydantic_ai Agent + TestModel, no
         # network) driven through the harness-agnostic driver — proves the
@@ -284,10 +330,21 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         # tool call. On an ACTING phase that is refused
         # (:mod:`teatree.agents.action_verification`) and rightly so; a toolless
         # double can only honestly stand in for a phase that need not act.
-        result_json = '{"summary": "test summary", "plan_text": "the plan"}'
+        result_json = json.dumps(
+            {
+                "summary": "test summary",
+                "plan_text": "the plan",
+                "base_sha": _FORTY_HEX,
+                "adequacy": dict(TEST_ADEQUACY),
+            }
+        )
         fake_harness = PydanticAiHarness(model=TestModel(custom_output_text=result_json))
         with (
-            patch.object(runner_mod, "resolve_harness", return_value=fake_harness),
+            patch.object(
+                runner_mod,
+                "resolve_dispatch_harness",
+                return_value=runner_mod.DispatchHarness(harness=fake_harness, name="fake_harness", provider=None),
+            ),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
             attempt = run_agent(self.task, phase="planning", overlay_skill_metadata={})
@@ -329,7 +386,13 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         history = asyncio.run(agent.run("hello")).all_messages()
         parked = Task.objects.create(ticket=self.ticket, session=self.session)
         persist_parked_thread(parked, history)
-        resumed_task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding", parent_task=parked)
+        resumed_task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            phase="coding",
+            parent_task=parked,
+            session_continuation=Task.SessionContinuation.PARENT,
+        )
         ConfigSetting.objects.set_value("openai_compatible_model", "vendor/some-model")
 
         with (
@@ -358,9 +421,15 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         history = asyncio.run(agent.run("hello")).all_messages()
         parked = Task.objects.create(ticket=self.ticket, session=self.session)
         persist_parked_thread(parked, history)
-        resumed_task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding", parent_task=parked)
+        resumed_task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            phase="coding",
+            parent_task=parked,
+            session_continuation=Task.SessionContinuation.PARENT,
+        )
 
-        def _boom(_self: PydanticAiHarness, _options: object) -> object:
+        def _boom(_self: PydanticAiHarness, _options: object, _run: SessionRun) -> object:
             msg = "backend router transport unavailable"
             raise RuntimeError(msg)
 
@@ -585,7 +654,7 @@ def test_pydantic_ai_session_maps_the_request_cap_to_error_max_turns() -> None:
     from teatree.agents.runner_failure_taxonomy import limit_match  # noqa: PLC0415 — test-local assertion
 
     agent: Agent[None, str] = Agent(FunctionModel(stream_function=_tool_then_text_stream), toolsets=[_ping_toolset()])
-    session = PydanticAiHarnessSession(agent, model_name="m", request_limit=1)
+    session = PydanticAiHarnessSession(agent, model_name="m", run=SessionRun.start(request_limit=1))
 
     async def drive() -> list[object]:
         await session.query("hi")
@@ -616,15 +685,18 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
     def _run_raising(self, exc: Exception) -> TaskAttempt:
         harness = PydanticAiHarness(model=FunctionModel(stream_function=_raising_stream(exc)))
         with (
-            patch.object(runner_mod, "resolve_harness", return_value=harness),
+            patch.object(
+                runner_mod,
+                "resolve_dispatch_harness",
+                return_value=runner_mod.DispatchHarness(harness=harness, name="fake_harness", provider=None),
+            ),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
             attempt = run_agent(self.task, phase="coding", overlay_skill_metadata={})
         self.task.refresh_from_db()
         return attempt
 
-    def test_rate_limit_error_parks_when_autorecovery_on(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
+    def test_rate_limit_error_parks_the_task(self) -> None:
         exc = ModelHTTPError(status_code=429, model_name="m", body={"error": {"type": "rate_limit_error"}})
         attempt = self._run_raising(exc)
 
@@ -636,17 +708,7 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
         assert window is not None
         assert window.cause == "rate_limit"
 
-    def test_rate_limit_error_fails_cleanly_when_autorecovery_off(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
-        exc = ModelHTTPError(status_code=429, model_name="m", body={"error": {"type": "rate_limit_error"}})
-        attempt = self._run_raising(exc)
-
-        assert self.task.status == Task.Status.FAILED
-        assert attempt.error.startswith("rate_limit: ")
-        assert "Traceback" not in attempt.error, "a classified limit failure, never a raw traceback"
-
     def test_overloaded_error_529_is_a_rate_limit(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
         exc = ModelHTTPError(status_code=529, model_name="m", body={"error": {"type": "overloaded_error"}})
         attempt = self._run_raising(exc)
 
@@ -659,7 +721,6 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
     def test_credit_body_400_is_api_credit_and_never_parks(self) -> None:
         # API-credit exhaustion has no timed window, so even with auto-recovery ON
         # it FAILS loud (add credits) and never parks.
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
         exc = ModelHTTPError(
             status_code=400,
             model_name="m",
@@ -676,7 +737,6 @@ class TestRunHeadlessPydanticAiFailureReporting(TestCase):
     def test_usage_limit_exceeded_fails_error_max_turns_and_never_parks(self) -> None:
         # The run hit its own per-run request cap — a genuine FAILED (error_max_turns),
         # never a park, never a raw traceback.
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
         exc = UsageLimitExceeded("The next request would exceed the request_limit of 1")
         attempt = self._run_raising(exc)
 
@@ -721,7 +781,7 @@ class TestRunHeadlessCachedResumeParity(TestCase):
             patch.object(
                 harness_mod.PydanticAiHarness,
                 "_resolve_model",
-                lambda self, options: FunctionModel(stream_function=stream_fn),
+                lambda self, options, run: FunctionModel(stream_function=stream_fn),
             ),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
@@ -740,7 +800,7 @@ class TestRunHeadlessCachedResumeParity(TestCase):
             patch.object(
                 harness_mod.PydanticAiHarness,
                 "_resolve_model",
-                lambda self, options: FunctionModel(stream_function=stream_fn),
+                lambda self, options, run: FunctionModel(stream_function=stream_fn),
             ),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
@@ -769,7 +829,7 @@ class TestPydanticAiHarnessRegulatedPathGate(TestCase):
         options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
-            PydanticAiHarness()._resolve_model(options)
+            PydanticAiHarness()._resolve_model(options, SessionRun.start())
 
     def test_unenforced_lane_reaches_the_credential_step(self) -> None:
         # Default enforce_regulated_path=False — the factory lane is unrestricted,
@@ -777,7 +837,7 @@ class TestPydanticAiHarnessRegulatedPathGate(TestCase):
         options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
         with pytest.raises(CredentialError, match="openai_compatible_base_url"):
-            PydanticAiHarness()._resolve_model(options)
+            PydanticAiHarness()._resolve_model(options, SessionRun.start())
 
     def test_allowlisted_model_reaches_the_credential_step(self) -> None:
         ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
@@ -785,7 +845,7 @@ class TestPydanticAiHarnessRegulatedPathGate(TestCase):
         options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
         with pytest.raises(CredentialError, match="openai_compatible_base_url"):
-            PydanticAiHarness()._resolve_model(options)
+            PydanticAiHarness()._resolve_model(options, SessionRun.start())
 
 
 class TestPydanticAiHarnessSession:
@@ -1021,22 +1081,26 @@ class TestPydanticAiModelIdNormalization(TestCase):
         # The bug: options.model carries a teatree-abstract-tier default in Claude
         # dash-form (claude-opus-4-8), which the endpoint does NOT carry. It must be
         # normalised to the configured id, never sent verbatim.
-        model = self._configured_harness()._resolve_model(HarnessOptions(model="claude-opus-4-8"))
+        model = self._configured_harness()._resolve_model(HarnessOptions(model="claude-opus-4-8"), SessionRun.start())
         assert model.model_name == "vendor/some-model"
 
     def test_no_model_pin_resolves_to_the_configured_model(self) -> None:
-        model = self._configured_harness()._resolve_model(HarnessOptions())
+        model = self._configured_harness()._resolve_model(HarnessOptions(), SessionRun.start())
         assert model.model_name == "vendor/some-model"
 
     def test_explicit_provider_native_pin_passes_through(self) -> None:
-        model = self._configured_harness()._resolve_model(HarnessOptions(model="deepseek/deepseek-v4-pro"))
+        model = self._configured_harness()._resolve_model(
+            HarnessOptions(model="deepseek/deepseek-v4-pro"), SessionRun.start()
+        )
         assert model.model_name == "deepseek/deepseek-v4-pro"
 
     def test_a_model_off_the_regulated_allowlist_is_refused(self) -> None:
         ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
-            self._configured_harness()._resolve_model(HarnessOptions(model="deepseek/deepseek-v4-pro"))
+            self._configured_harness()._resolve_model(
+                HarnessOptions(model="deepseek/deepseek-v4-pro"), SessionRun.start()
+            )
 
 
 class TestBuildOpenAICompatibleProvider(TestCase):
@@ -1048,18 +1112,18 @@ class TestBuildOpenAICompatibleProvider(TestCase):
         monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "dummy-backend-test-value")
 
     def test_factory_lane_rides_the_x_lane_header(self) -> None:
-        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_FACTORY))
+        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_FACTORY), SessionRun.start())
         assert provider.client.default_headers["x-lane"] == "factory"
         assert str(provider.client.base_url).rstrip("/") == "https://api.example.invalid/v1"
 
     def test_eval_lane_rides_the_x_lane_header(self) -> None:
-        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_EVAL))
+        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_EVAL), SessionRun.start())
         assert provider.client.default_headers["x-lane"] == "eval"
 
     def test_bulk_lane_rides_the_x_lane_header(self) -> None:
         # A secondary overlay's cheap bulk-leg lane: a router DSL rule keys on
         # ``headers["x-lane"] == "bulk"``.
-        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_BULK))
+        provider = build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_BULK), SessionRun.start())
         assert provider.client.default_headers["x-lane"] == "bulk"
 
     def _capture_pass_path(self, pass_path: str | None) -> str:
@@ -1072,7 +1136,9 @@ class TestBuildOpenAICompatibleProvider(TestCase):
             )
 
         with patch.object(pyconfig_mod, "resolve_openai_compatible_backend", _spy):
-            build_openai_compatible_provider(OpenAICompatibleLaneConfig(lane=LANE_FACTORY, credential_entry=pass_path))
+            build_openai_compatible_provider(
+                OpenAICompatibleLaneConfig(lane=LANE_FACTORY, credential_entry=pass_path), SessionRun.start()
+            )
         return captured["path"]
 
     def test_configured_pass_path_is_injected_into_the_credential(self) -> None:
@@ -1091,7 +1157,7 @@ class TestPydanticAiStepCap(TestCase):
     """The per-run sequential-request cap via pydantic_ai ``UsageLimits`` (plan §4 guardrail #1)."""
 
     def test_positive_limit_becomes_usage_limits(self) -> None:
-        session = PydanticAiHarnessSession(Agent(TestModel()), model_name="t", request_limit=5)
+        session = PydanticAiHarnessSession(Agent(TestModel()), model_name="t", run=SessionRun.start(request_limit=5))
         limits = session._usage_limits()
         assert limits is not None
         assert limits.request_limit == 5
@@ -1099,7 +1165,9 @@ class TestPydanticAiStepCap(TestCase):
     def test_disabled_limit_is_uncapped(self) -> None:
         for value in (0, None):
             with self.subTest(value=value):
-                session = PydanticAiHarnessSession(Agent(TestModel()), model_name="t", request_limit=value)
+                session = PydanticAiHarnessSession(
+                    Agent(TestModel()), model_name="t", run=SessionRun.start(request_limit=value)
+                )
                 assert session._usage_limits() is None
 
     def test_resolve_harness_reads_the_configured_request_limit_synchronously(self) -> None:
@@ -1213,12 +1281,29 @@ class TestPydanticAiMaxTokens(TestCase):
     def test_open_threads_max_tokens_into_the_agent_model_settings(self) -> None:
         harness = PydanticAiHarness(model=TestModel(), config=PydanticAiModelConfig(max_tokens=9000))
 
-        async def drive() -> object:
+        async def drive() -> tuple[str, object]:
             async with harness.open(ClaudeAgentOptions()) as session:
                 assert isinstance(session, PydanticAiHarnessSession)
-                return session._agent.model_settings
+                return session.session_id, session._agent.model_settings
 
-        assert asyncio.run(drive()) == {"max_tokens": 9000}
+        _session_id, settings = asyncio.run(drive())
+        assert settings == {"max_tokens": 9000}, "no provider cache key unless the endpoint is declared to take it"
+
+    def test_open_keys_the_provider_cache_on_the_session_when_the_endpoint_takes_it(self) -> None:
+        harness = PydanticAiHarness(
+            model=TestModel(),
+            config=PydanticAiModelConfig(
+                max_tokens=9000, backend=OpenAICompatibleLaneConfig(sends_prompt_cache_key=True)
+            ),
+        )
+
+        async def drive() -> tuple[str, object]:
+            async with harness.open(ClaudeAgentOptions()) as session:
+                assert isinstance(session, PydanticAiHarnessSession)
+                return session.session_id, session._agent.model_settings
+
+        session_id, settings = asyncio.run(drive())
+        assert settings == {"max_tokens": 9000, "openai_prompt_cache_key": session_id}
 
 
 class TestVerifierPinnedToClaude(TestCase):
@@ -1262,27 +1347,27 @@ class TestResolveDispatchProvider(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_no_configured_pin_stays_unpinned(self) -> None:
-        assert resolve_dispatch_provider(phase="testing") is None
+        assert resolve_dispatch_harness(phase="testing").provider is None
 
     def test_unpinned_phase_keeps_the_configured_provider(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
         for phase in (None, "coding", "debugging", "shipping"):
             with self.subTest(phase=phase):
-                assert resolve_dispatch_provider(phase=phase) is AgentHarnessProvider.ANTHROPIC_API
+                assert resolve_dispatch_harness(phase=phase).provider is AgentHarnessProvider.ANTHROPIC_API
 
     def test_verification_pin_drops_a_provider_invalid_under_the_pinned_harness(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
         for phase in ("reviewing", "requesting_review", "testing"):
             with self.subTest(phase=phase):
-                assert resolve_dispatch_provider(phase=phase) is None
+                assert resolve_dispatch_harness(phase=phase).provider is None
 
     def test_the_drop_is_warned_never_silent(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
-        with self.assertLogs("teatree.agents.harness", level="WARNING") as logs:
-            resolve_dispatch_provider(phase="testing")
+        with self.assertLogs("teatree.agents.harness_dispatch", level="WARNING") as logs:
+            resolve_dispatch_harness(phase="testing")
         assert any("anthropic_api" in message and "claude_sdk" in message for message in logs.output)
 
     def test_a_flip_onto_a_harness_the_pin_is_still_valid_under_keeps_it(self) -> None:
@@ -1290,24 +1375,27 @@ class TestResolveDispatchProvider(TestCase):
         # overlay-registered backend that also accepts ``anthropic_api`` keeps the pin,
         # so the drop can never over-suppress a credential that still applies.
         register_harness(
-            "shares_anthropic_api",
-            lambda context: ClaudeSdkHarness(),
-            valid_providers=frozenset({AgentHarnessProvider.ANTHROPIC_API.value}),
+            HarnessSpec(
+                name="shares_anthropic_api",
+                factory=lambda context: ClaudeSdkHarness(),
+                valid_providers=frozenset({AgentHarnessProvider.ANTHROPIC_API.value}),
+            )
         )
         self.addCleanup(harness_registry._REGISTRY.pop, "shares_anthropic_api", None)
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         ConfigSetting.objects.set_value("agent_harness_provider", "anthropic_api")
-        with patch.object(harness_mod, "resolve_phase_harness", return_value="shares_anthropic_api"):
-            assert resolve_dispatch_provider(phase="testing") is AgentHarnessProvider.ANTHROPIC_API
+        with patch.object(harness_dispatch_mod, "resolve_phase_harness", return_value="shares_anthropic_api"):
+            assert resolve_dispatch_harness(phase="testing").provider is AgentHarnessProvider.ANTHROPIC_API
 
-    def test_an_invalid_pair_no_pin_explains_is_left_for_the_dispatch_guard(self) -> None:
-        # The control: a pair the phase pin does NOT explain is passed through untouched, so
-        # ``resolve_harness``'s InvalidHarnessProviderError still fires on it.
+    def test_an_invalid_pair_no_pin_explains_still_fails_loud(self) -> None:
+        # The control: a pair no phase pin explains is never quietly dropped — the
+        # InvalidHarnessProviderError fires on every dispatch entry point.
         with patch.dict(
             os.environ,
             {"T3_AGENT_HARNESS": "claude_sdk", "T3_AGENT_HARNESS_PROVIDER": "openai_compatible"},
         ):
-            assert resolve_dispatch_provider(phase="coding") is AgentHarnessProvider.OPENAI_COMPATIBLE
+            with pytest.raises(InvalidHarnessProviderError):
+                resolve_dispatch_harness(phase="coding")
             with pytest.raises(InvalidHarnessProviderError):
                 resolve_harness(phase="coding")
 
@@ -1335,12 +1423,12 @@ class TestOpenAICompatibleLaneAndModelCallSite(TestCase):
         harness = PydanticAiHarness(
             config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(model="vendor/other-model"))
         )
-        model = harness._resolve_model(HarnessOptions(model="claude-opus-4-8"))
+        model = harness._resolve_model(HarnessOptions(model="claude-opus-4-8"), SessionRun.start())
         assert model.model_name == "vendor/other-model"
 
     def test_an_unconfigured_model_fails_loud_rather_than_guessing(self) -> None:
         with pytest.raises(UnconfiguredOpenAICompatibleModelError, match="openai_compatible_model"):
-            PydanticAiHarness()._resolve_model(HarnessOptions(model="claude-opus-4-8"))
+            PydanticAiHarness()._resolve_model(HarnessOptions(model="claude-opus-4-8"), SessionRun.start())
 
     def test_resolve_harness_reads_the_generic_backend_settings_synchronously(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
@@ -1369,12 +1457,73 @@ class TestOpenAICompatibleLaneAndModelCallSite(TestCase):
         harness = PydanticAiHarness(
             config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(lane=LANE_BULK, model="vendor/other-model"))
         )
-        model = harness._resolve_model(HarnessOptions(model="claude-opus-4-8"))
+        model = harness._resolve_model(HarnessOptions(model="claude-opus-4-8"), SessionRun.start())
         assert model.model_name == "vendor/other-model"
         client = model.client
         assert str(client.base_url).rstrip("/") == "https://api.example.invalid/v1"
         assert client.api_key == "dummy-backend-test-value"
         assert client.default_headers["x-lane"] == "bulk"
+
+    def test_resolve_harness_reads_the_configured_extra_headers_synchronously(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("openai_compatible_extra_headers", {"X-OrcaRouter-Session-Id": "t3-{session}"})
+        harness = resolve_harness(phase="coding")
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness._backend.extra_headers == {"X-OrcaRouter-Session-Id": "t3-{session}"}
+
+    def test_open_keys_the_router_session_on_the_id_the_run_reports_and_sends_no_cache_key_by_default(self) -> None:
+        session_id, request, terminal = self._drive_router_open(OpenAICompatibleLaneConfig())
+
+        assert request.headers["X-OrcaRouter-Session-Id"] == f"t3-{session_id}"
+        assert "prompt_cache_key" not in json.loads(request.content)
+        assert terminal.session_id == session_id
+        assert terminal.total_cost_usd == pytest.approx(0.000382)
+        assert terminal.model_usage == {RESOLVED_MODEL: {}}
+
+    def test_a_declared_endpoint_receives_the_session_as_its_cache_key(self) -> None:
+        declared = OpenAICompatibleLaneConfig(sends_prompt_cache_key=True)
+        session_id, request, _terminal = self._drive_router_open(declared)
+
+        assert json.loads(request.content)["prompt_cache_key"] == session_id
+
+    def test_resolve_harness_reads_the_prompt_cache_key_declaration_synchronously(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        assert resolve_harness(phase="coding")._backend.sends_prompt_cache_key is False
+        ConfigSetting.objects.set_value("openai_compatible_sends_prompt_cache_key", value=True)
+        harness = resolve_harness(phase="coding")
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness._backend.sends_prompt_cache_key is True
+
+    def _drive_router_open(self, backend: OpenAICompatibleLaneConfig) -> tuple[str, httpx2.Request, ResultMessage]:
+        headers = {"X-OrcaRouter-Include-Cost": "true", "X-OrcaRouter-Session-Id": "t3-{session}"}
+        harness = PydanticAiHarness(
+            config=PydanticAiModelConfig(
+                backend=dataclasses.replace(backend, model="orcarouter/teatree-auto", extra_headers=headers)
+            )
+        )
+        sent: list[httpx2.Request] = []
+
+        def network(request: httpx2.Request) -> httpx2.Response:
+            sent.append(request)
+            return text_reply("done", cost_usd=0.000382)
+
+        async def drive() -> tuple[str, list[object]]:
+            async with harness.open(ClaudeAgentOptions()) as session:
+                await session.query("go")
+                return session.session_id, [message async for message in session.receive_response()]
+
+        # The transport is faked, so a model request cannot leave the process whatever the global guard says.
+        with (
+            patch.object(
+                httpx2.AsyncHTTPTransport, "handle_async_request", httpx2.MockTransport(network).handle_async_request
+            ),
+            override_allow_model_requests(allow_model_requests=True),
+        ):
+            session_id, messages = asyncio.run(drive())
+
+        [request] = sent
+        terminal = next(message for message in messages if isinstance(message, ResultMessage))
+        return session_id, request, terminal
 
 
 class TestOpenAICompatibleInertByDefault(TestCase):

@@ -54,7 +54,7 @@ DATABASE_BACKEND = {
     "TASKS": {
         "default": {
             "BACKEND": "django_tasks_db.DatabaseBackend",
-            "QUEUES": ["default", "loops"],
+            "QUEUES": ["default", "loops", "cheap"],
         },
     },
 }

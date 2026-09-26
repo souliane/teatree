@@ -49,6 +49,8 @@ Before any destructive or history-moving git operation (`cherry-pick`, `reset --
 
 **Asked to "cherry-pick the X commit" with a vaguely-named commit and a remembered SHA, your single next action is the verify READ against the live branch — never the cherry-pick (do X, never Y).** This is acute when the live request names a DIFFERENT branch than the one your memory associates with the SHA (e.g. you recall `a1b2c3d` was on `fix/lint-cleanup`, but the request says the commit is on `feature/ruff-baseline`): the branch in the live request wins, and the SHA on it is almost certainly NOT the hash you remember. So your first tool call is `git log`/`git show`/`git rev-parse` against the branch named in the request — and you do NOT issue `git cherry-pick <remembered-sha>` as your first action.
 
+When the request says to run or issue the commands and Bash is available, **invoke the Bash tool now** for that verify read. Never print the command as final text instead of calling Bash. A command-shaped prose answer has not verified the branch; the Bash call and its live output are the required action.
+
 ```bash
 # do X — first action is the verify READ against the live-request branch, then STOP to read its output:
 git log --oneline feature/ruff-baseline

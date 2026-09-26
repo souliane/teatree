@@ -3,7 +3,7 @@
 Coordination lives in :mod:`teatree.cli.setup.command`, which composes the
 per-concern units under this package: clone resolution (:mod:`.clone`), global
 ``t3`` install (:mod:`.tool_installer`), APM (:mod:`.apm`), skill linking
-(:mod:`.skill_linker`), and Claude-plugin registration (:mod:`.plugin_registrar`).
+(:mod:`.skill_linker`), and runtime plugin registration (:mod:`.plugin_registrar`).
 """
 
 from teatree.cli.doctor import AGENT_SKILL_RUNTIMES, agent_skill_dirs

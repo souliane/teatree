@@ -58,7 +58,7 @@ class TestSeedThenColdRead(TransactionTestCase):
                 "teatree": {
                     "memory_recall_enabled": False,  # default True -> disabled gate
                     "self_dm_gate_enabled": False,  # default True -> disabled gate
-                    "deny_circuit_breaker_threshold": 7,  # default 3 -> raised budget
+                    "hook_validator_timeout_seconds": 90,  # default 60 -> raised budget
                 }
             }
         )
@@ -66,7 +66,7 @@ class TestSeedThenColdRead(TransactionTestCase):
         # The seed half: every cold-hook key landed a row in the GLOBAL scope.
         assert ConfigSetting.objects.get_effective("memory_recall_enabled") is False
         assert ConfigSetting.objects.get_effective("self_dm_gate_enabled") is False
-        assert ConfigSetting.objects.get_effective("deny_circuit_breaker_threshold") == 7
+        assert ConfigSetting.objects.get_effective("hook_validator_timeout_seconds") == 90
 
         db_file = self.tmp_path / "db.sqlite3"
         _snapshot_db_to_file(db_file)
@@ -82,7 +82,7 @@ class TestSeedThenColdRead(TransactionTestCase):
         # The cold reader returns the SEEDED raised budget. The hook_router int flip
         # is PR4; here the cold reader proves the int budget was seeded losslessly
         # and is cold-readable as the correct int type.
-        assert cold_reader.int_setting("deny_circuit_breaker_threshold", default=3, minimum=1) == 7
+        assert cold_reader.int_setting("hook_validator_timeout_seconds", default=60, minimum=1) == 90
 
     def test_unseeded_gate_falls_to_in_code_default_after_seed(self) -> None:
         # A gate the seed did not configure has no seeded row, so the flipped reader

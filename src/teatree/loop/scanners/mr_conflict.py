@@ -29,7 +29,7 @@ from teatree.core.backend_protocols import CodeHostBackend, MergeConflictState
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.loop.scanners.my_prs import _str_field
 from teatree.loop.scanners.pr_payload import head_sha
-from teatree.loop.url_specificity import best_url_match_specificity
+from teatree.loop.scanners.repository_scope import RepositoryScope
 from teatree.types import RawAPIDict
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.url_slug import pr_ref_from_url
@@ -52,12 +52,11 @@ class MrConflictScanner:
     by url exactly as the sibling PR scanners do; empty falls back to
     ``host.current_user()``. ``allowed_url_prefixes`` narrows what this overlay
     claims so a sibling overlay's merge requests stay in the sibling's zone;
-    empty claims everything the host lists. ``overlay_name`` tags the emitted
-    summaries.
+    empty means the scope is unresolved, so nothing is listed or probed.
+    ``overlay_name`` tags the emitted summaries.
 
-    One forge read per surviving merge request, which is why the whole scanner is
-    gated default-OFF one layer up
-    (:func:`teatree.loop.scanner_factories._mr_conflict_scanner_for`).
+    The ship pass always pays the one forge read per surviving merge request so
+    every open merge request gets a resolved conflict state.
     """
 
     host: CodeHostBackend
@@ -65,14 +64,20 @@ class MrConflictScanner:
     allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     overlay_name: str = ""
     name: str = "mr_conflict"
+    _scope: RepositoryScope = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._scope = RepositoryScope(self.allowed_url_prefixes, scanner=self.name, log=logger)
 
     def scan(self) -> list[ScanSignal]:
+        if self._scope.refuses():
+            return []
         authors = self._resolve_identities()
         if not authors:
             return []
         signals: list[ScanSignal] = []
         for url, pr in self._collect(authors).items():
-            if not self._url_allowed(url):
+            if not self._scope.admits(url):
                 continue
             conflict = self._conflict_state(url)
             if conflict is MergeConflictState.CLEAN:
@@ -120,11 +125,6 @@ class MrConflictScanner:
         except Exception as exc:  # noqa: BLE001 — a merge-state probe must never abort the tick.
             logger.warning("%s: merge-state probe failed for %s: %s", self.name, url, exc)
             return MergeConflictState.UNKNOWN
-
-    def _url_allowed(self, url: str) -> bool:
-        if not self.allowed_url_prefixes:
-            return bool(url)
-        return bool(url) and best_url_match_specificity(url, self.allowed_url_prefixes) > 0
 
     def _resolve_identities(self) -> tuple[str, ...]:
         if self.identities:

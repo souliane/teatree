@@ -18,14 +18,24 @@ Two complementary levers, both wired into ``t3 mcp serve``:
     client is gone, and the server hard-exits instead of waiting for an EOF
     that may never arrive.
 
-Both levers read PID 1 as "reparented to init", which is a HOST fact. In a
-container PID 1 is the container's own entrypoint, so a server started by
-``docker compose run --entrypoint t3 … mcp serve`` has ``getppid() == 1`` from
-its first instant: the watchdog fired immediately and the server exited 0
-without answering a single request, and the reaper would SIGTERM every sibling
-server in the same container. :func:`orphan_detection_applies` therefore makes
-both inert there — the container runtime owns that lifecycle, tearing the exec
-down when the client disconnects.
+Both levers read PID 1 as "reparented to init", which is a HOST fact, and no
+container reading substitutes for it. In a container PID 1 is the entrypoint, so
+a server started by ``docker compose run --entrypoint t3 … mcp serve`` has
+``getppid() == 1`` from its first instant: the watchdog fired immediately and the
+server exited 0 without answering a single request. The other PPID a container
+offers is no better — a ``docker exec`` process reports PPID 0 whether or not a
+client is attached (measured against a freshly launched server whose client was
+still connected), so reading PPID 0 as the container's disconnection signature
+SIGTERMs every live server. :func:`orphan_detection_applies` therefore makes both
+inert there, and the container needs neither: killing the host-side client makes
+the exec'd server exit on stdin EOF.
+
+Which is why the host process the sweep must classify is the LAUNCHER, not the
+server. ``t3 setup`` replaces ``t3`` on PATH with a wrapper that execs
+``docker compose exec … t3-in-container t3 mcp serve``, so on a dockerised
+install the only host-side process is that wrapper — matched by
+:func:`is_serve_command` through the ``t3-in-container`` label under a
+container-CLI argv[0].
 """
 
 import logging
@@ -45,6 +55,12 @@ logger = logging.getLogger(__name__)
 _INIT_PID = 1
 _DEFAULT_POLL_SECONDS = 5.0
 _PS_FIELDS = 3
+_CONTAINER_CLIS = frozenset({"docker", "docker-compose", "podman", "podman-compose", "nerdctl"})
+
+# ``sh -c``'s ``$0`` label, emitted by every one of ``deploy/t3``'s five launch
+# sites immediately before ``t3`` — the token that separates a launcher from a
+# container command whose arguments merely happen to read ``t3 mcp serve``.
+_CONTAINER_LAUNCH_LABEL = "t3-in-container"
 
 
 def orphan_detection_applies(*, containerized: bool | None = None) -> bool:
@@ -88,13 +104,18 @@ def is_serve_command(command: str) -> bool:
     """Whether *command* is a ``t3 mcp serve`` invocation.
 
     Matches the ``t3`` token (bare or a path ending in ``/t3``) immediately
-    followed by ``mcp serve``, where ``t3`` is either argv[0] or preceded by a
+    followed by ``mcp serve``, where ``t3`` is either argv[0], preceded by a
     python interpreter (the shebang-rewritten form ``…/python …/bin/t3 mcp
-    serve``). The interpreter constraint keeps an unrelated process whose
-    ARGUMENTS merely mention ``t3 mcp serve`` (a grep, an editor) out of the
-    match — reaping must never guess.
+    serve``), or preceded by :data:`_CONTAINER_LAUNCH_LABEL` under a container
+    CLI (``docker compose exec … t3-in-container t3 mcp serve``). Each
+    provenance names the token DIRECTLY before ``t3``, so a process whose
+    arguments merely read ``t3 mcp serve`` — ``docker compose exec … grep -r t3
+    mcp serve``, which is how ``ps`` renders a quoted grep pattern — is not a
+    match. Accepting the container CLI wherever it appeared made the container
+    branch position-independent, and reaping must never guess.
     """
     words = command.split()
+    launched_by_container_cli = bool(words) and Path(words[0]).name in _CONTAINER_CLIS
     for index in range(len(words) - 2):
         word = words[index]
         if word != "t3" and not word.endswith("/t3"):
@@ -103,7 +124,10 @@ def is_serve_command(command: str) -> bool:
             continue
         if index == 0:
             return True
-        if Path(words[index - 1]).name.startswith("python"):
+        preceding = words[index - 1]
+        if launched_by_container_cli and preceding == _CONTAINER_LAUNCH_LABEL:
+            return True
+        if Path(preceding).name.startswith("python"):
             return True
     return False
 

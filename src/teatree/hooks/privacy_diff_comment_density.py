@@ -300,7 +300,12 @@ class _FileScan:
         self._feed_added_line(raw[1:], comment_re)
 
     def _feed_context_line(self, code: str) -> None:
+        # Docstring state is the FILE's, not the hunk's: a rewritten body keeps its
+        # closing marker as context, and skipping it reads every later line as prose.
         self._target_line += 1
+        was_in_docstring = self.in_docstring
+        if self._consume_docstring(code) or was_in_docstring:
+            return
         if code.strip():
             self.code_seen = True
             self._resolve_against_code(code)

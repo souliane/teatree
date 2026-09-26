@@ -29,7 +29,7 @@ def _run(*args: str) -> str:
     return out.getvalue() + err.getvalue()
 
 
-def _loop(name: str, *, enabled: bool) -> Loop:
+def _loop(name: str, *, enabled: bool | None = None) -> Loop:
     prompt, _ = Prompt.objects.get_or_create(name=f"{name}-prompt", defaults={"body": "do x"})
     return Loop.objects.update_or_create(
         name=name,
@@ -116,45 +116,43 @@ class TestStatusSubcommandIsAReadNotAMutation(TestCase):
         assert LoopState.objects.status_of("review") is LoopStatus.PAUSED
 
 
-class TestLoopStateSetsLoopRowEnabled(TestCase):
-    """``enable``/``disable`` must set ``Loop.enabled`` — the master-tick source of truth.
+class TestTheHoldVerbsMoveTheHoldPlaneAlone(TestCase):
+    """``pause``/``resume``/``disable``/``enable`` are HOLD-plane verbs, and only that.
 
-    The #2584 unified verdict gates a loop on BOTH ``Loop.enabled`` AND the
-    ``LoopState`` control plane. Writing only the ``LoopState`` kill-switch left
-    ``Loop.enabled`` stale, so ``t3 loop enable <name>`` reported success while
-    the loop tick's ``not row.enabled`` gate kept skipping the loop. These pin
-    both columns moving together.
+    ``Loop.enabled`` is the MANUAL override slot now, written solely through
+    ``set_manual_override`` (which requires a reason). A hold verb that also wrote it
+    would be a second, reasonless writer of the layer above it — so these pin that the
+    hold moves and the manual layer is left exactly as the operator left it.
     """
 
-    def test_enable_sets_loop_row_enabled_true(self) -> None:
-        _loop("dispatch", enabled=False)
-        _run("enable", "dispatch")
-        assert Loop.objects.get(name="dispatch").enabled is True
-
-    def test_disable_sets_loop_row_enabled_false(self) -> None:
-        _loop("ship", enabled=True)
+    def test_disable_holds_the_loop_without_touching_the_manual_layer(self) -> None:
+        _loop("ship")
         _run("disable", "ship")
-        assert Loop.objects.get(name="ship").enabled is False
+        assert LoopState.objects.status_of("ship") is LoopStatus.DISABLED
+        assert Loop.objects.get(name="ship").enabled is None
 
-    def test_enable_also_clears_the_loop_state_hold(self) -> None:
-        _loop("tickets", enabled=False)
+    def test_enable_clears_the_hold_without_touching_the_manual_layer(self) -> None:
+        _loop("tickets")
         _run("disable", "tickets")
         _run("enable", "tickets")
-        # Both planes agree the loop runs again.
-        assert Loop.objects.get(name="tickets").enabled is True
         assert LoopState.objects.status_of("tickets") is LoopStatus.ENABLED
+        assert Loop.objects.get(name="tickets").enabled is None
 
-    def test_disable_also_sets_the_loop_state_kill_switch(self) -> None:
-        _loop("housekeeping", enabled=True)
-        _run("disable", "housekeeping")
-        # Both planes agree the loop is held.
-        assert Loop.objects.get(name="housekeeping").enabled is False
-        assert LoopState.objects.status_of("housekeeping") is LoopStatus.DISABLED
-
-    def test_resume_returns_loop_row_to_enabled(self) -> None:
-        _loop("audit", enabled=False)
+    def test_resume_clears_a_pause_without_touching_the_manual_layer(self) -> None:
+        _loop("audit")
+        _run("pause", "audit")
         _run("resume", "audit")
-        assert Loop.objects.get(name="audit").enabled is True
+        assert LoopState.objects.status_of("audit") is LoopStatus.ENABLED
+        assert Loop.objects.get(name="audit").enabled is None
+
+    def test_a_manual_override_survives_a_hold_and_its_release(self) -> None:
+        # The property the split exists for: the human's recorded decision is not
+        # collateral damage of an emergency hold.
+        _loop("housekeeping")
+        Loop.objects.set_manual_override("housekeeping", runs=False, reason="pinned by the test")
+        _run("disable", "housekeeping")
+        _run("enable", "housekeeping")
+        assert Loop.objects.get(name="housekeeping").enabled is False
 
 
 class TestUnknownLoopNameRefused(TestCase):
@@ -208,39 +206,46 @@ class TestUnknownLoopNameRefused(TestCase):
 
 
 class TestOverrideCommand(TestCase):
-    """``loop_state override`` — the emergency FORCED plane (#3248).
+    """``loop_state override`` — the MANUAL layer, and the sole writer of it (A3).
 
-    Sets the tri-state forced value (on/off/clear) with an optional TTL and
-    reason, orthogonal to the hold status. The CLI gates the pause/enable verbs
-    behind ``--emergency``; the override verb is the emergency handle itself.
+    Sets the tri-state manual value (on/off/clear) on ``Loop.enabled``, which beats the
+    preset. Setting one REQUIRES a reason: without it nothing can judge whether the
+    override still applies, so the only possible policy would be a timer — the thing A6
+    got wrong. ``--lift-by`` is advisory and nothing enforces it (A5/A7).
     """
 
     def setUp(self) -> None:
-        _loop("review", enabled=True)
-        _loop("news", enabled=True)
+        _loop("review")
+        _loop("news")
 
-    def test_override_on_sets_forced_true(self) -> None:
-        _run("override", "review", "on")
-        assert LoopState.objects.forced_of("review") is True
+    def test_override_on_forces_the_loop_to_run(self) -> None:
+        _run("override", "review", "on", "--reason", "incident firefight")
+        assert Loop.objects.get(name="review").enabled is True
 
-    def test_override_off_sets_forced_false(self) -> None:
-        _run("override", "news", "off")
-        assert LoopState.objects.forced_of("news") is False
+    def test_override_off_forces_the_loop_to_stop(self) -> None:
+        _run("override", "news", "off", "--reason", "incident firefight")
+        assert Loop.objects.get(name="news").enabled is False
 
-    def test_override_clear_returns_to_neutral(self) -> None:
-        _run("override", "review", "on")
+    def test_override_clear_hands_the_loop_back_to_the_preset(self) -> None:
+        _run("override", "review", "on", "--reason", "incident firefight")
         _run("override", "review", "clear")
-        assert LoopState.objects.forced_of("review") is None
+        assert Loop.objects.get(name="review").enabled is None
 
-    def test_override_with_ttl_expires(self) -> None:
-        _run("override", "review", "on", "--for", "2h")
-        row = LoopState.objects.get(name="review")
-        assert row.forced_until is not None
-        assert row.forced_until > timezone.now()
+    def test_an_override_without_a_reason_is_refused(self) -> None:
+        with pytest.raises(SystemExit) as caught:
+            _run("override", "review", "on")
+        assert caught.value.code == 2
+        assert Loop.objects.get(name="review").enabled is None
+
+    def test_lift_by_is_recorded_and_advisory(self) -> None:
+        _run("override", "review", "on", "--reason", "incident firefight", "--lift-by", "2h")
+        row = Loop.objects.get(name="review")
+        assert row.override_expected_lift_at is not None
+        assert row.override_expected_lift_at > timezone.now()
 
     def test_override_records_reason(self) -> None:
         _run("override", "review", "on", "--reason", "incident firefight")
-        assert LoopState.objects.get(name="review").forced_reason == "incident firefight"
+        assert Loop.objects.get(name="review").override_reason == "incident firefight"
 
     def test_override_unknown_name_refused(self) -> None:
         out = StringIO()
@@ -256,9 +261,11 @@ class TestOverrideCommand(TestCase):
         assert caught.value.code == 2
 
 
-@override_settings(TASKS={"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}})
+@override_settings(
+    TASKS={"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
+)
 class TestOverrideReconcilesTheTimerChain(TestCase):
-    """The FORCED plane outranks the mode mask, so writing it changes chain membership now.
+    """The manual layer outranks the preset, so writing it changes chain membership now.
 
     ``resume``/``disable``/``enable`` all reconcile at their chokepoint; ``override`` did
     not, so a force-ON left a loop admitted with nothing driving it — and a force-OFF left
@@ -272,11 +279,11 @@ class TestOverrideReconcilesTheTimerChain(TestCase):
         Loop.objects.filter(name="inbox").update(script="src/teatree/loops/inbox/loop.py", prompt=None)
 
     def test_force_on_heads_the_chain_at_once(self) -> None:
-        _run("override", "inbox", "on")
+        _run("override", "inbox", "on", "--reason", "pinned by the test")
         assert len(timer_chains.pending_loop_timers("inbox")) == 1
 
     def test_force_off_prunes_the_chain_at_once(self) -> None:
         Loop.objects.filter(name="inbox").update(enabled=True)
         timer_chains.enqueue_loop_timer("inbox", run_after=timezone.now())
-        _run("override", "inbox", "off")
+        _run("override", "inbox", "off", "--reason", "pinned by the test")
         assert timer_chains.pending_loop_timers("inbox") == []

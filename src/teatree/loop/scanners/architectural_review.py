@@ -14,29 +14,22 @@ environments that need to tune one overlay differently from the rest:
     (default ``"ac-reviewing-codebase"``).
 * ``architectural_review_cadence_hours: int`` — minimum age of the last
     COMPLETED review before re-firing (default 168 = 7 days).
-* ``architectural_review_retry_backoff_hours: int`` — after a FAILED review
-    (with no completed one since), the shorter age the failed attempt must
-    reach before re-firing (default 12).
 * ``architectural_review_after_merge_count: int`` — fire after this many
     ticket merges since the last review (default 25).
-* ``architectural_review_disabled: bool`` — escape hatch; when True the
-    wiring layer skips scanner instantiation for the affected overlay.
 
 The scanner shares :class:`teatree.loop.scanners.phase_cadence.PhaseCadence`
 with the other periodic task-queuing scanners for its dedupe / last-run /
-bootstrap-cadence machinery, and adds two genuine variants of its own:
+bootstrap-cadence machinery, and adds one genuine variant of its own:
 
-* **Bounded post-failure backoff.** Two clocks gate a re-fire: the last
-    COMPLETED review drives the full ``cadence_hours`` (168h) success gate, and
-    the last terminal attempt of ANY status drives a shorter
-    ``retry_backoff_hours`` (12h) backoff gate. A review fires only when both
-    have elapsed. So a transient failure retries in 12h (no week-long blind
-    spot), a persistently failing review backs off to every 12h instead of
-    storming hourly, and a completed review still suppresses for the full week
-    (the 168h gate dominates the 12h one).
 * **Merge-count backstop.** Beyond the time cadence, a high-velocity overlay
     fires a review after ``after_merge_count`` merges since the last completed
-    one — itself gated behind the same backoff so a failing backstop can't storm.
+    one.
+
+One clock gates a re-fire: the last COMPLETED review against ``cadence_hours``.
+A failed review therefore retries on the loop's own cadence — the ``arch_review``
+row checks daily, so the retry is the next day. A separate post-failure backoff
+would only bind if the loop ticked faster than the work should retry, which is a
+wrong cadence rather than a setting to add.
 
 The scanner is a pure observer that creates one :class:`Task` row of
 ``phase="architectural_review"`` when a trigger holds and no review task is
@@ -65,7 +58,7 @@ from django.db.models import Max
 from django.utils import timezone
 
 from teatree.core.modelkit.phases import ARCHITECTURAL_REVIEW_PHASE
-from teatree.loop.scanners.base import ScanSignal, hours_since
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
 
 if TYPE_CHECKING:
@@ -89,15 +82,13 @@ class ArchitecturalReviewScanner:
     explicitly (rather than read from a global at scan time) so test
     setup is deterministic and the wiring layer is the single place
     that resolves :class:`teatree.config.UserSettings` to scanner
-    kwargs. The on/off decision lives at the wiring layer
-    (``architectural_review_disabled`` in core config); the scanner
+    kwargs. The on/off decision is the ``arch_review`` Loop row; the scanner
     itself always scans when invoked.
     """
 
     overlay_name: str
     skill: str = "ac-reviewing-codebase"
     cadence_hours: int = 168
-    retry_backoff_hours: int = 12
     after_merge_count: int = 25
     name: str = "architectural_review"
 
@@ -110,10 +101,7 @@ class ArchitecturalReviewScanner:
 
         now = timezone.now()
         last_completed_at = cadence.last_completed_run_at()
-        last_attempt_at = cadence.last_terminal_run_at()
-        trigger = self._evaluate_triggers(
-            cadence, now=now, last_completed_at=last_completed_at, last_attempt_at=last_attempt_at
-        )
+        trigger = self._evaluate_triggers(cadence, now=now, last_completed_at=last_completed_at)
         if trigger is None:
             return []
 
@@ -146,21 +134,13 @@ class ArchitecturalReviewScanner:
         *,
         now: dt.datetime,
         last_completed_at: dt.datetime | None,
-        last_attempt_at: dt.datetime | None,
     ) -> str | None:
         """Return the trigger name (``bootstrap`` / ``cadence`` / ``after_merge_count``) or None.
 
-        Two clocks gate a re-fire. The post-failure backoff comes first: a
-        terminal attempt of any status within ``retry_backoff_hours`` suppresses
-        every trigger, so a repeatedly-failing review backs off to the backoff
-        window instead of storming hourly. Past the backoff, the success cadence
-        (168h since the last COMPLETED review) and the merge-count backstop
-        decide. After a COMPLETED review the 168h cadence dominates the shorter
-        12h backoff; after a FAILED one, the 12h backoff is the binding gate.
+        The last COMPLETED review is the only clock: a failed one leaves it
+        untouched, so the next re-fire is decided by the loop's own cadence.
         Cadence wins over merge-count when both fire.
         """
-        if last_attempt_at is not None and hours_since(last_attempt_at, now=now) < self.retry_backoff_hours:
-            return None
         if last_completed_at is None:
             return "bootstrap"
         # Non-None ``last_completed_at`` can only yield "cadence" or None here.

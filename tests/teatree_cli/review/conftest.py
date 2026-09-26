@@ -13,10 +13,13 @@ resolution itself is stubbed. Only the third-party ``glab`` binary is.
 
 import os
 from collections.abc import Iterator
+from dataclasses import dataclass
 from unittest import mock
 
+import httpx
 import pytest
 
+from teatree.cli.review import inline_shape_gate, shape_gate
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.utils import run as utils_run_mod
@@ -88,3 +91,52 @@ def no_glab_login(monkeypatch: pytest.MonkeyPatch) -> None:
         "run",
         lambda *_a, **_kw: mock.MagicMock(stderr="", stdout="", returncode=1),
     )
+
+
+@dataclass
+class OutboundHttpBan:
+    """Counts the outbound requests the ban intercepted, for tests that assert zero."""
+
+    attempts: int = 0
+
+
+@pytest.fixture(autouse=True)
+def no_outbound_http(monkeypatch: pytest.MonkeyPatch) -> OutboundHttpBan:
+    """Refuse every real HTTP request this package's tests would make.
+
+    The forge POST is stubbed in these tests, but the pre-publish gate chain and the
+    author read in front of it are not: `ReviewService.post_comment` reached
+    `gitlab.com/api/v4` six times in a clean run of one file, 401ing, and the calls
+    passed only because `guarded_read` degrades a failed read to its neutral. A gate
+    exercised against a 401 proves nothing about the gate, and the requests time out
+    under xdist.
+
+    Broad on purpose: it patches the transport, so it catches a read at ANY seam rather
+    than the seams a test remembered to stub. `guarded_read` swallows the raise, which
+    is why the counter exists -- a test asserting `attempts == 0` sees a read the
+    exception alone would have hidden.
+    """
+    ban = OutboundHttpBan()
+
+    def _refuse(_self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+        ban.attempts += 1
+        msg = f"outbound HTTP is banned in this package: {request.method} {request.url}"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _refuse)
+    return ban
+
+
+@pytest.fixture
+def forge_reads_stubbed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer the two pre-publish gate reads locally, at their own seams.
+
+    `check_review_shape` reads the MR author and `check_inline_shape` counts the
+    existing inline drafts. Both degrade through `guarded_read`, so today they reach
+    gitlab.com, 401, and the gate runs on the neutral -- which proves nothing about the
+    gate and times out under xdist. The stubs return those same neutrals, an unreadable
+    author and no pending drafts, so the branch each gate takes is chosen here rather
+    than inherited from a failed request.
+    """
+    monkeypatch.setattr(shape_gate, "fetch_mr_author", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(inline_shape_gate, "count_inline_drafts", lambda *_args, **_kwargs: 0)

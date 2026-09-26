@@ -1,5 +1,6 @@
 """``t3 eval list`` / ``t3 eval run`` end-to-end through the typer CLI."""
 
+import asyncio
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -8,15 +9,16 @@ from unittest.mock import patch
 
 import pytest
 import typer
+from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.eval.all import AiLaneOutcome, _suite_should_fail
+from teatree.cli.eval.all import AiLaneOutcome, _assert_ai_lane_not_vacuous, _suite_should_fail
 from teatree.cli.eval.corpus import CorpusGradeRow
 from teatree.cli.eval.docker import DockerUnavailableError
 from teatree.cli.eval.run_modes import RunGuards, with_model
 from teatree.cli.eval.verdict import LaneResult
-from teatree.eval.api_runner import ApiRunnerParams
+from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
 from teatree.eval.coverage import CoverageReport, SkillCoverage
 from teatree.eval.discovery import CORE_CATALOG_FLOOR, ScenarioCatalog
 from teatree.eval.model_resolution import resolve_eval_model
@@ -27,6 +29,7 @@ from teatree.eval.regression_corpus import CheckResult, RegressionCheck, Regress
 from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult, evaluate
 from teatree.eval.skill_command_validity import CommandValidityReport, CommandViolation
 from teatree.eval.skill_prose_judge import ProseJudgeReport, ProseScore
+from teatree.eval.skip_guard import MEASURED_NOTHING_EXIT_CODE
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
 
@@ -697,13 +700,15 @@ class TestEvalRequireExecuted:
         assert result.exit_code != 0, result.output
         assert "executed 0" in result.output
 
-    def test_single_trial_subscription_all_skipped_stays_green_without_flag(self, tmp_path: Path) -> None:
-        # The subscription backend's pre-transcript all-skip is legitimate and
-        # stays green — the flag is still opt-in there.
+    def test_single_trial_subscription_all_skipped_declines_rather_than_reds(self, tmp_path: Path) -> None:
+        # The transcript backend's pre-transcript all-skip is legitimate, so the flag
+        # stays opt-in and the lane does not go RED. Legitimate is not the same as
+        # GREEN, though: the run graded nothing, so it exits the tolerated
+        # measured-nothing code rather than 0, which is what a graded pass exits.
         specs = [_spec("alpha")]
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
             result = CliRunner().invoke(app, ["eval", "run", "--no-persist", "--transcript-dir", str(tmp_path)])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == MEASURED_NOTHING_EXIT_CODE, result.output
 
     def test_single_trial_with_execution_passes_under_flag(self) -> None:
         specs = [_spec("alpha")]
@@ -828,13 +833,13 @@ class TestEvalBackend:
         assert "PASS worktree_first" in result.output
 
     def test_default_backend_missing_transcript_prints_clear_hint(self, tmp_path: Path) -> None:
-        # The missing-transcript UX: a bare run with no transcripts skips cleanly
-        # (exit 0) and names the scenario, the expected path, and the recipe to
-        # produce it — never a silent no-op.
+        # The missing-transcript UX: a bare run with no transcripts names the
+        # scenario, the expected path, and the recipe to produce it — never a silent
+        # no-op, and never a green that would read as coverage it does not have.
         specs = [_spec("worktree_first")]
         with patch("teatree.cli.eval.app.discover_specs", return_value=specs):
             result = CliRunner().invoke(app, ["eval", "run", "--transcript-dir", str(tmp_path), "--no-persist"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == MEASURED_NOTHING_EXIT_CODE, result.output
         assert "SKIP worktree_first" in result.output
         assert str(tmp_path / "worktree_first.jsonl") in result.output
         assert "prepare-transcript" in result.output
@@ -2018,6 +2023,96 @@ class TestEvalSuiteSdkBackendDockerByDefault:
         assert result.exit_code == 2
         assert "docker" in result.output.lower()
 
+    def test_local_runs_metered_suite_in_process(self, tmp_path: Path) -> None:
+        # The host escape `eval run` already carries: without it the bare suite can
+        # never run a metered backend where the nested container route is absent.
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
+            patch("teatree.cli.eval.all.run_eval_in_docker") as docker,
+        ):
+            result = CliRunner().invoke(app, ["eval", "--backend", "api", "--local", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        docker.assert_not_called()
+
+    def test_anthropic_api_local_runs_the_suite_on_the_host(self, tmp_path: Path) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()) as ai_lane,
+            patch("teatree.cli.eval.all.run_eval_in_docker") as docker,
+        ):
+            result = CliRunner().invoke(
+                app, ["eval", "--backend", "anthropic_api", "--local", "--transcript-dir", str(tmp_path)]
+            )
+        assert result.exit_code == 0, result.output
+        docker.assert_not_called()
+        assert ai_lane.call_args.kwargs["backend"] == "anthropic_api"
+        assert "WARNING: --local runs the metered eval on the HOST" in result.output
+
+    def test_local_warns_the_metered_host_run(self, tmp_path: Path) -> None:
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome()),
+            patch("teatree.cli.eval.all.run_eval_in_docker"),
+        ):
+            result = CliRunner().invoke(app, ["eval", "--backend", "api", "--local", "--transcript-dir", str(tmp_path)])
+        assert "WARNING: --local runs the metered eval on the HOST" in result.output
+
+    def test_local_does_not_force_a_host_run_of_the_docker_flag(self) -> None:
+        # `--docker` is the explicit force; it must still win so `--local --docker`
+        # cannot silently drop the container the operator asked for.
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as docker,
+            patch(
+                "teatree.cli.eval.all.run_regression_corpus",
+                side_effect=AssertionError("--docker must not run on host"),
+            ),
+        ):
+            result = CliRunner().invoke(app, ["eval", "--backend", "api", "--local", "--docker"])
+        assert result.exit_code == 0, result.output
+        docker.assert_called_once()
+        assert "WARNING: --local runs the metered eval on the HOST" not in result.output
+
+
+class TestMeteredSuiteNamesItsFailuresAndItsCost:
+    """A metered bare-``t3 eval`` prints the per-scenario report, not counts alone.
+
+    The ai-eval lane row carries ``N graded, M failed`` and nothing else, so a red
+    metered suite named neither WHICH scenario failed nor what the run cost — while
+    the closing verdict pointed at "the ai-eval row(s) above" that do not exist.
+    """
+
+    def test_metered_suite_names_the_failing_scenario(self, tmp_path: Path) -> None:
+        failing = evaluate(_spec("boom_scenario"), _run("boom_scenario"))
+        with (
+            patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": "1"}),
+            _patch_all_lanes([_spec("boom_scenario")]),
+            patch(
+                "teatree.cli.eval.all.run_ai_lane",
+                return_value=_ai_outcome(passed=False, detail="1 graded, 1 failed", results=(failing,)),
+            ),
+        ):
+            result = CliRunner().invoke(app, ["eval", "--backend", "api", "--transcript-dir", str(tmp_path)])
+        assert "boom_scenario" in result.output
+        assert "API cost:" in result.output
+
+    def test_transcript_suite_keeps_the_terse_summary(self, tmp_path: Path) -> None:
+        # The $0 default grades on-disk transcripts and is run constantly; it keeps
+        # the counts-only table rather than a per-scenario dump.
+        passing = evaluate(_spec("quiet_scenario"), _run("quiet_scenario", tool_calls=_PASSING_CALL))
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            _patch_all_lanes([_spec("quiet_scenario")]),
+            patch("teatree.cli.eval.all.run_ai_lane", return_value=_ai_outcome(results=(passing,))),
+        ):
+            result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "API cost:" not in result.output
+
 
 class TestEvalSubcommandsStillWork:
     """Subcommands/args remain the special, targeted path (capability kept)."""
@@ -2668,6 +2763,45 @@ class TestEvalAllSkillProseJudgeLaneAdvisory:
         assert result.exit_code == 0, result.output
 
 
+_API_MODEL = "claude-opus-4-8"
+
+
+def _api_spec(tmp_path: Path) -> EvalSpec:
+    agent = tmp_path / "agent.md"
+    agent.write_text("# fake skill\n\nbody\n", encoding="utf-8")
+    return EvalSpec(
+        name="alpha",
+        scenario="s",
+        agent_path=str(agent),
+        prompt="do",
+        matchers=(),
+        source_path=tmp_path / "spec.yaml",
+        model=_API_MODEL,
+    )
+
+
+def _api_result_message() -> ResultMessage:
+    """What the api transport yields when it billed nothing but the turn used tokens."""
+    model_usage: dict[str, dict[str, object]] = {_API_MODEL: {}}
+    return ResultMessage(
+        subtype="success",
+        duration_ms=0,
+        duration_api_ms=0,
+        is_error=False,
+        num_turns=1,
+        session_id="s1",
+        total_cost_usd=None,
+        usage={
+            "input_tokens": 12_000,
+            "output_tokens": 3_000,
+            "cache_read_input_tokens": 40_000,
+            "cache_creation_input_tokens": 8_000,
+        },
+        model_usage=model_usage,
+        result="ok",
+    )
+
+
 class TestEvalAllSdkMeteredGuard:
     """The suite mirror of ``RunGuards.api_metered`` (#) — an api AI lane that meters $0 fails loud.
 
@@ -2702,6 +2836,33 @@ class TestEvalAllSdkMeteredGuard:
         ):
             result = CliRunner().invoke(app, ["eval", "--backend", "api", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
+
+    def test_api_suite_whose_only_figure_is_usage_derived_fails_loud(self, tmp_path: Path, capsys) -> None:
+        """The guard sums cost_usd, so a derived figure hid a transport that billed nothing.
+
+        Driven through the real runner rather than a hand-built $0 run: the whole defect
+        was that this shape did NOT arrive as $0. An api transport that reported no cost
+        had its token usage priced at list, the guard summed a spending lane, and the
+        suite went green on a run nothing metered.
+        """
+        spec = _api_spec(tmp_path)
+
+        async def _query(*, prompt: str, options=None, **_):
+            await asyncio.sleep(0)
+            yield AssistantMessage(content=[TextBlock(text="answer")], model=_API_MODEL)
+            yield _api_result_message()
+
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", _query),
+        ):
+            run = ApiInProcessRunner(ApiRunnerParams(workspace=tmp_path)).run(spec)
+
+        with pytest.raises(SystemExit) as exc:
+            _assert_ai_lane_not_vacuous(backend="api", results=[evaluate(spec, run)])
+
+        assert exc.value.code == 1
+        assert "metered" in capsys.readouterr().err.lower()
 
     def test_transcript_suite_with_zero_cost_stays_green(self, tmp_path: Path) -> None:
         # The default transcript backend runs no model by design — a $0 graded

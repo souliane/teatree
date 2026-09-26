@@ -22,9 +22,12 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.routing import OwnerDmOnlyError
+from teatree.backends.slack.token_validation import TokenSlotMismatchError
 from teatree.backends.types import Service
 from teatree.core import backend_factory, toml_backends
 from teatree.core.backend_factory import OwnerMessagingTransport
+from teatree.core.backend_registry import UnknownSlackScopeProfileError
 from teatree.core.notify import NotifyReason, resolve_owner_dm_backend
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
@@ -154,6 +157,47 @@ class TestBackendsFromToml:
         with patch("teatree.config.load_config", return_value=cfg):
             assert backend_factory._backends_from_toml(set()) == []
 
+    def test_unknown_slack_profile_drops_only_that_overlays_bot(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        (tmp_path / "db.sqlite3").touch()
+        slack = {"messaging_backend": "slack", "slack_token_ref": "ref"}
+        cfg = _config_with(
+            {
+                "bad": {**slack, "slack_scope_profile": "dm-only", "path": str(tmp_path)},
+                "good": slack,
+            }
+        )
+
+        def fake_read(key: str) -> str:
+            return {"ref-bot": "xoxb-bot-tok", "ref-app": "xapp-app-tok"}.get(key, "")
+
+        with (
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+        ):
+            out = backend_factory._backends_from_toml(set())
+        by_name = {backends.name: backends for backends in out}
+        assert by_name["bad"].messaging is None
+        assert isinstance(by_name["good"].messaging, SlackBotBackend)
+        assert "bad" in caplog.text
+
+    def test_non_profile_value_error_propagates(self) -> None:
+        slack = {"messaging_backend": "slack", "slack_token_ref": "ref"}
+        cfg = _config_with({"bad": slack})
+
+        def fake_read(key: str) -> str:
+            return {"ref-bot": "xoxp-fake", "ref-app": "xapp-app-tok"}.get(key, "")
+
+        with (
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+            pytest.raises(TokenSlotMismatchError),
+        ):
+            backend_factory._backends_from_toml(set())
+
     def test_includes_overlay_with_only_external_db(self, tmp_path: Path) -> None:
         db = tmp_path / "db.sqlite3"
         db.touch()
@@ -213,6 +257,49 @@ class TestMessagingFromToml:
         with patch("teatree.utils.secrets.read_pass", side_effect=fake_read):
             backend = backend_factory._messaging_from_toml(cfg)
         assert isinstance(backend, SlackBotBackend)
+
+    def test_dm_only_profile_enforces_owner_guard_in_toml_fallback(self) -> None:
+        cfg = {
+            "messaging_backend": "slack",
+            "slack_scope_profile": "dm_only",
+            "slack_token_ref": "ref",
+            "slack_user_id": "U1",
+        }
+
+        def fake_read(key: str) -> str:
+            return {"ref-bot": "xoxb-bot-tok", "ref-app": "xapp-app-tok"}.get(key, "")
+
+        with patch("teatree.utils.secrets.read_pass", side_effect=fake_read):
+            backend = backend_factory._messaging_from_toml(cfg)
+        assert isinstance(backend, SlackBotBackend)
+        with patch.object(backend._http, "post") as transport, pytest.raises(OwnerDmOnlyError):
+            backend.join_conversation("C-public")
+        transport.assert_not_called()
+
+    def test_unknown_profile_refuses_to_build_the_bot(self) -> None:
+        cfg = {"messaging_backend": "slack", "slack_scope_profile": "dm-only", "slack_token_ref": "ref"}
+
+        def fake_read(key: str) -> str:
+            return {"ref-bot": "xoxb-bot-tok", "ref-app": "xapp-app-tok"}.get(key, "")
+
+        with (
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+            pytest.raises(UnknownSlackScopeProfileError, match="slack_scope_profile"),
+        ):
+            backend_factory._messaging_from_toml(cfg)
+
+    @pytest.mark.parametrize("profile", [True, ["dm_only"], 0, {"profile": "dm_only"}, False])
+    def test_wrong_type_profile_refuses_to_build_the_bot(self, profile: object) -> None:
+        cfg = {"messaging_backend": "slack", "slack_scope_profile": profile, "slack_token_ref": "ref"}
+
+        def fake_read(key: str) -> str:
+            return {"ref-bot": "xoxb-bot-tok", "ref-app": "xapp-app-tok"}.get(key, "")
+
+        with (
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+            pytest.raises(UnknownSlackScopeProfileError, match="slack_scope_profile"),
+        ):
+            backend_factory._messaging_from_toml(cfg)
 
     def test_resolves_user_token_ref_from_pass(self) -> None:
         """``user_token_ref`` is honoured by the TOML path-only resolver.

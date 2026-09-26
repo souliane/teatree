@@ -24,7 +24,7 @@ from teatree.loops.off_live_tick_driver import (
     off_live_tick_commands,
 )
 
-_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
 
 class _ExplodingTickError(RuntimeError):
@@ -87,9 +87,9 @@ class TestOffLiveTickDriver(django.test.TestCase):
         assert result == {"deduped": 1}
         assert self._ran == []
 
-    def test_kill_switch_off_halts_the_chain_without_driving_anything(self) -> None:
+    def test_a_fleet_admitting_nothing_halts_the_chain_without_driving_anything(self) -> None:
         with (
-            unittest.mock.patch.object(off_live_tick_driver, "loop_runner_enabled", return_value=False),
+            unittest.mock.patch.object(off_live_tick_driver, "fleet_admits_work", return_value=False),
             unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", self._record),
         ):
             result = off_live_tick_driver.drive_off_live_tick_loops.func()

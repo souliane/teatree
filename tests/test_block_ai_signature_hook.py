@@ -230,6 +230,40 @@ class TestScannerErrorIsDistinguishedFromFinding:
         assert "scanner error" in reason.lower()
         assert "banned trailer in the PR body or commit message" not in reason
 
+    def test_a_t3_that_could_not_exec_fails_open(self, monkeypatch):
+        """The managed `t3` is a bash launcher; a target it cannot exec blocks EVERY commit.
+
+        bash reports that as exit 126 with `exec: … cannot execute` and none of the
+        scanner's own output — a process that never started, so it scanned nothing and
+        there is no verdict to withhold. Reading it as a scanner error refused every
+        commit on the box, including the ones that would have repaired the launcher.
+        """
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        unexecutable = subprocess.CompletedProcess(
+            args=[],
+            returncode=126,
+            stdout="",
+            stderr="/home/u/.local/bin/t3: line 4: exec: /gone/deploy/t3: cannot execute: required file not found",
+        )
+        with patch.object(router.subprocess, "run", return_value=unexecutable):
+            assert handle_block_ai_signature(_gh_pr_create("a clean description")) is False
+
+    def test_a_t3_that_is_not_found_by_the_shell_fails_open(self, monkeypatch):
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        missing = subprocess.CompletedProcess(args=[], returncode=127, stdout="", stderr="t3: command not found")
+        with patch.object(router.subprocess, "run", return_value=missing):
+            assert handle_block_ai_signature(_gh_pr_create("a clean description")) is False
+
+    def test_a_scanner_that_ran_and_errored_still_fails_closed(self, monkeypatch, capsys):
+        """The could-not-exec codes are the ONLY structural widening — 1 and 2 still block."""
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        errored = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="exec format error while reading the body"
+        )
+        with patch.object(router.subprocess, "run", return_value=errored):
+            assert handle_block_ai_signature(_gh_pr_create("a clean description")) is True
+        assert "scanner error" in json.loads(capsys.readouterr().out)["permissionDecisionReason"].lower()
+
     def test_real_finding_still_denies_with_finding_message(self, monkeypatch, capsys):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout=_FINDING_STDOUT, stderr="")

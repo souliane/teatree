@@ -134,5 +134,5 @@ def _run_verbatim_paste_pretool(data: dict) -> bool:
         return False
     if verdict.outcome == verbatim_paste.REPRODUCED:
         verbatim_paste.log_decision(decision="blocked", verdict=verdict)
-        return emit_pretooluse_deny(verbatim_paste.format_block_message(verdict))
+        return emit_pretooluse_deny(verbatim_paste.format_block_message(verdict), gate_id="verbatim_operator_paste")
     return False

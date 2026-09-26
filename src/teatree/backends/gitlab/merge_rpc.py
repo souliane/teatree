@@ -50,6 +50,9 @@ _READ_FAILURES = (httpx.HTTPError, BackendResolutionError, ValueError)
 # alongside the real exception so the log still names the concrete failure.
 _TRANSPORT_FAILURE_PREFIX = "temporary failure reaching the GitLab API"
 
+# GitLab merge methods that land a merge commit when ``squash`` is false; ``ff`` fast-forwards instead.
+_MERGE_COMMIT_METHODS = frozenset({"merge", "rebase_merge"})
+
 
 def _mr_endpoint(slug: str, pr_id: int) -> str:
     """The MR's REST path, with the project identifier URL-encoded.
@@ -101,6 +104,12 @@ class GitLabApiMergeRpc:
         """
         data = self._read(_mr_endpoint(slug, pr_id))
         return cast("RawAPIDict", data) if isinstance(data, dict) else None
+
+    def _merge_commit_refusal(self, slug: str) -> str:
+        """Why a no-squash merge would land no merge commit on *slug*, else ``""`` — unreadable refuses."""
+        project = self._read(f"projects/{slug.replace('/', '%2F')}")
+        method = project.get("merge_method") if isinstance(project, dict) else None
+        return "" if method in _MERGE_COMMIT_METHODS else _merge_commit_refusal_message(slug, method)
 
     def _read(self, endpoint: str) -> object:
         """A GET whose every failure mode degrades to ``None``, logged not swallowed."""
@@ -183,7 +192,7 @@ class GitLabApiMergeRpc:
         """GitLab has no branch-protection-required-status-checks gate on this path.
 
         The GitLab §17.4.3 verdict is the head pipeline's overall status (see
-        :func:`core.merge.ci_rollup._classify_gitlab_pipeline`), which already
+        :func:`core.merge.ci_rollup.classify_gitlab_pipeline`), which already
         aggregates the required jobs server-side. Core never calls this on the
         GitLab path; the method exists only to satisfy the ``CodeHostBackend``
         Protocol surface. Returns ``[]`` (no separate required-context gate).
@@ -212,8 +221,10 @@ class GitLabApiMergeRpc:
         paths = [entry.get("new_path") or entry.get("old_path") for entry in diffs]
         return [path.strip() for path in paths if isinstance(path, str) and path.strip()]
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
-        """``PUT merge_requests/<iid>/merge`` bound to *expected_head_oid*, squashed.
+    def merge_pr_squash_bound(
+        self, *, slug: str, pr_id: int, expected_head_oid: str, squash: bool = True
+    ) -> ForgeMergeResult:
+        """``PUT merge_requests/<iid>/merge`` bound to *expected_head_oid*, squashed unless ``squash=False``.
 
         Issued NON-idempotently: a merge that reached GitLab and only lost its
         response must not be blindly replayed by the retry transport (the replay
@@ -222,10 +233,12 @@ class GitLabApiMergeRpc:
         merge actually landed before each one.
         """
         endpoint = f"{_mr_endpoint(slug, pr_id)}/merge"
+        if not squash and (refusal := self._merge_commit_refusal(slug)):
+            return ForgeMergeResult(returncode=1, stdout="", stderr=refusal, merged_sha="")
         try:
             response = self._client.put_response(
                 endpoint,
-                {"sha": expected_head_oid, "squash": True},
+                {"sha": expected_head_oid, "squash": squash},
                 idempotent=False,
             )
         except httpx.RequestError as exc:
@@ -233,6 +246,13 @@ class GitLabApiMergeRpc:
         except BackendResolutionError as exc:
             return ForgeMergeResult(returncode=1, stdout="", stderr=str(exc), merged_sha="")
         return _merge_result(response)
+
+
+def _merge_commit_refusal_message(slug: str, method: object) -> str:
+    return (
+        f"refusing a --no-squash merge of {slug}: its GitLab merge method is {method or 'unreadable'!s}, "
+        f"which does not land a merge commit — the second parent a no-squash merge exists to keep would be lost"
+    )
 
 
 def _transport_failure(exc: httpx.RequestError) -> ForgeMergeResult:

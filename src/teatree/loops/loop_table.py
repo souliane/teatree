@@ -7,10 +7,10 @@ cadence ledger. #2584 closes the gap the #2513 cutover opened: a loop runs this
 tick iff it is NOT ``off_live_tick`` AND its ``Loop`` row is ``is_due(now)`` (its
 own ``delay_seconds`` interval, or its ``daily_at`` wall-clock schedule) AND the
 combined enable verdict admits it. That verdict is
-:func:`teatree.loop.loop_state_db.loop_state_admits` — ``Loop.enabled`` (the
-configured/opt-in plane) AND not ``LoopState``-held (the durable runtime control
-tier: ``t3 loop pause`` / ``disable``, #1913) — there is no env kill-switch and no
-``[loops]`` toml disabled-state tier. The tick applies that ONE predicate over its
+:func:`teatree.loop.loop_state_db.loop_state_admits` — not ``LoopState``-held (the
+durable runtime control tier: ``t3 loop pause`` / ``disable``, #1913), then the manual
+override ``Loop.enabled`` carries when a human set one, then the active preset — there is
+no env kill-switch and no ``[loops]`` toml disabled-state tier. The tick applies that ONE predicate over its
 already-bulk-loaded ``Loop`` rows plus a SINGLE bulk ``LoopState`` read (no
 per-loop hold query), and the standalone :func:`teatree.loops.enable_verdict.loop_admits`
 single-lookup used
@@ -42,10 +42,11 @@ silently consumed. The fan-out then ATOMICALLY claims an admitted loop's ``last_
 BEFORE building its jobs, so two ticks that read the same anchor cannot both
 drive the loop — exactly one wins the claim and dispatches.
 
-**Colleague-facing loops are held off by the mode's own table (#2904, #61).** A mode
-that means "the owner cannot weigh in" says so by turning ``followup`` — the sole
-``Loop.colleague_facing`` row — OFF in its ``entries``, so the mask the tick already
-applies is the whole mechanism; there is no second posture axis to drift from it.
+**Colleague-facing WORK is held off per action, not per loop (#2904, #61).** ``afk``
+runs ``followup`` — its sync half is the daily job and only its nag is a voice — so a
+posture that means "the owner cannot weigh in" declares ``Mode.egress = "forbid"`` and the
+loop layer reads it at SELECTION time, rather than masking a loop whose other half is
+wanted.
 
 This is the ``jobs_builder`` the per-loop tick (``t3 loops tick --loop <name>``)
 injects into the shared :func:`teatree.loop.tick.run_tick` pipeline, so reap +
@@ -193,10 +194,10 @@ def _admission_block(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) ->
         return "no Loop row — this loop's config was never seeded"
     if not row.is_due(ctx.now):
         return "not due yet on its own cadence"
-    return _control_plane_block(row, loop, ctx)
+    return _control_plane_block(loop, ctx)
 
 
-def _control_plane_block(row: "Loop", loop: MiniLoop, ctx: _TickAdmission) -> str:
+def _control_plane_block(loop: MiniLoop, ctx: _TickAdmission) -> str:
     """Which enable plane refused *loop* — the empty string when none did.
 
     Delegated whole to :meth:`~teatree.loops.enable_verdict.EnablePlanes.refusal`, the
@@ -205,7 +206,7 @@ def _control_plane_block(row: "Loop", loop: MiniLoop, ctx: _TickAdmission) -> st
     *ctx*'s already-bulk-loaded planes — it issues NO query of its own, so the
     single-``teatree_loop_state``-read invariant (#2584) holds unchanged.
     """
-    return ctx.planes.refusal(loop.name, configured_enabled=row.enabled)
+    return ctx.planes.refusal(loop.name)
 
 
 def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> bool:
@@ -215,8 +216,8 @@ def _loop_admitted(row: "Loop | None", loop: MiniLoop, ctx: _TickAdmission) -> b
     :func:`teatree.loops.off_live_tick_driver.drive_off_live_tick_loops`), it HAS a ``Loop``
     row that is ``is_due(now)``, AND
     :class:`~teatree.loops.enable_verdict.EnablePlanes` admits it — not held (the bulk
-    ``LoopState`` read, #2584), then the forced plane, then the active mode's mask over
-    ``Loop.enabled``. Those planes are the SAME object chain membership reads (#4185),
+    ``LoopState`` read, #2584), then the manual override, then the active preset. Those
+    planes are the SAME object chain membership reads (#4185),
     so :func:`build_loop_table_jobs`, :func:`admitted_loop_names` and
     :func:`teatree.loops.chain_membership.timer_chain_loop_names` cannot drift.
 

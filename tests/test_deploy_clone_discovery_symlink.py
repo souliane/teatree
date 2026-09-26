@@ -4,14 +4,23 @@
 The runtime clone lives on the ``teatree_src`` volume at ``/home/teatree/teatree``,
 but ``clone_root()`` resolves source clones under ``~/workspace``. Provisioning a
 worktree calls ``find_clone_path(clone_root, "souliane/teatree")``, which matches
-the slug's literal path ``~/workspace/souliane/teatree`` — a bare
-``~/workspace/teatree`` link (no owner segment) is invisible to that lookup, so
-``workspace ticket`` fails at worktree provisioning ("No git clone found for
-souliane/teatree") and the issue-implementer intake is silently disabled.
+the slug's literal path ``~/workspace/souliane/teatree``. A bare
+``~/workspace/teatree`` link (no owner segment) used to be invisible to that
+lookup, so ``workspace ticket`` failed at worktree provisioning ("No git clone
+found for souliane/teatree") and the issue-implementer intake was silently
+disabled.
 
 These tests pin the image to the org-prefixed discovery link and cross-check the
-same layout resolves through the real ``find_clone_path`` (a RED-before-fix guard:
-the old bare ``workspace/teatree`` link fails both).
+same layout resolves through the real ``find_clone_path``.
+
+Since #151 the resolver also probes the FLAT clone root, so the bare link
+resolves too and the image link is belt-and-braces rather than the only way in.
+Resolving by basename is deliberately identity-BLIND at this layer; whether the
+clone really IS the requested slug is settled downstream by the #2276 origin
+guard in ``runners.provision``, which ``is_remote_project_path`` now runs for
+multi-segment GitLab namespaces as well (pinned by
+``tests/teatree_core/test_runners_provision.py``
+``::test_a_multi_segment_path_with_a_wrong_origin_flat_clone_raises_loud``).
 """
 
 import re
@@ -72,14 +81,28 @@ class TestFindClonePathResolvesContainerLayout:
         assert resolved == clone_root / "souliane" / "teatree"
         assert (resolved / ".git").is_dir()
 
-    def test_bare_non_org_symlink_does_not_resolve_the_slug(self, tmp_path: Path) -> None:
-        # The old container layout: link at workspace/teatree (no owner) — the
-        # slug lookup misses it, reproducing the provisioning failure.
+    def test_bare_non_org_symlink_now_resolves_through_the_flat_rung(self, tmp_path: Path) -> None:
+        # The old container layout: link at workspace/teatree (no owner). It used to
+        # miss the slug lookup entirely, which is why the image gained the org-prefixed
+        # link above; #151's flat rung resolves it by basename now. The identity
+        # question this rung cannot answer is the origin guard's, not the resolver's —
+        # see the module docstring.
         clone = tmp_path / "teatree"
         (clone / ".git").mkdir(parents=True)
         clone_root = tmp_path / "workspace"
         clone_root.mkdir()
         (clone_root / "teatree").symlink_to(clone)
+
+        assert find_clone_path(clone_root, REPO_SLUG) == clone_root / "teatree"
+
+    def test_a_clone_root_holding_no_matching_basename_resolves_to_none(self, tmp_path: Path) -> None:
+        # The anti-vacuity control the flipped case above no longer supplies: with
+        # every rung widened, the resolver must still be able to answer "no clone".
+        clone = tmp_path / "teatree"
+        (clone / ".git").mkdir(parents=True)
+        clone_root = tmp_path / "workspace"
+        (clone_root / "souliane").mkdir(parents=True)
+        (clone_root / "souliane" / "some-other-repo").symlink_to(clone)
 
         assert find_clone_path(clone_root, REPO_SLUG) is None
 

@@ -5,6 +5,7 @@ EXPLICIT criteria (no ``/plan`` derivation); the grade seam records a verifier's
 per-criterion PASS/FAIL through the guarded factory (grader != maker, SHA-bound).
 """
 
+import io
 import json
 from typing import cast
 
@@ -12,9 +13,11 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.models import RubricCriterion, Ticket
+from teatree.core.management.commands._rubric_commands import RubricCommandError, parse_grades
+from teatree.core.models import RubricCriterion, RubricError, Ticket
 
 _SHA = "a" * 40
+_CITATION = "unit: tests/teatree_core/test_ticket_rubric_commands.py"
 
 
 def _ticket() -> Ticket:
@@ -77,7 +80,12 @@ class TestRubricGradeCommand(TestCase):
 
     def test_grade_stamps_pass_and_reports_fully_passed(self) -> None:
         ticket = self._ticket_with_rubric()
-        grades = json.dumps([{"ordinal": 0, "status": "pass"}, {"ordinal": 1, "status": "pass"}])
+        grades = json.dumps(
+            [
+                {"ordinal": 0, "status": "pass", "rationale": _CITATION},
+                {"ordinal": 1, "status": "pass", "rationale": _CITATION},
+            ]
+        )
         result = cast(
             "dict[str, object]",
             call_command(
@@ -104,7 +112,7 @@ class TestRubricGradeCommand(TestCase):
                 "rubric-grade",
                 str(ticket.pk),
                 "--grades-json",
-                json.dumps([{"ordinal": 0, "status": "pass"}]),
+                json.dumps([{"ordinal": 0, "status": "pass", "rationale": _CITATION}]),
                 "--grader-identity",
                 "cold-reviewer",
                 "--reviewed-sha",
@@ -233,3 +241,87 @@ class TestRubricGradeCommand(TestCase):
                 "--reviewed-sha",
                 _SHA,
             )
+
+    def test_a_refused_batch_stamps_nothing(self) -> None:
+        # The atomicity the CLI inherits from `Rubric.apply_grades`: criterion 0's
+        # grade is valid, criterion 1's PASS is uncited. A non-atomic run leaves the
+        # rubric half-graded — a state no verifier chose to record.
+        ticket = self._ticket_with_rubric()
+        with pytest.raises(SystemExit):
+            call_command(
+                "ticket",
+                "rubric-grade",
+                str(ticket.pk),
+                "--grades-json",
+                json.dumps(
+                    [{"ordinal": 0, "status": "pass", "rationale": _CITATION}, {"ordinal": 1, "status": "pass"}]
+                ),
+                "--grader-identity",
+                "cold-reviewer",
+                "--reviewed-sha",
+                _SHA,
+            )
+
+        assert [c.status for c in ticket.rubrics.get().criteria.all()] == [
+            RubricCriterion.Status.PENDING,
+            RubricCriterion.Status.PENDING,
+        ]
+
+
+class TestParseGrades(TestCase):
+    """The CLI parser yields the same :class:`RubricGrade` shape the envelope carries.
+
+    The per-item refusals below are :meth:`Rubric.normalize_grades`, shared verbatim with
+    the reviewing recorder — the CLI's own contract is now only the JSON and the
+    non-empty-array rule, which the envelope path does not share.
+    """
+
+    def test_an_ordinal_string_is_coerced_to_the_int_the_lookup_needs(self) -> None:
+        assert parse_grades(json.dumps([{"ordinal": "0", "status": "pass"}])) == [
+            {"ordinal": 0, "status": "pass", "rationale": ""}
+        ]
+
+    def test_a_non_integer_ordinal_is_refused_by_name(self) -> None:
+        with pytest.raises(RubricError, match="a grade ordinal must be an integer naming a criterion"):
+            parse_grades(json.dumps([{"ordinal": "first", "status": "pass"}]))
+
+    def test_a_float_ordinal_is_refused_rather_than_truncated(self) -> None:
+        with pytest.raises(RubricError, match="a grade ordinal must be an integer naming a criterion"):
+            parse_grades(json.dumps([{"ordinal": 1.5, "status": "pass"}]))
+
+    def test_the_non_empty_array_rule_stays_the_command_own_refusal(self) -> None:
+        # The envelope path does not share it — an absent ``rubric_grades`` grades nothing
+        # there rather than refusing — so this rung stays behind the CLI's own error type.
+        with pytest.raises(RubricCommandError, match="non-empty array"):
+            parse_grades(json.dumps({"ordinal": 0, "status": "pass"}))
+
+    def test_a_bare_string_item_is_refused_by_name(self) -> None:
+        with pytest.raises(RubricError, match="must be an object, not a str"):
+            parse_grades(json.dumps(["pass"]))
+
+    def test_an_item_naming_the_wrong_status_field_is_refused_by_name(self) -> None:
+        with pytest.raises(RubricError, match="needs an ordinal and a status"):
+            parse_grades(json.dumps([{"ordinal": 0, "grade": "pass"}]))
+
+    def test_a_malformed_item_names_the_refusal_on_stderr_and_exits_nonzero(self) -> None:
+        ticket = _ticket()
+        call_command("ticket", "rubric-set", str(ticket.pk), "--criteria-json", json.dumps(["the fix is pinned RED"]))
+        stderr = io.StringIO()
+
+        with pytest.raises(SystemExit) as raised:
+            call_command(
+                "ticket",
+                "rubric-grade",
+                str(ticket.pk),
+                "--grades-json",
+                json.dumps(["pass"]),
+                "--grader-identity",
+                "cold-reviewer",
+                "--reviewed-sha",
+                _SHA,
+                stderr=stderr,
+            )
+
+        assert raised.value.code == 1
+        assert "rubric-grade refused: each grade must be an object, not a str: 'pass'" in stderr.getvalue()
+        assert [c.status for c in ticket.rubrics.get().criteria.all()] == [RubricCriterion.Status.PENDING]

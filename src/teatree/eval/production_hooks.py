@@ -1,8 +1,7 @@
-"""Production-hook plugin wiring for the clean-room SDK eval runner.
+"""Production-hook wiring shared by the SDK and direct-model eval runners.
 
 A ``production_hooks`` scenario measures the model+hook SYSTEM that ships, not
-the raw model. Three seams make that real, composed by
-:func:`teatree.eval.api_runner.build_sdk_options` and the runner:
+the raw model. Three shared seams make that real:
 
 *   :func:`t3_plugin` — registers the shipped teatree hook chain
     (``hooks/hooks.json`` fired from the repo-root plugin manifest) into the
@@ -13,6 +12,10 @@ the raw model. Three seams make that real, composed by
 *   :func:`has_hook_events` — the fail-loud signal that the plugin genuinely
     registered (its absence on a hooked run means the lane silently degraded
     back to raw-model measurement).
+
+The SDK installs the plugin through :func:`teatree.eval.api_runner.build_sdk_options`;
+the CLI-free runner executes the same manifest through
+:mod:`teatree.eval.production_hook_bridge`.
 """
 
 import json
@@ -92,15 +95,25 @@ def hooked_env(env: dict[str, str], home: str) -> dict[str, str]:
     ``TEATREE_CLAUDE_STATUSLINE_STATE_DIR`` — an INHERITED real value would let the
     developer's LIVE loop-owner registry make ``_session_drives_loop(eval-session)``
     False, silently SKIPPING the Stop gate (a spurious raw-model measurement) and
-    polluting host hook state. Pinning those four at the sandbox home gives the gate a
+    polluting host hook state. Pinning those five at the sandbox home gives the gate a
     fresh, owner-less registry so it fires, and keeps eval hook state off the host.
-    ``CLAUDE_PLUGIN_ROOT`` is the fifth and is preflighted, not sandboxed — it points
+    ``CLAUDE_PLUGIN_ROOT`` is the sixth and is preflighted, not sandboxed — it points
     at the shipped plugin the hook commands live in.
     """
     hooked = dict(env)
     base = Path(home)
     hooked[PLUGIN_ROOT_VAR] = str(preflighted_plugin_root())
-    hooked["XDG_DATA_HOME"] = str(base / ".local" / "share")
+    # Keep this explicit sandbox distinct from ``$HOME/.local/share``.  The
+    # latter is the canonical location by definition, and worktree code refuses
+    # it even when HOME itself is temporary; an explicit sibling proves this is
+    # the eval-owned data root rather than the user's control DB.
+    hooked["XDG_DATA_HOME"] = str(base / "xdg-data")
+    # An explicit XDG_DATA_HOME under a linked worktree is intentionally rejected
+    # by the canonical-DB guard unless the caller also names an isolated teatree
+    # data root.  Without this pin, cold hook imports fail and safety gates degrade
+    # to their fail-closed branch (for example, harmless ``Bash true`` is mistaken
+    # for an unknown raw merge).  The SDK and direct-model adapters share this env.
+    hooked["T3_DATA_DIR"] = str(base / "teatree-data")
     hooked["T3_LOOP_REGISTRY_DIR"] = str(base / "loop-registry")
     hooked["T3_HOOK_STATE_DIR"] = str(base / "hook-state")
     hooked["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(base / "statusline-state")

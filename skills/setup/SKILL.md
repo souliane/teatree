@@ -139,18 +139,10 @@ slack_token_ref = "teatree/<name>/slack"
 
 ## Step 3: Install Skills
 
-`t3 setup` installs teatree's skills per runtime:
-
-- **Claude** — core skills ship inside the plugin, which `t3 setup` registers in
-  `~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the
-  main clone (no `~/.claude/plugins/t3` symlink — any leftover legacy one is
-  removed by `_cleanup_legacy_plugin`). Because the plugin carries the core
-  skills, `t3 setup` does **not** symlink them into `~/.claude/skills/`; any
-  leftover core symlinks from pre-plugin installs are pruned to avoid duplicate
-  entries. Overlay skills (not shipped by the plugin) are still symlinked.
-- **Other runtimes** listed in `teatree.cli.setup.AGENT_SKILL_RUNTIMES`
-  (e.g. Codex) are targeted when their home directory already exists, and
-  receive symlinks for both core and overlay skills.
+`t3 setup` installs TeaTree's skills per runtime. Claude Code and Codex receive
+the same core skills through the portable plugin. Setup prunes legacy core links
+from `~/.claude/skills/` and `~/.agents/skills/`, then links overlay skills that
+are not part of the portable package into both existing runtime directories.
 
 Contributor-mode symlinks that point inside the configured `workspace_dir`
 are preserved across runs.
@@ -158,11 +150,25 @@ are preserved across runs.
 Inspect the result with `t3 info` — the "Skills installed to" section lists
 every runtime dir teatree detected along with the count of managed symlinks.
 
-## Step 4: Claude Code Plugin Hooks
+## Step 4: Portable Claude Code and Codex Plugin
 
-Teatree ships a `hooks.json` that Claude Code loads automatically. `t3 setup` registers the plugin in `~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the main clone (no symlink, always live). All hooks route through `hook_router.py`, a unified Python router that handles event dispatch.
+Teatree is one package with sibling `.claude-plugin/plugin.json` and
+`.codex-plugin/plugin.json` wrappers over shared skills, `.mcp.json`, and policy
+code. `t3 setup` registers the plugin in both runtimes.
+Claude Code reads the live checkout through `installed_plugins.json`; Codex gets a
+slim copy of what `.codex-plugin/plugin.json` declares (`~/.local/share/teatree/codex-plugin`)
+registered as its local marketplace, and installs `t3@souliane` from it, without a
+remote clone. This registration makes the shared skills and `mcp__teatree__*` tools
+available in ordinary interactive sessions. The headless Codex app-server harness
+does not need the plugin for transport or authentication.
 
-Verify the registration: `t3 doctor check` (it reports the registered plugin and its `installPath`).
+Claude Code loads the full `hooks/hooks.json` workflow. The validated Codex plugin
+manifest exposes skills and MCP only. `hooks/codex.json` and its adapter remain an
+experimental, inactive compatibility probe until Codex plugin validation accepts a
+hooks field and an end-to-end Codex invocation proves the environment and decisions.
+
+Verify the registration: `t3 doctor check` reports the Claude plugin and its
+`installPath`; `codex plugin list --json` reports `t3@souliane` for Codex.
 
 `t3 setup` also registers + enables the external `pyright-lsp@claude-plugins-official`
 plugin (from the `anthropics/claude-plugins-official` marketplace) via the `claude
@@ -194,11 +200,9 @@ outcome, and a surface that cannot be read is its own WARN rather than a
 confidently-empty pass. Declaring a new mandate is the whole change: the gate picks it
 up with no edit to the check.
 
-`t3 setup` installs the manifest-declared skills no plugin ships, cloning each from the
-source its declaration names into `~/.local/share/teatree/skill-sources` and symlinking
-it into `~/.claude/skills`. It is idempotent — an already-loadable skill is skipped — so
-the container entrypoint's every-start `t3 setup` converges without re-fetching. `apm`
-remains the primary installer when it is present.
+`t3 setup` installs every enumerable manifest dependency for Claude Code and Codex
+through the pinned skills CLI. It selects the declared names explicitly and remains
+idempotent when the container entrypoint runs setup on every start.
 
 The hooks cover these events:
 
@@ -252,23 +256,23 @@ For the broader picture — operating mode (DB-home `mode`, set via `t3 <overlay
 
 ### Interactive permission mode
 
-Set `permissions.defaultMode` to `auto` in `~/.claude/settings.json` for the session you drive teatree from. `auto` sends every tool call past a model classifier, so the session flows without a prompt on each call but nothing is blanket-approved. `bypassPermissions` approves everything — a wider posture than an interactive session needs, since you are present.
+The configured interactive runtime owns its attended permission mode. For Claude Code, set `permissions.defaultMode` to `auto` in `~/.claude/settings.json` for the session you drive teatree from. `auto` sends every tool call past a model classifier, so the session flows without a prompt on each call but nothing is blanket-approved. `bypassPermissions` approves everything — a wider posture than an interactive session needs, since you are present. A Codex launch likewise leaves approvals at the operator's configured default.
 
 This is a suggestion, not a gate: the mode is Claude Code's setting, not teatree's, so `t3 doctor check` only advises when it sees `bypassPermissions` and stays silent when no mode is configured.
 
-**Changing it reaches only the session you drive, even though every lane reads the same file.** `defaultMode` is one global key, so the separation cannot come from the settings — it comes from each unattended lane pinning `--permission-mode` for itself. Headless dispatch pins it in `ClaudeAgentOptions` (the SDK emits the flag); `t3 loop start` pins the same flag on the argv it execs; and `t3 agent "<task>"` pins it on the `-p` argv it execs. A pinned flag beats the settings default, so none of those lanes inherits your choice here.
+**Changing it reaches only the Claude session you drive, even though every Claude lane reads the same file.** `defaultMode` is one global key, so the separation cannot come from the settings — it comes from each unattended Claude lane pinning `--permission-mode` for itself. Headless dispatch pins it in `ClaudeAgentOptions` (the SDK emits the flag); `t3 loop start` pins the same flag on the argv it execs; and a Claude-backed `t3 agent "<task>"` pins it on the `-p` argv it execs. A pinned flag beats the settings default, so none of those lanes inherits your choice here.
 
 Those pins are the only thing separating the lanes, and each is asserted — `tests/teatree_agents/test_runner_least_privilege.py`, `tests/teatree_cli/test_cli_loop.py`, and `tests/teatree_cli/test_cli_agent.py` — so removing one fails a test rather than silently classifier-gating unattended work.
 
-Note the split inside `t3 agent`: with a task argument it execs `claude -p`, which is headless and therefore pinned; with no task it execs an interactive `claude` and pins nothing, because you are the human sitting in front of it.
+Note the split inside `t3 agent`: the task's presence selects the project's headless or interactive runtime. Claude uses `claude -p` plus the unattended permission pin for a task and an unpinned interactive `claude` without one. Codex uses `codex exec --dangerously-bypass-approvals-and-sandbox` for a task and an ordinary attended `codex` without one. This CLI selection does not alter the Factory's in-process `Harness` transport.
 
 Five contexts — do not generalise one to the others:
 
 | Context | Mode | Why |
 |---|---|---|
 | Interactive session (you are present) | `auto` | classifier gates each call; no prompt spam, not allow-all |
-| Bare `t3 agent` (no task argument) | unpinned — inherits your `defaultMode` | execs an interactive `claude`; the session is attended, so the mode is yours to choose |
-| `t3 agent "<task>"` | `bypassPermissions` (pinned) | execs `claude -p`; print-mode runs headless with nobody present to answer a denial |
+| Bare `t3 agent` (no task argument) | runtime default | execs the configured interactive runtime; the session is attended, so the mode is yours to choose |
+| `t3 agent "<task>"` | unattended (pinned) | execs the configured headless runtime with its native bypass flag; nobody is present to answer a denial |
 | The `t3 loop start` session | `bypassPermissions` (pinned) | drives the autonomous loop; unattended while the owner is away, so a classifier denial has nobody to override it |
 | Headless write phases (`coding` / `planning` / `shipping` / `reviewing`) | `bypassPermissions` (pinned) | no human to approve a `Write`; narrowing it strands the run |
 | The quarantined reader phase | `dontAsk` (pinned) | its tool set is meant to be empty, so default-deny is correct |
@@ -325,17 +329,10 @@ If the user already has a project-local virtualenv, using that is fine too. The 
 
 ## Companion Skills
 
-`ac-reviewing-codebase`, `ac-python` and `ac-django` are REQUIRED, not offers. They are
-declared in `apm.yml` `dependencies.apm`, `t3 setup` provisions them, and `t3 doctor check`
-FAILs on any that is absent with its `apm install <spec>` line. Nothing to decide per stack —
-if one is missing, run the line the FAIL prints:
-
-```bash
-apm install souliane/skills/ac-reviewing-codebase#<ref>
-```
-
-None of the three is carried in this repo's `skills/` tree: a local copy would satisfy the
-mandate from the plugin-first install path and hide an unreachable source.
+The companion and methodology skills in `apm.yml` are REQUIRED, not offers. The
+Superpowers declarations name only the seven external methodology skills TeaTree
+requires; setup never installs the whole upstream bundle. If one is absent, restore
+access to its pinned source and rerun `t3 setup`.
 
 Offer the rest by stack, and install only if missing:
 

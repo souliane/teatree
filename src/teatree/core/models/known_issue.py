@@ -29,7 +29,7 @@ from django.db import models
 from django.utils import timezone
 
 if TYPE_CHECKING:
-    from teatree.core.factory.operational_health import HealthSignal
+    from teatree.core.factory.health_signal import HealthSignal
 
 
 class KnownIssueManager(models.Manager["KnownIssue"]):

@@ -106,6 +106,9 @@ class PREntrySerialized(TypedDict, total=False):
 
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
+    # Self-improvement repair tickets need this marker to classify their own
+    # task failures separately from the incidents they are investigating.
+    source: str
     pr_urls: list[str]
     # #1263: per-branch PR URL index so a reused-ticket multi-workstream
     # ship can tell whether the *current* invoking branch's PR exists,
@@ -153,7 +156,13 @@ class TicketExtra(TypedDict, total=False):
     issue_title: str
     labels: list[str]
     reviewed_sha: str
+    # What the FORGE last reported. Overwritten with the live value on every scan, so a
+    # LOCAL disposition stored here survives one pass and is then read back as an
+    # observation — the discharge has its own key below for exactly that reason.
     last_review_state: str
+    # The SHA the factory's own review was discharged at, written by the discharge
+    # transitions. Durable: nothing that caches forge state may overwrite it.
+    discharged_sha: str
     # ``ReviewedPrHeadScanner``'s rotation clock — least-recently-checked first,
     # so its per-tick cap cannot pin one window of a longer watch list.
     head_checked_at: str
@@ -164,7 +173,9 @@ class TicketExtra(TypedDict, total=False):
     # #940 branch-currency gate state: post-merge SHA the cold reviewer
     # must attest, and a durable refusal entry when the ship-time
     # defense-in-depth re-check rejects the push.
-    target_branch: str
+    # Stacked-delivery override keyed by canonical owner/repo slug. The string
+    # shape is retained only for tickets written before repo scoping.
+    target_branch: dict[str, str] | str
     branch_currency_post_merge_sha: str
     ship_branch_currency_blocker: "BranchCurrencyBlocker"
     last_approval_sha: str
@@ -189,13 +200,6 @@ class TicketExtra(TypedDict, total=False):
     # #1829 SHA-bound anti-vacuity proof; read by ``anti_vacuity_gate`` (see
     # ``AntiVacuityAttestation`` below).
     anti_vacuity_attestation: "AntiVacuityAttestation"
-    # #2232 per-ticket spec-coverage manifest mapping each acceptance criterion
-    # to its backing test(s); read by ``spec_coverage_gate`` (see
-    # ``SpecCoverageManifest`` below) at ``mark_delivered`` when
-    # ``require_spec_coverage`` is on. ``spec_coverage_override`` is the audited
-    # escape hatch (a ``reason`` for an AC-less ticket).
-    spec_coverage: "SpecCoverageManifest"
-    spec_coverage_override: "SpecCoverageOverride"
     # #1661 per-ticket FixRecord read by ``fix_dod_gate`` at ``mark_delivered`` for
     # ``kind=fix``; written from the agent result envelope by
     # ``agents.fix_record_recorder``. ``fix_record_override`` is the audited escape
@@ -255,13 +259,8 @@ class TicketExtra(TypedDict, total=False):
     # reconcile checks a box or retires a memory. See ``teatree.loops.dream.batch_promote``.
     dream_gap_batch: "list[dict[str, str]]"
     dream_gap_claimed_delivered: list[str]
-    # #2886: durable pydantic_ai harness conversation store for cached-resume
-    # parity with claude_sdk's ``--resume <session>``. Keyed by the PARKED
-    # ``Task.pk`` (the same identifier ``_get_resume_session_id`` walks the
-    # ``parent_task`` chain for), each value the JSON-mode dump of a
-    # ``pydantic_ai`` ``list[ModelMessage]``. Single-use: a resume consumes
-    # (pops) its entry, so the map never accumulates stale threads. See
-    # ``teatree.agents.pydantic_ai_resume``.
+    # #2886: durable pydantic_ai conversation store, keyed by the ``Task.pk`` whose run produced
+    # it and selected through ``Task.session_continuation``; see ``teatree.agents.pydantic_ai_resume``.
     pydantic_ai_threads: dict[str, list[object]]
     # #1 dispatch-zone executor contract: metadata the revived correction-zone
     # persistence handlers stamp so the dispatched agent has its context.
@@ -361,27 +360,32 @@ class AdequacySection(TypedDict, total=False):
 
 
 class PlanAdequacy(TypedDict, total=False):
-    """A four-section plan-adequacy manifest recorded on a ``PlanArtifact`` (SELFCATCH-3).
+    """A five-section plan-adequacy manifest recorded on a ``PlanArtifact`` (SELFCATCH-3).
 
     The structural substitute for judging whether a plan is a real plan or a thin
-    scope+acceptance spec. Each of the four sections must be substantive OR carry an
-    explicit reasoned negative (:class:`AdequacySection`) — a scope+acceptance-only
-    spec has no seams/edge-cases/test-strategy claims to make, so it structurally
-    fails ``plan_adequacy.is_adequate``. ``integration_seams.content`` is the list of
+    scope+acceptance spec. Each of the five sections must be substantive OR carry an
+    explicit reasoned negative (:class:`AdequacySection`) — a scope-only spec has no
+    seams/edge-cases/test-strategy claims to make, so it structurally fails
+    ``plan_adequacy.is_adequate``. ``integration_seams.content`` is the list of
     registries/contracts/sibling-paths the change touches; the plan-currency gate
     reads it to decide when a moved target HEAD renders the plan stale.
+    ``acceptance_criteria.content`` is the ticket's acceptance-criteria list, which
+    ``PlanArtifact.record`` turns into the ticket's ``core.Rubric`` rows — the plan is
+    the one home for it, and a reasoned negative there writes no rows and waives nothing
+    (the rubric gate's one waiver is the human-authorized ``ticket plan-bypass``).
     """
 
     design: AdequacySection
     integration_seams: AdequacySection
     edge_cases: AdequacySection
     test_strategy: AdequacySection
+    acceptance_criteria: AdequacySection
     # North-star PR-3 debt-delta waivers: the audited escape the ``debt_delta_gate``
     # honours. Each entry (:class:`ApprovedDebt`) names a suppression pattern the
     # plan explicitly approves plus the reason it is acceptable — so a net-new
     # ``noqa`` / ``type-ignore`` / lowered floor ships only against a recorded,
     # reasoned approval, never silently. Absent/empty on a plan that introduces no
-    # debt (the common case); it does NOT participate in the four-section
+    # debt (the common case); it does NOT participate in the five-section
     # :func:`plan_adequacy.is_adequate` check.
     approved_debt: list["ApprovedDebt"]
 
@@ -427,66 +431,23 @@ class AntiVacuityAttestation(TypedDict, total=False):
     at: str
 
 
-class AcceptanceCriterion(TypedDict, total=False):
-    """One acceptance criterion and the test(s) that back it (#2232).
+class RubricGrade(TypedDict, total=False):
+    """One verifier's per-criterion grade — the ONE shape every rubric producer speaks.
 
-    ``id`` is the canonical label (e.g. ``"AC1"``); ``description`` is the
-    human-readable statement and the fallback label when ``id`` is absent.
-    ``tests`` lists the backing test references (``path::node`` ids). An AC with
-    an empty/absent ``tests`` list is *uncovered* — the spec-coverage gate
-    refuses delivery until every AC names at least one test.
+    Declared here rather than beside any one producer because four surfaces read it
+    and a second hand-typed shape is how they drift: the ``rubric-grade`` CLI parser,
+    the reviewing agent's ``review_verdict.rubric_grades`` envelope and its JSON
+    schema, and :meth:`~teatree.core.models.rubric.Rubric.apply_grades` which stamps
+    them. Same reasoning as :class:`FixRecord` above.
+
+    ``rationale`` is required for a PASS and refused-if-absent by
+    :meth:`~teatree.core.models.rubric.RubricCriterion.record_grade`, not here — a
+    TypedDict cannot express "required only when ``status`` is ``pass``".
     """
 
-    id: str
-    description: str
-    tests: list[str]
-
-
-class SpecCoverageManifest(TypedDict, total=False):
-    """Per-ticket map of every acceptance criterion to its backing test(s) (#2232).
-
-    Carried on ``Ticket.extra['spec_coverage']``. The spec-coverage DoD gate
-    (``teatree.core.gates.spec_coverage_gate``) consumes it at ``mark_delivered``
-    when ``require_spec_coverage`` is on: a ticket cannot reach DELIVERED unless
-    every entry in ``acceptance_criteria`` has a backing test — done cannot be
-    declared on a partial subset of the spec.
-    """
-
-    acceptance_criteria: list[AcceptanceCriterion]
-
-
-def ac_label(ac: AcceptanceCriterion) -> str:
-    """The human label for an AC: its ``id`` if present, else its ``description``."""
-    return str(ac.get("id") or ac.get("description") or "<unnamed-ac>").strip()
-
-
-def spec_coverage_criteria(extra: dict | None) -> list[AcceptanceCriterion]:
-    """The declared acceptance criteria carried in *extra*, or an empty list.
-
-    The one parse shared by the gate that READS the manifest and the ticket
-    method that WRITES it, so producer and consumer can never drift. A missing,
-    non-mapping, or non-list manifest all yield ``[]`` — there is no partial
-    parse; non-mapping entries inside the list are dropped.
-    """
-    manifest = (extra or {}).get("spec_coverage")
-    if not isinstance(manifest, dict):
-        return []
-    criteria = manifest.get("acceptance_criteria")
-    if not isinstance(criteria, list):
-        return []
-    return [ac for ac in criteria if isinstance(ac, dict)]
-
-
-class SpecCoverageOverride(TypedDict, total=False):
-    """Audited escape hatch for an AC-less ticket (#2232).
-
-    ``Ticket.extra['spec_coverage_override']`` with a non-empty ``reason`` makes
-    the spec-coverage gate pass-and-log — for a genuinely AC-less ticket (a pure
-    refactor, a docs-only change) the heuristic must not hard-trap a legitimate
-    delivery.
-    """
-
-    reason: str
+    ordinal: int
+    status: str
+    rationale: str
 
 
 class FixRecord(TypedDict, total=False):
@@ -654,7 +615,8 @@ class E2ELastRunSerialized(TypedDict, total=False):
     timestamp: str
     per_repo_shas: dict[str, str]
     # The environment the run executed against: ``"local"`` (teatree-managed
-    # local stack) or ``"dev"`` (deployed dev environment). The DoD gate (#88)
+    # on-disk stack), ``"stack"`` (overlay-declared remote local stack), or a
+    # deployed target such as ``"dev"`` / ``"qa"``. The DoD gate (#88)
     # requires a *local* green run before a UI-visible ticket may ship — a
     # dev-after-merge run does not satisfy it. Absent on rows recorded before
     # #88; the gate treats a missing env conservatively as not-local.

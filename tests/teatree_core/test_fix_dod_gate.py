@@ -23,6 +23,7 @@ from teatree.core.models.types import FIX_RECORD_FIELDS, FixRecord, validated_ti
 from teatree.loop.dispatch import dispatch
 from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.scanners.base import ScanSignal
+from tests.factories import waive_rubric
 
 _COMPLETE_RECORD = {
     "root_cause": "carve-out resolved repo from ambient cwd, ignoring git -C target",
@@ -158,11 +159,13 @@ class TestMarkDeliveredFsmGate(TestCase):
 
     def test_feature_ticket_delivers(self) -> None:
         ticket = self._retrospected(kind=Ticket.Kind.FEATURE)
+        waive_rubric(ticket)
         ticket.mark_delivered()
         assert ticket.state == Ticket.State.DELIVERED
 
     def test_fix_with_record_delivers(self) -> None:
         ticket = self._retrospected(kind=Ticket.Kind.FIX, extra={"fix_record": _COMPLETE_RECORD})
+        waive_rubric(ticket)
         ticket.mark_delivered()
         assert ticket.state == Ticket.State.DELIVERED
 
@@ -175,6 +178,7 @@ class TestMarkDeliveredFsmGate(TestCase):
 
     def test_fix_with_override_delivers(self) -> None:
         ticket = self._retrospected(kind=Ticket.Kind.FIX, extra={"fix_record_override": {"reason": "exempt"}})
+        waive_rubric(ticket)
         ticket.mark_delivered()
         assert ticket.state == Ticket.State.DELIVERED
 
@@ -217,6 +221,7 @@ class TestFixRecordDodLivePath(TestCase):
 
     def test_correction_ticket_with_record_delivers(self) -> None:
         ticket = self._at_retrospected(self._correction_ticket(), fix_record=_COMPLETE_RECORD)
+        waive_rubric(ticket)
         ticket.mark_delivered()
         assert ticket.state == Ticket.State.DELIVERED
 
@@ -224,5 +229,6 @@ class TestFixRecordDodLivePath(TestCase):
         ticket = self._at_retrospected(
             self._correction_ticket(), fix_record_override={"reason": "trivial one-liner, no root cause"}
         )
+        waive_rubric(ticket)
         ticket.mark_delivered()
         assert ticket.state == Ticket.State.DELIVERED

@@ -26,10 +26,13 @@ so the model is the single source of truth for "this row needs a reply".
 import re
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import partial
 from typing import ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
+
+from teatree.core.telemetry.admission import record_lifecycle_transition
 
 _QUESTION_WORDS: frozenset[str] = frozenset(
     {
@@ -67,6 +70,15 @@ _QUESTION_PHRASES: tuple[str, ...] = (
 _LEADING_NOISE = re.compile(r"^[\s*_\->`#0-9.()]+")
 
 _FIRST_WORD = re.compile(r"^([A-Za-z]+)")
+
+# Broad enough for the same question heuristic, but evaluated in SQL so a
+# detector can LIMIT before materializing an unbounded inbound queue.
+_QUESTION_TEXT_REGEX = (
+    r"(?is)^[\s*_\->`#0-9.()]*"
+    rf"(?:(?:{'|'.join(sorted(_QUESTION_WORDS))})(?![A-Za-z])"
+    rf"|.*(?:{'|'.join(_QUESTION_PHRASES)})"
+    r"|.*\?\s*$)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +119,8 @@ class PendingChatInjection(models.Model):
         DELEGATED = "delegated", "Delegated"
         QUESTION_REPLY = "question_reply", "Question reply"
 
+    question_text_regex: ClassVar[str] = _QUESTION_TEXT_REGEX
+
     overlay = models.CharField(max_length=64, blank=True, default="")
     channel = models.CharField(max_length=64)
     slack_ts = models.CharField(max_length=64)
@@ -122,18 +136,15 @@ class PendingChatInjection(models.Model):
     # it on the Stop-hook hot path. The reactive Slack-answer loop must
     # NOT write this column — see ``loop_replied_at`` below (#1075).
     answered_at = models.DateTimeField(null=True, blank=True, db_index=True)
-    # The reactive Slack-answer loop (#1014) stamps these; they are
-    # orthogonal to BOTH ``consumed_at`` (the prompt-drain column) and
-    # ``answered_at`` (#1069's agent-personally-replied gate). Option B
-    # (#1075): the loop owns ``loop_replied_at``, a column distinct from
-    # ``answered_at``, so the loop posting a token-cheap reply does NOT
-    # satisfy the #1063 turn-end gate — that gate stays a strict "the
-    # agent personally answered" guarantee, fully decoupled from the loop
-    # work-queue. A row may be consumed-but-loop-unreplied (drained into a
-    # prompt, no loop reply yet) or loop-replied-but-unconsumed (the loop
-    # replied before any interactive session drained it). Each is a
-    # single-use compare-and-swap, never written for the same column twice.
+    # The loop's claim is separate from prompt-drain ``consumed_at`` and
+    # agent-personal ``answered_at``; a token-cheap loop reply cannot satisfy
+    # the latter's strict turn-end gate (#1069/#1075). Either loop or prompt
+    # drain may run first. The claim is a single-use compare-and-swap.
     loop_replied_at = models.DateTimeField(null=True, blank=True)
+    # Written only after verified Slack readback, a successful in-flight
+    # reaction API receipt, or a bound answer was applied. It proves response,
+    # not completion of delegated work.
+    loop_response_confirmed_at = models.DateTimeField(null=True, blank=True)
     answer_kind = models.CharField(
         max_length=16,
         blank=True,
@@ -161,12 +172,10 @@ class PendingChatInjection(models.Model):
 
     @property
     def is_loop_replied(self) -> bool:
-        """True once the reactive Slack-answer loop has replied (#1075).
+        """True once the reactive loop has claimed the reply slot (#1075).
 
-        Distinct from ``answered_at`` (#1069's "the agent personally
-        replied" gate): the loop stamps ``loop_replied_at``, never
-        ``answered_at``, so this property never reflects the turn-end
-        gate's state.
+        The claim is not delivery proof: ``loop_response_confirmed_at`` is.
+        ``answered_at`` remains the separate agent-personally-replied gate.
         """
         return self.loop_replied_at is not None
 
@@ -214,7 +223,20 @@ class PendingChatInjection(models.Model):
                 "thread_ts": context.thread_ts,
             },
         )
-        return row if created else None
+        if created:
+            transaction.on_commit(partial(record_lifecycle_transition, kind="message.received", entity_id=row.pk))
+            return row
+        return None
+
+    @classmethod
+    def latest_slack_ts(cls, *, overlay: str = "") -> str:
+        """The newest ``slack_ts`` recorded for *overlay*, or ``""`` when none is.
+
+        A Slack ``ts`` is a fixed-width epoch-seconds string, so the lexicographic
+        max is the chronological one; ``""`` reads as "no cursor yet".
+        """
+        newest = cls.objects.filter(overlay=overlay).aggregate(newest=models.Max("slack_ts"))["newest"]
+        return newest or ""
 
     @classmethod
     def pending(cls, *, overlay: str = "") -> models.QuerySet["PendingChatInjection"]:
@@ -285,6 +307,22 @@ class PendingChatInjection(models.Model):
             self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
         return bool(updated)
 
+    def observe_confirmed_loop_reply(self) -> None:
+        """Persist verified delivery/application, distinct from the pre-post claim."""
+        confirmed = (
+            type(self)
+            .objects.filter(
+                pk=self.pk,
+                loop_replied_at__isnull=False,
+                loop_response_confirmed_at__isnull=True,
+                answer_kind__in={self.AnswerKind.SIMPLE, self.AnswerKind.QUESTION_REPLY, self.AnswerKind.DELEGATED},
+            )
+            .update(loop_response_confirmed_at=timezone.now())
+        )
+        if confirmed:
+            self.refresh_from_db(fields=["loop_response_confirmed_at"])
+            transaction.on_commit(partial(record_lifecycle_transition, kind="message.answered", entity_id=self.pk))
+
     def unmark_loop_replied(self) -> bool:
         """Release the loop-reply claim; ``True`` if a stamp was cleared, else ``False``.
 
@@ -292,13 +330,12 @@ class PendingChatInjection(models.Model):
         of a claimed loop reply (the ACK :white_check_mark: reaction) fails,
         the caller clears ``loop_replied_at`` + ``answer_kind`` so the unit
         re-enters ``loop_unreplied()`` and is retried next cycle instead of
-        carrying a receipt for a reply that never landed. The conditional
-        ``UPDATE … WHERE loop_replied_at IS NOT NULL`` only ever clears a
-        present claim.
+        carrying a claim for a reply that never landed. A verified delivery
+        receipt is never cleared, even if a later side effect fails.
         """
         updated = (
             type(self)
-            .objects.filter(pk=self.pk, loop_replied_at__isnull=False)
+            .objects.filter(pk=self.pk, loop_replied_at__isnull=False, loop_response_confirmed_at__isnull=True)
             .update(loop_replied_at=None, answer_kind="")
         )
         if updated:
@@ -372,7 +409,12 @@ class PendingChatInjection(models.Model):
             loop_replied_at=now,
             answer_kind=cls.AnswerKind.QUESTION_REPLY,
         )
-        return int(in_thread.filter(answered_at__isnull=True).update(answered_at=now))
+        answered = int(in_thread.filter(answered_at__isnull=True).update(answered_at=now))
+        if answered:
+            row = in_thread.only("pk").first()
+            if row is not None:
+                transaction.on_commit(partial(record_lifecycle_transition, kind="message.answered", entity_id=row.pk))
+        return answered
 
     @classmethod
     def agent_answered_question(cls, slack_ts: str) -> int:
@@ -398,7 +440,14 @@ class PendingChatInjection(models.Model):
         """
         if not slack_ts:
             return 0
-        return int(cls.objects.filter(slack_ts=slack_ts, answered_at__isnull=True).update(answered_at=timezone.now()))
+        answered = int(
+            cls.objects.filter(slack_ts=slack_ts, answered_at__isnull=True).update(answered_at=timezone.now())
+        )
+        if answered:
+            row = cls.objects.filter(slack_ts=slack_ts).only("pk").first()
+            if row is not None:
+                transaction.on_commit(partial(record_lifecycle_transition, kind="message.answered", entity_id=row.pk))
+        return answered
 
     @classmethod
     def unanswered_questions_since(cls, window: timedelta) -> list["PendingChatInjection"]:

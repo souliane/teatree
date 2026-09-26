@@ -23,6 +23,10 @@ from teatree.eval.models import EvalToolCall, GateEvent, TokenUsage
 #: read the block reason, bounded so a verbose hook payload never bloats the run.
 _GATE_OUTPUT_SNIPPET_CAP = 500
 
+#: Cap on the user-visible assistant text captured immediately before a governed
+#: tool. It is diagnostic evidence, not grading input, and must stay bounded.
+_GATE_ASSISTANT_TEXT_CAP = 4000
+
 #: The four ``ResultMessage.usage`` keys the API bills on, mapped onto the
 #: :class:`TokenUsage` fields. The mapping is the single place a future SDK
 #: rename would have to be reflected; the conformance test pins these keys so a
@@ -146,8 +150,9 @@ def extract_tool_calls(events: list[StreamJsonEvent]) -> list[EvalToolCall]:
     edits (#2596). ``turn`` stays 1-indexed over the MAIN-agent assistant events.
     """
     tool_calls: list[EvalToolCall] = []
+    results = _tool_results_by_id(events)
     turn = 0
-    for event in events:
+    for event_index, event in enumerate(events):
         if event.type != "assistant":
             continue
         if _is_subagent_event(event):
@@ -159,23 +164,90 @@ def extract_tool_calls(events: list[StreamJsonEvent]) -> list[EvalToolCall]:
         content = message.get("content")
         if not isinstance(content, list):
             continue
-        for item in content:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") != "tool_use":
-                continue
-            name = item.get("name")
-            tool_input = item.get("input")
-            if not isinstance(name, str):
-                continue
-            tool_calls.append(
-                EvalToolCall(
-                    name=name,
-                    input=dict(tool_input) if isinstance(tool_input, dict) else {},
-                    turn=turn,
-                ),
-            )
+        tool_calls.extend(_calls_in_content(content, turn=turn, event_index=event_index, results=results))
     return tool_calls
+
+
+def _calls_in_content(
+    content: list[Any], *, turn: int, event_index: int, results: dict[str, tuple[dict[str, Any], int]]
+) -> list[EvalToolCall]:
+    calls: list[EvalToolCall] = []
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") != "tool_use":
+            continue
+        name = item.get("name")
+        if not isinstance(name, str):
+            continue
+        tool_input = item.get("input")
+        call_id = item.get("id")
+        call_id = call_id if isinstance(call_id, str) and call_id else None
+        result_entry = results.get(call_id) if call_id is not None else None
+        if result_entry is not None and result_entry[1] < event_index:
+            result_entry = None
+        result, result_event_index = result_entry if result_entry is not None else (None, None)
+        excerpt = _result_text(result)[:4096] if result is not None else ""
+        exit_code = _shell_exit_code(excerpt) if name == "Bash" else None
+        raw_error = result.get("is_error") if result is not None else None
+        is_error = raw_error if isinstance(raw_error, bool) else None
+        if exit_code is not None:
+            is_error = (is_error is True) or exit_code != 0
+        calls.append(
+            EvalToolCall(
+                name=name,
+                input=dict(tool_input) if isinstance(tool_input, dict) else {},
+                turn=turn,
+                call_id=call_id,
+                is_error=is_error,
+                exit_code=exit_code,
+                result_excerpt=excerpt,
+                event_index=event_index,
+                result_event_index=result_event_index,
+            ),
+        )
+    return calls
+
+
+def _tool_results_by_id(events: list[StreamJsonEvent]) -> dict[str, tuple[dict[str, Any], int]]:
+    results: dict[str, tuple[dict[str, Any], int]] = {}
+    ambiguous: set[str] = set()
+    for event_index, event in enumerate(events):
+        if event.type not in {"user", "assistant"} or _is_subagent_event(event):
+            continue
+        message = event.raw.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            call_id = block.get("tool_use_id")
+            if not isinstance(call_id, str) or not call_id:
+                continue
+            if call_id in results:
+                ambiguous.add(call_id)
+            results[call_id] = (block, event_index)
+    for call_id in ambiguous:
+        del results[call_id]
+    return results
+
+
+def _result_text(result: dict[str, Any]) -> str:
+    content = result.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", "") for block in content if isinstance(block, dict) and isinstance(block.get("text"), str)
+        )
+    return ""
+
+
+def _shell_exit_code(text: str) -> int | None:
+    for pattern in (r"\Aexit=(-?\d+)(?:\n|\Z)", r"(?m)^Exit code: (-?\d+)\b", r"(?m)^\(exit (-?\d+)\)\s*$"):
+        match = re.search(pattern, text)
+        if match is not None:
+            return int(match.group(1))
+    return None
 
 
 def extract_gate_events(events: list[StreamJsonEvent]) -> list[GateEvent]:
@@ -199,9 +271,26 @@ def extract_gate_events(events: list[StreamJsonEvent]) -> list[GateEvent]:
                 hook_event_name=str(name),
                 outcome=_stringify(raw.get("outcome")),
                 output_snippet=_stringify(raw.get("output"))[:_GATE_OUTPUT_SNIPPET_CAP],
+                sequence=_optional_int(raw.get("sequence")),
+                tool_name=_stringify(raw.get("tool_name")),
+                tool_use_id=_stringify(raw.get("tool_use_id")),
+                gate_id=_stringify(raw.get("gate_id")),
+                reason=_stringify(raw.get("reason"))[:_GATE_OUTPUT_SNIPPET_CAP],
+                assistant_text=_stringify(raw.get("assistant_text"))[:_GATE_ASSISTANT_TEXT_CAP],
             )
         )
     return gate_events
+
+
+def _optional_int(value: object) -> int | None:
+    """Return an integer audit sequence, rejecting booleans and malformed values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdecimal():
+        return int(value)
+    return None
 
 
 def _stringify(value: object) -> str:
@@ -251,27 +340,29 @@ def extract_terminal_reason(events: list[StreamJsonEvent]) -> tuple[str, bool]:
     return "aborted", True
 
 
-def extract_cost_usd(events: list[StreamJsonEvent]) -> float:
-    """Return ``total_cost_usd`` from the final ``result`` event, or ``0.0``.
+def reported_cost_usd(events: list[StreamJsonEvent]) -> float | None:
+    """The transport's OWN ``total_cost_usd`` from the final ``result`` event, else ``None``.
 
-    The ``claude -p --output-format stream-json`` CLI embeds ``total_cost_usd``
-    in the ``result`` event for metered (API-key) invocations. Subscription
-    and offline runs omit the field, so this safely returns ``0.0`` there.
+    ``None`` means the transport reported nothing — a subscription/offline CLI run, or
+    any ``PydanticAiRunner`` lane, whose ``total_cost_usd`` is ``None`` for every provider
+    that surfaces no cost key (always the case for Anthropic). It is NOT ``$0``, and the
+    two must stay distinguishable: :func:`~teatree.eval.cost_observation.observe_cost`
+    prices a silently-billing transport's run from its own token usage instead of
+    floor-reporting zero, and reports *unknown* for the ``api`` transport, whose silence
+    is itself the authority that it billed nothing.
     """
     for event in reversed(events):
         if event.type != "result":
             continue
         raw_cost = event.raw.get("total_cost_usd")
-        if isinstance(raw_cost, (int, float)):
-            return float(raw_cost)
-        return 0.0
-    return 0.0
+        return float(raw_cost) if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool) else None
+    return None
 
 
 def extract_usage(events: list[StreamJsonEvent]) -> TokenUsage:
     """Return the ``usage`` token split from the final ``result`` event, all-zero when absent.
 
-    Mirrors :func:`extract_cost_usd` defensively: a subscription / offline /
+    Mirrors :func:`reported_cost_usd` defensively: a subscription / offline /
     capped run omits ``usage`` (and a metered run that drops a key, or carries a
     non-int value, must not crash cost observability) — every missing or
     non-int key defaults to ``0``, so the worst case is an all-zero

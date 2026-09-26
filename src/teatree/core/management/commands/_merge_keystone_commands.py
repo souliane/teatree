@@ -48,6 +48,16 @@ class MergeKeystoneCommands(TyperCommand):
                 ),
             ),
         ] = "",
+        no_squash: Annotated[
+            bool,
+            typer.Option(
+                "--no-squash",
+                help=(
+                    "Land a merge commit instead of the default squash, keeping the branch's commits and "
+                    "their parents (an ancestry link needs its second parent). Recorded on the CLEAR."
+                ),
+            ),
+        ] = False,
     ) -> MergeKeystoneResult:
         """Execute the missing REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4).
 
@@ -100,6 +110,7 @@ class MergeKeystoneCommands(TyperCommand):
                 executing_loop_identity=loop_identity,
                 human_authorized=human_authorized,
                 expedite_authorized=expedite_authorized,
+                squash=not no_squash,
             )
         except MergePreconditionError as exc:
             self.stdout.write(f"  merge refused (re-escalating): {exc}")

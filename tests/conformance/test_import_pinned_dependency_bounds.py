@@ -17,35 +17,18 @@ so the NEXT unbounded coupling would red nothing.
 import ast
 import importlib.util
 import re
-import tomllib
-from importlib.metadata import packages_distributions
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PYPROJECT = REPO_ROOT / "pyproject.toml"
-PACKAGE = REPO_ROOT / "src" / "teatree"
+from tests.conformance._declared_dependencies import declared_dependencies, distributions_by_top_level
+from tests.conformance._src_tree import src_modules
 
 _UPPER_BOUND = re.compile(r"[<!=]")
-
-
-def _canonical(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def _declared_dependencies() -> dict[str, str]:
-    raw = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
-    out: dict[str, str] = {}
-    for spec in raw["project"]["dependencies"]:
-        name = re.split(r"[<>=!\[ ]", spec, maxsplit=1)[0].strip()
-        out[_canonical(name)] = spec
-    return out
 
 
 def _imported_modules() -> set[str]:
     """Every absolute module path ``src/teatree`` imports, dotted ones included."""
     modules: set[str] = set()
-    for source in PACKAGE.rglob("*.py"):
-        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"), str(source))):
+    for _, tree in src_modules():
+        for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 modules.update(alias.name for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
@@ -53,35 +36,31 @@ def _imported_modules() -> set[str]:
     return modules
 
 
-def _top_level_to_distribution() -> dict[str, set[str]]:
-    return {top: {_canonical(dist) for dist in dists} for top, dists in packages_distributions().items()}
-
-
 def _submodule_coupled() -> dict[str, set[str]]:
     """Declared dependencies imported by submodule path, mapped to those imports."""
-    declared = _declared_dependencies()
-    by_top_level = _top_level_to_distribution()
+    declared = declared_dependencies()
+    by_top_level = distributions_by_top_level()
     coupled: dict[str, set[str]] = {}
     for module in _imported_modules():
         top_level, _, rest = module.partition(".")
         if not rest:
             continue
-        for dist in by_top_level.get(top_level, set()) & declared.keys():
+        for dist in by_top_level.get(top_level, frozenset()) & declared.keys():
             coupled.setdefault(dist, set()).add(module)
     return coupled
 
 
 def test_every_declared_dependency_is_mapped_to_its_import_name():
     """The walk is only as complete as the installed dist->module mapping."""
-    mapped = {dist for dists in _top_level_to_distribution().values() for dist in dists}
-    unmapped = sorted(_declared_dependencies().keys() - mapped)
+    mapped = {dist for dists in distributions_by_top_level().values() for dist in dists}
+    unmapped = sorted(declared_dependencies().keys() - mapped)
     assert not unmapped, (
         f"declared dependencies with no installed top-level module, so the coupling walk cannot see them: {unmapped}"
     )
 
 
 def test_submodule_coupled_dependencies_carry_an_upper_bound():
-    declared = _declared_dependencies()
+    declared = declared_dependencies()
     coupled = _submodule_coupled()
     unbounded = sorted(
         f"{name} ({declared[name]!r}) — the tree imports {', '.join(sorted(imports)[:3])}"

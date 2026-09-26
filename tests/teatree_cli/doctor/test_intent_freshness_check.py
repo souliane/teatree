@@ -164,7 +164,9 @@ class TestCheckIntentFreshness(TestCase):
         assert out == ""
 
     def test_stuck_directive_with_masked_loop_fails_and_names_it(self) -> None:
-        # `directive_loop` ships disabled (masked) by default — the exact incident.
+        # The mask is STATED, never inherited: the shipped `present` preset now admits every
+        # loop, so a test relying on the default would be asserting the opposite case.
+        Loop.objects.filter(name="directive_loop").update(enabled=False)
         directive = Directive.objects.capture("cap 1 PR per repo", source=Directive.Source.CLI)
         _backdate_directive(directive, hours=200)
         ok, out = _run()
@@ -263,6 +265,7 @@ class TestCheckIntentFreshness(TestCase):
     def test_answered_clarifying_directive_is_still_consumer_work(self) -> None:
         # Every clarify question answered but not yet re-interpreted IS the directive
         # loop's work (`_advance_clarifying` re-dispatches), so a masked loop gates.
+        Loop.objects.filter(name="directive_loop").update(enabled=False)
         directive = Directive.objects.capture("ambiguous", source=Directive.Source.CLI)
         directive.mark_clarifying()
         clarify = DeferredQuestion.record("which?", options_hash=f"directive_clarify:{directive.pk}:0:0")

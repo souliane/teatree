@@ -79,7 +79,7 @@ from teatree.core.review.author_trust import (
 )
 from teatree.core.work_lease import WorkIdentity, foreign_work_holder
 from teatree.instance_id import instance_id
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.loop.scanners.forge_readback import (
     ReadbackIndex,
     build_readback_index,
@@ -88,6 +88,7 @@ from teatree.loop.scanners.forge_readback import (
     issue_number,
 )
 from teatree.types import RawAPIDict
+from teatree.utils.run import redact_secrets
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
@@ -255,6 +256,7 @@ class IssueIntakeScanner:
         candidates = self._candidate_issues(trusted)
         if not candidates:
             UnclaimedIntakeCandidate.objects.sync(self.overlay_name, [])
+            logger.info("IssueIntakeScanner tick %s: admitted=0 claimed=0 deferred=0", self.overlay_name)
             return []
         operators = self._resolve_identities()
         context = _TickContext(
@@ -264,6 +266,7 @@ class IssueIntakeScanner:
         )
         signals: list[ScanSignal] = []
         waiting: list[WaitingCandidate] = []
+        admitted = 0
         claiming = self.can_claim
         walk = self._resume_ordered(candidates)
         deadline = self.monotonic() + self.pass_budget_seconds
@@ -278,6 +281,7 @@ class IssueIntakeScanner:
                 verdict = self._admits(issue, url, context=context)
                 if verdict is None:
                     continue
+                admitted += 1
                 claiming = claiming and not (self._budget_exhausted() or self._governor_denied())
                 if claiming:
                     self._append_claim(issue, url, verdict, signals)
@@ -293,6 +297,13 @@ class IssueIntakeScanner:
         complete = position >= len(walk)
         UnclaimedIntakeCandidate.objects.sync(self.overlay_name, waiting, complete=complete)
         self._record_pass(examined, complete=complete)
+        logger.info(
+            "IssueIntakeScanner tick %s: admitted=%d claimed=%d deferred=%d",
+            self.overlay_name,
+            admitted,
+            len(signals),
+            admitted - len(signals),
+        )
         return signals
 
     def _readback_index(self, operators: tuple[str, ...]) -> ReadbackIndex:
@@ -526,27 +537,44 @@ class IssueIntakeScanner:
         An app handle (any ``/``-containing handle) is skipped outright: it can never
         author a real intake, so its query is pure waste.
 
-        Each query is fault-isolated (#3508): one identity's rate limit, deleted
-        account, or transient forge error is logged and skipped, so a sibling
-        identity's issues still surface this tick.
+        Each query is fault-isolated (#3508): one identity's rate limit, deleted account,
+        or transient forge error is logged and skipped, so a sibling identity's issues
+        still surface this tick. But when EVERY query failed the union is UNKNOWN, not
+        empty, and returning ``[]`` would report the queue as idle — the shape that hid a
+        wedged credential store for a full day. That case raises instead.
         """
         seen_urls: set[str] = set()
         issues: list[RawAPIDict] = []
+        attempted = 0
+        failures: list[str] = []
         for author in sorted(trusted):
             if "/" in author:
                 continue
+            attempted += 1
             self._collect(
                 lambda a=author: self.host.list_authored_issues(author=a, repo_slugs=self.repo_slugs),
                 f"list_authored_issues({author})",
                 seen_urls,
                 issues,
+                failures,
             )
         if self.admit_label:
+            attempted += 1
             self._collect(
                 lambda: self.host.list_labeled_issues(label=self.admit_label, repo_slugs=self.repo_slugs),
                 f"list_labeled_issues({self.admit_label})",
                 seen_urls,
                 issues,
+                failures,
+            )
+        if attempted and len(failures) == attempted:
+            raise ScannerError(
+                scanner=self.name,
+                error_class=ScannerErrorClass.AUTH,
+                detail=(
+                    f"every issue-discovery query failed, so the intake queue is UNKNOWN, not empty "
+                    f"(check the credential store and $GNUPGHOME): {'; '.join(failures)}"
+                ),
             )
         return sorted(issues, key=lambda issue: issue_created_at(issue) or _UNDATED)
 
@@ -556,11 +584,15 @@ class IssueIntakeScanner:
         label: str,
         seen_urls: set[str],
         issues: list[RawAPIDict],
+        failures: list[str],
     ) -> None:
         try:
             found = fetch()
-        except Exception:
+        except Exception as exc:
             logger.warning("%s failed — skipping", label, exc_info=True)
+            # This string reaches the owner's DM through ScannerError.detail, and a forge
+            # exception routinely echoes the request that carried the credential.
+            failures.append(f"{label}: {redact_secrets(str(exc))}")
             return
         for issue in found:
             url = issue_url(issue)

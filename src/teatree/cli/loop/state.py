@@ -8,9 +8,10 @@ already prints the statusline) onto the shared ``loop_app``. Each delegates to
 the ``loop_state`` Django management command — anything touching the ORM is a
 management command, not a plain typer command.
 
-The DB-backed ``LoopState`` is the canonical control tier (mirrors
-``ConfigSetting``): a paused/disabled loop stays held across a session restart,
-honoured by BOTH the tick and the in-session Stop self-pump (#1913).
+The DB-backed ``LoopState`` is the HOLD tier: a paused/disabled loop stays held across a
+session restart, honoured by BOTH the tick and the in-session Stop self-pump (#1913).
+``t3 loop override`` writes the tri-state MANUAL layer beneath it (``Loop.enabled``),
+which requires a reason and is never cleared by anything but a person.
 """
 
 import typer
@@ -22,7 +23,7 @@ from teatree.utils.django_bootstrap import ensure_django
 _EMERGENCY_GUIDANCE = (
     "refused: per-loop enable/disable/pause/resume is EMERGENCY-only. "
     "Normal handle: `t3 loop preset use <preset>` / `t3 loop schedule set-active <schedule>`. "
-    "Emergency: `t3 loop override <name> on|off [--for TTL] [--reason ...]`. "
+    "Emergency: `t3 loop override <name> on|off --reason '<why>' [--lift-by 2h]`. "
     "To force this per-loop verb anyway, pass --emergency."
 )
 
@@ -47,14 +48,14 @@ def _delegate(subcommand: str, name: str, *, json_output: bool) -> None:
         raise typer.Exit(code=int(exc.code) if isinstance(exc.code, int) else 1) from exc
 
 
-def _delegate_override(name: str, state: str, *, for_ttl: str, reason: str, json_output: bool) -> None:
-    """Call ``loop_state override <name> <state>`` with the TTL/reason; map ``SystemExit`` to ``typer.Exit``."""
+def _delegate_override(name: str, state: str, *, lift_by: str, reason: str, json_output: bool) -> None:
+    """Call ``loop_state override <name> <state>``; map ``SystemExit`` to ``typer.Exit``."""
     ensure_django()
     from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
 
     kwargs: dict[str, str | bool] = {}
-    if for_ttl:
-        kwargs["for_ttl"] = for_ttl
+    if lift_by:
+        kwargs["lift_by"] = lift_by
     if reason:
         kwargs["reason"] = reason
     if json_output:
@@ -117,12 +118,12 @@ def register(loop_app: typer.Typer) -> None:
         name: str = typer.Argument(..., help="Mini-loop name."),
         state: str = typer.Argument(..., help="on | off | clear."),
         *,
-        for_ttl: str = typer.Option("", "--for", help="TTL for the override (2h/30m/1d)."),
-        reason: str = typer.Option("", "--reason", help="Why the override is in force."),
+        lift_by: str = typer.Option("", "--lift-by", help="When you expect to lift it (2h/30m/1d) — advisory."),
+        reason: str = typer.Option("", "--reason", help="Why the override is in force. Required to set one."),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
-        """Emergency per-loop force (on/off/clear) — the handle that beats a preset force-off (#3248)."""
-        _delegate_override(name, state, for_ttl=for_ttl, reason=reason, json_output=json_output)
+        """Set the MANUAL per-loop override (on/off/clear) — the one handle that beats the preset."""
+        _delegate_override(name, state, lift_by=lift_by, reason=reason, json_output=json_output)
 
     @loop_app.command("loop-state")
     def loop_state_command(

@@ -50,13 +50,14 @@ def register(loop_app: typer.Typer) -> None:
     def use_command(
         name: Annotated[str, typer.Argument()],
         *,
-        expiry: Annotated[str, typer.Option("--for", "--until", help="TTL (2h/30m/1d) or ISO-8601 instant.")] = "",
-        hold: Annotated[bool, typer.Option("--hold", help="Sticky until cleared.")] = False,
-        reason: Annotated[str, typer.Option("--reason", help="Audit note on the active-preset WHY line.")] = "",
+        lift_by: Annotated[
+            str, typer.Option("--lift-by", help="When you expect to lift it (2h/30m/1d or ISO-8601) — advisory.")
+        ] = "",
+        reason: Annotated[str, typer.Option("--reason", help="Why this posture is in force. Required.")] = "",
         json_output: Annotated[bool, typer.Option("--json")] = False,
     ) -> None:
-        """Activate a preset as the manual override (default: until the next scheduled boundary)."""
-        _delegate(*_use_args(name, expiry=expiry, hold=hold, reason=reason), json_output=json_output)
+        """Activate a preset as the manual override — it holds until someone clears it."""
+        _delegate(*_use_args(name, lift_by=lift_by, reason=reason), json_output=json_output)
 
     @preset_app.command("auto")
     def auto_command(
@@ -116,12 +117,10 @@ def _drain_args(user_id: str, overlay: str) -> list[str]:
     return args
 
 
-def _use_args(name: str, *, expiry: str, hold: bool, reason: str) -> list[str]:
+def _use_args(name: str, *, lift_by: str, reason: str) -> list[str]:
     args = ["use", name]
-    if expiry:
-        args += ["--for", expiry]
-    if hold:
-        args += ["--hold"]
+    if lift_by:
+        args += ["--lift-by", lift_by]
     if reason:
         args += ["--reason", reason]
     return args

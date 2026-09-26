@@ -8,11 +8,12 @@ from django.test import TestCase, override_settings
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.signals as signals_mod
 from teatree.backends.slack import reactions as slack_reactions
-from teatree.core.models import ConfigSetting, PullRequest, Session, Task, Ticket
+from teatree.core.models import ConfigSetting, ModeOverride, PullRequest, Session, Task, Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.schema_readiness import invalidate_schema_readiness
+from tests.factories import waive_rubric
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
-from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm, mode_immediate_cm
+from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
 from tests.teatree_core.conftest import CommandOverlay
 
 
@@ -45,7 +46,7 @@ IMMEDIATE_BACKEND = {
             # Mirror the QUEUES allowlist from tests/django_settings.py — a task
             # defined with a non-default queue_name (the loop-timer chains' "loops"
             # queue) validates that name against this backend's queues at import.
-            "QUEUES": ["default", "loops"],
+            "QUEUES": ["default", "loops", "cheap"],
         },
     },
 }
@@ -82,6 +83,22 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_the_off_posture_enqueues_nothing(self) -> None:
+        ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+
+        with (
+            fake_sdk(success_stream({"summary": "OK"})),
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+        assert task.admitted_at is None
 
     def test_interactive_task_not_enqueued(self) -> None:
         """Interactive tasks are not auto-enqueued by the signal."""
@@ -139,8 +156,6 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
 
     @staticmethod
     def _create_coding_task_recording_enqueue() -> tuple[Task, bool]:
-        import teatree.core.tasks as tasks_mod  # noqa: PLC0415 — deferred: local import, mirrors the sibling tests above
-
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
 
@@ -153,7 +168,7 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
                 RecordingEnqueue.called = True
 
         with (
-            patch.object(tasks_mod, "execute_task", RecordingEnqueue),
+            patch("teatree.core.task_dispatch.execute_task", RecordingEnqueue),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
             task = Task.objects.create(ticket=ticket, session=session, phase="coding")
@@ -229,7 +244,7 @@ class TestSlackReactionsOnTransition(TestCase):
             called.append((t, name))
             return 1
 
-        with mode_immediate_cm(), _patch_transition_publisher(_fake):
+        with posture_permits_cm(), _patch_transition_publisher(_fake):
             ticket.mark_merged()
             ticket.save()
 
@@ -243,7 +258,7 @@ class TestSlackReactionsOnTransition(TestCase):
             msg = "slack down"
             raise RuntimeError(msg)
 
-        with mode_immediate_cm(), _patch_transition_publisher(_boom):
+        with posture_permits_cm(), _patch_transition_publisher(_boom):
             ticket.mark_merged()
             ticket.save()
 
@@ -258,7 +273,7 @@ class TestSlackReactionsOnTransition(TestCase):
             names.append(name)
             return 0
 
-        with mode_immediate_cm(), _patch_transition_publisher(_record):
+        with posture_permits_cm(), _patch_transition_publisher(_record):
             ticket.rework()
             ticket.save()
 
@@ -273,7 +288,7 @@ class TestSlackReactionsOnTransition(TestCase):
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_DELIVERED, role=Ticket.Role.REVIEWER)
         names: list[str] = []
 
-        with mode_immediate_cm(), _patch_transition_publisher(lambda _t, name: (names.append(name), 1)[1]):
+        with posture_permits_cm(), _patch_transition_publisher(lambda _t, name: (names.append(name), 1)[1]):
             ticket.mark_review_no_action()
             ticket.save()
 
@@ -285,7 +300,7 @@ class TestSlackReactionsOnTransition(TestCase):
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SELF_REVIEWED, role=Ticket.Role.REVIEWER)
         names: list[str] = []
 
-        with mode_immediate_cm(), _patch_transition_publisher(lambda _t, name: (names.append(name), 1)[1]):
+        with posture_permits_cm(), _patch_transition_publisher(lambda _t, name: (names.append(name), 1)[1]):
             ticket.mark_review_no_action()
             ticket.save()
 
@@ -299,7 +314,7 @@ class TestSlackReactionsOnTransition(TestCase):
         original = reaction_dispatch._publisher
         reaction_dispatch._publisher = None
         try:
-            with mode_immediate_cm():
+            with posture_permits_cm():
                 ticket.mark_merged()
                 ticket.save()
         finally:
@@ -341,7 +356,7 @@ class TestSlackReactionsReadPrExtra(TestCase):
 
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED, extra=extra)
         with (
-            mode_immediate_cm(),
+            posture_permits_cm(),
             patch.object(slack_reactions, "get_overlay", return_value=_Overlay()),
             patch.object(slack_reactions, "add_reaction_verified", _fake_add_reaction_verified),
         ):
@@ -391,7 +406,7 @@ class TestApprovalReactionOnTransition(TestCase):
             calls.append((pull_request,))
             return 1
 
-        with mode_immediate_cm(), _patch_approval_publisher(_fake), self.captureOnCommitCallbacks(execute=True):
+        with posture_permits_cm(), _patch_approval_publisher(_fake), self.captureOnCommitCallbacks(execute=True):
             pr.approve()
             pr.save()
 
@@ -410,7 +425,7 @@ class TestApprovalReactionOnTransition(TestCase):
         # suppression: a recorded approval would let it publish, exercised by the
         # next test). Pinned, because the shipped autonomy collapses an unset mode
         # to IMMEDIATE (#3895), which would silently make this the gate-OFF case.
-        with mode_gate_on_cm(), _patch_approval_publisher(_fake), self.captureOnCommitCallbacks(execute=True):
+        with posture_forbids_cm(), _patch_approval_publisher(_fake), self.captureOnCommitCallbacks(execute=True):
             pr.approve()
             pr.save()
 
@@ -449,7 +464,7 @@ class TestApprovalReactionOnTransition(TestCase):
             msg = "slack down"
             raise RuntimeError(msg)
 
-        with mode_immediate_cm(), _patch_approval_publisher(_boom), self.captureOnCommitCallbacks(execute=True):
+        with posture_permits_cm(), _patch_approval_publisher(_boom), self.captureOnCommitCallbacks(execute=True):
             pr.approve()
             pr.save()
 
@@ -461,7 +476,7 @@ class TestApprovalReactionOnTransition(TestCase):
         calls: list[object] = []
 
         with (
-            mode_immediate_cm(),
+            posture_permits_cm(),
             _patch_approval_publisher(lambda p: calls.append(p) or 0),
         ):
             pr.mark_merged()
@@ -518,7 +533,7 @@ class TestApprovalReactionOnTransition(TestCase):
         assert row is not None
 
         with (
-            mode_immediate_cm(),
+            posture_permits_cm(),
             _patch_approval_publisher(lambda _pr: 1),
             self.captureOnCommitCallbacks(execute=True),
         ):
@@ -554,7 +569,7 @@ class TestTransitionReactionGated(TestCase):
 
         # Gate ON (pinned — the shipped autonomy collapses an unset mode to
         # IMMEDIATE, #3895) and no recorded approval → the reaction is skipped.
-        with mode_gate_on_cm(), _patch_transition_publisher(_fake):
+        with posture_forbids_cm(), _patch_transition_publisher(_fake):
             ticket.mark_merged()
             ticket.save()
 
@@ -684,6 +699,7 @@ class TestTerminalTransitionsEnqueueTeardown(TestCase):
 
     def test_mark_delivered_from_retrospected_enqueues_teardown(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.RETRO_RECORDED)
+        waive_rubric(ticket)  # the subject is the teardown enqueue, not the rubric gate
         self._assert_enqueues_teardown_once(ticket, "mark_delivered")
 
     def test_mark_merged_enqueues_teardown(self) -> None:

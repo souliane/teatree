@@ -49,10 +49,7 @@ class InterchangeContext(NavContext):
 def _page_context() -> InterchangeContext:
     nav = nav_context("dash:interchange")
     return {
-        "nav_items": nav["nav_items"],
-        "nav_active": nav["nav_active"],
-        "instance_label": nav["instance_label"],
-        "brand_logo": nav["brand_logo"],
+        **nav,
         "sections": EXPORT_SECTIONS,
         "confirm_phrase": SAFETY_CONFIRM_PHRASE,
         "changed_sections": (),

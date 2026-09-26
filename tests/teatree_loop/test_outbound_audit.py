@@ -9,6 +9,7 @@ never executes either.
 """
 
 import datetime as dt
+from collections.abc import Iterator
 from http import HTTPStatus
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import BotPing, OutboundClaim
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.outbound_audit import (
     OutboundAuditScanner,
     VerifyResult,
@@ -42,6 +44,15 @@ def _aged_claim(*, kind: OutboundClaim.Kind, key: str, **extra: object) -> Outbo
         claim_ts=timezone.now() - dt.timedelta(seconds=age),
         extra=extra or {},
     )
+
+
+@pytest.fixture(autouse=True)
+def _default_forge_route() -> Iterator[None]:
+    def _resolve(overlay_name: str, *, credential: str) -> ForgeTokenResolution:
+        return ForgeTokenResolution(credential, overlay_name, ForgeTokenState.TOKEN, token=f"routed-{credential}")
+
+    with patch("teatree.forge_credentials.resolve_named_overlay_token", side_effect=_resolve):
+        yield
 
 
 class OutboundAuditScannerTests(TestCase):
@@ -764,24 +775,11 @@ class GitHubNoteVerifierTests(TestCase):
     Mirrors :class:`GitLabNoteVerifierTests` — proves each branch of the
     factory's error doctrine so the resilience contract is anti-vacuous.
 
-    Every test stubs :func:`_resolve_github_token` to "tok-test" so the
+    Every test stubs :func:`_resolve_github_token_for_overlay` to "tok-test" so the
     factory does not block on the codex-found credential check.
     """
 
-    _RESOLVE_PATH = "teatree.loop.scanners.outbound_audit._resolve_github_token"
-
-    def test_returns_none_when_github_module_unimportable(self) -> None:
-        import sys  # noqa: PLC0415
-
-        saved = sys.modules.get("teatree.backends.github")
-        sys.modules["teatree.backends.github"] = None  # ty: ignore[invalid-assignment] — a `None` entry in `sys.modules` is how CPython blocks an import; the `dict[str, ModuleType]` stub cannot express it, and that block IS what this test exercises.
-        try:
-            assert _github_note_verifier() is None
-        finally:
-            if saved is not None:
-                sys.modules["teatree.backends.github"] = saved
-            else:
-                sys.modules.pop("teatree.backends.github", None)
+    _RESOLVE_PATH = "teatree.loop.scanners.outbound_audit._resolve_github_token_for_overlay"
 
     def test_returns_none_when_no_github_token_resolves(self) -> None:
         """Codex-found gap: with no token a private-repo 404 is auth, not drift."""
@@ -987,42 +985,6 @@ class GitHubNoteVerifierTests(TestCase):
             )
             result = verifier(claim)
         assert result.verified is True
-
-
-class ResolveGithubTokenTests(TestCase):
-    """:func:`_resolve_github_token` reads env → pass in order, defaulting to ''."""
-
-    def test_returns_gh_token_env_when_set(self) -> None:
-        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
-
-        with patch.dict("os.environ", {"GH_TOKEN": "from-env"}, clear=False):
-            assert _resolve_github_token() == "from-env"
-
-    def test_falls_back_to_github_token_env(self) -> None:
-        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
-
-        env = {"GITHUB_TOKEN": "alt-env"}
-        # ensure GH_TOKEN absent
-        with patch.dict("os.environ", env, clear=True):
-            assert _resolve_github_token() == "alt-env"
-
-    def test_falls_back_to_pass_when_env_empty(self) -> None:
-        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
-
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            patch("teatree.utils.secrets.read_pass", return_value="from-pass"),
-        ):
-            assert _resolve_github_token() == "from-pass"
-
-    def test_returns_empty_when_pass_lookup_raises(self) -> None:
-        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
-
-        with (
-            patch.dict("os.environ", {}, clear=True),
-            patch("teatree.utils.secrets.read_pass", side_effect=RuntimeError("no pass")),
-        ):
-            assert _resolve_github_token() == ""
 
 
 class GitHubNoteSettlingWindowTests(TestCase):

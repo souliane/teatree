@@ -23,7 +23,7 @@ Playwright-based end-to-end testing for overlay target applications. Covers writ
 
 **Full worktree per PR (Non-Negotiable):** Each PR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`.
 
-**This full-worktree rule is `--target local` ONLY — a `--target dev` run provisions NOTHING locally.** A remote/DEV run (`t3 <overlay> e2e run --target dev`, or the `external` runner) hits the already-deployed stack, so there is nothing to run on your machine: do NOT `t3 <overlay> worktree provision` or start backend+frontend+DB for it. The full local stack exists to test an **unmerged** change on a self-run stack — irrelevant when the change is already deployed where you're pointing. Over-provisioning a full stack for a remote run just burns ~20 min and reads as a stall; a `--target dev` run needs only the specs repo + Playwright + DEV creds. Provision locally only for `--target local` (an unmerged change with no deployed env to hit).
+**This full-worktree rule is `--target local` ONLY — a `--target dev` run provisions NOTHING locally.** A remote/DEV run (`t3 <overlay> e2e run --target dev`, or the `external` runner) hits the already-deployed stack, so there is nothing to run on your machine: do NOT `t3 <overlay> worktree provision` or start backend+frontend+DB for it. The full local stack exists to test an **unmerged** change on a self-run stack — irrelevant when the change is already deployed where you're pointing. Over-provisioning a full stack for a remote run just burns ~20 min and reads as a stall; a `--target dev` run needs only the specs repo + Playwright + DEV creds. Provision locally only for `--target local` (an unmerged change with no deployed env to hit). A `--target stack` run likewise resolves no local worktree: its separate stack command owns the remote stack and tunnel.
 
 Always start dev servers via `t3 <overlay> worktree start` before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup. If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
@@ -50,7 +50,7 @@ The `t3 mcp browser-diagnosis` registration command, the exact `claude mcp add` 
 
 A single spec should run against either the deployed **dev** environment or the **local** stack, selected by one CLI argument. Determinism comes from code, never from a parsed file.
 
-**Target selection.** `t3 <overlay> e2e run --target dev|local` (and the `external` / `project` runners):
+**Target selection.** `t3 <overlay> e2e run --target dev|qa|local` applies to the `external` / `project` runners; the external runner additionally accepts `stack`:
 
 ```bash
 # Run the suite against the deployed dev environment (do NOT export/edit BASE_URL by hand):
@@ -58,15 +58,22 @@ t3 <overlay> e2e run <work-item> --target dev
 
 # Run the same spec against the local stack (always discovers the local frontend):
 t3 <overlay> e2e run <work-item> --target local
+
+# Run against the overlay-declared remote local stack through its held tunnel:
+t3 <overlay> e2e run <work-item> --target stack
 ```
 
-- `dev` — keep the pre-set `BASE_URL` (deployed env); no local port scan.
+- `dev` — a pre-set `BASE_URL` wins; unset, the overlay derives the deployed URL from the tenant (`env_extras`), and the run exits 1 when neither names one. No local port scan.
+- `qa` — the same, for the deployed QA environment.
 - `local` — always discover the local frontend, even if a stray `BASE_URL` is exported (so `--target local` can never silently hit a deployed env).
+- `stack` — use the overlay-declared frontend port on the container host without resolving a worktree; specs receive `local` mode, while durable run evidence remains truthfully labelled `stack`.
 - omitted — back-compat: infer `dev` if `BASE_URL` is set, else `local`.
+
+A `project` runner declares its suite in `get_e2e_config()`: `test_dir`, `settings_module` (passed as `--ds=`) and `pytest_args`.
 
 **Set the target with `--target`, never by hand-editing `BASE_URL` (Non-Negotiable).** Do this:
 
-1. Select the environment with the `--target dev|local` flag — that is the ONE knob.
+1. Select the environment with the `--target dev|qa|local|stack` flag — that is the ONE knob.
 2. Let the runner resolve and export **`T3_E2E_TARGET`** for you; the spec branches on it — `const IS_DEV = process.env.T3_E2E_TARGET === 'dev'`.
 3. Never re-derive the target from a `BASE_URL` host regex, and never export or rewrite `BASE_URL` to point at a different env — a stray `BASE_URL` is exactly what `--target local` overrides so a local run can't silently hit deployed code.
 
@@ -93,6 +100,8 @@ Test a deployed/merged change against `dev`; an unmerged change must still pass 
 **Deployed-branch check before asserting post-fix behaviour (Non-Negotiable).** Shared DEV and staging environments may run a long-lived release branch, not the default branch. A fix merged to `main` only is NOT observable on an environment that tracks a separate release branch. Before asserting "the fix is still broken on DEV" or "the fix works on DEV", verify which branch that environment actually runs and confirm the fix is present on it. The overlay skill's reference docs identify which environments track which branch. If unverified, gate or skip the assertion with a reason — never report "still broken" for what is actually "fix not yet on the deployed branch".
 
 ## Writing Tests
+
+**FINAL BDD before customer E2E (Non-Negotiable):** Before writing or running a customer E2E spec or plan, confirm that the ticket's **FINAL BDD scenario set** exists. A missing, draft, PREFLIGHT or otherwise uncertified set stops E2E work: no spec and no plan. Ask the owner whether to finalise it with `/bdd-test-creation` (`AskUserQuestion`; headless: `t3 <overlay> questions record`), because PRD and scenario edits need the owner's approval. The customer plan declares the PRD page, BDD revision/date, `final` status and final scenario IDs only in one hidden `<!-- t3-bdd-source {…} -->` comment, never in reader-visible text; `t3 <overlay> e2e write-test-plan` refuses a plan without that declaration, with a visible source field, or with a trace outside the declared set, and `t3 <overlay> e2e verify-plan-captures` re-checks every plan whose captures are committed.
 
 **Build the test against the TICKET's acceptance criteria, never against the MR diff (Non-Negotiable).** An E2E test verifies a **ticket** holistically — and a ticket is frequently multi-repo (a backend MR, a frontend MR, a microservice change, translations, external config, all closing one ticket). Gather the whole ticket and **all** its linked MRs across every repo before designing the test, then enumerate the end-to-end user flow the ticket promises and test *that*. Reading the MR diff too closely is a trap: it biases you to assert *what the code does now* instead of *what the ticket requires* — a vacuous test that passes regardless of correctness. The diff is an input to understanding, not the unit of test. The reviewer-side statement of this principle is `/t3:e2e-review` § "Test the ticket, not the MR diff" — apply it as the author, don't restate it.
 
@@ -229,7 +238,7 @@ The three-kind table (artifact / fixture / manifest) and their homes, where run 
 
 ## Test-Plan Authoring
 
-A test plan is for a human testing in a browser. Write it so the reviewer can skim and verify fast: terse steps, exact URLs and accounts, one expected result per step, minimal prose. Cut narration, repeated caveats, and analysis essays — a plan is not a report.
+A test plan is for a human testing in a browser. Write it so the reviewer can skim and verify fast: terse steps, exact URLs and accounts, one expected result per step. A plan is not a report.
 
 **Modality — classify each AC before writing a single step.** The right modality depends on what the AC actually tests:
 
@@ -239,11 +248,31 @@ A test plan is for a human testing in a browser. Write it so the reviewer can sk
 
 **Never put a terminal screenshot in a test plan.** A screenshot must show a browser UI. An API response belongs as a text code block (or a browser URL the tester opens), not an image of a terminal window.
 
-**Conciseness** — a plan that exceeds what a reviewer needs to verify fast is too long. Aim for the minimum: exact URL, exact account, one expected outcome per step. A 30k-character test plan buries the actual steps in narration; keep it short enough to skim.
+**Concise by construction, not trimmed to concise afterwards.** The same content reaches roughly three-quarters of the pages when four moves are applied from the first draft, so the pages a later cutting pass removes were an authoring default, never required content:
+
+- **A sentence that enumerates is a list.** Steps, conditions, observed values and per-scenario results go in bullets or a table; prose carries only what a list cannot.
+- **State a convention once, then rely on it.** A rounding rule, a date format, an environment name — one convention line the whole document reads against. Restated per scenario, it is length carrying no information.
+- **State a shared numeric-format convention once before the scenarios.** Then give each result's value without restating the rule. Never repeat the convention phrase in each scenario result: `Rates use six decimal places.` belongs once above the list; each item then reports only its expected and actual rate.
+- **No self-narration.** Nothing about the document, about the testing process, or about what the reader is about to see. A reader wants the result, not a tour of it.
+- **One term per concept, fixed before the first draft.** A term that collides with a verdict, a status, or another term costs a re-read at every occurrence, and a translated edition inherits the collision.
+
+**Page count is the metric, not word count.** The two move independently: converting prose to bullets removes words and adds lines, so a cutting pass can drop hundreds of words and gain a page. Render the document and read its page count — that is the artifact the reader holds. The reviewer states that number back (`/t3:e2e-review` § "E2E Confidence Rubric" → HARD GATE H7), so a document nobody rendered cannot be approved.
 
 **A plan describes the CURRENT state only (Non-Negotiable).** No "previously", no "used to", no note that a rule changed or that the document was rewritten. A reader opens the plan to learn what is tested now, so every sentence about a former state is one they must read and then discard. The single thing that is not history and must stay: where a recorded result was produced under conditions that no longer hold, say so as a property of **that result** — "recorded against a build that stores on fixing" — never as a story about the document changing. Why a scenario changed belongs in the MR; why the plan changed belongs in the commit message.
 
+**A plan names the behaviour, never the machinery that tests it (Non-Negotiable).** A customer reads this document, so no repository or file path, spec or fixture filename, branch name, ticket/work-item/MR number, internal tool name, or environment identifier beyond the agreed environment name belongs anywhere in it — header and summary lines included, since that is where one survives review. Name each covered behaviour in the customer's own domain language instead of naming the file that tests it, and a German-language plan names it in German. § "Writing the Test Plan" bounds *what* an outward plan reports; this bounds the vocabulary it reports in.
+
 **At most one version bump per merge request.** A plan issued outside the repo carries a revision history; while its MR is open the plan is still in flux, so a second edit revises that MR's row rather than adding another. A row exists to tell someone holding an older copy what changed — nobody outside holds a copy of an unmerged plan, so a row per edit only buries the change that matters.
+
+**An outward plan is one journey, in the order a tester walks it.** Scenarios follow the flow through the product rather than the order they were written, and a later one continues from an earlier one instead of rebuilding its setup — a tester who has to click back to the same starting point for every case spends the session on preparation. A scenario that genuinely starts elsewhere opens a new journey and says so, once.
+
+**An outward plan keeps every scenario and gets shorter by regrouping.** A scenario leaves only by merging into one that still asserts everything it asserted, or on the owner's explicit decision for that scenario. The automation layer decides how a case is automated, never whether the reader tests it. Reworking an issued plan regroups its recorded results and captures: no spec change and no new capture unless a re-run is asked for.
+
+**An outward plan states intent, never an obligation the reader can hold the team to.** No coverage ratio, no promised intervention, no "must". A wait names the real wait and, in parentheses, how the team shortened it in its own run — `wait 1 day (backdated manually)` — never an offer to the reader; an outward plan is the team's record of what it tested, carries no instruction to the reader and no slot for the reader's verdict. The change log names what changed in the reader's terms, never a removed scenario or a scenario count.
+
+**What the reader sees includes image alt text and excludes repository-only comments.** Alt text renders on a broken image and is read aloud, so it describes the picture, never its file. An HTML comment may carry traceability in the repository copy and is stripped before the plan is published.
+
+**Done is a recorded review verdict, not a green check.** An outward plan is reported done only when a review record taken against its current bytes answers what no check can read — or when its owner records an acceptance with the findings still listed. An overlay supplies the mechanical check and the record format.
 
 **Field-context evidence for generated documents.** When an AC requires verifying a term in a generated PDF, export, or rendered document, assert the term appears in its expected structured field or labelled row — not anywhere in the full text. Free-text fields (borrower name, address, test-fixture label) often contain the same token and produce a false "verified." The verification step must name the field being checked: "the Security row shows type X", not "the PDF contains X". Beware test-fixture names that embed the feature keyword — a borrower named "E2E FeatureName" defeats a naive full-text search for "FeatureName".
 
@@ -258,6 +287,8 @@ t3 <overlay> e2e write-test-plan --manifest "$T3_E2E_ARTIFACTS_DIR/<TICKET>/mani
 ```
 
 The path is derived, never passed: the repo from the overlay's declared e2e config, the filename from the ticket number. The manifest is the single input. Build it once, then run that command — re-running is always safe: each run merges its env over what the file already records and rewrites that one file, so a second run updates the plan instead of adding a second copy of it.
+
+On the first write, the manifest's top-level BDD key is exactly `scenario_source`, with `prd_page`, `bdd_revision`, `status: "final"` and `scenario_ids`. The hidden output comment is named `t3-bdd-source`; do not copy that name into the manifest as `bdd_source`, which the writer ignores.
 
 **A test plan that ships to a colleague-facing repo is evidence of real testing — never an admission of not testing (Non-Negotiable).** The plan merges into a colleague/product repo, so it MUST reflect testing actually performed on the real (deployed) environment with real evidence. **NEVER** write a plan containing "unable to test", "blocked", "DEV verification pending", "could not verify", "not automatable", or any equivalent — to the user's colleagues that reads as incompetence and is humiliating. The gate before any on-behalf post is one question: *did I actually verify this on the real env, with real evidence?* If no, do not post.
 
@@ -275,11 +306,19 @@ pass insert -m e2e/e2etest-password          # re-inject the credential, then ru
 # t3 <overlay> e2e write-test-plan --ticket 8568 --body-file blocked-plan.md   # FORBIDDEN when that body says "unable to test"
 ```
 
-**The manifest carries the per-workflow steps — not just screenshots.** Each entry in `workflows[]` is one workflow, and each workflow carries its own `steps` array: the numbered "how to test / where to click" list a human follows to reproduce it manually. The command renders that list above the workflow's `Dev | Local` evidence table, so the test plan is steps-plus-evidence, not bare images. Include a `steps` list on every workflow (see § "Manifest shape" for the full schema):
+**An outward-issued plan says what the agreed test concept asks for — no less, and no more.** The concept binds both ways: an omitted scenario, result or evidence item is owed and invisible in a document that otherwise reads complete, while a caveat, gap or explanation the concept never asked for hands the reader a lever to reopen settled scope. Dropping a disclosure is not licence to misstate — where removing one would leave a false statement, the claim under it is what needs fixing. The gate that fails a document on either direction is `/t3:e2e-review` § "E2E Confidence Rubric" → HARD GATE H6; apply it as the author, don't restate it.
+
+**The manifest carries the per-workflow steps — not just screenshots.** Each entry in `workflows[]` is one workflow, and each workflow carries its own `steps` array: the numbered "how to test / where to click" list a human follows to reproduce it manually. The command renders that list above the workflow's evidence table, so the test plan is steps-plus-evidence, not bare images. A manifest may carry `dev`, `local`, or `stack` captures, each under its own side key, and every side passes through the same capture preflight and `write-test-plan` path. Include a `steps` list on every workflow (see § "Manifest shape" for the full schema):
 
 ```jsonc
 {
   "ticket": "<TICKET>",
+  "scenario_source": {
+    "prd_page": "<PRD page URL>",
+    "bdd_revision": "<revision or date>",
+    "status": "final",
+    "scenario_ids": ["BDD-<TICKET>-001"]
+  },
   "workflows": [
     {
       "workflow": "<plain-language workflow name>",
@@ -292,17 +331,17 @@ pass insert -m e2e/e2etest-password          # re-inject the credential, then ru
 }
 ```
 
-**Set the environment with `--target`, never by hand-editing `BASE_URL`.** The env a manifest fills is decided by the `--target dev|local` flag on the `t3 <overlay> e2e run` invocation that produced the captures (§ "Dual-Env Testing" → "Target selection"), and recorded in the manifest's `dev`/`local` blocks. Do not export or rewrite `BASE_URL` to redirect the run — `--target` is the one knob; the runner exports `T3_E2E_TARGET` for you.
+**Set the environment with `--target`, never by hand-editing `BASE_URL`.** The run environment is decided by the `--target dev|qa|local|stack` flag on the `t3 <overlay> e2e run` invocation that produced the captures (§ "Dual-Env Testing" → "Target selection"), and downstream evidence records that real target. Do not export or rewrite `BASE_URL` to redirect the run — `--target` is the one knob; the runner exports `T3_E2E_TARGET` for you.
 
-**Local-vs-CI note.** The evidence-capture path (the videos and red-boxed screenshots the manifest cites) runs **locally behind the `--target` flag** — there is no CI parity for capturing or writing the plan. CI runs the suite for pass/fail, but it does **not** assemble or write a test plan; you produce the artifacts on your machine via `t3 <overlay> e2e run <work-item> --target dev|local`, then write the plan with the canonical command above. So the test plan is a local-run deliverable, gated by the flag — not something CI emits on your behalf.
+**Local-vs-CI note.** The evidence-capture path (the videos and red-boxed screenshots the manifest cites) runs **locally behind the `--target` flag** — there is no CI parity for capturing or writing the plan. CI runs the suite for pass/fail, but it does **not** assemble or write a test plan; you produce the artifacts on your machine via `t3 <overlay> e2e run <work-item> --target dev|qa|local|stack`, then write the plan with the canonical command above. So the test plan is a local-run deliverable, gated by the flag — not something CI emits on your behalf.
 
 ## Where the Plan Lives
 
-**`test-plans/<repo>-<gitlab-ticket>.md`, a sibling of `e2e/` in the repo that owns the specs.** ONE file per ticket, named after the ticket so writer and reader resolve the same path with no glob and no index — which is what makes a re-run update the plan in place. The repo half is not decoration: work-item numbers are allocated per repo, so `7311.md` alone cannot say which ticket it names. Nothing is configured: the repo comes from the overlay's declared e2e config and the checkout from the ticket's worktree for that repo, so a ticket with no worktree there fails loud rather than writing nowhere.
+**`test-plans/<repo>-<gitlab-ticket>.md`, a sibling of `e2e/` in the repo that owns the specs.** ONE file per ticket, named after the ticket so writer and reader resolve the same path with no glob and no index — which is what makes a re-run update the plan in place. The repo half is not decoration: work-item numbers are allocated per repo, so the number alone cannot say which ticket it names. Nothing is configured: the repo comes from the overlay's declared e2e config and the checkout from the ticket's worktree for that repo, so a ticket with no worktree there fails loud rather than writing nowhere.
 
 The file carries a hidden state blob, so a run recovers the prior state, merges its own env over it, and rewrites the file. Each env's evidence carries three fields — `env`, `commits`, `ran_at` — so a reader never has to infer where a run happened, against which commit, or when.
 
-How the plan renders (header provenance, per-workflow steps, the `Dev | Local` table), the hidden state blob and its merge semantics, the flag table, and how to pick the manifest's `template` from the AC's modality are in [`skills/e2e/references/test-plan-file-and-manifest.md`](references/test-plan-file-and-manifest.md).
+How the plan renders (header provenance, per-workflow steps, the `Dev | Local` table with `Stack` when present), the hidden state blob and its merge semantics, the flag table, and how to pick the manifest's `template` from the AC's modality are in [`skills/e2e/references/test-plan-file-and-manifest.md`](references/test-plan-file-and-manifest.md).
 
 ### Manifest shape
 
@@ -315,8 +354,8 @@ The per-environment directory layout, the `T3_E2E_ARTIFACTS_DIR` contract, and t
 ### Rules
 
 - **Cite whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none) — from that env's `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/` directory. The plan records each one's artifacts-root-relative path; the bytes stay out of the repo.
-- **`--embed-captures` is the exception, and only for a plan issued OUTSIDE the repository.** Its reader has no access to the artifacts directory, so a citation into one is a dead reference; the flag copies that run's captures to `test-plans/evidence/<repo>-<ticket>/` and embeds them by relative link. Never reach for it on an internal plan — committing binaries a citation already covers bloats the repo for no reader.
-- **Never hand-place a capture in the evidence directory.** `write-test-plan` is the only sanctioned way one gets there, because it re-validates the set the repo would hold **after** the run — already-committed captures plus incoming ones — through the same red-box and duplicate preflight the cited path uses, before anything is copied or written. `--body-file` is gated identically: a hand-authored body is exactly the path that let unvalidated captures reach a reviewer. A capture dropped in by hand skips no gate at write time — it fails the next write, by name.
+- **`--embed-captures` is the exception, and only for a plan issued OUTSIDE the repository.** Its reader has no access to the artifacts directory, so a citation into one is a dead reference; the flag copies that run's captures to `test-plans/evidence/<repo>-<ticket>/<env>/` and embeds them by relative link. Never reach for it on an internal plan — committing binaries a citation already covers bloats the repo for no reader.
+- **Never hand-place a capture in the evidence directory.** `write-test-plan` is the only sanctioned way one gets there, because it re-validates the set the repo would hold **after** the run — already-committed captures plus incoming ones — through the same red-box and duplicate preflight the cited path uses, before anything is copied or written. `--body-file` is gated identically: every `evidence/<repo>-<ticket>/<env>/<capture>` link the body carries must resolve — copied from `--artifacts-dir` under `--embed-captures`, else already committed — and passes the same red-box, duplicate, stills-only and pre-roll gates; a link nothing satisfies refuses the write. A capture dropped in by hand skips no gate at write time — it fails the next write, by name.
 - **Wire the standing gate into the repo that holds the plans.** `t3 <overlay> e2e verify-plan-captures --plans-dir <checkout>/test-plans` validates every ticket's committed captures, and **refuses when there is nothing to look at** rather than reporting success — a check that passes because it found nothing is the failure it exists to prevent. It belongs in that repo's pre-commit config or CI, since a capture can be committed without ever running a command.
 - **Always include a `steps` test plan per workflow.** Give each workflow a numbered "how to test / where to click" list so a human can reproduce it manually — this is a standard part of every teatree test plan, not optional. Write it in plain manual-testing language.
 - **One file per ticket, all environments.** The Dev|Local table accumulates: local now, dev added after deploy, same file.

@@ -2,8 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase
 
+from teatree.core.gates import provision_admission_gate
 from teatree.core.gates.provision_admission_gate import (
     ProvisionAdmissionVerdict,
     check_provision_admission,
@@ -12,7 +14,26 @@ from teatree.core.gates.provision_admission_gate import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _healthy_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(provision_admission_gate, "read_disk_used_percent", lambda: 20.0)
+
+
 class TestCheckProvisionAdmission(TestCase):
+    def test_holds_on_critical_disk_before_provisioning(self) -> None:
+        verdict = check_provision_admission(ram_used_percent=20, disk_used_percent=96)
+        assert not verdict.ok
+        assert "disk_pressure" in verdict.reason
+
+    def test_unmeasurable_disk_does_not_wedge_provisioning(self) -> None:
+        verdict = check_provision_admission(ram_used_percent=20, disk_probe=lambda: None)
+        assert verdict.ok
+
+    def test_healthy_disk_keeps_the_existing_ram_refusal(self) -> None:
+        verdict = check_provision_admission(ram_used_percent=95, disk_used_percent=20)
+        assert not verdict.ok
+        assert "ram_pressure" in verdict.reason
+
     def test_allows_when_ram_under_ceiling(self) -> None:
         verdict = check_provision_admission(ram_used_percent=50)
         assert verdict.ok is True

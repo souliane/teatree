@@ -6,7 +6,9 @@ is reachable on its own, and the page's SIZE — form / input / CSRF-token count
 where it was 272 forms, 1,060 inputs and 271 tokens.
 """
 
+import os
 import re
+from unittest import mock
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -19,6 +21,7 @@ from teatree.config.setting_groups import UNGROUPED_PATH, setting_comment, setti
 from teatree.config.setting_help import setting_help
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import (
+    DriftVerdict,
     SettingsEditorView,
     SettingsGroupView,
     SettingsSection,
@@ -41,6 +44,7 @@ from teatree.dash.views.settings import (
     settings_group,
     settings_readouts,
 )
+from tests.teatree_dash._overlay_venue import core_overlay_only
 
 _ROW_ID = re.compile(r'id="setting-([a-z0-9_]+)"')
 _H2 = re.compile(r"<h2[^>]*>(.*?)</h2>", re.DOTALL)
@@ -110,6 +114,7 @@ class TestSettingsPageContext(TestCase):
             "readouts",
             "editor",
             "confirm_phrase",
+            "skills_collision_count",
         }
         assert ctx["nav_active"] == "dash:settings"
         assert ctx["confirm_phrase"] == SAFETY_CONFIRM_PHRASE
@@ -285,7 +290,14 @@ class TestThePageCostsNoQueryPerRow(TestCase):
     Pinned as an EQUALITY between the smallest and the largest section rather than a
     ceiling: a ceiling generous enough to survive a schema growing keys is generous
     enough to hide the N+1 it exists to catch.
+
+    The overlay set is pinned too (``core_overlay_only``): the counts below are a
+    function of how many scope COLUMNS the venue registers, so without it the same
+    correct plan measures 7 on a core-only install and 9 on a fork that adds an overlay.
     """
+
+    def setUp(self) -> None:
+        self.enterContext(core_overlay_only())
 
     def _sections(self) -> tuple[SettingsSection, SettingsSection]:
         by_size = sorted(build_settings_sections(), key=lambda section: section.key_count)
@@ -347,7 +359,7 @@ class TestSettingsSet(TestCase):
         assert ConfigSetting.objects.count() == 0
 
     def test_set_rejects_an_invalid_value(self) -> None:
-        response = self._set("issue_implementer_enabled", {"value": '"false"'})
+        response = self._set("adaptive_intake_concurrency_enabled", {"value": '"false"'})
         assert response.status_code == 400
         assert ConfigSetting.objects.count() == 0
 
@@ -371,6 +383,12 @@ class TestSettingsSet(TestCase):
         assert "inconsistent config" in response.content.decode()
         assert ConfigSetting.objects.count() == 0
 
+    def test_set_refuses_an_overlay_column_for_a_global_only_key(self) -> None:
+        response = self._set("agent_tier_models", {"value": '{"cheap": "m"}'}, scope="proj")
+        assert response.status_code == 400
+        assert "global scope only" in response.content.decode()
+        assert ConfigSetting.objects.count() == 0
+
     def test_a_scoped_write_lands_in_the_scope_its_column_names(self) -> None:
         response = self._set("mode", {"value": '"auto"'}, scope="proj")
         assert response.status_code == 302
@@ -385,6 +403,48 @@ class TestSettingsSet(TestCase):
         assert self._set("mode", {"value": ""}, scope="proj").status_code == 302
         assert ConfigSetting.objects.get_effective("mode", scope="proj") is None
         assert ConfigSetting.objects.get_effective("mode") == "auto"
+
+
+class TestClearingAnOverlayColumnClearsThatOverlay(TestCase):
+    """The column is an OVERLAY, so its restore gesture must clear every spelling of it.
+
+    ``load_overlay_rows`` merges each canonically-equivalent scope, so a row under the bare
+    alias goes on supplying the value after the ``t3-`` row is deleted. Clearing the exact
+    spelling alone therefore reports success and changes nothing — the one outcome the
+    click-to-edit restore gesture must never have.
+    """
+
+    def _set(self, key: str, data: dict[str, str], scope: str = ""):
+        url = reverse("dash:settings_set", args=[key])
+        return self.client.post(f"{url}?scope={scope}" if scope else url, data, **_LOOPBACK)
+
+    def test_emptying_the_column_clears_the_alias_row_too(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="teatree")
+        ConfigSetting.objects.set_value("merge_wip", 9, scope="t3-teatree")
+        assert self._set("merge_wip", {"value": ""}, scope="t3-teatree").status_code == 302
+        assert ConfigSetting.objects.get_effective("merge_wip", scope="teatree") is None
+        assert ConfigSetting.objects.get_effective("merge_wip", scope="t3-teatree") is None
+
+    def test_it_never_reaches_past_the_overlay_into_the_global_row(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        ConfigSetting.objects.set_value("merge_wip", 9, scope="t3-teatree")
+        assert self._set("merge_wip", {"value": ""}, scope="t3-teatree").status_code == 302
+        assert ConfigSetting.objects.get_effective("merge_wip") == 4
+
+    def test_clearing_the_global_column_leaves_every_overlay_row_alone(self) -> None:
+        # The global scope is not an overlay and folds onto nothing; a sweep here would
+        # delete every overlay's row from a gesture that named none of them.
+        ConfigSetting.objects.set_value("merge_wip", 4)
+        ConfigSetting.objects.set_value("merge_wip", 9, scope="t3-teatree")
+        assert self._set("merge_wip", {"value": ""}).status_code == 302
+        assert ConfigSetting.objects.get_effective("merge_wip") is None
+        assert ConfigSetting.objects.get_effective("merge_wip", scope="t3-teatree") == 9
+
+    def test_an_unrelated_overlays_row_is_untouched(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="t3-widget")
+        ConfigSetting.objects.set_value("merge_wip", 9, scope="t3-teatree")
+        assert self._set("merge_wip", {"value": ""}, scope="t3-teatree").status_code == 302
+        assert ConfigSetting.objects.get_effective("merge_wip", scope="t3-widget") == 7
 
 
 class TestSafetyPostureConfirm(TestCase):
@@ -438,17 +498,22 @@ class TestNoShippedDefaultDrift(TestCase):
     default" whenever the shipped file carried no entry at all, whatever the DB held.
     """
 
-    def test_an_unset_no_default_key_matches_its_code_default(self) -> None:
+    def test_an_unset_no_default_key_reads_as_having_no_default(self) -> None:
         row = build_setting_row("workspace_dir")
         assert not row.has_shipped_default
-        assert all(cell.matches_default for cell in row.cells)
+        assert all(cell.verdict is DriftVerdict.NO_DEFAULT for cell in row.cells)
         assert not row.drifts
+
+    def test_an_unset_no_default_cell_never_claims_to_match_a_default(self) -> None:
+        body = _row_html(self.client, "workspace_dir")
+        assert "no shipped default" in body
+        assert "same as default" not in body
 
     def test_an_overridden_no_default_key_reads_as_drifted(self) -> None:
         ConfigSetting.objects.set_value("workspace_dir", "/srv/custom")
         row = build_setting_row("workspace_dir")
         cell = next(c for c in row.cells if c.scope == "")
-        assert not cell.matches_default
+        assert cell.verdict is DriftVerdict.DRIFTED
         assert row.drifts
 
     def test_the_rendered_row_shows_the_drift_for_a_no_default_key(self) -> None:
@@ -631,6 +696,34 @@ class SettingsScopeControlTestCase(TestCase):
         assert {"alpha", "beta"} <= set(scopes)
 
 
+class TestOneColumnPerOverlayNotOnePerSpelling(TestCase):
+    """A legacy alias scope and its ``t3-`` entry point are ONE overlay, so they are one column.
+
+    ``load_overlay_rows`` merges every canonically-equivalent scope, so both spellings resolve
+    to the same value: two columns showed the same reading twice under two names, and neither
+    said which spelling a write would land in.
+    """
+
+    def _headings(self) -> list[str]:
+        body = self.client.get(reverse("dash:settings"), **_LOOPBACK).content.decode()
+        return re.findall(r'<th class="setting-scope-head">([^<]*)</th>', body)
+
+    def test_an_alias_scope_adds_no_second_column_for_its_overlay(self) -> None:
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="teatree")
+        with core_overlay_only():
+            headings = self._headings()
+        assert headings.count("t3-teatree") == 1
+        assert "teatree" not in headings, headings
+
+    def test_a_scope_no_registered_overlay_claims_keeps_its_own_column(self) -> None:
+        # The union with the stored scopes is the feature: a row written before its overlay
+        # was registered, or after it was uninstalled, must stay visible rather than stranded.
+        ConfigSetting.objects.set_value("merge_wip", 7, scope="gone-overlay")
+        with core_overlay_only():
+            headings = self._headings()
+        assert "gone-overlay" in headings, headings
+
+
 class TestTheGridIsOneRowPerSettingAcrossEveryScope(TestCase):
     """#3880: one row per setting, every scope on it, drift coloured against the default."""
 
@@ -757,3 +850,39 @@ class TestTheNavCountsDriftedSettings(TestCase):
         body = self.client.get(reverse("dash:settings"), **_LOOPBACK).content.decode()
         assert "settings-nav-drift" in body
         assert "setting(s) here differ from their default" in body
+
+
+class TestEnvPinnedCellIsNotOfferedAsEditable(TestCase):
+    """An env var outranks every stored tier, so a stored write there changes nothing.
+
+    Rendering such a cell as an editable control, and accepting its POST, produced a write
+    that reported success and was never read back — a wrong-layer write. The cell is read-only
+    and the endpoint refuses by name instead.
+    """
+
+    def test_the_cell_is_read_only_and_names_the_pinning_variable(self) -> None:
+        with mock.patch.dict(os.environ, {"T3_WIP": "full"}):
+            row = build_setting_row("wip")
+            cell = next(c for c in row.cells if c.scope == "")
+            assert cell.unwritable_reason == "pinned by T3_WIP"
+            assert not cell.writable
+            body = _row_html(self.client, "wip")
+        assert "T3_WIP" in body
+        assert "cannot take effect" in body
+
+    def test_a_cell_with_no_env_var_set_stays_editable(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("T3_WIP", None)
+            row = build_setting_row("wip")
+        cell = next(c for c in row.cells if c.scope == "")
+        assert cell.unwritable_reason == ""
+        assert cell.writable
+
+    def test_the_setter_refuses_a_pinned_key_rather_than_writing_the_wrong_layer(self) -> None:
+        with mock.patch.dict(os.environ, {"T3_WIP": "full"}):
+            response = self.client.post(
+                reverse("dash:settings_set", args=["wip"]), {"value": '"boost"'}, headers={"hx-request": "true"}
+            )
+        assert response.status_code == 400
+        assert "T3_WIP" in response.content.decode()
+        assert not ConfigSetting.objects.filter(key="wip").exists()

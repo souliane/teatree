@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 from django.core.management import call_command
+from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.utils.module_loading import import_string
@@ -42,14 +43,17 @@ from teatree.config import load_config
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
+from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.core.management.commands._workspace.helpers import branch_prefix
 from teatree.core.management.commands._workspace.provision_parallel import WorktreeProvisionResult
 from teatree.core.management.commands._workspace.ticket_intake import build_branch_name
 from teatree.core.management.commands.workspace import _worktree_root
+from teatree.core.managers import TicketQuerySet
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
 from teatree.core.worktree.worktree_done import reap_done_worktrees
+from teatree.docker.reap import OwnedStacks
 from tests.teatree_core.management_commands._overlays import (
     FULL_OVERLAY,
     NESTED_OVERLAY,
@@ -73,6 +77,19 @@ def _allow_provision_admission() -> AbstractContextManager[MagicMock]:
     """Force the RAM-admission gate to always allow — never sample the real host's RAM in a test."""
     return patch(
         "teatree.core.management.commands._workspace.provision_parallel.check_provision_admission",
+        return_value=ProvisionAdmissionVerdict.allow(),
+    )
+
+
+def _allow_start_admission() -> AbstractContextManager[MagicMock]:
+    """The START path's half of the same ceiling — it holds and QUEUES rather than failing.
+
+    A test that samples the runner's live memory asserts about the machine, not the
+    command: above the ceiling the worktree is enqueued and never transitions, so the
+    verdict flips with whatever else is running on the box.
+    """
+    return patch(
+        "teatree.core.gates.local_stack_gate.check_provision_admission",
         return_value=ProvisionAdmissionVerdict.allow(),
     )
 
@@ -131,6 +148,7 @@ class TestStampIdentity(TestCase):
         with (
             patch.object(ws_stamp_identity_mod.git, "remote_url", return_value=url),
             patch.object(ws_stamp_identity_mod.git, "remote_slug", return_value=slug),
+            patch("teatree.core.public_identity.forge_url_cli_env", return_value={"GH_TOKEN": "routed"}),
             patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh_public),
             patch.object(ws_stamp_identity_mod, "set_local_noreply_identity", side_effect=set_calls.append),
         ):
@@ -250,6 +268,26 @@ class TestWorktreeRootHelper(TestCase):
 # ── Workspace commands ──────────────────────────────────────────────
 
 
+class TestWorkspaceTicketOrphanScanFailure(TestCase):
+    def test_non_missing_git_failure_exits_nonzero(self) -> None:
+        failure = utils_run_mod.CommandFailedError(
+            ["git", "-C", "/repo", "log", "feature", "--not", "origin/main"],
+            128,
+            "",
+            "fatal: invalid object",
+        )
+        stderr = StringIO()
+
+        with (
+            patch.object(workspace_mod._wh, "warn_orphans", side_effect=failure),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            call_command("workspace", "ticket", "https://example.com/issues/42", stderr=stderr)
+
+        assert exc_info.value.code == 1
+        assert "orphan scan failed" in stderr.getvalue()
+
+
 @_patch_overlays(FULL_OVERLAY)
 @override_settings(**SETTINGS)
 class TestWorkspaceTicketInputValidation(TestCase):
@@ -266,6 +304,88 @@ class TestWorkspaceTicketInputValidation(TestCase):
 
         assert Ticket.objects.filter(issue_url="3274").count() == 0
         assert Ticket.objects.count() == 0
+
+
+_WORK_ITEM_URL = "https://gitlab.com/acme/widgets/-/work_items/256"
+_ISSUE_URL = "https://gitlab.com/acme/widgets/-/issues/256"
+
+
+class _TicketIntakeCase(TestCase):
+    """``workspace ticket`` against a throwaway worktree root, with the provisioner stubbed."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.enterContext(_patch_overlays(FULL_OVERLAY))
+        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.object(workspace_mod, "_worktree_root", return_value=self.workspace))
+        self.provisioner = self.enterContext(patch.object(workspace_intake_mod, "WorktreeProvisioner"))
+        self.provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="ok")
+
+
+class TestWorkspaceTicketIssueIdentity(_TicketIntakeCase):
+    """GitLab serves one issue at ``/-/issues/N`` and ``/-/work_items/N``; both are ONE ticket (#2293)."""
+
+    def test_issues_and_work_items_urls_resolve_to_the_same_ticket(self) -> None:
+        stored = Ticket.objects.create(issue_url=_WORK_ITEM_URL)
+        assert call_command("workspace", "ticket", _ISSUE_URL) == stored.pk
+        assert list(Ticket.objects.values_list("issue_url", flat=True)) == [_WORK_ITEM_URL]
+
+    def test_the_same_number_in_another_repo_is_another_ticket(self) -> None:
+        Ticket.objects.create(issue_url="https://gitlab.com/acme/gadgets/-/work_items/256")
+        call_command("workspace", "ticket", _ISSUE_URL)
+        assert Ticket.objects.count() == 2
+
+    def test_a_concurrent_creator_under_the_sibling_spelling_is_attached(self) -> None:
+        winner = Ticket.objects.create(issue_url=_WORK_ITEM_URL)
+        lookups = [Ticket.objects.none(), Ticket.objects.filter(pk=winner.pk)]
+        with patch.object(TicketQuerySet, "matching_issue", side_effect=lambda _url: lookups.pop(0)):
+            ticket, created = Ticket.objects.get_or_create_for_issue(_ISSUE_URL)
+        assert (ticket.pk, created) == (winner.pk, False)
+        assert Ticket.objects.count() == 1
+
+    def test_an_integrity_error_no_sibling_row_explains_is_not_swallowed(self) -> None:
+        with (
+            patch.object(TicketQuerySet, "create", side_effect=IntegrityError("another constraint")),
+            pytest.raises(IntegrityError),
+        ):
+            Ticket.objects.get_or_create_for_issue(_ISSUE_URL)
+
+
+class TestWorkspaceTicketOnATerminalTicket(_TicketIntakeCase):
+    """A shipped ticket is refused by name, never re-run into a silent exit-0 no-op."""
+
+    def test_a_merged_or_delivered_ticket_is_refused_even_with_take_over(self) -> None:
+        for number, state in enumerate((Ticket.State.MERGED, Ticket.State.DELIVERED), start=1):
+            with self.subTest(state=state.value):
+                url = f"https://example.com/issues/{number}"
+                ticket = Ticket.objects.create(issue_url=url, state=state)
+                err = _refused_workspace_ticket(url, take_over=True)
+                assert "reopen_for_followup" in err
+                assert f"ticket transition {ticket.pk} reopen`" in err
+                ticket.refresh_from_db()
+                assert ticket.state == state
+        self.provisioner.assert_not_called()
+
+    def test_a_started_ticket_still_proceeds_with_take_over(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/3", state=Ticket.State.WORK_STARTED)
+        assert call_command("workspace", "ticket", "https://example.com/issues/3", take_over=True) == ticket.pk
+
+
+class TestWorkspaceTicketRefusalsExitNonZero(_TicketIntakeCase):
+    """The shell sees the refusal: ``run_from_argv`` is the path ``t3`` takes, not ``call_command``."""
+
+    def _argv(self, *args: str) -> int | str | None:
+        with pytest.raises(SystemExit) as exc:
+            workspace_mod.Command().run_from_argv(["manage.py", "workspace", "ticket", *args])
+        return exc.value.code
+
+    def test_a_foreign_worktree_refusal_exits_one(self) -> None:
+        (self.workspace / "42-someone-else-already-here").mkdir()
+        assert self._argv("https://example.com/issues/42") == 1
+
+    def test_a_terminal_ticket_refusal_exits_one(self) -> None:
+        Ticket.objects.create(issue_url="https://example.com/issues/43", state=Ticket.State.MERGED)
+        assert self._argv("https://example.com/issues/43", "--take-over") == 1
 
 
 class TestProvisionSplitsCloneRootFromWorktreeRoot(TestCase):
@@ -516,9 +636,7 @@ class TestFinalizeTicketProvision(TestCase):
             patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner),
             patch.object(Ticket, "aggregate_phase_records", return_value=(["coding"], {})),
         ):
-            rc = workspace_intake_mod.finalize_ticket_provision(
-                lambda _s: None, errs.append, ticket, None, self.workspace
-            )
+            rc = workspace_intake_mod.finalize_ticket_provision(lambda _s: None, errs.append, ticket, None)
         assert rc == 0
         assert Ticket.objects.filter(pk=ticket.pk).exists()
         assert any("Provisioning failed" in line for line in errs)
@@ -1319,6 +1437,7 @@ class TestWorkspaceStartTeardownExitCodes(TestCase):
             failing = MagicMock()
             failing.run.return_value = RunnerResult(ok=False, detail="docker compose up failed")
             with (
+                _allow_start_admission(),
                 patch.object(workspace_mod, "WorktreeStartRunner", return_value=failing),
                 pytest.raises(SystemExit) as exc_info,
             ):
@@ -1399,7 +1518,10 @@ class TestWorkspaceStartMixedState(TestCase):
             _ticket, provisioned, created, be_dir = self._ticket_with_mixed_worktrees(tmp)
             ok = MagicMock()
             ok.run.return_value = RunnerResult(ok=True, detail="ok")
-            with patch.object(workspace_mod, "WorktreeStartRunner", return_value=ok):
+            with (
+                patch.object(workspace_mod, "WorktreeStartRunner", return_value=ok),
+                _allow_start_admission(),
+            ):
                 # Pre-fix: raises TransitionNotAllowed on the CREATED worktree.
                 call_command("workspace", "start", path=str(be_dir))
 
@@ -1424,7 +1546,10 @@ class TestWorkspaceStartMixedState(TestCase):
                 instance.run.return_value = RunnerResult(ok=True, detail="ok")
                 return instance
 
-            with patch.object(workspace_mod, "WorktreeStartRunner", side_effect=_runner_factory):
+            with (
+                patch.object(workspace_mod, "WorktreeStartRunner", side_effect=_runner_factory),
+                _allow_start_admission(),
+            ):
                 call_command("workspace", "start", path=str(be_dir))
 
             assert started_repos == ["backend"]
@@ -1974,11 +2099,13 @@ _COMPOSE_LABEL = "com.docker.compose.project"
 
 
 class TestReapOrphanWorktreeDocker(TestCase):
-    """#1523 orphan reaper: a worktree whose dir is gone is not live, so its docker is reaped.
+    """#1523 orphan reaper: the registry is what proves a compose project is teatree's.
 
     The docker subprocess is mocked at the engine boundary
-    (``reap_orphan_compose_projects``); this asserts the live/keep set is
-    computed correctly from the rows-on-disk and handed to the engine.
+    (``reap_orphan_compose_projects``); this asserts the ownership set is
+    computed correctly from the rows and handed to the engine. Whether an owned
+    project is safe to touch is the engine's own container-state question, not
+    this module's.
     """
 
     def _worktree(self, *, repo: str, number: str, wt_path: str | None) -> Worktree:
@@ -1991,18 +2118,47 @@ class TestReapOrphanWorktreeDocker(TestCase):
             extra={"worktree_path": wt_path} if wt_path else {},
         )
 
-    def test_live_set_excludes_worktrees_whose_dir_is_gone(self) -> None:
+    def _owned(self) -> OwnedStacks:
+        with patch.object(ws_docker_mod, "reap_orphan_compose_projects", return_value=[]) as mock_engine:
+            ws_docker_mod.reap_orphan_worktree_docker()
+        (owned,) = mock_engine.call_args.args
+        return owned
+
+    def test_a_worktree_owns_both_of_its_stacks(self) -> None:
+        """``run_tests.sh`` runs postgres under ``<checkout-dir>-test``, a name no scheme mints."""
         with tempfile.TemporaryDirectory() as tmp:
-            live_dir = Path(tmp) / "live"
+            live_dir = Path(tmp) / "dummy-combined"
+            live_dir.mkdir()
+            wt = self._worktree(repo="backend", number="1", wt_path=str(live_dir))
+
+            assert self._owned().project_names == {f"backend-wt{wt.ticket_id}", "dummy-combined-test"}
+
+    def test_a_worktree_whose_dir_is_gone_still_owns_the_stacks_it_left_behind(self) -> None:
+        """The row is the proof: a removed checkout leaves both stacks running on the host."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = self._worktree(repo="backend", number="9", wt_path=str(Path(tmp) / "gone"))
+
+            assert self._owned().project_names == {f"backend-wt{wt.ticket_id}", "gone-test"}
+
+    def test_a_foreign_test_directorys_stack_is_never_owned(self) -> None:
+        # `~/src/acme-test` mints the compose project `acme-test` with no worktree
+        # anywhere near it; nothing in the registry may vouch for it.
+        with tempfile.TemporaryDirectory() as tmp:
+            live_dir = Path(tmp) / "dummy-combined"
             live_dir.mkdir()
             self._worktree(repo="backend", number="1", wt_path=str(live_dir))
-            self._worktree(repo="backend", number="9", wt_path=str(Path(tmp) / "gone"))
 
-            with patch.object(ws_docker_mod, "reap_orphan_compose_projects", return_value=[]) as mock_engine:
-                ws_docker_mod.reap_orphan_worktree_docker()
+            assert "acme-test" not in self._owned().project_names
 
-        (live_projects,) = mock_engine.call_args.args
-        assert live_projects == {"backend-wt1"}
+    def test_a_checkout_path_travels_with_every_basename_derived_name(self) -> None:
+        # A ``-test`` name is a directory BASENAME two unrelated checkouts share, so the
+        # engine admits one only when every container runs from a checkout named here.
+        with tempfile.TemporaryDirectory() as tmp:
+            live_dir = Path(tmp) / "dummy-combined"
+            live_dir.mkdir()
+            self._worktree(repo="backend", number="1", wt_path=str(live_dir))
+
+            assert self._owned().checkout_paths == {str(live_dir)}
 
     def test_renders_engine_results_as_lines(self) -> None:
         from teatree.docker.reap import ReapResult  # noqa: PLC0415
@@ -2029,7 +2185,7 @@ class TestReapOrphanWorktreeDocker(TestCase):
         """The whole path -- keep set, ownership gate, engine -- against a faked daemon.
 
         Mocks only the docker subprocess, so a regression anywhere between
-        ``_live_compose_projects`` and the reap engine turns this red. Pins the
+        ``_owned_compose_projects`` and the reap engine turns this red. Pins the
         two project names from the incident: the deploy stack and the user's
         unrelated project were both torn down by a single ``clean-all``.
         """
@@ -2046,7 +2202,8 @@ class TestReapOrphanWorktreeDocker(TestCase):
             if cmd[:2] == ["docker", "images"] and not scoped:
                 return subprocess.CompletedProcess(cmd, 0, "", "")
             if not scoped:
-                return subprocess.CompletedProcess(cmd, 0, "teatree\nopenclaw\nbackend-wt1\nbackend-wt9\n", "")
+                states = "teatree|running\nopenclaw|running\nbackend-wt1|running\nbackend-wt9|exited\n"
+                return subprocess.CompletedProcess(cmd, 0, states, "")
             containers = {"teatree": ["deploy-1"], "openclaw": ["signal-daemon"], "backend-wt9": ["c9"]}
             ids = containers.get(scoped, []) if cmd[:2] == ["docker", "ps"] else []
             return subprocess.CompletedProcess(cmd, 0, "\n".join(ids) + "\n", "")
@@ -4088,6 +4245,74 @@ class TestCleanAllFromNonGitCwd(TestCase):
                 cleaned = ws_clean_all_mod.run_clean_all(workspace, io, keep_dslr=3, dry_run=True)
 
             assert any("is not a git repo" in line for line in cleaned), cleaned
+
+
+class TestCleanAllPrunesTheDeclaredInvocationCwd(TestCase):
+    """The prune pass follows the operator's declared cwd, not the process's own.
+
+    From the container the process cwd is the image WORKDIR, so a `Path.cwd()`-gated
+    pass is SKIPPED on every run there — the branch and stash prune never ran at all.
+    """
+
+    def _run_from(self, declared: Path | None, process_cwd: Path, workspace: Path) -> tuple[list[str], list[str]]:
+        pruned: list[str] = []
+        io = ws_clean_all_mod.CleanAllIO(write_out=lambda _line: None, write_err=lambda _line: None)
+        self.addCleanup(os.chdir, Path.cwd())
+        os.chdir(process_cwd)
+        env = {INVOCATION_CWD_ENV: str(declared)} if declared is not None else {}
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch.object(ws_clean_all_mod, "drop_orphan_databases", new=lambda **_kw: []),
+            patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker", new=lambda **_kw: []),
+            patch.object(ws_clean_all_mod, "prune_branches", new=lambda repo, **_kw: pruned.append(repo) or []),
+            patch.object(ws_clean_all_mod, "drop_orphaned_stashes", new=lambda repo, **_kw: []),
+        ):
+            if declared is None:
+                os.environ.pop(INVOCATION_CWD_ENV, None)
+            cleaned = ws_clean_all_mod.run_clean_all(workspace, io, keep_dslr=3, dry_run=True)
+        return cleaned, pruned
+
+    def test_the_declared_cwd_is_pruned_though_the_process_cwd_is_not_a_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+            declared = tmp / "checkout"
+            (declared / ".git").mkdir(parents=True)
+            image_workdir = tmp / "home"
+            image_workdir.mkdir()
+
+            cleaned, pruned = self._run_from(declared, image_workdir, workspace)
+
+            assert pruned == [str(declared)], f"pruned {pruned}, expected the declared cwd"
+            assert not any("SKIPPED branch + stash prune" in line for line in cleaned), cleaned
+
+    def test_an_undeclared_cwd_still_falls_back_to_the_process_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+            here = tmp / "checkout"
+            (here / ".git").mkdir(parents=True)
+
+            _cleaned, pruned = self._run_from(None, here, workspace)
+
+            assert [Path(p).resolve() for p in pruned] == [here.resolve()]
+
+    def test_the_skip_line_names_the_resolved_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+            declared = tmp / "not-a-repo"
+            declared.mkdir()
+            image_workdir = tmp / "home"
+            image_workdir.mkdir()
+
+            cleaned, pruned = self._run_from(declared, image_workdir, workspace)
+
+            assert pruned == []
+            assert any(f"invocation cwd {declared} is not a git repo" in line for line in cleaned), cleaned
 
 
 @_no_prune

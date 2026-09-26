@@ -3,7 +3,7 @@
 The ``debt_delta_gate`` is wired into ``_run_ship_gates`` right after the PR-budget
 gate (both cheap, before the expensive diff-rendering gates): ``run_debt_delta_gate``
 diffs merge-base..HEAD and delegates to ``check_debt_delta``. Anti-vacuous at the
-seam and flag-gated: the SAME wired adapter blocks a net-new ``# noqa`` when
+seam and flag-gated: the SAME wired adapter blocks a net-new ``noqa`` suppression when
 ``require_debt_delta`` is ON and is a no-op when it is OFF (the DARK default) — the
 flag is what flips the outcome, and a manifest waiver lets a justified suppression
 through.

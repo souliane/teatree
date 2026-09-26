@@ -1,4 +1,4 @@
-"""The ``[loops.dream]`` table and the per-pass WALL-CLOCK budget read from it (#4776).
+"""The per-pass WALL-CLOCK budget and the live-validation setting the dream pass reads (#4776).
 
 `loop.py` owns the ten phase kill-switches — booleans answering "does phase P run at
 all?". ``validate_live_enabled`` and :class:`PassBudget` answer a different question:
@@ -17,41 +17,43 @@ into ONE :class:`~teatree.loops.dream.batch_promote.PromotionBatch` and mints AT
 ONE ticket, so there is nothing left to ration.
 """
 
-import os
+import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
-#: Recognised explicit env values; anything else defers to the DB key.
-TRUTHY = frozenset({"1", "true", "yes", "on"})
-FALSY = frozenset({"0", "false", "no", "off"})
+from teatree.config.settings import UserSettings
 
-_VALIDATE_LIVE_ENV = "T3_DREAM_VALIDATE_LIVE"
+logger = logging.getLogger(__name__)
 
 
-def dream_table() -> dict:
-    """The ``dream`` sub-table of the DB ``loops`` setting; ``{}`` on absence/failure."""
-    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: loaded at tick time, not import
+def dream_settings() -> UserSettings:
+    """The effective settings; a read failure falls back to the shipped defaults, loudly.
 
-    dream = cold_reader.mapping_setting("loops").get("dream")
-    return dream if isinstance(dream, dict) else {}
+    A stored ``false`` is as unreadable as everything else, so the phases that file a
+    ticket (memory promotion) or rewrite memory files (decay, merge) fall back OFF rather
+    than let a shipped ``true`` act in its place.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: ORM-backed read
+
+    try:
+        return get_effective_settings()
+    except Exception:
+        logger.warning(
+            "dream settings read failed — shipped defaults with memory promotion, decay and merge OFF",
+            exc_info=True,
+        )
+        return replace(UserSettings(), dream_memory_promote=False, dream_decay=False, dream_merge=False)
 
 
 def validate_live_enabled() -> bool:
     """Whether eval promotion runs the METERED live validator (default OFF, #4176).
 
     Default OFF is the nightly tick's key safety property — without the validator every
-    clearing candidate is WITHHELD. It had no config path at all (only ``--full`` /
-    ``--validate-live``), so the cron pass could never reach live promotion however it
-    was configured; this is that path.
+    clearing candidate is WITHHELD.
     """
-    raw_env = os.environ.get(_VALIDATE_LIVE_ENV, "").strip().lower()
-    if raw_env in TRUTHY:
-        return True
-    if raw_env in FALSY:
-        return False
-    stored = dream_table().get("validate_live")
-    return stored if isinstance(stored, bool) else False
+    settings = dream_settings()
+    return settings.dream_validate_live
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,9 +109,7 @@ class PassBudget:
 
 
 __all__ = [
-    "FALSY",
-    "TRUTHY",
     "PassBudget",
-    "dream_table",
+    "dream_settings",
     "validate_live_enabled",
 ]

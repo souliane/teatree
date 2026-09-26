@@ -318,11 +318,19 @@ def _default_worktree_root(overlay_name: str) -> Path:
     return base / overlay_name if overlay_name else base
 
 
-def worktree_root() -> Path:
+def worktree_root(*, overlay: str | None = None) -> Path:
     """Canonical per-overlay WORKTREE root (where ticket worktrees are created).
 
     DISTINCT from :func:`clone_root` (the ``~/workspace`` CLONE root): this names
     where worktrees REGROUP, the clone root names where source clones live.
+
+    *overlay* names the overlay whose root is wanted, for a caller that already
+    knows it (``ticket.overlay``) and must not inherit whatever the PROCESS
+    happens to resolve. Omitting it keeps the ambient resolution; ``""`` is
+    DISTINCT from omitting — a caller declaring itself genuinely overlay-less —
+    and collapsing the two would put the split back at the parameter. The name is
+    used for BOTH the overlay-scope ``ConfigSetting`` read and the default root,
+    so a named overlay never reads another one's pinned ``workspace_dir``.
 
     Resolution precedence, first match wins:
 
@@ -336,7 +344,7 @@ def worktree_root() -> Path:
         ``t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]``.
     3.  the sound default ``~/workspace/t3-workspaces/<overlay>/``.
 
-    The active overlay is resolved exactly as every other per-overlay setting
+    The ambient overlay is resolved exactly as every other per-overlay setting
     (``T3_OVERLAY_NAME`` → cwd discovery → the single installed overlay). The DB
     tier is read through the resolution helpers (the deferred loader → resolution
     edge the module docstring describes) so it stays fail-safe to "no row" when
@@ -362,7 +370,7 @@ def worktree_root() -> Path:
         if hasattr(settings, "T3_WORKSPACE_DIR"):
             return Path(settings.T3_WORKSPACE_DIR)
 
-    overlay_name = _resolved_overlay_name(None)
+    overlay_name = _resolved_overlay_name(overlay)
     stored = _db_overlay_overrides(overlay_name).get("workspace_dir")
     if stored is None:
         stored = _db_global_overrides().get("workspace_dir")

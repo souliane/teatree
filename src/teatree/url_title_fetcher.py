@@ -13,12 +13,14 @@ delete the file to invalidate).
 
 import concurrent.futures
 import json
+import os
 import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
 
 from teatree.config import get_effective_settings
+from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 CACHE_FILE = Path.home() / ".cache" / "teatree" / "url-titles.json"
@@ -54,9 +56,9 @@ def _save_cache(cache: dict[str, str]) -> None:
         pass
 
 
-def _run_json(cmd: list[str]) -> dict:
+def _run_json(cmd: list[str], *, env: dict[str, str] | None = None) -> dict:
     try:
-        result = run_allowed_to_fail(cmd, expected_codes=None, timeout=PER_FETCH_TIMEOUT)
+        result = run_allowed_to_fail(cmd, expected_codes=None, timeout=PER_FETCH_TIMEOUT, env=env)
     except (CommandFailedError, TimeoutExpired, OSError):
         return {}
     if result.returncode != 0:
@@ -70,16 +72,27 @@ def _run_json(cmd: list[str]) -> dict:
 def _fetch_gitlab(repo: str, kind: str, iid: str) -> str:
     if not shutil.which("glab"):
         return ""
+    resolution = resolve_slug_token(repo, forge="gitlab", credential="gitlab_token")
+    if resolution.state is not ForgeTokenState.TOKEN:
+        return ""
+    env = dict(os.environ)
+    env["GITLAB_TOKEN"] = resolution.token
     endpoint = "merge_requests" if kind == "merge_requests" else "issues"
     project = repo.replace("/", "%2F")
-    return _run_json(["glab", "api", f"projects/{project}/{endpoint}/{iid}"]).get("title", "")
+    return _run_json(["glab", "api", f"projects/{project}/{endpoint}/{iid}"], env=env).get("title", "")
 
 
 def _fetch_github(repo: str, kind: str, num: str) -> str:
     if not shutil.which("gh"):
         return ""
+    resolution = resolve_slug_token(repo, forge="github", credential="github_token")
+    if resolution.state is not ForgeTokenState.TOKEN:
+        return ""
+    env = dict(os.environ)
+    env.pop("GITHUB_TOKEN", None)
+    env["GH_TOKEN"] = resolution.token
     cmd_kind = "pr" if kind == "pull" else "issue"
-    return _run_json(["gh", cmd_kind, "view", num, "--repo", repo, "--json", "title"]).get("title", "")
+    return _run_json(["gh", cmd_kind, "view", num, "--repo", repo, "--json", "title"], env=env).get("title", "")
 
 
 def _extract_jobs(prompt: str) -> list[tuple[str, Callable[[], str]]]:

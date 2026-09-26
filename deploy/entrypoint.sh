@@ -6,8 +6,9 @@
 #                    completion, so the editable-install-on-the-shared-clone happens once.
 #   worker         — runs `t3 worker` (the loop cadence owner), DEBUG off.
 #   admin          — runs `t3 admin` (Django admin under gunicorn, DEBUG off) on the box loopback.
-#   slack-listener — runs `t3 slack listen` (the Socket-Mode receiver feeding the
-#                    worker's drain-queue slot). Only meaningful when an overlay is
+#   slack-listener — runs `t3 slack listen` (the Socket-Mode receiver: records an inbound
+#                    DM and wakes the answer cycle itself, and feeds the JSONL queue the
+#                    worker's mention scanner drains). Only meaningful when an overlay is
 #                    Slack-enabled; a no-op-and-exit when none are.
 #   watchdog       — runs `deploy/watchdog.sh --loop` (the in-daemon self-heal
 #                    sidecar). Dispatched BEFORE the common preamble below: it has
@@ -15,6 +16,28 @@
 #                    gh-auth / git-config / chmod-GNUPGHOME preamble is noise or a
 #                    crash for it.
 set -euo pipefail
+
+# Compose runs this script from the deploy checkout, so a fast-forward reaches it before
+# the image it needs is rebuilt. This script needs the image contract below: the system
+# gh credential helper and the image-baked skills its strict setup installs. An image
+# that predates the contract runs its OWN baked entrypoint instead, which matches it,
+# until the next build — never a new script on an old image. Bump both this number and
+# the Dockerfile's /usr/local/share/teatree/entrypoint-contract together.
+ENTRYPOINT_IMAGE_CONTRACT=1
+BAKED_ENTRYPOINT="${TEATREE_BAKED_ENTRYPOINT:-/usr/local/bin/entrypoint.sh}"
+image_contract() {
+    local baked
+    baked="$(cat "${TEATREE_ENTRYPOINT_CONTRACT_FILE:-/usr/local/share/teatree/entrypoint-contract}" 2>/dev/null || true)"
+    case "$baked" in
+        '' | *[!0-9]*) echo 0 ;;
+        *) echo "$baked" ;;
+    esac
+}
+if [ "$(readlink -f "$0")" != "$BAKED_ENTRYPOINT" ] && [ -x "$BAKED_ENTRYPOINT" ] &&
+    [ "$(image_contract)" -lt "$ENTRYPOINT_IMAGE_CONTRACT" ]; then
+    echo "entrypoint: this image predates entrypoint contract $ENTRYPOINT_IMAGE_CONTRACT - running the image's own $BAKED_ENTRYPOINT until the next image build" >&2
+    exec "$BAKED_ENTRYPOINT" "$@"
+fi
 
 ROLE="${TEATREE_ROLE:?TEATREE_ROLE must be one of: init, worker, admin, slack-listener, watchdog}"
 
@@ -62,14 +85,11 @@ detect_host_root() {
 }
 HOST_ROOT="$(detect_host_root)"
 
-# The loop and gh use GH_TOKEN from the ambient env for GitHub access, so the
-# token never appears in a clone URL, argv, or logs.
-
 # The filesystem type backing $1, resolved from the kernel's mount table by
 # LONGEST matching mount point (a bind mount reports the transport that serves
 # it, not the fs of any parent). Reading /proc/mounts is a pure kernel read — it
 # never touches the directory itself, which is the whole point: the host's GPG
-# home must be probed WITHOUT writing to it (see resolve_gnupg_home).
+# home must be probed WITHOUT writing to it (see seed_container_gnupg_home).
 # Unresolvable — no mount table, or a mount point whose path the kernel escaped
 # (a space becomes `\040`, which cannot match) — yields the empty string, and the
 # caller treats that as "not socket-capable", the safe direction.
@@ -138,9 +158,29 @@ fstype_hosts_unix_sockets() {
 # dirmngr.conf — host DAEMON configs that routinely name host-only binaries
 # (`pinentry-program /opt/homebrew/bin/pinentry-mac`) which do not exist in this
 # image; the container's own defaults are the headless-correct ones.
+same_directory() {
+    [ "$(readlink -f "$1" 2>/dev/null)" = "$(readlink -f "$2" 2>/dev/null)" ]
+}
+
+# Clear the container home before it is re-seeded: a link is unlinked, never followed, and
+# a home that resolves to the host GPG directory itself is refused, because clearing it
+# would delete the operator's keys.
+clear_container_gnupg_home() {
+    local home="$1" source="$2"
+    if [ -L "$home" ]; then
+        rm -f "$home"
+    elif [ -e "$home" ]; then
+        if same_directory "$home" "$source"; then
+            echo "entrypoint: WARN the container GPG home $home is the host GPG home $source - refusing to clear it" >&2
+            return 1
+        fi
+        rm -rf "$home"
+    fi
+}
+
 derive_container_gnupg_home() {
     local source="$1" derived="$2" name
-    rm -rf "$derived"
+    clear_container_gnupg_home "$derived" "$source" || return 1
     mkdir -p "$derived" || return 1
     chmod 700 "$derived"
     for name in common.conf gpg.conf pubring.kbx pubring.gpg trustdb.gpg; do
@@ -162,59 +202,69 @@ derive_container_gnupg_home() {
     return 0
 }
 
-# Point GNUPGHOME at a home gpg can actually USE, before any `pass show` below.
+# Seed the container's ONE GPG home — a FIXED path every entry point already agrees on.
 #
-# THE FAILURE. gpg-agent and keyboxd bind their `S.*` sockets INSIDE GNUPGHOME.
-# On the deployment box that home is a bind mount of a real local filesystem and
-# binding works, so nothing here changes. On an operator laptop the same mount is
-# served by a file-sharing transport that cannot host a unix socket at all
-# (Docker Desktop for Mac: `fakeowner`), and a host with `use-keyboxd` in
-# common.conf — the GnuPG 2.4 default on Homebrew — routes the PUBLIC keyring
-# through keyboxd, which then dies with `exit status 2` trying to bind
-# `S.keyboxd`. gpg reports `No Keybox daemon running`, finds zero keys, and every
-# `pass show` fails even though private-keys-v1.d is right there and intact.
+# THE FAILURE THIS SHAPE FORECLOSES. GNUPGHOME used to be resolved per process: the image
+# baked the host mount, and only this entrypoint's own tree got the corrected value. A
+# `docker exec` — the loop's own subprocesses included — started from the container's
+# create-time environment and reached for the HOST home instead, where two things go
+# wrong at once. gpg-agent and keyboxd bind their `S.*` sockets inside GNUPGHOME, which a
+# file-sharing transport (Docker Desktop for Mac: `fakeowner`) cannot host at all, so
+# keyboxd dies and gpg finds zero keys; and gpg's dotlock records `pid` + `hostname`, so a
+# lock the HOST's own keyboxd holds on the shared keybox names a hostname no container can
+# match — gpg will not judge it stale and waits forever. Both disappear once no container
+# process ever opens the host home. Patching each entry point separately (a login-shell
+# profile, a wrapper prologue) left every unpatched one broken, which is the class.
 #
-# THE FIX. Copy the key material into a container-local home on the tmpfs that
-# compose mounts for exactly this (see docker-compose.yml), where a socket CAN be
-# bound and keyboxd starts normally.
+# The host home stays strictly READ-ONLY: it is the SOURCE, never GNUPGHOME. Detection
+# reads /proc/mounts, so even it never touches the directory.
 #
-# The host home is treated as strictly READ-ONLY throughout: the stale `S.*`
-# sockets sitting in it are left alone, common.conf is never edited, nothing is
-# written back. The switch is decided from /proc/mounts, so even the DETECTION
-# does not touch it.
-#
-# The box keeps its exact current behaviour rather than being switched over
-# wholesale, because the in-place home is shared by every service and therefore
-# shares ONE gpg-agent — which is what makes the gpg-agent-CACHED-passphrase
-# setup deploy/README.md documents work at all. A per-container copy would give
-# each service its own cold agent and break that (a `%no-protection` key, the
-# other documented option, would not care).
-resolve_gnupg_home() {
-    local fstype derived
-    [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] || return 0
-    fstype="$(path_fstype "$GNUPGHOME")"
-    fstype_hosts_unix_sockets "$fstype" && return 0
-    derived="${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg"
-    if ! derive_container_gnupg_home "$GNUPGHOME" "$derived"; then
-        echo "entrypoint: WARN GNUPGHOME $GNUPGHOME is on '$fstype' (cannot host the gpg-agent/keyboxd sockets) but a container-local copy at $derived could not be created - keeping $GNUPGHOME, gpg reads may fail" >&2
+# A socket-capable host home is ADOPTED in place through a symlink, so the box keeps its
+# exact current behaviour — one home shared by every service means one gpg-agent, which is
+# what makes the cached-passphrase setup deploy/README.md documents work.
+CONTAINER_GNUPG_HOME="${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg"
+
+seed_container_gnupg_home() {
+    local source="${TEATREE_HOST_GNUPG_DIR:-/home/teatree/.gnupg}" fstype
+    export GNUPGHOME="$CONTAINER_GNUPG_HOME"
+    [ -d "$source" ] || return 0
+    fstype="$(path_fstype "$source")"
+    if fstype_hosts_unix_sockets "$fstype"; then
+        # The parent is a compose tmpfs in the deployed stack, but a bare `docker run`
+        # of this image has none — and `set -e` would turn a failing `ln` into a dead
+        # container rather than a degraded gpg. Symmetric with the copy path's mkdir -p.
+        if ! mkdir -p "$(dirname "$CONTAINER_GNUPG_HOME")"; then
+            echo "entrypoint: WARN could not create $(dirname "$CONTAINER_GNUPG_HOME") - gpg reads will fail" >&2
+            return 0
+        fi
+        clear_container_gnupg_home "$CONTAINER_GNUPG_HOME" "$source" || return 0
+        ln -s "$source" "$CONTAINER_GNUPG_HOME"
+        echo "entrypoint: GNUPGHOME $CONTAINER_GNUPG_HOME adopts the host GPG home $source in place (on '$fstype', which hosts the gpg-agent/keyboxd sockets)"
         return 0
     fi
-    # Absence stays a no-op, not a new failure: a host with no key material
-    # yields an empty derived home, gpg finds no keys exactly as it did before,
-    # and init_preflight reports the SAME message it always did.
-    echo "entrypoint: GNUPGHOME $GNUPGHOME is on '$fstype', which cannot host the gpg-agent/keyboxd sockets - using a container-local copy of the key material at $derived (the host GPG home is left untouched)"
-    export GNUPGHOME="$derived"
+    if ! derive_container_gnupg_home "$source" "$CONTAINER_GNUPG_HOME"; then
+        echo "entrypoint: WARN the host GPG home $source is on '$fstype' (cannot host the gpg-agent/keyboxd sockets) and a container-local copy at $CONTAINER_GNUPG_HOME could not be created - gpg reads will fail" >&2
+        return 0
+    fi
+    # Absence stays a no-op: a host with no key material yields an empty derived home,
+    # gpg finds no keys exactly as before, and init_preflight reports the same message.
+    echo "entrypoint: GNUPGHOME $CONTAINER_GNUPG_HOME holds a container-local copy of $source (on '$fstype', which cannot host the gpg-agent/keyboxd sockets; the host GPG home is left untouched)"
 }
-resolve_gnupg_home
+seed_container_gnupg_home
 
 # gpg refuses a group/other-readable home, so normalise GNUPGHOME's mode BEFORE
 # the boot-time `pass show` reads below can decrypt — only when the mount is
 # writable (a hardened read-only mount would EROFS here under -e) AND the mode is
 # not already right, so the common case writes NOTHING to the host's GPG home.
-if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ] &&
-    [ "$(stat -c %a "$GNUPGHOME" 2>/dev/null || echo 700)" != 700 ]; then
-    chmod 700 "$GNUPGHOME"
-fi
+# `-L`: an adopted home is a symlink, whose own mode always reads 777, so without it
+# every boot would chmod the host's home through the link.
+normalise_gnupg_home_mode() {
+    if [ -n "${GNUPGHOME:-}" ] && [ -d "$GNUPGHOME" ] && [ -w "$GNUPGHOME" ] &&
+        [ "$(stat -L -c %a "$GNUPGHOME" 2>/dev/null || echo 700)" != 700 ]; then
+        chmod 700 "$GNUPGHOME"
+    fi
+}
+normalise_gnupg_home_mode
 
 # Route ALL runtime temp to DISK, never the box's small RAM-backed tmpfs. The
 # host /tmp is a ~16G tmpfs; the spawned headless `claude` sessions, `pytest`, and
@@ -252,22 +302,34 @@ source_secret_from_pass() {
     return 0
 }
 
-# GitHub token + admin password default to the box's provisioned pass paths;
-# override either in teatree.env when the store is laid out differently.
-source_secret_from_pass TEATREE_GH_TOKEN "${TEATREE_GH_TOKEN_PASS_PATH:-github/souliane/pat}"
+# An explicit bootstrap entry wins; otherwise init_preflight reads the entry the owning
+# overlay's ``github_token_pass_key`` routes (db_routed_github_pass_key). A guessed
+# default pass path would shadow that route, so there is none.
+if [ -n "${TEATREE_GH_TOKEN_PASS_PATH:-}" ]; then
+    source_secret_from_pass TEATREE_GH_TOKEN "$TEATREE_GH_TOKEN_PASS_PATH"
+fi
+# The admin password is deployment infrastructure rather than an overlay credential.
 source_secret_from_pass T3_ADMIN_PASSWORD "${T3_ADMIN_PASSWORD_PASS_PATH:-teatree/admin-password}"
-# The Notion integration token, on the same terms: teatree.env is regenerated wholesale
-# on every deploy, so a line written there is reverted without a word.
-source_secret_from_pass NOTION_TOKEN "${NOTION_TOKEN_PASS_PATH:-notion/integration-token}"
+# The Notion token is exported only from an entry named here: an exported value beats the
+# notion_token_pass_key setting, so a guessed default would shadow the entry the venue routes.
+if [ -n "${NOTION_TOKEN_PASS_PATH:-}" ]; then
+    source_secret_from_pass NOTION_TOKEN "$NOTION_TOKEN_PASS_PATH"
+fi
 
-if [ -n "${TEATREE_GH_TOKEN:-}" ]; then
+if [ "$ROLE" = "init" ] && [ -n "${TEATREE_GH_TOKEN:-}" ]; then
     export GH_TOKEN="$TEATREE_GH_TOKEN"
 fi
 
 # Configure git to use gh as the https credential helper for EVERY role (idempotent):
 # the worker/admin `git push` over https needs it too, not just the init clone.
-if [ -n "${GH_TOKEN:-}" ]; then
+if [ "$ROLE" = "init" ] && [ -n "${GH_TOKEN:-}" ]; then
     gh auth setup-git
+fi
+
+# GitHub env tokens are an init-only bootstrap for the permission preflight and
+# first clone. Every long-running role resolves the owning overlay's DB route.
+if [ "$ROLE" != "init" ]; then
+    unset GH_TOKEN GITHUB_TOKEN TEATREE_GH_TOKEN
 fi
 
 # The GitLab TOKEN half. The credential HELPER that consumes it is baked into the
@@ -280,12 +342,12 @@ fi
 #
 # This export reaches only THIS role's process tree. A `docker exec` starts from the
 # container's create-time environment and never sees it, so the compose files declare
-# GITLAB_TOKEN per service and the deploying host resolves it from the same pass key —
-# that declaration, not this read, is what an exec'd process inherits. This read stays
-# as the fallback for a container created without a host value (the watchdog cannot
-# reach the host's pass store), and returns early when compose already supplied one.
-if [ -z "${GITLAB_TOKEN:-}" ]; then
-    source_secret_from_pass TEATREE_GITLAB_TOKEN "${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat}"
+# GITLAB_TOKEN per service and the deploying host may resolve it from the same explicitly
+# configured bootstrap entry — that declaration, not this read, is what an exec'd process
+# inherits. With no explicit entry, never guess a legacy path that can disagree with the
+# DB-bound route. A value compose already supplied still wins.
+if [ -z "${GITLAB_TOKEN:-}" ] && [ -n "${TEATREE_GITLAB_TOKEN_PASS_PATH:-}" ]; then
+    source_secret_from_pass TEATREE_GITLAB_TOKEN "$TEATREE_GITLAB_TOKEN_PASS_PATH"
     if [ -n "${TEATREE_GITLAB_TOKEN:-}" ]; then
         export GITLAB_TOKEN="$TEATREE_GITLAB_TOKEN"
     fi
@@ -357,6 +419,42 @@ gh_repo_slug() {
     if [ -n "$owner" ] && [ -n "$repo" ] && [ "$owner" != "$url" ]; then
         printf '%s/%s' "$owner" "$repo"
     fi
+}
+
+# The pass entry the deploy repo's owning overlay routes for its GitHub token: the
+# overlay's own ``github_token_pass_key`` row, or the registry entry 0104 moves it out of
+# on a DB still waiting to be migrated. Read with sqlite3 and read-only, because init
+# needs the token before it migrates, and a boot must never write the control DB this
+# early. Empty when there is no DB yet (a fresh box) or no overlay routes one.
+db_routed_github_pass_key() {
+    local db="${T3_CONTROL_DB_DIR:-/var/lib/teatree/control-db}/db.sqlite3" slug
+    [ -f "$db" ] || return 0
+    slug="$(gh_repo_slug)"
+    [[ "$slug" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || slug=""
+    sqlite3 -readonly "$db" "
+        WITH registry AS (
+            SELECT entry.key AS overlay, entry.value AS spec
+            FROM teatree_config_setting AS setting, json_each(setting.value) AS entry
+            WHERE setting.scope = '' AND setting.key = 'overlays'
+        ),
+        scoped AS (
+            SELECT scope AS overlay, json_extract(value, '\$') AS pass_key
+            FROM teatree_config_setting
+            WHERE key = 'github_token_pass_key' AND scope <> ''
+        ),
+        candidates AS (
+            SELECT overlay, pass_key FROM scoped
+            UNION ALL
+            SELECT overlay, json_extract(spec, '\$.github_token_pass_key') FROM registry
+            WHERE overlay NOT IN (SELECT overlay FROM scoped)
+        )
+        SELECT candidates.pass_key
+        FROM candidates LEFT JOIN registry ON registry.overlay = candidates.overlay
+        WHERE candidates.pass_key IS NOT NULL AND candidates.pass_key <> ''
+        ORDER BY EXISTS (
+            SELECT 1 FROM json_each(registry.spec, '\$.workspace_repos') AS repo WHERE repo.value = '$slug'
+        ) DESC, candidates.overlay
+        LIMIT 1;" 2>/dev/null | head -n1 || true
 }
 
 # True (0) on a genuine token-DENIAL signal (vs a transient fault) — mirrors the Python gate's _DENIED_SIGNALS.
@@ -478,7 +576,15 @@ init_preflight() {
             exit 1
         fi
     fi
-    : "${TEATREE_GH_TOKEN:?MISSING TEATREE_GH_TOKEN - set the repo secret and re-run Deploy}"
+    if [ -z "${TEATREE_GH_TOKEN:-}" ]; then
+        local routed
+        routed="$(db_routed_github_pass_key)"
+        if [ -n "$routed" ]; then
+            source_secret_from_pass TEATREE_GH_TOKEN "$routed"
+        fi
+    fi
+    : "${TEATREE_GH_TOKEN:?MISSING TEATREE_GH_TOKEN - no explicit value, no TEATREE_GH_TOKEN_PASS_PATH, and no github_token_pass_key route that decrypts. Set one and re-run Deploy}"
+    export GH_TOKEN="$TEATREE_GH_TOKEN"
     : "${GIT_AUTHOR_NAME:?MISSING GIT_AUTHOR_NAME - set the repo secret and re-run Deploy}"
     : "${GIT_AUTHOR_EMAIL:?MISSING GIT_AUTHOR_EMAIL - set the repo secret and re-run Deploy}"
     if ! gh auth status >/dev/null 2>&1; then
@@ -545,23 +651,25 @@ seed_claude_settings() {
     echo "teatree-init: provisioned ~/.claude/settings.json (model=$(jq -r .model "$target"), mode=$(jq -r .permissions.defaultMode "$target"))"
 }
 
-# Provision the per-container Claude runtime the spawned `claude` agent needs:
-# ~/.claude/settings.json (seed_claude_settings) AND `t3 setup` (skill links, the
-# t3@souliane plugin registration via PluginRegistrar.install, statusLine, MCP
-# registration). This MUST run in EVERY agent-spawning role, not just init: the
-# `~/.claude` dir is PER-CONTAINER ephemeral (docker-compose.yml bind-mounts only
-# ~/.claude/projects — credentials stay host-only), so init's registration lands in
-# the init container's throwaway ~/.claude and never reaches worker/admin/slack-
-# listener. Without this, the worker's `claude` has no ~/.claude/plugins and no
-# enabledPlugins, so factory agents load ZERO skills. `t3 setup` is idempotent and
-# claude-env-focused, and these roles `depends_on` a completed init (shared clone +
-# editable install on the teatree_uv volume are present), so it is safe per-role.
-prepare_claude_runtime() {
+# Reconcile the factory-owned Claude, Codex, and universal agent homes. Compose
+# mounts all three as named volumes shared by init and runtime roles, so init is
+# the one writer and `t3 setup` is the sole source of installed factory skills.
+# Runtime roles consume the completed state after depends_on(init) and never race
+# each other by running setup concurrently. A skill source that is briefly
+# unreachable must not take the whole stack down, so setup is retried and then
+# left to the worker's own verify_agent_skills gate.
+prepare_agent_homes() {
+    local attempt
     seed_claude_settings
-    t3 setup
+    for attempt in 1 2 3; do
+        t3 setup --strict-agent-skills && return 0
+        echo "teatree-init: WARNING strict agent-skill setup failed (attempt $attempt/3)" >&2
+        [ "$attempt" -lt 3 ] && sleep $((attempt * 15))
+    done
+    echo "teatree-init: WARNING strict agent-skill setup still failing - continuing so admin and slack-listener come up; the worker starts only if a previous setup's skills are intact (verify_agent_skills)" >&2
 }
 
-# VERIFY the agent's skills are actually available after `prepare_claude_runtime`:
+# VERIFY the agent's skills are actually available after `prepare_agent_homes`:
 # the ``t3@souliane`` plugin is registered in ~/.claude/plugins/installed_plugins.json
 # with a resolvable install path AND enabled in ~/.claude/settings.json. Returns
 # non-zero when any signal is missing — the exact "agents would run SKILL-LESS"
@@ -573,7 +681,9 @@ verify_agent_skills() {
     jq -e '.enabledPlugins."t3@souliane" == true' "$settings" >/dev/null 2>&1 || return 1
     local install_path
     install_path="$(jq -r '(.plugins."t3@souliane" // [])[0].installPath // empty' "$installed" 2>/dev/null)" || return 1
-    [ -n "$install_path" ] && [ -d "$install_path" ]
+    [ -n "$install_path" ] && [ -d "$install_path" ] || return 1
+    local ready="$HOME/.local/share/teatree/skills/ready"
+    [ "$(cat "$ready" 2>/dev/null)" = "v1" ]
 }
 
 # Seed a config value through the provenance-aware DEPLOY seed (#3435). The ORM
@@ -591,157 +701,6 @@ seed_setting() {
     if ! t3 teatree config_setting seed "$1" "$2"; then
         echo "teatree-init: WARNING seed of '$1' failed ('t3 teatree config_setting seed' exited non-zero); continuing — the runtime uses the code default for it. Fix and re-run Deploy to persist an override." >&2
     fi
-}
-
-# Fleet role split: this instance must run its own loops and NOT the loops another
-# fleet member owns. The box HOSTS the DM-only Slack conversational loop for the
-# owner overlay, so `inbox` — the inbound-messaging scanners (Slack DM →
-# PendingChatInjection, review-intent, red-card, mentions) — MUST run here; it
-# feeds the drain → 👀-ack → answer cycle that posts replies. The COLLEAGUE-facing
-# Slack loop the laptop owns stays off here: `review` (colleague PR review → Slack).
-#
-# OWNER-INTAKE loops are NEVER forced off here (#3632): `directive_loop` interprets
-# the owner's captured directives and `dispatch` posts deferred owner questions.
-# an away mode means the human is unreachable *now* — captured intent must
-# QUEUE for later, not be dropped unread. A prior default forced `directive_loop`
-# off on every deploy, so captured owner directives sat uninterpreted for days; the
-# owner-intake set (`t3 loop intake-loops`) is pruned from the DISABLED set below.
-#
-# Per-loop enable/disable/pause/resume is now EMERGENCY-only (#3248): the normal
-# handle is presets/schedules and the emergency per-loop handle is `t3 loop
-# override`. Neither presets, schedules, nor `t3 loop override` can express this
-# box's per-loop role, and — critically — none of them can lift a durable
-# `LoopState` HOLD: admission resolves hold > forced > preset > base, so a loop a
-# prior deploy left in a DISABLED hold (older images ran `t3 loop disable inbox`)
-# stays dead under any preset/schedule/override. Clearing a hold has exactly ONE
-# handle: `t3 loop enable`, which is emergency-gated. So this box declares its role
-# on the two authoritative planes that actually beat everything below them:
-#
-#   * ENABLED set (default `inbox`) → `t3 loop enable <name> --emergency`, which
-#     clears any stale hold AND sets `Loop.enabled=True`, so a box whose inbox a
-#     prior deploy durably disabled recovers. Idempotent (a no-op when already on).
-#   * DISABLED set (default `review`) → `t3 loop override <name> off`, the
-#     sanctioned, NON-emergency forced-off that supersedes the deprecated
-#     `t3 loop disable`. Forced-off beats the preset mask AND the base config, so a
-#     colleague/human-facing loop stays off here regardless of any mode the owner
-#     later selects. Idempotent. Owner-intake loops (`t3 loop intake-loops`) are
-#     pruned from this set before it is applied, so they can never be re-masked.
-#
-# TEATREE_ENABLED_LOOPS / TEATREE_DISABLED_LOOPS (comma-separated, from teatree.env)
-# override the defaults; empty values act on nothing. Every name in BOTH lists is
-# validated against the registered mini-loops first, so a typo fails the deploy
-# loudly before anything is touched (rather than silently mis-configuring the box).
-apply_fleet_loop_policy() {
-    local enabled_raw="${TEATREE_ENABLED_LOOPS-inbox}"
-    local disabled_raw="${TEATREE_DISABLED_LOOPS-review}"
-    local field loop registered intake
-    local fields=() enable_loops=() disable_loops=()
-
-    IFS=',' read -ra fields <<<"$enabled_raw"
-    for field in ${fields[@]+"${fields[@]}"}; do
-        field="${field//[[:space:]]/}"
-        [ -n "$field" ] && enable_loops+=("$field")
-    done
-    fields=()
-    IFS=',' read -ra fields <<<"$disabled_raw"
-    for field in ${fields[@]+"${fields[@]}"}; do
-        field="${field//[[:space:]]/}"
-        [ -n "$field" ] && disable_loops+=("$field")
-    done
-    [ $((${#enable_loops[@]} + ${#disable_loops[@]})) -gt 0 ] || return 0
-
-    if ! registered="$(t3 loop list --json | jq -r '.mini_loops[].name')" || [ -z "$registered" ]; then
-        echo "entrypoint: could not read the registered loops ('t3 loop list --json' failed or was empty) - confirm 't3 teatree db migrate' seeded the loops above and re-run Deploy" >&2
-        exit 1
-    fi
-
-    for loop in ${enable_loops[@]+"${enable_loops[@]}"} ${disable_loops[@]+"${disable_loops[@]}"}; do
-        if ! grep -qxF "$loop" <<<"$registered"; then
-            echo "entrypoint: TEATREE_ENABLED_LOOPS/TEATREE_DISABLED_LOOPS names an unknown loop '${loop}' - valid loops are: $(tr '\n' ' ' <<<"$registered")- fix the value in teatree.env and re-run Deploy" >&2
-            exit 1
-        fi
-    done
-
-    # The owner-intake loops (single source of truth in Python) that must never be
-    # forced off, so the owner's captured intent is always at least ingested (#3632).
-    if ! intake="$(t3 loop intake-loops)"; then
-        echo "entrypoint: could not read the owner-intake loop set ('t3 loop intake-loops' failed) - confirm the t3 install is healthy and re-run Deploy" >&2
-        exit 1
-    fi
-
-    # A loop in BOTH lists is a contradiction: the ENABLE pass forces it on, then
-    # the DISABLE pass would immediately force it off (admission resolves
-    # forced > preset > base), leaving a sanctioned-enabled loop silently MASKED
-    # on every init. This is exactly how `inbox` regressed (teatree.env carried it
-    # in both lists). ENABLED wins (it is the stronger, emergency-gated signal and
-    # the operator's explicit "must run here"): drop such loops from the disable
-    # set and WARN loudly. Resolving rather than `exit 1` is deliberate — a hard
-    # failure here would crash-loop init on an already-deployed box that carries
-    # the overlap (the very config that shipped), turning a silent mask into an
-    # outage. The warning tells the operator to de-dup teatree.env.
-    local pruned_disable=() dropped=()
-    for loop in ${disable_loops[@]+"${disable_loops[@]}"}; do
-        local overlaps=
-        for other in ${enable_loops[@]+"${enable_loops[@]}"}; do
-            if [ "$loop" = "$other" ]; then
-                overlaps=1
-                break
-            fi
-        done
-        if [ -n "$overlaps" ]; then
-            dropped+=("$loop")
-            echo "entrypoint: loop '${loop}' is in BOTH TEATREE_ENABLED_LOOPS and TEATREE_DISABLED_LOOPS - keeping it ENABLED (would otherwise be re-masked every restart); drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
-        elif grep -qxF "$loop" <<<"$intake"; then
-            dropped+=("$loop")
-            echo "entrypoint: loop '${loop}' is an OWNER-INTAKE loop (interprets directives / delivers owner questions) - NOT forcing it off; the owner's captured intent must always be ingested, even while the owner is away. Drop it from the TEATREE_DISABLED_LOOPS repo variable to silence this warning" >&2
-        else
-            pruned_disable+=("$loop")
-        fi
-    done
-
-    # NET-EFFECT report. The per-name lines above each say "this one name was not
-    # applied"; none of them says what the operator actually needs to know when
-    # EVERY name was pruned: the declaration masks nothing at all, AND declaring it
-    # at all replaced the built-in default (`review`, the colleague-facing loop this
-    # box must not run), so that is no longer forced off either. That silent
-    # displacement is the real harm, and it survives every redeploy unreported.
-    #
-    # Still a warning, not `exit 1`: init crash-looping on the very config the box
-    # already shipped turns a mis-mask into an outage. The durable escalation is the
-    # `fleet_loop_policy_contradiction` health signal (teatree.config.fleet_policy),
-    # which keeps the chip yellow until the repo variable is fixed - stderr here
-    # scrolls away, a KnownIssue row does not.
-    if [ ${#dropped[@]} -gt 0 ] && [ ${#pruned_disable[@]} -eq 0 ]; then
-        echo "entrypoint: CONTRADICTORY FLEET CONFIG - every name in TEATREE_DISABLED_LOOPS ('${disabled_raw}') is unmaskable here, so NO loop is forced off on this box; and setting the variable at all displaced the built-in default ('review'), which is therefore NOT masked either. Fix the SOURCE: the deploy workflow rewrites teatree.env from the repository variables on every run, so a hand-edit on the box is reverted. Run 'gh variable set TEATREE_DISABLED_LOOPS --repo <owner>/<repo> --body review' (or 'gh variable delete TEATREE_DISABLED_LOOPS --repo <owner>/<repo>' to restore the default) and re-run Deploy." >&2
-    fi
-    disable_loops=(${pruned_disable[@]+"${pruned_disable[@]}"})
-
-    # ENABLE clears any durable hold (only `enable` can) and sets Loop.enabled=True.
-    # It does NOT lift a stale forced-OFF override — so a loop this box left in the
-    # DISABLED set on a PRIOR deploy stays masked even after being promoted to the
-    # ENABLED set here (the override outlives the config change in LoopState). Clear
-    # the override right after enabling so a sanctioned-enabled loop can never remain
-    # forced off by leftover state; `clear` is neutral, so a still-enabled loop keeps
-    # running via Loop.enabled=True.
-    for loop in ${enable_loops[@]+"${enable_loops[@]}"}; do
-        if ! t3 loop enable "$loop" --emergency; then
-            echo "entrypoint: 't3 loop enable ${loop} --emergency' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
-            exit 1
-        fi
-        if ! t3 loop override "$loop" clear --reason "fleet policy: ${loop} is sanctioned-enabled here; drop any stale forced-off override from a prior deploy"; then
-            echo "entrypoint: 't3 loop override ${loop} clear' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
-            exit 1
-        fi
-    done
-
-    # DISABLE via the forced-off override plane (beats preset + base config), the
-    # sanctioned non-emergency successor to the now-refused `t3 loop disable`.
-    for loop in ${disable_loops[@]+"${disable_loops[@]}"}; do
-        if ! t3 loop override "$loop" off --reason "fleet policy (DM-only box): ${loop} must not run here"; then
-            echo "entrypoint: 't3 loop override ${loop} off' FAILED - the DB-backed loop control plane is unreachable; confirm 't3 teatree db migrate' succeeded above and re-run Deploy" >&2
-            exit 1
-        fi
-    done
 }
 
 # True (0) when the box has working outbound connectivity to the git origin.
@@ -816,6 +775,14 @@ require_install_headroom() {
 # constrains nothing. The install then degrades to today's unconstrained resolve — the
 # bug — instead of taking the boot down with it.
 CONSTRAINTS_FILE="${CLONE_DIR}/uv-constraints.txt"
+
+# The image's `ENV UV_CONSTRAINT` is a BUILD-time expansion of $TEATREE_CLONE_DIR, so a fork
+# that vendors core under vendor/teatree — and overrides that variable at RUNTIME — inherits
+# a path nothing ever writes. uv errors outright on a missing constraints file, so the
+# unflagged `uv tool install prek` below exits 2 and every role gated on init stays `Created`
+# (#4659). Realigned HERE, not inside ensure_uv_constraints: that has one call site, in the
+# init role, while worker/slack-listener/admin install off the same ambient value.
+export UV_CONSTRAINT="$CONSTRAINTS_FILE"
 
 ensure_uv_constraints() {
     local tmp="${CONSTRAINTS_FILE}.tmp"
@@ -924,60 +891,13 @@ assert_core_source() {
     }
 }
 
-# Drain + 👀-ack inbound Slack on a cadence, SURFACING failures (#3443). The old
-# `t3 slack check >/dev/null 2>&1 || true` swallowed every error, so a drain that
-# could not boot Django looked identical to a healthy one and nobody ever saw it.
-#
-# `t3 slack check` exits 0 when it drained messages and 2 with NO output when the
-# queue was empty (the common, healthy case on a quiet box) — so healthy is
-# EXACTLY rc==0 or rc==2. Everything else (including rc=1, regardless of
-# stdout) is a failure: rc=1 used to double as "empty queue" too, but a
-# crashing drain (Django boot failure, a DB error after a migration) ALSO
-# exits 1 with EMPTY stdout and a traceback on stderr — byte-identical to the
-# old "empty queue" signal — so that collision is now the crash signature,
-# not a healthy read. The Socket Mode singleton stand-down (another drain
-# already holds the lock) still exits 0 and stays healthy under this rule —
-# "0 = drained messages" is about to be false, it also covers "stood down".
-# STDERR is captured SEPARATELY: every t3 invocation emits a benign WARNING
-# there (an overlay's skills-root notice), which must not by itself flip a
-# healthy rc into a failure. Real failures increment a consecutive-failure
-# counter and log BOTH streams to stderr (visible in `docker compose logs
-# teatree-slack-listener`); a healthy exit never does.
-#
-# Each pass rewrites a heartbeat file that `t3 doctor` reads from another
-# container to surface a stuck/failed drain (`self_heal_slack_drain.check_slack_drain_alive`).
-# The heartbeat path mirrors teatree.paths.DATA_DIR ($HOME/.local/share/teatree) —
-# the filename is pinned to the doctor side by tests/test_deploy_slack_listener.py.
-slack_drain_loop() {
-    local interval="${SLACK_CHECK_INTERVAL_SECONDS:-15}"
-    local heartbeat="${SLACK_DRAIN_HEARTBEAT:-$HOME/.local/share/teatree/slack-drain-heartbeat.json}"
-    local consecutive=0 last_ok=null now out err rc errfile
-    errfile="$(mktemp)"
-    trap 'rm -f "$errfile"' EXIT
-    mkdir -p "$(dirname "$heartbeat")"
-    while true; do
-        now="$(date +%s)"
-        out="$(t3 slack check 2>"$errfile")" && rc=0 || rc=$?
-        if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
-            consecutive=0
-            last_ok="$now"
-        else
-            consecutive=$((consecutive + 1))
-            echo "entrypoint: slack drain (t3 slack check) FAILED rc=$rc (consecutive=$consecutive):" >&2
-            printf '%s\n' "$out" >&2
-            err="$(cat "$errfile")"
-            [ -n "$err" ] && printf '%s\n' "$err" >&2
-        fi
-        printf '{"updated_at": %s, "interval_seconds": %s, "consecutive_failures": %s, "last_ok_at": %s}\n' \
-            "$now" "$interval" "$consecutive" "$last_ok" >"$heartbeat"
-        sleep "$interval"
-    done
-}
-
 case "$ROLE" in
 init)
     init_preflight
     ensure_clone
+    # Do not let setup/runtime reads inherit the bootstrap identity. From here on,
+    # GitHub credentials are bound to the repository's owning overlay.
+    unset GH_TOKEN GITHUB_TOKEN TEATREE_GH_TOKEN
     assert_core_source
     # Before ANY uv install: the image exports UV_CONSTRAINT at this path, and uv errors
     # outright when a constraints file is missing, so it must exist for every role that
@@ -998,10 +918,8 @@ init)
         # The [slack] extra pulls slack_sdk so the slack-listener role's Socket-Mode
         # receiver can open its WebSocket. Without it `t3 slack listen` degrades to a
         # no-op ("slack_sdk not installed") and inbound Slack never reaches the loop.
-        # `--overrides` is REQUIRED, and explicit rather than relying on the image ENV:
-        # `uv tool install` never reads the package's own `[tool.uv] override-dependencies`,
-        # so without it the SDK's `mcp` cap makes this reinstall unresolvable and the box
-        # cannot boot. See uv-overrides.txt.
+        # SDK 0.2.152's `mcp<3.0.0` admits teatree's `mcp>=2,<3`; the empty
+        # `--overrides` plumbing stays explicit because uv ignores the package's own table.
         # `--constraints` is the LOCKFILE bound (see ensure_uv_constraints): without it
         # this `--reinstall` re-resolves the whole graph from the index and can install
         # versions no CI lane has ever run.
@@ -1059,35 +977,22 @@ init)
     # (git links every worktree to it), so the privacy leak gate (#685), the
     # foreign-MR guard, banned-terms, and the push gates actually fire on the
     # loop's pushes. Without this the migrated box had an EMPTY .git/hooks and
-    # every gate was silently bypassed. Idempotent; harden the baked PREK path
-    # to a PATH lookup (souliane/teatree#1462) so a torn-down worktree can't
-    # leave a stale absolute path in the shared hook.
+    # every gate was silently bypassed. Idempotent.
     #
-    # ASK git where the hooks landed rather than assuming `$CLONE_DIR/.git/hooks`.
-    # When core is VENDORED inside a fork, `$CLONE_DIR` is `<fork>/vendor/teatree`,
-    # which is a plain subdirectory of the FORK's repo — `$CLONE_DIR/.git` does not
-    # exist at all, and `prek install` writes to the fork root's common git dir two
-    # levels up. Assuming the path made `sed` exit non-zero on three missing files
-    # and, with its stderr discarded, aborted the whole init under `set -e` with a
-    # bare `exit 2` and no explanation. Hardening only the hooks that EXIST keeps a
-    # layout carrying a subset of them from failing the same way.
-    (
-        cd "$CLONE_DIR" && prek install -f
-        hooks_dir="$(git rev-parse --git-common-dir)/hooks"
-        for hook in pre-push pre-commit commit-msg; do
-            if [ -f "$hooks_dir/$hook" ]; then
-                sed -i 's#^PREK="/opt/teatree/uv/tools/prek/bin/prek"#PREK="prek"#' "$hooks_dir/$hook"
-            fi
-        done
-    )
+    # The baked PREK path is deliberately NOT rewritten here: this dir is shared with
+    # the host, and the unprobed PATH lookup this used to write resolved there to a
+    # bind-mounted host venv that dies `Exec format error`. `prepare_agent_homes`
+    # below runs `t3 setup`, whose `harden_hooks` probes candidates and reaches this
+    # very dir — the installed-clone walk passes `.git`-less `vendor/teatree` up to
+    # the fork root, whose common git dir is the one `prek install` just wrote.
+    (cd "$CLONE_DIR" && prek install -f)
     # Provision the agent's ~/.claude/settings.json + `t3 setup` (skill links, the
     # t3@souliane plugin registration, statusLine, MCP). setup's statusLine writer
     # merges into (never clobbers) the file the seed writes (#3359).
-    prepare_claude_runtime
+    prepare_agent_homes
     t3 teatree db migrate
     # Values are JSON: enum strings are quoted, booleans and ints are bare.
     seed_setting agent_harness '"claude_sdk"'
-    seed_setting loop_runner_enabled true
     # #3409/#3435: provision concurrency 0 = AUTO EQUALS the code default, so the
     # provenance-aware seeder intentionally SKIPS it — the runtime already
     # auto-derives from THIS host (nCPU/2, cgroup-aware), and the worker's compose
@@ -1110,52 +1015,32 @@ init)
     if ! t3 teatree config_setting set worker_quiescing false; then
         echo "teatree-init: WARNING could not clear worker_quiescing ('t3 teatree config_setting set' failed); the worker may stay quiesced and admit no new work — clear it manually with 't3 teatree config_setting set worker_quiescing false' and check 't3 worker status'." >&2
     fi
-    apply_fleet_loop_policy
     echo "teatree-init: complete"
     ;;
 worker)
-    # ~/.claude is per-container ephemeral, so the agent's plugin/skill registration
-    # from init never reaches this container — re-run it here. For the WORKER, skills
-    # are a HARD startup precondition: the loop spawns headless agents, and a worker
-    # that spawns them with ZERO skills is the exact silent outage we refuse (owner
-    # directive: PREFER HARD FAIL over running with a critical capability missing). So
-    # `t3 setup` failing (set -e) OR the post-setup skills verification failing REFUSES
-    # to start, loudly and specifically, rather than serving a skill-less loop.
-    prepare_claude_runtime
+    # Init owns setup on the shared agent-home volumes. The worker consumes that
+    # exact state and hard-fails if it is absent rather than silently spawning a
+    # skill-less agent.
     if ! verify_agent_skills; then
-        echo "entrypoint: FATAL worker refusing to start: the t3 skills plugin is NOT registered (t3@souliane missing from ~/.claude/plugins/installed_plugins.json or not enabled in ~/.claude/settings.json) — the loop's agents would run SKILL-LESS. Re-run \`t3 setup\` in this container (or redeploy) and check \`t3 doctor check\`." >&2
+        echo "entrypoint: FATAL worker refusing to start: strict agent-skill setup is incomplete (Claude plugin, Codex plugin, declared skills, inventory, or readiness marker). Re-run \`t3 setup --strict-agent-skills\` in this container (or redeploy) and check \`t3 doctor check\`." >&2
         exit 1
     fi
     exec t3 worker
     ;;
 slack-listener)
     # Socket-Mode receiver: one WebSocket per slack-enabled overlay, writing
-    # inbound events to the JSONL queue that the worker's drain-queue slot
-    # drains, acks with 👀, and dispatches. `t3 slack listen` exits non-zero
+    # inbound events to the JSONL queue that the worker's mention scanner
+    # drains. `t3 slack listen` exits non-zero
     # when no overlay is Slack-enabled; `restart: unless-stopped` then simply
     # keeps a harmless retry loop on a box that has no Slack overlay yet.
     #
-    # Drain + 👀-ack captured DMs on a cadence: the reactive loop-drain-queue
-    # slot is not bootstrapped under `t3 worker` in headless, so the listener's
-    # captures would never reach an observable state without this. `t3 slack
-    # check` drains the JSONL queue and, unlike the drain-queue loop, is NOT
-    # gated by the worker singleton. `slack_drain_loop` backgrounds the cadence
-    # (so `exec t3 slack listen` stays the foreground process), never trips
-    # `set -e`, and — unlike the old `|| true` — logs real failures to stderr and
-    # writes a heartbeat `t3 doctor` reads to catch a stuck/failed drain (#3443).
+    # The receiver itself now records each inbound DM and wakes the answer cycle,
+    # so nothing here needs a `t3 slack check` cadence to make a capture observable;
+    # the receiver also stamps the heartbeat `t3 doctor` reads.
     #
-    # ~/.claude is per-container ephemeral, so re-run the agent plugin/skill
-    # registration here too (non-fatal — a listener must keep draining Slack even if
-    # setup hiccups; init already proved setup works).
-    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in slack-listener - agent skills may be unavailable until restart" >&2
-    slack_drain_loop &
     exec t3 slack listen
     ;;
 admin)
-    # ~/.claude is per-container ephemeral, so re-run the agent plugin/skill
-    # registration here too (non-fatal — the admin UI must serve even if setup
-    # hiccups; init already proved setup works).
-    prepare_claude_runtime || echo "entrypoint: WARNING prepare_claude_runtime failed in admin - agent skills may be unavailable until restart" >&2
     # Bind the box loopback (the service uses host networking) so the SSH-tunnel
     # request arrives as 127.0.0.1 and clears the middleware's loopback check.
     exec t3 admin --host 127.0.0.1 --port 8000 --no-browser

@@ -21,13 +21,14 @@ success, which is how a half-provisioned stack reads as green. Hence the refusal
 here: a divergence must FAIL where the row is registered, loudly, instead of
 surviving as a warning nobody reads.
 
-The refusal is deliberately scoped to a ticket that ALREADY has a settled
-workspace. A ticket with no materialised worktree yet (first provision), or one
-whose existing worktrees already disagree about their parent, has no single
-workspace to join — :func:`ticket_workspace_dir` returns ``None`` for both and the
-assertion is a no-op, so this never converts a pre-existing split into a hard
-failure at an unrelated call site. Draining those is the reaper's job, not this
-predicate's.
+:func:`assert_joins_ticket_workspace` is deliberately scoped to a ticket that
+ALREADY has a settled workspace: a ticket with no materialised worktree yet, or
+one whose worktrees already disagree, has no single workspace to join, so the
+assertion is a no-op and never converts a pre-existing split into a hard failure
+at an unrelated call site. PROVISIONING is the one caller that must separate
+those two states — :func:`ticket_workspace_dir_or_refuse` falls back on the first
+and refuses on the second, because materialising the next repo would deepen the
+split it cannot see.
 """
 
 from pathlib import Path
@@ -50,22 +51,84 @@ class TicketWorkspaceDivergenceError(RuntimeError):
     """
 
 
-def ticket_workspace_dir(ticket: "Ticket") -> Path | None:
-    """The single directory holding *ticket*'s materialised worktrees, or ``None``.
+def _group_equivalent_dirs(parents: set[Path]) -> set[Path]:
+    """Collapse *parents* to one representative per :func:`paths_match` class.
+
+    A ``/var`` candidate and its ``/private/var`` twin — or a configured symlink
+    and its target — are two spellings of ONE workspace dir. Counting them raw
+    reports a healthy ticket as split and refuses a registration that would
+    actually land as a sibling.
+    """
+    groups: list[Path] = []
+    for candidate in parents:
+        if not any(paths_match(candidate, existing) for existing in groups):
+            groups.append(candidate)
+    return set(groups)
+
+
+def ticket_workspace_dirs(ticket: "Ticket") -> set[Path]:
+    """Every distinct parent dir *ticket*'s materialised worktrees sit in.
 
     A repo worktree lives at ``<ticket-dir>/<repo-leaf>``, so the parent of any
-    one of them IS the ticket dir. Returns ``None`` when the ticket has no
-    on-disk worktree yet (nothing to join) or when the existing ones disagree on
-    a parent (a pre-existing split this predicate refuses to paper over by
-    picking a winner). Only paths that are still directories count, so a torn-down
-    worktree's stale row cannot pin the ticket to a dir that no longer exists.
+    one of them IS a ticket dir. Only paths that are still directories count, so a
+    torn-down worktree's stale row cannot pin the ticket to a dir that no longer
+    exists. Empty means nothing is materialised yet; more than one (after
+    :func:`_group_equivalent_dirs` collapses path-spelling variants) means the
+    ticket is genuinely split.
     """
-    parents = {
+    raw = {
         Path(path).parent
         for wt in Worktree.objects.for_ticket(ticket)
         if (path := (wt.extra or {}).get("worktree_path")) and Path(path).is_dir()
     }
+    return _group_equivalent_dirs(raw)
+
+
+def ticket_workspace_dir(ticket: "Ticket") -> Path | None:
+    """The single directory holding *ticket*'s materialised worktrees, or ``None``.
+
+    Returns ``None`` when the ticket has no on-disk worktree yet (nothing to join)
+    or when the existing ones disagree on a parent (a pre-existing split this
+    predicate refuses to paper over by picking a winner).
+    """
+    parents = ticket_workspace_dirs(ticket)
     return parents.pop() if len(parents) == 1 else None
+
+
+def ticket_workspace_dir_or_refuse(ticket: "Ticket") -> Path | None:
+    """Like :func:`ticket_workspace_dir`, but a SPLIT refuses instead of answering ``None``.
+
+    ``None`` from that predicate covers two states whose correct handling is
+    opposite: "nothing materialised yet", where a caller must fall back to its
+    own default, and "the worktrees disagree", where falling back adds the next
+    repo to one arbitrary side and deepens the split. A caller that provisions
+    calls this one so the second state stops it.
+    """
+    parents = ticket_workspace_dirs(ticket)
+    if len(parents) > 1:
+        raise TicketWorkspaceDivergenceError(_split_refusal(ticket, parents))
+    return parents.pop() if parents else None
+
+
+def _split_refusal(ticket: "Ticket", parents: set[Path]) -> str:
+    """Name every offending root verbatim — the operator cannot act on a count.
+
+    Deliberately does NOT prescribe ``workspace relocate``: relocation is a
+    ``rename(2)``, which these roots' bind mounts refuse across their boundary, so
+    prescribing it would be a remedy that cannot discharge its own finding.
+    Prescribes ``workspace repair-split``, not ``workspace clean-all``: clean-all
+    is the DONE-worktree reaper — it deliberately keeps an unfinished checkout — so
+    it repairs nothing on a still-open ticket. Repair MOVES each checkout instead
+    of reaping it, so unfinished work survives.
+    """
+    roots = ", ".join(sorted(str(p) for p in parents))
+    return (
+        f"Refusing to provision ticket {ticket.pk}: its worktrees are split across {len(parents)} workspace "
+        f"dirs ({roots}), and a ticket's repos must be siblings in ONE dir so each can resolve the others "
+        f"(a split ticket silently drops services from the generated stack). Provisioning would add the next "
+        f"repo to one arbitrary side. Repair it from the venue that mounts these checkouts "
+        f"(`t3 <overlay> workspace repair-split` inside the container), then re-provision."
+    )
 
 
 def assert_joins_ticket_workspace(ticket: "Ticket", candidate: Path) -> None:

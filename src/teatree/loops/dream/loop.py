@@ -47,15 +47,12 @@ is invoked directly by the tick command, not through the scanner-signal dispatch
 pipeline.
 """
 
-import os
 from typing import TYPE_CHECKING
 
 from teatree.loops.base import LoopDeterminism, LoopReach, MiniLoop
-from teatree.loops.dream.pass_config import FALSY as _FALSY
-from teatree.loops.dream.pass_config import TRUTHY as _TRUTHY
-from teatree.loops.dream.pass_config import dream_table
 
 if TYPE_CHECKING:
+    from teatree.config.settings import UserSettings
     from teatree.loop.job_identity import _ScannerJob
 
 DREAM_LOOP_NAME = "dream"
@@ -88,155 +85,86 @@ DREAM_LEASE_SECONDS = DREAM_OFF_TICK_DEADLINE_SECONDS + 5 * 60
 #: ``last_run_at`` does not.
 DREAM_RETRY_BACKOFF_SECONDS = 2 * 3600
 
-#: Every dream phase that can be turned off is LIVE by default (#2346 "make it
-#: live", #1933 phases 4-6). Each carries the SAME two-layer kill-switch, first
-#: match wins:
-#:
-#: 1. ``T3_DREAM_<PHASE>`` env — ``0``/``false``/``no``/``off`` disables, an
-#:    explicit truthy value enables, an absent/unknown value defers to the DB.
-#: 2. the ``dream`` sub-table of the DB ``loops`` setting, key ``<phase>`` — an
-#:    explicit bool.
-#:
-#: Default (no env, no DB key) is ON, so each phase is live out of the box while
-#: a single ``config_setting set`` (or a falsy env var) turns it off.
-
-#: One phase toggle: the DB ``loops.dream`` key and its ``T3_DREAM_*`` env var.
-_PROPOSE_EVALS = ("propose_evals", "T3_DREAM_PROPOSE_EVALS")
-_CROSS_LINK = ("cross_link", "T3_DREAM_CROSS_LINK")
-_MERGE = ("merge", "T3_DREAM_MERGE")
-_REINDEX = ("reindex", "T3_DREAM_REINDEX")
-_DECAY = ("decay", "T3_DREAM_DECAY")
+#: Each dream phase is a declared setting (``teatree.config.settings_loop_owned``), resolved
+#: through the ordinary chain — ``T3_DREAM_<PHASE>`` env, then the ``ConfigSetting``
+#: store, then the shipped default. The phases that only read and rewrite memory ship ON;
+#: every phase that files a ticket or makes a metered model call ships OFF.
 
 
-def _phase_enabled(key: str, env_var: str) -> bool:
-    """Resolve a dream-phase toggle (default ON) across the env + DB kill-switch.
+def _settings() -> "UserSettings":
+    """The effective settings, resolved at call time so a phase never binds a stale read."""
+    from teatree.loops.dream.pass_config import dream_settings  # noqa: PLC0415 — deferred: ORM-backed read
 
-    The env layer wins when it carries an explicit truthy/falsy value; an absent
-    or unrecognised env value defers to the DB ``loops.dream`` key, default ON.
-    """
-    raw_env = os.environ.get(env_var, "").strip().lower()
-    if raw_env in _FALSY:
-        return False
-    if raw_env in _TRUTHY:
-        return True
-    value = dream_table().get(key)
-    return value if isinstance(value, bool) else True
+    return dream_settings()
 
 
 def propose_evals_enabled() -> bool:
     """Whether the nightly ``tick`` should request eval proposals (default ON)."""
-    return _phase_enabled(*_PROPOSE_EVALS)
+    settings = _settings()
+    return settings.dream_propose_evals
 
 
 def cross_link_enabled() -> bool:
     """Whether phase 4 (cross-link related memories) runs (default ON)."""
-    return _phase_enabled(*_CROSS_LINK)
+    settings = _settings()
+    return settings.dream_cross_link
 
 
 def merge_enabled() -> bool:
     """Whether phase 4b (merge near-duplicate memories) runs (default ON, #2723)."""
-    return _phase_enabled(*_MERGE)
+    settings = _settings()
+    return settings.dream_merge
 
 
 def reindex_enabled() -> bool:
     """Whether phase 5 (regenerate ``MEMORY.md``) runs (default ON)."""
-    return _phase_enabled(*_REINDEX)
+    settings = _settings()
+    return settings.dream_reindex
 
 
 def decay_enabled() -> bool:
     """Whether phase 6 (decay/archive stale memories) runs (default ON)."""
-    return _phase_enabled(*_DECAY)
-
-
-#: Pass-2 memory promotion (#2426) FILES backlog tickets — it was default OFF while the
-#: ledger's own promotion rail sat inert (2133 candidate rows, 0 promoted, #4685). #4776
-#: is the missing safety mechanism that decision needed: a pass's promotions now batch
-#: into ONE ticket, so turning this on can no longer dump an unbounded backlog. Default
-#: ON; opt out with ``T3_DREAM_MEMORY_PROMOTE=0`` / the DB ``loops.dream memory_promote =
-#: false`` key.
-_MEMORY_PROMOTE = ("memory_promote", "T3_DREAM_MEMORY_PROMOTE")
+    settings = _settings()
+    return settings.dream_decay
 
 
 def memory_promote_enabled() -> bool:
-    """Whether Pass-2 memory→fix promotion runs (default ON, #2426, #4685, #4776)."""
-    return _phase_enabled(*_MEMORY_PROMOTE)
-
-
-#: The LLM-backed full-scenario derivation (#2447) is the one dream phase that is
-#: default OFF — it makes a metered SDK call per candidate and stages real eval
-#: files. Opt in with ``T3_DREAM_DERIVE_EVALS=1`` / the DB ``loops.dream derive_evals =
-#: true`` key; absent, the dream pass never invokes the LLM synthesizer (no behaviour
-#: change). The deterministic ``promote`` path (default ON) is unaffected.
-_DERIVE_EVALS = ("derive_evals", "T3_DREAM_DERIVE_EVALS")
+    """Whether Pass-2 memory→fix promotion runs (default ON — a pass batches its promotions into ONE ticket, #4776)."""
+    settings = _settings()
+    return settings.dream_memory_promote
 
 
 def derive_evals_enabled() -> bool:
-    """Whether the LLM-backed full-scenario derivation runs (default OFF, #2447)."""
-    raw_env = os.environ.get(_DERIVE_EVALS[1], "").strip().lower()
-    if raw_env in _TRUTHY:
-        return True
-    if raw_env in _FALSY:
-        return False
-    return _dream_phase_default_off(_DERIVE_EVALS[0])
-
-
-#: Phase 3c is SPLIT into two independently-gated halves (#2663). MEASUREMENT — the
-#: root-KPI accountant — only PERSISTS a compliance snapshot (never files), so it is
-#: default ON and runs on EVERY pass: the root KPI must actually be measured. Two-layer
-#: kill-switch (env then DB ``loops.dream compliance_measure``), default ON, so a single
-#: falsy env / DB key turns measurement off.
-_COMPLIANCE_MEASURE = ("compliance_measure", "T3_DREAM_COMPLIANCE_MEASURE")
+    """Whether the LLM-backed full-scenario derivation runs (default OFF — metered, #2447)."""
+    settings = _settings()
+    return settings.dream_derive_evals
 
 
 def compliance_measure_enabled() -> bool:
-    """Whether phase-3c compliance MEASUREMENT runs (default ON, #2663)."""
-    return _phase_enabled(*_COMPLIANCE_MEASURE)
-
-
-#: ESCALATION — the other half — FILES enforcement tickets for recurrences, so it is
-#: default OFF, mirroring the Pass-2 memory-promotion posture. Opt in with
-#: ``T3_DREAM_COMPLIANCE_ESCALATE=1`` / the DB ``loops.dream compliance_escalate = true``
-#: key; absent, the dream pass measures but never escalates (no ticket-filing). The
-#: toggle ALONE suffices: it used to be ANDed with ``--full`` at the call site, which the
-#: cron ``tick`` can never set, so the toggle was dead on the nightly path (#4176).
-_COMPLIANCE_ESCALATE = ("compliance_escalate", "T3_DREAM_COMPLIANCE_ESCALATE")
+    """Whether phase-3c compliance MEASUREMENT runs (default ON — it persists, never files, #2663)."""
+    settings = _settings()
+    return settings.dream_compliance_measure
 
 
 def compliance_escalate_enabled() -> bool:
-    """Whether phase-3c compliance ESCALATION runs (default OFF, #2663)."""
-    raw_env = os.environ.get(_COMPLIANCE_ESCALATE[1], "").strip().lower()
-    if raw_env in _TRUTHY:
-        return True
-    if raw_env in _FALSY:
-        return False
-    return _dream_phase_default_off(_COMPLIANCE_ESCALATE[0])
+    """Whether phase-3c compliance ESCALATION runs (default OFF — it FILES enforcement tickets, #2663).
 
-
-#: Phase 3d — the automatable-ask promoter (#2663), the "improve-with-new-stuff"
-#: sibling of the compliance accountant. It PROMOTES recurring manual user asks to a
-#: fix-and-merge (a checkbox + scheduled coding task). Gated by an OR at the call site
-#: (``if not force_all_phases and not automation_asks_enabled()``): it runs on ``--full``
-#: OR when opted in with ``T3_DREAM_AUTOMATION_ASKS=1`` / the DB ``loops.dream automation_asks
-#: = true`` key — so ``--full`` alone triggers it, whereas the compliance phase's AND-gate
-#: additionally requires its own toggle even under ``--full``. Absent both, the dream
-#: pass never promotes an ask (no behaviour change).
-_AUTOMATION_ASKS = ("automation_asks", "T3_DREAM_AUTOMATION_ASKS")
+    The toggle ALONE suffices: it used to be ANDed with ``--full`` at the call site, which
+    the cron ``tick`` can never set, so the toggle was dead on the nightly path (#4176).
+    """
+    settings = _settings()
+    return settings.dream_compliance_escalate
 
 
 def automation_asks_enabled() -> bool:
-    """Whether phase-3d automatable-ask promotion runs (default OFF, #2663)."""
-    raw_env = os.environ.get(_AUTOMATION_ASKS[1], "").strip().lower()
-    if raw_env in _TRUTHY:
-        return True
-    if raw_env in _FALSY:
-        return False
-    return _dream_phase_default_off(_AUTOMATION_ASKS[0])
+    """Whether phase-3d automatable-ask promotion runs (default OFF — it schedules work, #2663).
 
-
-def _dream_phase_default_off(key: str) -> bool:
-    """Read the DB ``loops.dream`` key; default OFF, never raise."""
-    value = dream_table().get(key)
-    return value if isinstance(value, bool) else False
+    Gated by an OR at the call site (``if not force_all_phases and not
+    automation_asks_enabled()``), so ``--full`` alone triggers it — whereas the compliance
+    phase's AND-gate additionally requires its own toggle even under ``--full``.
+    """
+    settings = _settings()
+    return settings.dream_automation_asks
 
 
 def _build_jobs(**_: object) -> "list[_ScannerJob]":

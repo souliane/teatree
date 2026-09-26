@@ -8,11 +8,20 @@ import pytest
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.tasks as tasks_mod
 from teatree.core import agent_runner as agent_runner_mod
 from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
 from teatree.core.mode_resolution import clear_mode_override, set_mode_override
-from teatree.core.models import AttachmentManifest, ConfigSetting, Mode, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import (
+    AttachmentManifest,
+    ConfigSetting,
+    Mode,
+    ModeOverride,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+)
+from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.runners import RetroPhaseMarker
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
@@ -26,7 +35,10 @@ from teatree.core.tasks import (
     refresh_followup_snapshot,
     sync_followup,
 )
+from teatree.loop.drain import DrainReport, set_worker_quiescing
+from tests.factories import waive_rubric
 from tests.teatree_core.conftest import CommandOverlay
+from tests.teatree_core.test_managers_task_claim import a_drain_lands_mid_claim, admits_then_the_fleet_stops
 
 IMMEDIATE_BACKEND = {
     "TASKS": {
@@ -198,13 +210,13 @@ class TestDrainHeadlessQueue(TestCase):
         assert live.status == Task.Status.PENDING
 
     def test_unfreeze_then_drain_readmits(self) -> None:
-        Mode.objects.create(name="frozen-drain-test", entries={"dispatch": False})
-        set_mode_override("frozen-drain-test")
+        Mode.objects.create(name="frozen-drain-test", entries={"dispatch": False, "dream": True})
+        set_mode_override("frozen-drain-test", reason="test")
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
         recorder = MagicMock()
         with (
-            patch.object(tasks_mod, "execute_task", recorder),
+            patch("teatree.core.task_dispatch.execute_task", recorder),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
             live = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING, phase="coding")
@@ -422,8 +434,8 @@ class TestClaimIsTheSoleAdmissionDecision(TestCase):
         assert (task.status, task.claimed_by) == (Task.Status.PENDING, "")
 
     def test_frozen_dispatch_mask_skips_execute_task(self) -> None:
-        Mode.objects.create(name="frozen-execute-test", entries={"dispatch": False})
-        set_mode_override("frozen-execute-test")
+        Mode.objects.create(name="frozen-execute-test", entries={"dispatch": False, "dream": True})
+        set_mode_override("frozen-execute-test", reason="test")
 
         task, result, runner = self._run_frozen()
 
@@ -454,6 +466,7 @@ class TestExecuteRetrospect(TestCase):
         ticket = self._ticket_in_merged()
         ticket.state = Ticket.State.RETRO_RECORDED
         ticket.save(update_fields=["state"])
+        waive_rubric(ticket)  # the subject is the retro advance, not the rubric gate
 
         result = execute_retrospect.enqueue(ticket.pk)
 
@@ -738,7 +751,7 @@ class TestExecuteProvision(TestCase):
 
         with (
             patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
-            patch("teatree.core.tasks.run_landscape", return_value=survey) as gather,
+            patch("teatree.core.intake.landscape_persist.run_landscape", return_value=survey) as gather,
         ):
             provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
             execute_provision.enqueue(ticket.pk)
@@ -762,7 +775,7 @@ class TestExecuteProvision(TestCase):
 
         with (
             patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
-            patch("teatree.core.tasks.run_landscape", side_effect=RuntimeError("forge down")),
+            patch("teatree.core.intake.landscape_persist.run_landscape", side_effect=RuntimeError("forge down")),
         ):
             provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
             result = execute_provision.enqueue(ticket.pk)
@@ -926,6 +939,52 @@ class TestExecuteProvision(TestCase):
         assert ticket.state == Ticket.State.WORK_STARTED
         assert not ticket.tasks.filter(phase="planning").exists()
         assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "repo missing"}
+
+    def _fail_provision(self, ticket: Ticket, detail: str) -> None:
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = RunnerResult(ok=False, detail=detail)
+            execute_provision.enqueue(ticket.pk)
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_provision_failure_records_a_deferred_question(self) -> None:
+        # One un-provisionable repo holds the ticket at STARTED forever. The
+        # failure path recorded a logger.warning while the attachment gate right
+        # below it escalated, so the hold was invisible across ~28 attempts.
+        ticket = self._ticket_in_started()
+
+        self._fail_provision(ticket, "failed to create worktrees for: backend")
+
+        question = DeferredQuestion.objects.get(dedupe_marker=f"provision-failure:{ticket.pk}")
+        assert "backend" in question.question
+        assert str(ticket.pk) in question.question or (ticket.issue_url or "") in question.question
+        assert ticket.overlay in question.question
+        # `worktree provision` resolves an EXISTING checkout and has no `--verbose`
+        # flag; the retry seam that reaches checkout CREATION is `workspace ticket`.
+        assert "workspace ticket" in question.question
+        assert "worktree provision --verbose" not in question.question
+        assert not ticket.tasks.filter(phase="planning").exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_provision_failure_names_the_retry_command_when_the_ticket_has_an_issue_url(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/111", repos=["repo-a"], extra={"branch": "111-x"}
+        )
+        ticket.state = Ticket.State.WORK_STARTED
+        ticket.save(update_fields=["state"])
+
+        self._fail_provision(ticket, "failed to create worktrees for: backend")
+
+        question = DeferredQuestion.objects.get(dedupe_marker=f"provision-failure:{ticket.pk}")
+        assert "t3 test workspace ticket https://example.com/issues/111" in question.question
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_redelivered_provision_failure_collapses_to_one_question(self) -> None:
+        ticket = self._ticket_in_started()
+
+        self._fail_provision(ticket, "failed to create worktrees for: backend")
+        self._fail_provision(ticket, "failed to create worktrees for: backend")
+
+        assert DeferredQuestion.objects.filter(dedupe_marker=f"provision-failure:{ticket.pk}").count() == 1
 
 
 class TestExecuteShip(TestCase):
@@ -1392,3 +1451,69 @@ class TestHeadlessClaimLease(TestCase):
             execute_task.func(task.pk, task.phase)
 
         assert captured["seconds"] == pytest.approx(_LEASE_SECONDS, abs=1)
+
+
+class TestExecuteTaskHonoursTheClaimAdmissionGate(TestCase):
+    def setUp(self) -> None:
+        _stub_headless_runner(self)
+        ticket = Ticket.objects.create(overlay="test")
+        self.task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="test"), phase="coding"
+        )
+
+    def test_the_default_posture_runs_the_task(self) -> None:
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = execute_task.func(self.task.pk, self.task.phase)
+
+        self.task.refresh_from_db()
+        assert result.get("exit_code") == 0
+        assert self.task.status == Task.Status.COMPLETED
+
+    def test_the_off_posture_leaves_the_task_pending_with_no_attempt(self) -> None:
+        ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = execute_task.func(self.task.pk, self.task.phase)
+
+        self.task.refresh_from_db()
+        assert "admits no loop" in result.get("skipped", "")
+        assert self.task.status == Task.Status.PENDING
+        assert not TaskAttempt.objects.filter(task=self.task).exists()
+
+    def test_a_quiescing_worker_leaves_the_task_pending_with_no_attempt(self) -> None:
+        set_worker_quiescing(value=True)
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = execute_task.func(self.task.pk, self.task.phase)
+
+        self.task.refresh_from_db()
+        assert "quiescing" in result.get("skipped", "")
+        assert self.task.status == Task.Status.PENDING
+        assert not TaskAttempt.objects.filter(task=self.task).exists()
+
+    def test_a_stop_between_the_probe_and_the_claim_leaves_the_task_pending(self) -> None:
+        with (
+            patch("teatree.core.tasks.headless_admission_block_reason", admits_then_the_fleet_stops()),
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            result = execute_task.func(self.task.pk, self.task.phase)
+
+        self.task.refresh_from_db()
+        assert "admits no loop" in result.get("skipped", "")
+        assert self.task.status == Task.Status.PENDING
+        assert not TaskAttempt.objects.filter(task=self.task).exists()
+
+    def test_a_quiesce_landing_mid_claim_leaves_the_task_pending_and_the_drain_truthful(self) -> None:
+        reports: list[DrainReport] = []
+
+        with (
+            patch("teatree.core.models.task_claim.current_owner", a_drain_lands_mid_claim(reports)),
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+        ):
+            result = execute_task.func(self.task.pk, self.task.phase)
+
+        assert reports[0].drained
+        self.task.refresh_from_db()
+        assert "quiescing" in result.get("skipped", "")
+        assert self.task.status == Task.Status.PENDING
+        assert not TaskAttempt.objects.filter(task=self.task).exists()

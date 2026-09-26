@@ -10,6 +10,7 @@ read degrades that band, never the whole page.
 """
 
 import logging
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,6 +22,7 @@ from teatree.config import get_effective_settings
 from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime
 from teatree.core.factory.operational_health import read_health
 from teatree.core.mode_resolution import resolve_active_mode
+from teatree.core.models.anthropic_active_pick import AnthropicActivePick
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.task_attempt import TaskAttempt
@@ -65,10 +67,16 @@ class ParkedLane:
 @dataclass(frozen=True, slots=True)
 class AccountUtilization:
     pass_path: str
-    utilization_5h: float
-    utilization_7d: float
+    #: ``None`` is a window the router never measured — the page renders it as unknown
+    #: rather than as the full headroom a 0.0 would claim.
+    utilization_5h: float | None
+    utilization_7d: float | None
     is_exhausted: bool
     earliest_reset: datetime | None
+    #: The routing scopes currently PINNED to this account ("global" for the unnamed one).
+    #: Without it the page shows what every account has left but not which one work is
+    #: actually being routed to, so a pin stranded on a spent account is invisible here.
+    pinned_scopes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +176,9 @@ def _parked_lanes() -> tuple[ParkedLane, ...]:
 
 
 def _account_utilizations() -> tuple[AccountUtilization, ...]:
+    pinned: dict[str, list[str]] = defaultdict(list)
+    for pick in AnthropicActivePick.objects.all():
+        pinned[pick.pass_path].append(f"{pick.kind}:{pick.scope or 'global'}")
     return tuple(
         AccountUtilization(
             pass_path=row.pass_path,
@@ -175,6 +186,7 @@ def _account_utilizations() -> tuple[AccountUtilization, ...]:
             utilization_7d=row.utilization_7d,
             is_exhausted=row.is_exhausted,
             earliest_reset=row.earliest_reset,
+            pinned_scopes=tuple(pinned.get(row.pass_path, ())),
         )
         for row in AnthropicTokenUsage.objects.all()
     )

@@ -10,6 +10,7 @@ with no exception and no double-reply / double-drain.
 """
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -56,8 +57,9 @@ class RecordingBackend:
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         self.replies.append((channel, ts, text))
-        self.thread_replies.setdefault(ts, []).append({"ts": f"{ts}-bot", "user": _BOT_UID, "text": text})
-        return {"ok": True}
+        posted_ts = str(Decimal(ts) + Decimal("0.000001"))
+        self.thread_replies.setdefault(ts, []).append({"ts": posted_ts, "user": _BOT_UID, "text": text})
+        return {"ok": True, "ts": posted_ts}
 
     def open_dm(self, user_id: str) -> str:
         _ = user_id

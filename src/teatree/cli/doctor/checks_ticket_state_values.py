@@ -1,7 +1,7 @@
 """A Ticket value outside ``Ticket.State.values`` matches no transition source (#4779).
 
 The rename carries no dual-read shim, so pre-rename code still running after migration
-0093 can write a retired name — into ``state``, into the ``ignored_from`` /
+0119 can write a retired name — into ``state``, into the ``ignored_from`` /
 ``reopened_from`` snapshot ``unignore()`` assigns straight back into ``state``, or into
 a ``TicketTransition`` endpoint. Such a row can never transition, no board column shows
 it, and history splits its edges, so it fails the run.
@@ -58,7 +58,7 @@ def check_unknown_ticket_states() -> bool:
         return True
     typer.echo(
         f"FAIL  {len(findings)} ticket value(s) name no live Ticket.State — no transition accepts them and "
-        "the board hides them. Rewrite each to its renamed value (migration 0093's mapping): "
+        "the board hides them. Rewrite each to its renamed value (migration 0119's mapping): "
         f"{', '.join(findings[:_LISTED])}"
         f"{f' … and {len(findings) - _LISTED} more' if len(findings) > _LISTED else ''}."
     )

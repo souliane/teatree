@@ -28,10 +28,6 @@ a committed leak from the backstop. The scan reads the ``HEAD`` blob via
 ``git show HEAD:<path>`` and falls back to the working-tree file only
 when the blob is unavailable (a freshly-added, not-yet-committed file).
 
-Email carve-out preserved: a brand that appears only inside an email
-address (author/contact metadata) is allowed — :func:`term_match.strip_emails`
-blanks emails before matching, exactly as the shell scanner does.
-
 The brand list is a NEW optional high-confidence ``banned_brands`` key
 (distinct from the flat ``banned_terms`` the shell gate consumes), read
 DB-home from the canonical ``ConfigSetting`` store via the Django-free
@@ -242,18 +238,22 @@ def load_brand_terms(db_path: Path | None = None) -> tuple[str, ...]:
     return legacy_brand_terms(db_path=db_path)
 
 
-def scan_text(text: str, terms: tuple[str, ...]) -> list[tuple[int, str, str]]:
+def scan_text(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> list[tuple[int, str, str]]:
     """Scan *text* line by line for brand hits; return ``(lineno, term, line)``.
 
-    Routes through the shared :func:`term_match.matched_term` with the
-    email carve-out applied per line, so the brand pass matches the other
-    banned-terms entry points exactly. Empty *terms* is a clean no-op.
+    Routes through the shared :func:`term_match.matched_term`, so the brand
+    pass matches the other banned-terms entry points exactly. Empty *terms* is
+    a clean no-op.
+
+    *allowlist* is the company-identifier carve-out the other entry points
+    already honour; without it an allow-listed identifier (``myorg-engineering``)
+    is flagged here for the bare ``myorg`` token with no escape available.
     """
     if not terms:
         return []
     hits: list[tuple[int, str, str]] = []
     for lineno, line in enumerate(text.splitlines(), start=1):
-        term = term_match.matched_term(term_match.strip_emails(line), terms)
+        term = term_match.matched_term(line, terms, allowlist)
         if term is not None:
             hits.append((lineno, term, line))
     return hits
@@ -302,7 +302,8 @@ def committed_blob_text(repo_root: Path, rel_path: str) -> str | None:
     """
     try:
         result = run_allowed_to_fail(
-            ["git", "-C", str(repo_root), "show", f"HEAD:{rel_path}"],
+            # ``./`` resolves from ``-C`` (a vendored subtree); a bare path resolves from the repo top.
+            ["git", "-C", str(repo_root), "show", f"HEAD:./{rel_path}"],
             expected_codes=None,
             timeout=_GIT_SHOW_TIMEOUT_S,
         )
@@ -331,7 +332,7 @@ def _scannable_text(repo_root: Path, path: Path, rel: str) -> str | None:
         return None
 
 
-def scan_tree(repo_root: Path, terms: tuple[str, ...]) -> list[TreeFinding]:
+def scan_tree(repo_root: Path, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> list[TreeFinding]:
     """Scan every tracked text file for committed brands and conflated terminology.
 
     Two passes per file, both over the COMMITTED blob (so a working-tree
@@ -340,6 +341,9 @@ def scan_tree(repo_root: Path, terms: tuple[str, ...]) -> list[TreeFinding]:
     the built-in terminology gate (``terminology_gate``), which flags
     teatree-internal vocabulary conflations regardless of any operator
     config.
+
+    *allowlist* carves the company's own identifiers out of the brand pass only;
+    the terminology gate is teatree vocabulary, which no operator config exempts.
 
     Propagates :class:`TreeEnumerationError` — a tree that could not be enumerated
     has no findings for the same reason a tree that was never read has none.
@@ -353,7 +357,9 @@ def scan_tree(repo_root: Path, terms: tuple[str, ...]) -> list[TreeFinding]:
         if text is None:
             continue
         lines = text.splitlines()
-        findings.extend(TreeFinding(rel, lineno, term, line) for lineno, term, line in scan_text(text, terms))
+        findings.extend(
+            TreeFinding(rel, lineno, term, line) for lineno, term, line in scan_text(text, terms, allowlist)
+        )
         if not terminology_gate.path_is_exempt(rel):
             for lineno, finding in terminology_gate.scan_text(text):
                 term = f"{finding.phrase} — {finding.correction}"

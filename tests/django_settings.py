@@ -71,7 +71,7 @@ TASKS = {
         "BACKEND": "django.tasks.backends.dummy.DummyBackend",
         # Mirror the production ``teatree.settings`` allowlist: "loops" is the
         # dedicated queue the self-rescheduling loop-timer chains ride (parity-tested).
-        "QUEUES": ["default", "loops"],
+        "QUEUES": ["default", "loops", "cheap"],
     },
 }
 

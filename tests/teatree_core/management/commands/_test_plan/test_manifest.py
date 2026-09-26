@@ -13,9 +13,17 @@ from pathlib import Path
 
 import pytest
 
+from teatree.core.evidence.bdd_scenario_source import BddScenarioSource
 from teatree.core.management.commands._test_plan import state as state_mod
 from teatree.core.management.commands._test_plan.manifest import SideManifest, parse_manifest, validate_template
 from teatree.core.management.commands._test_plan.state import DEFAULT_TEMPLATE
+
+_FINAL_BDD_SOURCE: BddScenarioSource = {
+    "prd_page": "https://notion.so/example-prd",
+    "bdd_revision": "2026-09-22",
+    "status": "final",
+    "scenario_ids": ["BDD-4521-001"],
+}
 
 # A minimal valid PNG (8-byte signature + IHDR) that ``media_kind`` recognises.
 _PNG_BYTES = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489")
@@ -36,7 +44,7 @@ class TestParseManifestGuards:
 
     def test_no_side_captures_raises(self) -> None:
         raw = json.dumps({"ticket": "1", "workflows": [{"workflow": "wf"}]})
-        with pytest.raises(state_mod.TestPlanValidationError, match="no 'dev' or 'local' captures"):
+        with pytest.raises(state_mod.TestPlanValidationError, match="no 'dev', 'local' or 'stack' captures"):
             parse_manifest(raw)
 
     def test_missing_workflow_name_raises(self) -> None:
@@ -55,6 +63,26 @@ class TestParseManifestGuards:
             parse_manifest(raw)
 
 
+class TestScenarioSourceIsValidatedAtParse:
+    def _manifest(self, **source: object) -> str:
+        return json.dumps(
+            {
+                "ticket": "4521",
+                "scenario_source": _FINAL_BDD_SOURCE | source,
+                "dev": {"commits": {"repo": "abc"}},
+                "workflows": [{"workflow": "login", "steps": ["open page"]}],
+            }
+        )
+
+    def test_non_final_scenario_source_refuses(self) -> None:
+        with pytest.raises(state_mod.TestPlanValidationError, match="'preflight'"):
+            parse_manifest(self._manifest(status="preflight"))
+
+    def test_scenario_source_without_ids_refuses(self) -> None:
+        with pytest.raises(state_mod.TestPlanValidationError, match="final scenario IDs"):
+            parse_manifest(self._manifest(scenario_ids=[]))
+
+
 class TestValidateTemplate:
     def test_known_template_passes_through(self) -> None:
         assert validate_template("link-api") == "link-api"
@@ -68,14 +96,14 @@ class TestParseManifestHappyPath:
     def test_steps_only_manifest_parses_without_media(self) -> None:
         raw = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "mrs": ["https://example.com/x/-/merge_requests/1"],
                 "dev": {"commits": {"repo": "abc"}},
                 "workflows": [{"workflow": "login", "steps": ["open page", "click"]}],
             }
         )
         manifest = parse_manifest(raw)
-        assert manifest.ticket == "8521"
+        assert manifest.ticket == "4521"
         assert manifest.dev.present is True
         assert manifest.dev.commits == {"repo": "abc"}
         assert manifest.steps == {"login": ("open page", "click")}

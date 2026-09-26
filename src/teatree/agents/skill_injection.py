@@ -21,19 +21,14 @@ _ALWAYS_FULL_SKILLS = frozenset({"rules"})
 
 
 def harness_skills_dirs() -> list[Path]:
-    """Skill-body search roots: teatree's own skills dir, then the harness dir.
-
-    A headless / no-Skill-tool dispatch can only "see" a skill whose ``SKILL.md``
-    body is embedded, so the resolver must reach the harness user skills dir
-    (``~/.claude/skills``) where team / overlay skills installed via ``npx skills
-    add`` (or symlinked from an overlay clone) live — not only teatree's own dir.
-    Teatree-local first, so a name collision resolves to the framework body.
-    """
-    dirs = [DEFAULT_SKILLS_DIR]
-    harness = Path.home() / ".claude" / "skills"
-    if harness not in dirs:
-        dirs.append(harness)
-    return dirs
+    home = Path.home()
+    candidates = [
+        DEFAULT_SKILLS_DIR,
+        home / ".agents" / "skills",
+        home / ".claude" / "skills",
+        home / ".codex" / "skills",
+    ]
+    return list(dict.fromkeys(candidates))
 
 
 def _resolve_dirs(skills_dir: Path | None) -> list[Path]:
@@ -109,7 +104,8 @@ def _companion_line(name: str, dirs: Sequence[Path]) -> str:
 
 def _is_primary(name: str, primary_skills: set[str]) -> bool:
     """Check if a skill name (or path) matches the primary set or always-full list."""
-    if name in primary_skills or name in _ALWAYS_FULL_SKILLS:
+    bare = _bare_skill_name(name)
+    if name in primary_skills or bare in primary_skills or bare in _ALWAYS_FULL_SKILLS:
         return True
     skill_dir_name = Path(name).parent.name if "/" in name else ""
     return skill_dir_name in primary_skills or skill_dir_name in _ALWAYS_FULL_SKILLS

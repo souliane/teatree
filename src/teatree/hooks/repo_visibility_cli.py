@@ -21,14 +21,20 @@ Prints exactly one line -- ``PUBLIC`` / ``PRIVATE`` / ``INTERNAL`` /
 ``UNKNOWN`` -- and exits 0 whenever it could run. ``UNKNOWN`` is the fail-safe
 verdict: callers must treat it as "NOT confirmed private" and keep enforcing,
 so an absent forge CLI, an unparsable remote, or a probe error never silently
-skips a leak scan.
+skips a leak scan. It is equally NOT a confirmation of publicness -- a caller
+whose rule needs a public remote must require an affirmative ``PUBLIC``.
+
+The offline ``private_repos`` allowlist answers before any probe, so a declared
+private repo resolves the same way from every checkout on the host and never
+depends on a network call completing inside its budget.
 """
 
 import sys
 
-from teatree.hooks._repo_visibility import slug_for_remote_url, slug_visibility
+from teatree.hooks._repo_visibility import slug_for_remote_url, slug_is_allowlisted_private, slug_visibility
 
 UNKNOWN_VERDICT = "UNKNOWN"
+PRIVATE_VERDICT = "PRIVATE"
 
 
 def visibility_for_remote(url: str) -> str:
@@ -38,10 +44,20 @@ def visibility_for_remote(url: str) -> str:
     (:func:`_repo_visibility.slug_for_remote_url`) so the host-keyed probe
     routes to the forge the remote actually lives on. A host-stripped slug
     would default every remote to the GitHub probe.
+
+    The offline ``private_repos`` allowlist is consulted BEFORE the probe — the
+    order every other consumer of this module already uses (``publish_surface``,
+    ``publish_destination``, ``public_visibility``, ``author_trust``). A repo the
+    operator has declared private must not have its verdict decided by a
+    5s-budget network call that a loaded machine loses: that made one URL resolve
+    PRIVATE on an idle box and UNKNOWN on a busy one, and the push gate reads an
+    UNKNOWN as "not confirmed private".
     """
     slug = slug_for_remote_url(url.strip())
     if not slug:
         return UNKNOWN_VERDICT
+    if slug_is_allowlisted_private(slug, None):
+        return PRIVATE_VERDICT
     return slug_visibility(slug) or UNKNOWN_VERDICT
 
 

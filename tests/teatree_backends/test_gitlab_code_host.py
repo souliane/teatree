@@ -269,6 +269,19 @@ def test_list_assigned_issues_delegates_to_client() -> None:
     client.list_open_issues_for_assignee.assert_called_once_with("adrien")
 
 
+def test_list_assigned_issues_passes_repo_scope_to_client() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.list_open_issues_for_assignee.return_value = []
+    host = GitLabCodeHost(client=client)
+
+    host.list_assigned_issues(assignee="adrien", repo_slugs=("acme/backend",))
+
+    client.list_open_issues_for_assignee.assert_called_once_with(
+        "adrien",
+        project_slugs=("acme/backend",),
+    )
+
+
 def test_list_authored_issues_delegates_to_client() -> None:
     """#3235 — the author-scoped intake query: issues the trusted human FILED."""
     client = MagicMock(spec=GitLabAPI)
@@ -1712,3 +1725,76 @@ class TestCreatePrSetsReviewersAtomically:
             host.create_pr(self._spec(["alice", "bob"]))
 
         assert caplog.records == []
+
+
+class TestFetchOpenPrUrlForBranch:
+    """The open-MR probe must read over HTTP — the deploy image ships no ``glab``.
+
+    ``deploy/Dockerfile`` states the omission is deliberate and states the rule: a tool a
+    role SHELLS OUT to has to be in the image. The GitLab arm of the shared open-PR probe
+    broke that contract, so inside the container every probe came back UNKNOWN, the orphan
+    guard reported ``pr_unknown``, and ``pr ensure-pr`` returned ``owed: True`` having
+    created nothing — no MR could be opened from the container at all. That in turn drove
+    agents to a host ``glab``, which holds the HUMAN token, producing MRs their author can
+    never approve.
+
+    Tri-state as ``str | None``, the encoding ``PrProbe.url_or_none_on_unknown`` already
+    uses across this codebase: the url is FOUND, ``""`` is NONE, ``None`` is UNKNOWN.
+    """
+
+    @staticmethod
+    def _host(client: MagicMock) -> GitLabCodeHost:
+        client.resolve_project_from_remote.return_value = _project()
+        client.resolve_project.return_value = _project()
+        return GitLabCodeHost(client=client)
+
+    def test_an_open_mr_is_found_over_http_with_no_subprocess(self) -> None:
+        client = MagicMock(spec=GitLabAPI)
+        client.get_json.return_value = [{"web_url": "https://gitlab.com/acme/widgets/-/merge_requests/7"}]
+
+        url = self._host(client).fetch_open_pr_url_for_branch(repo="org/repo", branch="feature")
+
+        assert url == "https://gitlab.com/acme/widgets/-/merge_requests/7"
+        endpoint = client.get_json.call_args.args[0]
+        assert endpoint.startswith("projects/42/merge_requests?")
+        assert "source_branch=feature" in endpoint
+        assert "state=opened" in endpoint
+
+    def test_no_open_mr_is_an_empty_string_never_none(self) -> None:
+        """NONE and UNKNOWN must stay apart — a fail-closed caller refuses only on UNKNOWN."""
+        client = MagicMock(spec=GitLabAPI)
+        client.get_json.return_value = []
+
+        assert self._host(client).fetch_open_pr_url_for_branch(repo="org/repo", branch="feature") == ""
+
+    def test_an_unresolvable_project_is_unknown(self) -> None:
+        client = MagicMock(spec=GitLabAPI)
+        client.resolve_project.return_value = None
+        client.resolve_project_from_remote.return_value = None
+
+        assert GitLabCodeHost(client=client).fetch_open_pr_url_for_branch(repo="org/repo", branch="feature") is None
+
+    def test_a_transport_error_is_unknown_not_absence(self) -> None:
+        client = MagicMock(spec=GitLabAPI)
+        client.get_json.side_effect = BackendResolutionError("no token")
+
+        assert self._host(client).fetch_open_pr_url_for_branch(repo="org/repo", branch="feature") is None
+
+    def test_a_non_list_payload_is_unknown(self) -> None:
+        client = MagicMock(spec=GitLabAPI)
+        client.get_json.return_value = {"web_url": "x"}
+
+        assert self._host(client).fetch_open_pr_url_for_branch(repo="org/repo", branch="feature") is None
+
+    def test_a_row_carrying_no_web_url_is_unknown_not_found_with_an_empty_url(self) -> None:
+        """A changed output schema must never read as verified absence (the #4116 lesson)."""
+        client = MagicMock(spec=GitLabAPI)
+        client.get_json.return_value = [{"iid": 7}]
+
+        assert self._host(client).fetch_open_pr_url_for_branch(repo="org/repo", branch="feature") is None
+
+    def test_an_empty_branch_is_unknown_without_asking_the_forge(self) -> None:
+        client = MagicMock(spec=GitLabAPI)
+
+        assert self._host(client).fetch_open_pr_url_for_branch(repo="org/repo", branch="") is None
+        client.get_json.assert_not_called()

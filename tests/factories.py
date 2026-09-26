@@ -33,8 +33,41 @@ from teatree.core.models import (
 )
 from teatree.core.models.pending_pull_request import SerializedPrSpec
 from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.types import AdequacySection, PlanAdequacy
 
 _FORTY_HEX = "c" * 40
+
+#: The adequate manifest a fixture plan carries — substantive where the fixture really
+#: does declare something, an explicit reasoned negative where it does not. Deliberately
+#: NOT bypass-shaped (``test_strategy`` carries content), so a fixture plan never reads as
+#: the human-authorized plan-bypass and never waives the rubric.
+TEST_ADEQUACY: PlanAdequacy = PlanAdequacy(
+    design=AdequacySection(content="the fixture ticket's plan"),
+    integration_seams=AdequacySection(none_reason="a fixture ticket touches no seam"),
+    edge_cases=AdequacySection(none_reason="a fixture ticket has no edge cases"),
+    test_strategy=AdequacySection(content="the test that builds this fixture"),
+    acceptance_criteria=AdequacySection(none_reason="the fixture declares no acceptance criteria"),
+)
+
+
+def record_test_plan(ticket: Ticket, *, plan_text: str = "test plan", recorded_by: str = "tests") -> PlanArtifact:
+    """An adequate, base-bound plan on *ticket* — the guarded factory every fixture goes through."""
+    return PlanArtifact.record(
+        ticket=ticket,
+        plan_text=plan_text,
+        recorded_by=recorded_by,
+        base_sha=_FORTY_HEX,
+        adequacy=TEST_ADEQUACY,
+    )
+
+
+def waive_rubric(ticket: Ticket) -> PlanArtifact:
+    """Record the human-authorized plan-bypass on *ticket* — the ONLY rubric waiver."""
+    return PlanArtifact.record_bypass(
+        ticket=ticket,
+        plan_text="[audited bypass by tests] fixture",
+        recorded_by="tests",
+    )
 
 
 def planned_ticket(**kwargs: object) -> Ticket:
@@ -48,7 +81,7 @@ def planned_ticket(**kwargs: object) -> Ticket:
     they exercise the path they mean to.
     """
     ticket = Ticket.objects.create(**kwargs)
-    PlanArtifact.record(ticket=ticket, plan_text="test plan", recorded_by="tests")
+    record_test_plan(ticket)
     return ticket
 
 

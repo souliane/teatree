@@ -4,8 +4,8 @@ Two distinct failure shapes, two guards:
 
 *   *All-skipped*: specs collected, zero executed. A scenario skips (not fails)
     when its run never happened — most often because ``claude`` is not on PATH.
-    Every skipped scenario reports as passed, so a suite that collects specs but
-    executes none exits green with zero behavioral coverage. The fresh-run (api)
+    A skipped scenario cannot pass; the guard also prevents the lane from
+    reporting success when no scenario was executed. The fresh-run (api)
     path forces this guard on; the LOCAL transcript backend legitimately
     all-skips before any transcript exists, so for it the guard is opt-in.
 
@@ -15,11 +15,12 @@ Two distinct failure shapes, two guards:
     made zero tool calls, and recorded nothing. A fresh run that records nothing
     never actually executed and must FAIL LOUD, never pass.
 
-*   *Empty fresh run*: the vacuous-green signal for the fresh-run backends that
-    record no cost at all. ``anthropic_api`` and ``pydantic_ai`` both drive the model
-    through ``PydanticAiRunner``, which meters no ``cost_usd``, so the $0 guard is
-    structurally blind to them — an EMPTY trajectory (no tool calls, no text) is
-    their equivalent "never actually executed" evidence.
+*   *Empty fresh run*: the vacuous-green signal for the fresh-run backends whose
+    TRANSPORT reports no cost. ``anthropic_api`` and ``pydantic_ai`` both drive the
+    model through ``PydanticAiRunner``; their ``cost_usd`` is derived from token usage
+    rather than billed, so it is positive for any run that made a call and cannot
+    distinguish a healthy run from a vacuous one. An EMPTY trajectory (no tool calls,
+    no text) is their equivalent "never actually executed" evidence.
 
 *   *Hooks not registered*: a ``production_hooks`` scenario ran with the shipped
     plugin unregistered, so it graded the raw model rather than the model+hook
@@ -31,15 +32,32 @@ Two distinct failure shapes, two guards:
     (souliane/teatree#3922).
 
 Which guard owns which backend is the load-bearing detail, and it is NOT the
-fresh-run split: ``api`` is guarded by cost because it is the only backend that
-records any, while the other two fresh lanes are guarded by trajectory because they
-record none. Widening the $0 guard to every fresh backend would red every healthy
-``anthropic_api`` run — the CI eval lane's own backend.
+fresh-run split: ``api`` is guarded by cost because it is the only backend whose
+TRANSPORT reports a bill, while the other two fresh lanes are guarded by trajectory
+because a usage-derived figure is positive whether or not the run did anything useful.
 """
 
 from collections.abc import Sequence
 
 from teatree.eval.backends import API_BACKEND, UNMETERED_FRESH_BACKENDS
+
+#: Exit code for a lane that MEASURED NOTHING — it collected scenarios and graded none.
+#: A third status beside 0 (ran, passed) and 1 (ran, failed), because "the suite declined
+#: to run" and "the suite ran and passed" are OPPOSITE facts that exiting 0 made
+#: indistinguishable. 75 is already the eval lanes' blocked/nothing-billed code, and the
+#: one a CI job scopes ``allow_failure: exit_codes:`` to — so a declined lane renders
+#: orange rather than green, and a genuinely red suite still reddens on 1.
+MEASURED_NOTHING_EXIT_CODE = 75
+
+
+def graded_nothing(*, collected: int, executed: int) -> bool:
+    """True when a run collected scenarios and graded none of them.
+
+    A suite that collected ZERO is NOT this state: there was nothing to run, so
+    nothing declined to run. Only a suite with work in front of it that graded none
+    of it has proved nothing while looking like it proved everything.
+    """
+    return collected > 0 and executed == 0
 
 
 class AllSkippedError(RuntimeError):
@@ -70,7 +88,7 @@ def assert_executed_when_required(*, collected: int, executed: int, required: bo
     specs. A zero-spec suite is not a silent skip — there is nothing to run —
     so it never trips the guard.
     """
-    if not required or collected == 0 or executed > 0:
+    if not required or not graded_nothing(collected=collected, executed=executed):
         return
     msg = (
         f"eval suite collected {collected} scenario(s) but executed 0 — every scenario "
@@ -84,14 +102,12 @@ def assert_executed_when_required(*, collected: int, executed: int, required: bo
 def assert_api_run_was_metered(*, backend: str, executed: int, total_cost_usd: float) -> None:
     """Fail when the ``api`` backend executed scenarios but metered $0 of API cost.
 
-    ``api`` ONLY, and deliberately so — this keys on ``cost_usd``, which no other
-    backend records. ``transcript`` runs no model by design, and the other two
-    fresh-run lanes (:data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS`) drive
-    the model through ``PydanticAiRunner`` and meter nothing, so $0 is their NORMAL
-    state on a run that genuinely executed; widening this to
-    :data:`~teatree.eval.backends.FRESH_CLAUDE_BACKENDS` would red every healthy
-    ``anthropic_api`` run. Their vacuous-green signal is an empty trajectory, which
-    :func:`assert_fresh_run_produced_output` owns.
+    ``api`` ONLY, and deliberately so — this keys on a TRANSPORT-REPORTED bill, which
+    no other backend produces. ``transcript`` runs no model by design, and the other two
+    fresh-run lanes (:data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS`) carry a
+    figure derived from token usage, which is positive for any run that made a call and
+    so cannot separate a healthy run from a vacuous one. Their vacuous-green signal is an
+    empty trajectory, which :func:`assert_fresh_run_produced_output` owns.
 
     ``executed == 0`` is the all-skipped guard's job, not this one; this fires only
     when scenarios ran (``executed > 0``) yet recorded nothing, which means the model
@@ -116,13 +132,13 @@ def assert_api_run_was_metered(*, backend: str, executed: int, total_cost_usd: f
 def assert_fresh_run_produced_output(*, backend: str, executed: int, produced: int) -> None:
     """Fail when an UNMETERED fresh backend executed scenarios but every run was empty.
 
-    The ``$0``-metered guard (:func:`assert_api_run_was_metered`) keys on ``cost_usd``,
-    which only the CLI-backed ``api`` lane records. Every backend in
-    :data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS` — ``anthropic_api`` and
-    ``pydantic_ai`` — drives the model through ``PydanticAiRunner``, which meters
-    nothing, so the cost guard is structurally blind to them. The backend-appropriate
-    vacuous-green signal is an EMPTY trajectory: a run that captured no tool calls AND
-    no text never actually drove the model.
+    The ``$0``-metered guard (:func:`assert_api_run_was_metered`) keys on a
+    transport-reported bill, which only the CLI-backed ``api`` lane produces. Every
+    backend in :data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS` —
+    ``anthropic_api`` and ``pydantic_ai`` — derives its cost from token usage instead, a
+    figure a vacuous run and a healthy one do not reliably differ on. The
+    backend-appropriate vacuous-green signal is an EMPTY trajectory: a run that captured
+    no tool calls AND no text never actually drove the model.
 
     ``anthropic_api`` is the backend CI runs, so leaving it out of this guard left the
     CI eval lane with NO vacuous-green guard at all — the cost guard cannot see it and
@@ -137,8 +153,9 @@ def assert_fresh_run_produced_output(*, backend: str, executed: int, produced: i
         f"{backend} eval run executed {executed} scenario(s) but every run captured an EMPTY "
         "trajectory (no tool calls, no text). A fresh run that produces nothing never actually "
         "drove the model — the backend credential/model likely never authenticated. This backend "
-        "meters no cost, so the $0 guard cannot see it and this is the only vacuous-green check "
-        "standing between the lane and a decorative green. Check the backend credential and model."
+        "reports no metered bill of its own, so the $0 guard cannot see it and this is the only "
+        "vacuous-green check standing between the lane and a decorative green. Check the backend "
+        "credential and model."
     )
     raise EmptyFreshRunError(msg)
 

@@ -16,12 +16,15 @@ this a hard refusal at registration instead of a log warning.
 import subprocess
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.provision.worktree_adopt import WorktreeAdoptError, adopt_worktree_for_ticket
+from teatree.core.runners import WorktreeProvisioner
+from teatree.core.runners.base import RunnerResult
 from teatree.core.worktree.ticket_workspace import (
     TicketWorkspaceDivergenceError,
     assert_joins_ticket_workspace,
@@ -84,6 +87,18 @@ class TestTicketWorkspaceDir(_TicketWorkspaceCase):
 
         assert ticket_workspace_dir(self.ticket) is None
 
+    def test_two_spellings_of_one_dir_are_not_a_split(self) -> None:
+        # A symlinked spelling of the SAME real dir (macOS /var -> /private/var) used to
+        # count as a second workspace, so a healthy ticket refused its next registration.
+        alias = self.tmp / "workspace-alias"
+        alias.symlink_to(self.workspace)
+        be = self._add_worktree(self.backend_clone, self.workspace / "backend", "42-be")
+        self._register("backend", be, "42-be")
+        fe = self._add_worktree(self.frontend_clone, alias / "frontend", "42-fe")
+        self._register("frontend", fe, "42-fe")
+
+        assert ticket_workspace_dir(self.ticket) is not None
+
     def test_ignores_a_row_whose_directory_is_gone(self) -> None:
         # A torn-down worktree's stale row must not pin the ticket to a dead dir.
         wt = self._add_worktree(self.backend_clone, self.workspace / "backend", "42-be")
@@ -112,6 +127,65 @@ class TestAssertJoinsTicketWorkspace(_TicketWorkspaceCase):
         # which is not guessable from "divergent path".
         assert str(self.workspace) in str(exc.value)
         assert str(elsewhere) in str(exc.value)
+
+
+class TestProvisioningEnforcesTheInvariant(_TicketWorkspaceCase):
+    """The seam that registers MOST rows, which until now enforced nothing."""
+
+    def _scope(self, repos: list[str], adopt: dict[str, str] | None = None) -> None:
+        self.ticket.repos = repos
+        self.ticket.extra = {"branch": "42-ticket", "adopt": adopt or {}}
+        self.ticket.save(update_fields=["repos", "extra"])
+
+    def _provision(self) -> RunnerResult:
+        with patch("teatree.core.runners.provision.clone_root", return_value=self.tmp / "clones"):
+            return WorktreeProvisioner(self.ticket).run()
+
+    def test_a_repo_adopted_from_a_foreign_root_is_refused_and_writes_no_row(self) -> None:
+        be = self._add_worktree(self.backend_clone, self.workspace / "backend", "42-be")
+        self._register("backend", be, "42-be")
+        elsewhere = self._add_worktree(self.frontend_clone, self.tmp / "elsewhere" / "frontend", "42-fe")
+        self._scope(["backend", "frontend"], adopt={"frontend": str(elsewhere)})
+        before = Worktree.objects.count()
+
+        result = self._provision()
+
+        assert not result.ok
+        assert "must be siblings in ONE workspace dir" in result.detail
+        assert Worktree.objects.count() == before
+
+    def test_a_repo_adopted_into_the_ticket_workspace_is_accepted(self) -> None:
+        be = self._add_worktree(self.backend_clone, self.workspace / "backend", "42-be")
+        self._register("backend", be, "42-be")
+        fe = self._add_worktree(self.frontend_clone, self.workspace / "frontend", "42-fe")
+        self._scope(["backend", "frontend"], adopt={"frontend": str(fe)})
+
+        assert self._provision().ok
+        assert Worktree.objects.get(ticket=self.ticket, repo_path="frontend").extra["worktree_path"] == str(fe)
+
+    def test_an_existing_split_refuses_instead_of_falling_back_to_the_root(self) -> None:
+        # ``ticket_workspace_dir`` answers None for "nothing materialised" and for
+        # "the worktrees disagree" alike; provisioning must fall back on the first
+        # and refuse on the second, or it adds the next repo to one arbitrary side.
+        be = self._add_worktree(self.backend_clone, self.workspace / "backend", "42-be")
+        other_root = self.tmp / "t3-workspaces" / "42-ticket"
+        fe = self._add_worktree(self.frontend_clone, other_root / "frontend", "42-fe")
+        self._register("backend", be, "42-be")
+        self._register("frontend", fe, "42-fe")
+        self._scope(["backend", "frontend"])
+
+        result = self._provision()
+
+        assert not result.ok
+        assert str(self.workspace) in result.detail
+        assert str(other_root) in result.detail
+        # Relocation is a rename(2), which these roots' bind mounts refuse across
+        # their boundary — prescribing it cannot discharge its own finding.
+        assert "workspace relocate" not in result.detail
+        # clean-all is the DONE-worktree reaper — it keeps an unfinished checkout,
+        # so it repairs nothing here; repair-split MOVES checkouts instead.
+        assert "clean-all" not in result.detail
+        assert "workspace repair-split" in result.detail
 
 
 class TestAdoptEnforcesTheInvariant(_TicketWorkspaceCase):

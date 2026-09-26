@@ -356,14 +356,30 @@ def test_diff_only_report_clean_added_line_is_empty(tmp_path: Path) -> None:
     assert _diff_only_report(["doc.md"], _TERMS, repo) == []
 
 
-def test_diff_only_report_carves_out_email_only_added_line(tmp_path: Path) -> None:
-    # The added-line scan applies the same email carve-out the full scan does:
-    # a term that appears ONLY inside an author email address is not a leak.
+def test_diff_only_report_flags_a_term_inside_an_email_address(tmp_path: Path) -> None:
+    # An email address is published content like any other, so a customer term
+    # inside one is a leak; only the allowlist exempts an identifier.
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-b", "main")
     doc = repo / "doc.md"
     doc.write_text("Author: someone <dev@acme.example>\n", encoding="utf-8")
+    _git(repo, "add", "doc.md")
+
+    assert _diff_only_report(["doc.md"], _TERMS, repo) == [
+        "BANNED TERM in doc.md:",
+        "  +:Author: someone <dev@acme.example>",
+    ]
+
+
+def test_diff_only_report_clean_email_added_line_is_empty(tmp_path: Path) -> None:
+    # Anti-vacuity for the test above: an ordinary email carrying no configured
+    # term still passes, so the gate measures the term, not the '@'.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    doc = repo / "doc.md"
+    doc.write_text("Author: someone <dev@example.org>\n", encoding="utf-8")
     _git(repo, "add", "doc.md")
 
     assert _diff_only_report(["doc.md"], _TERMS, repo) == []

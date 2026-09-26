@@ -18,6 +18,7 @@ import teatree.core.management.commands._workspace.anchor as anchor_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 from teatree.config.settings import UserSettings
+from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.base import RunnerResult
 from teatree.core.worktree.readiness import Probe, ProbeResult
@@ -56,8 +57,21 @@ def _build_worktree(wt_path: Path, *, repo_path: str = "backend") -> Worktree:
     )
 
 
+class _AdmissionAllowedTestCase(TestCase):
+    """Keep lifecycle assertions independent from the test host's live RAM use."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        admission_patch = patch(
+            "teatree.core.gates.local_stack_gate.check_provision_admission",
+            return_value=ProvisionAdmissionVerdict.allow(),
+        )
+        admission_patch.start()
+        self.addCleanup(admission_patch.stop)
+
+
 @override_settings(**SETTINGS)
-class TestWorktreeStartChainsProbes(TestCase):
+class TestWorktreeStartChainsProbes(_AdmissionAllowedTestCase):
     def test_start_exits_1_when_probe_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt_path = Path(tmp) / "worktree"
@@ -194,7 +208,7 @@ class TestWorktreeVerifyChainsProbes(TestCase):
 
 
 @override_settings(**SETTINGS)
-class TestWorkspaceStartChainsProbes(TestCase):
+class TestWorkspaceStartChainsProbes(_AdmissionAllowedTestCase):
     def test_start_exits_1_when_any_worktree_probe_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

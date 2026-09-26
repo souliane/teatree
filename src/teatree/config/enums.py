@@ -109,7 +109,7 @@ class Autonomy(StrEnum):
 
     *   :attr:`BABYSIT` — every approval gate keeps its own value; the user
         stays in the loop on merges and answers.
-        Review-request posting follows ``on_behalf_post_mode`` like any other
+        Review-request posting follows the active posture like any other
         colleague-visible post.
     *   :attr:`NOTIFY` — autonomous, but every on-behalf action DMs the user
         (derived ``notify_on_behalf``) and the user's MR merges only after a
@@ -130,7 +130,7 @@ class Autonomy(StrEnum):
     the deleted ``agent_review_request_disabled`` side flag) — see
     :func:`_apply_autonomy`. Two gates are deliberately outside that set, each its
     own named opt-in no tier touches: ``require_human_approval_to_merge`` for review
-    before merge (#3630), and ``on_behalf_post_mode`` for speaking to a colleague
+    before merge (#3630), and ``Mode.egress`` for speaking to a colleague
     under the owner's own identity (#3895). An explicit per-gate value always wins. The
     safety floor (privacy/leak gate, cold-review with reviewer != maker,
     CI-green, not-draft, never-lockout, the SHA-bound audited keystone
@@ -156,65 +156,6 @@ class Autonomy(StrEnum):
         except ValueError as exc:
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid autonomy {value!r}; valid values: {valid}"
-            raise ValueError(msg) from exc
-
-
-class OnBehalfPostMode(StrEnum):
-    """Tri-state pre-gate over on-behalf colleague-VISIBLE posts (#960).
-
-    Three points on the autonomy ramp for colleague-visible posts the
-    agent makes *as the user* to a colleague/customer surface (PR/MR
-    comment, issue comment, Slack channel/thread post, Notion post, PR/MR
-    approve, reaction on someone else's message).
-
-    Colleague-INVISIBLE *draft* notes (``t3 review post-draft-note``) are
-    exempt from this gate under EVERY mode — a draft is never visible to
-    colleagues (only the user can submit it), so it never needs approval.
-    That exemption is the whole purpose of the setting: keep the user in
-    control of their colleague-visible voice while letting the agent draft
-    freely. Drafts always publish autonomously; under :attr:`ASK` /
-    :attr:`DRAFT_OR_ASK` the agent additionally DMs the user with the
-    publish/delete commands so they can review and submit.
-
-    *   :attr:`DRAFT_OR_ASK` (default) and :attr:`ASK` behave identically:
-        both auto-publish a draft (+ DM the user) and both BLOCK every
-        colleague-visible post until the user records an approval. They
-        are kept as distinct names for clarity and backward compatibility;
-        the per-action draft exemption is what makes a draft ungated, not
-        the mode.
-    *   :attr:`ASK` — every colleague-VISIBLE action requires an explicit
-        recorded approval (``t3 review approve-on-behalf <target> <action>
-        --approver <id>``) before it publishes. Drafts are exempt.
-    *   :attr:`IMMEDIATE` — the gate is off; gated actions publish
-        directly (subject to the always-gated list in :class:`Mode`).
-
-    The user satisfies the gate for a colleague-visible post without a TTY
-    by recording an
-    :class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval`;
-    DMs *to the user themselves*, draft notes, and internal-only
-    orchestration writes are out of scope and remain ungated under every
-    mode.
-    """
-
-    DRAFT_OR_ASK = "draft_or_ask"
-    ASK = "ask"
-    IMMEDIATE = "immediate"
-
-    @classmethod
-    def parse(cls, value: str) -> "OnBehalfPostMode":
-        """Parse an on-behalf-post-mode string; invalid values raise ``ValueError``.
-
-        Mirrors :meth:`Mode.parse`: the conservative default
-        (:attr:`DRAFT_OR_ASK`) is applied by the caller when the setting
-        is absent, so typos never silently downgrade to a less-safe
-        mode.
-        """
-        normalised = value.strip().lower()
-        try:
-            return cls(normalised)
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in cls)
-            msg = f"Invalid on_behalf_post_mode {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
 
 

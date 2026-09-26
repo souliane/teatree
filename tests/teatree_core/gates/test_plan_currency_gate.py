@@ -9,13 +9,12 @@ test_gate_is_load_bearing (neutralise the gate → the same stale plan advances)
 Second, an inadequate/legacy plan is treated absent → refuse.
 
 Real ``git init`` under ``tmp_path`` (mirrors ``test_branch_currency``) drives the
-stale-on-a-seam path deterministically; the flag ships OFF so the generic FSM is
-never blocked.
+stale-on-a-seam path deterministically. Nothing here patches a setting — the gate has
+no off switch, which is itself what ``test_stale_on_a_seam_is_refused_with_no_setting_
+to_turn_it_off`` pins.
 """
 
-import contextlib
 import subprocess
-from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -88,13 +87,8 @@ def _adequacy(seams: list[str]) -> dict:
         "integration_seams": {"content": seams} if seams else {"none_reason": "pure refactor"},
         "edge_cases": {"content": ["offline fetch"]},
         "test_strategy": {"content": "red-first"},
+        "acceptance_criteria": {"content": ["a stale plan on a declared seam is refused"]},
     }
-
-
-@contextlib.contextmanager
-def _gate(*, required: bool) -> Iterator[None]:
-    with patch.object(plan_currency_gate, "plan_adequacy_required", return_value=required):
-        yield
 
 
 def _planned_ticket_with_worktree(clone: Path, *, base_sha: str, seams: list[str]) -> Ticket:
@@ -130,38 +124,28 @@ class TestIsBoundTo(TestCase):
 
 
 class TestCheckPlanCurrent(TestCase):
-    def test_flag_off_is_a_noop_even_with_a_stale_plan(self) -> None:
-        # A stale plan passes when the gate is off — opt-in, generic FSM green.
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
-        PlanArtifact.objects.create(ticket=ticket, plan_text="p", recorded_by="op")  # legacy blank-sha
-        with _gate(required=False):
-            assert check_plan_current(ticket) is True
-
-    def test_inadequate_legacy_plan_is_refused_when_on(self) -> None:
+    def test_inadequate_legacy_plan_is_refused(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         PlanArtifact.objects.create(ticket=ticket, plan_text="p", recorded_by="op")  # blank sha, empty adequacy
-        with _gate(required=True), pytest.raises(NoCurrentPlanError, match="not adequate"):
+        with pytest.raises(NoCurrentPlanError, match="not adequate"):
             check_plan_current(ticket)
 
     def test_no_plan_at_all_passes_absence_is_the_plan_first_gates_job(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
-        with _gate(required=True):
-            assert check_plan_current(ticket) is True
+        assert check_plan_current(ticket) is True
 
     def test_trivial_skip_marker_passes(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         mark_trivial_plan_skip(ticket, reason="typo fix", by="op")
         ticket.save()
-        with _gate(required=True):
-            assert check_plan_current(ticket) is True
+        assert check_plan_current(ticket) is True
 
     def test_no_worktree_fails_open(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         PlanArtifact.objects.create(
             ticket=ticket, plan_text="p", recorded_by="op", base_sha="a" * 40, adequacy=_adequacy([_SEAM])
         )
-        with _gate(required=True):
-            assert check_plan_current(ticket) is True  # no materialised worktree → undeterminable → open
+        assert check_plan_current(ticket) is True  # no materialised worktree → undeterminable → open
 
 
 class TestCheckPlanCurrentGit(TestCase):
@@ -176,21 +160,26 @@ class TestCheckPlanCurrentGit(TestCase):
 
     def test_current_plan_bound_to_head_passes(self) -> None:
         ticket = _planned_ticket_with_worktree(self.clone, base_sha=self.base_sha, seams=[_SEAM])
-        with _gate(required=True):
-            assert check_plan_current(ticket) is True  # base == live HEAD → bound
+        assert check_plan_current(ticket) is True  # base == live HEAD → bound
 
     def test_stale_base_touching_a_declared_seam_is_refused(self) -> None:
         """ANTI-VACUITY PROOF b: HEAD moved off base AND touched a declared seam → ABSENT."""
         ticket = _planned_ticket_with_worktree(self.clone, base_sha=self.base_sha, seams=[_SEAM])
         _advance_remote(self._tmp, self.bare, path=_SEAM)
-        with _gate(required=True), pytest.raises(NoCurrentPlanError, match="STALE"):
+        with pytest.raises(NoCurrentPlanError, match="STALE"):
             check_plan_current(ticket)
 
     def test_base_moved_but_not_on_a_seam_passes(self) -> None:
         ticket = _planned_ticket_with_worktree(self.clone, base_sha=self.base_sha, seams=[_SEAM])
         _advance_remote(self._tmp, self.bare, path="src/unrelated.py")
-        with _gate(required=True):
-            assert check_plan_current(ticket) is True  # moved, but no declared seam touched
+        assert check_plan_current(ticket) is True  # moved, but no declared seam touched
+
+    def test_stale_on_a_seam_is_refused_with_no_setting_to_turn_it_off(self) -> None:
+        """Nothing is patched here — the config escape that made this opt-in is gone."""
+        ticket = _planned_ticket_with_worktree(self.clone, base_sha=self.base_sha, seams=[_SEAM])
+        _advance_remote(self._tmp, self.bare, path=_SEAM)
+        with pytest.raises(NoCurrentPlanError, match="STALE"):
+            check_plan_current(ticket)
 
 
 class TestFsmIntegration(TestCase):
@@ -206,20 +195,19 @@ class TestFsmIntegration(TestCase):
         _advance_remote(self._tmp, self.bare, path=_SEAM)  # make the plan stale on a seam
 
     def test_code_refused_when_stale(self) -> None:
-        with _gate(required=True), pytest.raises(NoCurrentPlanError):
+        with pytest.raises(NoCurrentPlanError):
             self.ticket.code()
         self.ticket.refresh_from_db()
         assert self.ticket.state == Ticket.State.PLAN_RECORDED  # did NOT advance
 
     def test_schedule_coding_refused_when_stale(self) -> None:
-        with _gate(required=True), pytest.raises(NoCurrentPlanError):
+        with pytest.raises(NoCurrentPlanError):
             self.ticket.schedule_coding()
 
     def test_gate_is_load_bearing(self) -> None:
         """Neutralise the gate → the SAME stale plan advances PLAN_RECORDED → CODED."""
         neutralised = {**gate_registry._REGISTRY, ("gate", "plan_currency"): lambda _t: True}
         with (
-            _gate(required=True),
             patch.object(gate_registry, "_REGISTRY", neutralised),
             self.captureOnCommitCallbacks(execute=False),
         ):
@@ -287,18 +275,17 @@ class TestMechanismPlacement(TestCase):
 
     def test_a_conforming_directive_plan_passes(self) -> None:
         ticket = _directive_ticket(placement=_placement())
-        with _gate(required=True):
-            assert check_plan_current(ticket) is True
+        assert check_plan_current(ticket) is True
 
     def test_an_overlay_chokepoint_plan_blocks_coder_dispatch(self) -> None:
         # Anti-vacuity (a): a directive plan whose chokepoint is an overlay-package one-off → REFUSED.
         ticket = _directive_ticket(placement=_placement(policy_chokepoint="src/teatree/overlays/acme/hook.py::cap"))
-        with _gate(required=True), pytest.raises(NoCurrentPlanError, match="not a core seam"):
+        with pytest.raises(NoCurrentPlanError, match="not a core seam"):
             check_plan_current(ticket)
 
     def test_a_missing_mechanism_placement_blocks(self) -> None:
         ticket = _directive_ticket(placement=None)
-        with _gate(required=True), pytest.raises(NoCurrentPlanError, match="mechanism_placement"):
+        with pytest.raises(NoCurrentPlanError, match="mechanism_placement"):
             check_plan_current(ticket)
 
     def test_an_ordinary_ticket_is_unaffected(self) -> None:
@@ -307,14 +294,13 @@ class TestMechanismPlacement(TestCase):
         PlanArtifact.objects.create(
             ticket=ticket, plan_text="p", recorded_by="op", base_sha="a" * 40, adequacy=_adequacy([])
         )
-        with _gate(required=True):
-            assert check_plan_current(ticket) is True
+        assert check_plan_current(ticket) is True
 
     def test_gate_is_load_bearing_the_hack_dispatches_without_it(self) -> None:
         # RED-before proof: neutralise mechanism_conforms → the SAME overlay-chokepoint plan passes
         # (the pre-PR-5 behaviour where a hack-shaped directive plan dispatched a coder).
         ticket = _directive_ticket(placement=_placement(policy_chokepoint="src/teatree/overlays/acme/hook.py::cap"))
-        with _gate(required=True), patch.object(plan_currency_gate, "mechanism_conforms", return_value=None):
+        with patch.object(plan_currency_gate, "mechanism_conforms", return_value=None):
             assert check_plan_current(ticket) is True
 
     def test_a_directive_not_yet_interpreted_fails_open(self) -> None:
@@ -325,51 +311,7 @@ class TestMechanismPlacement(TestCase):
         PlanArtifact.objects.create(
             ticket=ticket, plan_text="p", recorded_by="op", base_sha="a" * 40, adequacy=_adequacy([])
         )
-        with _gate(required=True):
-            assert check_plan_current(ticket) is True  # no ratified sketch → nothing to conform to → open
-
-
-class TestDirectivePlanTeethDecoupled(TestCase):
-    """H3: a directive-linked plan is checked against its ratified sketch regardless of the flag.
-
-    ``_check_mechanism_placement`` runs ABOVE the ``require_plan_adequacy``
-    early-return, so a directive plan's anti-hack teeth hold even when the general
-    plan-adequacy flag is off — matching ``merge_quality_gate``'s "directive tickets
-    unconditionally" doctrine. Ordinary work stays untouched (no linked directive →
-    the check is a no-op).
-    """
-
-    def test_directive_hack_plan_blocked_even_with_flag_off(self) -> None:
-        # The decoupling: an overlay-chokepoint directive plan is refused with the flag OFF.
-        ticket = _directive_ticket(placement=_placement(policy_chokepoint="src/teatree/overlays/acme/hook.py::cap"))
-        with _gate(required=False), pytest.raises(NoCurrentPlanError, match="not a core seam"):
-            check_plan_current(ticket)
-
-    def test_missing_mechanism_placement_blocked_even_with_flag_off(self) -> None:
-        ticket = _directive_ticket(placement=None)
-        with _gate(required=False), pytest.raises(NoCurrentPlanError, match="mechanism_placement"):
-            check_plan_current(ticket)
-
-    def test_conforming_directive_plan_passes_with_flag_off(self) -> None:
-        ticket = _directive_ticket(placement=_placement())
-        with _gate(required=False):
-            assert check_plan_current(ticket) is True
-
-    def test_ordinary_ticket_unaffected_with_flag_off(self) -> None:
-        # No linked directive → the mechanism check is a no-op; the flag-off fast path stays green.
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
-        PlanArtifact.objects.create(ticket=ticket, plan_text="p", recorded_by="op")  # thin legacy plan
-        with _gate(required=False):
-            assert check_plan_current(ticket) is True
-
-    def test_directive_not_yet_interpreted_fails_open_with_flag_off(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
-        directive = Directive.objects.capture("no sketch yet", source=Directive.Source.CLI)
-        directive.ticket = ticket
-        directive.save(update_fields=["ticket"])  # sketch is None → nothing to conform to
-        PlanArtifact.objects.create(ticket=ticket, plan_text="p", recorded_by="op", base_sha="a" * 40)
-        with _gate(required=False):
-            assert check_plan_current(ticket) is True
+        assert check_plan_current(ticket) is True  # no ratified sketch → nothing to conform to → open
 
 
 class TestMechanismPlacementNeverLockout(TestCase):
@@ -381,8 +323,7 @@ class TestMechanismPlacementNeverLockout(TestCase):
         assert artifact is not None
         artifact.adequacy = dict(all_negated_adequacy("audited plan-bypass"))
         artifact.save(update_fields=["adequacy"])
-        with _gate(required=True):
-            assert check_plan_current(ticket) is True
+        assert check_plan_current(ticket) is True
 
     def test_a_section_none_reason_does_not_launder_a_hack(self) -> None:
         # F2: a section-level none_reason is contradictory once a sketch is ratified — it must
@@ -390,7 +331,7 @@ class TestMechanismPlacementNeverLockout(TestCase):
         ticket = _directive_ticket(
             placement={"none_reason": "config only", "policy_chokepoint": "src/teatree/overlays/acme/hook.py::cap"}
         )
-        with _gate(required=True), pytest.raises(NoCurrentPlanError):
+        with pytest.raises(NoCurrentPlanError):
             check_plan_current(ticket)
 
 
@@ -402,14 +343,14 @@ class TestMechanismPlacementFsmIntegration(TestCase):
 
     def test_code_refused_on_a_hack_plan(self) -> None:
         ticket = self._hack_ticket()
-        with _gate(required=True), pytest.raises(NoCurrentPlanError, match="not a core seam"):
+        with pytest.raises(NoCurrentPlanError, match="not a core seam"):
             ticket.code()
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.PLAN_RECORDED  # did NOT advance to CODED
 
     def test_schedule_coding_refused_on_a_hack_plan(self) -> None:
         ticket = self._hack_ticket()
-        with _gate(required=True), pytest.raises(NoCurrentPlanError):
+        with pytest.raises(NoCurrentPlanError):
             ticket.schedule_coding()
 
 

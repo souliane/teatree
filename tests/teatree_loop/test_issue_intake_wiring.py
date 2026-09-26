@@ -8,18 +8,21 @@ The mini-loop wires it into the live tick and routes the emitted
 ``issue_intake.admitted`` signal to ``t3:orchestrator`` (maker-side kickoff).
 """
 
+import io
+from contextlib import redirect_stdout
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.cli.doctor.checks_admission_pressure import _check_merge_brake
 from teatree.config import UserSettings
 from teatree.core.admission_governor import read_merge_signal
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState
 from teatree.core.intake.concurrency import ADAPTIVE_FRESHNESS
-from teatree.core.models import ImplementedIssueMarker, PullRequest, SweepSkipStreak, Task, Ticket
+from teatree.core.models import ImplementedIssueMarker, PullRequest, SkipObservation, SweepSkipStreak, Task, Ticket
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
@@ -75,20 +78,11 @@ def _settings(**overrides: object) -> UserSettings:
 
 
 def _enabled(**overrides: object) -> UserSettings:
-    """The enabled loop with one trusted author — the #3235 baseline posture."""
-    return _settings(issue_implementer_enabled=True, user_identity_aliases=["alice"], **overrides)
-
-
-def _disabled(**overrides: object) -> UserSettings:
-    """The loop explicitly turned OFF (the master gate ships ON by default since #3895)."""
-    return _settings(issue_implementer_enabled=False, **overrides)
+    """The loop with one trusted author — the #3235 baseline posture."""
+    return _settings(user_identity_aliases=["alice"], **overrides)
 
 
 class IssueIntakeGateTests(TestCase):
-    def test_disabled_emits_no_scanner(self) -> None:
-        with patch(_PATCH_TARGET, return_value=_disabled()):
-            assert _issue_intake_scanner_for(_backend()) is None
-
     def test_enabled_with_budget_builds_scanner(self) -> None:
         with patch(_PATCH_TARGET, return_value=_enabled(issue_implementer_label="auto-implement")):
             scanner = _issue_intake_scanner_for(_backend())
@@ -108,7 +102,6 @@ class IssueIntakeGateTests(TestCase):
     def test_trusted_authors_are_resolved_from_the_config_union(self) -> None:
         """The builder hands the scanner the UNION of aliases + the ``trusted_issue_authors`` allowlist."""
         settings = _settings(
-            issue_implementer_enabled=True,
             user_identity_aliases=["souliane"],
             trusted_issue_authors=["trusted-colleague"],
         )
@@ -276,10 +269,6 @@ class IssueIntakeGateTests(TestCase):
         with patch(_PATCH_TARGET, return_value=_enabled()):
             assert _issue_intake_scanner_for(backend) is None
 
-    def test_domain_slice_empty_when_disabled(self) -> None:
-        with patch(_PATCH_TARGET, return_value=_disabled()):
-            assert jobs_for_domain(Domain.ISSUE_IMPLEMENTER, _backend()) == []
-
     def test_domain_slice_emits_one_scanner_when_enabled(self) -> None:
         with patch(_PATCH_TARGET, return_value=_enabled()):
             jobs = jobs_for_domain(Domain.ISSUE_IMPLEMENTER, _backend())
@@ -341,12 +330,6 @@ class IssueIntakeMiniLoopTests(TestCase):
         assert MINI_LOOP.name == "issue_implementer"
         assert MINI_LOOP.off_live_tick is False
 
-    def test_disabled_loop_is_inert(self) -> None:
-        host = _authored_host("https://github.com/souliane/teatree/issues/100")
-        with patch(_PATCH_TARGET, return_value=_disabled()):
-            jobs = MINI_LOOP.build_jobs(backends=[_backend_with_host(host)])
-        assert jobs == []
-
     def test_no_backends_is_inert(self) -> None:
         with patch(_PATCH_TARGET, return_value=_enabled()):
             assert MINI_LOOP.build_jobs(backends=None) == []
@@ -358,7 +341,12 @@ class IssueIntakeMiniLoopTests(TestCase):
             jobs = MINI_LOOP.build_jobs(backends=[_backend_with_host(host)])
         assert [job.scanner.name for job in jobs] == ["issue_intake"]
 
-        signals = [signal for job in jobs for signal in job.scanner.scan()]
+        with (
+            self.assertLogs("teatree.loop.scanners.issue_intake", level="INFO") as tick_logs,
+            patch.object(IssueIntakeScanner, "_governor_denied", return_value=False),
+        ):
+            signals = [signal for job in jobs for signal in job.scanner.scan()]
+        assert "admitted=1 claimed=1 deferred=0" in "\n".join(tick_logs.output)
         claimed = [s for s in signals if s.kind == "issue_intake.admitted"]
         assert [s.payload["url"] for s in claimed] == [url]
 
@@ -515,6 +503,29 @@ class TestMergeStallGatesNewIntake(TestCase):
         reported = "\n".join(logs.output)
         assert "merge sweep" in reported
         assert "3 of 3" in reported
+
+    def test_ci_verdict_flap_reaches_threshold_without_unknown_lookup_braking_intake(self) -> None:
+        self._pile_up(count=3, stuck=0)
+        for iid in (800, 801, 802):
+            for reason in ("ci_pending", "ci_red", "required_checks_indeterminate"):
+                SweepSkipStreak.objects.observe(SkipObservation(slug="o/r", pr_id=iid, reason=reason, overlay="acme"))
+
+        assert read_merge_signal(overlay="acme").stuck_prs == 0
+        assert _check_merge_brake() is True
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            assert _issue_intake_scanner_for(_backend()).can_claim is True
+
+        for iid in (800, 801, 802):
+            SweepSkipStreak.objects.observe(SkipObservation(slug="o/r", pr_id=iid, reason="ci_red", overlay="acme"))
+        signal = read_merge_signal(overlay="acme")
+        assert signal.stalled
+        assert signal.stuck_refs == ("o/r#800", "o/r#801", "o/r#802")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            assert _check_merge_brake() is False
+        assert "o/r#800" in output.getvalue()
+        with patch(_PATCH_TARGET, return_value=_enabled()):
+            assert _issue_intake_scanner_for(_backend()).can_claim is False
 
     def test_one_pr_still_moving_lets_intake_keep_claiming(self) -> None:
         self._pile_up(count=3, stuck=2)

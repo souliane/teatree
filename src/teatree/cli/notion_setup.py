@@ -41,20 +41,27 @@ def notion_setup(
     secret = typer.prompt("Paste the internal integration secret", hide_input=True).strip()
     _store(pass_key, secret)
     client = _verify(overlay, pass_key, secret)
-    unshared = _report_pages(client, list(page or []))
+    unshared = _report_pages(client, _pages_to_check(overlay, list(page or [])))
     _report_deployed_containers(pass_key)
     if unshared is not None:
         raise typer.Exit(code=unshared.exit_code)
 
 
 def _target_pass_key(overlay: str) -> str:
-    from teatree.backends.notion.client import NotionTokenCredential  # noqa: PLC0415 — deferred: lazy CLI import
     from teatree.backends.notion.credentials import overlay_notion_pass_key  # noqa: PLC0415 — lazy CLI import
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 — deferred: lazy CLI import
 
     ensure_django()
     _reject_unresolvable(overlay)
-    return overlay_notion_pass_key(overlay or None) or NotionTokenCredential.spec.pass_path or ""
+    if pass_key := overlay_notion_pass_key(overlay or None):
+        return pass_key
+    scope = overlay or "<overlay>"
+    typer.echo(
+        "FAIL  No `pass` entry is routed for the Notion token on this venue, so there is nowhere to store it. "
+        f"Route it first: `t3 {scope} config_setting set notion_token_pass_key '\"<entry>\"' --overlay {scope}`.",
+        err=True,
+    )
+    raise typer.Exit(code=1)
 
 
 def _reject_unresolvable(overlay: str) -> None:
@@ -122,11 +129,18 @@ def _verify(overlay: str, pass_key: str, secret: str) -> "NotionClient":
     return client
 
 
+def _pages_to_check(overlay: str, named: list[str]) -> list[str]:
+    from teatree.cli.doctor.checks_notion import tracked_notion_pages  # noqa: PLC0415 — deferred: needs apps
+
+    tracked = [page_id for page_id, _ticket in tracked_notion_pages(overlay)]
+    return list(dict.fromkeys([*named, *tracked]))
+
+
 def _report_pages(client: "NotionClient", pages: list[str]) -> "NotionError | None":
     """Never exit here — the caller still owes the operator the deploy note."""
-    typer.echo("Step 3/3 — Check the pages this integration must reach.")
+    typer.echo("Step 3/3 — Check the pages this integration must reach: every --page and every tracked one.")
     if not pages:
-        typer.echo("      No --page given. An integration sees nothing until each page is shared WITH it.")
+        typer.echo("      No page given or tracked. An integration sees nothing until each page is shared WITH it.")
         return None
     first_error: NotionError | None = None
     for reference in pages:
@@ -138,5 +152,6 @@ def _report_pages(client: "NotionClient", pages: list[str]) -> "NotionError | No
 
 
 def _report_deployed_containers(pass_key: str) -> None:
-    typer.echo(f"      Deployed containers read `pass {pass_key}` from this host at deploy time — re-run Deploy")
-    typer.echo("      to pick it up. It is never written into deploy/teatree.env, which every deploy rewrites.")
+    typer.echo(f"      A deployed container reads its own `pass` store: seed `{pass_key}` there, then run")
+    typer.echo("      `t3 setup` inside it to verify. The token is never written into deploy/teatree.env,")
+    typer.echo("      which every deploy rewrites.")

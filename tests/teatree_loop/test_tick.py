@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import django.test
 import pytest
 
-from teatree.config import Mode, UserSettings
+from teatree.config import Mode, PrReviewBackend, UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.scanners.base import Scanner, ScanSignal
@@ -1378,7 +1378,13 @@ class TestBuildDefaultJobsWiring(django.test.TestCase):
     def test_build_default_jobs_wires_self_pr_review_and_never_codex(self) -> None:
         """#3569: the review intake wires the Claude ``self_pr_review`` scanner, never codex."""
         backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
-        with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=UserSettings()):
+        with (
+            patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=UserSettings()),
+            patch(
+                "teatree.loop.scanner_factories.resolve_pr_review_backend",
+                return_value=PrReviewBackend.CLAUDE,
+            ),
+        ):
             jobs = build_default_jobs(backends=[backend])
         self_jobs = [j for j in jobs if j.scanner.name == "self_pr_review"]
         assert len(self_jobs) == 1
@@ -1390,7 +1396,13 @@ class TestBuildDefaultJobsWiring(django.test.TestCase):
         """#3569: self-PR review runs regardless of mode — it is not fleet-gated like the old codex sweep."""
         backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
         interactive = UserSettings(mode=Mode.INTERACTIVE)
-        with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=interactive):
+        with (
+            patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=interactive),
+            patch(
+                "teatree.loop.scanner_factories.resolve_pr_review_backend",
+                return_value=PrReviewBackend.CLAUDE,
+            ),
+        ):
             jobs = build_default_jobs(backends=[backend])
         assert [j for j in jobs if j.scanner.name == "self_pr_review"]
 

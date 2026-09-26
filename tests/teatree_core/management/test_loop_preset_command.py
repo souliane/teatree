@@ -25,62 +25,68 @@ def _run(*args: str, **kwargs: object) -> str:
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
 class TestLoopPresetCommand(django.test.TestCase):
-    def _loop(self, name: str, *, enabled: bool = True) -> Loop:
+    def _loop(self, name: str, *, enabled: bool | None = None) -> Loop:
         return Loop.objects.create(
             name=name, delay_seconds=60, script=f"src/teatree/loops/{name}/loop.py", enabled=enabled
         )
 
-    def test_create_then_list_marks_entries(self) -> None:
-        _run("create", "maintenance", "--set", "review=off", "--set", "dispatch=on", "--description", "deep work")
-        preset = Mode.objects.get(name="maintenance")
-        assert preset.entries == {"review": False, "dispatch": True}
+    def test_a_newborn_preset_runs_nothing_and_is_total(self) -> None:
+        # B1: every preset holds an opinion on EVERY live loop, and a newborn one says
+        # off to all of them — so admitting a loop is always a deliberate edit.
+        self._loop("lp-review")
+        self._loop("lp-dispatch")
+        _run("create", "deep-work", "--description", "deep work")
+        preset = Mode.objects.get(name="deep-work")
+        assert set(preset.entries) == set(Loop.objects.values_list("name", flat=True))
+        assert not any(preset.entries.values())
         assert preset.description == "deep work"
-        listing = _run("list")
-        assert "maintenance" in listing
+        assert "deep-work" in _run("list")
 
-    def test_create_rejects_bad_entry(self) -> None:
+    def test_edit_admits_a_loop_the_newborn_preset_refused(self) -> None:
+        self._loop("lp-review")
+        _run("create", "deep-work")
+        _run("edit", "deep-work", "--set", "lp-review=on")
+        assert Mode.objects.get(name="deep-work").entries["lp-review"] is True
+
+    def test_edit_rejects_a_bad_entry(self) -> None:
+        self._loop("lp-review")
+        _run("create", "bad")
         with pytest.raises(SystemExit):
-            _run("create", "bad", "--set", "review=maybe")
-        assert not Mode.objects.filter(name="bad").exists()
-
-    def test_edit_inherit_removes_an_entry(self) -> None:
-        Mode.objects.create(name="p", entries={"review": False, "dispatch": True})
-        _run("edit", "p", "--set", "review=inherit")
-        assert Mode.objects.get(name="p").entries == {"dispatch": True}
+            _run("edit", "bad", "--set", "lp-review=maybe")
+        assert Mode.objects.get(name="bad").entries["lp-review"] is False
 
     def test_use_activates_an_override(self) -> None:
         Mode.objects.create(name="present", entries={"review": True})
-        _run("use", "present", "--hold")
+        _run("use", "present", "--reason", "pinned by the test")
         override = ModeOverride.objects.current()
         assert override is not None
         assert override.preset_name == "present"
-        assert override.until is None
+        assert override.expected_lift_at is None
 
-    def test_use_with_for_ttl_sets_until(self) -> None:
+    def test_lift_by_is_advisory_and_nothing_expires_the_override(self) -> None:
+        # A5/A7: no override auto-clears. `--lift-by` is what the watcher reminds
+        # against, and the row stands until someone lifts it deliberately.
         Mode.objects.create(name="present", entries={})
-        _run("use", "present", "--for", "2h")
-        assert ModeOverride.objects.current().until is not None
-
-    def test_use_with_until_iso_instant_still_works(self) -> None:
-        # --until remains a valid spelling of the unified expiry input.
-        Mode.objects.create(name="present", entries={})
-        _run("use", "present", "--until", "2099-01-01T00:00:00+00:00")
-        until = ModeOverride.objects.current().until
-        assert until is not None
-        assert until.year == 2099
+        _run("use", "present", "--reason", "release freeze", "--lift-by", "2h")
+        override = ModeOverride.objects.current()
+        assert override is not None
+        assert override.expected_lift_at is not None
 
     def test_use_records_reason_and_show_surfaces_it(self) -> None:
         # LP-6: --reason is stored on the override and rendered on the active WHY line.
         Mode.objects.create(name="present", entries={})
-        _run("use", "present", "--hold", "--reason", "release freeze")
+        _run("use", "present", "--reason", "release freeze")
         assert ModeOverride.objects.current().reason == "release freeze"
         payload = json.loads(_run("show", json_output=True))
         assert "release freeze" in payload["active"]["reason"]
 
-    def test_use_without_reason_leaves_it_blank(self) -> None:
+    def test_use_without_a_reason_is_refused(self) -> None:
+        # A8: without a recorded reason nothing can judge whether the posture still
+        # applies, so the only possible policy would be a timer — which A6 got wrong.
         Mode.objects.create(name="present", entries={})
-        _run("use", "present", "--hold")
-        assert ModeOverride.objects.current().reason == ""
+        with pytest.raises(SystemExit):
+            _run("use", "present")
+        assert ModeOverride.objects.current() is None
 
     def test_use_refuses_unknown_preset(self) -> None:
         with pytest.raises(SystemExit):
@@ -88,15 +94,17 @@ class TestLoopPresetCommand(django.test.TestCase):
 
     def test_auto_clears_the_override(self) -> None:
         Mode.objects.create(name="present", entries={})
-        _run("use", "present", "--hold")
+        _run("use", "present", "--reason", "pinned by the test")
         _run("auto")
         assert ModeOverride.objects.current() is None
 
     def test_show_active_reports_why_and_verdicts(self) -> None:
-        self._loop("lp-review")
-        self._loop("lp-dispatch", enabled=False)
+        # No manual override on either row, so the PRESET is the deciding layer and its
+        # entry is the whole answer.
+        self._loop("lp-review", enabled=None)
+        self._loop("lp-dispatch", enabled=None)
         Mode.objects.create(name="present", entries={"lp-review": False, "lp-dispatch": True})
-        _run("use", "present", "--hold")
+        _run("use", "present", "--reason", "pinned by the test")
         payload = json.loads(_run("show", json_output=True))
         assert payload["active"]["name"] == "present"
         assert payload["active"]["layer"] == "override"
@@ -107,10 +115,10 @@ class TestLoopPresetCommand(django.test.TestCase):
         assert verdicts["lp-dispatch"]["layer"] == "override"
 
     def test_show_active_none_when_no_preset(self) -> None:
-        self._loop("lp-base")
+        self._loop("lp-base", enabled=True)
         payload = json.loads(_run("show", json_output=True))
         assert payload["active"] is None
-        assert {row["name"]: row for row in payload["loops"]}["lp-base"]["layer"] == "base"
+        assert {row["name"]: row for row in payload["loops"]}["lp-base"]["layer"] == "manual"
 
     def test_show_named_warns_on_unknown_loop(self) -> None:
         Mode.objects.create(name="p", entries={"nonexistent_loop": False})

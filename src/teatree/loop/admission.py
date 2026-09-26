@@ -18,12 +18,17 @@ from pathlib import Path
 from teatree.core.admission_governor import (
     AdmissionDecision,
     MachineBrake,
+    MachineSignal,
+    QuotaSignal,
+    SupplementalAdmissionSignals,
     YieldSignal,
     decide_admission,
     governor_enabled,
+    pressure_for,
     read_machine_signal,
     read_quota_signal,
 )
+from teatree.core.telemetry.admission import record_admission_decision
 from teatree.loop.admit_budget import load_meta, meta_path
 
 logger = logging.getLogger(__name__)
@@ -86,17 +91,30 @@ def governor_verdict(*, statusline_path: Path, static_ceiling: int | None = None
     try:
         if not governor_enabled():
             return None
+        quota = read_quota_signal()
+        machine = read_machine_signal()
+        brake = MachineBrake(braked=read_braked(statusline_path=statusline_path))
         decision = decide_admission(
-            quota=read_quota_signal(),
-            machine=read_machine_signal(),
-            yield_signal=read_yield_signal(),
-            load_brake=MachineBrake(braked=read_braked(statusline_path=statusline_path)),
+            quota=quota,
+            machine=machine,
+            signals=SupplementalAdmissionSignals(yield_signal=read_yield_signal()),
+            load_brake=brake,
             static_ceiling=static_ceiling,
         )
     except Exception:
         logger.exception("admission governor probe failed — falling back to the static ceiling")
         return None
     write_braked(braked=decision.braked, statusline_path=statusline_path)
+    if isinstance(quota, QuotaSignal) and isinstance(machine, MachineSignal):
+        try:
+            record_admission_decision(
+                decision=decision,
+                pressure=pressure_for(quota=quota, machine=machine, load_brake=brake),
+                lane="loop",
+            )
+        except Exception:
+            # Observability must never become an admission brake.
+            logger.exception("admission telemetry failed; retaining the computed verdict")
     if not decision.admit:
         # Never silent: a governor that refuses without saying so recreates the class of
         # bug that hid a dead merge loop for weeks.

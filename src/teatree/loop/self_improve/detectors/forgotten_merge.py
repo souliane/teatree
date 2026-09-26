@@ -30,9 +30,15 @@ from typing import ClassVar
 from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.scanners.clear_stall_lookup import PROBE_CAP, PrStateReader, stalled_clears, unverified_reader
+from teatree.loop.scanners.clear_stall_lookup import (
+    PROBE_CAP,
+    ClearLiveness,
+    PrStateReader,
+    clear_liveness_probe,
+    unverified_reader,
+)
 from teatree.loop.self_improve.dedup import canonical_key, state_hash
-from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport
+from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, DetectorScan
 
 DEFAULT_AGE_THRESHOLD = dt.timedelta(minutes=30)
 
@@ -52,8 +58,13 @@ class ForgottenMergeDetector:
     probe_cap: int = PROBE_CAP
 
     def detect(self) -> list[DetectorReport]:
+        return self.detect_checked().reports
+
+    def detect_checked(self) -> DetectorScan:
         cutoff = timezone.now() - self.age_threshold
-        stalled = stalled_clears(issued_before=cutoff, read_state=self.read_state, cap=self.probe_cap)
+        probe = clear_liveness_probe(issued_before=cutoff, read_state=self.read_state, cap=self.probe_cap)
+        stalled = probe.of(ClearLiveness.STALLED)
+        unknown = [*probe.of(ClearLiveness.UNVERIFIED), *probe.unprobed]
         reports: list[DetectorReport] = []
         for clear in stalled:
             pr_identity = f"{clear.slug}#{clear.pr_id}"
@@ -74,7 +85,12 @@ class ForgottenMergeDetector:
                     auto_fix=self.auto_fix,
                 )
             )
-        return reports
+        return DetectorScan(
+            reports,
+            complete=not unknown,
+            reason="forge_unknown" if unknown else None,
+            protected_keys=frozenset(canonical_key(self.name, f"{clear.slug}#{clear.pr_id}") for clear in unknown),
+        )
 
     def scan(self) -> list[ScanSignal]:
         return [report.to_signal() for report in self.detect()]

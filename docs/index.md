@@ -13,7 +13,7 @@ Teatree coordinates work through **four state machines** — `Ticket`, `Worktree
 The **CLI** (`t3 ...`) is the source of truth — everything else is a view on top. Two surfaces sit on it:
 
 - **Statusline** — a 3-zone statusline (anchors, action needed, in flight), the always-on UI surface written to a file and read by the Claude Code statusline hook.
-- **Claude plugin** — skills, hooks, and the autonomous per-domain loops (driven by the singleton `t3 worker`) that teach an agent how to drive the CLI.
+- **Portable agent plugin** — shared skills and MCP tools for Claude Code and Codex, with Claude Code hooks; autonomous per-domain loops remain driven by the singleton `t3 worker`.
 
 ## How it fits together
 
@@ -37,6 +37,7 @@ Your overlay is a lightweight Python package with an `OverlayBase` subclass and 
 ## Further reading
 
 - [Installation](install.md) -- setup and first project
+- [Codex App Server harness](codex-app-server.md) -- managed ChatGPT bootstrap, secure cache lifecycle, and policy translation
 - [Architecture](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) -- the canonical architecture spec
 - [CLI Reference](generated/cli-reference.md) -- the `t3` command and its subcommands
 - [Overlay API](overlay-api.md) -- the contract between teatree and your project

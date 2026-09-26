@@ -32,7 +32,7 @@ from teatree.core.tasks import STRANDED_JOB_GRACE_SECONDS, execute_task
 from teatree.loops import stranded_runs
 from teatree.loops.timer_chains import LOOPS_QUEUE
 
-_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
 #: A path that exists in no module — the shape half these zombies actually have, left
 #: behind by a rename. A per-path deadline table would go stale exactly as this did.

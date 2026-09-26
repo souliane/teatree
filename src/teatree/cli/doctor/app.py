@@ -74,6 +74,7 @@ from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
 from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
 from teatree.cli.doctor.checks_resources import (
     _check_pyright_lsp_plugin,
+    _check_resume_ceiling_reachable,
     _check_root_disk_headroom,
     _check_scratch_sweep_probe,
     _check_tmp_tmpfs_headroom,
@@ -180,6 +181,7 @@ __all__ = (
     "_check_pyright_lsp_plugin",
     "_check_recommended_skills",
     "_check_reconciliation_ledger",
+    "_check_resume_ceiling_reachable",
     "_check_root_disk_headroom",
     "_check_scratch_sweep_probe",
     "_check_shipped_seed_inertness",

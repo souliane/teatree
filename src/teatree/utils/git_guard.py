@@ -1,17 +1,21 @@
 from teatree.utils import git
 
 
-def is_github_slug(value: str) -> bool:
-    """True iff ``value`` is a bare ``owner/repo`` slug, not a filesystem path.
+def is_remote_project_path(value: str) -> bool:
+    """True iff ``value`` names a forge PROJECT PATH, not a bare basename or a filesystem path.
 
-    A ticket's ``repos`` entry may be either an ``owner/repo`` slug
-    (``souliane/teatree``) or a bare basename (``teatree``) the clone
-    resolver expands by scanning. Only the slug form carries a canonical
-    remote identity to guard against — this predicate lets callers tell the
-    two apart without a git invocation.
+    A ticket's ``repos`` entry is either a project path — ``souliane/teatree`` on
+    GitHub, ``group/subgroup/repo`` on GitLab, which nests arbitrarily — or a bare
+    basename (``teatree``) the clone resolver expands by scanning. Only the path form
+    carries a canonical remote identity to guard against, and ``git.remote_slug``
+    already returns the full post-host path, so a multi-segment namespace compares
+    exactly as a two-segment one does. Restricting this to two segments left every
+    GitLab namespace unguarded (#151).
     """
-    owner, sep, name = value.partition("/")
-    return bool(sep) and bool(owner) and bool(name) and "/" not in name
+    if not value or value.startswith("/"):
+        return False
+    segments = value.split("/")
+    return len(segments) > 1 and all(segments)
 
 
 def guard_repo_remote_slug(repo: str, expected_slug: str) -> None:

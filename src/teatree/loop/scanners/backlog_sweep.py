@@ -23,9 +23,9 @@ safety properties onto every task it queues:
 
 Other invariants mirror the family:
 
-* **Single trigger.** Only a cadence (``backlog_sweep_cadence_hours``,
-    default 24h = daily). A fixed-rate platform behaviour, not coupled
-    to delivery velocity.
+* **Single trigger.** The ``backlog_sweep`` ``Loop`` row's own daily cadence,
+    and nothing else. A fixed-rate platform behaviour, not coupled to
+    delivery velocity.
 * **Overlay anchor is injected, not baked.** A core scanner that does not
     know any overlay's name; the wiring layer resolves the active core
     overlay via :func:`teatree.config.discover_active_overlay` and passes
@@ -68,8 +68,7 @@ class BacklogSweepScanner:
     layer is the single place that resolves
     :class:`teatree.config.UserSettings` and
     :func:`teatree.config.discover_active_overlay` to scanner kwargs. The
-    on/off decision lives at the wiring layer (``backlog_sweep_disabled``
-    in core config, and the ``backlog_sweep`` ``Loop`` row behind it); the
+    on/off decision is the ``backlog_sweep`` ``Loop`` row and the active preset; the
     scanner itself always scans when invoked.
 
     ``overlay_name`` is the resolved overlay-anchor identity for the
@@ -88,12 +87,11 @@ class BacklogSweepScanner:
 
     overlay_name: str
     skill: str = "sweeping-tickets"
-    cadence_hours: int = 24
     require_approval: bool = True
     name: str = "backlog_sweep"
 
     def scan(self) -> list[ScanSignal]:
-        cadence = PhaseCadence(self.overlay_name, phase=BACKLOG_SWEEP_PHASE, cadence_hours=self.cadence_hours)
+        cadence = PhaseCadence(self.overlay_name, phase=BACKLOG_SWEEP_PHASE)
         if cadence.in_flight_exists():
             return []
 

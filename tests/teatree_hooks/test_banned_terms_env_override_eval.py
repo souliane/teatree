@@ -18,12 +18,13 @@ Scenario matrix:
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from hooks.scripts.hook_router import handle_banned_terms_pretool
-from teatree.hooks import _repo_visibility
+from teatree.hooks import _repo_visibility, banned_terms_scanner
 from teatree.hooks.banned_terms_scanner import has_override, scan_text
 
 
@@ -161,10 +162,37 @@ class TestBannedTermGenuineGuardIntact:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 
-class TestBannedTermFailsOpenOnBrokenEnv:
-    """A missing config / unreadable scanner must fail OPEN (no block)."""
+class TestBannedTermAbsentStoreNoOpsAndErroredStoreFailsClosed:
+    """An ABSENT store has nothing to vouch for; a store that ERRORED cannot vouch at all."""
 
-    def test_no_config_fails_open(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.fixture(autouse=True)
+    def _no_required_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
+
+    def test_no_config_no_ops(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "does-not-exist.sqlite3"))
-        # No config ⇒ scan_text returns None ⇒ the gate never blocks.
+        assert scan_text("acmecorp leak") is None
+
+    def test_no_config_fails_closed_once_the_deployment_says_it_must_scrub(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "does-not-exist.sqlite3"))
+        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
+        assert scan_text("acmecorp leak") == banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER
+
+    def test_an_errored_store_fails_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The other direction: no-opping on every store would pass the first assertion above."""
+        corrupt = tmp_path / "corrupt.sqlite3"
+        corrupt.write_bytes(b"this is not a sqlite database")
+        monkeypatch.setenv("T3_CONFIG_DB", str(corrupt))
+        assert scan_text("acmecorp leak") == banned_terms_scanner.STORE_UNREADABLE_MARKER
+
+    def test_a_readable_store_with_no_terms_still_no_ops(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "empty.sqlite3"
+        with closing(sqlite3.connect(str(db))) as con:
+            con.execute(
+                "CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, key TEXT, value TEXT, scope TEXT)"
+            )
+            con.commit()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert scan_text("acmecorp leak") is None

@@ -116,7 +116,9 @@ class TestTheFactoryIsNeverRefused:
 
 class TestTheCoordinatorRoleStaysAvailable:
     def test_reading_and_searching_are_not_refused(self, engaged_session: Path) -> None:
-        for command in ("git log --oneline -5", "rg 'autonomy' src/", "t3 doctor check"):
+        # `rg` carries a count bound because the delegation gate refuses an UNBOUNDED
+        # sweep. This row asserts searching is not refused for BEING a search — it is.
+        for command in ("git log --oneline -5", "rg -m 5 'autonomy' src/", "t3 doctor check"):
             data = {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": command}}
             assert _run_chain(data) is False, command
 

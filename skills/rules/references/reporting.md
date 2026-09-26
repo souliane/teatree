@@ -16,6 +16,8 @@ When reporting back on assigned work, the reader's first need is an unambiguous 
 #   "Merged 3 PRs, 5 lanes green — good progress. Solid checkpoint, picking the rest up next time."
 ```
 
+When the next driving action is to run the AI/trajectory eval suite, the canonical command is `t3 eval run`. Do not add the `teatree` group to it: that group owns deterministic tests (`t3 teatree run tests`), not evals. An invalid command does not keep the goal moving.
+
 This must not be gameable by an `AskUserQuestion`-to-defer or a positive-framed partial report that ends the turn: while the goal is unmet and work remains, the only honest stop is actually-green OR a user-acknowledged external ceiling. Pinned by `standing_green_goal_keeps_driving_never_stops_done` (the keep-driving ACTION) and `verified_green_status_report_leads_binary_never_stops_as_done` (the report-LEAD text) in `evals/scenarios/rules.yaml`.
 
 ## Keep Turn Output Terse and TTS-Ready

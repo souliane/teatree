@@ -11,8 +11,8 @@ from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip, mark_trivial_plan_skip
+from tests.factories import record_test_plan
 
 
 def _author(state: str = Ticket.State.NOT_STARTED) -> Ticket:
@@ -50,7 +50,7 @@ class TestTheLadderWalk(TestCase):
         """The whole point of the walk: the ladder must actually continue past planning."""
         ticket = _author()
         task = ticket.begin_planning()
-        PlanArtifact.record(ticket=ticket, plan_text="the plan", recorded_by="t3:planner")
+        record_test_plan(ticket, plan_text="the plan", recorded_by="t3:planner")
 
         task.complete()
 

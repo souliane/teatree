@@ -83,6 +83,7 @@ def emit_banned_term_deny(tool_name: str, command: str, payload: str, term: str,
         banned_terms_scanner,
         own_repo_url_carve_out,
         publish_surface,
+        scan_scope_hint,
     )
 
     if publish_surface.carve_out_applies(tool_name, command, payload, cwd_repo):
@@ -126,4 +127,9 @@ def emit_banned_term_deny(tool_name: str, command: str, payload: str, term: str,
             "(probe unavailable). If private, add it to the private_repos config row "
             "(t3 <overlay> config_setting set private_repos '[...]') for a reliable offline carve-out.\n"
         )
-    return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
+    # The #1657 NOTE above needs a RESOLVED slug; the scope diagnostic covers the
+    # two shapes that have none. Message only -- the verdict is already decided.
+    return emit_pretooluse_deny(
+        banned_terms_scanner.format_block_message(term) + scan_scope_hint.scan_scope_hint(command, cwd_repo),
+        gate_id="banned_terms",
+    )

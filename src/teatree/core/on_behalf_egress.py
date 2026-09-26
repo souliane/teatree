@@ -53,6 +53,7 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, route_send
+from teatree.on_behalf_gate import OnBehalfContext
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -71,16 +72,23 @@ class _PublishDidNotLandError(Exception):
         self.response = response
 
 
+#: What the egress reports when the wire call never ran: the backend resolved no token for
+#: the destination — an overlay with no Slack transport, or no user-OAuth token for a
+#: colleague surface. Named here once, so no caller prints it as ``unknown_error``.
+NO_TOKEN_FOR_DESTINATION: RawAPIDict = {"ok": False, "error": "no_token_for_destination"}
+
+
 def _publish_or_rollback(publish: Callable[[], RawAPIDict]) -> RawAPIDict:
     """Run *publish* and raise :class:`_PublishDidNotLandError` unless the artifact landed.
 
     ``already_reacted`` IS landed — the reaction is present, the call was just the
-    idempotent no-op. An empty body (no token resolved) is not.
+    idempotent no-op. An empty body (no token resolved) is not, and is reported as
+    :data:`NO_TOKEN_FOR_DESTINATION`.
     """
     response = publish()
     if response.get("ok") or response.get("error") == "already_reacted":
         return response
-    raise _PublishDidNotLandError(response)
+    raise _PublishDidNotLandError(response or dict(NO_TOKEN_FOR_DESTINATION))
 
 
 class OnBehalfSlackEgress:
@@ -124,6 +132,7 @@ class OnBehalfSlackEgress:
         destination: str = "",
         artifact_url: str = "",
         summary: str = "",
+        context: OnBehalfContext | None = None,
     ) -> RawAPIDict:
         """React on *channel*'s message, gated+audited on a colleague surface.
 
@@ -141,6 +150,7 @@ class OnBehalfSlackEgress:
             response = require_on_behalf_approval(
                 target=target,
                 action=action,
+                context=context,
                 publish=lambda: _publish_or_rollback(
                     lambda: self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji)
                 ),
@@ -168,6 +178,7 @@ class OnBehalfSlackEgress:
         thread_ts: str = "",
         destination: str = "",
         summary: str = "",
+        context: OnBehalfContext | None = None,
     ) -> RawAPIDict:
         """Post to *channel*, gated+audited on a colleague surface.
 
@@ -205,6 +216,7 @@ class OnBehalfSlackEgress:
             response = require_on_behalf_approval(
                 target=target,
                 action=action,
+                context=context,
                 publish=lambda: _publish_or_rollback(
                     lambda: self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts)
                 ),
@@ -271,4 +283,4 @@ def _retire_threaded_answer(thread_ts: str) -> None:
         logger.debug("retire-answered-question stamp failed for thread_ts=%s: %s", thread_ts, exc)
 
 
-__all__ = ["OnBehalfPostBlockedError", "OnBehalfSlackEgress"]
+__all__ = ["NO_TOKEN_FOR_DESTINATION", "OnBehalfPostBlockedError", "OnBehalfSlackEgress"]

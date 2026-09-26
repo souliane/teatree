@@ -70,6 +70,9 @@ class TestAdmitLoadBearingLoops(TransactionTestCase):
             mode.objects.create(name=name, entries=entries, description=(descriptions or {}).get(name, ""))
         if low_power_pin:
             config_setting = old_apps.get_model("core", "ConfigSetting")
+            # The pre-`0066` spelling. `0086` renames it to `token_outage_preset_name`, and
+            # seeding that name here writes a key `0066` cannot see — the escape then reads
+            # unpinned and the migration re-admits the very row the pin protects.
             config_setting.objects.update_or_create(
                 scope="", key="low_power_preset_name", defaults={"value": low_power_pin}
             )

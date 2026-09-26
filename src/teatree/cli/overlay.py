@@ -18,7 +18,7 @@ from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
 from teatree.cli.overlay_leaves import register_core_passthrough_leaves
 from teatree.cli.teatree_gate import register_gate_commands
 from teatree.cli.wip import register_wip_commands
-from teatree.utils.django_db import project_env_is_drivable, runner_prefix
+from teatree.utils.django_db import project_env_import_error, project_env_is_drivable, runner_prefix
 from teatree.utils.run import CommandFailedError, run_streamed, spawn
 from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, singleton
 
@@ -114,11 +114,21 @@ def _run_workers(project_path: Path, overlay_name: str, count: int, interval: fl
 
 
 @contextmanager
-def _faithful_child_exit() -> Iterator[None]:
-    """Propagate a bridged child's exit code faithfully, without a traceback (PR-30)."""
+def _faithful_child_exit(project_env: Path | None = None) -> Iterator[None]:
+    """Propagate a bridged child's exit code faithfully, without a traceback (PR-30).
+
+    A child spawned into *project_env*'s own venv that cannot import Django dies with a
+    ``ModuleNotFoundError`` far from its cause, so the venv is named with its repair last.
+    """
     try:
         yield
     except CommandFailedError as exc:
+        if project_env is not None and (reason := project_env_import_error(project_env)):
+            typer.echo(
+                f"{project_env / '.venv'} cannot import Django ({reason}). "
+                f"Repair it with: uv sync --directory {project_env} --reinstall",
+                err=True,
+            )
         raise SystemExit(exc.returncode) from None
 
 
@@ -128,13 +138,13 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
     if overlay_name:
         env["T3_OVERLAY_NAME"] = overlay_name
 
+    if project_path and (project_path / "manage.py").is_file() and project_env_is_drivable(project_path):
+        with _faithful_child_exit(project_path):
+            run_streamed(_managepy_cmd(project_path, "manage.py", *args), cwd=project_path, env=env)
+        return
+    env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
     with _faithful_child_exit():
-        if project_path and (project_path / "manage.py").is_file() and project_env_is_drivable(project_path):
-            cmd = _managepy_cmd(project_path, "manage.py", *args)
-            run_streamed(cmd, cwd=project_path, env=env)
-        else:
-            env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-            run_streamed([sys.executable, "-m", "teatree", *args], env=env)
+        run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
 def _overlay_importable_in_current_env(entry: "OverlayEntry") -> bool:
@@ -179,7 +189,7 @@ def managepy_core(*args: str, overlay_name: str = "") -> None:
         env["T3_OVERLAY_NAME"] = overlay_name
     env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
     project_path = _overlay_project_env(overlay_name)
-    with _faithful_child_exit():
+    with _faithful_child_exit(project_path):
         if project_path is not None:
             run_streamed([*runner_prefix(project_path), "-m", "teatree", *args], cwd=project_path, env=env)
         else:
@@ -332,9 +342,14 @@ class OverlayAppBuilder:
                 help="Explicit skill override. Repeat to load multiple skills.",
             ),
         ) -> None:
-            """Launch Claude Code with overlay context and auto-detected skills."""
+            """Launch the configured agent with overlay context and auto-detected skills."""
             from teatree.cli import _find_project_root  # noqa: PLC0415 — deferred: breaks overlay ↔ cli cycle
-            from teatree.cli.agent import _detect_agent_ticket_status, _launch_claude  # noqa: PLC0415 — lazy CLI import
+            from teatree.cli.agent import (  # noqa: PLC0415 — lazy CLI import
+                AgentLaunchContext,
+                _configured_cli_runtime,
+                _detect_agent_ticket_status,
+                _launch_agent,
+            )
             from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: keeps CLI startup light
             from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415 — deferred: lazy CLI import
 
@@ -353,12 +368,15 @@ class OverlayAppBuilder:
                 explicit_skills=skill or [],
                 overlay_active=True,
             )
-            _launch_claude(
-                task=task,
-                project_root=overlay_root,
-                context_lines=lines,
-                skills=selection.skills,
-                ask_user_which_skill=selection.ask_user,
+            _launch_agent(
+                runtime=_configured_cli_runtime(task=task),
+                launch=AgentLaunchContext(
+                    task=task,
+                    project_root=overlay_root,
+                    context_lines=lines,
+                    skills=selection.skills,
+                    ask_user_which_skill=selection.ask_user,
+                ),
             )
 
     def _register_skill_preamble_command(self) -> None:
@@ -507,7 +525,11 @@ class OverlayAppBuilder:
 
         @group.command(
             name=name,
-            context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
+            context_settings={
+                "allow_extra_args": True,
+                "allow_interspersed_args": False,
+                "ignore_unknown_options": True,
+            },
             help=help_text,
         )
         def _run(ctx: typer.Context) -> None:

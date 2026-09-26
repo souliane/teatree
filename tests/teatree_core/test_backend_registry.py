@@ -1,5 +1,7 @@
 """The core → backends builder/loader inversion registry (#1922)."""
 
+import re
+
 import pytest
 
 from teatree.core import backend_registry
@@ -13,6 +15,27 @@ _SHAREPOINT_SPEC = SharePointRemoteSpec(
     site_url="s",
     library_path="l",
 )
+
+
+@pytest.mark.parametrize(("value", "expected"), [("", "full"), ("full", "full"), ("dm_only", "dm_only")])
+def test_unset_or_known_slack_scope_profile_parses(value: str, expected: str) -> None:
+    assert backend_registry.parse_slack_scope_profile(value) == expected
+
+
+@pytest.mark.parametrize("value", ["dm-only", "DM_ONLY", "bogus"])
+def test_unknown_slack_scope_profile_raises(value: str) -> None:
+    with pytest.raises(backend_registry.UnknownSlackScopeProfileError, match="slack_scope_profile"):
+        backend_registry.parse_slack_scope_profile(value)
+
+
+@pytest.mark.parametrize("value", [True, False, ["dm_only"], 0, {"profile": "dm_only"}, None])
+def test_wrong_type_slack_scope_profile_raises(value: object) -> None:
+    with pytest.raises(backend_registry.UnknownSlackScopeProfileError, match=re.escape(repr(value))):
+        backend_registry.parse_slack_scope_profile(value)
+
+
+def test_unknown_slack_scope_profile_error_is_value_error() -> None:
+    assert issubclass(backend_registry.UnknownSlackScopeProfileError, ValueError)
 
 
 class TestBackendProviderRegistry:

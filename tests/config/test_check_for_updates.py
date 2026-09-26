@@ -26,9 +26,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from teatree.config import check_for_updates
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.update_check import _write_update_cache
 
 Row = tuple[str, str, object]
+
+
+@pytest.fixture(autouse=True)
+def _routed_github_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "teatree.update_check.resolve_slug_token",
+        lambda _slug, **_kwargs: ForgeTokenResolution(
+            "github_token", "t3-teatree", ForgeTokenState.TOKEN, token="routed-token"
+        ),
+    )
 
 
 def _make_config_db(path: Path, rows: Iterable[Row]) -> None:

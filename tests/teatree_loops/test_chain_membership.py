@@ -1,9 +1,10 @@
 """teatree.loops.chain_membership — which loops carry a chain, and which are starved (#4185).
 
-``Loop.enabled`` is the LOWEST-precedence input to the enable verdict (hold > forced >
-mode mask > column), so a governing mode decides the loop and the column is never
-reached. Membership built from that column alone left mode-admitted loops with no timer
-row of any status, ever — admitted, reported healthy, and with nothing to drive them.
+``Loop.enabled`` is the MANUAL-override layer of the enable verdict (hold > manual >
+preset), empty on a fleet nobody has intervened on, so the preset decides the loop and
+the column answers about none of them. Membership built from that column alone left
+preset-admitted loops with no timer row of any status, ever — admitted, reported
+healthy, and with nothing to drive them.
 Integration-first against the real DB + ``django_tasks_db`` backend.
 
 The drift pin here is deliberately keyed on the TICK's verdict
@@ -21,14 +22,14 @@ from teatree.core.models import Loop, Mode, ModeOverride
 from teatree.loops import chain_membership, timer_chains, timer_reconciler
 from teatree.loops.loop_table import admitted_loop_names
 
-_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 #: A preset of the test's own, so nothing here depends on the seeded production modes.
 _PRESET = "forced-on-4185"
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
 class TestChainMembership(django.test.TestCase):
-    """``inbox``: a registered live-tick loop, column OFF, forced ON by the active preset."""
+    """``inbox``: a registered live-tick loop the active preset admits."""
 
     def setUp(self) -> None:
         Loop.objects.all().delete()
@@ -37,13 +38,12 @@ class TestChainMembership(django.test.TestCase):
             name="inbox",
             script="src/teatree/loops/inbox/loop.py",
             delay_seconds=60,
-            enabled=False,
         )
         Mode.objects.create(name=_PRESET, entries={"inbox": True})
-        ModeOverride.objects.set_override(_PRESET)
+        ModeOverride.objects.set_override(_PRESET, reason="test override")
         self.now = timezone.now()
 
-    def test_a_preset_forced_on_column_disabled_loop_is_a_member(self) -> None:
+    def test_a_preset_admitted_loop_is_a_member(self) -> None:
         assert "inbox" in chain_membership.timer_chain_loop_names()
 
     def test_membership_is_the_ticks_own_admitted_set_when_every_member_is_due(self) -> None:
@@ -70,10 +70,9 @@ class TestStarvedLoopNames(django.test.TestCase):
             name="inbox",
             script="src/teatree/loops/inbox/loop.py",
             delay_seconds=60,
-            enabled=False,
         )
         Mode.objects.create(name=_PRESET, entries={"inbox": True})
-        ModeOverride.objects.set_override(_PRESET)
+        ModeOverride.objects.set_override(_PRESET, reason="test override")
 
     def test_an_admitted_loop_with_no_timer_row_is_starved(self) -> None:
         assert chain_membership.starved_loop_names() == {"inbox"}

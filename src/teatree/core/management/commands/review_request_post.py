@@ -38,12 +38,14 @@ The post-half of #1084/#1094. One classifier-legible transaction:
 provably the same string.
 """
 
+import logging
 from typing import Annotated, NoReturn
 
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.backend_factory import messaging_from_overlay
+from teatree.config import get_effective_settings
+from teatree.core.backend_factory import code_host_from_overlay, messaging_from_overlay
 from teatree.core.gates.review_request_batch_gate import refusal_payload, work_group_batch_refusal
 from teatree.core.gates.review_request_draft_gate import draft_refusal_reason
 from teatree.core.gates.review_request_guard import (
@@ -63,11 +65,15 @@ from teatree.core.on_behalf_gate_recorded import (
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.review.repo_exemption import mr_url_is_review_exempt
+from teatree.core.review.review_candidate import _is_self_authored
 from teatree.core.review.review_message_cache import persist_review_message
 from teatree.loop.review_request_tracker import record_review_request_post
+from teatree.on_behalf_gate import OnBehalfContext
 from teatree.types import RawAPIDict
 
 _ACTION = "review_request_post"
+
+logger = logging.getLogger(__name__)
 
 
 class _PostFailedError(RuntimeError):
@@ -88,6 +94,17 @@ def _posted_or_raise(response: RawAPIDict) -> RawAPIDict:
     detail = response.get("error") or "no message timestamp in the response"
     msg = f"review-request post did not land: {detail}"
     raise _PostFailedError(msg)
+
+
+def _owner_authorship(mr_url: str, overlay_name: str) -> bool | None:
+    """Resolve fresh forge authorship against the configured owner aliases."""
+    try:
+        host = code_host_from_overlay(overlay_name or None)
+        identities = tuple(get_effective_settings(overlay_name or None).user_identity_aliases)
+    except Exception:
+        logger.exception("review_request_post: could not resolve owner identity dependencies for %s", mr_url)
+        return None
+    return _is_self_authored(mr_url, host, identities)
 
 
 # Used when ``--title`` is absent. The command does NOT fetch the live MR
@@ -162,7 +179,7 @@ class Command(TyperCommand):
         """
         _ = approver  # the #960 approver is bound at approve-on-behalf record time.
 
-        overlay_name = overlay_for_mr_url(mr_url)
+        overlay_name = self._attributed_overlay(mr_url)
         # A review-exempt repo outranks every gate below: those all ask whether
         # THIS attempt may post, and the answer here is that no attempt ever may.
         if mr_url_is_review_exempt(mr_url, overlay_name=overlay_name):
@@ -233,7 +250,18 @@ class Command(TyperCommand):
         if batch_refusal is not None:
             self._emit(refusal_payload(batch_refusal, mr_url=canonical), exit_code=2)
 
-        decision = should_post_review_request(mr_url=canonical, target=target)
+        authorship = _owner_authorship(canonical, overlay_name)
+        if authorship is not True:
+            self._emit(
+                {
+                    "action": "refused",
+                    "reason": "foreign_author" if authorship is False else "authorship_unreadable",
+                    "mr_url": canonical,
+                },
+                exit_code=2,
+            )
+
+        decision = should_post_review_request(mr_url=canonical, target=target, overlay=overlay_name)
         if not decision.should_post:
             self._emit(
                 {
@@ -244,11 +272,11 @@ class Command(TyperCommand):
                 },
                 exit_code=0,
             )
-
         # Peek (non-consuming) so an unapproved post refuses early — before
         # any wire call — and the orphan guard claim is rolled back. The
         # consume happens atomically with the post below (#1879), never here.
-        blocked = on_behalf_block_message(canonical, _ACTION)
+        context = OnBehalfContext(overlay=overlay_name or None, own_mr=True, target=canonical)
+        blocked = on_behalf_block_message(canonical, _ACTION, context=context)
         if blocked:
             self._rollback_orphan_claim(canonical)
             self.stdout.write(blocked)
@@ -292,6 +320,7 @@ class Command(TyperCommand):
             resp = require_on_behalf_approval(
                 target=canonical,
                 action=_ACTION,
+                context=OnBehalfContext(overlay=overlay_name or None, own_mr=True, target=canonical),
                 publish=lambda: _posted_or_raise(
                     messaging.post_message(channel=target.channel_id, text=text, thread_ts=""),
                 ),
@@ -324,6 +353,7 @@ class Command(TyperCommand):
             mr_url=canonical,
             slack_channel_id=target.channel_id,
             slack_thread_ts=ts,
+            overlay=overlay_name,
         )
 
         from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
@@ -463,6 +493,20 @@ class Command(TyperCommand):
             done_at__isnull=True,
             slack_thread_ts="",
         ).delete()
+
+    def _attributed_overlay(self, mr_url: str) -> str:
+        """The overlay owning *mr_url*, refusing rather than recording an orphan row.
+
+        The nag, the resume and the merge-react all select by concrete overlay name,
+        so a row written with an empty one is followed up by none of them, ever.
+        """
+        overlay_name = overlay_for_mr_url(mr_url)
+        if not overlay_name:
+            self._emit(
+                {"action": "refused", "reason": "overlay_unattributable", "mr_url": mr_url},
+                exit_code=2,
+            )
+        return overlay_name
 
     def _emit(self, payload: RawAPIDict, *, exit_code: int) -> NoReturn:
         """Print the single machine-legible JSON dict, then exit.

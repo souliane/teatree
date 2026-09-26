@@ -30,6 +30,7 @@ overlay_sdk = teatree.overlay_sdk
 EXPECTED_SURFACE: frozenset[str] = frozenset(
     {
         "DEFAULT_TRANSITION_EMOJIS",
+        "TEST_STACK_SUFFIX",
         "AttemptUsage",
         "BaseImageConfig",
         "CacheBreakpoint",
@@ -106,6 +107,7 @@ EXPECTED_SURFACE: frozenset[str] = frozenset(
         "run_allowed_to_fail",
         "run_checked",
         "run_agent",
+        "sibling_test_project",
         "validate_result_keys",
     }
 )
@@ -178,6 +180,7 @@ EXPECTED_E2E_SIGNATURES: dict[str, str] = {
 EXPECTED_REVIEW_SIGNATURES: dict[str, str] = {
     "can_auto_merge": "(self, *, target_ref: str, thread_ref: str) -> teatree.core.gates.merge_guard.MergeGuard",
     "classify_customer_display_impact": "(self, changed_files: list[str]) -> bool",
+    "mandatory_e2e_exempt_repo_slugs": "(self) -> tuple[str, ...]",
     "merge_candidate_repo_slugs": "(self) -> list[str]",
     "repo_owner_for_slug": "(self, slug: str) -> teatree.core.review.mr_triage.RepoOwner",
     "review_exempt_repo_slugs": "(self) -> tuple[str, ...]",

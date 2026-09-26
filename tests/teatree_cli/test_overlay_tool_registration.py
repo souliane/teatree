@@ -13,7 +13,9 @@ from pathlib import Path
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
+from teatree.cli import overlay as overlay_cli
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.types import SkillMetadata, ToolCommand
 
@@ -125,3 +127,24 @@ def test_default_layout_without_tools_stays_quiet(
 
     assert "tool" not in _group_names(builder.overlay_app)
     assert caplog.records == []
+
+
+def test_a_tool_forwards_leading_options_to_its_command_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A tool whose command takes group-level options (`stack --app x up`) is only
+    # reachable if the forwarding proxy passes an option it does not know itself.
+    project = tmp_path / "project"
+    project.mkdir()
+    custom_root = tmp_path / "packaged" / "skills"
+    _write_tool_commands(custom_root)
+    _patch_overlay(monkeypatch, skill_metadata={"skill_root": str(custom_root)}, tool_commands=[])
+    forwarded: list[tuple[str, ...]] = []
+    monkeypatch.setattr(overlay_cli, "managepy", lambda _path, *args, overlay_name="": forwarded.append(args))
+
+    builder = OverlayAppBuilder("t3-demo", project)
+    builder._register_overlay_tools()
+    result = CliRunner().invoke(builder.overlay_app, ["tool", "widget", "--app", "x", "up", "--no-browser"])
+
+    assert result.exit_code == 0, result.output
+    assert forwarded == [("widget_cmd", "--app", "x", "up", "--no-browser")]

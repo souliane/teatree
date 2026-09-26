@@ -5,7 +5,8 @@ The scanner lists ``needs-triage`` open issues and emits
 buckets. The conservative bar is load-bearing: ANY uncertainty yields no
 candidate. Two anti-vacuity guards live here — a live in-flight ticket / unique
 fingerprint / valid path yields ZERO candidates (revert the bar → RED), and the
-default-OFF gate (exercised in ``test_issue_disposition_wiring``) emits nothing.
+canonical-core overlay guard (exercised in ``test_issue_disposition_wiring``)
+keeps other backlogs out.
 """
 
 from dataclasses import dataclass, field
@@ -30,6 +31,8 @@ class _Host:
     user: str = "alice"
     issues: list[RawAPIDict] = field(default_factory=list)
     open_issues_by_query: dict[str, list[RawAPIDict]] = field(default_factory=dict)
+    open_issues_by_repo_and_query: dict[tuple[str, str], list[RawAPIDict]] = field(default_factory=dict)
+    searched_repos: list[str] = field(default_factory=list)
 
     def current_user(self) -> str:
         return self.user
@@ -39,8 +42,17 @@ class _Host:
         return self.issues
 
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
-        _ = repo
-        return self.open_issues_by_query.get(query, [])
+        self.searched_repos.append(repo)
+        return self.open_issues_by_repo_and_query.get((repo, query), self.open_issues_by_query.get(query, []))
+
+    def repo_for_issue_url(self, issue_url: str) -> str:
+        return _slug_of(issue_url)
+
+
+def _slug_of(issue_url: str) -> str:
+    """``owner/name`` from a forge issue URL, the way a real code host answers it."""
+    parts = issue_url.split("/")
+    return "/".join(parts[3:5]) if len(parts) > 5 else ""
 
 
 def _issue(url: str, *, title: str = "Do the thing", body: str = "", labels: list[str] | None = None) -> RawAPIDict:
@@ -58,7 +70,7 @@ class IssueDispositionAlreadyShippedTests(TestCase):
     URL = "https://github.com/souliane/teatree/issues/300"
 
     def _scanner(self, host: _Host) -> IssueDispositionScanner:
-        return IssueDispositionScanner(host=host, repo=self.REPO, overlay_name="acme")
+        return IssueDispositionScanner(host=host, overlay_name="acme")
 
     def test_delivered_ticket_for_issue_yields_already_shipped_candidate(self) -> None:
         Ticket.objects.create(issue_url=self.URL, state=Ticket.State.DELIVERED)
@@ -81,7 +93,7 @@ class IssueDispositionExactDuplicateTests(TestCase):
     OTHER = "https://github.com/souliane/teatree/issues/41"
 
     def _scanner(self, host: _Host) -> IssueDispositionScanner:
-        return IssueDispositionScanner(host=host, repo=self.REPO, overlay_name="acme")
+        return IssueDispositionScanner(host=host, overlay_name="acme")
 
     def test_matching_open_issue_fingerprint_yields_duplicate_candidate(self) -> None:
         title = "Fix the broken login flow"
@@ -101,6 +113,22 @@ class IssueDispositionExactDuplicateTests(TestCase):
         )
         assert self._scanner(host).scan() == []
 
+    def test_of_two_duplicates_only_the_newer_is_a_candidate_and_it_names_the_survivor(self) -> None:
+        title = "Fix the broken login flow"
+        older, newer = _issue(self.OTHER, title=title), _issue(self.URL, title=title)
+        host = _Host(issues=[older, newer], open_issues_by_query={title: [older, newer]})
+
+        signals = self._scanner(host).scan()
+
+        assert [(s.payload["url"], s.payload["duplicate_of"]) for s in signals] == [(self.URL, self.OTHER)]
+
+    def test_a_sibling_with_no_issue_number_leaves_the_survivor_undecided(self) -> None:
+        title = "Fix the broken login flow"
+        unnumbered = _issue("https://github.com/souliane/teatree/issues/new", title=title)
+        host = _Host(issues=[_issue(self.URL, title=title)], open_issues_by_query={title: [unnumbered]})
+
+        assert self._scanner(host).scan() == []
+
     def test_self_match_is_not_a_duplicate(self) -> None:
         title = "Only one of these"
         host = _Host(
@@ -110,15 +138,63 @@ class IssueDispositionExactDuplicateTests(TestCase):
         assert self._scanner(host).scan() == []
 
 
+class IssueDispositionIsScopeBoundToTheCandidatesOwnRepoTests(TestCase):
+    """The listing spans every owned repo, so the duplicate search must follow the candidate.
+
+    Searching one fixed repo while listing across all of them compares issues that share
+    a title but nothing else, and orders the group by a bare issue number that is not
+    comparable across repos — so a second repo's issue is closed in favour of a
+    first-repo issue it has no relationship to.
+    """
+
+    TITLE = "Fix the broken login flow"
+    A_URL = "https://github.com/souliane/repo-a/issues/10"
+    B_URL = "https://github.com/souliane/repo-b/issues/20"
+
+    def _scanner(self, host: _Host) -> IssueDispositionScanner:
+        return IssueDispositionScanner(host=host, overlay_name="acme")
+
+    def test_a_same_title_issue_in_another_repo_is_not_a_duplicate(self) -> None:
+        a, b = _issue(self.A_URL, title=self.TITLE), _issue(self.B_URL, title=self.TITLE)
+        host = _Host(
+            issues=[a, b],
+            open_issues_by_repo_and_query={
+                ("souliane/repo-a", self.TITLE): [a],
+                ("souliane/repo-b", self.TITLE): [b],
+            },
+        )
+
+        assert self._scanner(host).scan() == []
+        assert set(host.searched_repos) == {"souliane/repo-a", "souliane/repo-b"}
+
+    def test_two_duplicates_in_one_repo_still_close_the_higher_numbered(self) -> None:
+        older = _issue("https://github.com/souliane/repo-a/issues/10", title=self.TITLE)
+        newer = _issue("https://github.com/souliane/repo-a/issues/400", title=self.TITLE)
+        host = _Host(
+            issues=[older, newer],
+            open_issues_by_repo_and_query={("souliane/repo-a", self.TITLE): [older, newer]},
+        )
+
+        signals = self._scanner(host).scan()
+
+        assert [(s.payload["url"], s.payload["duplicate_of"]) for s in signals] == [
+            ("https://github.com/souliane/repo-a/issues/400", "https://github.com/souliane/repo-a/issues/10")
+        ]
+
+    def test_an_unresolvable_repo_leaves_the_duplicate_bucket_silent(self) -> None:
+        host = _Host(issues=[_issue("not-a-url", title=self.TITLE)])
+
+        assert self._scanner(host).scan() == []
+        assert host.searched_repos == []
+
+
 class IssueDispositionObsoleteTests(TestCase):
     REPO = "souliane/teatree"
     URL = "https://github.com/souliane/teatree/issues/500"
 
     def test_all_referenced_paths_gone_yields_obsolete_candidate(self) -> None:
         host = _Host(issues=[_issue(self.URL, body="Broken in `src/teatree/gone.py` and `src/teatree/also_gone.py`.")])
-        scanner = IssueDispositionScanner(
-            host=host, repo=self.REPO, overlay_name="acme", path_exists=lambda _path: False
-        )
+        scanner = IssueDispositionScanner(host=host, overlay_name="acme", path_exists=lambda _repo, _path: False)
         signals = scanner.scan()
         assert [s.payload["reason"] for s in signals] == ["obsolete"]
 
@@ -127,22 +203,19 @@ class IssueDispositionObsoleteTests(TestCase):
         host = _Host(issues=[_issue(self.URL, body="See `src/teatree/here.py` and `src/teatree/gone.py`.")])
         scanner = IssueDispositionScanner(
             host=host,
-            repo=self.REPO,
             overlay_name="acme",
-            path_exists=lambda path: path == "src/teatree/here.py",
+            path_exists=lambda _repo, path: path == "src/teatree/here.py",
         )
         assert scanner.scan() == []
 
     def test_body_references_no_path_yields_no_candidate(self) -> None:
         host = _Host(issues=[_issue(self.URL, body="Just prose, run `git push`, no real file paths here.")])
-        scanner = IssueDispositionScanner(
-            host=host, repo=self.REPO, overlay_name="acme", path_exists=lambda _path: False
-        )
+        scanner = IssueDispositionScanner(host=host, overlay_name="acme", path_exists=lambda _repo, _path: False)
         assert scanner.scan() == []
 
     def test_obsolete_bucket_disabled_without_oracle(self) -> None:
         host = _Host(issues=[_issue(self.URL, body="Broken in `src/teatree/gone.py`.")])
-        assert IssueDispositionScanner(host=host, repo=self.REPO, overlay_name="acme").scan() == []
+        assert IssueDispositionScanner(host=host, overlay_name="acme").scan() == []
 
 
 class IssueDispositionSelectionTests(TestCase):
@@ -151,7 +224,7 @@ class IssueDispositionSelectionTests(TestCase):
     URL_B = "https://github.com/souliane/teatree/issues/601"
 
     def _scanner(self, host: _Host, **kw: object) -> IssueDispositionScanner:
-        return IssueDispositionScanner(host=host, repo=self.REPO, overlay_name="acme", **kw)
+        return IssueDispositionScanner(host=host, overlay_name="acme", **kw)
 
     def test_issue_without_needs_triage_is_ignored(self) -> None:
         Ticket.objects.create(issue_url=self.URL, state=Ticket.State.DELIVERED)

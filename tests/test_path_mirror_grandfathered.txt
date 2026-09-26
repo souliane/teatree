@@ -97,7 +97,6 @@ tests/teatree_core/test_url_slug_pr_ref.py
 tests/teatree_core/test_workspace_group_wiring.py
 tests/teatree_core/test_worktree_verify_runner.py
 tests/teatree_hooks/test_ups_fastpath.py
-tests/teatree_loop/self_improve/test_loop_self_improve_command.py
 tests/teatree_loop/slack_answer/test_loop_slack_answer_command.py
 tests/teatree_loop/test_active_tickets.py
 tests/teatree_loop/test_architectural_review_scanner.py
@@ -109,7 +108,6 @@ tests/teatree_loop/test_disposition_identity_groups.py
 tests/teatree_loop/test_eval_local_scanner.py
 tests/teatree_loop/test_external_tickets_scanner.py
 tests/teatree_loop/test_failed_e2e_scanner.py
-tests/teatree_loop/test_gitlab_approvals_scanner.py
 tests/teatree_loop/test_incoming_events_scanner.py
 tests/teatree_loop/test_multi_identity_scanners.py
 tests/teatree_loop/test_outbound_audit.py
@@ -120,7 +118,6 @@ tests/teatree_loop/test_provision_smoke_scanner.py
 tests/teatree_loop/test_pull_main_clone_scanner.py
 tests/teatree_loop/test_red_card_scanner.py
 tests/teatree_loop/test_resource_pressure_scanner.py
-tests/teatree_loop/test_review_nag_scanner.py
 tests/teatree_loop/test_review_react_self_authored_skip_1838.py
 tests/teatree_loop/test_review_request_merge_react_scanner.py
 tests/teatree_loop/test_reviewer_prs_skip_conditions_1321.py
@@ -174,7 +171,6 @@ tests/test_skill_deps.py
 tests/test_slack_setup.py
 tests/test_slack_voice_classifier_config.py
 tests/test_transcript_replay_conformance.py
-tests/test_url_title_fetcher.py
 tests/test_visual_qa.py
 tests/utils/test_db.py
 tests/utils/test_django_bootstrap.py

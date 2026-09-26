@@ -76,11 +76,10 @@ class TestMandatedSkillAbsent:
     def test_the_failure_carries_the_exact_remediation(self, project_root: Path, home: Path) -> None:
         _, output = _run(project_root, home)
 
-        # Pasteable per gap: the declared spec, not a generic `apm install` shape
-        # the reader still has to resolve back to a source.
-        assert "apm install souliane/skills/ac-python#d0008a3" in output
-        assert "apm install souliane/skills/ac-django#d0008a3" in output
+        assert "souliane/skills/ac-python#d0008a3" in output
+        assert "souliane/skills/ac-django#d0008a3" in output
         assert "t3 setup" in output
+        assert "apm install" not in output
 
     def test_the_failure_names_where_the_dependency_is_declared(self, project_root: Path, home: Path) -> None:
         _, output = _run(project_root, home)
@@ -147,7 +146,8 @@ class TestTheShippedManifestMandatesTheCompanionSkills:
         _, output = _run(_TEATREE_ROOT, home, search_dirs=[empty_skills])
 
         assert f"FAIL  Declared dependency not provisioned: skill '{name}'" in output
-        assert f"apm install souliane/skills/{name}#" in output
+        assert f"souliane/skills/{name}#" in output
+        assert "t3 setup" in output
 
     def test_the_companion_skills_are_not_shipped_in_the_plugins_own_skills_tree(self) -> None:
         # A copy under `skills/` satisfies the mandate from the plugin-first

@@ -18,7 +18,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ docs            Serve the project documentation with mkdocs.                 │
 │ capabilities    List each command's --json support and exit-code contract    │
 │                 (front-end discovery).                                       │
-│ agent           Launch Claude Code with auto-detected project context.       │
+│ agent           Launch the configured agent with auto-detected project       │
+│                 context.                                                     │
 │ sessions        List recent Claude conversation sessions with resume         │
 │                 commands.                                                    │
 │ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
@@ -55,36 +56,35 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 branch.                                                      │
 │ assess          Codebase health assessment.                                  │
 │ overlay         Dev-mode overlay install/uninstall.                          │
-│ loop            Manage the tick-driven autonomous loops. Under #1796 / PR-28 │
-│                 the singleton `t3 worker` owns the per-loop tick cadence by  │
-│                 default (`loop_runner_enabled` ON): it drains durable        │
-│                 self-rescheduling loop-timer chains (django-tasks            │
-│                 `run_after` rows), one per enabled DB `Loop` row firing `t3  │
-│                 loops tick --loop <name>` on its own cadence — there is no   │
-│                 master tick, and the DB loops run with no Claude session     │
-│                 open (the SessionStart supervisor keeps one worker alive; on │
-│                 a headless box start it once from a login profile).          │
-│                 `loop_runner_enabled` is the kill-switch — set it false to   │
-│                 stop the loops entirely (there is no fallback plane; PR-28   │
-│                 retired the native `/loop` cron mirror). Each per-loop tick  │
-│                 atomically claims the next pending unit (`t3 loop            │
-│                 claim-next`), spawns one fresh bounded sub-agent for it, and │
-│                 records the outcome when that sub-agent returns (`tasks      │
-│                 record-attempt --claim-token`) — the claim is the spawn      │
-│                 boundary, not the finish, and an unrecorded unit is          │
-│                 reclaimed and re-offered rather than ever completing; a      │
-│                 dying worker leaves its Task reclaimable and the next tick   │
-│                 re-dispatches it. Check the worker with `t3 worker status`;  │
-│                 ensure one is running with `t3 worker ensure`.               │
+│ loop            Manage the tick-driven autonomous loops. Under #1796 the     │
+│                 singleton `t3 worker` owns the per-loop tick cadence: it     │
+│                 drains durable self-rescheduling loop-timer chains           │
+│                 (django-tasks `run_after` rows), one per admitted DB `Loop`  │
+│                 row firing `t3 loops tick --loop <name>` on its own cadence  │
+│                 — there is no master tick, and the DB loops run with no      │
+│                 Claude session open (the SessionStart supervisor keeps one   │
+│                 worker alive; on a headless box start it once from a login   │
+│                 profile). The active preset is the stop condition — one that │
+│                 admits zero loops stops them entirely (there is no fallback  │
+│                 plane). Each per-loop tick atomically claims the next        │
+│                 pending unit (`t3 loop claim-next`), spawns one fresh        │
+│                 bounded sub-agent for it, and records the outcome when that  │
+│                 sub-agent returns (`tasks record-attempt --claim-token`) —   │
+│                 the claim is the spawn boundary, not the finish, and an      │
+│                 unrecorded unit is reclaimed and re-offered rather than ever │
+│                 completing; a dying worker leaves its Task reclaimable and   │
+│                 the next tick re-dispatches it. Check the worker with `t3    │
+│                 worker status`; ensure one is running with `t3 worker        │
+│                 ensure`.                                                     │
 │ goal            Standing verified-green goals (PR-25).                       │
-│ worker          The singleton loop-timer worker (#1796 / PR-28). Bare `t3    │
-│                 worker` runs it (the cadence owner, default ON via           │
-│                 `loop_runner_enabled`). `status` reports the live holder +   │
-│                 resolved kill-switch + whether loops actually tick (it EXITS │
-│                 NON-ZERO on a stale fleet); `ensure` spawns a detached       │
-│                 worker iff enabled and the flock is free; `drain` quiesces   │
-│                 admission without stopping anything; `stop` / `restart` end  │
-│                 the live worker and verify it against the flock.             │
+│ worker          The singleton loop-timer worker (#1796). Bare `t3 worker`    │
+│                 runs it (the cadence owner). `status` reports the live       │
+│                 holder + how many loops the active preset admits + whether   │
+│                 loops actually tick (it EXITS NON-ZERO on a stale fleet);    │
+│                 `ensure` spawns a detached worker iff the flock is free;     │
+│                 `drain` quiesces admission without stopping anything; `stop` │
+│                 / `restart` end the live worker and verify it against the    │
+│                 flock.                                                       │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
@@ -117,6 +117,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 what keeps a fresh install inert.                            │
 │ peer            The loopback forwards the Compare Instances page reads its   │
 │                 peers through.                                               │
+│ settings        This box's settings beside its peers' — the Compare          │
+│                 Instances page, in a terminal.                               │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -126,22 +128,21 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 
- Manage the tick-driven autonomous loops. Under #1796 / PR-28 the singleton `t3
- worker` owns the per-loop tick cadence by default (`loop_runner_enabled` ON):
- it drains durable self-rescheduling loop-timer chains (django-tasks
- `run_after` rows), one per enabled DB `Loop` row firing `t3 loops tick --loop
- <name>` on its own cadence — there is no master tick, and the DB loops run
- with no Claude session open (the SessionStart supervisor keeps one worker
- alive; on a headless box start it once from a login profile).
- `loop_runner_enabled` is the kill-switch — set it false to stop the loops
- entirely (there is no fallback plane; PR-28 retired the native `/loop` cron
- mirror). Each per-loop tick atomically claims the next pending unit (`t3 loop
- claim-next`), spawns one fresh bounded sub-agent for it, and records the
- outcome when that sub-agent returns (`tasks record-attempt --claim-token`) —
- the claim is the spawn boundary, not the finish, and an unrecorded unit is
- reclaimed and re-offered rather than ever completing; a dying worker leaves
- its Task reclaimable and the next tick re-dispatches it. Check the worker with
- `t3 worker status`; ensure one is running with `t3 worker ensure`.
+ Manage the tick-driven autonomous loops. Under #1796 the singleton `t3 worker`
+ owns the per-loop tick cadence: it drains durable self-rescheduling loop-timer
+ chains (django-tasks `run_after` rows), one per admitted DB `Loop` row firing
+ `t3 loops tick --loop <name>` on its own cadence — there is no master tick,
+ and the DB loops run with no Claude session open (the SessionStart supervisor
+ keeps one worker alive; on a headless box start it once from a login profile).
+ The active preset is the stop condition — one that admits zero loops stops
+ them entirely (there is no fallback plane). Each per-loop tick atomically
+ claims the next pending unit (`t3 loop claim-next`), spawns one fresh bounded
+ sub-agent for it, and records the outcome when that sub-agent returns (`tasks
+ record-attempt --claim-token`) — the claim is the spawn boundary, not the
+ finish, and an unrecorded unit is reclaimed and re-offered rather than ever
+ completing; a dying worker leaves its Task reclaimable and the next tick
+ re-dispatches it. Check the worker with `t3 worker status`; ensure one is
+ running with `t3 worker ensure`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -167,8 +168,6 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  emit it.                                                    │
 │ list             Print LIVE loop status: each loop's enabled state, cadence, │
 │                  last fire, and next tick.                                   │
-│ intake-loops     Print each owner-intake loop name (never fleet-masked off), │
-│                  one per line, sorted.                                       │
 │ reclaim-markers  Release non-terminal markers whose ticket is terminal,      │
 │                  gone, or stalled, freeing intake budget.                    │
 │ pause            Pause a mini-loop durably (#1913) — EMERGENCY-only; prefer  │
@@ -179,8 +178,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  presets/schedules or `loop override`.                       │
 │ enable           Enable a disabled mini-loop — EMERGENCY-only; prefer        │
 │                  presets/schedules or `loop override`.                       │
-│ override         Emergency per-loop force (on/off/clear) — the handle that   │
-│                  beats a preset force-off (#3248).                           │
+│ override         Set the MANUAL per-loop override (on/off/clear) — the one   │
+│                  handle that beats the preset.                               │
 │ loop-state       Read a known mini-loop's durable state, read-only (ENABLED  │
 │                  when never touched; refuses an unknown name).               │
 │ self-improve     Self-improving monitor — scheduled smell detection with a   │

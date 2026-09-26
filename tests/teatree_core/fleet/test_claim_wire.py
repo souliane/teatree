@@ -12,6 +12,7 @@ in the model manager, so ``teatree.core.models`` keeps no dependency on the high
 ``teatree.core`` coordination modules (the tach boundary).
 """
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
@@ -20,10 +21,12 @@ from django.test import TestCase
 
 from teatree.core.fleet import claim as fleet_claim
 from teatree.core.fleet import wire as fleet_claim_wire
-from teatree.core.forge_push import CredentialSource, PushOutcome
+from teatree.core.forge_push import PushOutcome
+from teatree.core.forge_push_verdict import CredentialSource
 from teatree.core.management.commands._ship.gates import run_fleet_claim_fence_gate
 from teatree.core.models import ImplementedIssueMarker, Ticket, Worktree
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
+from teatree.types import RawAPIDict
 
 from ._git_origin import init_bare, init_client, ref_sha
 
@@ -35,8 +38,28 @@ if TYPE_CHECKING:
 _ISSUE = "https://github.com/souliane/teatree/issues/4242"
 
 
-def _scanner() -> IssueIntakeScanner:
-    return IssueIntakeScanner(host=cast("CodeHostBackend", object()), admit_label="t3-auto", overlay_name="acme")
+@dataclass
+class _EmptyQueueHost:
+    """A forge that ANSWERS every discovery query with an empty queue."""
+
+    queries: list[str] = field(default_factory=list)
+
+    def current_user(self) -> str:
+        return "souliane"
+
+    def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        self.queries.append(f"authored:{author}")
+        return []
+
+    def list_labeled_issues(self, *, label: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        self.queries.append(f"labeled:{label}")
+        return []
+
+
+def _scanner(host: "CodeHostBackend | None" = None) -> IssueIntakeScanner:
+    return IssueIntakeScanner(
+        host=host or cast("CodeHostBackend", _EmptyQueueHost()), admit_label="t3-auto", overlay_name="acme"
+    )
 
 
 def _enable_and_route(client: Path) -> tuple:
@@ -108,13 +131,16 @@ class TestScannerHeartbeatOnly(TestCase):
     """At full budget (``can_claim=False``) the scanner heartbeats but claims nothing."""
 
     def test_scan_heartbeats_and_claims_nothing(self) -> None:
+        host = _EmptyQueueHost()
         scanner = IssueIntakeScanner(
-            host=cast("CodeHostBackend", object()), admit_label="t3-auto", overlay_name="acme", can_claim=False
+            host=cast("CodeHostBackend", host), admit_label="t3-auto", overlay_name="acme", can_claim=False
         )
         with patch.object(fleet_claim_wire, "heartbeat_inflight_claims") as beat:
             signals = scanner.scan()
         assert signals == []
         beat.assert_called_once_with("acme")
+        # The empty result is a READ queue, not a swallowed credential outage.
+        assert host.queries == ["labeled:t3-auto"]
 
 
 class TestCacheFromFleetClaim(TestCase):

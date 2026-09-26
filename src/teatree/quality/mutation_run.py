@@ -5,11 +5,11 @@ module is the runner that, when the intersection is non-empty, writes a scoped
 mutmut config and executes mutmut over ONLY the touched safety modules, then
 classifies the result and applies the surviving-count ratchet.
 
-Two design choices keep it robust and narrow. Serial (debug) execution:
-mutmut's default forks a child per mutant; on macOS a forked child that has
-already imported pytest segfaults on exit, reporting every mutant as segfault.
-``debug = true`` runs serially and is deterministic across macOS and Linux —
-fine for the handful of small modules in scope. Per-module ``tests_dir``:
+Two design choices keep it robust and narrow. Quota-aware execution: mutmut's
+default worker count follows the host CPU count, which can exceed a container's
+cgroup quota. The runner passes an explicit cgroup/affinity-aware
+``--max-children`` value; ``debug = true`` does not serialize mutmut. Per-module
+``tests_dir``:
 mutmut's baseline "clean tests" pass runs the whole ``tests_dir`` once; scoping
 it per module (from ``[tool.teatree.mutation.module_tests]``) keeps each run
 inside the CI cap.
@@ -27,6 +27,7 @@ against a run that measured nothing.
 """
 
 import dataclasses
+import os
 import re
 import tomllib
 from collections.abc import Iterable, Sequence
@@ -315,7 +316,7 @@ class BaselineRatchet:
 
 def changed_files_vs_main(repo: str = ".", target: str = "origin/main") -> tuple[str, ...]:
     base = git.merge_base(repo=repo, target=target)
-    out = git.run(repo=repo, args=["diff", "--name-only", f"{base}...HEAD"])
+    out = git.run(repo=repo, args=["diff", "--relative", "--name-only", f"{base}...HEAD"])
     return tuple(line for line in out.splitlines() if line.strip())
 
 
@@ -374,11 +375,61 @@ def run_scoped(
 
 
 _MUTMUT_CMD = ("uv", "run", "--group", "mutation", "mutmut")
+_CGROUP_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
+_CGROUP_CPU_V1_DIRS = (Path("/sys/fs/cgroup/cpu"), Path("/sys/fs/cgroup/cpu,cpuacct"))
+
+
+def _read_cgroup_cpu_max() -> str | None:
+    try:
+        return _CGROUP_CPU_MAX.read_text(encoding="utf-8")
+    except OSError:
+        pass
+    for cpu_dir in _CGROUP_CPU_V1_DIRS:
+        try:
+            quota = (cpu_dir / "cpu.cfs_quota_us").read_text(encoding="utf-8").strip()
+            period = (cpu_dir / "cpu.cfs_period_us").read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        return f"{quota} {period}"
+    return None
+
+
+def _usable_cpu_count(
+    *,
+    cpu_max: str | None,
+    affinity_count: int | None,
+    cpu_count: int | None,
+    override: str | None,
+) -> int:
+    override_error = "MUTMUT_MAX_CHILDREN must be an integer greater than or equal to 1"
+    if override is not None:
+        try:
+            configured = int(override)
+        except ValueError as exc:
+            raise ValueError(override_error) from exc
+        if configured < 1:
+            raise ValueError(override_error)
+        return configured
+
+    host_limit = max(cpu_count or 1, 1)
+    limits = [host_limit]
+    if affinity_count is not None:
+        limits.append(max(affinity_count, 1))
+    if cpu_max:
+        quota_raw, _, period_raw = cpu_max.strip().partition(" ")
+        if quota_raw not in {"max", "-1"}:
+            try:
+                quota = int(quota_raw)
+                period = int(period_raw)
+            except ValueError:
+                pass
+            else:
+                if quota >= 0 and period > 0:
+                    limits.append(max(quota // period, 1))
+    return max(min(limits), 1)
 
 
 def _mutmut_env() -> dict[str, str]:
-    import os  # noqa: PLC0415 — deferred: loaded only on this code path
-
     env = dict(os.environ)
     # macOS aborts a fork()ed child that touches the Objective-C runtime once a
     # parent thread has initialized it (mutmut starts a timeout thread before
@@ -405,13 +456,31 @@ def _run_mutmut(modules: Sequence[str], *, tests_dir: Sequence[str], repo: str, 
     config_path.write_text(build_mutmut_config(modules, tests_dir=tests_dir), encoding="utf-8")
     pytest_ini.write_text(_MUTANTS_PYTEST_INI, encoding="utf-8")
     env = _mutmut_env()
+    cpu_max = _read_cgroup_cpu_max()
+    sched_getaffinity = getattr(os, "sched_getaffinity", None)
+    try:
+        affinity_count = len(sched_getaffinity(0)) if sched_getaffinity is not None else None
+    except OSError:
+        affinity_count = None
+    max_children = _usable_cpu_count(
+        cpu_max=cpu_max,
+        affinity_count=affinity_count,
+        cpu_count=os.cpu_count(),
+        override=os.environ.get("MUTMUT_MAX_CHILDREN"),
+    )
     try:
         # ``expected_codes=None`` accepts any mutmut RETURN code (mutmut exits
         # non-zero when mutants survive — a normal outcome we classify). A
         # wall-clock TimeoutExpired or a results-query CommandFailedError is a
         # tool CRASH, not a return code: translate it to MutationToolCrashError
         # so the warn-first CLI treats it as inconclusive, not a test gap.
-        run_allowed_to_fail([*_MUTMUT_CMD, "run"], expected_codes=None, cwd=repo, env=env, timeout=timeout)
+        run_allowed_to_fail(
+            [*_MUTMUT_CMD, "run", "--max-children", str(max_children)],
+            expected_codes=None,
+            cwd=repo,
+            env=env,
+            timeout=timeout,
+        )
         # ``results --all=1`` lists killed mutants too — without it mutmut hides
         # them, so the kill-proof could not observe a kill. ``--all`` is a
         # value option in mutmut, not a flag, so it needs ``=1``.

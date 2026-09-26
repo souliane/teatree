@@ -289,6 +289,13 @@ echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(g
 # mount keeps path identity with the container's `/home/teatree/...` targets.
 export TEATREE_HOST_HOME="$HOME"
 
+# Docker Desktop's worker cannot observe macOS load/RAM/swap. Install from the
+# updated checkout, after the host home is known, on every convergence. The
+# deploy workflow also invokes this after an old deploy.sh's first fast-forward.
+if [ "$(uname -s)" = Darwin ]; then
+    "$SCRIPT_DIR/install-host-pressure.zsh"
+fi
+
 # The checkout this deploy runs out of — the directory holding `deploy/`. The
 # watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs
 # `$TEATREE_DEPLOY_CHECKOUT/deploy/watchdog.sh` from it, so both sides read this
@@ -381,42 +388,60 @@ echo "deploy: container UID (host deploy user) — TEATREE_UID=$TEATREE_UID"
 # ${TEATREE_WORKER_MEM_LIMIT:-18g}). The watchdog's `up -d --no-recreate` does not
 # export these, but --no-recreate never re-sizes a running worker; the next deploy
 # re-asserts them.
+#
+# Exit 3 is the sizer's REFUSAL: this daemon is too small to hold a worker cap that the
+# admission governor can ever release, and every alternative is worse — a cap it can hold
+# is one `t3 doctor check` hard-FAILs as a broken product, and emitting nothing leaves
+# compose's deliberately generous in-file default on a VM it dwarfs. So a refusal ABORTS
+# the deploy with its reason, while any other non-zero (no python3, an import error) keeps
+# the pre-existing silent degrade to that default. stderr can no longer be discarded: it
+# is where the refusal's remedy is written.
 TEATREE_WORKER_CPUS="${TEATREE_WORKER_CPUS:-}"
 TEATREE_WORKER_MEM_LIMIT="${TEATREE_WORKER_MEM_LIMIT:-}"
 if command -v python3 >/dev/null 2>&1; then
-    eval "$(python3 "$REPO_ROOT/src/teatree/utils/ram_probe.py" compose-sizing 2>/dev/null || true)"
+    SIZING_ERR="$(mktemp)"
+    SIZING_VARS="$(python3 "$REPO_ROOT/src/teatree/utils/ram_probe.py" compose-sizing 2>"$SIZING_ERR")" &&
+        SIZING_RC=0 || SIZING_RC=$?
+    if [ "$SIZING_RC" = 0 ]; then
+        eval "$SIZING_VARS"
+    elif [ "$SIZING_RC" = 3 ]; then
+        echo "deploy: refusing to size the worker container —" >&2
+        cat "$SIZING_ERR" >&2
+        rm -f "$SIZING_ERR"
+        exit 1
+    fi
+    rm -f "$SIZING_ERR"
 fi
 export TEATREE_WORKER_CPUS TEATREE_WORKER_MEM_LIMIT
 echo "deploy: worker sizing — cpus=${TEATREE_WORKER_CPUS:-<default>} mem_limit=${TEATREE_WORKER_MEM_LIMIT:-<default>}"
 
 # The GitLab token compose interpolates into every service's `environment:`, so a
 # `docker exec` inherits it — the entrypoint's own export cannot, since it reaches
-# only the role's process tree. Resolved from the box's pass store rather than
-# teatree.env so the plaintext stays gpg-encrypted at rest and a rotation needs no
-# file rewrite. Read here because this is the process that runs `compose up`, and
-# compose interpolates from ITS environment. Absent pass or key, it stays empty and
-# the entrypoint's own read remains the only path, exactly as before.
-if [ -z "${GITLAB_TOKEN:-}" ] && command -v pass >/dev/null 2>&1; then
-    GITLAB_TOKEN="$(pass show "${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat}" 2>/dev/null | head -n1 || true)"
+# only the role's process tree. When the operator explicitly names a bootstrap
+# pass entry, read it here because this process runs `compose up` and compose
+# interpolates from ITS environment. With no explicit entry, stay empty rather
+# than guessing a legacy path that may disagree with the DB-bound route.
+if [ -z "${GITLAB_TOKEN:-}" ] && [ -n "${TEATREE_GITLAB_TOKEN_PASS_PATH:-}" ] && command -v pass >/dev/null 2>&1; then
+    GITLAB_TOKEN="$(pass show "$TEATREE_GITLAB_TOKEN_PASS_PATH" 2>/dev/null | head -n1 || true)"
 fi
 export GITLAB_TOKEN="${GITLAB_TOKEN:-}"
 if [ -n "$GITLAB_TOKEN" ]; then
-    echo "deploy: GitLab token resolved for the container environment (key ${TEATREE_GITLAB_TOKEN_PASS_PATH:-gitlab/pat})"
+    echo "deploy: GitLab token resolved for the container environment (key ${TEATREE_GITLAB_TOKEN_PASS_PATH:-from this environment})"
 else
-    echo "deploy: no GitLab token on this host — containers fall back to the entrypoint's own pass read" >&2
+    echo "deploy: no GitLab token exported — set TEATREE_GITLAB_TOKEN_PASS_PATH for an explicit bootstrap pass entry, or let the runtime use its bound credential route" >&2
 fi
 
-# The Notion integration token, on exactly the terms above: teatree.env is regenerated
-# wholesale on every deploy and is deliberately secret-free, so `pass` is the only
-# source, and the per-service declaration is what a `docker exec` inherits.
-if [ -z "${NOTION_TOKEN:-}" ] && command -v pass >/dev/null 2>&1; then
-    NOTION_TOKEN="$(pass show "${NOTION_TOKEN_PASS_PATH:-notion/integration-token}" 2>/dev/null | head -n1 || true)"
+# The Notion token crosses the same boundary, but only from an entry named in
+# NOTION_TOKEN_PASS_PATH: an exported value beats the notion_token_pass_key setting, so a
+# guessed default would shadow the entry each container routes from its own store.
+if [ -z "${NOTION_TOKEN:-}" ] && [ -n "${NOTION_TOKEN_PASS_PATH:-}" ] && command -v pass >/dev/null 2>&1; then
+    NOTION_TOKEN="$(pass show "$NOTION_TOKEN_PASS_PATH" 2>/dev/null | head -n1 || true)"
 fi
 export NOTION_TOKEN="${NOTION_TOKEN:-}"
 if [ -n "$NOTION_TOKEN" ]; then
-    echo "deploy: Notion token resolved for the container environment (key ${NOTION_TOKEN_PASS_PATH:-notion/integration-token})"
+    echo "deploy: Notion token exported to the container environment (key ${NOTION_TOKEN_PASS_PATH:-from this environment})"
 else
-    echo "deploy: no Notion token on this host — run 't3 notion setup' if the factory must read Notion" >&2
+    echo "deploy: no Notion token exported — containers read the entry notion_token_pass_key routes; 't3 setup' in one reports it"
 fi
 
 # Services the staged swap names, in the order it stages them. Everything compose

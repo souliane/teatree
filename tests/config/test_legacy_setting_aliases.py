@@ -11,21 +11,20 @@ Two guards live here:
 
 *   the instance guard — a stored ``speed`` row resolves to ``Wip.FULL`` through
     the ``speed -> wip`` alias;
-*   the class-of-bug guard — every key that has ever been a DB-home settings
-    field name (the explicitly-maintained ``_RETIRED_SETTING_KEYS`` registry) is
-    still reachable: a current ``UserSettings`` field or a ``_LEGACY_SETTING_ALIASES``
-    entry, so the next rename cannot silently drop an operator's setting.
+*   the class-of-bug guard — every alias points at a field that still exists, so
+    a dangling target cannot drop an operator's setting as silently as a missing
+    alias would. Reachability itself needs no guard: ``_LEGACY_SETTING_ALIASES``
+    and ``_RETIRED_SETTING_KEYS`` are both derived from ``RENAMED_SETTING_KEYS``
+    (#3527), so a retired key is an alias key by construction.
 
 Integration-first per the Test-Writing Doctrine: real ``ConfigSetting`` rows
 resolved through ``get_effective_settings``.
 """
 
-import dataclasses
-
 import pytest
 from django.test import TestCase
 
-from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, Autonomy, UserSettings, Wip, get_effective_settings
+from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, Autonomy, Wip, get_effective_settings
 from teatree.config import resolution as _resolution
 from teatree.config.resolution import _LEGACY_SETTING_ALIASES, _RETIRED_SETTING_KEYS
 from teatree.core.models import ConfigSetting
@@ -122,38 +121,12 @@ class AliasFoldedGatePinSurvivesAutonomyCollapse(TestCase):
 class RetiredSettingKeysStayReachable(TestCase):
     """The class-of-bug guard: a renamed DB-home key must never silently drop rows.
 
-    ``_RETIRED_SETTING_KEYS`` is the explicitly-maintained record of every key that
-    has ever been a DB-home settings field name. Retiring a key is a deliberate
-    two-part edit (record it here, wire its alias), and this guard fails loudly if
-    the alias half is missing.
+    Both ``_RETIRED_SETTING_KEYS`` and ``_LEGACY_SETTING_ALIASES`` are derived from
+    the single ``RENAMED_SETTING_KEYS`` registry (#3527), so "every retired key is
+    aliased" and "every alias is recorded as retired" hold by construction and are
+    not testable propositions. What the derivation does NOT settle is whether an
+    alias TARGET still exists — that one is guarded below.
     """
-
-    @staticmethod
-    def _current_fields() -> set[str]:
-        return {field.name for field in dataclasses.fields(UserSettings)}
-
-    def test_every_retired_key_is_a_current_field_or_aliased(self) -> None:
-        current = self._current_fields()
-        unresolved = sorted(
-            key for key in _RETIRED_SETTING_KEYS if key not in current and key not in _LEGACY_SETTING_ALIASES
-        )
-        assert not unresolved, (
-            f"Retired DB-home settings key(s) {unresolved} are neither a current UserSettings "
-            f"field nor in _LEGACY_SETTING_ALIASES, so a ConfigSetting row stored under the old "
-            f"key is silently ignored. For each key, either add "
-            f"'<old_key>': '<current_field>' to _LEGACY_SETTING_ALIASES in "
-            f"src/teatree/config/resolution.py, or ship a data migration that renames the "
-            f"stored rows and drop the key from _RETIRED_SETTING_KEYS."
-        )
-
-    def test_every_alias_key_is_recorded_as_retired(self) -> None:
-        # The registry is the canonical record of renames: an alias without a
-        # retired-key entry means the guard above cannot see it.
-        unrecorded = sorted(set(_LEGACY_SETTING_ALIASES) - set(_RETIRED_SETTING_KEYS))
-        assert not unrecorded, (
-            f"_LEGACY_SETTING_ALIASES key(s) {unrecorded} are missing from _RETIRED_SETTING_KEYS. "
-            f"Add each retired key to _RETIRED_SETTING_KEYS so the reachability guard covers it."
-        )
 
     def test_every_alias_target_actually_resolves(self) -> None:
         # A dangling alias (target absent from the DB-home parser registry) would
@@ -189,7 +162,8 @@ class TestGoldenSnapshotCatchesSilentDropOrRename:
     ``UserSettings`` field, so a DB-home key can never drift away from the single
     hand-maintained golden. Renames are still routed to ``_RETIRED_SETTING_KEYS`` /
     ``_LEGACY_SETTING_ALIASES`` by the full-field-set pin in
-    ``test_settings_field_golden.py`` and kept reachable by ``RetiredSettingKeysStayReachable``.
+    ``test_settings_field_golden.py``; the alias TARGET is guarded by
+    ``RetiredSettingKeysStayReachable``.
     """
 
     def test_every_live_db_home_key_is_pinned(self) -> None:

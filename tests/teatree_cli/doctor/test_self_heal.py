@@ -54,21 +54,21 @@ class ComposeStackCheckTest(TestCase):
         assert ok is True
         assert out == ""
 
-    def test_worker_down_while_runner_on_fails(self) -> None:
+    def test_worker_down_while_the_fleet_admits_work_fails(self) -> None:
         states = [("teatree-worker", "exited", "Exited (137) 1 minute ago")]
         with (
             mock.patch(f"{_MOD}._Probe.compose_container_states", return_value=states),
-            mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True),
+            mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True),
         ):
             ok, out = _echoes(self_heal._check_compose_stack)
         assert ok is False
         assert "teatree-worker" in out
 
-    def test_worker_down_while_runner_off_is_ok(self) -> None:
+    def test_worker_down_while_the_fleet_admits_nothing_is_ok(self) -> None:
         states = [("teatree-worker", "exited", "Exited (0)")]
         with (
             mock.patch(f"{_MOD}._Probe.compose_container_states", return_value=states),
-            mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=False),
+            mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=False),
         ):
             ok, _out = _echoes(self_heal._check_compose_stack)
         assert ok is True
@@ -88,7 +88,7 @@ class ComposeStackCheckTest(TestCase):
         ]
         with (
             mock.patch(f"{_MOD}._Probe.compose_container_states", return_value=states),
-            mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True),
+            mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True),
         ):
             ok, _out = _echoes(self_heal._check_compose_stack)
         assert ok is True
@@ -104,7 +104,7 @@ class ComposeStackCheckTest(TestCase):
         ]
         with (
             mock.patch(f"{_MOD}._Probe.compose_container_states", return_value=states),
-            mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True),
+            mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True),
         ):
             ok, out = _echoes(self_heal._check_compose_stack)
         assert ok is False
@@ -185,7 +185,7 @@ class LoopWorkerAliveCheckTest(TestCase):
     def test_free_flock_over_overdue_work_fails(self) -> None:
         overdue = [("inbox", timezone.now() - dt.timedelta(hours=1), 600)]
         with (
-            mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True),
+            mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True),
             mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=True),
             mock.patch(f"{_MOD}._Probe.overdue_ready_timers", return_value=overdue),
         ):
@@ -196,7 +196,7 @@ class LoopWorkerAliveCheckTest(TestCase):
 
     def test_free_flock_but_no_overdue_work_is_ok(self) -> None:
         with (
-            mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True),
+            mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True),
             mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=True),
             mock.patch(f"{_MOD}._Probe.overdue_ready_timers", return_value=[]),
         ):
@@ -205,19 +205,19 @@ class LoopWorkerAliveCheckTest(TestCase):
 
     def test_held_flock_is_ok(self) -> None:
         with (
-            mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True),
+            mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True),
             mock.patch(f"{_MOD}._Probe.worker_flock_free", return_value=False),
         ):
             ok, _out = _echoes(self_heal._check_loop_worker_alive)
         assert ok is True
 
-    def test_runner_off_is_ok(self) -> None:
-        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=False):
+    def test_a_fleet_admitting_nothing_is_ok(self) -> None:
+        with mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=False):
             ok, _out = _echoes(self_heal._check_loop_worker_alive)
         assert ok is True
 
     def test_crash_degrades_to_pass(self) -> None:
-        with mock.patch(f"{_MOD}._Probe.loop_runner_on", side_effect=RuntimeError("boom")):
+        with mock.patch(f"{_MOD}._Probe.fleet_admits_work", side_effect=RuntimeError("boom")):
             ok, out = _echoes(self_heal._check_loop_worker_alive)
         assert ok is True
         assert "WARN" in out
@@ -294,7 +294,7 @@ class TaskAttemptActivityCheckTest(TestCase):
         task = TaskFactory(status=Task.Status.PENDING)
         self._backdate_task(task, minutes=31)
 
-        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+        with mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True):
             ok, out = _echoes(self_heal._check_task_attempt_activity)
 
         assert ok is False
@@ -306,7 +306,7 @@ class TaskAttemptActivityCheckTest(TestCase):
         self._backdate_task(task, minutes=60)
         TaskAttemptFactory(task=task)
 
-        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+        with mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True):
             ok, out = _echoes(self_heal._check_task_attempt_activity)
 
         assert ok is True
@@ -318,7 +318,7 @@ class TaskAttemptActivityCheckTest(TestCase):
         attempt = TaskAttemptFactory(task=task)
         self._backdate_attempt(attempt, minutes=31)
 
-        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+        with mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True):
             ok, out = _echoes(self_heal._check_task_attempt_activity)
 
         assert ok is True
@@ -331,7 +331,7 @@ class TaskAttemptActivityCheckTest(TestCase):
         self._backdate_attempt(attempt, minutes=60)
         self._end_attempt(attempt, minutes=31)
 
-        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+        with mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True):
             ok, out = _echoes(self_heal._check_task_attempt_activity)
 
         assert ok is False
@@ -344,7 +344,7 @@ class TaskAttemptActivityCheckTest(TestCase):
         self._backdate_attempt(attempt, minutes=60)
         self._end_attempt(attempt, minutes=5)
 
-        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+        with mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True):
             ok, out = _echoes(self_heal._check_task_attempt_activity)
 
         assert ok is True
@@ -355,7 +355,7 @@ class TaskAttemptActivityCheckTest(TestCase):
         attempt = TaskAttemptFactory(task=task)
         self._backdate_attempt(attempt, minutes=60)
 
-        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=True):
+        with mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=True):
             ok, out = _echoes(self_heal._check_task_attempt_activity)
 
         assert ok is True
@@ -365,7 +365,7 @@ class TaskAttemptActivityCheckTest(TestCase):
         task = TaskFactory(status=Task.Status.PENDING)
         self._backdate_task(task, minutes=60)
 
-        with mock.patch(f"{_MOD}._Probe.loop_runner_on", return_value=False):
+        with mock.patch(f"{_MOD}._Probe.fleet_admits_work", return_value=False):
             ok, out = _echoes(self_heal._check_task_attempt_activity)
 
         assert ok is True

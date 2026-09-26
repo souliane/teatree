@@ -11,7 +11,7 @@ DELIVERED / IGNORED), returning the slot to the budget.
 from django.test import TestCase
 
 from teatree.core.models import ImplementedIssueMarker, Ticket
-from tests.factories import ImplementedIssueMarkerFactory, TicketFactory
+from tests.factories import ImplementedIssueMarkerFactory, TicketFactory, waive_rubric
 
 URL = "https://github.com/souliane/teatree/issues/3205"
 
@@ -44,6 +44,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
 
     def test_delivered_releases_the_marker(self) -> None:
         marker = self._ticket_with_marker(state=Ticket.State.RETRO_RECORDED)
+        waive_rubric(marker.ticket)
 
         marker.ticket.mark_delivered()
         marker.ticket.save()

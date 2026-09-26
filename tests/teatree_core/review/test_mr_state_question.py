@@ -2,7 +2,7 @@
 
 ``ask_mr_state`` is the surface the automation uses when it genuinely cannot
 decide a merge request's state. It is the bot talking to its own operator about
-the operator's own work — a different concern from ``on_behalf_post_mode`` /
+the operator's own work — a different concern from the posture /
 ``notify_on_post_on_behalf``, which govern posts made AS the user TO colleagues.
 Routing this through the publish gate would silently swallow the question
 whenever the operator has the (default) gate armed, which is exactly when they
@@ -19,7 +19,6 @@ backlog of undecidable merge requests cannot arrive as a flood.
 """
 
 import json
-import os
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
@@ -28,8 +27,11 @@ from teatree.core import notify as notify_module
 from teatree.core.gates.review_request_guard import canonical_mr_url
 from teatree.core.models import ConfigSetting, DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
+from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict
+from teatree.core.review import mr_state_question
 from teatree.core.review.mr_state_question import ask_mr_state, mr_state_marker
-from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
+from teatree.on_behalf_gate import OnBehalfVerdict
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
 _MR = "https://git.example.com/acme/app/-/merge_requests/41"
 _OTHER_MR = "https://git.example.com/acme/app/-/merge_requests/42"
@@ -116,8 +118,6 @@ class TestOneOpenQuestionPerMergeRequest(TestCase):
 
 class TestPerTickCap(TestCase):
     def test_the_cap_refuses_the_next_distinct_merge_request(self) -> None:
-        ConfigSetting.objects.set_value("mr_state_questions_max_per_tick", 2)
-
         assert ask_mr_state(mr_url=_MR, reason=_REASON) is not None
         assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
         assert ask_mr_state(mr_url=_THIRD_MR, reason=_REASON) is None
@@ -125,33 +125,31 @@ class TestPerTickCap(TestCase):
 
     def test_a_raised_cap_admits_the_merge_request_the_lower_one_refused(self) -> None:
         """The control: without this the cap test would also pass on a reader that always refuses."""
-        ConfigSetting.objects.set_value("mr_state_questions_max_per_tick", 1)
-        assert ask_mr_state(mr_url=_MR, reason=_REASON) is not None
-        assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is None
-
-        ConfigSetting.objects.set_value("mr_state_questions_max_per_tick", 2)
+        with patch.object(mr_state_question, "MAX_OPEN_QUESTIONS", 1):
+            assert ask_mr_state(mr_url=_MR, reason=_REASON) is not None
+            assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is None
 
         assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
 
     def test_re_asking_an_already_open_merge_request_is_never_refused_by_the_cap(self) -> None:
-        ConfigSetting.objects.set_value("mr_state_questions_max_per_tick", 1)
-        first = ask_mr_state(mr_url=_MR, reason=_REASON)
+        with patch.object(mr_state_question, "MAX_OPEN_QUESTIONS", 1):
+            first = ask_mr_state(mr_url=_MR, reason=_REASON)
 
-        second = ask_mr_state(mr_url=_MR, reason=_REASON)
+            second = ask_mr_state(mr_url=_MR, reason=_REASON)
 
         assert first is not None
         assert second is not None
         assert second.pk == first.pk
 
     def test_answering_a_question_frees_its_slot(self) -> None:
-        ConfigSetting.objects.set_value("mr_state_questions_max_per_tick", 1)
-        first = ask_mr_state(mr_url=_MR, reason=_REASON)
-        assert first is not None
-        assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is None
+        with patch.object(mr_state_question, "MAX_OPEN_QUESTIONS", 1):
+            first = ask_mr_state(mr_url=_MR, reason=_REASON)
+            assert first is not None
+            assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is None
 
-        first.apply_answer("treat as ready", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
+            first.apply_answer("treat as ready", resolved_via=DeferredQuestion.ResolvedVia.LOCAL)
 
-        assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
+            assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
 
 
 class TestReachesTheOwnerIndependentOfThePublishGate(TestCase):
@@ -159,17 +157,17 @@ class TestReachesTheOwnerIndependentOfThePublishGate(TestCase):
         ConfigSetting.objects.set_value("notify_on_post_on_behalf", value=False)
         backend = _owner_dm_backend()
 
-        with patch.dict(os.environ, {"T3_ON_BEHALF_POST_MODE": "draft_or_ask"}):
-            # Inline control: under these exact settings a colleague-visible action
-            # really is blocked, so the delivery below is independence and not a
-            # gate that happened to be disarmed.
-            assert resolve_on_behalf_verdict("post_comment") is OnBehalfVerdict.BLOCK
+        seed_forbidding_posture()
+        # Inline control: under this exact posture a colleague-visible action really is
+        # blocked, so the delivery below is independence and not a gate that happened to
+        # be disarmed.
+        assert resolve_posture_verdict("post_comment") is OnBehalfVerdict.BLOCK
 
-            row = ask_mr_state(mr_url=_MR, reason=_REASON)
-            assert row is not None
+        row = ask_mr_state(mr_url=_MR, reason=_REASON)
+        assert row is not None
 
-            with patch.object(notify_module, "messaging_from_overlay", return_value=None):
-                mirrored, total = drain_unmirrored_deferred_questions(user_id="U_OWNER", backend=backend)
+        with patch.object(notify_module, "messaging_from_overlay", return_value=None):
+            mirrored, total = drain_unmirrored_deferred_questions(user_id="U_OWNER", backend=backend)
 
         assert (mirrored, total) == (1, 1)
         backend.post_message.assert_called_once()

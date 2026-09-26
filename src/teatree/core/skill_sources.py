@@ -10,9 +10,14 @@ never installed.
 
 from pathlib import Path
 
+from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE
 from teatree.core.overlay_loader import get_all_overlays
 from teatree.provisioning.skill_clone_install import CloneInstall, install_published_skills
 from teatree.provisioning.skill_drift import SkillSourceClone
+from teatree.provisioning.skills_cli import SkillsCli
+from teatree.skill_support.agent_declarations import declared_skills_for_agent
+from teatree.skill_support.demands import SkillDemand, enumerate_skill_demands, skill_demand_names
+from teatree.skill_support.loading import SkillLoadingPolicy
 
 
 def declared_skill_sources() -> list[SkillSourceClone]:
@@ -25,8 +30,45 @@ def declared_skill_sources() -> list[SkillSourceClone]:
     return list(sources.values())
 
 
-def install_declared_sources(*, link_dir: Path, cache_root: Path) -> list[CloneInstall]:
-    """Install everything the registered overlays' declared skill sources publish."""
+def skill_demands_by_overlay() -> dict[str, tuple[SkillDemand, ...]]:
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — avoids config↔skill-source import cycle
+
+    demands: dict[str, tuple[SkillDemand, ...]] = {}
+    for overlay_name, overlay in get_all_overlays().items():
+        config = getattr(overlay, "config", None)
+        if config is not None:
+            demands[overlay_name] = enumerate_skill_demands(config, get_effective_settings(overlay_name))
+    return demands
+
+
+def demanded_skill_names() -> tuple[str, ...]:
+    demands = [demand for overlay_demands in skill_demands_by_overlay().values() for demand in overlay_demands]
+    phase_agents = {
+        phase: agent.removeprefix("t3:")
+        for (_role, phase), agent in SUBAGENT_BY_PHASE.items()
+        if agent.startswith("t3:")
+    }
+    for phase, agent in sorted(phase_agents.items()):
+        agent_skills = declared_skills_for_agent(agent)
+        required = agent_skills or [SkillLoadingPolicy.lifecycle_for_phase(phase)]
+        demands.extend(SkillDemand(f"agent[{phase}]", skill) for skill in required if skill)
+    return skill_demand_names(demands)
+
+
+def install_declared_sources(
+    *,
+    cache_root: Path,
+    demand_names: set[str],
+    harness_exclusions: list[str],
+    cli: SkillsCli | None = None,
+) -> list[CloneInstall]:
     return [
-        install_published_skills(clone, link_dir=link_dir, cache_root=cache_root) for clone in declared_skill_sources()
+        install_published_skills(
+            clone,
+            cache_root=cache_root,
+            demand_names=demand_names,
+            harness_exclusions=harness_exclusions,
+            cli=cli,
+        )
+        for clone in declared_skill_sources()
     ]

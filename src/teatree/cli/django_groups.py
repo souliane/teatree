@@ -105,6 +105,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("doctor", "Detect state drift across every store; optionally fix it."),
             ("clean-merged", "Tear down every worktree whose ticket is already MERGED."),
             ("clean-all", "Prune merged worktrees, stale branches, orphaned stashes, orphan DBs, old DSLR snapshots."),
+            ("repair-split", "Move a ticket's divergent worktrees into its canonical workspace dir (keeps all work)."),
             (
                 "relocate",
                 "Move this overlay's existing worktrees under the per-overlay workspace dir (git worktree move).",
@@ -133,6 +134,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("emit", "Print the JSON handoff for every NOT-auto-deleted worktree (the judgment skill's input)."),
             ("salvage", "Capture a branch's unique content to a PR, verify it landed, then delete the branch."),
             ("restore", "Apply a captured salvage bundle back into a checkout (--into, --dry-run)."),
+            (
+                "prek-patches",
+                "Which prek patches hold work absent from the tree, and restore one (--repo, --restore, --dry-run).",
+            ),
         ],
     ),
     "run": DjangoGroup(
@@ -143,6 +148,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("backend", "Start the backend dev server."),
             ("build-frontend", "Build the frontend for production/testing."),
             ("tests", "Run the project test suite."),
+            ("e2e", "Run one targeted E2E spec through the canonical E2E runner."),
             ("lint", "Run the overlay's lint pipeline on this worktree."),
         ],
     ),
@@ -177,6 +183,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Database operations.",
         [
             ("migrate", "Apply pending migrations to the runtime self-DB (non-destructive self-rescue)."),
+            ("seed-loops", "Seed the shipped loops, prompts, modes and schedules (existing rows untouched)."),
             ("refresh", "Re-import the worktree database from dump/DSLR."),
             ("migrate-app", "Apply pending migrations to the worktree's app DB, without re-importing it."),
             ("approve", "Record a single-use DbApproval that satisfies the #777 fresh-dump gate without a TTY (#953)."),
@@ -195,8 +202,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         # overlay's own settings context when the overlay ships one, and stays
         # on the core path otherwise. Their siblings (refresh/restore-ci/
         # reset-passwords) always route through the overlay manage.py for the
-        # overlay's db_import strategy.
-        core_subcommands=frozenset({"approve"}),
+        # overlay's db_import strategy. `seed-loops` joins `approve` on the core
+        # path: the rows it writes are core's (Loop/Prompt/Mode/ModeSchedule) and
+        # no overlay app is involved, so the overlay settings context adds nothing.
+        core_subcommands=frozenset({"approve", "seed-loops"}),
         overlay_settings_subcommands=frozenset({"migrate"}),
     ),
     "pr": DjangoGroup(
@@ -247,6 +256,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
     "retention": DjangoGroup(
         "Age-based pruning of the high-churn control-DB tables (#3693).",
         [
+            ("artifacts", "Reclaim dormant rebuildable build artifacts (dry-run unless --apply)."),
             ("prune", "Prune terminal-owned rows past the retention window (dry-run unless --apply)."),
             ("scratch", "Reclaim stale agent scratch under the temp root (dry-run unless --apply, #4165)."),
         ],
@@ -370,6 +380,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ),
             ("fix-record-override", "Record the audited exception for the fix-ticket FixRecord DoD gate."),
             ("dod-override", "Record the DoD local-E2E gate escape hatch for a ticket (#88)."),
+            ("set-target-branch", "Set one repo's stacked-delivery parent branch for this ticket."),
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("backfill-clears", "Recover the ticket link on consumed CLEARs issued without --ticket-id."),
             ("list-clears", "List every unconsumed merge authorisation, tagged live / superseded / incomplete."),
@@ -388,8 +399,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("show", "Show a ticket's state plus the per-phase attempt counts."),
             ("expedite", "Flag a ticket as an expedite/release-blocker."),
             ("attachments", "Print (and with --fetch download) a ticket's referenced attachments."),
-            ("record-spec-coverage", "Record the spec-coverage manifest the delivery gate reads (#2232)."),
-            ("rubric-set", "Set a ticket's rubric from explicit JSON criteria (#2241)."),
+            ("rubric-set", "Restate a ticket's rubric from explicit JSON criteria (#2241)."),
             ("rubric-grade", "Record a verifier's per-criterion PASS/FAIL on the rubric (#2241)."),
         ],
         core_dispatch=True,
@@ -473,7 +483,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
     "notify": DjangoGroup(
         "Slack egress from the shell (#1030, #1750).",
         [
-            ("send", "DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct notify)."),
+            ("send", "Raise an alarm/status signal; the push/pull registry decides whether it interrupts."),
+            ("dm", "Deliver a directly requested owner DM without applying the recurring-signal registry."),
             ("digest", "Read the status signals the push/pull classifier kept off the DM channel."),
             ("post", "Post, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
             ("react", "React, token routed by destination (self-DM→bot, colleague/channel→xoxp); exit 0 on ``ok``."),
@@ -490,6 +501,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
     "retro": DjangoGroup(
         "Retrospective enforcement tooling (#1573).",
         [
+            (
+                "finding",
+                "Record one confirmed lesson on the gap ledger as a deduped umbrella checkbox + a scheduled fix.",
+            ),
             (
                 "review-findings",
                 "Classify a PR's review findings A/B/C and auto-file a deduped enforcement issue per class-C.",

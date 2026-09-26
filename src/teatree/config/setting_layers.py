@@ -19,7 +19,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from teatree.config.homes import SETTING_HOMES, SettingHome
-from teatree.config.mr_reminder import mr_reminder_from_table
+from teatree.config.mr_reminder import MrReminderConfig, mr_reminder_from_table
 from teatree.config.settings import UserSettings
 from teatree.config.speak import speak_from_subtable
 from teatree.types import SpeakConfig
@@ -31,15 +31,12 @@ _logger = logging.getLogger("teatree.config")
 class SettingLayers:
     """The stored-form tiers of one resolution, read ONCE and served in both forms.
 
-    ``toml_rows`` / ``toml_defaults`` are the shipped-defaults table in raw and coerced
-    form; ``db_rows`` is the ascending-precedence ``(global, overlay)`` tuple
+    ``db_rows`` is the ascending-precedence ``(global, overlay)`` tuple
     :func:`apply_structured_settings` walks (``speak`` / ``mr_reminder`` are JSON dicts
     the row coercer skips), and ``global_db`` / ``overlay_db`` are those same two rows
     coerced, driving the generic ``dataclasses.replace``.
     """
 
-    toml_rows: dict[str, Any]
-    toml_defaults: dict[str, Any]
     db_rows: tuple[dict[str, Any], ...]
     global_db: dict[str, Any]
     overlay_db: dict[str, Any]
@@ -50,26 +47,14 @@ class SettingLayers:
     degraded_scopes: frozenset[str] = frozenset()
 
 
-def shipped_defaults_base(base: UserSettings, layers: SettingLayers) -> UserSettings:
-    """The object the resolver layers its overrides onto — the shipped defaults, or *base* itself.
+def stored_form(value: object) -> object:
+    """*value* as a ``ConfigSetting`` row holds it — the two structured settings as their dict.
 
-    The TOML tier is a DEFAULTS tier, so it sits BELOW everything, including the base
-    ``load_config().user`` hands the resolver. Production's loader returns the plain
-    dataclass default (``config/loader.py``), which carries no opinion of its own, so
-    there the whole shipped table applies — scalars via ``replace`` and the two nested
-    tables via the same parsers a stored row uses. Any other base is a caller-staged
-    opinion (the ``load_config`` patch seam, a structural-subset stub, a loader that
-    resolves values itself) and is returned untouched: a staged value always wins
-    over a shipped default, and the resolver keeps reading only the fields it needs off
-    the base rather than every field the shipped table names.
-
-    All-or-nothing is exact rather than approximate: the committed file is pinned
-    value-identical to the dataclass defaults (``tests/config/test_toml_default_tier.py``),
-    so applying the table wholesale and applying it per-field resolve to the same settings.
+    A ``StrEnum`` needs no conversion: it IS a ``str``. Shared by the resolver's default
+    authority and the shipped-file renderer so the two cannot disagree about what a
+    declared default looks like once stored.
     """
-    if type(base) is not UserSettings or base != UserSettings():
-        return base
-    return apply_structured_settings(replace(base, **layers.toml_defaults), (layers.toml_rows,), base.speak)
+    return value.to_dict() if isinstance(value, SpeakConfig | MrReminderConfig) else value
 
 
 def apply_structured_settings(

@@ -32,6 +32,7 @@ from teatree.cli.slack.provision import (
 from teatree.cli.slack.setup import SlackManifestError
 from teatree.cli.slack.user_token_setup import REQUIRED_USER_SCOPES
 from teatree.config import OverlayEntry
+from teatree.core.backend_registry import UnknownSlackScopeProfileError
 from teatree.core.models import ConfigSetting
 
 _T3_OVERLAY = {
@@ -125,7 +126,7 @@ class TestDmOnlyProvision:
 
     def test_unknown_profile_fails_loud(self) -> None:
         _seed({"weird": {"slack_scope_profile": "bogus"}})
-        with pytest.raises(ValueError, match="slack_scope_profile"):
+        with pytest.raises(UnknownSlackScopeProfileError, match=r"'weird'.*slack_scope_profile"):
             overlay_scope_profile("weird")
 
     def test_provision_skips_channels_and_passes_dm_profile(self) -> None:

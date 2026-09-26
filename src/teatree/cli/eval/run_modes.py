@@ -22,6 +22,7 @@ from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeGrader, JudgeOutcome, ScenarioResult
 from teatree.eval.skip_guard import (
+    MEASURED_NOTHING_EXIT_CODE,
     AllSkippedError,
     EmptyFreshRunError,
     HooksNotRegisteredError,
@@ -32,6 +33,7 @@ from teatree.eval.skip_guard import (
     assert_fresh_run_produced_output,
     assert_judge_was_metered,
     assert_production_hooks_registered,
+    graded_nothing,
 )
 from teatree.eval.surface import is_advisory
 
@@ -80,6 +82,37 @@ class RunGuards:
         except AllSkippedError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=1) from None
+
+    @staticmethod
+    def declined_is_not_a_pass(*, executed: int, collected: int) -> None:
+        """Exit 75 when a TOLERATED lane collected scenarios and graded none of them.
+
+        The sibling of :meth:`executed`, for the one lane where the all-skip is
+        legitimate: the transcript backend before any transcript exists. That
+        legitimacy is a reason not to go RED — it was never a reason to report GREEN,
+        and exiting 0 made "declined to run" and "ran and passed" the same observable.
+        Five consecutive weekly local runs recorded ``0 passed, 0 failed, 273 skipped``
+        and succeeded, so nothing downstream could see that the suite had measured
+        nothing since it last found real failures.
+
+        75 is the eval lanes' existing tolerated-status code — already what
+        ``allow_failure: exit_codes:`` scopes to — so a declined lane renders orange,
+        a graded lane still renders green, and ``--require-executed`` still escalates
+        the same state to a hard 1 for the lanes that must never tolerate it.
+
+        Called AFTER persistence: a declined run that vanishes from the run-history
+        ledger is the same blindness pointing the other way.
+        """
+        if not graded_nothing(collected=collected, executed=executed):
+            return
+        typer.echo(
+            f"eval run collected {collected} scenario(s) and graded 0 — this run MEASURED NOTHING. "
+            "It is not a pass: nothing was proved about any scenario. Exiting "
+            f"{MEASURED_NOTHING_EXIT_CODE} (tolerated, never green). Produce the missing "
+            "transcripts, or run a fresh-run backend, before reading this as coverage.",
+            err=True,
+        )
+        raise typer.Exit(code=MEASURED_NOTHING_EXIT_CODE)
 
     @staticmethod
     def hooks_registered(results: Sequence[GuardedResult]) -> None:
@@ -434,7 +467,7 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
     # Every failing scenario reds the run. The ONE exception is the interactive
     # surface, whose verdict rides a bundled claude CLI's AskUserQuestion rendering
     # rather than the question contract teatree owns — reported, never gating (#3855).
-    failed = any(not r.passed and not is_advisory(r.spec) for r in results)
+    failed = any(r.verdict == "fail" and not is_advisory(r.spec) for r in results)
     return failed or regressed or cost_regressed or cost_bounds_failed
 
 

@@ -15,6 +15,7 @@ load-bearing assertions:
 """
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -88,9 +89,10 @@ class RecordingBackend:
             raise RuntimeError(msg)
         self.replies.append((channel, ts, text))
         root = self._root_of(ts)
-        posted = {"ts": f"{ts}-bot", "user": _BOT_UID, "text": text, "thread_ts": root}
+        posted_ts = str(Decimal(ts) + Decimal("0.000001"))
+        posted = {"ts": posted_ts, "user": _BOT_UID, "text": text, "thread_ts": root}
         self.thread_replies.setdefault(root, []).append(posted)
-        return {"ok": True}
+        return {"ok": True, "ts": posted_ts}
 
     def open_dm(self, user_id: str) -> str:
         _ = user_id
@@ -168,6 +170,7 @@ class TestSimple:
         assert "overlay=acme" in text
         row.refresh_from_db()
         assert row.answer_kind == "simple"
+        assert row.loop_response_confirmed_at is not None
         assert report.answered_simple == 1
 
     def test_simple_not_stamped_when_readback_fails(self) -> None:
@@ -182,6 +185,7 @@ class TestSimple:
 
         row.refresh_from_db()
         assert row.loop_replied_at is None  # retry next cycle (fail-safe)
+        assert row.loop_response_confirmed_at is None
 
     def test_simple_not_stamped_when_post_raises(self) -> None:
         row = _row("what's the status?")
@@ -195,6 +199,23 @@ class TestSimple:
 
         row.refresh_from_db()
         assert row.loop_replied_at is None
+        assert row.loop_response_confirmed_at is None
+
+    def test_process_crash_after_claim_has_no_delivery_receipt(self) -> None:
+        row = _row("what's the status?")
+        backend = RecordingBackend()
+
+        with (
+            patch("teatree.loop.slack_answer.simple_answer.statusline_for_slack", return_value="overlay=acme\n"),
+            patch.object(backend, "post_reply", side_effect=SystemExit("simulated process death")),
+            pytest.raises(SystemExit),
+        ):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        row.refresh_from_db()
+        assert row.loop_replied_at is not None
+        assert row.answer_kind == PendingChatInjection.AnswerKind.SIMPLE
+        assert row.loop_response_confirmed_at is None
 
 
 class TestNonRootUserMessageReadBack:
@@ -248,7 +269,7 @@ class TestNonRootUserMessageReadBack:
         """
         backend = self._non_root_backend()
         backend.thread_replies[self._ROOT] = [
-            {"ts": f"{self._ROOT}-prior", "user": _BOT_UID, "text": "overlay=acme", "thread_ts": self._ROOT}
+            {"ts": "1780772700.000101", "user": _BOT_UID, "text": "overlay=acme", "thread_ts": self._ROOT}
         ]
         row = self._non_root_row()
 
@@ -262,6 +283,20 @@ class TestNonRootUserMessageReadBack:
         row.refresh_from_db()
         assert row.answer_kind == "simple"  # treated as already-answered
         assert row.loop_replied_at is not None
+
+    def test_old_bot_answer_in_thread_does_not_cover_new_owner_question(self) -> None:
+        backend = self._non_root_backend()
+        backend.thread_replies[self._ROOT] = [
+            {"ts": "1780770500.000001", "user": _BOT_UID, "text": "old answer", "thread_ts": self._ROOT}
+        ]
+        row = self._non_root_row()
+
+        with patch("teatree.loop.slack_answer.simple_answer.statusline_for_slack", return_value="overlay=acme\n"):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert len(backend.replies) == 1
+        row.refresh_from_db()
+        assert row.loop_response_confirmed_at is not None
 
 
 class TestNeedsWorkDelegation:
@@ -364,7 +399,7 @@ class TestClaimIsTakenBeforeTheSideEffect:
             claimed_at_post.append(PendingChatInjection.objects.get(pk=row.pk).loop_replied_at is not None)
             return original_post(channel=channel, ts=ts, text=text)
 
-        backend.post_reply = observing_post  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+        backend.post_reply = observing_post  # ty: ignore[invalid-assignment]
         with patch(
             "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
             return_value="overlay=acme\nticket=#1\n",
@@ -424,3 +459,60 @@ class TestBoundedBatch:
         report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
         assert report.processed == 10
+
+
+class TestSelectionOfAQuestionRow:
+    """What the cycle's work-queue does and does not select.
+
+    Filed as "the loop selects nothing even when run by hand": a ``question``-kind
+    row sat in ``t3 <overlay> pending_chat list`` while ``t3 loop slack-answer run``
+    reported ``processed=0``. These are the two falsifying controls. The queue is
+    ``loop_replied_at IS NULL`` and nothing else — no age, channel, kind or session
+    filter — so an unhandled question IS selected, and a ``processed=0`` on a
+    ``question`` row means that row was already handled, never that the query
+    skipped it.
+    """
+
+    def test_a_pending_question_row_is_selected_and_processed(self) -> None:
+        row = _row("where do we stand?")
+        backend = RecordingBackend()
+
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert row.is_question is True
+        assert report.processed >= 1
+        row.refresh_from_db()
+        assert row.loop_replied_at is not None
+        assert row.eyes_reacted_at is not None
+
+    def test_an_already_handled_row_is_not_reselected(self) -> None:
+        row = _row("where do we stand?")
+        assert row.mark_loop_replied(PendingChatInjection.AnswerKind.DELEGATED) is True
+        backend = RecordingBackend()
+
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert report.processed == 0
+        assert backend.replies == []
+        assert backend.reactions == []
+
+
+class TestIdleCycleIsSilent:
+    """The inverse control: an empty queue reacts to nothing and posts nothing.
+
+    A loop on a 5-minute cadence that says anything at all on an idle tick would
+    be muted within a day, so "nothing to do" must be indistinguishable from the
+    loop not running at all — from Slack's side.
+    """
+
+    def test_empty_queue_processes_nothing_and_posts_nothing(self) -> None:
+        backend = RecordingBackend()
+
+        report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert report.processed == 0
+        assert report.dispatched == 0
+        assert report.errors == 0
+        assert backend.replies == []
+        assert backend.reactions == []
+        assert Task.objects.count() == 0

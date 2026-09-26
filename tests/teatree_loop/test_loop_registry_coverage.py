@@ -186,7 +186,7 @@ class TestSingleOverlayMessagingParity:
 class TestBacklogSweepLoopSwitch:
     """The ``Loop`` row is the sweep's single switch; the kill switch still bites (#4344).
 
-    ``backlog_sweep_disabled`` ships open, so the mini-loop fans its job out under
+    The kill-switch is gone, so the mini-loop fans its job out under
     real default config — the row's own ``enabled`` flag is what an operator flips.
     Setting the kill switch still empties the fan-out, which is the anti-vacuity twin.
     """
@@ -200,11 +200,11 @@ class TestBacklogSweepLoopSwitch:
             assert BACKLOG_SWEEP_LOOP.build_jobs() == []
 
 
-class TestRevivedLoopsDefaultOff:
-    """The issue-disposition loop fans out nothing unless its opt-in flag is set (#22).
+class TestIssueDispositionLoopScope:
+    """The issue-disposition loop is unconditional for the canonical core overlay (#22).
 
-    Anti-vacuity twin: it also produces its job once its gate opens, so the
-    default-OFF assertion is not vacuously always-empty.
+    The backend scope guard keeps other people's backlogs out; the anti-vacuity
+    twin proves an admitted scanner is still fanned out.
     """
 
     @staticmethod
@@ -214,12 +214,10 @@ class TestRevivedLoopsDefaultOff:
         backend.overlay = None
         return backend
 
-    def test_issue_disposition_default_off_produces_no_jobs(self) -> None:
-        # Real default config: auto_disposition_enabled=False → the gate returns
-        # None → no job.
+    def test_noncanonical_overlay_produces_no_jobs(self) -> None:
         assert ISSUE_DISPOSITION_LOOP.build_jobs(backends=[self._stub_backend()]) == []
 
-    def test_issue_disposition_runs_when_gate_opens(self) -> None:
+    def test_an_admitted_scanner_is_fanned_out(self) -> None:
         backend = self._stub_backend()
         fake = MagicMock()
         fake.name = "issue_disposition"

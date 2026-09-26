@@ -9,6 +9,7 @@ from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
+from teatree.core.cleanup.prek_patch_recovery import render_report, resolve_patch_dir, restore_patch
 from teatree.core.cleanup.unshipped_restore import restore_bundle
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue, start_services_or_enqueue
 from teatree.core.gates.open_pr_teardown_gate import check_no_open_prs
@@ -37,6 +38,7 @@ from teatree.core.management.commands._workspace.ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     InvalidTicketKindError,
     RawTicketInputs,
+    TerminalTicketRefusedError,
     adopt_preflight_refusal,
     build_intake,
     build_ticket,
@@ -50,8 +52,10 @@ from teatree.core.worktree.branch_upstream import repair_clones
 from teatree.core.worktree.branch_verdict import branch_verdict_report, render_verdict
 from teatree.core.worktree.dead_row_release import release_dead_rows
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, refuse_if_ticket_checkout_occupied
+from teatree.core.worktree.ticket_workspace_repair import repair_split_workspace
 from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
+from teatree.utils.run import CommandFailedError
 
 
 def _worktree_root() -> Path:
@@ -107,7 +111,11 @@ class Command(TyperCommand):
         """Create or update a ticket, provision its worktrees, return its pk; a refusal exits nonzero (#932)."""
         # The pk is for a ``call_command`` caller; the summary below is the human view.
         self.print_result = False
-        _wh.warn_orphans(self.stderr.write)
+        try:
+            _wh.warn_orphans(self.stderr.write)
+        except CommandFailedError as exc:
+            self.stderr.write(f"  Refused: orphan scan failed: {exc}")
+            raise SystemExit(1) from exc
         # #1310: a multi-overlay install with ``T3_OVERLAY_NAME`` missing
         # used to die on the ambiguous ``get_overlay()`` call here.
         # Infer from the issue URL whose workspace repos own it; the
@@ -133,7 +141,7 @@ class Command(TyperCommand):
         except InvalidTicketKindError as exc:
             self.stderr.write(f"  Refused: {exc}")
             raise SystemExit(1) from exc
-        except ForeignIssueWorktreeRefusedError as exc:
+        except (ForeignIssueWorktreeRefusedError, TerminalTicketRefusedError) as exc:
             raise SystemExit(1) from exc
 
         # #3952: re-resolving a ticket whose checkout a live agent already holds
@@ -148,13 +156,7 @@ class Command(TyperCommand):
                 self.stderr.write("  Pass --take-over to proceed anyway.")
                 raise SystemExit(1) from exc
 
-        ticket_pk = finalize_ticket_provision(
-            self.stdout.write,
-            self.stderr.write,
-            ticket,
-            adopt_ctx,
-            _worktree_root(),
-        )
+        ticket_pk = finalize_ticket_provision(self.stdout.write, self.stderr.write, ticket, adopt_ctx)
         if not ticket_pk:
             raise SystemExit(1)
         return ticket_pk
@@ -519,6 +521,36 @@ class Command(TyperCommand):
         self.stdout.write(line)
         return line
 
+    @command(name="prek-patches")
+    def prek_patches(
+        self,
+        *,
+        repo: str = typer.Option(".", help="Checkout to classify the patches against."),
+        patch_dir: str = typer.Option("", help="Override prek's patch directory."),
+        restore: str = typer.Option("", help="Patch file (or bare name) to apply back into --repo."),
+        dry_run: bool = typer.Option(default=False, help="Report whether the patch applies; write nothing."),
+    ) -> str:
+        """Which prek patches hold work that is nowhere else, and put one back (#144).
+
+        prek does not restore its stashed unstaged changes on SIGTERM or SIGKILL,
+        and it keeps a patch after a SUCCESSFUL restore too — so the directory
+        listing cannot say which one holds lost work. Only the tree can.
+        """
+        into = Path(repo).expanduser().resolve()
+        self.print_result = False
+        if restore.strip():
+            candidate = Path(restore).expanduser()
+            if not candidate.is_file():
+                candidate = resolve_patch_dir(patch_dir) / restore
+            outcome = restore_patch(into, candidate, dry_run=dry_run)
+            self.stdout.write(outcome.render())
+            if not outcome.ok:
+                raise SystemExit(1)
+            return outcome.render()
+        report = render_report(into, resolve_patch_dir(patch_dir))
+        self.stdout.write(report)
+        return report
+
     @command(name="restore")
     def restore(
         self,
@@ -531,6 +563,27 @@ class Command(TyperCommand):
         if not into.strip():
             _die(self.stderr.write, "workspace restore needs --into <checkout>: nothing is restored unnamed.\n")
         outcome = restore_bundle(reference, Path(into).expanduser(), dry_run=dry_run)
+        self.print_result = False
+        self.stdout.write(outcome.render())
+        if not outcome.ok:
+            raise SystemExit(1)
+        return outcome.render()
+
+    @command(name="repair-split")
+    def repair_split(
+        self,
+        path: str = typer.Option("", help="Worktree path inside the split workspace (auto-detects from PWD)."),
+    ) -> str:
+        """Move a ticket's divergent worktrees into its canonical workspace dir.
+
+        The targeted recovery for the split-refusal ``assert_joins_ticket_workspace``
+        raises: unlike ``workspace clean-all`` (the DONE-worktree reaper, which
+        deliberately keeps an unfinished checkout), this moves each repo's checkout
+        rather than deleting it — uncommitted work is captured and reapplied, and
+        commits stay on the branch throughout. A no-op when nothing is split.
+        """
+        ticket = resolve_workspace_ticket(path)
+        outcome = repair_split_workspace(ticket)
         self.print_result = False
         self.stdout.write(outcome.render())
         if not outcome.ok:

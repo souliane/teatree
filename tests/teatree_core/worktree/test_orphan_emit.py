@@ -266,10 +266,11 @@ class TestTheForgeMemoIsResetLikeTheSiblingPasses(_OrphanEmitFixture):
         """The memo is process-wide, so a long-lived loop worker carries it between ticks."""
         repo, branch = str(self.repo_main), "agent-4579-memo"
         wt_path = self._add_orphan(branch, files={"new.py": "WORK = 1\n"})
-        with patch.object(branch_classification, "probe_host_cli", return_value="7"):
+        forge = patch.object(branch_classification, "forge_for_repo", return_value="github")
+        with forge, patch.object(branch_classification, "probe_host_cli", return_value="7"):
             assert branch_classification._branch_pr_is_merged(repo, branch) is True
 
-        with patch.object(branch_classification, "probe_host_cli", return_value=""):
+        with forge, patch.object(branch_classification, "probe_host_cli", return_value=""):
             assert self._record_for(wt_path) is not None
             assert branch_classification._branch_pr_is_merged(repo, branch) is False
 

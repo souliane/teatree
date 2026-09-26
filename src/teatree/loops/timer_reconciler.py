@@ -40,11 +40,13 @@ import datetime as dt
 import logging
 import os
 
+from django.db import transaction
 from django.tasks import task
 from django.utils import timezone
 
 from teatree.core.claim_liveness import ClaimOwner, owner_is_executing
 from teatree.loops.chain_membership import loop_timers_by_name, timer_chain_loop_names
+from teatree.loops.self_improve_cycle import run_self_improve_cycle_via_command as _run_self_improve_cycle_via_command
 from teatree.loops.timer_chains import LOOPS_QUEUE, compute_successor_run_after, enqueue_loop_timer
 
 logger = logging.getLogger(__name__)
@@ -81,7 +83,6 @@ SLACK_ANSWER_LEASE = "loop-slack-answer"
 #: worker chain and an owner session can never run two cycles at once.
 SELF_IMPROVE_LEASE = "loop-self-improve"
 #: The only tier with detectors wired; the mgmt command refuses the rest.
-SELF_IMPROVE_TIER = "cheap"
 
 
 def ensure_loop_timers() -> dict[str, int]:
@@ -154,8 +155,8 @@ def _pending_for_path(path: str) -> bool:
     return DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY).exists()
 
 
-def _finished_within(path: str, seconds: int) -> dt.datetime | None:
-    """When *path* last finished, if that was under *seconds* ago — else ``None``.
+def _cycle_finished_within(path: str, seconds: int) -> dt.datetime | None:
+    """When *path* last finished a real cycle, if that was under *seconds* ago — else ``None``.
 
     The window is in the filter rather than applied to a newest-first scan so
     the query stays bounded to the few rows the interval can hold.
@@ -165,6 +166,8 @@ def _finished_within(path: str, seconds: int) -> dt.datetime | None:
     cutoff = timezone.now() - dt.timedelta(seconds=seconds)
     return (
         DBTaskResult.objects.filter(task_path=path, finished_at__gt=cutoff)
+        .exclude(return_value__has_key="coalesced")
+        .exclude(return_value__has_key="deduped")
         .order_by("-finished_at")
         .values_list("finished_at", flat=True)
         .first()
@@ -231,13 +234,13 @@ def expire_stale_jobs() -> dict[str, int]:
     the ``loops`` queue like its sibling maintenance chains — it never runs the heavy
     jobs, it only retires the stale READY ones to FAILED (reversible, auditable).
     """
-    from teatree.loop.queue_drain import expire_stale_default_jobs  # noqa: PLC0415 — deferred: task-body import
+    from teatree.loop.queue_drain import expire_stale_headless_jobs  # noqa: PLC0415 — deferred: task-body import
 
     if _pending_for_path(expire_stale_jobs.module_path):
         return {"deduped": 1}
     expire_stale_jobs.using(run_after=timezone.now() + dt.timedelta(seconds=EXPIRE_INTERVAL_SECONDS)).enqueue()
     try:
-        retired = expire_stale_default_jobs()
+        retired = expire_stale_headless_jobs()
     except Exception:
         logger.exception("expire_stale_jobs body failed; successor already queued, the chain survives")
         return {"error": 1}
@@ -291,6 +294,17 @@ def _headless_run_is_dead(task, row, now: dt.datetime) -> bool:  # noqa: ANN001 
     return not heartbeat_live and not owner_is_executing(ClaimOwner.of(task), task.pk, now=now)
 
 
+def _dispatch_refusal() -> str:
+    """Why a dead run may not be re-dispatched now — the claim composition, failing CLOSED when unreadable."""
+    from teatree.core.managers import claim_admission_block_reason  # noqa: PLC0415 — deferred: needs the app registry
+
+    try:
+        return claim_admission_block_reason()
+    except Exception as exc:
+        logger.exception("reap_stuck_runs: admission read failed; dead runs are held")
+        return f"{type(exc).__name__}: {exc}"
+
+
 def reap_stuck_runs() -> dict[str, int]:
     """Fail dead-worker ``execute_task`` runs and re-enqueue their live tasks (#10).
 
@@ -313,11 +327,15 @@ def reap_stuck_runs() -> dict[str, int]:
     :func:`_headless_run_is_dead` therefore probes the owner process too, and a
     stalled-but-alive run is left entirely alone — nothing failed, nothing enqueued — so
     the concurrent-worktree hazard cannot arise from this reaper.
+
+    While no work is admitted (the ``off`` posture, a quiescing worker) a dead run is held
+    untouched, so its replacement is enqueued exactly once when admission returns.
     """
     from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.core.models import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.core.task_dispatch import enqueue_execution  # noqa: PLC0415 — deferred: task-body import
     from teatree.core.tasks import execute_task  # noqa: PLC0415 — deferred: task-body import
 
     now = timezone.now()
@@ -326,6 +344,8 @@ def reap_stuck_runs() -> dict[str, int]:
         status=TaskResultStatus.RUNNING,
     )
     counts = {"failed": 0, "reenqueued": 0}
+    held = 0
+    held_reason = ""
     for row in running:
         task_id = _headless_task_id(row)
         if task_id is None:
@@ -333,11 +353,25 @@ def reap_stuck_runs() -> dict[str, int]:
         task = Task.objects.filter(pk=task_id).first()
         if not _headless_run_is_dead(task, row, now):
             continue
-        row.set_failed(_StuckHeadlessRunError(f"execute_task {row.id} RUNNING past lease+grace; worker dead"))
-        counts["failed"] += 1
-        if task is not None and task.status not in Task.Status.terminal():
-            execute_task.enqueue(task.pk, task.phase)
-            counts["reenqueued"] += 1
+        with transaction.atomic():
+            # Only the reaper that still sees the row RUNNING fails and replaces it, so a rival scan cannot double it.
+            still_running = DBTaskResult.objects.filter(id=row.id, status=TaskResultStatus.RUNNING).first()
+            if still_running is None:
+                continue
+            # Admission is read under the same lock as the write, so a stop landing after the scan still holds the run.
+            if refusal := _dispatch_refusal():
+                held += 1
+                held_reason = refusal
+                continue
+            still_running.set_failed(
+                _StuckHeadlessRunError(f"execute_task {row.id} RUNNING past lease+grace; worker dead")
+            )
+            counts["failed"] += 1
+            if task is not None and task.status not in Task.Status.terminal():
+                enqueue_execution(task.pk, task.phase)
+                counts["reenqueued"] += 1
+    if held:
+        logger.info("reap_stuck_runs: holding %d dead run(s) while no work is admitted: %s", held, held_reason)
     if any(counts.values()):
         logger.info("reap_stuck_runs: %s", counts)
     return counts
@@ -446,29 +480,6 @@ def run_slack_answer() -> dict[str, int]:
         return {"error": 1}
 
 
-def _run_self_improve_cycle_under_lease() -> dict[str, int]:
-    """Run one cheap-tier self-improve cycle under the shared ``loop-self-improve`` lease.
-
-    Mirrors :func:`_run_slack_answer_cycle_under_lease`: a held lease means an owner
-    session (or another worker) is already running the cycle, so this returns
-    ``{"skipped_lease_held": 1}`` rather than starting a second one.
-    """
-    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
-    from teatree.loop.phases.render import self_improve_rerender  # noqa: PLC0415 — deferred: task-body import
-    from teatree.loop.self_improve.schedule import run_tier  # noqa: PLC0415 — deferred: task-body import
-
-    owner = f"worker-{os.getpid()}"
-    if not LoopLease.objects.acquire(SELF_IMPROVE_LEASE, owner=owner):
-        return {"skipped_lease_held": 1}
-    try:
-        result = run_tier(SELF_IMPROVE_TIER, auto_fix_callable=self_improve_rerender)
-    finally:
-        LoopLease.objects.release(SELF_IMPROVE_LEASE, owner=owner)
-    if result.skipped:
-        return {"skipped_budget": 1}
-    return {"reports": len(result.reports), "actions": len(result.actions)}
-
-
 @task(queue_name=LOOPS_QUEUE)
 def run_self_improve() -> dict[str, int]:
     """Re-schedule at its cadence, THEN run one cheap-tier self-improve cycle headless.
@@ -488,7 +499,7 @@ def run_self_improve() -> dict[str, int]:
         run_after=timezone.now() + dt.timedelta(seconds=self_improve_cadence_seconds()),
     ).enqueue()
     try:
-        return _run_self_improve_cycle_under_lease()
+        return _run_self_improve_cycle_via_command()
     except Exception:
         logger.exception("run_self_improve body failed; successor already queued, the chain survives")
         return {"error": 1}
@@ -518,7 +529,7 @@ def wake_slack_answer() -> dict[str, int]:
     """
     if _pending_for_path(wake_slack_answer.module_path):
         return {"deduped": 1}
-    last_finished = _finished_within(wake_slack_answer.module_path, WAKE_MIN_INTERVAL_SECONDS)
+    last_finished = _cycle_finished_within(wake_slack_answer.module_path, WAKE_MIN_INTERVAL_SECONDS)
     if last_finished is not None:
         wake_slack_answer.using(run_after=last_finished + dt.timedelta(seconds=WAKE_MIN_INTERVAL_SECONDS)).enqueue()
         return {"coalesced": 1}
@@ -567,7 +578,7 @@ def ensure_maintenance_chains() -> None:
     # chain, and the cron their docstrings promised was never installed anywhere.
     ensure_off_live_tick_driver_chain()
     # Directive #3: the self-rescheduling usage-window re-arm chain. Its body is inert while
-    # ``limit_autorecovery_enabled`` is OFF, so seeding it unconditionally is dark-safe.
+    # is unconditional now, so seeding it needs no flag read.
     ensure_usage_window_recovery_chain()
     # #3159: the preset-transition side-effect chain (override reap, availability pin,
     # one Slack line per switch). Inert with no active preset — a cheap keepalive.

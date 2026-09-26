@@ -258,7 +258,10 @@ class GhTokenProbe:
 
 def _default_run(args: list[str]) -> tuple[int, str]:
     """Run ``gh api <args>``; a 4xx is an expected probe outcome, not an error to raise on."""
-    result = run_allowed_to_fail(["gh", "api", *args], expected_codes=None, env=forge_cli_env())
+    env = forge_cli_env()
+    if env is None:
+        return 4, "github_token_pass_key is unset or unreadable; refusing ambient gh authentication"
+    result = run_allowed_to_fail(["gh", "api", *args], expected_codes=None, env=env)
     return result.returncode, f"{result.stdout}\n{result.stderr}"
 
 

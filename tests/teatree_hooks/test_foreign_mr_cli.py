@@ -25,7 +25,8 @@ from django.test import TestCase
 
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS
 from teatree.core.models.config_setting import ConfigSetting
-from teatree.hooks.foreign_mr_cli import NONE_VERDICT, foreign_mr_verdict
+from teatree.hooks._repo_visibility import PROBE_FAILED
+from teatree.hooks.foreign_mr_cli import NONE_VERDICT, PROBE_NO_LOGIN, UNKNOWN_VERDICT, foreign_mr_verdict
 
 _GITLAB_REMOTE = "https://gitlab.com/acme-eng/widget.git"
 _GITHUB_REMOTE = "https://github.com/acme/widget.git"
@@ -126,17 +127,60 @@ class TestEveryUnresolvableStepFailsOpen:
         monkeypatch.setenv("PATH", str(forge_bin))
         assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == NONE_VERDICT
 
-    def test_an_unresolvable_login_is_none(self, forge_bin: Path) -> None:
-        # The MR resolves but the identity does not, so "foreign" cannot be
-        # established — reporting it would block on a guess.
+
+def _mr_but_no_identity(forge_bin: Path, author: str = "teammate") -> None:
+    """A ``glab`` that resolves the open MR but 401s on ``api user`` (the container venue)."""
+    _write_shim(
+        forge_bin,
+        "glab",
+        "if args[0] == 'api' and 'merge_requests' in args[1]:\n"
+        f"    print(json.dumps([{json.dumps(_mr('feature-x', author))}]))\n"
+        "    sys.exit(0)\n",
+    )
+
+
+class TestAnUnresolvableIdentityFailsClosed:
+    """An open MR whose OWN-vs-FOREIGN question no identity can settle is UNKNOWN.
+
+    Answering NONE made the guard's protection venue-dependent: the same push was
+    refused on the host and permitted in the container, and the container route
+    minted none of the audit token the documented escape exists to create.
+    """
+
+    def test_an_unresolvable_login_is_unknown(self, forge_bin: Path) -> None:
+        _mr_but_no_identity(forge_bin)
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == f"{UNKNOWN_VERDICT} 77 teammate glab {PROBE_FAILED}"
+
+    def test_the_unknown_verdict_is_not_none(self, forge_bin: Path) -> None:
+        _mr_but_no_identity(forge_bin)
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") != NONE_VERDICT
+
+    def test_the_unknown_verdict_names_the_probe_that_did_not_answer(self, forge_bin: Path) -> None:
+        _mr_but_no_identity(forge_bin)
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split()[3] == "glab"
+
+    def test_the_unknown_verdict_names_the_author_it_could_not_attribute(self, forge_bin: Path) -> None:
+        """Field 3 is the MR author on BOTH blocking verdicts — withholding it hides whose MR is at stake."""
+        _mr_but_no_identity(forge_bin)
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split()[2] == "teammate"
+
+    def test_the_unknown_verdict_names_the_cause_the_probe_actually_produced(self, forge_bin: Path) -> None:
+        """A 401 and a timeout are different observations; the refusal must not assert one for the other."""
+        _mr_but_no_identity(forge_bin)
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split()[4] == PROBE_FAILED
+
+    def test_a_probe_that_answers_without_a_login_is_named_as_such(self, forge_bin: Path) -> None:
         _write_shim(
             forge_bin,
             "glab",
+            "if args[:2] == ['api', 'user']:\n"
+            "    print(json.dumps({'name': 'no username key here'}))\n"
+            "    sys.exit(0)\n"
             "if args[0] == 'api' and 'merge_requests' in args[1]:\n"
             f"    print(json.dumps([{json.dumps(_mr('feature-x', 'teammate'))}]))\n"
             "    sys.exit(0)\n",
         )
-        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == NONE_VERDICT
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split()[4] == PROBE_NO_LOGIN
 
 
 def _seed_self_identities(db: Path, identities: dict[str, object]) -> None:
@@ -192,6 +236,20 @@ class TestOurOwnBotIsNotATeammate:
     def test_declaring_nothing_leaves_the_verdict_unchanged(self, forge_bin: Path, config_db: Path) -> None:
         _glab_shim(forge_bin, username="me", merge_requests=[_mr("feature-x", "acme-factory-bot")])
         assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "FOREIGN 77 acme-factory-bot me"
+
+    def test_a_declared_identity_answers_without_the_probe(self, forge_bin: Path, config_db: Path) -> None:
+        """The declaration is a cold config read, so a venue whose probe 401s still pushes to its own MRs."""
+        _seed_self_identities(config_db, {"gitlab.com": ["acme-factory-bot"]})
+        _mr_but_no_identity(forge_bin, author="acme-factory-bot")
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x") == "OWN 77"
+
+    def test_an_undeclared_author_is_still_unknown_when_the_probe_cannot_answer(
+        self, forge_bin: Path, config_db: Path
+    ) -> None:
+        # The load-bearing half: consulting the declaration first must not blanket-allow.
+        _seed_self_identities(config_db, {"gitlab.com": ["acme-factory-bot"]})
+        _mr_but_no_identity(forge_bin, author="teammate")
+        assert foreign_mr_verdict(_GITLAB_REMOTE, "feature-x").split()[0] == UNKNOWN_VERDICT
 
 
 class TestTheDocumentedEnablementPathWorks(TestCase):

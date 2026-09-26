@@ -28,7 +28,7 @@
     </span>
     <nav class="dash-nav" aria-label="Dashboard sections">
       {% for name, label in nav_items %}
-        <a href="{% url name %}" class="{% if name == nav_active %}active{% endif %}">{{ label }}</a>
+        <a href="{% url name %}" class="{% if name == nav_active %}active{% endif %}">{{ label }}{% if name == "dash:skills" and skills_collision_count %}<span class="nav-alert" aria-label="Skills collision count">{{ skills_collision_count }}</span>{% endif %}</a>
       {% endfor %}
     </nav>
     <div class="dash-actions">

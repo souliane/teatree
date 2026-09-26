@@ -139,11 +139,11 @@ class TestShowInfo:
     def test_lists_existing_runtime_skill_dirs(self, tmp_path, monkeypatch, capsys):
         _stage_home(tmp_path, monkeypatch)
         (tmp_path / ".claude" / "skills").mkdir(parents=True)
-        (tmp_path / ".codex" / "skills").mkdir(parents=True)
+        (tmp_path / ".agents" / "skills").mkdir(parents=True)
         fake_target = tmp_path / "source" / "code"
         fake_target.mkdir(parents=True)
         (tmp_path / ".claude" / "skills" / "code").symlink_to(fake_target)
-        (tmp_path / ".codex" / "skills" / "code").symlink_to(fake_target)
+        (tmp_path / ".agents" / "skills" / "code").symlink_to(fake_target)
 
         with (
             patch("shutil.which", return_value="/usr/bin/t3"),
@@ -155,12 +155,12 @@ class TestShowInfo:
         out = capsys.readouterr().out
         assert "Skills installed to:" in out
         assert str(tmp_path / ".claude" / "skills") in out
-        assert str(tmp_path / ".codex" / "skills") in out
+        assert str(tmp_path / ".agents" / "skills") in out
 
     def test_skips_missing_runtime_skill_dirs(self, tmp_path, monkeypatch, capsys):
         _stage_home(tmp_path, monkeypatch)
         (tmp_path / ".claude" / "skills").mkdir(parents=True)
-        # No ~/.codex.
+        # No ~/.agents.
 
         with (
             patch("shutil.which", return_value="/usr/bin/t3"),
@@ -171,4 +171,4 @@ class TestShowInfo:
 
         out = capsys.readouterr().out
         assert str(tmp_path / ".claude" / "skills") in out
-        assert ".codex" not in out
+        assert ".agents" not in out

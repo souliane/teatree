@@ -10,6 +10,7 @@ from teatree.agents.context_budget import MAX_APPEND_BYTES
 from teatree.agents.prompt import _parent_result_summary, build_system_context, build_task_prompt
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
+from teatree.core.models.task_handoff import RESUME_CONTINUATION_CLAUSE, schedule_resume
 
 # --- build_task_prompt ---
 
@@ -813,6 +814,35 @@ class TestCacheablePrefixStability(TestCase):
 
         assert ctx.index("# Loaded Skills") < ctx.index(f"Task ID: {task.pk}")
         assert ctx.index("# Context Budget") < ctx.index(f"Task ID: {task.pk}")
+
+
+class TestTheResumeInstructionReachesTheAgentOnlyWhenItIsTrue(TestCase):
+    """The prompt is where the clause lands, so it is where the FRESH override has to bite.
+
+    ``dispatch_reason`` is applied at both dispatch surfaces; this pins the headless one, which
+    renders ``execution_reason`` straight into the work prompt.
+    """
+
+    def _resume(self, continuation: str) -> Task:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/1")
+        session = Session.objects.create(ticket=ticket)
+        parked = Task.objects.create(ticket=ticket, session=session)
+        resume = schedule_resume(parked, answer="postgres-1")
+        Task.objects.filter(pk=resume.pk).update(session_continuation=continuation)
+        resume.refresh_from_db()
+        return resume
+
+    def test_a_resumed_dispatch_is_told_to_continue(self) -> None:
+        prompt = build_task_prompt(self._resume(Task.SessionContinuation.PARENT))
+
+        assert RESUME_CONTINUATION_CLAUSE in prompt
+        assert "postgres-1" in prompt
+
+    def test_a_fresh_dispatch_is_told_the_answer_and_nothing_about_continuing(self) -> None:
+        prompt = build_task_prompt(self._resume(Task.SessionContinuation.FRESH))
+
+        assert RESUME_CONTINUATION_CLAUSE not in prompt
+        assert "postgres-1" in prompt
 
 
 class TestReviewingSystemContextCarriesTheAssignedIdentity(TestCase):

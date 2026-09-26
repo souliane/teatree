@@ -34,15 +34,33 @@ deletion. :meth:`ProcessTable.holds` therefore matches the query under both its
 raw and its resolved spelling. That can only ever WIDEN the keep-set, so it can
 never itself authorise a deletion.
 
+**This process is never its own witness.** Eviction opens a directory descriptor on
+the very tree it is about to delete and holds it across this read, so folding this
+pid's ``fd`` entries in answers "a live process is working inside the checkout" for
+every candidate — a guard stop that reads as correct while the pass reclaims nothing.
+The pid to drop comes from ``<root>/self``, which the procfs instance resolves in ITS
+OWN namespace: a container reading the host's bind mount gets its HOST pid there,
+where ``os.getpid()`` would name a different process entirely. A table that will not
+say which process this is cannot separate our descriptors from anyone else's, so it
+is refused rather than believed.
+
 An individual pid declining to answer is NOT what makes the table unusable:
-``/proc/<pid>/cwd`` is readable only to the pid's own uid, so on a shared box the
-root daemons never answer and a table that demanded every answer would refuse
-forever. What is decisive is *no* pid answering — a table listing processes none
-of which will speak is exactly the blind case, and it is reported as such.
+``fd`` and ``map_files`` sit behind ``ptrace_may_access`` and ``cwd`` is readable
+only to the pid's own uid, so on a shared box the other uids' processes never
+answer — 35 of 325 on the box #4165 measured — and a table that demanded every
+answer would refuse forever, taking the artifact pass, the ``clean-all`` liveness
+guard and the worktree GC down with it. What is decisive is *no* pid answering: a
+table listing processes none of which will speak is exactly the blind case, and it
+is reported as such. :func:`~teatree.core.retention.liveness.held_paths` pools that
+blindness probe-wide for the scratch sweep, whose refusal costs one deferred file;
+the two counts are read apart here, where a refusal costs the whole reclaim.
+
 """
 
 from dataclasses import dataclass
 from pathlib import Path
+
+from teatree.core.retention.liveness import held_paths, normalized_spelling
 
 #: The host's process table as bind-mounted into a container (deploy/docker-compose.yml).
 _HOST_PROC_ROOT = Path("/host-proc")
@@ -53,10 +71,6 @@ _OWN_PROC_ROOT = Path("/proc")
 #: Present iff this process runs inside a container, so ``/proc`` shows a
 #: namespace that is not the host's.
 _CONTAINER_MARKERS = (Path("/.dockerenv"), Path("/run/.containerenv"))
-
-#: The per-process links that place a process inside a directory: where it is
-#: working, and the binary it is running.
-_PLACEMENT_LINKS = ("cwd", "exe")
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,33 +157,40 @@ def read_process_table() -> ProcessTable:
     root, refusal = host_proc_root()
     if root is None:
         return ProcessTable(frozenset(), "", (refusal,))
-    pids = _pid_dirs(root)
-    paths: set[Path] = set()
-    silent = 0
+    own_pid = _own_pid_in(root)
+    if own_pid is None:
+        return ProcessTable(frozenset(), "", (f"{root} would not say which process this is",))
+    view = held_paths(root, exclude_pid=own_pid)
+    if not view.answered_pids:
+        return ProcessTable(frozenset(), "", (view.unknowable_reason,))
+    paths = {Path(normalized_spelling(path)) for path in view.held}
+    executables, executable_gaps = _executables([pid for pid in _pid_dirs(root) if pid.name != own_pid])
+    paths.update(executables)
+    partial_gaps = (view.unknowable_reason,) if view.unknowable_reason else ()
+    return ProcessTable(frozenset(paths), str(root), (*partial_gaps, *executable_gaps))
+
+
+def _own_pid_in(root: Path) -> str | None:
+    """This process's pid as *root* numbers it — ``None`` when the table will not say."""
+    try:
+        return (root / "self").readlink().name
+    except OSError:
+        return None
+
+
+def _executables(pids: list[Path]) -> tuple[set[Path], tuple[str, ...]]:
+    executables: set[Path] = set()
+    gaps: list[str] = []
     for pid in pids:
-        placements = _placements(pid)
-        if not placements:
-            silent += 1
-            continue
-        paths.update(placements)
-    if pids and not paths:
-        return ProcessTable(
-            frozenset(),
-            "",
-            (f"{root} lists {len(pids)} process(es) and none would say where it is running",),
-        )
-    gaps = (f"{silent} of {len(pids)} process(es) under {root} did not say where they run",) if silent else ()
-    return ProcessTable(frozenset(paths), str(root), gaps)
-
-
-def _placements(pid_dir: Path) -> set[Path]:
-    placements: set[Path] = set()
-    for link in _PLACEMENT_LINKS:
         try:
-            placements.add((pid_dir / link).readlink())
-        except OSError:
+            executable = (pid / "exe").readlink()
+        except FileNotFoundError:
             continue
-    return placements
+        except OSError as exc:
+            gaps.append(f"pid {pid.name} executable could not be read ({exc.strerror or exc})")
+            continue
+        executables.add(Path(normalized_spelling(str(executable))))
+    return executables, tuple(gaps)
 
 
 __all__ = [

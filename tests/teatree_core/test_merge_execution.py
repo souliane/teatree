@@ -35,6 +35,7 @@ from teatree.core.merge import (
 from teatree.core.models import ClearRequest, MergeAudit, MergeClear, PullRequest, Session, Ticket, Worktree
 from teatree.utils.pr_ref import PrRef
 from tests._forge_stub import changed_files_stdout
+from tests.factories import waive_rubric
 from tests.teatree_core.conftest import CommandOverlay
 
 _GIT = shutil.which("git") or "git"
@@ -79,6 +80,9 @@ def _branch_protection_probe(joined: str, *, required: list[str]) -> tuple[int, 
 
 
 def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
+    # The rubric done-gate runs at this chokepoint; the real path has an independent
+    # verifier grade the rubric, so the audited bypass stands in (cf. _seed_sibling_verdict).
+    waive_rubric(ticket)
     defaults: dict[str, object] = {
         "ticket": ticket,
         "pr_id": 859,
@@ -469,20 +473,22 @@ class TestMergeExecutionEdgeCases(TestCase):
 
         from teatree.backends import forge_merge_rpc  # noqa: PLC0415
 
-        captured: list[list[str]] = []
+        captured: list[tuple[list[str], dict[str, str]]] = []
 
         def _fake_run(argv: list[str], **_kw: object) -> object:
-            captured.append(argv)
+            captured.append((argv, _kw["env"]))
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
         with (
             patch("teatree.backends.forge_merge_rpc.shutil.which", return_value="/usr/bin/gh"),
             patch("teatree.backends.forge_merge_rpc.run_allowed_to_fail", side_effect=_fake_run),
         ):
-            rc, out, _err = forge_merge_rpc.gh_runner(token="")(["pr", "view", "1"])
+            rc, out, _err = forge_merge_rpc.gh_runner(token="routed-token")(["pr", "view", "1"])
         assert rc == 0
         assert out == "ok"
-        assert captured == [["/usr/bin/gh", "pr", "view", "1"]]
+        assert captured[0][0] == ["/usr/bin/gh", "pr", "view", "1"]
+        assert captured[0][1]["GH_TOKEN"] == "routed-token"
+        assert "GITHUB_TOKEN" not in captured[0][1]
 
     def test_merge_in_unconfigured_provider_context_fails_loudly(self) -> None:
         # The §9 risk: a merge in a context where the backends app is not
@@ -1389,7 +1395,10 @@ class TestExecuteBoundMergeRecordsTheLanding(TestCase):
     """
 
     def _row(self, pr_id: int = 859) -> PullRequest:
+        # The ledger row IS what resolves the ticket for the rubric gate here (there is no
+        # CLEAR), so the audited bypass stands in for the verifier's grade.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)
         return PullRequest.objects.create(
             ticket=ticket,
             overlay="t3-teatree",
@@ -1553,3 +1562,63 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
         assert ticket.state == Ticket.State.MERGED
         assert clear.consumed_at is not None
         assert MergeAudit.objects.filter(clear=clear).exists()
+
+
+class TestNoSquashMerge(TestCase):
+    """``ticket merge --no-squash`` lands a merge commit and says so on the consumed CLEAR."""
+
+    def _merge_argv(self, *, squash: bool) -> tuple[list[str], MergeClear]:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        clear = _clear(ticket)
+        stub = _GhStub()
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop", squash=squash)
+        clear.refresh_from_db()
+        return next(argv for argv in stub.calls if any(word.endswith("/merge") for word in argv)), clear
+
+    def test_no_squash_lands_a_merge_commit_and_records_it_on_the_clear(self) -> None:
+        argv, clear = self._merge_argv(squash=False)
+
+        assert "merge_method=merge" in argv
+        assert clear.merged_without_squash is True
+
+    def test_the_default_still_squashes_and_records_nothing(self) -> None:
+        argv, clear = self._merge_argv(squash=True)
+
+        assert "merge_method=squash" in argv
+        assert clear.merged_without_squash is False
+
+
+class TestAReconcileKeepsTheBoundMergeMode(TestCase):
+    """A retry that only reconciles a landed merge records the mode that merge actually used."""
+
+    def _lose_the_post_hook(self, clear: MergeClear, stub: "_LostPostHookGhStub", *, squash: bool) -> None:
+        boom = RuntimeError("post hook lost")
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
+            patch("teatree.core.merge.execution.record_merge_and_advance", side_effect=boom),
+            pytest.raises(RuntimeError, match="post hook lost"),
+        ):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop", squash=squash)
+
+    def _reconcile(self, clear: MergeClear, stub: "_LostPostHookGhStub", *, squash: bool) -> MergeClear:
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
+            merge_ticket_pr(
+                clear=MergeClear.objects.get(pk=clear.pk), executing_loop_identity="merge-loop", squash=squash
+            )
+        clear.refresh_from_db()
+        return clear
+
+    def test_a_no_squash_merge_reconciled_by_a_default_retry_stays_no_squash(self) -> None:
+        clear = _clear(Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED))
+        stub = _LostPostHookGhStub()
+        self._lose_the_post_hook(clear, stub, squash=False)
+
+        assert self._reconcile(clear, stub, squash=True).merged_without_squash is True
+
+    def test_a_squash_merge_reconciled_by_a_no_squash_retry_stays_squashed(self) -> None:
+        clear = _clear(Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED))
+        stub = _LostPostHookGhStub()
+        self._lose_the_post_hook(clear, stub, squash=True)
+
+        assert self._reconcile(clear, stub, squash=False).merged_without_squash is False

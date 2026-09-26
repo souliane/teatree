@@ -14,6 +14,7 @@ import claude_agent_sdk
 import pytest
 from django.test import SimpleTestCase, TestCase
 
+from teatree.agents.compaction_guard import COMPACTION_SWITCH_ENV
 from teatree.agents.model_tiering import resolve_tier
 from teatree.core.models import ConfigSetting
 from teatree.llm.credentials import CredentialError
@@ -359,15 +360,15 @@ class SdkDistillerCredentialEnvTestCase(TestCase):
         assert "GIT_DIR" not in options.env
 
     def test_options_env_stays_ambient_with_no_provider(self) -> None:
-        # No provider pin → system_child_env() returns None → options.env keeps the SDK
-        # default empty mapping (ambient inherited), exactly as before the pinning.
+        # No provider pin → system_child_env() returns None → options.env carries only the
+        # compaction switch, which the SDK merges over the inherited ambient env.
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch.object(claude_agent_sdk, "ClaudeSDKClient", _recording_client("[]")),
         ):
             sdk_distiller.sdk_distiller(_extract_with_one_snippet())
 
-        assert FakeHarnessSession.last_options.env == {}
+        assert FakeHarnessSession.last_options.env == dict(COMPACTION_SWITCH_ENV)
 
     def test_unresolvable_credential_fails_loud_before_any_turn(self) -> None:
         # An auth gap must RAISE (CredentialError) before the turn spawns, so it can
@@ -392,7 +393,7 @@ class SdkDistillerCredentialEnvTestCase(TestCase):
 
     def test_pydantic_ai_provider_falls_back_to_ambient(self) -> None:
         # A pydantic_ai-only provider warns and uses ambient auth rather than breaking a
-        # valid deployment: the turn still runs and options.env stays the SDK default.
+        # valid deployment: the turn still runs and options.env carries only the compaction switch.
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
         with (
@@ -401,7 +402,7 @@ class SdkDistillerCredentialEnvTestCase(TestCase):
         ):
             sdk_distiller.sdk_distiller(_extract_with_one_snippet())
 
-        assert FakeHarnessSession.last_options.env == {}
+        assert FakeHarnessSession.last_options.env == dict(COMPACTION_SWITCH_ENV)
 
 
 class SdkDistillReasonTestCase(SimpleTestCase):

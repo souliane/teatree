@@ -11,6 +11,7 @@ update, not a duplicate (idempotent).
 from django.test import TestCase
 
 from teatree.core.models import E2eMandatoryRun, Ticket
+from teatree.core.models.e2e_mandatory_run import E2eRunEvidence
 
 _SHA = "c" * 40
 _OTHER_SHA = "d" * 40
@@ -22,13 +23,29 @@ class TestRecordRun(TestCase):
         self.ticket = Ticket.objects.create(issue_url="https://example.com/i/10")
 
     def test_record_green_posted_run(self) -> None:
-        run = E2eMandatoryRun.record(
-            ticket=self.ticket, head_sha=_SHA, spec="e2e/loan.spec.ts", result="green", posted_url=_URL
+        run = E2eMandatoryRun.record_evidence(
+            ticket=self.ticket,
+            head_sha=_SHA,
+            spec="e2e/loan.spec.ts",
+            evidence=E2eRunEvidence(result="green", posted_url=_URL, target="stack"),
         )
         assert run.pk is not None
         assert run.result == "green"
         assert run.head_sha == _SHA
         assert run.posted_url == _URL
+        assert run.target == "stack"
+
+    def test_pre_existing_run_has_unknown_target(self) -> None:
+        run = E2eMandatoryRun.objects.create(
+            ticket=self.ticket,
+            head_sha=_SHA,
+            spec="e2e/loan.spec.ts",
+            result="green",
+            posted_url=_URL,
+        )
+
+        assert run.target == "unknown"
+        assert "target=unknown" in str(run)
 
     def test_record_normalizes_sha(self) -> None:
         run = E2eMandatoryRun.record(ticket=self.ticket, head_sha="C" * 40, spec="x", result="green", posted_url=_URL)

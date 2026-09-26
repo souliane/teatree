@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review-one-place-partial-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "HOLD — blocking finding. The concept still has 3 owner files: common/customer_value.py, adapters/d.py, and adapters/e.py. Presentation differences do not justify an exemption; the common owner should accept those rendering inputs while retaining the invariant."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

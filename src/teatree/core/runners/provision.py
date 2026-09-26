@@ -19,12 +19,16 @@ from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.checkout_disposal import disposal_refusal
 from teatree.core.worktree.clone_paths import find_clone_path, git_common_clone_dir
 from teatree.core.worktree.clone_provision import ensure_clone
-from teatree.core.worktree.ticket_workspace import ticket_workspace_dir
+from teatree.core.worktree.ticket_workspace import (
+    TicketWorkspaceDivergenceError,
+    assert_joins_ticket_workspace,
+    ticket_workspace_dir_or_refuse,
+)
 from teatree.core.worktree.venue_safe_registry import WorkPresence, prune_worktrees, unsalvageable_work_state
 from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
-from teatree.utils.git_guard import guard_repo_remote_slug, is_github_slug
+from teatree.utils.git_guard import guard_repo_remote_slug, is_remote_project_path
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -122,13 +126,15 @@ def _tear_down_worktree(clone: str, wt_path: str, branch: str) -> None:
         git.check(repo=clone, args=["branch", "-d", branch])
 
 
-def _unclearable_leftover(leftover: _RegisteredWorktree, work: WorkPresence, *, branch: str, wt_str: str) -> str | None:
-    """Adopt a leftover that cannot be cleared, or refuse the provision — never destroy it.
+def _refuse_unclearable_leftover(
+    leftover: _RegisteredWorktree, work: WorkPresence, *, branch: str, wt_str: str
+) -> None:
+    """Refuse the provision over a leftover that cannot be cleared — never destroy it, never adopt it.
 
-    Reached only for a leftover whose teardown could cost work: one carrying commits
-    that exist on no remote, and one this context cannot READ, which is the same risk
-    with the evidence missing (#4287). The unreadable case is never adopted either —
-    nothing here can provision into a directory it cannot resolve.
+    Reached only for a leftover OUTSIDE the scope's slot whose teardown could cost work:
+    one carrying commits that exist on no remote, or one this context cannot READ (#4287).
+    A checkout elsewhere is not one this ticket owns, even on its branch — claiming it is
+    ``workspace ticket --adopt``'s job, run from inside it.
     """
     if work is WorkPresence.UNKNOWN:
         logger.error(
@@ -139,24 +145,23 @@ def _unclearable_leftover(leftover: _RegisteredWorktree, work: WorkPresence, *, 
             wt_str,
             leftover.path,
         )
-        return None
-    if leftover.branch == branch:
-        logger.warning(
-            "Leftover worktree for %s at %s carries work that exists on no remote — adopting it in place "
-            "instead of recreating at %s. Push or salvage it to move the worktree.",
+    elif leftover.branch == branch:
+        logger.error(
+            "Cannot provision %s at %s: the branch is checked out at %s, outside this ticket's slot, and "
+            "carries work that exists on no remote. Refusing to adopt a checkout this ticket does not own "
+            "or to destroy it — push or salvage that work, or run `workspace ticket --adopt` from inside it.",
             branch,
-            leftover.path,
             wt_str,
+            leftover.path,
         )
-        return leftover.path
-    logger.error(
-        "Cannot provision %s at %s: a worktree on branch %s is in the way and carries work that exists on "
-        "no remote. Refusing to destroy it — push or salvage that work, then retry.",
-        branch,
-        wt_str,
-        leftover.branch,
-    )
-    return None
+    else:
+        logger.error(
+            "Cannot provision %s at %s: a worktree on branch %s is in the way and carries work that exists on "
+            "no remote. Refusing to destroy it — push or salvage that work, then retry.",
+            branch,
+            wt_str,
+            leftover.branch,
+        )
 
 
 def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, ticket_id: int | None) -> str | None:
@@ -176,9 +181,9 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, tic
     - a registration whose directory is GONE → stale git admin; pruned, then recreate;
     - a leftover holding the branch at ANOTHER path, or one sitting at the expected
         path on the WRONG branch → torn down (guarded) and recreated;
-    - a leftover carrying work absent from every remote → NEVER destroyed: adopted in
-        place when it is on the scope's branch, and otherwise refused so nothing
-        silently deletes the only copy of that work;
+    - a leftover outside the slot carrying work absent from every remote → refused:
+        never destroyed, and never adopted even on the scope's branch — a checkout
+        elsewhere is not one this ticket owns;
     - a leftover this context cannot READ — so whether it carries work is unknowable
         here — → refused, never adopted and never torn down (#4287);
     - anything standing in the slot that this context cannot prove disposable →
@@ -209,7 +214,8 @@ def _reconcile_leftover_worktree(clone: Path, wt_path: Path, branch: str, *, tic
             continue
         work = unsalvageable_work_state(leftover.path)
         if work is not WorkPresence.NONE:
-            return _unclearable_leftover(leftover, work, branch=branch, wt_str=wt_str)
+            _refuse_unclearable_leftover(leftover, work, branch=branch, wt_str=wt_str)
+            return None
         logger.warning(
             "Cleaning up a broken leftover worktree at %s (branch %s) before provisioning %s at %s",
             leftover.path,
@@ -296,21 +302,36 @@ class WorktreeProvisioner(RunnerBase):
         # repo is adopted so no stray second dir appears.
         adopt = dict(extra.get("adopt") or {})
 
-        ticket_dir = self._existing_ticket_dir(ticket) or ticket_dir_for(worktree_root(), branch)
+        # The ROOT comes from the TICKET's overlay: a container run resolves no ambient
+        # overlay, drops the segment, and splits the ticket across two roots. A legacy
+        # blank-overlay ticket has nothing to name, so ``or None`` keeps it ambient.
+        try:
+            ticket_dir = self._existing_ticket_dir(ticket) or ticket_dir_for(
+                worktree_root(overlay=ticket.overlay or None), branch
+            )
+        except TicketWorkspaceDivergenceError as exc:
+            logger.exception("Ticket workspace is already split")
+            return RunnerResult(ok=False, detail=str(exc))
         if any(repo_name not in adopt for repo_name in repos):
             ticket_dir.mkdir(parents=True, exist_ok=True)
 
         provisioned: dict[str, str] = dict(extra.get("provision") or {})
         failed: list[str] = []
+        divergence_detail = ""
 
         for repo_name in repos:
-            wt_path = self._provision_repo(
-                clone_root_path,
-                repo_name,
-                ticket_dir,
-                branch=branches.get(repo_name, branch),
-                adopt_path=adopt.get(repo_name, ""),
-            )
+            try:
+                wt_path = self._provision_repo(
+                    clone_root_path,
+                    repo_name,
+                    ticket_dir,
+                    branch=branches.get(repo_name, branch),
+                    adopt_path=adopt.get(repo_name, ""),
+                )
+            except TicketWorkspaceDivergenceError as exc:
+                logger.exception("Candidate worktree would split the ticket workspace")
+                divergence_detail = str(exc)
+                break
             if wt_path is None:
                 failed.append(repo_name)
             else:
@@ -319,6 +340,8 @@ class WorktreeProvisioner(RunnerBase):
         # #800 N3: canonical locked RMW (was an unlocked extra save).
         ticket.merge_extra(set_keys={"provision": provisioned})
 
+        if divergence_detail:
+            return RunnerResult(ok=False, detail=divergence_detail)
         if failed:
             return RunnerResult(ok=False, detail=f"failed to create worktrees for: {', '.join(failed)}")
         return RunnerResult(ok=True, detail=f"provisioned {len(provisioned)} worktree(s)")
@@ -335,8 +358,9 @@ class WorktreeProvisioner(RunnerBase):
         into a provision that can never succeed again. Proof of life is
         :func:`_recorded_checkout_is_live`. In adopt mode (*adopt_path* set) the
         existing checkout is recorded verbatim — see :meth:`_create`. On a failed
-        ``git worktree add`` the just-created row is rolled back so the ticket
-        carries no half-provisioned repo.
+        ``git worktree add`` — or a RAISED refusal such as the #2276 wrong-repo
+        guard — the just-created row is rolled back so the ticket carries no
+        half-provisioned repo.
         """
         existing = Worktree.objects.filter(ticket=self.ticket, repo_path=repo_name).first()
         recorded = (existing.extra or {}).get("worktree_path", "") if existing else ""
@@ -347,6 +371,11 @@ class WorktreeProvisioner(RunnerBase):
             logger.error("%s", refusal)
             return None
 
+        # Most rows are registered HERE rather than at the ad-hoc adopt seam, and
+        # ``adopt_path`` records a checkout verbatim — wherever the operator ran from.
+        slot = Path(adopt_path) if adopt_path else ticket_dir / Path(repo_name).name
+        assert_joins_ticket_workspace(self.ticket, slot)
+
         worktree = existing or Worktree.objects.create(
             ticket=self.ticket,
             repo_path=repo_name,
@@ -354,7 +383,15 @@ class WorktreeProvisioner(RunnerBase):
             overlay=self.ticket.overlay,
         )
 
-        created = self._create(clones_root, repo_name, ticket_dir, branch, adopt_path=adopt_path)
+        try:
+            created = self._create(clones_root, repo_name, slot, branch, adopt_path=adopt_path)
+        except Exception:
+            # A RAISED refusal (the #2276 wrong-repo guard) is a failed provision exactly
+            # as a ``None`` return is, so it must roll the row back too — otherwise the
+            # loud refusal strands a Worktree row for a repo that was never provisioned.
+            if existing is None:
+                worktree.delete()
+            raise
         if created is None:
             if existing is None:
                 worktree.delete()  # roll back only the row we just created, never a reused one
@@ -391,24 +428,25 @@ class WorktreeProvisioner(RunnerBase):
     def _existing_ticket_dir(ticket: Ticket) -> Path | None:
         """The shared parent dir of this ticket's already-materialised worktrees.
 
-        Delegates to :func:`~teatree.core.worktree.ticket_workspace.ticket_workspace_dir`
+        Delegates to
+        :func:`~teatree.core.worktree.ticket_workspace.ticket_workspace_dir_or_refuse`
         so the provisioner's co-location rule and the refusal the ad-hoc registration
-        seams now enforce are the SAME predicate. They were the same rule expressed
-        twice, which is how the ad-hoc seams came to have no rule at all: a repo added
-        later co-locates as a sibling in the ticket's existing dir, and ``None`` (no
-        materialised worktree yet, or an existing split) leaves the caller's
-        ``workspace / branch`` default in force.
+        seams enforce are the SAME predicate. They were the same rule expressed twice,
+        which is how the ad-hoc seams came to have no rule at all: a repo added later
+        co-locates as a sibling in the ticket's existing dir, ``None`` (nothing
+        materialised yet) leaves the caller's root-derived default in force, and an
+        existing SPLIT refuses rather than picking a side.
         """
-        return ticket_workspace_dir(ticket)
+        return ticket_workspace_dir_or_refuse(ticket)
 
     def _create(
-        self, clones_root: Path, repo_name: str, ticket_dir: Path, branch: str, *, adopt_path: str = ""
+        self, clones_root: Path, repo_name: str, wt_path: Path, branch: str, *, adopt_path: str = ""
     ) -> tuple[str, Path] | None:
         """Run ``git worktree add`` for one repo, or record an adopted checkout (#2275).
 
         *clones_root* is the CLONE root (``config.clone_root()``, ``~/workspace``)
         — where source clones are DISCOVERED — NOT the WORKTREE root the new
-        worktree lands under (that is *ticket_dir*). Returns
+        worktree lands under (that is *wt_path*'s parent). Returns
         ``(worktree_path, clone_path)`` on success or ``None`` on failure (no clone
         found or creatable, a slot this context cannot clear, or ``git worktree add``
         rejected the path).
@@ -441,17 +479,15 @@ class WorktreeProvisioner(RunnerBase):
             )
             return None
 
-        # #2276: ``find_clone_path`` resolves by basename, so a SIBLING clone
-        # of the same name (a different ``origin``) would be cut silently. When
-        # ``repo_name`` is an ``owner/repo`` slug it carries a canonical remote
-        # identity to enforce — refuse loudly if the resolved clone's ``origin``
-        # is a different repo, before ``git worktree add``. A bare basename has
-        # no slug to compare against, so the guard is skipped (it must never
-        # crash the legitimate ``--repos <basename>`` flow).
-        if is_github_slug(repo_name):
+        # #2276: ``find_clone_path`` resolves by basename — via the flat root and a
+        # one-level scan — so a SIBLING clone of the same name (a different
+        # ``origin``) would be cut silently. When ``repo_name`` is a forge PROJECT
+        # PATH it carries a canonical remote identity to enforce — refuse loudly if
+        # the resolved clone's ``origin`` is a different repo, before ``git worktree
+        # add``. A bare basename has no path to compare against, so the guard is
+        # skipped (it must never crash the legitimate ``--repos <basename>`` flow).
+        if is_remote_project_path(repo_name):
             guard_repo_remote_slug(str(repo_path), repo_name)
-
-        wt_path = ticket_dir / Path(repo_name).name
 
         # #3234: reconcile whatever a prior failed attempt left behind BEFORE adding.
         # A leftover worktree/branch makes ``git worktree add`` refuse both the path

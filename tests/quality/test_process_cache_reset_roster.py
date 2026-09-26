@@ -131,6 +131,10 @@ def discover_process_caches() -> dict[str, str]:
 #: Caches the conftest roster resets around every test, mapped to the reset
 #: function conftest invokes (the name that must literally appear in conftest.py).
 RESET_BY_CONFTEST: dict[str, str] = {
+    "teatree.agents.skill_routing:_MEMORY": "clear_route_availability_cache",
+    "teatree.agents.skill_routing:_PERSISTENT_CHECKED": "clear_route_availability_cache",
+    "teatree.agents.live_mailbox:_shared_brokers": "reset_shared_brokers",
+    "teatree.agents.codex_shared_app_server:_managers": "reset_shared_codex_app_servers",
     "teatree.core.backend_factory:_code_host_cache": "reset_backend_caches",
     "teatree.core.backend_factory:_messaging_cache": "reset_backend_caches",
     # Short-TTL negative caches (F4.5): a transient resolve failure caches a None
@@ -138,9 +142,13 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.backend_factory:_code_host_none_until": "reset_backend_caches",
     "teatree.core.backend_factory:_messaging_none_until": "reset_backend_caches",
     "teatree.backends.loader:get_ci_service": "reset_backend_caches",  # cleared transitively by reset_backend_caches
+    # Which overlay declares a non-owner author for a remote. Overlay-set- and secret-derived,
+    # so a test that swaps either would otherwise read the previous test's answer.
+    "teatree.core.authoring_credential:_declared_cache": "reset_backend_caches",
     "teatree.core.overlay_loader:_discover_overlays": "reset_overlay_cache",
     "teatree.core.gates.pr_budget_forge:_forge_cache": "reset_forge_pr_budget_cache",
     "teatree.utils.throttled_log:_last_warned": "reset_throttle",
+    "teatree.utils.host_pressure:_missing_warned": "reset_missing_warning_memo",
     # Task pks this process is executing (#4164). Pk-keyed, so it is exactly the recycled-rowid
     # class above: a leaked entry makes a later test's fresh task read as still-executing and
     # the sweep withholds a reap that test asserts it takes.
@@ -155,7 +163,11 @@ RESET_BY_CONFTEST: dict[str, str] = {
     "teatree.core.worktree.branch_classification:_declared_single_branch_repos": "reset_single_branch_cache",
     "teatree.core.worktree.branch_classification:_branch_pr_is_merged": "reset_forge_probe_cache",
     "teatree.core.worktree.branch_classification:_merged_pr_head_sha": "reset_forge_probe_cache",
+    "teatree.core.worktree.branch_classification:_pr_merge_commit_sha": "reset_forge_probe_cache",
     "teatree.loop.scanners.my_prs_ci:_MEMO": "reset_ci_memo",
+    # The once-per-process unlink of the degraded-read marker. Exhausted by an earlier test,
+    # a later one's healthy read leaves a marker it asserts was cleared.
+    "teatree.config.override_read_health:note_healthy_read": "_reset_declaration_caches",
     # The shipped seed tables are read by the `config_setting import` classifier, and tests
     # re-point `DEFAULTS_TOML` at a fixture — a parse outliving its test would classify a
     # later import against the wrong shipped table. Its `cold_defaults` sibling stays EXEMPT
@@ -171,12 +183,21 @@ RESET_BY_CONFTEST: dict[str, str] = {
     # test process runs many and creates and destroys git repositories between them, so a
     # kept entry answers a later test about a tree that no longer has that shape.
     "teatree.utils.work_tree:_tree_for": "reset_cwd_cache",
+    # Per-overlay Slack DM recorders, each holding the backend `messaging_from_overlay`
+    # resolved and the bot identity probed through it. Derived from `_messaging_cache`,
+    # which conftest already resets — so leaving this one alone defeats that reset and
+    # answers a later test's overlay with the earlier test's backend.
+    "teatree.cli.slack.listen:_dm_recorders": "reset_dm_recorders",
 }
 
 #: Caches deliberately NOT reset, each with the reason it is safe to leave alone.
 #: Registries are populated once at import/app-ready and are stable for the whole
 #: process — resetting them mid-session would break resolution, not isolate a test.
 EXEMPT: dict[str, str] = {
+    "teatree.core.telemetry.admission:_provider": (
+        "the OTel TracerProvider and its processors are process-lifetime resources; tests replace the provider "
+        "binding when exercising exporter variants and do not change OTLP endpoint configuration between calls"
+    ),
     "teatree.agents.harness_registry:_REGISTRY": "import-populated harness registry; process-stable",
     "teatree.core.factory.chokepoint_registry:_REGISTRY": "import-populated chokepoint registry; process-stable",
     "teatree.core.modelkit.gate_registry:_REGISTRY": "import-populated modelkit gate registry; process-stable",
@@ -190,6 +211,10 @@ EXEMPT: dict[str, str] = {
         "resetting it would clear nothing"
     ),
     "teatree.core.presence:_FACTORIES": "import-populated presence-factory registry; process-stable",
+    "teatree.config.setting_taxonomy:taxonomy": (
+        "a view over import-populated registries (feature flags, gate evidence, retirements, cold + "
+        "registry key sets); nothing mutates them at runtime, so the memo cannot hold another test's state"
+    ),
     "teatree.cli.overlay:OVERLAY_PROXY_COMMANDS": "import-populated command map; not mutated at runtime",
     "teatree.config.setting_registries:TOML_OVERLAY_OVERRIDABLE_SETTINGS": (
         "import-populated constant; not mutated at runtime"
@@ -209,6 +234,11 @@ EXEMPT: dict[str, str] = {
     ),
     "teatree.loops.deadlined_tick:_LIVE_TICK_PGIDS": (
         "live tick subprocess PGIDs; process-lifecycle, not a per-test memo"
+    ),
+    "teatree.quality.hand_written_loc:_window_loc": (
+        "@lru_cache keyed by (repo path, HEAD sha, window bounds) — the sha IS the thing that changes "
+        "when a tree does, and each test builds its own tmp repo, so an entry can never answer for "
+        "another test's state; resetting it would only re-run an identical boundary diff"
     ),
     "teatree.quality.skill_symbol_refs:build_repo_index": (
         "@lru_cache keyed by repo_root; every caller (scan_source/scan_tree, all test-only) passes "

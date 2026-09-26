@@ -14,6 +14,14 @@ overwrites the same key), so a second ``ready()`` (test re-entry, in-process
 ``call_command``) is a no-op, not a duplicate-key error.
 """
 
+from typing import TYPE_CHECKING
+
+from teatree.core.review import pr_open_state as _pr_open_state
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import PrOpenState
+    from teatree.core.models.ticket import Ticket
+
 
 def _infer_overlay_for_url(url: str) -> str:
     # Re-read the module attribute at call time so a test patching
@@ -28,6 +36,10 @@ def _resolve_overlay_name(name: str) -> str | None:
     from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415 — deferred: call-time import
 
     return resolve_overlay_name(name)
+
+
+def _read_pr_open_state(ticket: "Ticket") -> "PrOpenState":
+    return _pr_open_state.read_pr_open_state(ticket)
 
 
 def populate_model_registries() -> None:
@@ -46,10 +58,11 @@ def populate_model_registries() -> None:
         plan_gate,
         repro_gate,
         review_context_gate,
-        spec_coverage_gate,
+        rubric_gate,
     )
     from teatree.core.modelkit.gate_registry import register_resolver  # noqa: PLC0415 — deferred: call-time import
 
     register_resolver("infer_overlay_for_url", _infer_overlay_for_url)
     register_resolver("resolve_overlay_name", _resolve_overlay_name)
+    register_resolver("pr_open_state", _read_pr_open_state)
     register_cost_factories()

@@ -35,6 +35,7 @@ quote-scanner's ``--quote-ok`` / ``QUOTE_OK=1`` escape hatch.
 import os
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import TypedDict
 
@@ -86,6 +87,42 @@ SCANNER_UNAVAILABLE_MARKER: str = "<banned-terms-scanner-unavailable>"
 # broken interpreters, sending operators to reinstall a healthy uv.
 SCANNER_TIMEOUT_MARKER: str = "<banned-terms-scanner-timeout>"
 
+# Marker returned when the TERM STORE errored on read, so the gate cannot tell an empty
+# term list from one it could not see. Separate from the two markers above because their
+# message sends the operator to repair an interpreter, which is not the fault here and not
+# the remedy: this store is present and corrupt, locked, or missing its table. A store that
+# is simply ABSENT is not this — it is a confirmed answer, and carries no marker.
+STORE_UNREADABLE_MARKER: str = "<banned-terms-store-unreadable>"
+
+# Marker returned when the store WAS read, holds no term list, and the deployment has set
+# ``banned_terms_required``. That flag is read inside the shell scanner, which the
+# nothing-configured branch below never invokes, so it was inert on exactly the path it
+# exists for: the deployment that MUST scrub published unscanned.
+TERMS_REQUIRED_UNSET_MARKER: str = "<banned-terms-required-but-unset>"
+
+# Its deny reason. The remedy is the operator's own configuration, not a repair.
+_TERMS_REQUIRED_UNSET_DENY: str = (
+    "BLOCKED: banned-terms posting gate (#1415/#3247). No banned-term list is configured and "
+    "banned_terms_required is set, so this deployment must scrub before publishing and has "
+    "nothing to scrub against. Configure the list with `t3 <overlay> config_setting set "
+    "banned_terms`, or unset banned_terms_required on a box that does not need it. Failing "
+    "closed: an unscanned body is not allowed onto a public surface."
+)
+
+# Its deny reason. Separate from the scanner messages for the reason one of them was
+# itself rewritten: naming the wrong cause sends the operator to repair something that is
+# not broken, and nothing here is an interpreter problem. A constant rather than a
+# formatter because it interpolates nothing — the shape ``gate._BANNED_TERMS_CREDENTIAL_DENY``
+# already uses in this family.
+_STORE_UNREADABLE_DENY: str = (
+    "BLOCKED: banned-terms posting gate (#1415/#4008). The term store is HERE and would not READ, "
+    "so this gate cannot tell an empty term list from a list it simply could not see. The config DB "
+    "is corrupt, locked by a live writer, or missing its table, and no published projection answers "
+    "this key either — `t3 doctor check` says which. Failing closed: an unscanned body is not "
+    "allowed onto a public surface. The escapes remain — ALLOW_BANNED_TERM=1 for one call, or "
+    "banned_terms_gate_enabled false to disable the gate."
+)
+
 # How long to wait for the shell scanner before failing closed. The harness
 # SIGKILLs a hook at its ``hooks.json`` timeout (30s) and a killed hook returns no
 # verdict at all, so the default stays well under that ceiling; a venue slower than
@@ -122,11 +159,16 @@ def _banned_terms_configured(config_path: Path | None) -> bool:
     DB path (else the canonical DB / ``T3_CONFIG_DB``). A malformed registry
     propagates :class:`BannedTermsUnsetError` (fail-loud), never a silent no-op.
 
-    A legacy row that could not be READ at all (locked, corrupt, or missing its
-    table) raises :class:`BannedTermsUnreadableError` rather than resolving to
-    "not configured": an errored read is indistinguishable from an unset row, and
-    treating it as unset let a busy store open this publish-surface gate the same
-    way it opened the commit-only shell scanner (#4008).
+    A store that ERRORED on read (locked, corrupt, missing its table) raises
+    :class:`BannedTermsUnreadableError` rather than resolving to "not configured":
+    that read is indistinguishable from an unset row, and treating it as unset let a
+    busy store open this publish-surface gate the same way it opened the commit-only
+    shell scanner (#4008). Confirmed ABSENCE is the opposite case and returns ``False``:
+    no DB anywhere, no published projection, no row is what a fresh install looks like,
+    and refusing it made this gate match its own sentinel against every body — every
+    fresh install, the whole test suite, and every issue the factory files. The
+    deployment that must scrub declares itself with ``banned_terms_required``, which
+    :func:`_no_term_list_verdict` honours on exactly this branch.
     """
     from teatree.hooks.banned_term_registry import load_registry  # noqa: PLC0415  dual-read cycle
 
@@ -343,6 +385,21 @@ def _marker_for_scanner_failure(exc: Exception, timeout: int) -> str:
     return SCANNER_UNAVAILABLE_MARKER
 
 
+def _no_term_list_verdict(config_path: Path | None, *, configured: bool | None) -> str | None:
+    """The scan result when no term list resolved: a marker to block on, or a clean no-op.
+
+    ``None`` from the caller is a store that could not be read. ``False`` is a store that was
+    read and holds nothing — the genuine no-op on a dev box, and a fail-closed on the
+    deployment that set ``banned_terms_required``, which never reached this branch because
+    that flag is read inside the shell scanner the branch skips.
+    """
+    from teatree.hooks.banned_terms_cli import banned_terms_required  # noqa: PLC0415  CLI import, off the fast path
+
+    if configured is None:
+        return STORE_UNREADABLE_MARKER
+    return TERMS_REQUIRED_UNSET_MARKER if banned_terms_required(db_path=config_path) else None
+
+
 def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """Delegate ``text`` to ``check-banned-terms.sh``; return the matched term, else ``None``.
 
@@ -359,9 +416,7 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """
     configured = _configured_or_unreadable(config_path)
     if configured is not True:
-        # ``None`` (store unreadable) fails CLOSED; ``False`` (nothing configured)
-        # is the genuine no-op — one branch, so the return budget stays sane.
-        return SCANNER_UNAVAILABLE_MARKER if configured is None else None
+        return _no_term_list_verdict(config_path, configured=configured)
     script = _scanner_script()
     if not script.is_file():
         # banned-terms IS configured (checked above) but the scanner script is
@@ -560,6 +615,19 @@ def format_scanner_timeout_message() -> str:
     )
 
 
+# Every marker's deny reason, as a table: a new marker that forgets its row renders no
+# message at all, which reads to the caller as a configured term and picks up the
+# private-destination downgrade — the fail-OPEN the routing exists to prevent.
+_MARKER_DENY_RENDERERS: dict[str, Callable[[], str]] = {
+    UNAVAILABLE_BODY_SOURCE_MARKER: format_unavailable_body_source_message,
+    UNRESOLVABLE_BODY_MARKER: format_unresolvable_body_message,
+    SCANNER_TIMEOUT_MARKER: format_scanner_timeout_message,
+    SCANNER_UNAVAILABLE_MARKER: format_scanner_unavailable_message,
+    STORE_UNREADABLE_MARKER: lambda: _STORE_UNREADABLE_DENY,
+    TERMS_REQUIRED_UNSET_MARKER: lambda: _TERMS_REQUIRED_UNSET_DENY,
+}
+
+
 def marker_deny_message(term: str) -> str | None:
     """Return the deny reason for a fail-closed marker, or ``None`` for a real term.
 
@@ -572,12 +640,5 @@ def marker_deny_message(term: str) -> str | None:
     routed here: an unrouted one would be mistaken for a configured term and pick
     up that path's private-destination downgrade, failing OPEN.
     """
-    if term == UNAVAILABLE_BODY_SOURCE_MARKER:
-        return format_unavailable_body_source_message()
-    if term == UNRESOLVABLE_BODY_MARKER:
-        return format_unresolvable_body_message()
-    if term == SCANNER_TIMEOUT_MARKER:
-        return format_scanner_timeout_message()
-    if term == SCANNER_UNAVAILABLE_MARKER:
-        return format_scanner_unavailable_message()
-    return None
+    renderer = _MARKER_DENY_RENDERERS.get(term)
+    return renderer() if renderer is not None else None

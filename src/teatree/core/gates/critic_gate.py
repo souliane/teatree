@@ -7,7 +7,7 @@ adversarial questions the human had to ask all session. Two halves:
 Deterministic blocking teeth (no LLM in the blocking path)
     ``done_not_done`` / ``spec_not_plan`` / ``completeness`` are pure predicates over
     REAL artifacts (they REUSE ``merge_evidence_gate`` / ``plan_currency`` /
-    ``spec_coverage_gate``). A FAIL is recorded as a ``CriticFinding`` and, when
+    ``rubric_gate``). A FAIL is recorded as a ``CriticFinding`` and, when
     ``critic_gate_mode`` is ``blocking``, raises :class:`CriticGateError` so the delivery
     is refused. These are the ONLY items that can block.
 
@@ -219,7 +219,7 @@ def record_returned_critic_verdict(task: object, result: dict) -> str:
     """Record a headless critic task's returned ``critic_verdict`` envelope (corr-11).
 
     The orchestrator half of the async critic lane, mirroring
-    ``attempt_recorder._maybe_record_review_verdict``: a Bash-denied critic RETURNS a
+    ``review_envelope_recorder.record_returned_review_envelope``: a Bash-denied critic RETURNS a
     typed ``critic_verdict``; THIS actor (not the maker) records the
     :class:`CriticVerdict`, then re-runs the finding recording so the freshly-judged
     LLM items land in ``CriticFinding``. A non-critic task, a result without a
@@ -271,7 +271,7 @@ def check_critic(ticket: "Ticket") -> None:
         # reading plan+diff+attachments). Ship it truly inert — no Session/Task/
         # CriticDispatch created — until an overlay opts into `advisory`/`blocking`
         # (the per-overlay mode scopes enablement to the teatree/dogfood overlay
-        # first, exactly like `require_merge_evidence`/`require_plan_adequacy`).
+        # first, exactly like `require_merge_evidence`).
         return
     _enqueue_llm_critic(ticket, delivered_head_sha(ticket))
     if not critic_blocking(overlay):

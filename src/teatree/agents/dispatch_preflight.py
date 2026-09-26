@@ -14,8 +14,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.models.plan_adequacy import declared_seam_paths
 from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.rubric import Rubric
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.worktree.branch_currency import fetch_target_head, predict_merge_conflicts
 from teatree.core.worktree.target_branch import resolve_target_branch
@@ -111,6 +113,31 @@ def declared_seams_brief_lines(task: "Task") -> tuple[str, ...]:
         "UNDECLARED seam is a gap):"
     )
     return ("", header, *(f"  - {seam}" for seam in seams))
+
+
+def rubric_brief_lines(task: "Task") -> tuple[str, ...]:
+    """Render the reviewed ticket's rubric criteria for a reviewing brief, or ``()``.
+
+    The reviewer is told to grade EVERY criterion and nothing else grades one, so a
+    brief that names no criteria asks for a checklist the reviewer cannot see. Resolved
+    through the SAME :func:`~teatree.core.merge.ticket_resolution.gated_ticket_for_review_task`
+    the recorder stamps and the merge gate reads — a brief listing a rubric those two
+    would not consult teaches the wrong checklist.
+
+    ``()`` for a PR no ticket owns and for a ticket with no rubric, so a dispatch is
+    byte-identical to today until a reviewed ticket actually carries criteria.
+    """
+    ticket = gated_ticket_for_review_task(task)
+    if ticket is None:
+        return ()
+    rubric = Rubric.objects.active_for_ticket(ticket)
+    if rubric is None:
+        return ()
+    criteria = list(rubric.criteria.all())
+    if not criteria:
+        return ()
+    header = f"TICKET RUBRIC (ticket {ticket.pk}) — grade EVERY one of these in `rubric_grades`:"
+    return ("", header, *(f"  #{c.ordinal} {c.text}" for c in criteria))
 
 
 _MAX_REVIEW_DIFF_CHARS = 24000

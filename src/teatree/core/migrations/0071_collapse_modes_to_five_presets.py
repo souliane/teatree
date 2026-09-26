@@ -18,13 +18,6 @@ is reconstructible from no shipped table. Migrating back to ``0070`` restores th
 columns at their field defaults (``False``/``False``/``True``) — the correct posture for
 ``off`` — so the pre-collapse resolver reads a coherent table. Recovery is forward:
 ``t3 loop preset use <name>`` plus the idempotent seed.
-
-One behaviour change the mask does not capture: old ``offline`` set
-``presence_sensitive=False``, so a SCHEDULE- or DEFAULT-sourced holiday was never
-presence-upgraded by a keystroke. With the column deleted a schedule/default ``off`` IS
-upgradable (:func:`teatree.core.mode_resolution._apply_presence_upgrade`). A manual
-``--hold`` override is source ``override`` and is still never upgraded, so an operator's
-explicit hold is unaffected.
 """
 
 from django.db import migrations
@@ -93,13 +86,14 @@ _AUTO_LOW_POWER_REASONS = ("auto:low-power (usage window parked)", "auto:low-tok
 
 
 def _rename_modes(apps, schema_editor) -> None:
-    mode = apps.get_model("core", "Mode")
+    db = schema_editor.connection.alias
+    mode = apps.get_model("core", "Mode").objects.using(db)
     renamed: dict[str, str] = {}
     for old, new in _RENAMES:
-        row = mode.objects.filter(name=old).first()
+        row = mode.filter(name=old).first()
         if row is None:
             continue
-        if mode.objects.filter(name=new).exists():
+        if mode.filter(name=new).exists():
             # The successor name is already taken (an operator's own row): keep theirs
             # rather than colliding on the unique name.
             row.delete()
@@ -108,9 +102,9 @@ def _rename_modes(apps, schema_editor) -> None:
             row.save(update_fields=["name"])
         renamed[old] = new
     for old, new in _MERGED:
-        row = mode.objects.filter(name=old).first()
+        row = mode.filter(name=old).first()
         if row is not None:
-            if mode.objects.filter(name=new).exists() or not _is_referenced(apps, old):
+            if mode.filter(name=new).exists() or not _is_referenced(apps, db, old):
                 row.delete()
             else:
                 # Something points AT this row and there is nothing to merge it into, so
@@ -119,54 +113,55 @@ def _rename_modes(apps, schema_editor) -> None:
                 row.name = new
                 row.save(update_fields=["name"])
         renamed[old] = new
-    mode.objects.filter(name__in=_DROPPED).delete()
+    mode.filter(name__in=_DROPPED).delete()
 
     for name, (shipped, replacement) in _DESCRIPTIONS.items():
-        mode.objects.filter(name=name, description=shipped).update(description=replacement)
+        mode.filter(name=name, description=shipped).update(description=replacement)
 
-    row = mode.objects.filter(name="maintenance").first()
+    row = mode.filter(name="maintenance").first()
     if row is not None:
         entries = dict(row.entries) if isinstance(row.entries, dict) else {}
         row.entries = {**entries, **_MAINTENANCE_ENTRIES}
         row.save(update_fields=["entries"])
 
-    _repoint_references(apps, renamed)
+    _repoint_references(apps, db, renamed)
 
 
-def _is_referenced(apps, name: str) -> bool:
+def _is_referenced(apps, db: str, name: str) -> bool:
     """Whether any stored row names *name* — a slot, the manual override, or a setting."""
+    settings = apps.get_model("core", "ConfigSetting").objects.using(db)
     return (
-        apps.get_model("core", "ModeScheduleSlot").objects.filter(preset_name=name).exists()
-        or apps.get_model("core", "ModeOverride").objects.filter(preset_name=name).exists()
-        or apps.get_model("core", "ConfigSetting").objects.filter(key__in=_MODE_VALUED_SETTINGS, value=name).exists()
+        apps.get_model("core", "ModeScheduleSlot").objects.using(db).filter(preset_name=name).exists()
+        or apps.get_model("core", "ModeOverride").objects.using(db).filter(preset_name=name).exists()
+        or settings.filter(key__in=_MODE_VALUED_SETTINGS, value=name).exists()
     )
 
 
-def _repoint_references(apps, renamed: dict[str, str]) -> None:
+def _repoint_references(apps, db: str, renamed: dict[str, str]) -> None:
     """Move every stored reference to a renamed mode / schedule onto its successor."""
-    slot = apps.get_model("core", "ModeScheduleSlot")
-    override = apps.get_model("core", "ModeOverride")
-    setting = apps.get_model("core", "ConfigSetting")
+    slot = apps.get_model("core", "ModeScheduleSlot").objects.using(db)
+    override = apps.get_model("core", "ModeOverride").objects.using(db)
+    setting = apps.get_model("core", "ConfigSetting").objects.using(db)
     for old, new in renamed.items():
-        slot.objects.filter(preset_name=old).update(preset_name=new)
-        override.objects.filter(preset_name=old).update(preset_name=new)
-        setting.objects.filter(key__in=_MODE_VALUED_SETTINGS, value=old).update(value=new)
-    slot.objects.filter(preset_name__in=_DROPPED).delete()
-    override.objects.filter(preset_name__in=_DROPPED).delete()
-    setting.objects.filter(key__in=_MODE_VALUED_SETTINGS, value__in=_DROPPED).delete()
+        slot.filter(preset_name=old).update(preset_name=new)
+        override.filter(preset_name=old).update(preset_name=new)
+        setting.filter(key__in=_MODE_VALUED_SETTINGS, value=old).update(value=new)
+    slot.filter(preset_name__in=_DROPPED).delete()
+    override.filter(preset_name__in=_DROPPED).delete()
+    setting.filter(key__in=_MODE_VALUED_SETTINGS, value__in=_DROPPED).delete()
 
     old_reason, new_reason = _AUTO_LOW_POWER_REASONS
-    override.objects.filter(reason=old_reason).update(reason=new_reason)
+    override.filter(reason=old_reason).update(reason=new_reason)
 
-    schedule = apps.get_model("core", "ModeSchedule")
+    schedule = apps.get_model("core", "ModeSchedule").objects.using(db)
     old_name, new_name = _SCHEDULE_RENAME
-    row = schedule.objects.filter(name=old_name).first()
-    if row is not None and not schedule.objects.filter(name=new_name).exists():
+    row = schedule.filter(name=old_name).first()
+    if row is not None and not schedule.filter(name=new_name).exists():
         row.name = new_name
         row.save(update_fields=["name"])
-        setting.objects.filter(key=_SCHEDULE_VALUED_SETTING, value=old_name).update(value=new_name)
+        setting.filter(key=_SCHEDULE_VALUED_SETTING, value=old_name).update(value=new_name)
     shipped, replacement = _SCHEDULE_DESCRIPTIONS
-    schedule.objects.filter(name=new_name, description=shipped).update(description=replacement)
+    schedule.filter(name=new_name, description=shipped).update(description=replacement)
 
 
 class Migration(migrations.Migration):

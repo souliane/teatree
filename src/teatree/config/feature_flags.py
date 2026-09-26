@@ -80,8 +80,7 @@ class FeatureFlag:
 # ``outer_loop_enabled`` is the canonical DARK flag (the OFF switch the T4
 # autoresearch outer loop ships behind). The live registry is mostly ``DARK`` plus a
 # few ``SETTLING`` flags (``incremental_push_gate``, graduated by #122 once its CI
-# selection-audit soak came clean; ``limit_autorecovery_enabled``, graduated by #3691
-# so a fresh deploy self-recovers from an exhausted usage window; and
+# selection-audit soak came clean; and
 # ``directive_loop_enabled``, graduated by #3895 as part of the owner-authorised
 # autonomous-by-default posture); ``REMOVE`` is not represented live, so the
 # stage-discrimination machinery (:func:`dark_flags`, :func:`render_flags_audit`) is
@@ -100,19 +99,14 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree — autoresearch outer-loop (T4)",
         summary="The SIG-PR-2 recipe/score seam; ships dark until the outer loop consumes the metric.",
     ),
-    "require_plan_adequacy": FeatureFlag(
-        field="require_plan_adequacy",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — SELFCATCH-3 plan_gate hardening",
-        summary="Plan-adequacy + late-bound-plan gate; ships dark until the planner emits manifests.",
-    ),
     "critic_gate_mode": FeatureFlag(
         field="critic_gate_mode",
         stage=FlagStage.DARK,
         tracking_issue="souliane/teatree#104 — SELFCATCH-5 critic_gate",
         summary=(
             "Tri-state enforcement posture (off|advisory|blocking) for the autonomous user-proxy critic on "
-            "mark_delivered; ships off (records advisory findings, never arms the async critic, never blocks)."
+            "mark_delivered; ships off (records advisory findings, never arms the async critic, never blocks). "
+            "Self-satisfying, but a safety-posture gate bounding self-modification — arming it is an owner call."
         ),
         off_value=CriticGateMode.OFF,
     ),
@@ -157,7 +151,8 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree — north-star PR-4 merge-quality critic",
         summary=(
             "Merge-quality (test_value + cleanliness) verdict gate on execute_bound_merge for ORDINARY tickets; "
-            "directive tickets are gated unconditionally, so this flag ships dark until an overlay opts in."
+            "directive tickets are gated unconditionally, so this flag ships dark until an overlay opts in. "
+            "Self-satisfying, but a safety-posture gate — arming it is an owner call."
         ),
     ),
     "incremental_push_gate": FeatureFlag(
@@ -169,27 +164,6 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
             "(FULL on any uncertainty). Default ON after the CI selection-audit soak came clean; survives "
             "as a per-overlay escape hatch. OFF is whole-tree (the pre-#122 behaviour); the CI whole-tree "
             "backstop is untouched regardless."
-        ),
-    ),
-    "limit_autorecovery_enabled": FeatureFlag(
-        field="limit_autorecovery_enabled",
-        stage=FlagStage.SETTLING,
-        tracking_issue="souliane/teatree#3691",
-        summary=(
-            "Resilience default: park-not-fail on a Claude usage-window limit + the self-rescheduling "
-            "usage_window_recovery re-arm. Default ON (graduated DARK->SETTLING by #3691) so a fresh deploy "
-            "self-recovers from an exhausted usage window instead of idling; survives as a per-overlay escape "
-            "hatch during the soak. OFF restores the pre-graduation terminal-FAILED behaviour."
-        ),
-    ),
-    "require_spec_coverage": FeatureFlag(
-        field="require_spec_coverage",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree#2232",
-        summary=(
-            "Per-ticket spec-coverage DoD gate on mark_delivered: every acceptance criterion must name a "
-            "backing test. Ships dark — `ticket record-spec-coverage` is the manual producer of the manifest; "
-            "graduation waits on the #2232 AC extractor that derives ACs from the issue body."
         ),
     ),
     "ci_eval_heal_autofix_enabled": FeatureFlag(
@@ -210,8 +184,8 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
 # These qualify because each gates a COMPLETE capability — its satisfying
 # artifact already has a producer command — or is a standing doctrine knob, so
 # enabling it is a permanent per-overlay choice rather than a soak with an end.
-# An UNCLASSIFIED toggle is the governance hole ``require_spec_coverage`` fell
-# through: gated, default-off, and reviewed by nothing.
+# An UNCLASSIFIED toggle is the governance hole a dark gate falls through:
+# gated, default-off, and reviewed by nothing.
 DURABLE_GATE_SETTINGS: frozenset[str] = frozenset(
     {
         "require_anti_vacuity_attestation",  # producer: lifecycle record-anti-vacuity
@@ -221,7 +195,6 @@ DURABLE_GATE_SETTINGS: frozenset[str] = frozenset(
         "require_merge_evidence",  # producer: the keystone merge's MergeAudit row
         "require_review_context",  # producer: lifecycle record-review-context
         "require_reviewed_state_for_review_request",  # satisfied by the FSM state itself
-        "require_rubric_verification",  # producer: ticket rubric-set / rubric-grade
         "require_work_group_batch",  # standing doctrine knob
     }
 )
@@ -265,19 +238,6 @@ def dark_flags(flags: dict[str, FeatureFlag] | None = None) -> dict[str, Feature
     """
     registry = FEATURE_FLAGS if flags is None else flags
     return {key: flag for key, flag in registry.items() if flag.stage is FlagStage.DARK}
-
-
-def flag_trailer(key: str) -> str:
-    """The ``[feature flag, …]`` governance trailer for *key*, or ``""`` for a setting.
-
-    Appended by ``config_setting set``/``get`` so an operator touching a flag key
-    sees at a glance that they are flipping a governed, lifecycle-staged toggle —
-    not a durable setting — and where its removal is tracked.
-    """
-    flag = FEATURE_FLAGS.get(key)
-    if flag is None:
-        return ""
-    return f"[feature flag, stage={flag.stage.value}, tracking {flag.tracking_issue}]"
 
 
 def render_flags_audit(flags: dict[str, FeatureFlag]) -> str:

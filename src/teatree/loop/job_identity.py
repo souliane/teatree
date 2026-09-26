@@ -61,7 +61,8 @@ PER_OVERLAY_DOMAINS: tuple[Domain, ...] = (
 )
 
 
-_CANONICAL_CORE_OVERLAY = "t3-teatree"
+#: The overlay whose repos teatree itself owns — the one name for "our own code".
+CANONICAL_CORE_OVERLAY = "t3-teatree"
 
 
 _TUPLE_PAIR = 2

@@ -35,6 +35,7 @@ import httpx
 import teatree.core.overlay_loader as _overlay_loader
 from teatree.core.backend_protocols import ApprovalState, CodeHostBackend
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal, SignalPayload
+from teatree.loop.scanners.repository_scope import RepositoryScope
 from teatree.types import RawAPIDict
 from teatree.url_classify import is_gitlab_mr_url, pr_ref
 
@@ -60,9 +61,16 @@ class GitLabApprovalsScanner:
 
     host: CodeHostBackend
     identities: tuple[str, ...] = field(default_factory=tuple)
+    allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     name: str = "gitlab_approvals"
+    _scope: RepositoryScope = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._scope = RepositoryScope(self.allowed_url_prefixes, scanner=self.name, log=logger)
 
     def scan(self) -> list[ScanSignal]:
+        if self._scope.refuses():
+            return []
         authors = self._resolve_identities()
         if not authors:
             return []
@@ -94,6 +102,8 @@ class GitLabApprovalsScanner:
         for author in authors:
             for pr in self.host.list_my_prs(author=author):
                 url = _str_field(pr, "web_url", "html_url")
+                if not self._scope.admits(url):
+                    continue
                 if url and url in seen_urls:
                     continue
                 if url:

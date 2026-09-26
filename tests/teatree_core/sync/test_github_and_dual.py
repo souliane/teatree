@@ -4,6 +4,7 @@ Covers _merge_results, dual GitHub+GitLab sync, reviewer MR/PR caching and
 the GitHub sync backend.
 """
 
+import subprocess
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
@@ -619,6 +620,19 @@ class TestSyncGitHub(TestCase):
 
 
 class TestSyncGitHubReviewerPrs(TestCase):
+    def test_reviewer_read_scrubs_hostile_github_token(self) -> None:
+        mock_run = MagicMock(return_value=subprocess.CompletedProcess([], 0, stdout="[]"))
+        with (
+            patch.dict("os.environ", {"GH_TOKEN": "ambient-gh", "GITHUB_TOKEN": "ambient-github"}, clear=False),
+            patch("shutil.which", return_value="/usr/bin/gh"),
+            patch("subprocess.run", mock_run),
+        ):
+            GitHubSyncBackend._fetch_reviewer_prs("routed-token")
+
+        env = mock_run.call_args.kwargs["env"]
+        assert env["GH_TOKEN"] == "routed-token"
+        assert "GITHUB_TOKEN" not in env
+
     def test_caches_reviewer_prs(self) -> None:
         import json  # noqa: PLC0415
         import subprocess  # noqa: PLC0415

@@ -9,15 +9,9 @@ When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, **proceed t
 3. **Affected tests pass:** `cd "$T3_REPO" && bash dev/test-affected.sh` — must be green. The diff-scoped lane, not the whole suite: it escalates to FULL itself on anything it cannot prove local, and CI's sharded lane is the whole-tree authority ([#3994](https://github.com/souliane/teatree/issues/3994)).
 4. **Privacy scan passes:** see § Privacy Scan.
 
-## Never Work on Main (Non-Negotiable)
+## Worktree, Never the Main Clone, Never `main`
 
-**NEVER commit to the default branch (`main`/`master`) directly. NEVER push to it.** Always work on a feature branch in a worktree. This applies to retro commits, skill edits, "quick fixes" — everything. No exceptions.
-
-## Worktree for Retro Commits (Non-Negotiable)
-
-**All retro commits MUST happen in a worktree — never in the main clone.** Even for "small" skill fixes. Use `t3 <overlay> workspace ticket` or `EnterWorktree` to get a worktree before touching any file.
-
-If you are already in a worktree from the session, commit there. If not, create one now. When unsure which worktree to use, **ask the user** with `AskUserQuestion`.
+Canonical rule: [`../../rules/SKILL.md`](../../rules/SKILL.md) § "Worktree-First Work (Non-Negotiable)". It binds retro commits like everything else — "small" skill fixes included. Commit in the session's existing worktree when there is one; otherwise create one before touching any file.
 
 ## Branch Selection for Retro Commits
 
@@ -41,7 +35,7 @@ Squash retro commits into clean, human-sized units **before chaining to the revi
 
 ## After Committing
 
-**Always inform the user:**
+**In `interactive` mode, inform the user:**
 
 ```text
 ════════════════════════════════════════════════════════════════
@@ -56,16 +50,7 @@ Squash retro commits into clean, human-sized units **before chaining to the revi
 ════════════════════════════════════════════════════════════════
 ```
 
-**Ask the user whether to push** using `AskUserQuestion` — even when `T3_PUSH=false`. Show the branch name and commit hash so the user can make an informed decision. If they say yes, load `/t3:contribute` and run it. If they decline, remind them to run `/t3:contribute` later.
-
-**Auto-push exception** (`T3_AUTO_PUSH_FORK=true`): skip the confirmation above and chain directly into `/t3:contribute` when **all** of the following hold:
-
-1. `T3_PUSH=true` — pushing is globally enabled.
-2. `T3_AUTO_PUSH_FORK=true` — auto-push to fork is opted in.
-3. `origin`'s push URL does **not** match `T3_UPSTREAM` — the push lands on the user's fork, not upstream.
-4. The privacy scan (§ Privacy Scan) passed.
-
-When any of these fail, fall back to the confirmation flow. Upstream issue creation always requires explicit confirmation regardless of `T3_AUTO_PUSH_FORK`.
+**Whether to push is the mode's decision, not this file's.** Resolve the effective mode and follow it: `auto` pushes and opens the PR once the privacy scan passes, with no confirmation; `interactive` stops at the local commit and leaves the push to `/t3:contribute`. The resolution order — and the legacy `T3_PUSH` / `T3_AUTO_PUSH_FORK` vars the `mode` setting subsumes — is in [`../SKILL.md`](../SKILL.md) § Configuration and [`../../rules/SKILL.md`](../../rules/SKILL.md) § "Publishing Actions Are Mode-Conditional". Upstream issue creation needs explicit confirmation under either mode.
 
 ## Chain to Review Skill
 

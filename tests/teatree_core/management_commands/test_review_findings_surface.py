@@ -21,6 +21,7 @@ from teatree.core.modelkit.forge_readability import LiveHeadRead
 from teatree.core.models import ConfigSetting, ReviewVerdict
 from teatree.core.review.verdict_findings import marker_for
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -54,14 +55,14 @@ class _FakeHost:
 class _FindingsSurfaceBase(TestCase):
     @pytest.fixture(autouse=True)
     def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_POST_MODE", "T3_ON_BEHALF_AUTO_ACTIONS", "T3_BANNED_TERMS"):
+        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS", "T3_BANNED_TERMS"):
             monkeypatch.delenv(env, raising=False)
         self.monkeypatch = monkeypatch
         self.host = _FakeHost()
         ConfigSetting.objects.set_value("private_repos", [_SLUG])
 
     def _allow_posting(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        seed_permitting_posture()
 
     def _record(self, **overrides: object) -> dict[str, object]:
         kwargs: dict[str, object] = {

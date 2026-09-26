@@ -445,6 +445,68 @@ class WriteClustersTestCase(TestCase):
         return TranscriptMember(path=f, kind="memory")
 
 
+class LedgerLadderWiringTestCase(TestCase):
+    """The ledger rungs the pass itself drives (#1933) — a row never stops at CANDIDATE."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_a_grounded_cluster_is_recorded_verified_with_its_citation(self) -> None:
+        member = _write_member(self.tmp)
+
+        write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
+
+        row = ConsolidatedMemory.objects.get(cluster_key="k1")
+        assert row.status == ConsolidatedMemory.Status.VERIFIED
+        assert row.verified_citation == _CITATION
+
+    def test_a_wider_re_cluster_supersedes_the_row_it_covers(self) -> None:
+        narrow = _write_member(self.tmp, name="feedback_narrow.md")
+        write_clusters([_cluster_for(narrow)], _extract_of(narrow), dry_run=False)
+
+        wider = _write_member(self.tmp, name="feedback_wider.md")
+        cluster = DistilledCluster(
+            cluster_key="k2",
+            rule="Run the gate before pushing.",
+            source_files=[str(narrow.path), str(wider.path)],
+            is_binding=False,
+            verified_citation=_CITATION,
+            durable_destination="feedback/run_gate.md",
+        )
+        write_clusters([cluster], _extract_of(narrow, wider), dry_run=False)
+
+        superseded = ConsolidatedMemory.objects.get(cluster_key="k1")
+        assert superseded.status == ConsolidatedMemory.Status.SUPERSEDED
+        assert superseded.superseded_by_id == ConsolidatedMemory.objects.get(cluster_key="k2").pk
+
+    def test_a_re_distilled_cluster_refreshes_its_citation(self) -> None:
+        member = _write_member(self.tmp, body=f"BINDING-free lesson — {_CITATION} — and a newer mistake")
+        write_clusters([_cluster_for(member)], _extract_of(member), dry_run=False)
+
+        newer = DistilledCluster(
+            cluster_key="k1",
+            rule="Run the gate before pushing.",
+            source_files=[str(member.path)],
+            is_binding=False,
+            verified_citation="a newer mistake",
+            durable_destination="feedback/run_gate.md",
+        )
+        write_clusters([newer], _extract_of(member), dry_run=False)
+
+        row = ConsolidatedMemory.objects.get(cluster_key="k1")
+        assert row.verified_citation == "a newer mistake"
+        assert row.status == ConsolidatedMemory.Status.VERIFIED
+
+    def test_an_unrelated_cluster_supersedes_nothing(self) -> None:
+        first = _write_member(self.tmp, name="feedback_first.md")
+        write_clusters([_cluster_for(first)], _extract_of(first), dry_run=False)
+
+        other = _write_member(self.tmp, name="feedback_other.md")
+        write_clusters([_cluster_for(other, key="k2")], _extract_of(other), dry_run=False)
+
+        assert ConsolidatedMemory.objects.get(cluster_key="k1").status == ConsolidatedMemory.Status.VERIFIED
+
+
 class BuildExtractTestCase(TestCase):
     def setUp(self) -> None:
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))

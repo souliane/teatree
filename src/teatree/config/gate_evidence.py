@@ -114,16 +114,6 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         ),
     ),
     GateEvidence(
-        setting="require_rubric_verification",
-        off_value=False,
-        kind=ObservableKind.MODEL,
-        target="core.Rubric",
-        shipped=dt.date(2026, 6, 11),
-        intent=ActivationIntent.UNDECIDED,
-        rationale=_UNDECIDED,
-        satisfier="`t3 <overlay> ticket rubric-set` to define the rubric, then `t3 <overlay> ticket rubric-grade`",
-    ),
-    GateEvidence(
         setting="require_review_context",
         off_value=False,
         kind=ObservableKind.TICKET_EXTRA,
@@ -207,27 +197,6 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
             "reconcile_merged() in the same transaction, so a keystone merge already passes; an "
             "out-of-band merge falls back to a live forge MERGED probe, and an erroring probe fails closed"
         ),
-    ),
-    GateEvidence(
-        setting="require_spec_coverage",
-        off_value=False,
-        kind=ObservableKind.TICKET_EXTRA,
-        target="spec_coverage",
-        shipped=dt.date(2026, 6, 11),
-        intent=ActivationIntent.UNDECIDED,
-        rationale=_UNDECIDED,
-        satisfier="`t3 <overlay> ticket record-spec-coverage`",
-    ),
-    GateEvidence(
-        setting="require_plan_adequacy",
-        off_value=False,
-        kind=ObservableKind.MODEL,
-        target="core.PlanArtifact",
-        shipped=dt.date(2026, 7, 5),
-        intent=ActivationIntent.UNDECIDED,
-        rationale="PlanArtifact rows are written and none carries an adequacy manifest — written, never read",
-        satisfier="`t3 <overlay> ticket plan` with a four-section --adequacy-json manifest and a --base-sha",
-        filters={"adequacy__has_key": "design"},
     ),
     GateEvidence(
         setting="require_work_group_batch",

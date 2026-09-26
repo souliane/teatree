@@ -13,6 +13,7 @@ from django_fsm import can_proceed
 from teatree.core.review.author_trust import classify_author
 from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.loop.dispatch import ActionPayload
+from teatree.loop.mechanical_artifacts import sweep_artifacts
 from teatree.loop.mechanical_ci_eval_heal import advance_ci_eval_heal
 from teatree.loop.mechanical_db_backup import run_db_backup
 from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
@@ -391,6 +392,47 @@ def _scrub_disposition_close_comment(host: "CodeHostBackend", issue_url: str, co
         return None
 
 
+def _survivor_confirmed_open(host: "CodeHostBackend", issue_url: str, survivor_url: str) -> bool:
+    """Whether *survivor_url* is a same-repo, still-open issue — unreadable is neither."""
+    if not survivor_url or not _same_repo(host, issue_url, survivor_url):
+        return False
+    try:
+        issue = host.get_issue(survivor_url)
+    except Exception:
+        logger.warning("close_dead_issue: could not read survivor %s", survivor_url, exc_info=True)
+        return False
+    state = issue.get("state") if isinstance(issue, dict) and "error" not in issue else None
+    return isinstance(state, str) and state.lower() in {"open", "opened"}
+
+
+def _same_repo(host: "CodeHostBackend", issue_url: str, survivor_url: str) -> bool:
+    """Whether both URLs resolve to ONE repo — an unresolvable side is not a match.
+
+    Two repos can carry the same issue title with no relationship at all, so a
+    duplicate pairing that crosses a repo boundary is not evidence of anything.
+    """
+    try:
+        repo, survivor_repo = host.repo_for_issue_url(issue_url), host.repo_for_issue_url(survivor_url)
+    except Exception:
+        logger.warning("close_dead_issue: could not attribute %s / %s", issue_url, survivor_url, exc_info=True)
+        return False
+    if repo and repo == survivor_repo:
+        return True
+    logger.info("close_dead_issue: %s and survivor %s are not one repo — keeping it open", issue_url, survivor_url)
+    return False
+
+
+def _disposition_close_comment(host: "CodeHostBackend", issue_url: str, payload: ActionPayload) -> str | None:
+    """The scrubbed audit comment to close *issue_url* with, or ``None`` when it must stay open."""
+    reason = str(payload.get("reason", ""))
+    survivor = str(payload.get("duplicate_of") or "")
+    if reason == "exact_duplicate" and not _survivor_confirmed_open(host, issue_url, survivor):
+        logger.info("close_dead_issue: no confirmed-open survivor for duplicate %s — keeping it open", issue_url)
+        return None
+    audit = _DISPOSITION_AUDIT_REASONS.get(reason, reason or "machine-detected dead evidence")
+    return _scrub_disposition_close_comment(host, issue_url, f"Auto-closed by the issue-disposition scanner: {audit}.")
+
+
 def close_dead_issue(payload: ActionPayload) -> None:
     """Close a high-confidence DEAD issue with an audit-trail comment (#2122).
 
@@ -418,9 +460,7 @@ def close_dead_issue(payload: ActionPayload) -> None:
     if host is None:
         logger.info("close_dead_issue: no code host resolved for %s", issue_url)
         return
-    audit = _DISPOSITION_AUDIT_REASONS.get(reason, reason or "machine-detected dead evidence")
-    raw_comment = f"Auto-closed by the issue-disposition scanner: {audit}."
-    comment = _scrub_disposition_close_comment(host, issue_url, raw_comment)
+    comment = _disposition_close_comment(host, issue_url, payload)
     if comment is None:
         return
     try:
@@ -442,6 +482,7 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     "reviewer_task_self_authored": reviewer_task_self_authored,
     "assign_gitlab_reviewer": assign_gitlab_reviewer,
     "free_resources": free_resources,
+    "sweep_artifacts": sweep_artifacts,
     "task_completion": task_completion,
     "close_dead_issue": close_dead_issue,
     # #2190 idle-stack reaper + acquisition-queue drainer. The scanners only

@@ -1,17 +1,17 @@
 """Django-free, pydantic-free stdlib reader for the shipped ``defaults.toml``.
 
-The reader :func:`teatree.config.resolution._toml_default_rows` layers the DEFAULTS
-tier from. It exists as a stdlib reader — rather than reading the same file through
+The stdlib reader of the shipped file's SEED tables and its ``[teatree]`` export. It is
+a stdlib reader — rather than reading the same file through
 :func:`teatree.config.schema.shipped_defaults` — because ``teatree.config``'s package
 init imports ``resolution``, and the cold hook path loads that package init: a
 pydantic read there would put the model's ~110ms import on EVERY hook invocation.
 Only the standard library is imported — never ``schema``/``pydantic``, never Django,
 never a sibling that would pull either — and a subprocess control pins that.
 
-The file is packaged data — hand-editable, and snapshot-able from the live box through
-the owner-approved ``manage.py snapshot_settings_defaults``. The ``[teatree]`` table
-it exposes carries EXACTLY the ``Category.DEFAULT`` keys (Secret/Personal keys are absent by
-construction and have no shipped default).
+The file is packaged data. Its ``[teatree]`` table is GENERATED from the settings
+declarations (``config/declared_defaults.py``) and the sibling seed tables are
+hand-maintained. The table this module exposes carries EXACTLY the ``Category.DEFAULT``
+keys (Secret/Personal keys are absent by construction and have no shipped default).
 
 The FILE nests those keys into the declaration hierarchy as real sub-tables; the KEY
 NAMESPACE stays flat, because that namespace is the persisted contract every env
@@ -37,9 +37,9 @@ from typing import Any
 # package init already imports them, so the cold path pays nothing for the read.
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS as _DECLARED_SETTING_KEYS
 
-#: The packaged shipped-defaults file — the ONE path every default reader resolves
-#: it from: this stdlib one, ``schema.shipped_defaults``, and the resolver's
-#: TOML-default tier (``resolution._toml_default_rows``).
+#: The packaged shipped-defaults file — the ONE path every reader of it resolves it
+#: from: this stdlib one and ``schema.shipped_defaults``. It is no longer a resolution
+#: tier: ``config/declared_defaults.py`` RENDERS it from the declarations instead.
 DEFAULTS_TOML = Path(__file__).with_name("defaults.toml")
 _TEATREE_TABLE = "teatree"
 
@@ -83,8 +83,8 @@ def shipped_defaults_table(path: Path | None = None) -> dict[str, Any]:
     The default path is resolved from :data:`DEFAULTS_TOML` at CALL time, not bound as a
     default argument at import time — a test that re-points the module constant at a
     fixture file would otherwise be silently ignored by every no-argument caller while
-    ``resolution._toml_default_rows`` (which passes it explicitly) honoured it, so the key
-    set and the values could come from two different files.
+    a caller that passes it explicitly honoured it, so the key set and the values could
+    come from two different files.
     """
     resolved = DEFAULTS_TOML if path is None else path
     try:

@@ -105,6 +105,14 @@ _SRC_MODULE_PREFIX = "src/teatree/"
 _SRC_PREFIX = "src/"
 _TESTS_PREFIX = "tests/"
 _TESTS_CONFIG_PREFIX = "tests/config/"
+_EVAL_DATA_SUFFIXES = (".yaml", ".jsonl", ".md")
+EVAL_HARNESS_PATHS: tuple[str, ...] = (
+    "tests/eval_harness",
+    "tests/eval_replay",
+    "tests/teatree_eval",
+    "tests/teatree_cli/eval",
+    "tests/teatree_cli/test_eval.py",
+)
 
 
 @dataclass(frozen=True)
@@ -219,7 +227,12 @@ def is_reference_mapped(path: str) -> bool:
     it, so ``build_force_keep`` maps it to those readers instead of escalating the whole
     tree.
     """
-    return is_doc_path(path) or is_lane_runner(path) or path in NON_EXECUTABLE_CONFIG_PATHS
+    return (
+        is_doc_path(path)
+        or is_lane_runner(path)
+        or path in NON_EXECUTABLE_CONFIG_PATHS
+        or (path.startswith("evals/") and path.endswith(_EVAL_DATA_SUFFIXES))
+    )
 
 
 def _extra_full_trigger(path: str) -> str | None:
@@ -362,6 +375,10 @@ def build_force_keep(
 
     for changed_test in (str(p) for p in verdict.scoped_tests):
         kept.add(changed_test, "self-changed", (f"{changed_test} (changed test)",))
+
+    if any(path.startswith("evals/") for path in verdict.scoped_reference_mapped):
+        for harness_path in EVAL_HARNESS_PATHS:
+            kept.add(harness_path, "eval-harness", ("eval data changed — exercise the eval harness",))
 
     for reader in reader_lookup(reference_tokens(verdict.scoped_reference_mapped)):
         kept.add(reader, "reference-read", (f"{reader} names a changed non-imported path",))

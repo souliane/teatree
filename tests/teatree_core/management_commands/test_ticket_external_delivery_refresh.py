@@ -8,6 +8,7 @@ on a ticket with no live lease, so the loop's own FSM transitions never claim a
 unit.
 """
 
+import json
 from datetime import datetime
 from typing import cast
 
@@ -17,7 +18,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import mark_external_delivery, under_external_delivery
-from teatree.core.models.plan_artifact import PlanArtifact
+from tests.factories import _FORTY_HEX, TEST_ADEQUACY, record_test_plan
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -35,7 +36,16 @@ class TicketPlanRefreshesLeaseTest(TestCase):
         mark_external_delivery(ticket, lease_seconds=10)
         before = _expires_at(ticket)
 
-        call_command("ticket", "plan", str(ticket.pk), "implement the fix")
+        call_command(
+            "ticket",
+            "plan",
+            str(ticket.pk),
+            "implement the fix",
+            "--base-sha",
+            _FORTY_HEX,
+            "--adequacy-json",
+            json.dumps(TEST_ADEQUACY),
+        )
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.PLAN_RECORDED
@@ -46,7 +56,7 @@ class TicketPlanRefreshesLeaseTest(TestCase):
 class TicketTransitionRefreshesLeaseTest(TestCase):
     def _planned_ticket_under_delivery(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
-        PlanArtifact.record(ticket=ticket, plan_text="plan", recorded_by="operator")
+        record_test_plan(ticket, plan_text="plan", recorded_by="operator")
         ticket.plan()
         ticket.save()
         mark_external_delivery(ticket, lease_seconds=10)
@@ -67,7 +77,7 @@ class TicketTransitionRefreshesLeaseTest(TestCase):
         # No lease present: a loop-driven transition must not create one, or the
         # dispatch chokepoint would wrongly skip the unit.
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.WORK_STARTED)
-        PlanArtifact.record(ticket=ticket, plan_text="plan", recorded_by="operator")
+        record_test_plan(ticket, plan_text="plan", recorded_by="operator")
         ticket.plan()
         ticket.save()
 

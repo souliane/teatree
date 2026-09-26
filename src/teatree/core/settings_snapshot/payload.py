@@ -217,8 +217,8 @@ def _effective_values(keys: Sequence[str], overlay: str, terms: tuple[str, ...],
 def _provenance(keys: Sequence[str], scopes: Sequence[str]) -> dict[str, dict[str, str]]:
     """Which tier each key actually resolves from, per scope.
 
-    teatree resolves env -> DB(overlay) -> DB(global) -> overlay code default -> shipped file
-    -> code default. So a key the target box reads from a ``T3_*`` variable does not change
+    teatree resolves env -> DB(overlay) -> DB(global) -> overlay code default -> declared
+    default. So a key the target box reads from a ``T3_*`` variable does not change
     when a DB row is imported for it: the import succeeds and nothing observable happens.
     Recording the tier is what lets the plan say so instead of emitting an inert write.
     """

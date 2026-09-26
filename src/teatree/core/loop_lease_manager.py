@@ -32,8 +32,7 @@ to the new id and wins.
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import NamedTuple
+from datetime import timedelta
 
 from django.db import models
 from django.db.models import F, Q
@@ -43,6 +42,7 @@ from django.utils import timezone
 from teatree.core.loop_lease_liveness import (
     CLAIM_COLUMNS,
     LeaseClaim,
+    OwnershipStatus,
     anchorable_owner_pid,
     claim_pid_is_foreign,
     lease_is_live,
@@ -72,6 +72,8 @@ T3_MASTER_SLOT = "t3-master"
 #: disjoint from ``T3_MASTER_SLOT`` and from the infra-slot leases
 #: (``loop-tick`` / ``loop-self-improve`` / …), which use ``-`` not ``:``.
 PER_LOOP_OWNER_PREFIX = "loop:"
+#: The reactive slots whose row anchors "last ran" on the statusline; never debris.
+INFRA_SLOTS: tuple[str, ...] = ("loop-tick", "loop-self-improve", "loop-slack-answer", "loop-drain-queue")
 
 
 def per_loop_owner_slot(loop_name: str) -> str:
@@ -138,27 +140,6 @@ def is_per_loop_tick_mutex(slot: str) -> bool:
     return slot.startswith(PER_LOOP_TICK_MUTEX_PREFIX)
 
 
-class OwnershipStatus(NamedTuple):
-    """Read-only snapshot of a session-scoped t3-master claim (#1073/#1604).
-
-    ``is_live`` is the predicate callers branch on. It is pid-anchored
-    (matching ``claim_ownership``'s liveness): ``True`` iff a non-empty
-    session holds a claim that is either unexpired OR whose ``owner_pid``
-    is still alive, keyed on ``session_id`` rather than ``owner``.
-
-    ``generation`` is the current fencing / lease-generation token
-    (autonomous-lane redesign §5) — the value a merge-worker dispatched now
-    would stamp and later re-check at its git write. A missing row reports
-    generation ``0``.
-    """
-
-    owner_session: str
-    expires_at: datetime | None
-    is_live: bool
-    generation: int = 0
-    driver: str = ""
-
-
 class LoopLeaseQuerySet(models.QuerySet):
     def take_over_ownership(
         self,
@@ -192,6 +173,7 @@ class LoopLeaseQuerySet(models.QuerySet):
             owner_pid=owner_pid,
             owner_pid_namespace=_namespace_for(owner_pid),
             acquired_at=now,
+            last_acquired_at=now,
             lease_expires_at=expires,
             generation=self._generation_after(holder_changed=prior != session_id),
             driver=self._driver_after(driver, holder_changed=prior != session_id),
@@ -269,6 +251,7 @@ class LoopLeaseQuerySet(models.QuerySet):
                     owner_pid=owner_pid,
                     owner_pid_namespace=_namespace_for(owner_pid),
                     acquired_at=now,
+                    last_acquired_at=now,
                     lease_expires_at=expires,
                     # A same-process rotation is not a transfer, so preserve the
                     # stored driver when detection comes back blank (edge-case 1).
@@ -301,6 +284,7 @@ class LoopLeaseQuerySet(models.QuerySet):
                 owner_pid=owner_pid,
                 owner_pid_namespace=_namespace_for(owner_pid),
                 acquired_at=now,
+                last_acquired_at=now,
                 lease_expires_at=expires,
                 # Reclaiming an unowned/expired slot from a DIFFERENT prior holder
                 # is a holder change → bump the fencing generation (§5). A same-
@@ -520,6 +504,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         reapable = (
             self.filter(session_id="", lease_expires_at__lt=cutoff)
             .exclude(name=T3_MASTER_SLOT)
+            .exclude(name__in=INFRA_SLOTS)
             .exclude(name__startswith=PER_LOOP_OWNER_PREFIX)
         )
         deleted, _ = reapable.delete()
@@ -545,6 +530,7 @@ class LoopLeaseQuerySet(models.QuerySet):
             # A heartbeat that extended only the TTL would leave the owner looking
             # progressively staler the more diligently it heartbeat.
             acquired_at=now,
+            last_acquired_at=now,
             lease_expires_at=now + timedelta(seconds=ttl_seconds),
         )
         return refreshed == 1
@@ -621,6 +607,7 @@ class LoopLeaseQuerySet(models.QuerySet):
             .update(
                 owner=owner,
                 acquired_at=now,
+                last_acquired_at=now,
                 lease_expires_at=expires,
             )
         )

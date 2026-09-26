@@ -182,7 +182,12 @@ def test_format_refusal_renders_matches_block() -> None:
     assert "Redact" in rendered
 
 
-def test_registered_overlay_rules_union_is_empty_when_the_registry_is_unenumerable() -> None:
-    """An unenumerable overlay registry offers no rules — the built-in anchors stay the floor."""
+def test_registered_overlay_rules_union_fails_closed_when_the_registry_is_unenumerable() -> None:
+    """An unenumerable registry may be hiding a sibling's terms, so the public scan must refuse."""
     with patch("teatree.core.gates.privacy_gate.get_all_overlays", side_effect=RuntimeError("registry down")):
+        assert _registered_overlay_rules_union() is None
+
+
+def test_an_empty_registry_has_no_rules_to_lose() -> None:
+    with patch("teatree.core.gates.privacy_gate.get_all_overlays", return_value={}):
         assert _registered_overlay_rules_union() == ([], [])

@@ -90,10 +90,21 @@ def _overlay_registry_degraded() -> bool:
         return False
 
 
+def _metadata_from_stdin() -> tuple[str, str]:
+    """The ``{"title", "description"}`` pair the caller pipes in.
+
+    On stdin rather than argv because GitLab accepts a 1 MiB description and a
+    description-only edit back-fills ``title=description``, so on argv the body rides the
+    exec TWICE and breaches ``ARG_MAX`` at roughly half the size the forge itself allows —
+    and the pre-tool gate that shells this command then failed OPEN, silently, on exactly
+    the large bodies a validator is most needed for.
+    """
+    payload = json.loads(sys.stdin.read() or "{}")
+    return payload.get("title", ""), payload.get("description", "")
+
+
 @tool_app.command("validate-mr")
 def validate_mr(
-    title: str = typer.Option("", "--title", help="MR/PR title"),
-    description: str = typer.Option("", "--description", help="MR/PR description"),
     repo: str = typer.Option(
         "",
         "--repo",
@@ -108,11 +119,12 @@ def validate_mr(
 ) -> None:
     """Validate MR/PR title+description against the active overlay's rules.
 
-    Runs the active overlay's ``validate_pr`` (the same verdict used by
-    ``t3 <overlay> pr create``). Exits non-zero and prints each error when
-    the metadata is invalid. The pre-push hook invokes this by default so a
-    bad title/description is rejected BEFORE the push — no env-var opt-in
-    (#119).
+    The pair is read from STDIN as ``{"title": …, "description": …}``; see
+    :func:`_metadata_from_stdin` for why it cannot ride argv. Runs the active
+    overlay's ``validate_pr`` (the same verdict used by ``t3 <overlay> pr
+    create``). Exits non-zero and prints each error when the metadata is
+    invalid. The pre-push hook invokes this by default so a bad
+    title/description is rejected BEFORE the push — no env-var opt-in (#119).
 
     ``--repo`` keys overlay resolution to the MR's TARGET repo (the ``-R``
     slug / the ``glab api`` namespace / the ``gh api repos/<o>/<r>`` path),
@@ -149,6 +161,7 @@ def validate_mr(
     ensure_django()
     from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
 
+    title, description = _metadata_from_stdin()
     require_sections = not sections_optional
     if repo:
         from teatree.utils.git import remote_slug  # noqa: PLC0415 — deferred: call-time import

@@ -33,11 +33,11 @@ from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
-from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import dispatch
 from teatree.loop.mechanical import HANDLERS
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.types import RawAPIDict
+from tests._pr_open_state_stub import mint_open_pr_review
 
 
 @dataclass
@@ -140,7 +140,7 @@ class TestSelfAuthoredAcrossIdentities(TestCase):
 class TestReconcileExistingSelfAuthoredReviewingTask(TestCase):
     def _seed_open_reviewing_task(self, url: str, overlay: str = "") -> tuple[Ticket, Task]:
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, overlay=overlay)
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
         assert task.status == Task.Status.PENDING
         return ticket, task
 
@@ -217,7 +217,7 @@ class TestSoloOverlayArmedReviewIsNotReaped(TestCase):
     def test_reviewing_task_with_an_auto_review_dispatch_survives(self) -> None:
         url = "https://gitlab/x/-/merge_requests/302"
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
         AutoReviewDispatch.objects.create(
             slug="x",
             pr_id=302,
@@ -248,7 +248,7 @@ class TestSoloOverlayArmedReviewIsNotReaped(TestCase):
         """The control: #1321's own behaviour is unchanged for a genuine stray."""
         url = "https://gitlab/x/-/merge_requests/303"
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
         host = FakeCodeHost(
             user="user-gl",
             review_requested_by_reviewer={
@@ -282,7 +282,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
 
     def _armed(self, url: str, state: str) -> tuple[Ticket, Task]:
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=state)
-        task = schedule_external_review(ticket)
+        task = mint_open_pr_review(ticket)
         AutoReviewDispatch.objects.create(slug="x", pr_id=400, head_sha="abc", pr_url=url, task=task)
         return ticket, task
 
@@ -299,7 +299,7 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
         """
         url = "https://github.com/souliane/teatree/pull/402"
         ticket, task = self._armed(url, Ticket.State.REVIEW_DELIVERED)
-        schedule_external_review(ticket)
+        mint_open_pr_review(ticket)
         host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.OPEN})
         scanner = ReviewerPrsScanner(host=host, identities=_IDENTITIES)
 

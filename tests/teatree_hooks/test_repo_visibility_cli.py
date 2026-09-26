@@ -23,6 +23,7 @@ permissive.
 
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -34,6 +35,22 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _GITLAB_REMOTE = "git@gitlab.com:acme-eng/inner/widget.git"
 _GITHUB_REMOTE = "https://github.com/acme/widget.git"
+
+
+def _seed_config_db(path: Path, rows: dict[str, object]) -> Path:
+    """Write a ``teatree_config_setting`` store the Django-free cold reader can read."""
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)", (key, json.dumps(value))
+        )
+    conn.commit()
+    conn.close()
+    return path
 
 
 def _write_shim(bin_dir: Path, name: str, body: str) -> Path:
@@ -72,13 +89,23 @@ def _forge_shims(bin_dir: Path, *, gh_visibility: str = "PUBLIC", glab_visibilit
     return log
 
 
-def _run_cli(remote: str, tmp_path: Path, bin_dir: Path) -> str:
+def _run_cli(
+    remote: str,
+    tmp_path: Path,
+    bin_dir: Path,
+    *,
+    data_dir: Path | None = None,
+    config_db: Path | None = None,
+) -> str:
     env = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         # Isolate the day cache so a verdict never leaks between tests or in
         # from the developer's own machine.
-        "T3_DATA_DIR": str(tmp_path / "state"),
+        "T3_DATA_DIR": str(data_dir if data_dir is not None else tmp_path / "state"),
+        # An EMPTY allowlist by default, so the developer's own `private_repos`
+        # rows can never hand a probe row its verdict for free.
+        "T3_CONFIG_DB": str(config_db if config_db is not None else _seed_config_db(tmp_path / "empty.db", {})),
         "PYTHONPATH": str(REPO_ROOT / "src"),
     }
     result = subprocess.run(
@@ -157,3 +184,77 @@ class TestVisibilityVerdictIsCachedPerRemote:
         cache = json.loads((tmp_path / "state" / "repo-visibility-cache.json").read_text(encoding="utf-8"))
 
         assert "gitlab.com/acme-eng/inner/widget" in cache
+
+
+def _failing_forge_shims(bin_dir: Path) -> Path:
+    """``gh``/``glab`` that are PRESENT but never answer — a timed-out probe's shape."""
+    log = bin_dir / "invocations.log"
+    for tool in ("gh", "glab"):
+        _write_shim(bin_dir, tool, f'#!/usr/bin/env bash\necho "{tool} $*" >> "{log}"\nexit 1\n')
+    return log
+
+
+_ALLOWLIST = {"private_repos": ["acme-eng"]}
+
+
+class TestDeclaredPrivateNeedsNoNetwork:
+    """A declared-private repo resolves PRIVATE offline, so no probe flake can move it.
+
+    Every sibling consumer of this module — ``publish_surface``,
+    ``publish_destination``, ``public_visibility``, ``author_trust`` — asks the
+    offline ``private_repos`` allowlist BEFORE the network probe. This CLI did
+    not: it went straight to cache-then-probe, so the verdict for a repo the
+    operator had already declared private was decided by a 5s-budget forge call.
+    On a loaded box that call measures well past its budget, and the pre-push
+    leak gate read the resulting UNKNOWN as "assume public".
+    """
+
+    def test_allowlisted_remote_resolves_private_without_probing_at_all(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        log = _forge_shims(bin_dir, glab_visibility="private")
+        config_db = _seed_config_db(tmp_path / "allow.db", _ALLOWLIST)
+
+        verdict = _run_cli(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=config_db)
+
+        assert verdict == "PRIVATE"
+        assert not log.exists(), f"probed the network for an already-declared-private repo: {log.read_text()}"
+
+    def test_allowlisted_remote_resolves_private_when_the_probe_never_answers(self, tmp_path: Path) -> None:
+        """The incident: the forge call exceeds its budget, and the repo is still private."""
+        bin_dir = tmp_path / "bin"
+        _failing_forge_shims(bin_dir)
+        config_db = _seed_config_db(tmp_path / "allow.db", _ALLOWLIST)
+
+        assert _run_cli(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=config_db) == "PRIVATE"
+
+    def test_a_repo_outside_the_allowlist_still_needs_the_probe(self, tmp_path: Path) -> None:
+        """Anti-vacuity: the allowlist answers for its OWN namespace, nothing wider."""
+        bin_dir = tmp_path / "bin"
+        _failing_forge_shims(bin_dir)
+        config_db = _seed_config_db(tmp_path / "allow.db", _ALLOWLIST)
+
+        assert _run_cli(_GITHUB_REMOTE, tmp_path, bin_dir, config_db=config_db) == "UNKNOWN"
+
+
+class TestVerdictDoesNotDependOnWhichCheckoutAsks:
+    """One remote URL, one verdict — whichever worktree resolves it.
+
+    The visibility cache lands under the data dir, and the data dir is
+    AUTO-ISOLATED PER WORKTREE (``paths.resolve_data_dir``). So each worktree
+    kept its own cache, each cache froze whatever the flaky probe happened to
+    answer there, and the same URL resolved PRIVATE in one worktree and UNKNOWN
+    in the next — the shape the operator hit. The two data dirs below are what
+    two worktrees of one repo get.
+    """
+
+    def test_same_remote_resolves_the_same_when_the_probe_flakes_between_checkouts(self, tmp_path: Path) -> None:
+        config_db = _seed_config_db(tmp_path / "allow.db", _ALLOWLIST)
+        answering = tmp_path / "answering-bin"
+        _forge_shims(answering, glab_visibility="private")
+        silent = tmp_path / "silent-bin"
+        _failing_forge_shims(silent)
+
+        idle_box = _run_cli(_GITLAB_REMOTE, tmp_path, answering, data_dir=tmp_path / "wt-a", config_db=config_db)
+        loaded_box = _run_cli(_GITLAB_REMOTE, tmp_path, silent, data_dir=tmp_path / "wt-b", config_db=config_db)
+
+        assert idle_box == loaded_box == "PRIVATE"

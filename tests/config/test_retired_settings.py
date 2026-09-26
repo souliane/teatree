@@ -31,6 +31,7 @@ from teatree.config.retired_settings import (
     removed_setting,
     warn_removed_setting,
 )
+from teatree.config.retired_settings_loop_owned import LOOP_OWNED_RETIREMENTS
 from teatree.core.models import ConfigSetting
 
 
@@ -57,6 +58,16 @@ class TestRegistryShape:
     def test_renamed_and_removed_partition_the_registry(self) -> None:
         assert not RENAMED_SETTING_KEYS.keys() & REMOVED_SETTING_KEYS
         assert RENAMED_SETTING_KEYS.keys() | REMOVED_SETTING_KEYS == {e.key for e in RETIRED_SETTINGS}
+
+    def test_no_key_is_recorded_twice_across_the_two_halves(self) -> None:
+        # `removed_setting` reads a key->entry dict, so a key appended to both halves of
+        # the roll would resolve to whichever built last instead of failing.
+        keys = [entry.key for entry in RETIRED_SETTINGS]
+        assert sorted(keys) == sorted(set(keys))
+
+    def test_the_loop_owned_half_is_part_of_the_roll(self) -> None:
+        assert LOOP_OWNED_RETIREMENTS
+        assert set(LOOP_OWNED_RETIREMENTS) < set(RETIRED_SETTINGS)
 
     def test_removed_setting_looks_up_only_removals(self) -> None:
         removed = next(iter(REMOVED_SETTING_KEYS))
@@ -168,3 +179,57 @@ class TestIntakeRequireLabelRetirementIsRecorded(TestCase):
         stderr = self._captured.readouterr().err
         assert self.KEY in stderr
         assert "config_setting clear" in stderr
+
+
+class TestArchReviewSettingRetirementsAreRecorded(TestCase):
+    """The two arch_review settings removed with their plumbing stay removed.
+
+    A loop's cadence IS its retry interval: `arch_review` checks daily, so a failed
+    review retries the next day and a separate 12h backoff could never bind against a
+    24h check. Enablement is the `arch_review` Loop row, so the per-scanner disable
+    flag was a second switch for one decision. Both are recorded here so a stored row
+    warns instead of silently reverting an operator's value.
+    """
+
+    KEYS = ("architectural_review_retry_backoff_hours", "architectural_review_disabled")
+
+    @pytest.fixture(autouse=True)
+    def _no_overlay(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    @pytest.fixture(autouse=True)
+    def _capsys(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._captured = capsys
+
+    def test_both_are_recorded_as_removals_not_renames(self) -> None:
+        for key in self.KEYS:
+            assert key in REMOVED_SETTING_KEYS, key
+            assert key not in RENAMED_SETTING_KEYS, key
+
+    def test_neither_is_a_live_settings_field_any_more(self) -> None:
+        # The resurrection guard: re-adding either field turns this red.
+        for key in self.KEYS:
+            assert not hasattr(UserSettings(), key), key
+
+    def test_a_stored_row_warns_instead_of_vanishing(self) -> None:
+        ConfigSetting.objects.set_value(self.KEYS[0], 6)
+        get_effective_settings()
+        stderr = self._captured.readouterr().err
+        assert self.KEYS[0] in stderr
+        assert "config_setting clear" in stderr
+
+
+class TestTheForkRetirementsAreRecorded:
+    """A stored row under a key the redesign removed warns loudly rather than vanishing."""
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "deferred_question_max_escalations",
+            "require_spec_coverage",
+            "require_plan_adequacy",
+            "require_rubric_verification",
+        ],
+    )
+    def test_the_key_is_recorded_as_a_removal(self, key: str) -> None:
+        assert removed_setting(key) is not None

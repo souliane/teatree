@@ -70,7 +70,8 @@ def test_a_loop_action_swaps_the_surface(live_server: LiveServer, page: Page) ->
     page.goto(f"{live_server.url}/dash/loops/")
     page.evaluate(_RECORD_HTMX_LIFECYCLE, list(_HTMX_EVENTS))
 
-    _loop_row(page).get_by_role("button", name="pause").click()
+    _loop_row(page).get_by_label("e2e_loop interval seconds").fill("120")
+    _loop_row(page).get_by_role("button", name="set", exact=True).click()
     page.wait_for_timeout(2000)
 
     probe = page.evaluate("() => window.__probe")
@@ -84,4 +85,4 @@ def test_a_loop_action_swaps_the_surface(live_server: LiveServer, page: Page) ->
         _loop_row(page).inner_html()[:900],
     )
 
-    expect(_loop_row(page).get_by_role("button", name="resume")).to_be_visible()
+    expect(_loop_row(page)).to_contain_text("every 120s")

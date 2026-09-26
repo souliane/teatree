@@ -83,8 +83,8 @@ class TicketSchedulingModel(TicketFacet):
 
         Gated by ``plan_currency`` (SELFCATCH-3) on the normal author PLAN_RECORDED→CODED flow
         (the same gate ``code()`` runs): no coding task for a thin/legacy or seam-stale
-        plan. NO-OP unless ``require_plan_adequacy`` is on; synthetic corrective
-        re-entries that mint a coding task directly are exempt (they carry no plan).
+        plan. Synthetic corrective re-entries that mint a coding task directly are
+        exempt (they carry no plan).
         """
         return self._schedule_phase_task(
             "coding",

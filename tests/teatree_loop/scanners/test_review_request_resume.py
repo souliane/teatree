@@ -18,12 +18,14 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from django.core.management import call_command
 from django.db import connections
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from teatree.core.backend_protocols import ROLLUP_QUERY_FAILED, DraftState
+from teatree.core.backend_protocols import ROLLUP_QUERY_FAILED, DraftState, PrOpenState
 from teatree.core.models import ConfigSetting, ReviewRequestPost
+from teatree.core.on_behalf_egress import NO_TOKEN_FOR_DESTINATION
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.review_request_resume import (
     RESUME_REPLY_TEXT,
@@ -31,10 +33,11 @@ from teatree.loop.scanners.review_request_resume import (
     _claim_and_reply,
     _claim_resume,
 )
+from teatree.on_behalf_gate import OnBehalfContext
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 from teatree.types import RawAPIDict
-from tests.db_alias import run_racing_threads
-from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm, mode_immediate_cm
+from tests.db_alias import RouteAllToAlias, register_sqlite_alias, run_racing_threads, teardown_sqlite_alias
+from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
 
 _MR_URL = "https://github.com/o/r/pull/7"
 _CHANNEL = "C_REVIEW"
@@ -57,6 +60,7 @@ class _Slack:
     reactions: tuple[str, ...] = (_PAUSE_EMOJI,)
     fetch_error: Exception | None = None
     post_error: Exception | None = None
+    post_response: RawAPIDict | None = None
     posted: list[tuple[str, str, str]] = field(default_factory=list)
 
     def route_token(self, channel: str) -> str:
@@ -77,7 +81,7 @@ class _Slack:
         if self.post_error is not None:
             raise self.post_error
         self.posted.append((channel, text, thread_ts))
-        return {"ok": True}
+        return {"ok": True} if self.post_response is None else self.post_response
 
     def resolve_user_id(self, handle: str) -> str:
         _ = handle
@@ -91,6 +95,17 @@ class _Host:
     draft: DraftState = DraftState.NOT_DRAFT
     rollup: list[RawAPIDict] = field(default_factory=lambda: list(_GREEN_ROLLUP))
     rollup_error: Exception | None = None
+    current: str = "owner"
+    author: str = "owner"
+    author_error: Exception | None = None
+    open_state: PrOpenState = PrOpenState.OPEN
+    open_state_error: Exception | None = None
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        _ = pr_url
+        if self.open_state_error is not None:
+            raise self.open_state_error
+        return self.open_state
 
     def fetch_pr_draft_state(self, *, slug: str, pr_id: int) -> DraftState:
         _ = (slug, pr_id)
@@ -106,10 +121,24 @@ class _Host:
         _ = (slug, pr_id)
         return [{"context": _REQUIRED_CHECK}]
 
+    def current_user(self) -> str:
+        return self.current
 
-def _seed() -> ReviewRequestPost:
+    def get_pr_author(self, *, pr_url: str) -> str:
+        _ = pr_url
+        if self.author_error is not None:
+            raise self.author_error
+        return self.author
+
+
+def _seed(
+    *,
+    mr_url: str = _MR_URL,
+    overlay: str | None = "overlay-a",
+) -> ReviewRequestPost:
     return ReviewRequestPost.objects.create(
-        mr_url=_MR_URL,
+        mr_url=mr_url,
+        overlay=overlay,
         slack_channel_id=_CHANNEL,
         slack_thread_ts=_THREAD_TS,
         created_at=timezone.now(),
@@ -125,18 +154,33 @@ class TestReviewRequestResumeScanner(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.enterContext(mode_immediate_cm())
-        self.post = _seed()
-
-    def _arm(self) -> None:
         ConfigSetting.objects.set_value("review_resume_reply_enabled", value=True)
+        self.enterContext(posture_permits_cm())
+        self.post = _seed()
 
     def _scan(self, slack: _Slack, host: _Host) -> list[ScanSignal]:
         with mock.patch("teatree.core.backend_factory.code_host_from_overlay", return_value=host):
-            return ReviewRequestResumeScanner(messaging=slack, host=host).scan()
+            return ReviewRequestResumeScanner(
+                messaging=slack,
+                host=host,
+                overlay="overlay-a",
+                identities=("owner",),
+            ).scan()
+
+    def test_other_overlay_and_unattributed_rows_are_skipped(self) -> None:
+        _seed(mr_url="https://github.com/o/r/pull/8", overlay=None)
+        slack = _Slack()
+
+        signals = ReviewRequestResumeScanner(
+            messaging=slack,
+            host=_Host(),
+            overlay="overlay-b",
+        ).scan()
+
+        assert signals == []
+        assert slack.posted == []
 
     def test_paused_and_ready_replies_once_in_the_tracked_thread(self) -> None:
-        self._arm()
         slack = _Slack()
 
         signals = self._scan(slack, _Host())
@@ -146,8 +190,40 @@ class TestReviewRequestResumeScanner(TestCase):
         self.post.refresh_from_db()
         assert self.post.resumed_at is not None
 
+    def test_colleague_authored_request_refuses_before_resume_claim(self) -> None:
+        slack = _Slack()
+        with mock.patch("teatree.loop.scanners.review_request_resume._claim_resume") as claim:
+            signals = self._scan(slack, _Host(author="colleague"))
+
+        claim.assert_not_called()
+        self.post.refresh_from_db()
+        assert self.post.resumed_at is None
+        assert slack.posted == []
+        assert _kinds(signals) == ["review_request.foreign_author"]
+
+    def test_unknown_authorship_refuses_before_resume_claim(self) -> None:
+        cases = (
+            (_Host(author=""), ("owner",)),
+            (_Host(author_error=RuntimeError("down")), ("owner",)),
+            (None, ("owner",)),
+        )
+        for index, (host, identities) in enumerate(cases):
+            slack = _Slack()
+            with (
+                self.subTest(index=index),
+                mock.patch("teatree.loop.scanners.review_request_resume._claim_resume") as claim,
+            ):
+                signals = ReviewRequestResumeScanner(
+                    messaging=slack,
+                    host=host,
+                    overlay="overlay-a",
+                    identities=identities,
+                ).scan()
+                claim.assert_not_called()
+                assert slack.posted == []
+                assert _kinds(signals) == ["review_request.authorship_unreadable"]
+
     def test_a_second_tick_posts_nothing_more(self) -> None:
-        self._arm()
         slack = _Slack()
 
         self._scan(slack, _Host())
@@ -157,10 +233,9 @@ class TestReviewRequestResumeScanner(TestCase):
         assert len(slack.posted) == 1
 
     def test_a_gated_post_releases_the_claim(self) -> None:
-        self._arm()
         slack = _Slack()
 
-        with mode_gate_on_cm():
+        with posture_forbids_cm():
             signals = self._scan(slack, _Host())
 
         assert _kinds(signals) == ["review_request.resume_gated"]
@@ -169,7 +244,6 @@ class TestReviewRequestResumeScanner(TestCase):
         assert self.post.resumed_at is None
 
     def test_a_failed_transport_releases_the_claim(self) -> None:
-        self._arm()
         slack = _Slack(post_error=RuntimeError("slack 503"))
 
         signals = self._scan(slack, _Host())
@@ -178,8 +252,68 @@ class TestReviewRequestResumeScanner(TestCase):
         self.post.refresh_from_db()
         assert self.post.resumed_at is None
 
+    def test_a_publish_slack_refused_releases_the_claim_and_retries(self) -> None:
+        # The egress hands an unlanded publish back WITHOUT raising, so discarding the
+        # body burns the single-use one-shot on a reply nobody ever saw.
+        refused = _Slack(post_response={"ok": False, "error": "not_in_channel"})
+
+        signals = self._scan(refused, _Host())
+
+        assert _kinds(signals) == ["review_request.resume_failed"]
+        assert signals[0].payload["error"] == "not_in_channel"
+        self.post.refresh_from_db()
+        assert self.post.resumed_at is None
+
+        recovered = _Slack()
+        assert _kinds(self._scan(recovered, _Host())) == ["review_request.resumed"]
+        assert recovered.posted == [(_CHANNEL, RESUME_REPLY_TEXT, _THREAD_TS)]
+
+    def test_an_empty_publish_body_releases_the_claim(self) -> None:
+        signals = self._scan(_Slack(post_response={}), _Host())
+
+        assert _kinds(signals) == ["review_request.resume_failed"]
+        assert signals[0].payload["error"] == NO_TOKEN_FOR_DESTINATION["error"]
+        self.post.refresh_from_db()
+        assert self.post.resumed_at is None
+
+    def test_a_row_retired_between_the_read_and_the_claim_is_never_posted(self) -> None:
+        # The queryset filters on done_at, but the claim did not — so a merge-react
+        # retiring the row in that window still got "Now ready for review." posted.
+        slack = _Slack()
+        real_claim = _claim_resume
+
+        def retire_then_claim(post: ReviewRequestPost, claimed_at: object) -> bool:
+            ReviewRequestPost.objects.filter(pk=post.pk).update(done_at=timezone.now())
+            return real_claim(post, claimed_at)
+
+        with mock.patch("teatree.loop.scanners.review_request_resume._claim_resume", side_effect=retire_then_claim):
+            signals = self._scan(slack, _Host())
+
+        assert signals == []
+        assert slack.posted == []
+
+    def test_an_open_gitlab_merge_request_resumes(self) -> None:
+        # GitLab upper-cases its own `opened` to OPENED, so comparing merge state to OPEN held every one.
+        slack = _Slack()
+
+        assert _kinds(self._scan(slack, _Host(open_state=PrOpenState.OPEN))) == ["review_request.resumed"]
+
+    def test_a_merged_closed_or_unreadable_mr_is_never_told_it_is_ready(self) -> None:
+        for state in (PrOpenState.MERGED, PrOpenState.CLOSED, PrOpenState.UNKNOWN):
+            with self.subTest(state=state.value):
+                slack = _Slack()
+                assert self._scan(slack, _Host(open_state=state)) == []
+                assert slack.posted == []
+                self.post.refresh_from_db()
+                assert self.post.resumed_at is None
+
+    def test_an_unreadable_open_state_holds_the_resume(self) -> None:
+        slack = _Slack()
+
+        assert self._scan(slack, _Host(open_state_error=RuntimeError("forge down"))) == []
+        assert slack.posted == []
+
     def test_a_released_claim_lets_a_later_tick_retry(self) -> None:
-        self._arm()
         failing = _Slack(post_error=RuntimeError("slack 503"))
         self._scan(failing, _Host())
 
@@ -189,8 +323,23 @@ class TestReviewRequestResumeScanner(TestCase):
         assert _kinds(signals) == ["review_request.resumed"]
         assert recovered.posted == [(_CHANNEL, RESUME_REPLY_TEXT, _THREAD_TS)]
 
+    def test_a_review_exempt_repo_is_never_resumed(self) -> None:
+        """The reply IS a review request on a colleague's thread — the exemption governs it.
+
+        Its sibling above is the control: same fixture, same armed scanner, the
+        pinned pattern the only difference.
+        """
+        ConfigSetting.objects.set_value("review_exempt_repos", ["o/r"])
+        slack = _Slack()
+
+        signals = self._scan(slack, _Host())
+
+        assert signals == []
+        assert slack.posted == []
+        self.post.refresh_from_db()
+        assert self.post.resumed_at is None
+
     def test_a_draft_merge_request_is_not_resumed(self) -> None:
-        self._arm()
         slack = _Slack()
 
         signals = self._scan(slack, _Host(draft=DraftState.DRAFT))
@@ -201,7 +350,6 @@ class TestReviewRequestResumeScanner(TestCase):
         assert self.post.resumed_at is None
 
     def test_red_required_checks_are_not_resumed(self) -> None:
-        self._arm()
         slack = _Slack()
 
         signals = self._scan(slack, _Host(rollup=list(_RED_ROLLUP)))
@@ -210,7 +358,6 @@ class TestReviewRequestResumeScanner(TestCase):
         assert slack.posted == []
 
     def test_an_unreadable_rollup_holds_the_resume(self) -> None:
-        self._arm()
         slack = _Slack()
 
         signals = self._scan(slack, _Host(rollup_error=RuntimeError("gh 502")))
@@ -227,7 +374,6 @@ class TestReviewRequestResumeScanner(TestCase):
         returns ``"unreadable"``, and the resume gate holds because it tests for
         GREEN rather than listing the reds it knows about.
         """
-        self._arm()
         slack = _Slack()
 
         signals = self._scan(slack, _Host(rollup=[ROLLUP_QUERY_FAILED]))
@@ -238,7 +384,6 @@ class TestReviewRequestResumeScanner(TestCase):
         assert self.post.resumed_at is None
 
     def test_an_unreadable_pause_is_surfaced_and_posts_nothing(self) -> None:
-        self._arm()
         slack = _Slack(fetch_error=RuntimeError("slack 500"))
 
         signals = self._scan(slack, _Host())
@@ -249,7 +394,6 @@ class TestReviewRequestResumeScanner(TestCase):
         assert self.post.resumed_at is None
 
     def test_an_unpaused_request_is_left_alone(self) -> None:
-        self._arm()
         slack = _Slack(reactions=("eyes",))
 
         signals = self._scan(slack, _Host())
@@ -257,21 +401,12 @@ class TestReviewRequestResumeScanner(TestCase):
         assert signals == []
         assert slack.posted == []
 
-    def test_the_scanner_is_inert_until_an_overlay_arms_it(self) -> None:
+    def test_a_scanner_without_a_code_host_reports_unreadable_authorship(self) -> None:
         slack = _Slack()
 
-        signals = self._scan(slack, _Host())
+        signals = ReviewRequestResumeScanner(messaging=slack, host=None, overlay="overlay-a").scan()
 
-        assert signals == []
-        assert slack.posted == []
-        self.post.refresh_from_db()
-        assert self.post.resumed_at is None
-
-    def test_a_scanner_without_a_code_host_does_nothing(self) -> None:
-        self._arm()
-        slack = _Slack()
-
-        assert ReviewRequestResumeScanner(messaging=slack, host=None).scan() == []
+        assert [signal.kind for signal in signals] == ["review_request.authorship_unreadable"]
         assert slack.posted == []
 
 
@@ -289,13 +424,14 @@ class TestLosingTickPostsNothing(TestCase):
     """
 
     def test_the_second_tick_neither_claims_nor_posts(self) -> None:
-        self.enterContext(mode_immediate_cm())
+        self.enterContext(posture_permits_cm())
         _seed()
         first, second = ReviewRequestPost.objects.all()[0], ReviewRequestPost.objects.all()[0]
         slack = _Slack()
 
-        winner = _claim_and_reply(first, slack)
-        loser = _claim_and_reply(second, slack)
+        context = OnBehalfContext(own_mr=True, target=_MR_URL)
+        winner = _claim_and_reply(first, slack, context=context)
+        loser = _claim_and_reply(second, slack, context=context)
 
         assert winner is not None
         assert winner.kind == "review_request.resumed"
@@ -331,47 +467,16 @@ def _make_alias(tmp_path: Path) -> str:
 
     ``transaction_mode="IMMEDIATE"`` is prod's (``SQLITE_WRITE_SERIALIZATION_OPTIONS``),
     so the second writer meets the same reserved write lock it meets in production
-    rather than a laxer local default. Only ``teatree_review_request_post`` is
-    created because the claim under test touches nothing else.
+    rather than a laxer local default. The real migration graph creates the
+    schema so this fixture cannot drift from ``ReviewRequestPost``.
     """
     alias = f"resume_{uuid.uuid4().hex}"
-    connections.databases[alias] = {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": str(tmp_path / f"{alias}.sqlite3"),
-        "OPTIONS": dict(SQLITE_WRITE_SERIALIZATION_OPTIONS),
-        "ATOMIC_REQUESTS": False,
-        "AUTOCOMMIT": True,
-        "CONN_MAX_AGE": 0,
-        "CONN_HEALTH_CHECKS": False,
-        "TIME_ZONE": None,
-        "TEST": {},
-    }
-    with connections[alias].cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE teatree_review_request_post (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                mr_url VARCHAR(512) NOT NULL UNIQUE,
-                slack_channel_id VARCHAR(64) NOT NULL,
-                slack_thread_ts VARCHAR(64) NOT NULL,
-                bot_id VARCHAR(64) NOT NULL,
-                last_nag_at DATETIME NULL,
-                nag_count INTEGER NOT NULL,
-                resumed_at DATETIME NULL,
-                created_at DATETIME NOT NULL,
-                done_at DATETIME NULL
-            )
-            """
-        )
+    db_file = tmp_path / f"{alias}.sqlite3"
+    register_sqlite_alias(alias, db_file, options=SQLITE_WRITE_SERIALIZATION_OPTIONS)
+    with override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
+        call_command("migrate", "--no-input", database=alias, verbosity=0)
     connections[alias].close()
     return alias
-
-
-def _teardown_alias(alias: str) -> None:
-    for conn in connections.all():
-        if conn.alias == alias:
-            conn.close()
-    connections.databases.pop(alias, None)
 
 
 def _race_the_claim(post_pk: int) -> list[bool]:
@@ -427,8 +532,22 @@ class TestConcurrentResumeClaim:
                 post.refresh_from_db()
                 resumed_at = post.resumed_at
         finally:
-            _teardown_alias(alias)
+            teardown_sqlite_alias(alias)
 
         assert outcomes.count(True) == 1, f"expected exactly one winner, got {outcomes!r}"
         assert outcomes.count(False) == 1, f"expected exactly one tick to stand down, got {outcomes!r}"
         assert resumed_at is not None
+
+
+class TestTheResumeReplyShipsOff(TestCase):
+    """A paused request waits silently until ``review_resume_reply_enabled`` opts the box in."""
+
+    def test_an_armed_row_posts_nothing_by_default(self) -> None:
+        self.enterContext(posture_permits_cm())
+        _seed()
+        slack = _Slack()
+
+        signals = ReviewRequestResumeScanner(messaging=slack, host=_Host(), overlay="overlay-a").scan()
+
+        assert signals == []
+        assert slack.posted == []

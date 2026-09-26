@@ -7,7 +7,7 @@
       <thead>
         <tr>
           <th>session</th><th>ticket</th><th>phase</th><th>model</th>
-          <th>lane</th><th>skills</th><th>outcome</th><th>started</th><th>duration</th>
+          <th>lane</th><th>skills</th><th>skill assurance</th><th>outcome</th><th>started</th><th>duration</th>
         </tr>
       </thead>
       <tbody>
@@ -24,12 +24,13 @@
             <td class="mono">{{ s.model|default:"—" }}</td>
             <td>{{ s.lane|default:"—" }}</td>
             <td>{% include "dash/partials/_skills.html" with skills=s.skills skills_fault=s.skills_fault %}</td>
+            <td>{% include "dash/partials/_skill_assurance.html" with assurance=s.assurance %}</td>
             <td>{{ s.outcome|default:"—" }}</td>
             <td>{{ s.started_at }}</td>
             <td>{{ s.duration|default:"—" }}</td>
           </tr>
         {% empty %}
-          <tr class="empty-row"><td colspan="9">No agent sessions recorded.</td></tr>
+          <tr class="empty-row"><td colspan="10">No agent sessions recorded.</td></tr>
         {% endfor %}
       </tbody>
     </table>

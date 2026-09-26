@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,10 +16,12 @@ from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.notion import NotionClient
+from teatree.backends.notion import write_guard as notion_write_guard
 from teatree.backends.sentry import SentryClient
 from teatree.backends.sharepoint import SharePointClient
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.backends.types import Service
+from teatree.config.credential_pass_key import PassKeyResolution, PassKeySource
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
     OwnerMessagingTransport,
@@ -48,6 +51,11 @@ class _TokenConfig(OverlayConfig):
     def get_gitlab_token(self) -> str:
         return "gl-test-token"
 
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        entry = "test/gitlab" if name == "gitlab_token" else ""
+        source = PassKeySource.DECLARED_DEFAULT if entry else PassKeySource.UNSET
+        return PassKeyResolution(f"{name}_pass_key", entry, source)
+
 
 class _TokenOverlay(OverlayBase):
     config = _TokenConfig()
@@ -67,12 +75,16 @@ class _NoTokenOverlay(OverlayBase):
         return []
 
 
+@contextmanager
 def _patch_overlay(overlay_cls):
-    return patch.object(
-        overlay_loader_mod,
-        "_discover_overlays",
-        return_value={"test": overlay_cls()},
-    )
+    with (
+        patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay_cls()}),
+        patch(
+            "teatree.core.overlays.forge_credential_provider.read_pass",
+            side_effect=lambda entry: {"test/github": "gh-test-token", "test/gitlab": "gl-test-token"}.get(entry, ""),
+        ),
+    ):
+        yield
 
 
 def test_code_host_from_overlay_returns_none_when_no_token() -> None:
@@ -152,6 +164,21 @@ def test_notion_client_from_overlay_returns_none_when_overlay_not_configured() -
 def test_notion_client_from_overlay_builds_client_when_token_present() -> None:
     with _patch_overlay(_NotionOverlay):
         assert isinstance(notion_client_from_overlay(), NotionClient)
+
+
+def test_the_notion_client_guards_writes_with_its_own_overlays_roots() -> None:
+    asked: list[str | None] = []
+
+    def roots(overlay: str | None) -> tuple[list[str], list[str]]:
+        asked.append(overlay)
+        return [], []
+
+    with _patch_overlay(_NotionOverlay), patch.object(notion_write_guard, "notion_write_roots", roots):
+        client = notion_client_from_overlay("test")
+        assert isinstance(client, NotionClient)
+        client._write_guard._scope()
+
+    assert asked == ["test"]
 
 
 class _SentryOverlay(OverlayBase):
@@ -493,12 +520,17 @@ class _BothTokenConfig(OverlayConfig):
     def get_gitlab_token(self) -> str:
         return "gl-test-token"
 
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        entry = {"github_token": "test/github", "gitlab_token": "test/gitlab"}.get(name, "")
+        source = PassKeySource.DECLARED_DEFAULT if entry else PassKeySource.UNSET
+        return PassKeyResolution(f"{name}_pass_key", entry, source)
+
 
 class _BothTokenOverlay(OverlayBase):
     config = _BothTokenConfig()
 
     def get_repos(self):
-        return []
+        return ["souliane/teatree"]
 
     def get_provision_steps(self, worktree):
         return []

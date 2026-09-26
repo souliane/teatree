@@ -21,6 +21,7 @@ from django.test import TestCase
 from teatree.config import UserSettings
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
+from tests.factories import waive_rubric
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 from tests.teatree_core.test_merge_execution import _GhStub
 
@@ -40,6 +41,9 @@ _OTHER_SHA = "b" * 40
 
 
 def _clear(ticket: Ticket) -> MergeClear:
+    # The rubric done-gate runs at this chokepoint; the real path has an independent
+    # verifier grade the rubric, so the audited bypass stands in (cf. _seed_sibling_verdict).
+    waive_rubric(ticket)
     return MergeClear.objects.create(
         ticket=ticket,
         pr_id=859,

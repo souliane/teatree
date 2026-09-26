@@ -135,13 +135,6 @@ class TestAnswerPipeline(_HealthyBaseline):
         assert not outcome.ok
         assert "answer loop is masked" in _messages(outcome)
 
-    def test_loop_runner_off_fails(self) -> None:
-        with patch("teatree.config.get_effective_settings") as settings:
-            settings.return_value.loop_runner_enabled = False
-            outcome = run_slack_roundtrip_probes(env={"TEATREE_ROLE": "worker"})
-        assert not outcome.ok
-        assert "loop runner is OFF" in _messages(outcome)
-
     def test_no_worker_flock_fails(self) -> None:
         self.flock.side_effect = lambda name, *_a, **_k: name != WORKER_SINGLETON
         outcome = run_slack_roundtrip_probes(env={"TEATREE_ROLE": "worker"})

@@ -11,32 +11,46 @@ import dataclasses
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import httpx2
 import pytest
 from claude_agent_sdk.types import EffortLevel
 from django.test import TestCase
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
+from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse, override_allow_model_requests
+from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import RunContext
 
+from teatree.agents.model_aliases import family_alias_models
+from teatree.agents.model_tiering import TIER_MODELS
 from teatree.agents.pydantic_ai_config import LANE_EVAL, OpenAICompatibleLaneConfig
+from teatree.agents.pydantic_ai_turn import SessionRun
 from teatree.config.settings import PYDANTIC_AI_MAX_TOKENS_DEFAULT
 from teatree.core.models import ConfigSetting
+from teatree.eval.api_errors import THROTTLE_TERMINAL_PREFIX
 from teatree.eval.backends import KNOWN_BACKENDS, PYDANTIC_AI_BACKEND, UnknownBackendError, make_runner
-from teatree.eval.discovery import SCENARIOS_DIR
+from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 from teatree.eval.loader import load_eval_yaml
+from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import CLEAN_ROOM_MIN_TURNS, EvalSpec, Matcher
-from teatree.eval.pydantic_ai_runner import EvalDriveCaps, PydanticAiRunner, build_eval_toolset
+from teatree.eval.pydantic_ai_runner import (
+    EvalDriveCaps,
+    PydanticAiRunner,
+    build_eval_toolset,
+    build_pydantic_ai_eval_runner,
+)
 from teatree.eval.report import evaluate
+from teatree.eval.throttle_retry import ThrottleRetryDriver
+from tests.teatree_agents._router_fake import text_reply
 
 
 def _spec(matcher: Matcher, *, tools: tuple[str, ...] = ("Bash",)) -> EvalSpec:
@@ -193,8 +207,16 @@ class TestNonClaudeScenarioRunsGreen:
         assert "anthropic_effort" not in model.recorded[0]
 
 
+_ROUTER_HEADERS = {"X-OrcaRouter-Include-Cost": "true", "X-OrcaRouter-Session-Id": "t3-{session}"}
+
+
 class TestRunnerWithSettings(TestCase):
     """The two paths that read DB-home settings: the factory and the real model build."""
+
+    @pytest.fixture(autouse=True)
+    def _backend_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_COMPATIBLE_BASE_URL", "https://backend.example.invalid/v1")
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "dummy-backend-test-value")
 
     def test_make_runner_builds_the_pydantic_ai_runner_on_the_eval_lane(self) -> None:
         runner = make_runner(PYDANTIC_AI_BACKEND)
@@ -209,24 +231,42 @@ class TestRunnerWithSettings(TestCase):
         assert runner._caps.max_tokens == 24576
 
     def test_resolve_model_builds_the_configured_model_on_the_eval_lane(self) -> None:
-        # With no injected model, `_resolve_model` builds a real OpenAI-compatible
-        # model — mocked at the credential boundary so the test needs no live key
-        # or network.
         spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
         spec = dataclasses.replace(spec, model="claude-opus-4-8")
-        runner = PydanticAiRunner(
-            backend=OpenAICompatibleLaneConfig(
-                lane=LANE_EVAL, base_url="https://backend.example/v1", model="vendor/some-model"
-            )
-        )
-        with patch(
-            "teatree.eval.pydantic_ai_runner.resolve_openai_compatible_backend",
-            lambda **_: SimpleNamespace(base_url="https://backend.example/v1", api_key="k"),
-        ):
-            model = runner._resolve_model(spec)
+        runner = PydanticAiRunner(backend=OpenAICompatibleLaneConfig(lane=LANE_EVAL, model="vendor/some-model"))
+        model = runner._resolve_model(spec, SessionRun.start())
         assert isinstance(model, OpenAIChatModel)
         # The abstract Claude id normalises UP to the CONFIGURED model id.
         assert model.model_name == "vendor/some-model"
+
+    def test_the_eval_client_sends_the_allowlisted_router_headers_and_nothing_else(self) -> None:
+        ConfigSetting.objects.create(
+            key="openai_compatible_extra_headers", scope="", value={**_ROUTER_HEADERS, "XAuthToken": "canary-value"}
+        )
+        ConfigSetting.objects.set_value("openai_compatible_model", "vendor/some-model")
+        runner = build_pydantic_ai_eval_runner()
+        sent: list[httpx2.Request] = []
+
+        def network(request: httpx2.Request) -> httpx2.Response:
+            sent.append(request)
+            return text_reply("done", cost_usd=0.0001)
+
+        # The transport is faked, so a model request cannot leave the process whatever the global guard says.
+        with (
+            patch.object(
+                httpx2.AsyncHTTPTransport, "handle_async_request", httpx2.MockTransport(network).handle_async_request
+            ),
+            override_allow_model_requests(allow_model_requests=True),
+        ):
+            runner.run(_spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value=".")))
+
+        assert sent, "the eval lane never reached the endpoint"
+        headers = sent[0].headers
+        assert headers["X-OrcaRouter-Include-Cost"] == "true"
+        assert headers["X-OrcaRouter-Session-Id"].startswith("t3-")
+        assert "{session}" not in headers["X-OrcaRouter-Session-Id"]
+        assert headers["x-lane"] == LANE_EVAL
+        assert "XAuthToken" not in headers
 
 
 class TestOutputCeilingOnTheRouterLane:
@@ -335,12 +375,14 @@ class TestProviderFailureFoldsIntoTheRun:
     """
 
     def test_a_refused_request_ends_the_scenario_as_an_error_run(self) -> None:
+        # A NON-throttle provider refusal is a genuine red, graded and never retried —
+        # the anti-cheat boundary the throttle envelope below must not cross.
         async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
             await asyncio.sleep(0)
             raise ModelHTTPError(
-                status_code=429,
+                status_code=400,
                 model_name="claude-sonnet-5",
-                body={"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}},
+                body={"type": "error", "error": {"type": "invalid_request_error", "message": "bad prompt"}},
             )
             yield ""  # unreachable — the ``yield`` is what makes this an async GENERATOR
 
@@ -349,6 +391,66 @@ class TestProviderFailureFoldsIntoTheRun:
 
         assert run.is_error is True
         assert run.terminal_reason == "error_during_execution"
+        assert not evaluate(spec, run).passed, "a run that never happened must never grade green"
+
+
+class TestProviderThrottleIsRiddenOutNotGradedAsBehavior:
+    """A provider capacity error is NOT a behavioral fail.
+
+    The metered lanes all run `--backend anthropic_api`, and this lane had no throttle
+    envelope: a 529 `overloaded_error` folded straight into an `error_during_execution`
+    red. `--escalate-on-fail` then re-ran it three times within seconds, hit the same
+    overload window, and reported `CONFIRMED (0/3 escalation trials)` — the exact
+    signature of a hard behavioral regression, produced by provider capacity.
+    """
+
+    @staticmethod
+    def _throttling_model(*, fail_times: int, status: int, error_type: str) -> FunctionModel:
+        state = {"calls": 0}
+
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+            await asyncio.sleep(0)
+            state["calls"] += 1
+            if state["calls"] <= fail_times:
+                raise ModelHTTPError(
+                    status_code=status,
+                    model_name="claude-sonnet-5",
+                    body={"type": "error", "error": {"type": error_type, "message": error_type}},
+                )
+            if state["calls"] == fail_times + 1:
+                yield {0: DeltaToolCall(name="Bash", json_args='{"command": "git push"}')}
+            else:
+                yield "pushed"
+
+        return FunctionModel(stream_function=stream_fn)
+
+    @staticmethod
+    def _instant_retry(attempts: int) -> ThrottleRetryDriver:
+        return ThrottleRetryDriver(max_attempts=attempts, timeout_max_attempts=0, sleep=lambda _s: None)
+
+    @pytest.mark.parametrize(("status", "error_type"), [(529, "overloaded_error"), (429, "rate_limit_error")])
+    def test_a_transient_throttle_is_retried_and_the_scenario_grades_on_the_real_run(
+        self, status: int, error_type: str
+    ) -> None:
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="git push"))
+        run = PydanticAiRunner(
+            model=self._throttling_model(fail_times=2, status=status, error_type=error_type),
+            retry=self._instant_retry(3),
+        ).run(spec)
+
+        assert run.is_error is False
+        assert evaluate(spec, run).passed, "the retried attempt is the one that must be graded"
+
+    def test_an_exhausted_throttle_surfaces_as_throttled_never_as_a_behavioral_fail(self) -> None:
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="git push"))
+        run = PydanticAiRunner(
+            model=self._throttling_model(fail_times=99, status=529, error_type="overloaded_error"),
+            retry=self._instant_retry(2),
+        ).run(spec)
+
+        assert run.is_error is True
+        assert run.terminal_reason.startswith(THROTTLE_TERMINAL_PREFIX), run.terminal_reason
+        assert run.terminal_reason != "error_during_execution"
         assert not evaluate(spec, run).passed, "a run that never happened must never grade green"
 
 
@@ -407,3 +509,115 @@ class TestScenarioCapsBindThisLane:
         run = PydanticAiRunner(model=FunctionModel(stream_function=stream_fn)).run(spec)
         assert run.is_error is True
         assert run.terminal_reason == "timeout"
+
+
+class TestAnErroredTurnReportsEachToolCallOnce:
+    """The error path recovers the trajectory from the event stream, without duplicating it.
+
+    A run that RAISES returns no result, so the finished-history read has nothing to read
+    and the streamed capture is the only record of what the model did. pydantic_ai surfaces
+    ONE `ToolCallPart` through THREE events, so a capture keyed on the part type records
+    every call three times — which reads as a model that blew its turn budget 3x over and
+    reds a correctly-behaving agent on a turn-count matcher.
+    """
+
+    _MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value=".")
+
+    def test_each_request_contributes_exactly_one_captured_call(self) -> None:
+        spec = dataclasses.replace(_spec(self._MATCHER), max_turns=CLEAN_ROOM_MIN_TURNS)
+        run = PydanticAiRunner(
+            model=_tool_calls_then_text(tool_turns=CLEAN_ROOM_MIN_TURNS),
+            backend=OpenAICompatibleLaneConfig(lane=LANE_EVAL, request_limit=2),
+        ).run(spec)
+
+        assert run.terminal_reason == "error_max_turns"
+        assert len(run.tool_calls) == 2, "one captured call per request the model actually made"
+
+
+class _RecordingAnthropicModel(AnthropicModel):
+    """A REAL ``AnthropicModel`` whose requests are served offline, recording their settings.
+
+    Mirrors :class:`_RecordingOpenAIModel` on the Anthropic branch: the settings CLASS
+    is chosen from the model's provider discriminator, so only a real ``AnthropicModel``
+    exercises the branch that builds ``anthropic_effort``.
+    """
+
+    def __init__(self, model_name: str, offline: Model) -> None:
+        super().__init__(model_name, provider=AnthropicProvider(api_key="offline-double"))
+        self._offline = offline
+        self.recorded: list[ModelSettings | None] = []
+
+    @asynccontextmanager
+    async def request_stream(
+        self,
+        messages: list[ModelMessage],
+        model_settings: ModelSettings | None,
+        model_request_parameters: ModelRequestParameters,
+        run_context: RunContext[None] | None = None,
+    ) -> AsyncIterator[StreamedResponse]:
+        self.recorded.append(model_settings)
+        async with self._offline.request_stream(
+            messages, model_settings, model_request_parameters, run_context
+        ) as response:
+            yield response
+
+
+class TestEffortIsGatedOnTheModelsCapability:
+    """A model that carries no effort lever is sent none -- the whole request is at stake.
+
+    Haiku answers ANY request carrying an effort with ``400 invalid_request_error: This
+    model does not support the effort parameter``. That is a whole-request rejection, so
+    the run captures an EMPTY trajectory and the scenario reds as
+    ``error_during_execution`` having graded nothing. Measured on the real API: the
+    ``--preset baseline`` lane pins its cheapest-passing scenarios to the ``cheap``/Haiku
+    tier while the lane-level ``METERED_DEFAULT_EFFORT`` rides on every scenario, so 22
+    of 266 baseline scenarios could never execute. The vocabulary guard cannot catch it --
+    ``high`` is a perfectly valid rung; the MODEL is what lacks the lever.
+    """
+
+    def _recorded_settings(self, model_name: str, *, effort: EffortLevel | None) -> ModelSettings:
+        spec = _spec(Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="."))
+        model = _RecordingAnthropicModel(model_name, _tool_call_then_text("uv run pytest", "done"))
+        PydanticAiRunner(model=model, caps=EvalDriveCaps(effort=effort)).run(spec)
+        assert model.recorded, "the model was never asked for a request"
+        settings = model.recorded[0]
+        assert settings is not None
+        return settings
+
+    def test_the_cheap_haiku_tier_is_sent_no_effort(self) -> None:
+        assert "anthropic_effort" not in self._recorded_settings(TIER_MODELS["cheap"], effort="high")
+
+    def test_a_reasoning_tier_still_carries_the_lane_effort(self) -> None:
+        settings = self._recorded_settings(TIER_MODELS["balanced"], effort="high")
+        assert settings.get("anthropic_effort") == "high"
+
+    def test_the_output_ceiling_rides_even_with_the_effort_dropped(self) -> None:
+        settings = self._recorded_settings(TIER_MODELS["cheap"], effort="high")
+        assert settings.get("max_tokens") == PYDANTIC_AI_MAX_TOKENS_DEFAULT
+
+
+class TestEveryScenarioResolvesToAConcreteModelId:
+    """No catalog scenario may resolve to a bare FAMILY alias.
+
+    ``model: haiku`` is what the Claude CLI accepts, and the ``api`` backend forwards it
+    to that CLI which resolves the family itself. The ``anthropic_api`` backend talks to
+    the Messages API directly, which knows no families: it answers ``404 not_found_error:
+    model: haiku`` and the scenario reds having executed nothing. Two catalog scenarios
+    carried such a pin and so had never once run on the backend the baseline lane uses.
+
+    Both now declare ``tier: cheap`` instead. Naming the concrete id would satisfy this
+    assertion and trip the sibling ratchet in ``tests/quality/test_no_hardcoded_model_ids``:
+    an abstract tier is the one spelling that satisfies both, because it resolves through
+    ``TIER_MODELS`` at run time and carries a model bump with it.
+    """
+
+    def test_no_discovered_spec_pins_a_family_alias(self) -> None:
+        aliases = set(family_alias_models())
+        assert aliases, "the family-alias map is empty -- this assertion would be vacuous"
+        offenders = {
+            spec.name: resolve_eval_model(spec) for spec in discover_specs() if resolve_eval_model(spec) in aliases
+        }
+        assert not offenders, (
+            f"these scenarios pin a family alias the Messages API cannot resolve: {offenders}. "
+            "Name the concrete catalog id (TIER_MODELS) or declare an abstract tier instead."
+        )

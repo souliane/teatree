@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 
 from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
-from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS
+from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS, is_known_cli_stub
 from teatree.eval.git_fixture import KNOWN_FIXTURES
 from teatree.eval.matcher_vacuity import is_positive_anchor
 from teatree.eval.models import (
@@ -28,11 +28,14 @@ from teatree.eval.models import (
     PERMITTED_LANES,
     PERMITTED_SURFACES,
     AnyOf,
+    AssistantTextMatcher,
     EvalSpec,
     ExpectItem,
     FinalStateMatcher,
     JudgeSpec,
     Matcher,
+    PlanBeforeToolMatcher,
+    SuccessfulToolCallMatcher,
 )
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
@@ -131,7 +134,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
             path,
             None,
             f"spec {name!r}: single_action requires at least one positive matcher "
-            "(tool_call/any_of/final_state) — a negatives-only probe would vacuously pass on a cap",
+            "(tool_call/any_of/final_state/assistant_text) — a negatives-only probe would vacuously pass on a cap",
         )
     return EvalSpec(
         name=name,
@@ -334,16 +337,17 @@ def _parse_cli_stubs(entry: Mapping[str, Any], spec_name: str, path: Path) -> tu
 
     Mirrors :func:`_parse_available_skills`: absent means "stub nothing" (every
     existing scenario keeps an untouched ``PATH``); present must be a non-empty
-    list of names drawn from :data:`teatree.eval.cli_stub_fixture.KNOWN_CLI_STUBS`
-    — an unknown name (a typo, an unimplemented binary) is a spec error, not a
-    silent no-op, since the sandbox would still error on that command.
+    list of built-in names from :data:`teatree.eval.cli_stub_fixture.KNOWN_CLI_STUBS`
+    or an overlay-local ``cli_stubs/<binary>@<profile>.sh`` beside this YAML. An
+    unknown name (a typo, an unimplemented binary) is a spec error, not a silent
+    no-op, since the sandbox would still error on that command.
     """
     raw = entry.get("cli_stubs")
     if raw is None:
         return ()
     if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s.strip() for s in raw):
         raise EvalSpecError(path, None, f"spec {spec_name!r}: `cli_stubs` must be a non-empty list of CLI-name strings")
-    unknown = [s for s in raw if s not in KNOWN_CLI_STUBS]
+    unknown = [s for s in raw if not is_known_cli_stub(s, source_path=path)]
     if unknown:
         raise EvalSpecError(
             path, None, f"spec {spec_name!r}: unknown cli_stubs {unknown} (known: {sorted(KNOWN_CLI_STUBS)})"
@@ -366,10 +370,14 @@ def _parse_matcher(item: object, spec_name: str, path: Path) -> ExpectItem:
         return _parse_any_of(item_map, spec_name, path)
     if "tool_call" in item_map:
         return _parse_positive(item_map, spec_name, path)
+    if "tool_call_succeeded" in item_map:
+        return _parse_successful(item_map, spec_name, path)
     if "no_tool_call_matching" in item_map:
         return _parse_negative(item_map, spec_name, path)
     if "final_state" in item_map:
         return _parse_final_state(item_map, spec_name, path)
+    if "assistant_text" in item_map:
+        return _parse_assistant_text(item_map, spec_name, path)
     kinds = ", ".join(f"`{kind}`" for kind in MATCHER_KINDS)
     raise EvalSpecError(path, None, f"spec {spec_name!r}: expect entry must have one of {kinds}")
 
@@ -377,6 +385,51 @@ def _parse_matcher(item: object, spec_name: str, path: Path) -> ExpectItem:
 def _parse_final_state(item: Mapping[str, Any], spec_name: str, path: Path) -> FinalStateMatcher:
     operator, value = _parse_op_expr(str(item["final_state"]), spec_name, path)
     return FinalStateMatcher(operator=operator, value=value)
+
+
+def _parse_assistant_text(
+    item: Mapping[str, Any], spec_name: str, path: Path
+) -> AssistantTextMatcher | PlanBeforeToolMatcher:
+    raw = item["assistant_text"]
+    if isinstance(raw, Mapping):
+        return _parse_plan_before_tool(raw, spec_name, path)
+    operator, value = _parse_op_expr(str(raw), spec_name, path)
+    return AssistantTextMatcher(operator=operator, value=value)
+
+
+def _parse_plan_before_tool(raw: Mapping[object, object], spec_name: str, path: Path) -> PlanBeforeToolMatcher:
+    if set(raw) != {"before_first_tool"} or not isinstance(raw.get("before_first_tool"), Mapping):
+        raise EvalSpecError(
+            path,
+            None,
+            f"spec {spec_name!r}: mapping-form `assistant_text` must contain only `before_first_tool`",
+        )
+    config_raw = raw["before_first_tool"]
+    if not isinstance(config_raw, Mapping):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `before_first_tool` must be a mapping")
+    config = {str(key): value for key, value in config_raw.items()}
+    if set(config) != {"governed_tools", "patterns"}:
+        raise EvalSpecError(
+            path,
+            None,
+            f"spec {spec_name!r}: `before_first_tool` requires exactly `governed_tools` and `patterns`",
+        )
+    tools = config["governed_tools"]
+    patterns = config["patterns"]
+    if not isinstance(tools, list) or not tools or not all(isinstance(tool, str) and tool for tool in tools):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `governed_tools` must be a non-empty string list")
+    if (
+        not isinstance(patterns, list)
+        or not patterns
+        or not all(isinstance(pattern, str) and pattern for pattern in patterns)
+    ):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `patterns` must be a non-empty regex string list")
+    try:
+        for pattern in patterns:
+            re.compile(pattern)
+    except re.error as exc:
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: invalid `before_first_tool` regex: {exc}") from exc
+    return PlanBeforeToolMatcher(governed_tools=tuple(tools), patterns=tuple(patterns))
 
 
 def _parse_any_of(item: Mapping[str, Any], spec_name: str, path: Path) -> AnyOf:
@@ -398,6 +451,33 @@ def _parse_positive(item: Mapping[str, Any], spec_name: str, path: Path) -> Matc
     arg_key, op_expr = _single_args_entry(item, spec_name, path)
     operator, value = _parse_op_expr(op_expr, spec_name, path)
     return Matcher(kind="positive", tool=tool, arg_path=arg_key, operator=operator, value=value)
+
+
+def _parse_successful(item: Mapping[str, Any], spec_name: str, path: Path) -> SuccessfulToolCallMatcher:
+    if set(item) != {"tool_call_succeeded", "args.command", "result", "before_first"}:
+        raise EvalSpecError(
+            path,
+            None,
+            f"spec {spec_name!r}: `tool_call_succeeded` requires exactly `args.command`, `result`, and `before_first`",
+        )
+    tool = str(item["tool_call_succeeded"]).strip()
+    if not tool:
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `tool_call_succeeded` needs a tool name")
+    operator, value = _parse_op_expr(str(item["args.command"]), spec_name, path)
+    result_operator, result_value = _parse_op_expr(str(item["result"]), spec_name, path)
+    before_tool, before_arg_path, before_operator, before_value = _parse_order_guard(item, spec_name, path)
+    return SuccessfulToolCallMatcher(
+        tool=tool,
+        arg_path="command",
+        operator=operator,
+        value=value,
+        result_operator=result_operator,
+        result_value=result_value,
+        before_tool=before_tool,
+        before_arg_path=before_arg_path,
+        before_operator=before_operator,
+        before_value=before_value,
+    )
 
 
 def _parse_negative(item: Mapping[str, Any], spec_name: str, path: Path) -> Matcher:

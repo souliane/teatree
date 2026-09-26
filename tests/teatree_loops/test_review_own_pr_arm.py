@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import django.test
 import pytest
 
+from teatree.config import PrReviewBackend
 from teatree.core.management.commands.loops_tick import Command
 from teatree.loops.review.loop import MINI_LOOP as REVIEW_LOOP
 
@@ -67,7 +68,13 @@ class TestOverlayScopedTickKeepsTheOwnPrArm(django.test.TestCase):
         backend = _backend("t3-teatree")
         with patch(_ITER_BACKENDS, return_value=[backend]):
             request = Command()._build_request("t3-teatree")
-        with patch("teatree.loop.scanner_factories._admit_colleague_prs_to_board", return_value=False):
+        with (
+            patch("teatree.loop.scanner_factories._admit_colleague_prs_to_board", return_value=False),
+            patch(
+                "teatree.loop.scanner_factories.resolve_pr_review_backend",
+                return_value=PrReviewBackend.CLAUDE,
+            ),
+        ):
             jobs = REVIEW_LOOP.build_jobs(backends=request.backends, host=request.host)
 
         assert "self_pr_review" in _scanner_names(jobs), _scanner_names(jobs)

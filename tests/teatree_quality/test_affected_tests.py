@@ -97,6 +97,15 @@ class TestDiskMirrorLookup:
 
 
 class TestClassifySelection:
+    def test_eval_scenario_data_is_scoped_to_eval_harness(self) -> None:
+        verdict = classify_selection(_changed(("M", "evals/scenarios/rules.yaml")))
+        assert not verdict.full
+        assert verdict.scoped_reference_mapped == ("evals/scenarios/rules.yaml",)
+        kept = _force_keep(_changed(("M", "evals/scenarios/rules.yaml")))
+        assert "tests/eval_harness" in kept.paths
+        assert "tests/eval_replay" in kept.paths
+        assert "tests/teatree_eval" in kept.paths
+
     def test_scoped_src_change_is_not_full(self) -> None:
         verdict = classify_selection(_changed(("M", "src/teatree/foo/bar.py")))
         assert not verdict.full

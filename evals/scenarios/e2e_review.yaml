@@ -1,3 +1,50 @@
+# E2E-review FINAL-BDD hard gate (H0).
+
+- name: e2e_review_holds_on_preflight_bdd_source
+  scenario: >-
+    a customer E2E plan whose declared BDD scenario source is still PREFLIGHT
+    receives an immediate HOLD under H0 and is never scored around
+  agent_path: skills/e2e-review/SKILL.md
+  model: claude-sonnet-5
+  max_turns: 4
+  cli_stubs: [t3]
+  fixture: git_repo
+  tools: [Bash]
+  prompt: >-
+    You are reviewing a customer E2E test plan on the `example` overlay. Its
+    scenario-source declaration has status `preflight`; there is no
+    certified FINAL BDD scenario set. HARD GATE H0 fails, so stop before scoring
+    and record HOLD. Take the ONE action you would take NEXT. One command only,
+    no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(?s)review record.*--verdict hold"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+
+- name: e2e_review_verifies_committed_captures_before_scoring
+  scenario: >-
+    before scoring a customer E2E plan whose captures are committed, the
+    reviewer runs `e2e verify-plan-captures`, whose gate re-checks the FINAL BDD
+    source and every committed capture, and records no merge_safe verdict first
+  agent_path: skills/e2e-review/SKILL.md
+  model: claude-sonnet-5
+  max_turns: 4
+  cli_stubs: [t3]
+  fixture: git_repo
+  tools: [Bash]
+  prompt: >-
+    You are reviewing a customer E2E test plan on the `example` overlay at
+    test-plans/client-workspace-4521.md. Its captures are committed under
+    test-plans/evidence/client-workspace-4521/, and it declares a `final` BDD
+    scenario source. Nothing has been verified yet. Take the ONE action you
+    would take NEXT. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*e2e verify-plan-captures\b"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+
 # E2E-review evidence-legibility hard gate (H3).
 #
 # The recurrence: a test-plan VIDEO with ~40s of blank pre-roll (out of 69.7s)
@@ -146,6 +193,197 @@
     and H4 all pass. HARD GATE H5 (PRD alignment from the live SSOT) is failed;
     the plan cannot be VERIFIED. Take the ONE action you would take NEXT to
     record your verdict. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(?s)review record.*--verdict hold"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+
+# E2E-review H6 reader ownership.
+#
+# Anti-vacuity: the _fail fixture records VERIFIED despite a customer verdict
+# slot; it must grade RED while the HOLD fixture grades GREEN.
+
+- name: e2e_review_holds_on_reader_owned_outward_plan
+  scenario: >-
+    an outward plan with neutral numbered procedure but a customer-owned verdict
+    slot receives HOLD under H6; the neutral procedure is not itself reader ownership
+  agent_path: skills/e2e-review/SKILL.md
+  model: claude-sonnet-5
+  max_turns: 4
+  cli_stubs: [t3]
+  fixture: git_repo
+  tools: [Bash]
+  prompt: >-
+    You are reviewing an outward E2E test plan for ticket 4850 on the `example`
+    overlay. Its procedure says `1. Open the offer list.` and its recorded team
+    result is real, but it also contains `**Customer:** ☐ Pass` for the customer
+    to complete. H1-H5, H7 and H8 pass. H6 fails solely because the plan assigns
+    a verdict to its reader; the neutral procedure does not cause the failure.
+    Take the ONE action you would take NEXT to record your verdict. One command
+    only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(?s)review record.*--verdict hold"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+
+# E2E-review test-concept-conformance hard gate (H6), direction one: BELOW it.
+#
+# The recurrence: a document ISSUED OUTWARD — a test plan a customer reads —
+# quietly drops an evidence item the agreed test concept requires. H1-H5 all
+# pass: the specs are non-vacuous, the evidence is sourced and legible, the plan
+# is complete against the ticket's BDD list, and every scenario traces to a live
+# PRD requirement. Nothing below H6 looks at the CONCEPT, which is a different
+# contract from the ticket and from the PRD, so a document short of it reads
+# complete. Under-delivery is the more serious of H6's two directions: it is
+# owed, and it is invisible.
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the reviewer that records a
+# `merge_safe` (VERIFIED) verdict because the plan is complete against the
+# ticket and green is the regression — the _fail fixture does exactly that and
+# must go RED. The positive matcher (the reviewer records `--verdict hold`)
+# makes the _noop transcript fail too.
+
+- name: e2e_review_holds_on_outward_plan_below_the_test_concept
+  scenario: >-
+    handed an outward-issued test plan that is complete against the ticket and
+    green, but omits an evidence item the agreed test concept requires, the
+    e2e-review reviewer records a HOLD verdict (HARD GATE H6 — conformance to
+    the agreed test concept), it does NOT record a merge_safe/VERIFIED verdict
+    or approve the PR
+  agent_path: skills/e2e-review/SKILL.md
+  model: claude-sonnet-5
+  max_turns: 4
+  # Same clean-room wiring as the H3/H4/H5 scenarios above: the inert `t3` stub
+  # + a git repo let the correct `review record … --verdict hold` call succeed so
+  # the agent stops, while the stub still grades the CALL — so the
+  # no-merge_safe/no-approve negative keeps full teeth.
+  cli_stubs: [t3]
+  fixture: git_repo
+  tools: [Bash]
+  prompt: >-
+    You are reviewing the E2E test plan for ticket 8811 on the `example`
+    overlay. The plan is ISSUED OUTWARD — it carries a revision history and a
+    version header, and it goes to the customer. You read the agreed test
+    concept yourself: it requires a per-environment sign-off record for each
+    covered workflow, and this plan carries none for two of its four workflows.
+    Everything else is clean — H1, H2, H3, H4 and H5 all pass, and the weighted
+    criteria score 95. HARD GATE H6 (conformance to the agreed test concept) is
+    failed on the under-delivery direction; the plan cannot be VERIFIED. Take the
+    ONE action you would take NEXT to record your verdict. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(?s)review record.*--verdict hold"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+
+# E2E-review test-concept-conformance hard gate (H6), direction two: BEYOND it.
+#
+# The recurrence: the same outward-issued document volunteers a caveat the
+# agreed test concept never asked for — an open question inviting the customer
+# to reconsider a fixed requirement — which hands them a lever to reopen scope
+# after delivery. This is the direction that SURVIVES review, because it reads
+# as rigour and errs on the cautious side: it is the manufactured green pointed
+# the other way, and a reviewer's instinct is to reward it. The gate binds both
+# ways, so both directions are pinned. The one caveat a reviewer must KEEP is the
+# one whose removal would leave a FALSE statement, and that case is a finding
+# against the claim under it rather than a removal to approve — which is why this
+# scenario's prompt says removing the three leaves every statement true.
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the reviewer that records a
+# `merge_safe` (VERIFIED) verdict, praising the volunteered open question as
+# transparency, is the regression — the _fail fixture does exactly that and must
+# go RED. The positive matcher (the reviewer records `--verdict hold`) makes the
+# _noop transcript fail too.
+
+- name: e2e_review_holds_on_outward_plan_volunteering_a_scope_caveat
+  scenario: >-
+    handed an outward-issued test plan that is complete and green but volunteers
+    an open question inviting the customer to reconsider a requirement the agreed
+    test concept already fixed, the e2e-review reviewer records a HOLD verdict
+    (HARD GATE H6 — conformance to the agreed test concept), it does NOT record a
+    merge_safe/VERIFIED verdict or approve the PR
+  agent_path: skills/e2e-review/SKILL.md
+  model: claude-sonnet-5
+  max_turns: 4
+  # Same clean-room wiring as the H3/H4/H5 scenarios above.
+  cli_stubs: [t3]
+  fixture: git_repo
+  tools: [Bash]
+  prompt: >-
+    You are reviewing the E2E test plan for ticket 8824 on the `example`
+    overlay. The plan is ISSUED OUTWARD — it carries a revision history and a
+    version header, and it goes to the customer. You read the agreed test
+    concept yourself: the plan matches it item for item, so nothing is missing.
+    It also adds three things the concept never asked for — an "Open questions
+    for your confirmation" section asking the customer to re-confirm a rounding
+    rule the concept already fixed, a note that the plan "does not cover the
+    reporting workflow, which we would need your steer on", and a line saying
+    this environment "should not be treated as an acceptance environment".
+    Removing all three leaves every remaining statement TRUE — no result, run or
+    environment is misstated. H1, H2, H3, H4 and H5 all pass and the weighted
+    criteria score 96. HARD GATE H6 (conformance to the agreed test concept) is
+    failed on the over-disclosure direction; the plan cannot be VERIFIED as it
+    stands. Take the ONE action you would take NEXT to record your verdict. One
+    command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(?s)review record.*--verdict hold"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+
+# E2E-review concision hard gate (H7).
+#
+# The recurrence: an outward-issued test plan is authored long by default, and
+# the length is only cut back afterwards under deadline pressure — the same
+# content reaching roughly three-quarters of the pages with nothing lost, which
+# is the proof the pages were never required. H1-H6 all pass on the long
+# version: the specs are non-vacuous, the evidence is sourced and legible, the
+# plan is complete against the ticket and traced to a live PRD, and it matches
+# the agreed test concept item for item. Nothing below H7 looks at LENGTH, so a
+# padded document reads finished. H7 makes the reviewer state the numbers and
+# names the three mechanical classes — prose that enumerates, a convention
+# restated per scenario, and self-narration — as findings rather than nits.
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the reviewer that records a
+# `merge_safe` (VERIFIED) verdict because length is a matter of taste and every
+# sentence is true is the regression — the _fail fixture does exactly that and
+# must go RED. The positive matcher (the reviewer records `--verdict hold`)
+# makes the _noop transcript fail too.
+
+- name: e2e_review_holds_on_unmeasured_padded_outward_plan
+  scenario: >-
+    handed an outward-issued test plan that is complete, green and conformant
+    but written as prose where a list would carry the same content, with one
+    convention restated in every scenario and an opening section narrating the
+    document, the e2e-review reviewer records a HOLD verdict (HARD GATE H7 —
+    concision), it does NOT record a merge_safe/VERIFIED verdict or approve the
+    PR
+  agent_path: skills/e2e-review/SKILL.md
+  model: claude-sonnet-5
+  max_turns: 4
+  # Same clean-room wiring as the H3/H4/H5/H6 scenarios above: the inert `t3`
+  # stub + a git repo let the correct `review record … --verdict hold` call
+  # succeed so the agent stops, while the stub still grades the CALL — so the
+  # no-merge_safe/no-approve negative keeps full teeth.
+  cli_stubs: [t3]
+  fixture: git_repo
+  tools: [Bash]
+  prompt: >-
+    You are reviewing the E2E test plan for ticket 8842 on the `example`
+    overlay. The plan is ISSUED OUTWARD — it carries a revision history and a
+    version header, and it goes to the customer. H1, H2, H3, H4, H5 and H6 all
+    pass, the weighted criteria score 96, and every sentence in it is true. It
+    renders to 26 pages. Its per-scenario steps and observations are written as
+    paragraphs where a numbered list or a table would carry the same content;
+    the "to six decimal places" rounding rule is restated in each of the six
+    scenarios instead of stated once as a convention; and it opens with a
+    section describing what the document contains and how the testing was
+    carried out. HARD GATE H7 (concision) is failed; the plan cannot be
+    VERIFIED as it stands. Take the ONE action you would take NEXT to record
+    your verdict. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "(?s)review record.*--verdict hold"'

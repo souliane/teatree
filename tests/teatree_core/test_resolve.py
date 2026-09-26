@@ -14,6 +14,7 @@ from teatree.core.intake.resolve import (
     WorktreePathConflictError,
     _auto_register_from_git,
     _find_env_cache,
+    _get_or_refresh_worktree,
     _parse_env_file,
     _refresh_reused_row,
     _ticket_by_number,
@@ -28,6 +29,7 @@ from teatree.core.intake.resolve import (
 )
 from teatree.core.invocation_cwd import INVOCATION_CWD_ENV
 from teatree.core.models import Ticket, Worktree
+from teatree.core.worktree.ticket_workspace import TicketWorkspaceDivergenceError
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -1109,6 +1111,67 @@ class TestRefreshReusedRowRefusesPathSteal(TestCase):
         assert row.branch == "1-new"
         assert row.extra["worktree_path"] == str(new_dir)
         assert row.extra["keep"] == "me"
+
+
+class TestCwdBasedRegistrationEnforcesSiblingPlacement(TestCase):
+    """#111 finding 3: registration/refresh via CWD never checked sibling placement.
+
+    ``provision.py`` enforces "same ticket -> same workspace" at the seam that
+    registers MOST rows; this seam — ``worktree provision --ticket ... --path
+    ...`` and any manual ``git worktree add`` a caller then resolves from CWD —
+    is the OTHER one that creates rows, and it checked path OWNERSHIP only.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _established_workspace(self, ticket: Ticket) -> Path:
+        workspace = self._tmp_path / "t3-workspaces" / "111-x"
+        backend = workspace / "backend"
+        backend.mkdir(parents=True)
+        Worktree.objects.create(
+            ticket=ticket, repo_path="backend", branch="111-x", extra={"worktree_path": str(backend)}
+        )
+        return workspace
+
+    def test_registering_a_second_repo_from_a_foreign_root_is_refused(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/111")
+        self._established_workspace(ticket)
+        elsewhere = self._tmp_path / "elsewhere" / "frontend"
+        elsewhere.mkdir(parents=True)
+
+        with pytest.raises(TicketWorkspaceDivergenceError):
+            _get_or_refresh_worktree(ticket, "frontend", "111-x", elsewhere)
+
+        assert not Worktree.objects.filter(ticket=ticket, repo_path="frontend").exists()
+
+    def test_registering_a_sibling_in_the_established_workspace_succeeds(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/111")
+        workspace = self._established_workspace(ticket)
+        frontend = workspace / "frontend"
+        frontend.mkdir(parents=True)
+
+        wt = _get_or_refresh_worktree(ticket, "frontend", "111-x", frontend)
+
+        assert wt.extra["worktree_path"] == str(frontend)
+
+    def test_refreshing_a_reused_row_onto_a_foreign_root_is_refused(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/111")
+        workspace = self._established_workspace(ticket)
+        frontend = workspace / "frontend"
+        frontend.mkdir(parents=True)
+        row = Worktree.objects.create(
+            ticket=ticket, repo_path="frontend", branch="111-x", extra={"worktree_path": str(frontend)}
+        )
+        elsewhere = self._tmp_path / "elsewhere" / "frontend"
+        elsewhere.mkdir(parents=True)
+
+        with pytest.raises(TicketWorkspaceDivergenceError):
+            _refresh_reused_row(row, "111-x", elsewhere)
+
+        row.refresh_from_db()
+        assert row.extra["worktree_path"] == str(frontend), "must not repoint onto the foreign root"
 
 
 class TestAutoRegisterFromAWorktreeSubdirectory(TestCase):

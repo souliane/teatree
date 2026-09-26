@@ -163,6 +163,25 @@ class Command(TyperCommand):
         self.stdout.write(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
 
     @command()
+    def seed_loops(self) -> None:
+        """Seed the shipped loops, prompts, modes and schedules into the control DB.
+
+        The reachable route to :mod:`teatree.core.management.commands.seed_loops`.
+        ``t3 setup`` runs that seed as its LAST step, so every earlier step of setup
+        is a way to lose it — and a box that loses it holds only the ``offline`` mode
+        its initial migration creates: holiday mode, every loop off, silently. A
+        container whose only teatree entry point is the ``t3`` console script cannot
+        reach the ``python -m teatree seed_loops`` recovery ``t3 doctor`` prints, so
+        this verb is what an operator (and a deploy entrypoint) can actually run.
+
+        Idempotent — ``get_or_create`` by name, so a re-run creates nothing new and
+        never clobbers an operator-edited row. A failing seed is left to propagate:
+        an exit code a deploy can refuse on beats a swallowed error that lets it
+        report a converged box which then sits in holiday mode.
+        """
+        call_command("seed_loops", stdout=self.stdout, stderr=self.stderr)
+
+    @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def refresh(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public `db refresh` surface (path/dslr/dump/force/fresh-dump/user-authorized); the arg list IS the CLI contract, not an internal design smell (same rationale as ticket.py:clear).
         self,

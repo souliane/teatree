@@ -16,7 +16,14 @@ import webbrowser
 
 import typer
 
-from teatree.core.peer_forward import DEFAULT_WAIT_SECONDS, NEAR_BIND, ForwardAction, ForwardPlan, run_plan, write_plan
+from teatree.core.host_hop.peer_forward import (
+    DEFAULT_WAIT_SECONDS,
+    NEAR_BIND,
+    ForwardAction,
+    ForwardPlan,
+    run_plan,
+    write_plan,
+)
 
 peer_app = typer.Typer(
     name="peer",
@@ -34,7 +41,7 @@ def _peers(name: str | None, action: ForwardAction = ForwardAction.UP) -> list[F
     forward needs a tunnel. Reporting on one, or closing it, reads the port and nothing else.
     """
     from teatree.config import load_peer_instances  # noqa: PLC0415 — deferred: keeps CLI startup light
-    from teatree.core.peer_forward import forward_plan  # noqa: PLC0415 — deferred with its config sibling
+    from teatree.core.host_hop.peer_forward import forward_plan  # noqa: PLC0415 — deferred with its config sibling
 
     peers = load_peer_instances()
     if name is not None:

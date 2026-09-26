@@ -32,11 +32,6 @@ def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Monk
 
 
 @dataclass
-class _Post:
-    mr_url: str = _MR_URL
-
-
-@dataclass
 class _Host:
     author: str = ""
     user: str = _USER
@@ -54,27 +49,27 @@ class _Host:
 
 class TestIsSelfAuthoredTriState:
     def test_resolved_self_returns_true(self) -> None:
-        assert _is_self_authored(_Post(), _Host(author=_USER), (_USER,)) is True
+        assert _is_self_authored(_MR_URL, _Host(author=_USER), (_USER,)) is True
 
     def test_resolved_colleague_returns_false(self) -> None:
-        assert _is_self_authored(_Post(), _Host(author=_COLLEAGUE), (_USER,)) is False
+        assert _is_self_authored(_MR_URL, _Host(author=_COLLEAGUE), (_USER,)) is False
 
     def test_empty_author_is_unresolved_none(self) -> None:
         # Previously this returned True (fail-closed → permanent close). F5.2:
         # an empty author is a lookup failure, not a verdict → None (skip/retry).
-        assert _is_self_authored(_Post(), _Host(author=""), (_USER,)) is None
+        assert _is_self_authored(_MR_URL, _Host(author=""), (_USER,)) is None
 
     def test_raised_lookup_is_unresolved_none(self) -> None:
         host = _Host(author="", raise_on_author=RuntimeError("github 500"))
-        assert _is_self_authored(_Post(), host, (_USER,)) is None
+        assert _is_self_authored(_MR_URL, host, (_USER,)) is None
 
-    def test_no_self_identity_to_protect_returns_false(self) -> None:
-        # No aliases and current_user resolves empty → nothing to protect → the
-        # colleague path proceeds (False), never a spurious skip.
-        assert _is_self_authored(_Post(), _Host(author="", user=""), ()) is False
+    def test_undeclared_current_credential_returns_false(self) -> None:
+        host = _Host(author=_USER, user=_USER)
 
-    def test_no_host_returns_false(self) -> None:
-        assert _is_self_authored(_Post(), None, (_USER,)) is False
+        assert _is_self_authored(_MR_URL, host, ()) is False
+
+    def test_no_host_returns_none(self) -> None:
+        assert _is_self_authored(_MR_URL, None, (_USER,)) is None
 
 
 @dataclass

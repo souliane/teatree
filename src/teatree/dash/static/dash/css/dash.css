@@ -110,6 +110,18 @@ select:focus-visible,
   color: var(--ink);
   border-bottom-color: var(--brand);
 }
+.nav-alert {
+  display: inline-flex;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  align-items: center;
+  justify-content: center;
+  margin-left: var(--sp-1);
+  border-radius: 999px;
+  background: var(--danger);
+  color: var(--bg);
+  font: 600 var(--text-xs) var(--font-mono);
+}
 .dash-actions {
   margin-left: auto;
   display: flex;
@@ -524,6 +536,33 @@ a.chip:hover {
   color: var(--ink-muted);
   margin: var(--sp-3) 0 var(--sp-2);
 }
+.skill-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+.skill-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.skill-summary-card strong {
+  font-size: var(--text-lg);
+}
+.skill-summary-card span {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.skill-summary-card.danger,
+.skill-row.danger > td {
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  border-color: var(--danger);
+}
 
 /* Settings: sections on the LEFT, the selected section's rows on the RIGHT. The nav
  * column is fixed so the detail pane owns the remaining width and the table never
@@ -592,7 +631,10 @@ signal — the icon and the words inside the cell say the verdict on their own. 
 .settings-grid .cell-at-default { background: color-mix(in srgb, var(--ok) 6%, transparent); }
 .settings-grid .cell-drifted { background: color-mix(in srgb, var(--warn) 10%, transparent); }
 .settings-grid .setting-name { white-space: nowrap; }
-.settings-grid .setting-help-anchor { border-bottom: 1px dotted currentcolor; cursor: help; }
+/* Every surface that hangs an explanation off a word says so the same way — a dotted rule and a
+help cursor. Scoped to the settings grid, the compare page's anchors carried the title= and no
+sign that there was anything to hover. */
+.setting-help-anchor { border-bottom: 1px dotted currentcolor; cursor: help; }
 
 /* Health verdict as the page lead. */
 .verdict-lead {
@@ -672,6 +714,160 @@ table.dash th.num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+/* --- Compare instances ---
+ *
+ * The page's one job is reading N columns against each other, and its own content took them
+ * apart: a `loops` value is a 400-character single-token JSON object, that token has no break
+ * opportunity, so it set the MIN-CONTENT width of its column and the table measured 12956px
+ * inside a 1408px band — the third box's column started at x=8592, off-screen on every row.
+ * Measured in a headless browser at 1440px, not inferred. A fixed layout plus break
+ * opportunities collapses the table to the band; the clamps stop one value owning the viewport
+ * in exchange. */
+.compare-table th,
+.compare-table td {
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+/* Only the COMPARISON tables are fixed-layout, so no cell can ever set a column again. The
+instances table's four columns want very different widths and hold nothing that can run away, so
+it keeps the auto algorithm. */
+.compare-grid {
+  table-layout: fixed;
+}
+/* The named column takes what it needs and every instance column splits what is left —
+equally, which is what makes N readings comparable at a glance. */
+.compare-grid th.col-row { width: 22rem; }
+.compare-grid th.col-signal { width: 16rem; }
+/* What SHIPS reads as the reference the instance columns are measured against, so it sits
+first and is visibly quieter than the live readings beside it. */
+.compare-grid th.col-shipped { width: 12rem; }
+.compare-table .compare-cell.shipped { color: var(--ink-muted); }
+
+/* One group per kind of difference: the conflicts open, the rest wait behind their own count so
+the page opens on signal instead of on ninety rows of overrides. */
+.compare-group {
+  margin-block: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.compare-group > summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding-block: var(--sp-2);
+  cursor: pointer;
+  font-weight: 600;
+}
+.compare-group > summary .group-kind {
+  text-transform: lowercase;
+}
+.compare-group > summary .group-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 0 0.4em;
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--ink-muted);
+}
+.compare-group > summary .muted {
+  font-weight: 400;
+  font-size: var(--text-xs);
+}
+
+/* The label reads as a path: the scope is what a row shares with its neighbours, the key is
+what makes it this row, and the write state is a footnote rather than a column of microtype. */
+.compare-table .setting-name {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+  white-space: normal;
+}
+.compare-table .row-scope {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+.compare-table .row-key {
+  font-weight: 600;
+}
+.compare-table .row-note {
+  color: var(--ink-muted);
+  font-size: var(--text-xs);
+}
+/* Rows arrive grouped by scope. A rule would be invisible — every row already carries one — so a
+group opens with AIR, which turns one long list into blocks the eye can count. */
+.compare-table tbody tr.group-start > td {
+  padding-top: var(--sp-4);
+}
+
+/* A value cell holds a reading or a control, and never more height than a row can spare. */
+.compare-table .compare-cell {
+  max-height: 8em;
+  overflow-y: auto;
+}
+.compare-table .compare-cell input[type="text"],
+.compare-table .compare-cell select {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+/* A long value is ONE line until it is asked for, and wraps freely once it is: a 400-character
+object rendered whole is the row, and rendered whole on eighty rows it is the page. */
+.compare-table .cell-fold > summary {
+  cursor: pointer;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.compare-table .cell-fold .cell-full {
+  margin-top: var(--sp-1);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+/* A withheld value reads as the verdict its digest stands for. Two sha256 strings side by side
+carry no human signal: the reader cannot tell which is which and cannot act on either, while the
+one fact the digests do establish — same secret or not — is what the hex buries. */
+.compare-table .cell-opaque {
+  font-style: italic;
+  text-transform: uppercase;
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+}
+/* Silence is not a value; it reads as absence rather than as a quieter reading. */
+.compare-table .cell-none {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+.compare-table .cell-differs {
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.compare-table .cell-same {
+  background: color-mix(in srgb, var(--ok) 6%, transparent);
+}
+/* A write nobody watched land is not a change anyone can rely on, so the verdict sits in the
+cell that produced it. */
+.compare-table .cell-status {
+  display: block;
+  font-size: var(--text-xs);
+}
+.compare-table .cell-status[data-state="saved"] { color: var(--ok); }
+.compare-table .cell-status[data-state="refused"] { color: var(--danger); }
+
+/* Severity carries the row's colour, so the BLOCKING signals the verdict names are the only red
+rows in the comparability table and a warn row no longer wears the same alarm. */
+.compare-table tr.sev-blocking {
+  color: var(--danger);
+}
+.compare-table tr.sev-warn {
+  color: var(--warn);
+}
+.compare-table .sev-badge {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+
 .empty-row td {
   color: var(--ink-muted);
 }

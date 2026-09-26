@@ -1,5 +1,6 @@
 """The Anthropic exhaustion classifier sorts each REAL signal into its distinct cause."""
 
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
@@ -9,13 +10,122 @@ from teatree.llm.anthropic_limits import (
     ALL_TOKENS_EXHAUSTED_SIGNATURE,
     REFUSAL_RESET_CEILING,
     REFUSAL_RESET_FLOOR,
+    EgressBlockedError,
     LimitCause,
     LimitMatch,
     believable_refusal_reset,
     classify_limit,
     classify_rate_limit_type,
+    parse_stated_reset,
     recoverable_exhaustion_cause,
+    window_horizon,
 )
+
+_CYCLE_RESET = datetime(2026, 10, 1, tzinfo=UTC)
+
+
+def _orca_body(message: str, *, code: str = "access_denied") -> str:
+    """How ``str(ModelHTTPError)`` renders an OpenAI-compatible router's refusal."""
+    return f"status_code: 403, model_name: m, body: {{'error': {{'message': '{message}', 'code': '{code}'}}}}"
+
+
+class TestProviderBudgetClassification:
+    @pytest.mark.parametrize(
+        ("text", "reset"),
+        [
+            (_orca_body("token cycle spend limit reached, resets at 2026-10-01T00:00:00Z"), _CYCLE_RESET),
+            (_orca_body("token quota is not enough", code="pre_consume_token_quota_failed"), None),
+            (_orca_body("pre_consume_token_quota_failed"), None),
+            (_orca_body("insufficient_user_quota"), None),
+            (_orca_body("monthly budget reached for this member"), None),
+        ],
+    )
+    def test_each_router_spend_stop_is_a_provider_budget(self, text: str, reset: datetime | None) -> None:
+        match = classify_limit(text)
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_BUDGET
+        assert match.stated_reset == reset
+
+    def test_the_same_body_without_its_spend_phrase_is_no_limit(self) -> None:
+        assert classify_limit(_orca_body("access denied, resets at 2026-10-01T00:00:00Z")) is None
+
+    def test_a_subscription_limit_never_carries_a_stated_reset(self) -> None:
+        match = classify_limit("usage limit reached, resets at 2026-10-01T00:00:00Z")
+        assert match is not None
+        assert match.cause is LimitCause.SUBSCRIPTION_SESSION
+        assert match.stated_reset is None
+
+    def test_a_budget_stop_is_re_probed_after_six_hours_when_no_reset_is_stated(self) -> None:
+        assert window_horizon(LimitCause.PROVIDER_BUDGET) == timedelta(hours=6)
+
+    def test_the_reason_names_the_budget_and_never_the_anthropic_console(self) -> None:
+        match = classify_limit(_orca_body("insufficient_user_quota"))
+        assert match is not None
+        reason = match.as_reason()
+        assert reason.startswith("provider_budget: insufficient_user_quota — ")
+        assert "console.anthropic.com" not in reason
+        assert "subscription" not in reason.casefold()
+
+    def test_a_budget_stop_is_not_auto_requeued_as_a_window_recovery(self) -> None:
+        error = LimitMatch(phrase="insufficient_user_quota", cause=LimitCause.PROVIDER_BUDGET).as_reason()
+        assert recoverable_exhaustion_cause(error) is None
+
+
+class TestLeakBlockedClassification:
+    """A content block — the router's guardrail or teatree's own egress scanner — is terminal, never a window."""
+
+    _GUARDRAIL_BODY = (
+        "status_code: 400, model_name: m, body: {'error': {'code': 'guardrail_blocked', "
+        "'message': 'blocked by guardrail teatree-egress (rule secrets)', 'type': 'invalid_request_error'}}"
+    )
+
+    def test_a_router_guardrail_block_is_a_leak_block(self) -> None:
+        match = classify_limit(self._GUARDRAIL_BODY)
+        assert match is not None
+        assert match.cause is LimitCause.LEAK_BLOCKED
+
+    def test_an_egress_block_carries_its_own_marker(self) -> None:
+        match = classify_limit(str(EgressBlockedError("secret-shaped token in the request body")))
+        assert match is not None
+        assert match.cause is LimitCause.LEAK_BLOCKED
+
+    def test_a_leak_block_outranks_any_other_phrase_in_the_same_body(self) -> None:
+        match = classify_limit(self._GUARDRAIL_BODY + " rate limit, monthly budget reached")
+        assert match is not None
+        assert match.cause is LimitCause.LEAK_BLOCKED
+
+    def test_a_leak_block_has_no_window_and_is_never_auto_requeued(self) -> None:
+        assert window_horizon(LimitCause.LEAK_BLOCKED) is None
+        reason = LimitMatch(phrase="guardrail_blocked", cause=LimitCause.LEAK_BLOCKED).as_reason()
+        assert reason.startswith("leak_blocked: guardrail_blocked — ")
+        assert recoverable_exhaustion_cause(reason) is None
+
+    def test_the_same_400_without_the_block_code_is_no_limit(self) -> None:
+        assert classify_limit(self._GUARDRAIL_BODY.replace("guardrail_blocked", "invalid_request")) is None
+
+
+class TestParseStatedReset:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("token cycle spend limit reached, resets at 2026-10-01T00:00:00Z", _CYCLE_RESET),
+            ("resets at 2026-10-01T02:00:00+02:00", _CYCLE_RESET),
+            ("resets at 2026-10-01 00:00:00 UTC", _CYCLE_RESET),
+            ("Resets At 2026-10-01T00:00:00.000Z.", _CYCLE_RESET),
+        ],
+    )
+    def test_an_iso_reset_is_read_as_an_aware_utc_instant(self, text: str, expected: datetime) -> None:
+        stated = parse_stated_reset(text)
+        assert stated == expected
+        assert stated is not None
+        assert stated.tzinfo is not None
+
+    @pytest.mark.parametrize(
+        "text",
+        ["token cycle spend limit reached", "resets at midnight", "resets at 2026-13-45T00:00:00Z", ""],
+    )
+    def test_no_parseable_reset_is_none(self, text: str) -> None:
+        assert parse_stated_reset(text) is None
 
 
 class TestClassifyLimit:

@@ -84,6 +84,8 @@ def import_candidates(doc: dict[str, Any]) -> list[tuple[str, str, ConfigValue]]
     if overlays_registry:
         candidates.append((GLOBAL_SCOPE, OVERLAYS_TABLE, overlays_registry))
     for key in TABLE_REGISTRY_KEYS:
+        # Annotated as the stored type: `dict` is invariant, so the concrete table type this
+        # comprehension builds is not itself a `ConfigValue`.
         registry: ConfigValue = {
             name: dict(table) for name, table in doc.get(key, {}).items() if isinstance(table, dict)
         }

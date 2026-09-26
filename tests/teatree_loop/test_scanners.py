@@ -275,7 +275,7 @@ class TestReviewerPrsScanner(TestCase):
             review_requested_prs=[{"web_url": "https://gitlab/x/-/merge_requests/3", "sha": "newer"}],
         )
         scanner = ReviewerPrsScanner(host=host)
-        _mark_reviewed_helper(url="https://gitlab/x/-/merge_requests/3", sha="older")
+        _mark_reviewed_helper(url="https://gitlab/x/-/merge_requests/3", sha="older", state=ReviewState.APPROVED.value)
         signals = scanner.scan()
         assert [s.kind for s in signals] == ["reviewer_pr.new_sha"]
 
@@ -286,7 +286,7 @@ class TestReviewerPrsScanner(TestCase):
             review_state_by_url={"https://gitlab/x/-/merge_requests/3": ReviewState.APPROVED},
         )
         scanner = ReviewerPrsScanner(host=host)
-        _mark_reviewed_helper(url="https://gitlab/x/-/merge_requests/3", sha="same")
+        _mark_reviewed_helper(url="https://gitlab/x/-/merge_requests/3", sha="same", state=ReviewState.APPROVED.value)
         assert scanner.scan() == []
 
     def test_no_reviewer_returns_no_signals(self) -> None:
@@ -400,10 +400,15 @@ class TestReviewerPrsScanner(TestCase):
         from teatree.loop.scanners.reviewer_prs import mark_reviewed  # noqa: PLC0415
 
         url = "https://gitlab/x/-/merge_requests/42"
-        mark_reviewed(url=url, sha="abc")
+        mark_reviewed(url=url, sha="abc", state=ReviewState.APPROVED.value)
         ticket = Ticket.objects.get(role=Ticket.Role.REVIEWER, issue_url=url)
         assert ticket.extra["reviewed_sha"] == "abc"
         assert ticket.extra["last_review_state"] == ReviewState.APPROVED.value
+
+    def test_mark_reviewed_refuses_to_invent_a_forge_state(self) -> None:
+        """A blank state used to become APPROVED — an observation nobody made."""
+        with pytest.raises(ValueError, match="OBSERVED forge state"):
+            _mark_reviewed_helper(url="https://gitlab/x/-/merge_requests/43", sha="abc")
 
     def test_orphaned_pending_task_for_merged_mr_emits_orphaned_signal(self) -> None:
         """A PENDING reviewing task whose MR was merged externally is reaped (#998).

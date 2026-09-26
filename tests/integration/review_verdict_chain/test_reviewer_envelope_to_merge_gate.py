@@ -23,8 +23,11 @@ import pytest
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.agents.prompt import build_system_context
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
+from teatree.core.gates.rubric_gate import RubricNotSatisfiedError, check_rubric_satisfied
 from teatree.core.modelkit.forge_readability import LiveHeadRead
-from teatree.core.models import AutoReviewDispatch, ReviewVerdict, Task
+from teatree.core.models import AutoReviewDispatch, PullRequest, ReviewVerdict, Task, Ticket
+from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.types import AdequacySection, PlanAdequacy
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import has_independent_cold_review
@@ -262,3 +265,87 @@ class TestReviewingBriefTeachesTheEnvelopeVocabulary:
         verdict_schema = properties["review_verdict"]["properties"]["verdict"]
         assert verdict_schema["enum"] == ["merge_safe", "hold"]
         assert {choice.value for choice in ReviewVerdict.Verdict} == set(verdict_schema["enum"])
+
+
+_AC = ["the reviewer's returned grades reach the rubric", "an ungraded criterion blocks the merge"]
+_CITATION = "integration: tests/integration/review_verdict_chain/test_reviewer_envelope_to_merge_gate.py"
+
+
+def _delivering_ticket() -> Ticket:
+    """The ticket the PR delivers, with a plan whose acceptance criteria ARE the rubric.
+
+    The reviewing task's own ticket is a reviewer-role row keyed by the PR url, so this
+    is a different row entirely — the one `core.merge.ticket_gates` resolves from the PR
+    identity and grades at merge time.
+    """
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+    PullRequest.objects.create(ticket=ticket, overlay="t3-teatree", url=_PR_URL, repo=_SLUG, iid=str(_PR_ID))
+    PlanArtifact.record(
+        ticket=ticket,
+        plan_text="the reviewing recorder produces the rubric grades",
+        recorded_by="planner",
+        base_sha="d" * 40,
+        adequacy=PlanAdequacy(
+            design=AdequacySection(content="grade from the returned envelope"),
+            integration_seams=AdequacySection(content=["src/teatree/agents/review_envelope_recorder.py"]),
+            edge_cases=AdequacySection(content=["a PR no ticket owns"]),
+            test_strategy=AdequacySection(content="this chain"),
+            acceptance_criteria=AdequacySection(content=_AC),
+        ),
+    )
+    return ticket
+
+
+def _graded_envelope(grades: list[dict[str, object]]) -> dict[str, object]:
+    envelope = _returned_envelope()
+    verdict = envelope["review_verdict"]
+    assert isinstance(verdict, dict)
+    verdict["rubric_grades"] = grades
+    return envelope
+
+
+class TestTheReviewersGradesAreWhatClearTheDoneGate:
+    """The producer half of the chain: no automatic grader means no ticketed PR merges.
+
+    The done-gate is unconditional, so a factory PR whose rubric nobody graded is
+    refused at merge forever. These two pin that the reviewing envelope is what closes
+    that loop — and that a HALF-graded one closes nothing.
+    """
+
+    def test_the_graded_envelope_satisfies_the_rubric_merge_gate(self, sweep: _FakePrApi) -> None:
+        ticket = _delivering_ticket()
+        task = _reviewing_task()
+
+        record_result_envelope(
+            task,
+            _graded_envelope([{"ordinal": i, "status": "pass", "rationale": _CITATION} for i in range(len(_AC))]),
+            phase="reviewing",
+        )
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert ReviewVerdict.objects.get(slug=_SLUG, pr_id=_PR_ID, reviewed_sha=_HEAD).is_merge_safe()
+        # The gate the whole chain exists to satisfy. It is asserted DIRECTLY: this
+        # file's `_FakePrApi.merge_pr_squash_bound` stands in for the backend call that
+        # reaches `execute_bound_merge`, so the sweep below never crosses the merge
+        # chokepoint and cannot see the rubric gate at all. The sweep line pins only
+        # that a graded envelope still drives the pre-existing verdict -> merge chain.
+        check_rubric_satisfied(ticket, _HEAD, transition="merge")
+        assert _run_sweep(sweep) == "pr_sweep.merged"
+        assert sweep.merge_calls == [(_SLUG, _PR_ID, _HEAD)]
+
+    def test_an_ungraded_verdict_records_nothing_and_the_merge_stays_refused(self, sweep: _FakePrApi) -> None:
+        ticket = _delivering_ticket()
+        task = _reviewing_task()
+
+        attempt = record_result_envelope(task, _returned_envelope(), phase="reviewing")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert "#0" in attempt.error
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        with pytest.raises(RubricNotSatisfiedError):
+            check_rubric_satisfied(ticket, _HEAD, transition="merge")
+        # Nothing was recorded, so the head is still armed for a re-review.
+        assert _run_sweep(sweep) == "pr_sweep.flag_no_review"
+        assert sweep.merge_calls == []

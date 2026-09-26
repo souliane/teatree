@@ -10,6 +10,10 @@ from teatree.agents.phase_blocks import (
     intake_survey_json,
     phase_specific_lines,
 )
+from teatree.agents.review_envelope_recorder import _RUBRIC_GRADED_PHASES
+from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
+from teatree.core.modelkit.phases import CANONICAL_PHASES
+from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models import LandscapeArtifact, Session, Task, Ticket
 from teatree.core.models.reviewer_identity import REVIEWER_IDENTITY_INSTRUCTION, assigned_reviewer_identity
 from teatree.core.models.types import FIX_RECORD_FIELDS
@@ -32,26 +36,60 @@ class TestPhaseSpecificLinesDispatch(TestCase):
         assert "PHASE: shipping — auto-review gate" in lines
 
 
-class TestTestingPhaseBranchCurrency(TestCase):
-    """#2663: a testing dispatch carries the branch-currency verdict, and only it does."""
+class TestTheReviewerIsToldToGradeTheRubric(TestCase):
+    """Nothing else grades the rubric, so an unbriefed reviewer leaves every merge refused.
 
-    _HEADER = "PHASE: testing — branch-currency preflight"
+    The brief teaches the ENVELOPE now, not the shell command. Prose that must be
+    remembered across a long review is the failure mode the envelope path replaces:
+    the reviewer returns `rubric_grades` beside its verdict and the orchestrator
+    stamps them, so grading cannot be forgotten separately from verdicting.
+    """
 
-    def test_testing_carries_the_branch_currency_preflight(self) -> None:
-        assert self._HEADER in phase_specific_lines(_task("testing"), [])
+    def _reviewing_brief(self) -> str:
+        return "\n".join(phase_specific_lines(_task("reviewing"), []))
 
-    def test_the_test_alias_resolves_to_the_same_block(self) -> None:
-        assert self._HEADER in phase_specific_lines(_task("test"), [])
+    def test_the_reviewing_brief_asks_for_the_grades_in_the_envelope(self) -> None:
+        brief = self._reviewing_brief()
+        assert "rubric_grades" in brief
+        assert "ordinal" in brief
+        assert "rationale" in brief
 
-    def test_a_worktreeless_ticket_is_loud_rather_than_silently_empty(self) -> None:
-        brief = "\n".join(phase_specific_lines(_task("testing"), []))
+    def test_the_reviewing_brief_requires_every_criterion_graded(self) -> None:
+        brief = self._reviewing_brief()
+        assert "EVERY criterion" in brief
+        assert "records nothing" in brief
 
-        assert "UNVERIFIED" in brief
-        assert "no ticket worktree materialised at dispatch" in brief
+    def test_the_reviewing_brief_says_a_pass_cites_a_test_and_a_fail_does_not(self) -> None:
+        brief = self._reviewing_brief()
+        assert "A PASS cites" in brief
+        assert "a FAIL needs none" in brief
 
-    def test_other_phases_are_unchanged(self) -> None:
-        for phase in ("coding", "reviewing", "shipping", "planning"):
-            assert self._HEADER not in "\n".join(phase_specific_lines(_task(phase), []))
+    def test_the_reviewing_brief_says_a_recorded_fail_is_a_finding_no_bypass_overrides(self) -> None:
+        assert "no bypass overrides" in self._reviewing_brief()
+
+    def test_the_reviewing_brief_sends_the_operator_seam_to_the_operator(self) -> None:
+        # The shell command still exists and the phase still carries the shell, so a
+        # reviewer that runs it grades OUTSIDE the atomic the recorder holds.
+        brief = self._reviewing_brief()
+        assert "do NOT run" in brief
+        assert "ticket rubric-grade" in brief
+
+    def test_the_reviewing_brief_keeps_the_findings_rule(self) -> None:
+        assert ENVELOPE_FINDINGS_RULE in phase_specific_lines(_task("reviewing"), [])
+
+    def test_a_non_reviewing_brief_does_not_carry_it(self) -> None:
+        assert "rubric_grades" not in "\n".join(phase_specific_lines(_task("coding"), []))
+
+    def test_every_phase_the_recorder_bills_for_coverage_is_shown_the_checklist(self) -> None:
+        # The recorder refuses a verdict leaving a criterion ungraded, so a phase it bills
+        # must be one whose brief names the criteria. Adding a phase to the recorder's set
+        # without briefing it turns this red.
+        for phase in _RUBRIC_GRADED_PHASES:
+            assert "rubric_grades" in "\n".join(phase_specific_lines(_task(phase), [])), phase
+
+    def test_e2e_reviewing_is_billed_for_nothing_because_it_is_shown_nothing(self) -> None:
+        assert "rubric_grades" not in "\n".join(phase_specific_lines(_task("e2e_reviewing"), []))
+        assert "e2e_reviewing" not in _RUBRIC_GRADED_PHASES
 
 
 class TestFixRecordDirective(TestCase):
@@ -75,6 +113,28 @@ class TestFixRecordDirective(TestCase):
 
     def test_a_non_fixing_phase_carries_no_directive(self) -> None:
         assert "THIS IS A FIX TICKET" not in self._brief("reviewing", Ticket.Kind.FIX)
+
+
+class TestTestingPhaseBranchCurrency(TestCase):
+    """#2663: a testing dispatch carries the branch-currency verdict, and only it does."""
+
+    _HEADER = "PHASE: testing — branch-currency preflight"
+
+    def test_testing_carries_the_branch_currency_preflight(self) -> None:
+        assert self._HEADER in phase_specific_lines(_task("testing"), [])
+
+    def test_the_test_alias_resolves_to_the_same_block(self) -> None:
+        assert self._HEADER in phase_specific_lines(_task("test"), [])
+
+    def test_a_worktreeless_ticket_is_loud_rather_than_silently_empty(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("testing"), []))
+
+        assert "UNVERIFIED" in brief
+        assert "no ticket worktree materialised at dispatch" in brief
+
+    def test_other_phases_are_unchanged(self) -> None:
+        for phase in ("coding", "reviewing", "shipping", "planning"):
+            assert self._HEADER not in "\n".join(phase_specific_lines(_task(phase), []))
 
 
 class TestIntakeSurveyJson(TestCase):
@@ -175,6 +235,36 @@ class TestBuildReviewerDispatchPrompt(TestCase):
         with patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=["code-review"]):
             out = build_reviewer_dispatch_prompt(review_instruction="REVIEW-BODY-MARKER")
         assert out.index("/code-review") < out.index("REVIEW-BODY-MARKER")
+
+
+class TestEnvelopeVerdictPhasesIsExactlyWhatTheBriefTeaches(TestCase):
+    """The pre-dispatch gate refuses on a head only the ENVELOPE path needs.
+
+    A phase whose brief never asks for a ``review_verdict`` records through the shell, off
+    the reviewer's own checkout, so gating it would refuse a run that records fine today.
+    The set is therefore derived from the brief and pinned here rather than remembered.
+    """
+
+    #: The directive ``_REVIEW_VERDICT_RETURN_LINES`` opens with — present iff the brief
+    #: asks for the envelope the orchestrator must record server-side.
+    _RETURN_DIRECTIVE = "RECORD YOUR VERDICT BY RETURNING IT"
+
+    def _phases_briefed_for_the_envelope(self) -> set[str]:
+        return {
+            phase
+            for phase in CANONICAL_PHASES
+            if self._RETURN_DIRECTIVE in "\n".join(phase_specific_lines(_task(phase), []))
+        }
+
+    def test_the_gated_set_is_exactly_the_briefed_set(self) -> None:
+        assert self._phases_briefed_for_the_envelope() == set(ENVELOPE_VERDICT_PHASES)
+
+    def test_the_shell_recording_review_phases_are_outside_it(self) -> None:
+        for phase in ("codex_reviewing", "codex_adversarial_reviewing", "e2e_reviewing"):
+            assert phase not in ENVELOPE_VERDICT_PHASES, phase
+
+    def test_the_rubric_graded_set_is_the_same_set_not_a_second_spelling(self) -> None:
+        assert _RUBRIC_GRADED_PHASES == ENVELOPE_VERDICT_PHASES
 
 
 class TestAnsweringWorkItemBlock(TestCase):

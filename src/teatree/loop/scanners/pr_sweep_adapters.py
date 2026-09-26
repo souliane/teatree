@@ -15,6 +15,7 @@ import shutil
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from teatree import forge_credentials
 from teatree.loop.main_check_runs import check_runs_argv, parse_check_run_pages
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
 from teatree.loop.scanners.pr_behind_base import (
@@ -161,12 +162,9 @@ def _has_changes_requested(reviews: list[object]) -> bool:
 class GhPrApiClient:
     """``gh``-backed :class:`teatree.loop.scanners.pr_sweep.PrApiClient`.
 
-    *token* — when non-empty — is exported as ``GH_TOKEN`` for every
-    subprocess call so the scanner can hit a private repo on behalf of a
-    given overlay using that overlay's PAT.
+    Every call resolves the target slug through its owning overlay. The resulting
+    token is exported as ``GH_TOKEN``; ambient CLI authentication is refused.
     """
-
-    token: str = ""
 
     def list_open_prs(self, *, slug: str) -> list[PrSummary]:
         argv = [
@@ -184,7 +182,7 @@ class GhPrApiClient:
                 "baseRefName,headRefName,headRepositoryOwner,author,isCrossRepository"
             ),
         ]
-        rc, out, err = self._run_gh(argv)
+        rc, out, err = self._run_gh(argv, slug=slug)
         if rc == _GH_NOT_INSTALLED_RC:
             # gh-not-installed is an environmental error, not an upstream
             # auth/rate-limit issue — preserve the pre-existing "fall back
@@ -234,7 +232,7 @@ class GhPrApiClient:
         answers: dict[int, bool | None] = {}
         for chunk in chunk_heads(heads):
             query = build_compare_query(owner=owner, name=name, base_ref=base_ref, heads=chunk)
-            rc, out, err = self._run_gh(["api", "graphql", "-f", f"query={query}"])
+            rc, out, err = self._run_gh(["api", "graphql", "-f", f"query={query}"], slug=slug)
             # gh exits non-zero on a PARTIAL failure while still printing the
             # aliases that did resolve, so the payload is read whatever rc says.
             parsed = parse_compare_response(out)
@@ -264,7 +262,7 @@ class GhPrApiClient:
         already treats as safe.
         """
         argv = check_runs_argv(slug=slug, ref="main")
-        rc, out, _ = self._run_gh(argv)
+        rc, out, _ = self._run_gh(argv, slug=slug)
         if rc != 0:
             return False
         runs = parse_check_run_pages(out)
@@ -312,14 +310,20 @@ class GhPrApiClient:
             "-f",
             f"expected_head_sha={expected_head_oid}",
         ]
-        rc, _out, err = self._run_gh(argv)
+        rc, _out, err = self._run_gh(argv, slug=slug)
         if rc != 0:
             logger.warning("pr_sweep update-branch refused for %s#%d rc=%d: %s", slug, pr_id, rc, err.strip()[:200])
         return rc == 0
 
-    def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
+    @staticmethod
+    def _run_gh(argv: list[str], *, slug: str) -> tuple[int, str, str]:
+        resolution = forge_credentials.resolve_slug_token(slug, forge="github", credential="github_token")
+        if resolution.state is not forge_credentials.ForgeTokenState.TOKEN:
+            detail = f"{resolution.setting} is {resolution.state.value}: {resolution.detail}"
+            return 4, "", f"{detail}; refusing ambient gh authentication"
         gh = shutil.which("gh") or "gh"
-        env = {**os.environ, "GH_TOKEN": self.token} if self.token else None
+        env: dict[str, str] = {**os.environ, "GH_TOKEN": resolution.token}
+        env.pop("GITHUB_TOKEN", None)
         try:
             result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env)
         except FileNotFoundError:

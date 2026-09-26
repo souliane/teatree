@@ -32,13 +32,19 @@ class TestThePublishArm:
 
 
 class TestEachArmDescribesItsOwnSurface:
-    def test_the_dispatch_arm_is_byte_identical_to_its_shipped_wording(self) -> None:
+    def test_the_dispatch_arm_is_byte_identical_to_its_working_escape_wording(self) -> None:
         assert messages.format_dispatch_block_message(_high()) == (
             "BLOCKED: pre-dispatch quote-scanner gate (#1401). The Agent/Task prompt carries verbatim "
             'user-voice/PII content (e.g. "x") — matched patterns: heading-user-mandate. Paraphrase it '
             "into author-voice description before dispatching (the sub-agent would otherwise echo it "
-            "into a published output, defeating the #1213 publish gate). If the match is a false "
-            "positive, add `[quote-ok: <reason>]` near the start of the prompt."
+            "into a published output, defeating the #1213 publish gate). If the match is a false positive "
+            "— for example you are relaying the owner's own authorisation verbatim into the brief, which "
+            "is inbound, not published — add `[quote-ok: <reason>]` to the one-line `description` (subject) "
+            "field, which always gets its own 512-character window regardless of prompt length. A token "
+            "placed more than 512 characters into the `prompt` field itself is NOT read — an embedded "
+            "skill preamble routinely pushes the top of your brief past that point, and a token merely "
+            "quoted inside pasted/relayed content must never authorise the whole dispatch. Example "
+            "subject: `<subject> [quote-ok: relaying the owner's authorisation verbatim to the sub-agent]`."
         )
 
     def test_the_task_entry_arm_names_the_carrier_it_actually_scans(self) -> None:

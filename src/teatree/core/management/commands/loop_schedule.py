@@ -1,4 +1,4 @@
-"""``manage.py loop_schedule`` — list/show/set-active/set-timezone/clear-active schedules (#3159).
+"""``manage.py loop_schedule`` — read and edit weekly preset schedules (#3159).
 
 Backs ``t3 loop schedule …``. A schedule is a named weekly calendar of slots; the
 active one is the ``active_loop_schedule`` ``ConfigSetting`` (global scope). Setting
@@ -17,7 +17,7 @@ from teatree.core.machine_output import emit
 from teatree.core.models import ConfigSetting, ModeSchedule
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
 from teatree.loops.preset_editing import PresetEditError
-from teatree.loops.schedule_editing import delete_schedule
+from teatree.loops.schedule_editing import delete_schedule, delete_schedule_slot, upsert_schedule_slot
 
 _WEEKDAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -31,8 +31,12 @@ def _slot_days(slot: object) -> str:
     return ",".join(_WEEKDAY_NAMES[day] for day in sorted(slot.weekdays))  # ty: ignore[unresolved-attribute]
 
 
+def _parse_days(raw: str) -> list[int]:
+    return [int(day.strip()) for day in raw.split(",") if day.strip()]
+
+
 class Command(TyperCommand):
-    help = "List/show/set-active/clear-active loop schedules (#3159)."
+    help = "Read and edit loop schedules and their slots (#3159)."
 
     @command(name="list")
     def list_schedules(
@@ -87,7 +91,8 @@ class Command(TyperCommand):
         slots = list(schedule.slots.all())
         human_lines = [f"schedule {schedule.name} (tz={schedule.timezone_label}): {schedule.description}"]
         human_lines += [
-            f"  {_slot_days(slot):<28} {slot.start_time.strftime('%H:%M')} -> {slot.preset_name}" for slot in slots
+            f"  [{slot.pk}] {_slot_days(slot):<28} {slot.start_time.strftime('%H:%M')} -> {slot.preset_name}"
+            for slot in slots
         ]
         emit(
             {
@@ -95,6 +100,7 @@ class Command(TyperCommand):
                 "timezone": schedule.timezone,
                 "slots": [
                     {
+                        "id": slot.pk,
                         "days": sorted(slot.weekdays),
                         "start_time": slot.start_time.strftime("%H:%M"),
                         "preset": slot.preset_name,
@@ -153,6 +159,62 @@ class Command(TyperCommand):
             {"name": name, "timezone": zone},
             f"schedule {name!r} now resolves its slots in {zone}.",
             json_output=json_output,
+        )
+
+    @command(name="set-slot")
+    def set_slot(
+        self,
+        name: Annotated[str, typer.Argument(help="Schedule to edit.")],
+        days: Annotated[str, typer.Argument(help="Comma-separated weekdays, Mon=0..Sun=6.")],
+        start_time: Annotated[str, typer.Argument(help="Local wall-clock start in HH:MM form.")],
+        preset_name: Annotated[str, typer.Argument(help="Preset selected from this start point.")],
+        *,
+        slot_id: Annotated[int | None, typer.Option("--slot-id", help="Existing slot id to update.")] = None,
+    ) -> None:
+        """Create a schedule slot, or update the slot named by ``--slot-id``."""
+        try:
+            slot = upsert_schedule_slot(
+                name,
+                slot_id=slot_id,
+                days=_parse_days(days),
+                start_time=start_time,
+                preset_name=preset_name,
+            )
+        except (PresetEditError, ValueError) as exc:
+            self._refuse(str(exc), json_output=False)
+        payload = {
+            "name": name,
+            "slot": {
+                "id": slot.pk,
+                "days": sorted(slot.weekdays),
+                "start_time": slot.start_time.strftime("%H:%M"),
+                "preset": slot.preset_name,
+            },
+        }
+        self._emit(
+            payload,
+            (
+                f"saved schedule {name!r} slot {slot.pk}: "
+                f"{_slot_days(slot)} {slot.start_time:%H:%M} -> {slot.preset_name}."
+            ),
+            json_output=False,
+        )
+
+    @command(name="delete-slot")
+    def delete_slot(
+        self,
+        name: Annotated[str, typer.Argument(help="Schedule to edit.")],
+        slot_id: Annotated[int, typer.Argument(help="Slot id to delete.")],
+    ) -> None:
+        """Delete one slot owned by a schedule."""
+        try:
+            delete_schedule_slot(name, slot_id)
+        except PresetEditError as exc:
+            self._refuse(str(exc), json_output=False)
+        self._emit(
+            {"name": name, "deleted_slot": slot_id},
+            f"deleted slot {slot_id} from schedule {name!r}.",
+            json_output=False,
         )
 
     @command(name="clear-active")

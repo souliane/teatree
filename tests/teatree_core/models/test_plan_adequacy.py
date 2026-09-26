@@ -9,10 +9,10 @@ integration campaign made structurally impossible at the manifest level.
 from teatree.core.models.mechanism_sketch import MechanismSketch
 from teatree.core.models.plan_adequacy import (
     REQUIRED_ADEQUACY_SECTIONS,
-    _is_plan_bypass_shaped,
     all_negated_adequacy,
     declared_seam_paths,
     is_adequate,
+    is_plan_bypass_shaped,
     is_valid_base_sha,
     mechanism_conforms,
     negated_section,
@@ -68,9 +68,10 @@ class TestIsAdequate:
             "integration_seams": {"content": ["src/teatree/core/gates/plan_currency_gate.py"]},
             "edge_cases": {"content": ["stale base", "offline fetch"]},
             "test_strategy": {"content": "red-first on stale-base refusal"},
+            "acceptance_criteria": {"content": ["a stale-base plan is refused"]},
         }
 
-    def test_complete_four_section_manifest_is_adequate(self) -> None:
+    def test_complete_five_section_manifest_is_adequate(self) -> None:
         assert is_adequate(self._full()) is True
 
     def test_thin_scope_acceptance_spec_is_inadequate(self) -> None:
@@ -90,8 +91,14 @@ class TestIsAdequate:
         assert is_adequate(None) is False
         assert is_adequate("scope: x\nacceptance: y") is False
 
-    def test_required_sections_are_the_four(self) -> None:
-        assert set(REQUIRED_ADEQUACY_SECTIONS) == {"design", "integration_seams", "edge_cases", "test_strategy"}
+    def test_required_sections_are_the_five(self) -> None:
+        assert set(REQUIRED_ADEQUACY_SECTIONS) == {
+            "design",
+            "integration_seams",
+            "edge_cases",
+            "test_strategy",
+            "acceptance_criteria",
+        }
 
 
 class TestDeclaredSeamPaths:
@@ -116,6 +123,49 @@ class TestDeclaredSeamPaths:
 
 def negated_section_manifest() -> dict:
     return {"integration_seams": negated_section("pure refactor")}
+
+
+class TestIsPlanBypassShaped:
+    """The single waiver predicate: every non-design section a reasoned negative with NO content."""
+
+    def _substantive(self) -> dict:
+        return {
+            "design": {"content": "split X into two methods"},
+            "integration_seams": {"content": ["src/teatree/core/gates/plan_currency_gate.py"]},
+            "edge_cases": {"content": ["stale base", "offline fetch"]},
+            "test_strategy": {"content": "red-first on stale-base refusal"},
+            "acceptance_criteria": {"content": ["a stale-base plan is refused"]},
+        }
+
+    def test_the_all_negatives_manifest_is_the_bypass(self) -> None:
+        assert is_plan_bypass_shaped(all_negated_adequacy("audited plan-bypass")) is True
+
+    def test_a_substantive_manifest_is_not(self) -> None:
+        assert is_plan_bypass_shaped(self._substantive()) is False
+
+    def test_content_beside_a_none_reason_is_content_not_a_negative(self) -> None:
+        """A planner that annotates every section is not authorizing a bypass.
+
+        The schema admits both keys, so a fully substantive manifest could also set
+        ``none_reason`` throughout — and reading only the reason classified it as the
+        human-authorized waiver, so ``record`` refused it for declaring NOTHING.
+        """
+        manifest = self._substantive()
+        for name in ("integration_seams", "edge_cases", "test_strategy", "acceptance_criteria"):
+            manifest[name]["none_reason"] = "annotated by the planner"
+
+        assert is_plan_bypass_shaped(manifest) is False
+
+    def test_a_blank_content_beside_a_reason_is_still_the_negative(self) -> None:
+        manifest = dict(all_negated_adequacy("audited plan-bypass"))
+        manifest["integration_seams"] = {"none_reason": "no seams", "content": ["  ", ""]}
+
+        assert is_plan_bypass_shaped(manifest) is True
+
+    def test_a_missing_or_malformed_manifest_is_not_the_bypass(self) -> None:
+        assert is_plan_bypass_shaped(None) is False
+        assert is_plan_bypass_shaped({}) is False
+        assert is_plan_bypass_shaped({"integration_seams": "oops"}) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -158,6 +208,7 @@ def _directive_manifest(section: dict | None) -> dict:
         "integration_seams": {"content": [_CORE_CHOKEPOINT.split("::", maxsplit=1)[0]]},
         "edge_cases": {"content": ["neutral default keeps core inert"]},
         "test_strategy": {"content": "red-first refusal on the budget count"},
+        "acceptance_criteria": {"content": ["the ratified setting gates the core seam"]},
     }
     if section is not None:
         manifest["mechanism_placement"] = section
@@ -253,8 +304,8 @@ class TestNeverLockoutEscapes:
     def test_a_plan_bypass_shaped_manifest_waives(self) -> None:
         # (d) never-lockout: the audited plan-bypass manifest (all reasoned negatives) waives too.
         bypass = dict(all_negated_adequacy("audited plan-bypass"))
-        assert _is_plan_bypass_shaped(bypass) is True
+        assert is_plan_bypass_shaped(bypass) is True
         assert mechanism_conforms(bypass, _sketch()) is None
 
     def test_a_normal_directive_manifest_is_not_bypass_shaped(self) -> None:
-        assert _is_plan_bypass_shaped(_directive_manifest(_conforming_section())) is False
+        assert is_plan_bypass_shaped(_directive_manifest(_conforming_section())) is False

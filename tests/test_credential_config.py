@@ -12,6 +12,7 @@ import datetime as dt
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -21,20 +22,23 @@ from django.utils import timezone
 
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import AnthropicActivePick, AnthropicTokenUsage, ConfigSetting
-from teatree.core.models.anthropic_token_usage import HEALTH_TTL, REJECTED_STATUS, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import HEALTH_TTL, REJECTED_STATUS, TokenHealthReading, Window
 from teatree.core.models.config_setting import GLOBAL_SCOPE
 from teatree.credential_config import (
+    AccountProber,
     AllTokensExhaustedError,
     PassPathSelector,
+    ReactiveLimit,
     TokenKind,
     reading_from,
     reading_from_metered,
+    record_reactive_exhaustion_and_reselect,
     resolve_api_key_credential,
     resolve_eval_credential,
     resolve_subscription_credential,
 )
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
-from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitSnapshot
+from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
 from teatree.utils.eval_container import IN_CONTAINER_ENV_VAR
 
 _OAUTH_SETTING = "anthropic_oauth_pass_paths"
@@ -42,10 +46,15 @@ _API_KEY_SETTING = "anthropic_api_key_pass_paths"
 
 
 def _snapshot(
-    *, u5: float = 0.1, u7: float = 0.1, s7: str = "allowed", reset: dt.datetime | None = None
+    *,
+    u5: float | None = 0.1,
+    u7: float | None = 0.1,
+    s7: str = "allowed",
+    reset: dt.datetime | None = None,
+    org: str = "org-1",
 ) -> RateLimitSnapshot:
     return RateLimitSnapshot(
-        organization_id="org-1",
+        organization_id=org,
         unified_5h_status="allowed",
         unified_5h_utilization=u5,
         unified_5h_reset=reset,
@@ -98,6 +107,26 @@ def _seed_fresh_healthy_row(pass_path: str) -> AnthropicTokenUsage:
         status_7d="allowed",
         reset_5h=None,
         reset_7d=None,
+    )
+    return AnthropicTokenUsage.objects.record(pass_path, reading, now=timezone.now())
+
+
+def _seed_row(
+    pass_path: str,
+    *,
+    u5: float = 0.0,
+    u7: float = 0.0,
+    s7: str = "allowed",
+    reset_7d: dt.datetime | None = None,
+) -> AnthropicTokenUsage:
+    reading = TokenHealthReading(
+        organization_id="org-1",
+        utilization_5h=u5,
+        utilization_7d=u7,
+        status_5h="allowed",
+        status_7d=s7,
+        reset_5h=None,
+        reset_7d=reset_7d,
     )
     return AnthropicTokenUsage.objects.record(pass_path, reading, now=timezone.now())
 
@@ -478,6 +507,175 @@ class TestSelectorStickiness(TestCase):
         assert reader.calls == [], "selection reads the store, never the network"
 
 
+class TestSelectorRanksOnHeadroom(TestCase):
+    """The routing pick follows headroom, not list position — the #118 defect."""
+
+    def test_a_sticky_pick_in_the_warning_band_is_replaced_by_a_richer_account(self) -> None:
+        # The measured live case: the pin sits at 96% weekly (BELOW the 0.99 exhaustion
+        # limit, so never "exhausted") while a sibling idles at 5%.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+        _seed_row("anthropic/a/oauth", u7=0.96)
+        _seed_row("anthropic/b/oauth", u7=0.05)
+        AnthropicActivePick.objects.set_pick("oauth", "", "anthropic/a/oauth")
+        reader = _FakeReader({})
+
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert chosen == "anthropic/b/oauth"
+        assert AnthropicActivePick.objects.pick_for("oauth", "") == "anthropic/b/oauth"
+        assert reader.calls == [], "selection reads the store, never the network"
+
+    def test_a_healthy_sticky_pick_is_reused_with_no_re_rank(self) -> None:
+        # The anti-thrash guard: a strictly richer sibling does NOT displace a healthy pin,
+        # so the warm prompt-cache prefix survives across the whole healthy range.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+        _seed_row("anthropic/a/oauth", u5=0.10, u7=0.10)
+        _seed_row("anthropic/b/oauth")
+        AnthropicActivePick.objects.set_pick("oauth", "", "anthropic/a/oauth")
+        reader = _FakeReader({})
+
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert chosen == "anthropic/a/oauth"
+        assert reader.calls == []
+
+    def test_the_best_measured_account_wins_over_the_first_in_list_order(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+        _seed_row("anthropic/a/oauth", u7=0.90)
+        _seed_row("anthropic/b/oauth", u7=0.05)
+        reader = _FakeReader({})
+
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert chosen == "anthropic/b/oauth"
+
+    def test_a_measured_healthy_account_outranks_an_uncached_one(self) -> None:
+        # We KNOW the measured one is rich; we know nothing about the other. Fabricating a
+        # zero utilization for the unmeasured candidate would be a lie.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/uncached/oauth", "anthropic/m/oauth"])
+        _seed_row("anthropic/m/oauth", u7=0.05)
+        reader = _FakeReader({})
+
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert chosen == "anthropic/m/oauth"
+
+    def test_a_fresh_all_null_row_does_not_win_over_a_measured_one(self) -> None:
+        # reading_from_metered writes utilization_5h=None and utilization_7d=None with no
+        # rejected status: a fresh, non-exhausted, all-NULL row. used_fraction(None) reads
+        # as 0.0, so headroom_at fabricates full headroom for BOTH windows unless a null
+        # row is excluded from ranking outright — the same NULL-vs-zero conflation
+        # migration 0097/0099 exists to remove, reintroduced here in the selector.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/null/oauth", "anthropic/measured/oauth"])
+        unmeasured = TokenHealthReading(
+            organization_id="org-1",
+            utilization_5h=None,
+            utilization_7d=None,
+            status_5h="",
+            status_7d="",
+            reset_5h=None,
+            reset_7d=None,
+        )
+        AnthropicTokenUsage.objects.record("anthropic/null/oauth", unmeasured, now=timezone.now())
+        _seed_row("anthropic/measured/oauth", u5=0.5, u7=0.5)
+        reader = _FakeReader({})
+
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert chosen == "anthropic/measured/oauth"
+
+    def test_a_strained_pin_holds_when_no_sibling_carries_a_fresh_measured_row(self) -> None:
+        # The band re-ranks, but it may only move to a candidate we have actually measured.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/uncached/oauth"])
+        _seed_row("anthropic/a/oauth", u7=0.96)
+        AnthropicActivePick.objects.set_pick("oauth", "", "anthropic/a/oauth")
+        reader = _FakeReader({})
+
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert chosen == "anthropic/a/oauth"
+
+    def test_all_uncached_candidates_keep_the_declared_order_and_never_probe(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+        assert not AnthropicTokenUsage.objects.exists()
+        reader = _FakeReader({})
+
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert chosen == "anthropic/a/oauth"
+        assert reader.calls == [], "an unmeasured list must never trigger a probe sweep"
+        assert AnthropicActivePick.objects.pick_for("oauth", "") == "anthropic/a/oauth"
+
+    def test_a_stale_exhausted_row_is_still_offered_when_nothing_is_measured(self) -> None:
+        # The exhaustion gate is unchanged: only a FRESH exhausted verdict rules a
+        # candidate out, so a cold or lagging table can never halt dispatch.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
+        spent = TokenHealthReading(
+            organization_id="org-1",
+            utilization_5h=0.1,
+            utilization_7d=1.0,
+            status_5h="allowed",
+            status_7d=REJECTED_STATUS,
+            reset_5h=None,
+            reset_7d=None,
+        )
+        AnthropicTokenUsage.objects.record("anthropic/a/oauth", spent, now=timezone.now() - 30 * HEALTH_TTL)
+        reader = _FakeReader({})
+
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert chosen == "anthropic/a/oauth"
+
+    def test_every_account_freshly_exhausted_still_raises_naming_the_earliest_reset(self) -> None:
+        # Ranking must not weaken the loud refusal into a "least bad" pick.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+        soonest = timezone.now() + dt.timedelta(hours=2)
+        _seed_row("anthropic/a/oauth", u7=1.0, s7=REJECTED_STATUS, reset_7d=soonest)
+        _seed_row("anthropic/b/oauth", u7=1.0, s7=REJECTED_STATUS, reset_7d=soonest + dt.timedelta(hours=5))
+        reader = _FakeReader({})
+
+        with _pass_echoes_path(), pytest.raises(AllTokensExhaustedError) as exc_info:
+            PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+
+        assert exc_info.value.earliest_reset == soonest
+
+
+class TestSpentAccountReleasesEveryScope(TestCase):
+    """Recording exhaustion frees the sibling scopes too — verified by re-selecting."""
+
+    def test_a_sibling_scope_re_selects_after_the_shared_account_is_spent(self) -> None:
+        for scope in ("alpha", "beta"):
+            ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"], scope=scope)
+            AnthropicActivePick.objects.set_pick("oauth", scope, "anthropic/a/oauth")
+        _seed_row("anthropic/b/oauth", u7=0.05)
+        spent = TokenHealthReading(
+            organization_id="org-1",
+            utilization_5h=0.0,
+            utilization_7d=1.0,
+            status_5h="allowed",
+            status_7d=REJECTED_STATUS,
+            reset_5h=None,
+            reset_7d=timezone.now() + dt.timedelta(days=2),
+        )
+
+        AnthropicTokenUsage.objects.record("anthropic/a/oauth", spent, now=timezone.now())
+
+        reader = _FakeReader({})
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH, "beta")
+
+        assert chosen == "anthropic/b/oauth"
+        assert AnthropicActivePick.objects.pick_for("oauth", "alpha") is None
+
+
 class TestFactoryWiring(TestCase):
     def test_default_no_config_fails_loud_for_the_api_key_credential(self) -> None:
         # No credential has a built-in default: with no routing list and no env var, the
@@ -704,3 +902,274 @@ class TestResolveEvalCredentialUsesActiveOverlayScope(TestCase):
         ):
             resolve_eval_credential().resolve()
         assert _OAUTH_SETTING in str(caught.value), "the loud error names anthropic_oauth_pass_paths to configure"
+
+
+class TestReactiveExhaustionRecordsProbedTruth(TestCase):
+    """The reactive writer records the account's OWN measured health, never a synthesis.
+
+    The SDK's mid-run limit signal carries only a reset instant and a weekly flag, and it
+    names neither the binding window reliably nor the account that signed the failing
+    request. A verdict built from those constants can be wrong in every field — including
+    stamping a DIFFERENT account's reset onto this account's row.
+    """
+
+    _SPENT = "anthropic/spent/oauth"
+    _OTHER = "anthropic/other/oauth"
+
+    def setUp(self) -> None:
+        # Every instant is anchored to ONE moment and lies in its future. Absolute dates
+        # stop binding the day the wall clock walks past them: the recorded block reads
+        # spent, the cached verdict reads stale, and every assertion below goes vacuous.
+        self.now = timezone.now()
+        # A reset that belongs to a DIFFERENT account — what the SDK signal supplies.
+        self.foreign_reset = self.now + dt.timedelta(days=5)
+        self.own_5h_reset = self.now + dt.timedelta(hours=1)
+        self.own_7d_reset = self.now + dt.timedelta(days=7)
+
+    def _route(self, paths: list[str], sticky: str) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, paths, scope=GLOBAL_SCOPE)
+        AnthropicActivePick.objects.set_pick(TokenKind.OAUTH.value, GLOBAL_SCOPE, sticky)
+
+    def _record(
+        self,
+        snapshots: dict[str, RateLimitSnapshot],
+        *,
+        tokens: dict[str, str] | None = None,
+        unreachable: set[str] | None = None,
+        weekly: bool = True,
+        now: dt.datetime | None = None,
+    ) -> str | None:
+        reader = _FakeReader(snapshots)
+        blocked = unreachable or set()
+
+        def probing_reader(token: str, *, is_oauth: bool) -> RateLimitSnapshot:
+            if token in blocked:
+                msg = "probe failed"
+                raise RateLimitProbeError(msg)
+            return reader(token, is_oauth=is_oauth)
+
+        # `snapshots` is keyed by TOKEN and the secret reader is asked for a PASS PATH, so
+        # the map is built by inverting the prefix. Keying it on `snapshots` directly made
+        # every read miss, and every case below silently took the unprobeable fallback.
+        resolved = tokens if tokens is not None else {token.removeprefix("T-"): token for token in snapshots}
+        return record_reactive_exhaustion_and_reselect(
+            scope=GLOBAL_SCOPE,
+            limit=ReactiveLimit(resets_at=self.foreign_reset, weekly=weekly),
+            now=now or self.now,
+            prober=AccountProber(reader=probing_reader, secret_reader=lambda path: resolved.get(path, "")),
+        )
+
+    def _record_the_last_account(self, snapshots: dict[str, RateLimitSnapshot], **kwargs: object) -> None:
+        """Record the exhaustion of the ONLY routed account, whose re-selection then parks.
+
+        The park is the documented outcome once nothing healthy is left, and it happens
+        AFTER the row is written — which is what these cases are about. Letting it
+        propagate would end the test before a single assertion ran.
+        """
+        with pytest.raises(AllTokensExhaustedError):
+            self._record(snapshots, **kwargs)  # type: ignore[arg-type]
+
+    def test_the_recorded_reset_is_the_probed_accounts_own_never_the_signals(self) -> None:
+        self._route([self._SPENT], self._SPENT)
+        self._record_the_last_account(
+            {
+                f"T-{self._SPENT}": replace(
+                    _snapshot(org="org-spent", u5=1.0, u7=0.0),
+                    unified_5h_status=REJECTED_STATUS,
+                    unified_5h_reset=self.own_5h_reset,
+                    unified_7d_reset=self.own_7d_reset,
+                )
+            },
+        )
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
+        assert row.reset_5h == self.own_5h_reset
+        assert row.reset_7d == self.own_7d_reset
+        assert self.foreign_reset not in {row.reset_5h, row.reset_7d}, (
+            "another account's reset must be impossible to write onto this row"
+        )
+        assert row.organization_id == "org-spent", "a probed row identifies the account it measured"
+
+    def test_the_recorded_windows_are_measured_not_forced_to_zero_and_one(self) -> None:
+        self._route([self._SPENT], self._SPENT)
+        self._record_the_last_account(
+            {f"T-{self._SPENT}": _snapshot(org="org-spent", u5=0.62, u7=0.995, s7=REJECTED_STATUS)}
+        )
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
+        assert row.utilization_5h == pytest.approx(0.62), "a weekly hit must not zero the 5h window"
+        assert row.utilization_7d == pytest.approx(0.995)
+        assert row.is_exhausted
+
+    def test_a_probe_that_reports_the_five_hour_claim_blocks_that_window(self) -> None:
+        self._route([self._SPENT], self._SPENT)
+        self._record_the_last_account(
+            {
+                f"T-{self._SPENT}": replace(
+                    _snapshot(org="org-spent", u5=0.10, u7=0.10),
+                    unified_5h_status=REJECTED_STATUS,
+                    unified_5h_reset=self.own_5h_reset,
+                    unified_7d_reset=self.own_7d_reset,
+                )
+            },
+            weekly=True,
+        )
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
+        assert row.blocking == {Window.FIVE_HOUR}, "the measured 5h refusal wins over the signal's weekly flag"
+        assert row.frees_up_at == self.own_5h_reset
+
+    def test_an_unprobeable_account_records_an_unverified_verdict_capped_at_the_ttl(self) -> None:
+        self._route([self._SPENT], self._SPENT)
+        self._record_the_last_account(
+            {f"T-{self._SPENT}": _snapshot(org="org-spent")}, unreachable={f"T-{self._SPENT}"}
+        )
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
+        assert row.is_exhausted, "the account still hit a limit, so it is still routed off"
+        assert row.valid_until == self.now + HEALTH_TTL, (
+            "an unmeasured verdict self-corrects in minutes instead of stranding the account"
+        )
+
+    def test_an_account_with_no_stored_token_records_an_unverified_verdict(self) -> None:
+        self._route([self._SPENT], self._SPENT)
+        self._record_the_last_account({}, tokens={})
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
+        assert row.is_exhausted
+        assert row.valid_until == self.now + HEALTH_TTL
+
+    def test_a_healthy_sibling_account_is_returned_for_rotation(self) -> None:
+        self._route([self._SPENT, self._OTHER], self._SPENT)
+        chosen = self._record(
+            {
+                f"T-{self._SPENT}": _snapshot(org="org-spent", u7=0.995, s7=REJECTED_STATUS),
+                f"T-{self._OTHER}": _snapshot(org="org-other", u5=0.05, u7=0.05),
+            }
+        )
+        assert chosen == self._OTHER
+
+    def test_nothing_is_recorded_when_no_account_is_routed(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, [self._SPENT], scope=GLOBAL_SCOPE)
+        assert self._record({}, tokens={}) is None
+        assert AnthropicTokenUsage.objects.count() == 0
+
+
+class TestReactiveExhaustionBindsTheSigningAccount(TestCase):
+    """The verdict lands on the account that SIGNED the failing request, not the sticky one.
+
+    The sticky pointer is shared per scope and moves whenever another dispatch re-selects,
+    so reading it at WRITE time attributes one account's limit — and its reset — to
+    whichever account happens to be pinned minutes later. The dispatch resolves an account
+    before the turn runs; that is the account the limit belongs to.
+    """
+
+    _SIGNED = "anthropic/signed/oauth"
+    _MOVED_TO = "anthropic/moved-to/oauth"
+
+    def setUp(self) -> None:
+        self.now = timezone.now()
+        self.signal_reset = self.now + dt.timedelta(days=5)
+        self.own_5h_reset = self.now + dt.timedelta(hours=1)
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, [self._SIGNED, self._MOVED_TO], scope=GLOBAL_SCOPE)
+        # The pointer has MOVED off the signing account since the failing request was sent.
+        AnthropicActivePick.objects.set_pick(TokenKind.OAUTH.value, GLOBAL_SCOPE, self._MOVED_TO)
+
+    def _prober(self) -> AccountProber:
+        health = {
+            self._SIGNED: replace(
+                _snapshot(org="org-signed", u5=1.0, u7=0.0),
+                unified_5h_status=REJECTED_STATUS,
+                unified_5h_reset=self.own_5h_reset,
+            ),
+            self._MOVED_TO: _snapshot(org="org-moved-to", u5=0.05, u7=0.05),
+        }
+        return AccountProber(reader=_FakeReader(health), secret_reader=lambda path: path)
+
+    def test_the_verdict_is_written_on_the_signing_account(self) -> None:
+        record_reactive_exhaustion_and_reselect(
+            scope=GLOBAL_SCOPE,
+            limit=ReactiveLimit(resets_at=self.signal_reset, weekly=True, pass_path=self._SIGNED),
+            now=self.now,
+            prober=self._prober(),
+        )
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SIGNED)
+        assert row.organization_id == "org-signed", "the row must measure the account that hit the limit"
+        assert row.is_exhausted
+
+    def test_the_account_the_pointer_moved_to_is_left_untouched(self) -> None:
+        record_reactive_exhaustion_and_reselect(
+            scope=GLOBAL_SCOPE,
+            limit=ReactiveLimit(resets_at=self.signal_reset, weekly=True, pass_path=self._SIGNED),
+            now=self.now,
+            prober=self._prober(),
+        )
+
+        assert not AnthropicTokenUsage.objects.filter(pass_path=self._MOVED_TO).exists(), (
+            "a healthy bystander must not be marked by another account's limit"
+        )
+
+    def test_without_an_attributed_account_the_sticky_pointer_still_decides(self) -> None:
+        record_reactive_exhaustion_and_reselect(
+            scope=GLOBAL_SCOPE,
+            limit=ReactiveLimit(resets_at=self.signal_reset, weekly=True),
+            now=self.now,
+            prober=self._prober(),
+        )
+
+        assert AnthropicTokenUsage.objects.filter(pass_path=self._MOVED_TO).exists(), (
+            "a caller with no routed account (an unrouted harness) keeps today's behaviour"
+        )
+
+
+class TestReactiveExhaustionNeverInventsAWeeklyRefusal(TestCase):
+    """A 5h-only limit must never be recorded as a weekly one, whatever the SDK's cause says.
+
+    The SDK's ``weekly`` flag and its ``resets_at`` are the only facts the old synthesis
+    had, and a weekly verdict is trusted for up to seven days — so one misclassified 5h
+    limit refused an account that was re-arming the same day.
+    """
+
+    _SPENT = "anthropic/spent/oauth"
+
+    def setUp(self) -> None:
+        self.now = timezone.now()
+        self.foreign_weekly_reset = self.now + dt.timedelta(days=5)
+        self.own_5h_reset = self.now + dt.timedelta(hours=1)
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, [self._SPENT], scope=GLOBAL_SCOPE)
+        AnthropicActivePick.objects.set_pick(TokenKind.OAUTH.value, GLOBAL_SCOPE, self._SPENT)
+
+    def _record_five_hour_truth_under_a_weekly_signal(self) -> None:
+        health = {
+            self._SPENT: replace(
+                _snapshot(org="org-spent", u5=1.0, u7=0.0),
+                unified_5h_status=REJECTED_STATUS,
+                unified_5h_reset=self.own_5h_reset,
+                unified_7d_status="allowed",
+                unified_status=REJECTED_STATUS,
+                representative_claim=Window.FIVE_HOUR.value,
+            )
+        }
+        with pytest.raises(AllTokensExhaustedError):
+            record_reactive_exhaustion_and_reselect(
+                scope=GLOBAL_SCOPE,
+                limit=ReactiveLimit(resets_at=self.foreign_weekly_reset, weekly=True, pass_path=self._SPENT),
+                now=self.now,
+                prober=AccountProber(reader=_FakeReader(health), secret_reader=lambda path: path),
+            )
+
+    def test_only_the_measured_five_hour_window_blocks(self) -> None:
+        self._record_five_hour_truth_under_a_weekly_signal()
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
+        assert row.blocking == {Window.FIVE_HOUR}
+        assert row.status_7d != REJECTED_STATUS, "the SDK's weekly flag must not reject an allowed week"
+        assert row.utilization_7d == pytest.approx(0.0), "an idle week must not be forced to 100%"
+
+    def test_the_account_re_arms_on_its_own_five_hour_reset(self) -> None:
+        self._record_five_hour_truth_under_a_weekly_signal()
+
+        row = AnthropicTokenUsage.objects.get(pass_path=self._SPENT)
+        assert row.frees_up_at == self.own_5h_reset
+        assert row.reset_7d != self.foreign_weekly_reset, "the signal's instant must never reach the row"

@@ -1,7 +1,7 @@
 """Backlog-sweep mini-loop — daily backlog-grouping cadence anchor.
 
-Global (non-overlay) loop like ``news`` / ``eval_local``. ``backlog_sweep_disabled``
-ships *open* (#4344), so this row is the single switch an operator flips — it seeds
+Global (non-overlay) loop like ``news`` / ``eval_local``. This row plus the active
+preset are the single switch an operator flips — it seeds
 ``enabled = false`` and contributes nothing until they turn it on, the shape
 ``issue_implementer`` / ``triage_assessor`` / ``directive_loop`` already use. The sweep
 groups aggressively and closes nothing for real, and keeps its
@@ -28,7 +28,7 @@ def _build_jobs(**_: object) -> "list[_ScannerJob]":
 
 MINI_LOOP = MiniLoop(
     name="backlog_sweep",
-    default_cadence_seconds=86400,  # 1d tick rate — weekly sweep cadence enforced internally
+    default_cadence_seconds=86400,  # the sweep cadence itself — daily, with no inner gate
     build_jobs=_build_jobs,
     declared_reach=frozenset({LoopReach.EGRESS}),
     determinism=LoopDeterminism.AI,

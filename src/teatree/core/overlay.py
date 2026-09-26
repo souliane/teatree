@@ -11,13 +11,15 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from teatree.backends.types import Service
+from teatree.config.credential_pass_key import PassKeyResolution, resolve_pass_key
 from teatree.core.e2e_scenario import Capture, E2eExtrasContext, Scenario
 from teatree.core.failed_e2e_watcher import FailedE2EWatcher
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.identity_wiring import AuthoringIdentity, classify_authoring_identity
 from teatree.core.mcp_tool_group import McpTool, McpToolGroup
-from teatree.core.modelkit.phases import canonicalize_stage_skill_keys, normalize_phase
+from teatree.core.modelkit.phases import canonicalize_phase_keys, normalize_phase
 from teatree.core.overlay_metadata import OverlayMetadata
+from teatree.core.overlays.connectors import OverlayConnectors
 from teatree.core.provision.variant import Variant
 from teatree.core.review.mr_triage import RepoOwner
 from teatree.core.statusline_segment import StatuslineSegment
@@ -41,8 +43,7 @@ from teatree.types import (
 from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
-    from teatree.core.connector_manifest import ConnectorRequirement
-    from teatree.core.factory.operational_health import HealthSignal
+    from teatree.core.factory.health_signal import HealthSignal
     from teatree.core.models import Worktree
     from teatree.core.worktree.readiness import Probe
     from teatree.types import RawAPIDict
@@ -99,7 +100,7 @@ class OverlayConfig(BaseModel):
     # Slack scope profile: ``"full"`` (default) provisions the read/write-everywhere
     # bot + shared xoxp user token — customer overlays that post across channels and
     # Slack-Connect. ``"dm_only"`` provisions a minimal bot that may talk ONLY to its
-    # one owner's DM (no channel/group scopes, no user token); the loader builds its
+    # one owner's DM (``channels:manage`` only to leave public channels, no user token); the loader builds its
     # ``SlackBotBackend`` with ``owner_dm_only=True`` so a non-owner destination fails LOUD.
     slack_scope_profile: str = "full"
     slack_token_ref: str = ""
@@ -142,9 +143,6 @@ class OverlayConfig(BaseModel):
     # genuinely-distinct humans (#1015).
     identity_aliases: list[list[str]] = Field(default_factory=list)
     dev_env_url: str = ""
-    # Retired (#plan-gate-fsm): no handler reads it anymore; enforcement lives in
-    # the Ticket state graph (WORK_STARTED → PLAN_RECORDED → CODED) via ``PlanArtifact``.
-    plan_gate: bool = False
     # #1295 capability J: privacy-redaction patterns scanned by the pre-publish
     # privacy gate before every public-repo write; empty in core.
     privacy_redact_terms: list[str] = Field(default_factory=list)
@@ -169,6 +167,8 @@ class OverlayConfig(BaseModel):
     # lookup gerund (``reviewing``) resolve to one entry; an unknown phase key
     # fails LOUD at config load.
     stage_skills: dict[str, list[str]] = Field(default_factory=dict)
+    # Tried in order before a factory dispatch opens; a phase with no list keeps ``agent_harness``.
+    factory_phase_harness_candidates: dict[str, list[str]] = Field(default_factory=dict)
     # The local clones whose reviewed ref is the source of truth for the skills
     # installed on this box. An install is a physical COPY, so it cannot announce
     # that its source moved on; declaring the source here is what lets
@@ -218,6 +218,7 @@ class OverlayConfig(BaseModel):
         # subclass may set arbitrary private (underscore) instance attributes,
         # which the ``__setattr__`` override below routes past Pydantic.
         object.__setattr__(self, "_secret_pass_keys", {})
+        object.__setattr__(self, "_pass_key_scope", "")
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:
@@ -275,32 +276,39 @@ class OverlayConfig(BaseModel):
         """Apply ``[overlays.<overlay_name>]`` overrides from the DB overlays registry."""
         from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
+        self._pass_key_scope = overlay_name
         config = load_config()
         overlay_cfg = config.raw.get("overlays", {}).get(overlay_name, {})
         for key, value in overlay_cfg.items():
             if key in {"class", "path"}:
                 continue  # reserved keys for overlay discovery
             if key.endswith("_pass_key"):
-                attr_name = key.removesuffix("_pass_key")
-                self._register_secret(attr_name, str(value))
+                logger.warning(
+                    "Ignoring %s in the overlays registry for %r: it is a per-key setting now", key, overlay_name
+                )
             else:
                 setattr(self, key, value)
 
     def _secret_registry(self) -> dict[str, str]:
-        """The ``*_PASS_KEY`` lookup dict ``__init__`` installs in the instance ``__dict__``."""
+        """The declared ``*_PASS_KEY`` defaults ``__init__`` installs in the instance ``__dict__``."""
         return self.__dict__.setdefault("_secret_pass_keys", {})
 
     def _register_secret(self, attr_name: str, pass_key: str) -> None:
         self._secret_registry()[attr_name] = pass_key
 
+    def declared_credentials(self) -> frozenset[str]:
+        return frozenset(self._secret_registry())
+
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        scope = self.__dict__.get("_pass_key_scope", "")
+        return resolve_pass_key(name, overlay_name=scope, declared_default=self._secret_registry().get(name, ""))
+
     def secret_pass_key(self, name: str) -> str:
-        """The ``pass`` entry *name* is routed to, or ``""`` when unregistered."""
-        return self._secret_registry().get(name, "")
+        """The ``pass`` entry *name* is routed to on this venue, or ``""`` when unconfigured."""
+        return self.resolve_pass_key(name).value
 
     def _read_secret(self, name: str) -> str:
-        """Read the ``pass`` value registered for *name* at point of use; ``""`` if unregistered."""
-        pass_key = self._secret_registry().get(name)
-        if not pass_key:
+        if not (pass_key := self.secret_pass_key(name)):
             return ""
         from teatree.utils.secrets import read_pass  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
@@ -315,8 +323,10 @@ class OverlayConfig(BaseModel):
         """The GitLab credential to act as on *remote*, defaulting to the overlay-wide one.
 
         An overlay overrides this only where one repo must be written under a
-        DIFFERENT identity than the rest — an MR the human reviewer has to be
-        eligible to approve cannot be authored by that human.
+        DIFFERENT identity than the rest — the forge makes an MR's AUTHOR ineligible
+        to approve it, so authoring under a scoped credential is what keeps the
+        OWNER'S account eligible. The AGENT then records the approval under that
+        account; this is never the owner's manual step.
         """
         del remote
         return self.get_gitlab_token()
@@ -338,9 +348,10 @@ class OverlayConfig(BaseModel):
         """Whether MRs on *remote* are authored by someone other than the owner.
 
         The one question the override above exists to answer, asked directly: a
-        repo handed its own credential is written by a non-human the owner stays
-        eligible to review and approve; every other repo is written as the owner
-        himself. Anything that makes the owner a CHECKER — the standing
+        repo handed its own credential is written by a non-human, which keeps the
+        owner's ACCOUNT eligible to review and approve (the agent acts as it);
+        every other repo is written as the owner himself. Anything that makes the
+        owner's account a CHECKER — the standing
         ``pr_auto_reviewers`` policy, the catch-up pass that applies it to MRs
         already open — is scoped by this, so it can never name the owner as
         reviewer of his own MR.
@@ -400,13 +411,16 @@ class OverlayConfig(BaseModel):
         """Return the skills a reviewer must hold, deduped and order-preserving."""
         return list(dict.fromkeys(s for s in [self.pr_review_companion, *self.companion_skills] if s))
 
-    @field_validator("stage_skills", mode="after")
+    @field_validator("stage_skills", "factory_phase_harness_candidates", mode="after")
     @classmethod
-    def _validate_stage_skills(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
-        return canonicalize_stage_skill_keys(value)
+    def _canonicalize_phase_keys(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        return canonicalize_phase_keys(value)
 
     def get_stage_skills(self, phase: str) -> list[str]:
         return list(self.stage_skills.get(normalize_phase(phase), []))
+
+    def get_factory_phase_harness_candidates(self, phase: str) -> list[str]:
+        return list(self.factory_phase_harness_candidates.get(normalize_phase(phase), []))
 
 
 # ── Overlay facets ───────────────────────────────────────────────────
@@ -584,6 +598,10 @@ class OverlayReview:
         """Repo patterns whose merge requests must never get a review request."""
         return ()
 
+    def mandatory_e2e_exempt_repo_slugs(self) -> tuple[str, ...]:
+        """Repo slugs that ship NO customer display surface — mandatory-E2E cannot apply (#1967)."""
+        return ()
+
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         """Return a merge-guard verdict for an approved merge request."""
         _ = target_ref, thread_ref
@@ -595,33 +613,6 @@ class OverlayReview:
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         """True iff *changed_files* could impact what is displayed to the customer (#1967)."""
         return True
-
-
-class OverlayConnectors:
-    """External-connector concern (claude.ai, MCP, Slack/Notion) — ``overlay.connectors``."""
-
-    def preflight(self) -> list[Callable[[], None]]:
-        """Zero-arg probes run before any connector-dependent loop work."""
-        from teatree.core.connector_probes import standard_probes  # noqa: PLC0415 — deferred: avoids import cycle
-
-        return standard_probes(self.manifest(), self.mcp_provider_expectations())
-
-    def mcp_provider_expectations(self) -> dict[str, str]:
-        """``{mcp_server_name: provider}`` for the #2282 connectivity check; default empty."""
-        return {}
-
-    def mcp_tool_group(self) -> McpToolGroup | None:
-        """The overlay's own tools for the teatree MCP server; none by default.
-
-        The group is registered only on the terms it declares: every service in
-        ``requires`` declared by some overlay, and every write tool naming its
-        gated seam.
-        """
-        return None
-
-    def manifest(self) -> list["ConnectorRequirement"]:
-        """Overlay's required-vs-optional claude.ai connectors by NAME; default none (PR-19)."""
-        return []
 
 
 # ── Overlay base class ───────────────────────────────────────────────

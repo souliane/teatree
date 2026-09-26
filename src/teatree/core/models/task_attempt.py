@@ -1,7 +1,8 @@
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, ClassVar, cast
 
-from django.db import models
+from django.db import models, transaction
 from django.db.models.functions import Coalesce
 
 from teatree.core.modelkit.gate_registry import get
@@ -10,6 +11,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import terminal_reason_fingerprint
+from teatree.core.telemetry.admission import record_lifecycle_transition
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -203,6 +205,7 @@ class TaskAttempt(models.Model):
 
         SUBSCRIPTION = "subscription", "Subscription"
         METERED = "metered", "Metered"
+        MANAGED = "managed", "Managed"
 
     class Outcome(models.TextChoices):
         """The terminal classification of a finished attempt (souliane/teatree#16).
@@ -286,6 +289,19 @@ class TaskAttempt(models.Model):
     # historical row keeps the blank/empty defaults, never backfilled.
     reasoning_effort = models.CharField(max_length=16, blank=True, default="")
     skills_loaded = models.JSONField(default=list, blank=True)
+    selected_harness = models.CharField(max_length=128, blank=True, default="")
+    selected_provider = models.CharField(max_length=128, blank=True, default="")
+    selected_model = models.CharField(max_length=255, blank=True, default="")
+    route_candidate_index = models.PositiveIntegerField(null=True, blank=True)
+    route_source_skill = models.CharField(max_length=255, blank=True, default="")
+    fallback_reason = models.TextField(blank=True, default="")
+    fallback_from_attempt = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        related_name="fallback_attempts",
+        null=True,
+        blank=True,
+    )
     # How many further polls re-derived this row's unchanged ``limit_parked:`` reason
     # after it was written (see TaskAttemptQuerySet.create). 0 on every non-park row and
     # on a park observed once, so "how long has this been parked" is a field read rather
@@ -344,6 +360,9 @@ class TaskAttempt(models.Model):
         using: str | None = None,
         update_fields: "Iterable[str] | None" = None,
     ) -> None:
+        previous_outcome = ""
+        if not self._state.adding:
+            previous_outcome = type(self).objects.filter(pk=self.pk).values_list("outcome", flat=True).first()
         if self._state.adding:
             self._stamp_repair_loop_fields()
         self.outcome = self._classify_outcome()
@@ -354,6 +373,23 @@ class TaskAttempt(models.Model):
             using=using,
             update_fields=update_fields,
         )
+        if (
+            self.outcome
+            and self.outcome != previous_outcome
+            and not self.error.startswith(LIMIT_PARKED_PREFIX)
+            and (update_fields is None or "outcome" in update_fields)
+        ):
+            transaction.on_commit(
+                partial(
+                    record_lifecycle_transition,
+                    kind="attempt.finished",
+                    entity_id=self.pk,
+                    ticket_id=self.task.ticket.pk,
+                    task_id=self.task.pk,
+                    cause=self.failure_kind or "success",
+                ),
+                using=using,
+            )
 
     def _classify_failure_kind(self) -> str:
         """Name this attempt's failure cause from ``error`` (#3957), blank when it did not fail.

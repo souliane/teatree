@@ -4,15 +4,7 @@ from teatree.dash.views.debug import command_run, debug_session
 from teatree.dash.views.health import health, health_bands_partial
 from teatree.dash.views.interchange import interchange, interchange_export, interchange_import
 from teatree.dash.views.live import live, live_body_partial
-from teatree.dash.views.loops import (
-    gate_toggle,
-    loop_action,
-    loop_cadence,
-    loops,
-    loops_table_partial,
-    mode_switch,
-    runner_toggle,
-)
+from teatree.dash.views.loops import gate_toggle, loop_cadence, loops, loops_table_partial, mode_switch
 from teatree.dash.views.presets import (
     preset_create,
     preset_delete,
@@ -32,9 +24,11 @@ from teatree.dash.views.settings import (
     settings_group,
     settings_readouts,
     settings_restore,
+    settings_seed_set,
     settings_set,
     settings_snapshot,
 )
+from teatree.dash.views.skills import skills, skills_refresh, skills_remove
 from teatree.dash.views.tickets import task_action, ticket_drawer, ticket_transition
 from teatree.dash.views.transcript import transcript
 
@@ -52,7 +46,6 @@ __all__ = [
     "interchange_import",
     "live",
     "live_body_partial",
-    "loop_action",
     "loop_cadence",
     "loops",
     "loops_table_partial",
@@ -64,7 +57,6 @@ __all__ = [
     "preset_rename",
     "preset_use",
     "presets",
-    "runner_toggle",
     "schedule_activate",
     "schedule_slot",
     "schedule_slot_delete",
@@ -74,8 +66,12 @@ __all__ = [
     "settings_group",
     "settings_readouts",
     "settings_restore",
+    "settings_seed_set",
     "settings_set",
     "settings_snapshot",
+    "skills",
+    "skills_refresh",
+    "skills_remove",
     "task_action",
     "ticket_drawer",
     "ticket_transition",

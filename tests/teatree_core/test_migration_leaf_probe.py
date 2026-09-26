@@ -18,6 +18,7 @@ the target's current leaf) yields one leaf — the probe must PASS.
 """
 
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,8 @@ import pytest
 from teatree.core import migration_leaf_probe as probe_module
 from teatree.core.migration_leaf_probe import (
     MigrationLeafConflict,
+    _app_label,
+    _declared_label,
     _leaves_by_app,
     _merged_tree_oid,
     _migration_blobs,
@@ -43,11 +46,26 @@ class Migration(migrations.Migration):
 """
 
 
-def _child_migration(parent: str) -> str:
+@dataclass(frozen=True, slots=True)
+class _FixtureApp:
+    directory: str
+    label: str
+    apps_module: str | None = None
+
+
+_CORE_APP = _FixtureApp("src/teatree/core", "core")
+
+
+def _apps_module(*class_body: str) -> str:
+    body = "".join(f"    {line}\n" for line in class_body)
+    return f"from django.apps import AppConfig\n\n\nclass FixtureConfig(AppConfig):\n{body}"
+
+
+def _child_migration(parent: str, app: _FixtureApp = _CORE_APP) -> str:
     return (
         "from django.db import migrations\n\n\n"
         "class Migration(migrations.Migration):\n"
-        f'    dependencies = [("core", "{parent}")]\n'
+        f'    dependencies = [("{app.label}", "{parent}")]\n'
         "    operations = []\n"
     )
 
@@ -63,23 +81,25 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _write_migration(repo: Path, name: str, body: str) -> None:
-    migrations_dir = repo / "src" / "teatree" / "core" / "migrations"
+def _write_migration(repo: Path, name: str, body: str, app: _FixtureApp = _CORE_APP) -> None:
+    migrations_dir = repo / app.directory / "migrations"
     migrations_dir.mkdir(parents=True, exist_ok=True)
+    if app.apps_module is not None:
+        (repo / app.directory / "apps.py").write_text(app.apps_module)
     init = migrations_dir / "__init__.py"
     if not init.exists():
         init.write_text("")
     (migrations_dir / f"{name}.py").write_text(body)
 
 
-def _make_remote_with_base_migration(tmp_path: Path) -> Path:
+def _make_remote_with_base_migration(tmp_path: Path, app: _FixtureApp = _CORE_APP) -> Path:
     """Bare remote on ``main`` carrying the initial ``0001`` migration."""
     seed = tmp_path / "seed"
     seed.mkdir()
     _git(seed, "init", "-b", "main")
     _git(seed, "config", "user.email", "t@e.st")  # privacy-scan:allow
     _git(seed, "config", "user.name", "Tester")
-    _write_migration(seed, "0001_initial", _BASE_MIGRATION)
+    _write_migration(seed, "0001_initial", _BASE_MIGRATION, app)
     _git(seed, "add", "-A")
     _git(seed, "commit", "-m", "initial migration")
 
@@ -96,21 +116,25 @@ def _clone(tmp_path: Path, bare: Path, name: str = "clone") -> Path:
     return clone
 
 
-def _advance_remote_with_migration(tmp_path: Path, bare: Path, *, name: str, parent: str) -> None:
+def _advance_remote_with_migration(
+    tmp_path: Path, bare: Path, *, name: str, parent: str, app: _FixtureApp = _CORE_APP
+) -> None:
     """Land a new migration on the remote's ``main`` (simulates branch A merging first)."""
     work = tmp_path / f"advance-{name}"
     _git(tmp_path, "clone", str(bare), str(work))
     _git(work, "config", "user.email", "t@e.st")  # privacy-scan:allow
     _git(work, "config", "user.name", "Tester")
-    _write_migration(work, name, _child_migration(parent))
+    _write_migration(work, name, _child_migration(parent, app), app)
     _git(work, "add", "-A")
     _git(work, "commit", "-m", f"remote: add {name}")
     _git(work, "push", "origin", "main")
 
 
-def _feature_branch_with_migration(clone: Path, branch: str, *, name: str, parent: str) -> str:
+def _feature_branch_with_migration(
+    clone: Path, branch: str, *, name: str, parent: str, app: _FixtureApp = _CORE_APP
+) -> str:
     _git(clone, "checkout", "-b", branch)
-    _write_migration(clone, name, _child_migration(parent))
+    _write_migration(clone, name, _child_migration(parent, app), app)
     _git(clone, "add", "-A")
     _git(clone, "commit", "-m", f"feature: add {name}")
     return _git(clone, "rev-parse", "HEAD")
@@ -206,6 +230,89 @@ class TestShaForksMigrationGraph:
         feature_sha = _git(clone, "rev-parse", "HEAD")
 
         assert sha_forks_migration_graph(str(clone), feature_sha) is None
+
+
+_RELABELLED_APP = _FixtureApp(
+    "src/acme_overlay",
+    "t3_acme",
+    _apps_module('name = "acme_overlay"', 'label = "t3_acme"'),
+)
+
+
+class TestAppLabelResolution:
+    def test_straight_chain_under_a_relabelled_app_has_one_leaf(self, tmp_path: Path) -> None:
+        """Dependencies name the app by its pinned label, never by the folder the migrations sit in."""
+        bare = _make_remote_with_base_migration(tmp_path, _RELABELLED_APP)
+        clone = _clone(tmp_path, bare)
+        feature_sha = _feature_branch_with_migration(
+            clone, "feat/x", name="0002_linear", parent="0001_initial", app=_RELABELLED_APP
+        )
+
+        assert sha_forks_migration_graph(str(clone), feature_sha) is None
+
+    def test_fork_under_a_relabelled_app_is_reported_under_its_label(self, tmp_path: Path) -> None:
+        bare = _make_remote_with_base_migration(tmp_path, _RELABELLED_APP)
+        clone = _clone(tmp_path, bare)
+        feature_sha = _feature_branch_with_migration(
+            clone, "feat/b", name="0002_branch_b", parent="0001_initial", app=_RELABELLED_APP
+        )
+        _advance_remote_with_migration(tmp_path, bare, name="0002_branch_a", parent="0001_initial", app=_RELABELLED_APP)
+
+        assert sha_forks_migration_graph(str(clone), feature_sha) == MigrationLeafConflict(
+            app_label="t3_acme", leaf_count=2, leaf_names=("0002_branch_a", "0002_branch_b")
+        )
+
+    @pytest.mark.parametrize(
+        "apps_module",
+        [None, _apps_module('name = "plain_app"')],
+        ids=["no-apps-module", "apps-module-without-label"],
+    )
+    def test_app_without_a_custom_label_is_keyed_by_its_folder(self, tmp_path: Path, apps_module: str | None) -> None:
+        app = _FixtureApp("src/plain_app", "plain_app", apps_module)
+        bare = _make_remote_with_base_migration(tmp_path, app)
+        clone = _clone(tmp_path, bare)
+        feature_sha = _feature_branch_with_migration(
+            clone, "feat/b", name="0002_branch_b", parent="0001_initial", app=app
+        )
+        _advance_remote_with_migration(tmp_path, bare, name="0002_branch_a", parent="0001_initial", app=app)
+
+        assert sha_forks_migration_graph(str(clone), feature_sha) == MigrationLeafConflict(
+            app_label="plain_app", leaf_count=2, leaf_names=("0002_branch_a", "0002_branch_b")
+        )
+
+    def test_installed_app_label_comes_from_the_app_registry(self, tmp_path: Path) -> None:
+        """An app this process runs resolves the way Django's migration loader does, ahead of the tree's literal."""
+        app = _FixtureApp("src/teatree/core", "core", _apps_module('name = "teatree.core"', 'label = "unregistered"'))
+        bare = _make_remote_with_base_migration(tmp_path, app)
+        clone = _clone(tmp_path, bare)
+        feature_sha = _feature_branch_with_migration(
+            clone, "feat/x", name="0002_linear", parent="0001_initial", app=app
+        )
+
+        assert sha_forks_migration_graph(str(clone), feature_sha) is None
+
+
+class TestAppLabel:
+    def test_unreadable_apps_module_falls_back_to_the_folder(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(probe_module, "_git", lambda repo, *args: (128, "fatal: bad object"))
+        assert _app_label("/repo", "src/acme_overlay", "oid") == "acme_overlay"
+
+
+class TestDeclaredLabel:
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            (_apps_module('name = "acme_overlay"', 'label = "t3_acme"'), "t3_acme"),
+            (_apps_module('name = "acme_overlay"'), None),
+            (_apps_module("label = 42"), None),
+            (_apps_module('label = "a"') + '\n\nclass Other(AppConfig):\n    label = "b"\n', None),
+            ('label = "module_level"\n', None),
+            ("class (((", None),
+        ],
+        ids=["declared", "no-label", "non-string", "ambiguous", "outside-a-class", "syntax-error"],
+    )
+    def test_reads_a_single_string_label_off_the_app_config(self, source: str, expected: str | None) -> None:
+        assert _declared_label(source) == expected
 
 
 class TestMergedTreeOid:

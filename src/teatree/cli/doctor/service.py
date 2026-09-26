@@ -27,15 +27,13 @@ from teatree.utils.run import run_allowed_to_fail
 _CLAUDE_PLUGIN_ID = "t3@souliane"
 
 
-# Agent runtimes that consume teatree skills.  ``t3 setup`` creates symlinks
-# into each runtime's skills directory that already exists — missing dirs are
-# skipped silently.  The Claude dir is always ensured by setup.
 AGENT_SKILL_RUNTIMES: tuple[str, ...] = ("claude", "codex")
+_AGENT_SKILL_DIRECTORIES = {"claude": ".claude", "codex": ".agents"}
 
 
 def agent_skill_dirs() -> list[tuple[str, Path]]:
     """Return (runtime_label, skills_dir) pairs, resolved against the current HOME."""
-    return [(name, Path.home() / f".{name}" / "skills") for name in AGENT_SKILL_RUNTIMES]
+    return [(name, Path.home() / _AGENT_SKILL_DIRECTORIES[name] / "skills") for name in AGENT_SKILL_RUNTIMES]
 
 
 class DoctorService:

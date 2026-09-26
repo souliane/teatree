@@ -43,17 +43,14 @@ _MIN_SECTION_CHARS = 120
 #: that added this check. SHRINK ONLY: never add a row to silence a new failure.
 _BASELINE: frozenset[tuple[str, str]] = frozenset(
     {
-        ("skills/code/references/multi-tenant-development.md", "Decision Gate (Non-Negotiable)"),
         ("skills/contribute/references/upstream-issue.md", "5. User Confirmation (Non-Negotiable)"),
         ("skills/platforms/references/gitlab.md", "Pre-Flight Checks (Non-Negotiable)"),
-        ("skills/retro/references/commit-to-fork.md", "Never Work on Main (Non-Negotiable)"),
-        ("skills/retro/references/commit-to-fork.md", "Worktree for Retro Commits (Non-Negotiable)"),
     }
 )
 
 #: The ratchet's real invariant: the list may DRAIN, never GROW. Lower this number
 #: when rows are fixed; raising it is the change reviewers must refuse.
-_CEILING = 5
+_CEILING = 2
 
 
 def _headings(path: Path) -> list[str]:

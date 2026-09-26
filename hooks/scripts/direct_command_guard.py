@@ -1,4 +1,4 @@
-"""Deny a Bash command that bypasses the ``t3`` CLI (#2384 PR7).
+"""Deny a Bash command that bypasses the ``t3`` CLI.
 
 Agents must drive workspace / server / database / test operations through the
 ``t3`` CLI, never the underlying tools (``manage.py runserver``, ``docker compose
@@ -20,9 +20,8 @@ against a quote-stripped copy so a blocked tool name inside a commit message or
 grep argument does not false-block. The ``T3_ALLOW_REMOTE_DUMP=1`` defunct bypass
 (#777) is denied first, even before the allowlist.
 
-Extracted whole from ``hook_router`` (the #2384 Wave-2 router split, PR7) so the
-dispatcher shrinks; the router re-exports :func:`handle_block_direct_commands`
-into ``_HANDLERS`` unchanged, plus :func:`deny_match` (as ``_deny_match``, read by
+The router re-exports :func:`handle_block_direct_commands`
+into ``_HANDLERS``, plus :func:`deny_match` (as ``_deny_match``, read by
 the denylist tests) and :data:`BLOCKED_COMMANDS` (as ``_BLOCKED_COMMANDS``, the
 combined denylist the BLUEPRINT / ship skill / merge-execution prose cite). The
 deny routes through the router's shared ``emit_pretooluse_deny`` chokepoint

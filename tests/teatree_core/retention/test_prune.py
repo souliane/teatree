@@ -186,14 +186,10 @@ class ApplyRetentionTestCase(TestCase):
 
     def test_apply_with_zero_window_deletes_nothing(self) -> None:
         _attempt()
-        _event(idempotency_key="k1")
-        settings = UserSettings(
-            task_attempt_retention_days=0, incoming_event_retention_days=0, park_attempt_retention_days=0
-        )
+        settings = UserSettings(task_attempt_retention_days=0)
         plan = apply_retention(settings=settings)
         assert plan.total_rows == 0
         assert TaskAttempt.objects.count() == 1
-        assert IncomingEvent.objects.count() == 1
 
 
 class ParkLaneReachesWhatTerminalOwnedCannotTestCase(TestCase):
@@ -272,13 +268,6 @@ class ParkRetentionPlanTestCase(TestCase):
         assert plan.total_rows == 2
         assert TaskAttempt.objects.count() == 2  # a plan deletes nothing
 
-    def test_zero_park_window_disables_the_park_lane(self) -> None:
-        _park()
-        plan = plan_retention(settings=UserSettings(park_attempt_retention_days=0))
-        (parks,) = (t for t in plan.tables if t.table == "TaskAttempt (park)")
-        assert parks.disabled is True
-        assert parks.rows == 0
-
 
 class ParkRetentionApplyTestCase(TestCase):
     def test_apply_deletes_the_park_and_keeps_every_protected_row(self) -> None:
@@ -302,7 +291,7 @@ class ParkRetentionApplyTestCase(TestCase):
         # requirement of the operational context, so it is pinned, not incidental.
         for _ in range(5):
             _park()
-        plan = apply_retention(settings=UserSettings(park_attempt_retention_days=7), batch_size=2)
+        plan = apply_retention(batch_size=2)
         (parks,) = (t for t in plan.tables if t.table == "TaskAttempt (park)")
         assert parks.rows == 5
         assert parks.batches == 3
@@ -417,7 +406,7 @@ class ReopenAfterPruneTestCase(TestCase):
 #: The library's prune refuses any backend that is not a ``DatabaseBackend``; the
 #: suite's default is a dummy one, so the lane's live path needs the real topology.
 _DATABASE_BACKEND = {
-    "default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]},
+    "default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]},
 }
 
 

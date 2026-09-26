@@ -71,7 +71,8 @@ class LaneBToolConfig:
     prevention). ``None`` when the task has no on-disk worktree, which disables
     the write/edit/search tools and narrows ``Read`` to the registered skill files
     (:mod:`teatree.agents.skill_files`). ``phase`` is the canonical phase token; it drives the phase-scoped
-    toolset filter (:mod:`teatree.core.modelkit.phase_tools`). Empty string = no
+    toolset filter (:mod:`teatree.core.modelkit.phase_tools`). ``read_roots`` are the
+    spawn's extra ``add_dirs``, reachable by the read tool alone. Empty string = no
     phase-scoping (every assembled tool is exposed), the construction-time
     default so an un-phased ``PydanticAiHarness()`` stays text-only.
     ``shell_denylist`` / ``shell_timeout_seconds`` / ``shell_max_output_bytes``
@@ -84,6 +85,7 @@ class LaneBToolConfig:
     """
 
     fs_root: Path | None = None
+    read_roots: tuple[Path, ...] = ()
     phase: str = ""
     shell_denylist: tuple[str, ...] = _DEFAULT_SHELL_DENYLIST
     shell_timeout_seconds: float = _DEFAULT_SHELL_TIMEOUT_SECONDS
@@ -129,8 +131,10 @@ class LaneBToolConfig:
         fs_root = Path(cwd) if cwd else None
         overrides = dict(options.env or {})
         shell_env = {**os.environ, **overrides} if overrides else {}
+        read_roots = tuple(Path(directory) for directory in options.add_dirs if directory != cwd)
         return cls(
             fs_root=fs_root,
+            read_roots=read_roots,
             phase=phase,
             shell_env=shell_env,
             shell_max_output_bytes=cold_reader.int_setting(

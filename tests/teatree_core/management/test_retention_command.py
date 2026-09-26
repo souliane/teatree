@@ -14,6 +14,7 @@ either way) is what is under test.
 import datetime as dt
 import json
 import os
+from contextlib import AbstractContextManager
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -26,10 +27,15 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core.cleanup import artifact_eviction, artifact_removal, process_table
 from teatree.core.management.commands.retention import Command, RetentionReport, _vacuum_row
 from teatree.core.models import IncomingEvent, Session, Task, TaskAttempt, Ticket
 from teatree.utils.django_db.vacuum import VacuumOutcome
+from tests._git_repo import make_git_repo
+from tests._process_table_venue import blinded_process_table, this_process_in
 from tests._procfs import pinned_venue_proc
+
+_REGISTRY = "teatree.core.cleanup.checkout_registry"
 
 _OLD = timezone.now() - dt.timedelta(days=60)
 _COMMAND = "teatree.core.management.commands.retention"
@@ -344,3 +350,168 @@ class UnlistableScratchRootCommandTests(TestCase):
 
         assert payload["refused"] is False
         assert payload["probe_gap"] == ""
+
+
+class ArtifactEvictionCommandTests(TestCase):
+    """The operator's on-demand view of the same plan the autonomous pass computes (#4244).
+
+    It gates nothing — the sweep runs unconditionally and deletes only what it has PROVED
+    reconstructible. What this surface owes is a HONEST account: an artifact the guards
+    kept, a deferral, and a deletion that failed part-way must each read as themselves, on
+    a host whose overlay points every worktree's ``node_modules`` at one clone directory.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path
+        self.host_proc = tmp_path / "host-proc"
+        (self.host_proc / "1").mkdir(parents=True)
+        (self.host_proc / "1" / "cwd").symlink_to(tmp_path / "elsewhere")
+        (self.host_proc / "1" / "exe").symlink_to(tmp_path / "elsewhere" / "bin" / "process")
+        this_process_in(self.host_proc)
+        self.enterContext(patch.object(process_table, "_HOST_PROC_ROOT", self.host_proc))
+        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(tmp_path,)))
+        self.enterContext(patch(f"{_REGISTRY}.Path.cwd", return_value=tmp_path / "nowhere"))
+        self.enterContext(patch(f"{_COMMAND}.worktree_root", return_value=tmp_path))
+
+    def _dormant_artifact(self, checkout_name: str = "clone", *, size: int = 4096) -> Path:
+        checkout = make_git_repo(self.workspace / checkout_name)
+        artifact = checkout / "node_modules"
+        (artifact / "lib").mkdir(parents=True)
+        (artifact / "lib" / "big.so").write_bytes(b"x" * size)
+        (checkout / "package-lock.json").touch()
+        for path in (artifact, checkout):
+            os.utime(path, (1_600_000_000, 1_600_000_000))
+        return artifact
+
+    def _run(self, *args: str) -> dict[str, Any]:
+        out = StringIO()
+        call_command("retention", "artifacts", *args, "--json", stdout=out)
+        return json.loads(out.getvalue())
+
+    def test_the_default_is_a_dry_run_that_deletes_nothing(self) -> None:
+        artifact = self._dormant_artifact()
+
+        payload = self._run("--days", "1")
+
+        assert artifact.exists(), "a dry run may not delete"
+        assert payload["applied"] is False
+        assert payload["freed_bytes"] == 0
+        assert payload["estimated_bytes"] > 0
+        assert [row["path"] for row in payload["entries"] if row["verdict"] == "EVICT"] == [str(artifact)]
+
+    def test_apply_actually_evicts(self) -> None:
+        """Anti-vacuity: the dry run's restraint must be the flag, not a broken pass."""
+        artifact = self._dormant_artifact()
+
+        payload = self._run("--days", "1", "--apply")
+
+        assert not artifact.exists()
+        assert payload["applied"] is True
+        assert payload["freed_bytes"] > 0
+
+    def test_a_symlinked_artifact_and_its_target_both_read_as_kept(self) -> None:
+        """The check the plan's §6 step 2 prescribes before any deletion is allowed."""
+        artifact = self._dormant_artifact()
+        worktree = make_git_repo(self.workspace / "wt-1234")
+        link = worktree / "node_modules"
+        link.symlink_to(artifact)
+        os.utime(worktree, (1_600_000_000, 1_600_000_000))
+
+        payload = self._run("--days", "1")
+
+        kept = {row["path"] for row in payload["entries"] if row["verdict"] == "KEEP"}
+        assert str(link) in kept, "the link must appear under KEEP"
+        assert str(artifact) in kept, "so must the target every worktree depends on"
+        assert [row["path"] for row in payload["entries"] if row["verdict"] == "EVICT"] == []
+
+    def test_a_refused_pass_reports_the_reason_and_exits_non_zero(self) -> None:
+        """A typer.Exit here would exit 0 under call_command and CI would report green."""
+        out = StringIO()
+        with blinded_process_table(self.workspace / "gone"), pytest.raises(SystemExit) as exit_info:
+            call_command("retention", "artifacts", "--days", "1", "--json", stdout=out)
+
+        assert exit_info.value.code == 1
+        payload = json.loads(out.getvalue())
+        assert payload["refused"] is True
+        assert payload["refusal"], "the payload is written BEFORE the raise, or the reason is lost"
+
+    def test_a_delete_that_failed_part_way_reads_as_stopped_not_as_an_untouched_keep(self) -> None:
+        """The state ``_failed_delete_state`` exists to name never reached the surface (F10).
+
+        Rendered as ``KEEP — dormant, rebuildable``, a part-removed tree reads as "nothing
+        happened", and the operator is never told it must be rebuilt before it is used.
+        """
+        artifact = self._dormant_artifact()
+
+        with patch.object(artifact_removal.shutil, "rmtree", side_effect=OSError("Permission denied")):
+            payload = self._run("--days", "1", "--apply")
+
+        row = next(row for row in payload["entries"] if row["path"] == str(artifact))
+        assert row["verdict"] == "STOPPED", payload["entries"]
+        assert "must be rebuilt before use" in row["reason"], row
+        assert payload["freed_bytes"] == 0
+
+    def _blind_after_first_delete(
+        self,
+    ) -> tuple[Path, Path, AbstractContextManager[object], AbstractContextManager[object]]:
+        first = self._dormant_artifact("aaa-first", size=100_000)
+        second = self._dormant_artifact("zzz-second", size=1_000)
+        answering = self.host_proc / "1" / "cwd"
+        readlink = Path.readlink
+        unreadable = PermissionError()
+        blinded = False
+
+        def _readlink(path: Path) -> Path:
+            if blinded and path == answering:
+                raise unreadable
+            return readlink(path)
+
+        real_remove = artifact_eviction._remove_anchored_candidate
+        removed = 0
+
+        def _remove(candidate: artifact_eviction.ArtifactCandidate) -> str:
+            nonlocal removed, blinded
+            reason = real_remove(candidate)
+            if not reason:
+                removed += 1
+            if removed == 1:
+                blinded = True  # the only pid that spoke stops speaking: a blind table, not a gap
+            return reason
+
+        return (
+            first,
+            second,
+            patch.object(Path, "readlink", _readlink),
+            patch.object(
+                artifact_eviction,
+                "_remove_anchored_candidate",
+                side_effect=_remove,
+            ),
+        )
+
+    def test_a_mid_batch_refusal_reports_the_removed_and_stopped_candidates(self) -> None:
+        first, second, readlink_patch, rmtree_patch = self._blind_after_first_delete()
+        out = StringIO()
+
+        with readlink_patch, rmtree_patch, pytest.raises(SystemExit) as exit_info:
+            call_command("retention", "artifacts", "--days", "1", "--apply", "--json", stdout=out)
+
+        payload = json.loads(out.getvalue())
+        assert exit_info.value.code == 1
+        assert not first.exists()
+        assert second.exists()
+        assert payload["evicted_count"] == 1
+        second_row = next(row for row in payload["entries"] if row["path"] == str(second))
+        assert second_row["verdict"] == "STOPPED"
+
+    def test_a_mid_batch_refusal_human_summary_does_not_claim_nothing_was_removed(self) -> None:
+        _first, _second, readlink_patch, rmtree_patch = self._blind_after_first_delete()
+        out = StringIO()
+
+        with readlink_patch, rmtree_patch, pytest.raises(SystemExit):
+            call_command("retention", "artifacts", "--days", "1", "--apply", stderr=out)
+
+        rendered = out.getvalue()
+        assert "nothing was removed" not in rendered
+        assert "after evicting 1 artifact" in rendered

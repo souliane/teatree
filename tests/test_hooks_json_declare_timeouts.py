@@ -1,3 +1,5 @@
+# test-path: cross-cutting — drives hooks/hooks.json against a ceiling shared with
+# teatree.core.session_start_hook_budget; no single src/teatree/ mirror owns it.
 """Every hook registration in hooks.json declares a timeout.
 
 A hook registered without ``timeout`` is unbounded: the harness waits on it for
@@ -19,12 +21,14 @@ hook fails in the most expensive place -- session start, before any work.
 import json
 from pathlib import Path
 
+from teatree.core.session_start_hook_budget import SESSION_START_TIMEOUT_CEILING_S
+
 _HOOKS_JSON = Path(__file__).resolve().parents[1] / "hooks" / "hooks.json"
 
-# A hook on the session-start path blocks the user's first prompt, so it gets a
-# tighter ceiling than the general one.
 _MAX_TIMEOUT_S = 60
-_MAX_SESSION_START_TIMEOUT_S = 30  # the bound the other SessionStart hooks already use
+# Shared with the advisory that applies this same ceiling to the operator's own
+# settings, which this test cannot reach.
+_MAX_SESSION_START_TIMEOUT_S = SESSION_START_TIMEOUT_CEILING_S
 
 
 def _registrations() -> list[tuple[str, dict]]:

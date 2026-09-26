@@ -24,6 +24,7 @@ _HOLDS_RETIRED_VALUES = frozenset(
     {
         "tests/quality/test_no_retired_ticket_state_names.py",
         "tests/teatree_core/test_rename_ticket_fsm_states_migration.py",
+        "tests/teatree_core/migrations/test_rename_ticket_fsm_states_db_alias.py",
         "tests/teatree_core/test_rehome_reviewer_delivered_migration.py",
         "tests/teatree_cli/doctor/test_unknown_ticket_state_check.py",
     }

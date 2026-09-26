@@ -55,6 +55,6 @@ def test_unknown_fixture_is_a_loud_spec_error(tmp_path: Path) -> None:
         load_eval_yaml(_write(tmp_path, "  fixture: not_a_fixture\n"))
 
 
-def test_on_behalf_ask_cli_stub_is_accepted(tmp_path: Path) -> None:
-    spec = load_eval_yaml(_write(tmp_path, "  cli_stubs: [t3@on_behalf_ask]\n"))[0]
-    assert spec.cli_stubs == ("t3@on_behalf_ask",)
+def test_on_behalf_forbidden_cli_stub_is_accepted(tmp_path: Path) -> None:
+    spec = load_eval_yaml(_write(tmp_path, "  cli_stubs: [t3@on_behalf_forbidden]\n"))[0]
+    assert spec.cli_stubs == ("t3@on_behalf_forbidden",)

@@ -98,6 +98,53 @@ class TestEnvOverrideWins(_WorktreeRootCase):
             assert worktree_root() == Path("/from/django")
 
 
+class TestExplicitOverlayArgument(_WorktreeRootCase):
+    """``overlay=`` names the overlay instead of inheriting the process's ambient one.
+
+    The container venue resolves NO ambient overlay: ``T3_OVERLAY_NAME`` is unset,
+    ``WORKDIR /home/teatree`` has no ``manage.py`` ancestor, and two overlays are
+    registered so the single-overlay fallback never fires. The name then resolves
+    to ``""`` and the per-overlay segment vanishes — which is how one ticket's
+    worktrees came to be split across two roots.
+    """
+
+    def _unresolvable_ambient(self) -> None:
+        self.enterContext(patched_environ({}, remove=("T3_OVERLAY_NAME", "T3_WORKSPACE_DIR")))
+        self.enterContext(patch("teatree.config.resolution._active_overlay_entry", return_value=None))
+
+    def test_explicit_overlay_beats_unresolvable_ambient(self) -> None:
+        self._unresolvable_ambient()
+
+        assert worktree_root() == self.home / "workspace" / "t3-workspaces"
+        assert worktree_root(overlay="other-overlay") == self.home / "workspace" / "t3-workspaces" / "other-overlay"
+
+    def test_explicit_overlay_reads_that_overlays_db_scope(self) -> None:
+        ConfigSetting.objects.set_value("workspace_dir", "/srv/named-ws", scope="named")
+
+        assert worktree_root(overlay="named") == Path("/srv/named-ws")
+        assert worktree_root() == self.home / "workspace" / "t3-workspaces" / "myoverlay"
+
+    def test_empty_string_overlay_is_not_none(self) -> None:
+        # A caller declaring itself overlay-LESS is not the same as one omitting
+        # the argument: collapsing the two re-creates the bug at the parameter.
+        ConfigSetting.objects.set_value("workspace_dir", "/srv/ambient-ws", scope="myoverlay")
+
+        assert worktree_root(overlay="") == self.home / "workspace" / "t3-workspaces"
+        assert worktree_root() == Path("/srv/ambient-ws")
+
+    def test_omitted_overlay_is_unchanged(self) -> None:
+        assert worktree_root(overlay=None) == worktree_root()
+        assert worktree_root() == self.home / "workspace" / "t3-workspaces" / "myoverlay"
+
+    def test_env_and_django_tiers_stay_ahead_of_an_explicit_overlay(self) -> None:
+        os.environ["T3_WORKSPACE_DIR"] = "/from/env"
+        assert worktree_root(overlay="other-overlay") == Path("/from/env")
+
+        del os.environ["T3_WORKSPACE_DIR"]
+        with self.settings(T3_WORKSPACE_DIR="/from/django"):
+            assert worktree_root(overlay="other-overlay") == Path("/from/django")
+
+
 class TestPreDjangoSafe(_WorktreeRootCase):
     """The settings probe is fail-safe when Django is unconfigured (mirrors clone_root)."""
 

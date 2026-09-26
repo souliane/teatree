@@ -12,6 +12,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.gates.review_request_guard import ReconcileResult, ReconcileStatus
 from teatree.core.management.commands import followup as followup_command
 from tests.teatree_core.conftest import CommandOverlay
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
@@ -134,7 +135,10 @@ class TestDiscoverMrs(TestCase):
             ),
             patch(
                 "teatree.core.gates.review_request_guard.reconcile_out_of_band",
-                return_value="https://team.slack.com/archives/C1/p1",
+                return_value=ReconcileResult(
+                    ReconcileStatus.RECONCILED,
+                    "https://team.slack.com/archives/C1/p1",
+                ),
             ),
         ):
             result = cast("dict[str, object]", call_command("followup", "discover-mrs"))

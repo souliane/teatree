@@ -17,7 +17,6 @@ from django.test import TestCase
 
 from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Mode, Prompt
-from teatree.loop.preset_resolution import ActivePreset
 from teatree.loop.standing_directives import (
     MAX_DIRECTIVE_CHARS,
     SCOPE_ATTENDED,
@@ -118,6 +117,18 @@ class TestTheThreeSlots:
         assert "ONLY if" in text
         assert "transcript" in text
         assert "outstanding user requests" in text
+
+    def test_todo_directive_carries_the_drain_half(self) -> None:
+        # Capture alone lets the list only grow: an OPEN task must also be
+        # checked against durable state and closed when already satisfied.
+        text = _text("standing-todo-consolidate")
+        assert "OPEN task" in text
+        assert "already satisfies it" in text
+        assert "CLOSE it" in text
+        assert "FALSE OPEN" in text
+        # The closing invariant: the list must drain, not only grow, across a session.
+        assert "DRAIN" in text
+        assert "not only grow" in text
 
     def test_pr_board_directive_names_the_keystone_and_its_guards(self) -> None:
         text = _text("standing-pr-board")
@@ -311,20 +322,9 @@ class TestTheSelfPumpBrake(TestCase):
         assert len(resolved) == len(STANDING_DIRECTIVES)
 
     def test_the_brake_reads_the_merged_mode_never_the_preset_layer(self) -> None:
-        # #4196: the L3/L2 layer cannot see the live-presence upgrade, so braking
-        # on it suppresses the rule at an away slot the owner is typing into.
-        away_slot = ActivePreset(
-            preset=Mode(name="off", entries={SELF_PUMP_LOOP: False}),
-            layer="schedule",
-            reason="test",
-            until=None,
-        )
-        present = self._resolved(pauses=False, source="live")
-
-        with (
-            mock.patch("teatree.loop.preset_resolution._resolve_active_preset", return_value=away_slot),
-            mock.patch("teatree.core.mode_resolution._apply_presence_upgrade", return_value=present),
-        ):
+        # #4196: the override/schedule layer stops at ``None`` when neither governs, so
+        # braking on it would ignore the configured default mode entirely.
+        with mock.patch("teatree.loop.preset_resolution._resolve_active_preset", return_value=None):
             braked = _self_pump_paused()
             resolved = resolve_standing_directives()
 

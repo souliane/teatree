@@ -7,6 +7,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
+from tests.factories import record_test_plan
 from tests.teatree_core.models._shared import (
     _advance_ticket_to_tested,
     _advance_work_started_to_plan_recorded,
@@ -89,14 +90,12 @@ class TestPhaseAutoDispatch(TestCase):
         assert ticket.tasks.filter(phase="planning", status=Task.Status.PENDING).exists()
 
     def test_coding_task_completion_advances_to_coded(self) -> None:
-        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
         ticket = Ticket.objects.create()
         ticket.scope()
         ticket.save()
         _start_with_provision(self, ticket)
 
-        PlanArtifact.record(ticket=ticket, plan_text="Plan: implement", recorded_by="t3:planner")
+        record_test_plan(ticket, plan_text="Plan: implement", recorded_by="t3:planner")
         _complete_phase_task(ticket, "planning")
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.PLAN_RECORDED

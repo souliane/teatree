@@ -87,7 +87,7 @@ def push_gate_command(
             typer.echo(f"ast-grep findings ({len(result.astgrep_findings)}):")
             for finding in result.astgrep_findings:
                 typer.echo(f"  {finding['check_id']}  {finding['path']}:{finding['start']['line']}")
-        raise typer.Exit(code=0 if result.ok else 1)
+        raise typer.Exit(code=result.exit_code)
 
     typer.echo(plan.report())
     typer.echo(f"reason: {plan.reason}")

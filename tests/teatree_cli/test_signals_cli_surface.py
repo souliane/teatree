@@ -25,6 +25,7 @@ from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.overlay import OverlayAppBuilder
+from teatree.core.factory.factory_signals import SIGNALS, VISIBILITY_SIGNALS
 from teatree.utils.env import patched_environ
 
 runner = CliRunner()
@@ -65,7 +66,7 @@ class TestSignalsCliSurface(TestCase):
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)  # raises if the human view leaked onto stdout
         assert {"overlay", "window_days", "verdict", "signals"} <= set(payload)
-        assert len(payload["signals"]) == 5
+        assert len(payload["signals"]) == len(SIGNALS) + len(VISIBILITY_SIGNALS)
 
     def test_overlay_scope_flows_through_the_bridge(self) -> None:
         # T3_OVERLAY_NAME the leaf sets must reach the report's scope field — the

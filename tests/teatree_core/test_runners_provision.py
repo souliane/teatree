@@ -585,6 +585,7 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
             # #2655: the call site now reads the FULL remote URL (host
             # intact); the gate refuses a non-github host before any gh call.
             patch("teatree.core.runners.provision.git.remote_url", return_value=remote_url),
+            patch("teatree.core.public_identity.forge_url_cli_env", return_value={"GH_TOKEN": "routed"}),
             patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=fake_gh_visibility),
             patch(
                 "teatree.core.runners.provision.set_local_noreply_identity",
@@ -789,7 +790,8 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
     Provisioning is now idempotent: a healthy leftover for the scope is ADOPTED, a
     broken one (registered-but-missing dir, wrong branch, non-git partial) is
     cleaned up and recreated, and a leftover carrying work that exists on NO remote
-    is NEVER destroyed — it is adopted in place. Real git under ``tmp_path``.
+    is NEVER destroyed — nor adopted unless it sits in the scope's own slot. Real git
+    under ``tmp_path``.
     """
 
     @pytest.fixture(autouse=True)
@@ -936,11 +938,10 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         assert git.current_branch(str(wt_path)) == branch
         assert self._recorded_path(ticket) == str(wt_path)
 
-    def test_leftover_carrying_unpushed_work_is_adopted_never_destroyed(self) -> None:
-        # The data-loss guard (#706, mirrored from reconcile/recover): the leftover is
-        # in the WRONG place, so the cleanup path would normally reap it — but its
-        # commits exist on NO remote. Destroying it would be the only copy of that
-        # work. It is adopted where it stands instead.
+    def test_leftover_elsewhere_carrying_unpushed_work_is_refused_never_adopted_nor_destroyed(self) -> None:
+        # The same branch checked out OUTSIDE this ticket's slot is not a checkout this
+        # ticket owns, so recovery must not adopt it — and its commits exist on no
+        # remote, so it must not be reaped either (#706). Only an explicit adopt claims it.
         clone = self._clone()
         branch = "3234-precious"
         stale = self._add_worktree(clone, self.tmp / "old-location", branch)
@@ -948,10 +949,11 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
 
         result, ticket = self._provision(branch)
 
-        assert result.ok is True, result.detail
+        assert result.ok is False, "a same-branch checkout outside the ticket's slot was adopted"
         assert stale.is_dir(), "a leftover with unpushed commits was DESTROYED"
         assert (stale / "work.txt").read_text(encoding="utf-8") == "precious\n"
-        assert self._recorded_path(ticket) == str(stale), "the surviving worktree must be the one recorded"
+        assert not (self.workspace / branch / "repo-a").exists()
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 0
 
     def test_row_recording_a_checkout_that_is_gone_is_reprovisioned(self) -> None:
         # souliane/teatree#3943: the row records a path whose checkout no longer
@@ -1049,6 +1051,37 @@ class TestWorktreeProvisionerIsIdempotent(TestCase):
         assert str(wt_path) not in registered, "the failed provision stranded a git worktree registration"
         assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 0
 
+    def test_a_leftover_adopted_elsewhere_is_refused_not_persisted_as_a_split(self) -> None:
+        # Recovery once adopted a same-branch checkout ELSEWHERE, persisting a row that split the workspace.
+        self._clone("repo-a")
+        clone_b = self._clone("repo-b")
+        branch = "3234-recovery-bypass"
+        stale_b = self._add_worktree(clone_b, self.tmp / "old-location-b", branch)
+        self._commit(stale_b, "work.txt", "precious\n")
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/3234-recovery-bypass",
+            repos=["repo-a", "repo-b"],
+            extra={"branch": branch, "description": "x"},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is False, "an alternate checkout outside the ticket workspace must never be silently split"
+        assert stale_b.is_dir(), "the alternate checkout carrying unpushed work must survive the refusal"
+        assert (stale_b / "work.txt").read_text(encoding="utf-8") == "precious\n"
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-b").count() == 0, "no split row persisted"
+        recorded_a = Worktree.objects.get(ticket=ticket, repo_path="repo-a")
+        assert Path((recorded_a.extra or {})["worktree_path"]).parent == self.workspace / branch
+
 
 class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
     """#2276: provisioning a worktree against the WRONG repo must fail loud.
@@ -1121,6 +1154,30 @@ class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
         assert "someone-else/teatree" in message
         no_worktree = self.workspace / "ac-teatree-2276-wrong" / "teatree"
         assert not no_worktree.exists()
+
+    def test_a_multi_segment_path_with_a_wrong_origin_flat_clone_raises_loud(self) -> None:
+        # The rung added for the container's FLAT clone root resolves
+        # ``workspace/<basename>`` for a full GitLab namespace path. ``is_github_slug`` (the pre-#151 predicate)
+        # answered False for any path with more than one "/", so the #2276 origin guard
+        # never ran for exactly the shape that rung serves.
+        self._init_clone(self.workspace / "tools", "git@gitlab.com:other-group/tools.git")
+
+        with pytest.raises(ValueError, match="group-a/sub-x/tools") as exc:
+            self._run(["group-a/sub-x/tools"], "ac-multi-seg-wrong")
+
+        assert "other-group/tools" in str(exc.value)
+        assert not (self.workspace / "ac-multi-seg-wrong" / "tools").exists()
+        assert Worktree.objects.filter(repo_path="group-a/sub-x/tools").count() == 0
+
+    def test_a_multi_segment_path_with_the_matching_origin_proceeds(self) -> None:
+        # The other direction: the guard must not refuse the legitimate flat-clone case
+        # the rung exists for, or it would be a removal of the rung by another name.
+        self._init_clone(self.workspace / "tools", "git@gitlab.com:group-a/sub-x/tools.git")
+
+        result = self._run(["group-a/sub-x/tools"], "ac-multi-seg-ok")
+
+        assert result.ok is True, result.detail
+        assert (self.workspace / "ac-multi-seg-ok" / "tools" / ".git").exists()
 
     def test_bare_repo_name_is_not_guarded(self) -> None:
         # A bare basename carries no canonical slug to compare against, so

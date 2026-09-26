@@ -52,6 +52,7 @@ from teatree.core.models.mechanism_sketch import MechanismSketch
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 from teatree.core.models.review_verdict import ReviewVerdict
 from tests._forge_stub import changed_files_stdout
+from tests.factories import waive_rubric
 
 _FORTY_HEX = "a" * 40
 _OTHER_HEX = "b" * 40
@@ -332,7 +333,12 @@ def _gh_green(argv: list[str]) -> tuple[int, str, str]:
 
 
 def _keystone_fixtures(ticket: Ticket) -> MergeClear:
-    """A cold-review verdict + PR row + green CLEAR bound to ``_FORTY_HEX`` for *ticket*."""
+    """A cold-review verdict + PR row + green CLEAR bound to ``_FORTY_HEX`` for *ticket*.
+
+    The audited bypass is recorded too, so the merge-quality gate is the one that fires
+    here — the sibling rubric gate at the same chokepoint would otherwise refuse first.
+    """
+    waive_rubric(ticket)
     ReviewVerdict.record(
         pr_id=_PR, slug=_SLUG, reviewed_sha=_FORTY_HEX, verdict="merge_safe", reviewer_identity="cold-reviewer"
     )

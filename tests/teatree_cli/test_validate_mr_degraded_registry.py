@@ -15,6 +15,7 @@ already draws for :func:`teatree.config.loader._inject_db_registries`:
 - neither path changes a verdict when an overlay DOES resolve.
 """
 
+import json
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -30,7 +31,8 @@ _COLD = "teatree.config.cold_reader"
 
 
 def _invoke(title: str):
-    return runner.invoke(app, ["tool", "validate-mr", "--title", title, "--description", "## What\nbody"])
+    payload = json.dumps({"title": title, "description": "## What\nbody"})
+    return runner.invoke(app, ["tool", "validate-mr"], input=payload)
 
 
 class TestDegradedRegistryFailsClosed:

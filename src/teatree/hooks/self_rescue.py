@@ -14,6 +14,7 @@ matter how a gate's detection misbehaves:
     ``t3 <overlay> gate config-overwrite disable``,
     ``t3 <overlay> gate main-clone disable``,
     ``t3 <overlay> gate plan disable``,
+    ``t3 <overlay> gate visible-plan disable``,
     ``t3 <overlay> gate add-all disable``,
     ``t3 <overlay> gate raw-merge disable``): the orchestrator-Bash,
     skill-loading, config-overwrite, main-clone, and out-of-band
@@ -111,6 +112,7 @@ SELF_RESCUE_ALLOWLIST: Final[tuple[tuple[_EntryToken, ...], ...]] = (
     ("t3", OVERLAY, "gate", "cron-loop-shell", "disable"),
     ("t3", OVERLAY, "gate", "main-clone", "disable"),
     ("t3", OVERLAY, "gate", "plan", "disable"),
+    ("t3", OVERLAY, "gate", "visible-plan", "disable"),
     ("t3", OVERLAY, "gate", "add-all", "disable"),
     ("t3", OVERLAY, "gate", "raw-merge", "disable"),
     ("t3", OVERLAY, "gate", "fail-open", "enable"),

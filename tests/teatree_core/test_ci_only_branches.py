@@ -18,6 +18,15 @@ from unittest.mock import patch
 import pytest
 
 
+@pytest.fixture
+def _routed_forge_cli_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep host-CLI mechanics isolated from owning-overlay route discovery."""
+    monkeypatch.setattr(
+        "teatree.core.worktree.branch_classification.forge_cli_env",
+        lambda _repo: {"GH_TOKEN": "routed"},
+    )
+
+
 class TestRegisterOverlayCommandsAllowlistFilter:
     """``register_overlay_commands`` skips entries outside the allowlist.
 
@@ -120,6 +129,7 @@ class TestOverlayLoaderTomlSkipNoClassPath:
         assert "bad" not in result
 
 
+@pytest.mark.usefixtures("_routed_forge_cli_env")
 class TestProbeHostCliEmptyResults:
     """``probe_host_cli`` short-circuits on empty / ``[]`` stdout — line 166."""
 
@@ -144,6 +154,7 @@ class TestProbeHostCliEmptyResults:
             assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("sha")) == ""
 
 
+@pytest.mark.usefixtures("_routed_forge_cli_env")
 class TestProbeHostCliTimeout:
     """``probe_host_cli`` bounds the host CLI and fails safe on expiry — #1580.
 
@@ -201,6 +212,7 @@ class TestProbeHostCliTimeout:
         assert run_mock.call_args.kwargs["timeout"] == pytest.approx(30.0)
 
 
+@pytest.mark.usefixtures("_routed_forge_cli_env")
 class TestProbeHostCliFailSafePaths:
     """The non-timeout failure/success paths still resolve correctly — #1580 regression guard."""
 

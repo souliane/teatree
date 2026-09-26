@@ -68,9 +68,10 @@ def demanding_session(tmp_path: Path) -> dict[str, str]:
 
 
 def _run_router(event: str, payload: dict, env_extra: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    env: dict[str, str] = {**os.environ, **env_extra}
-    env.pop("XDG_DATA_HOME", None)
-    env.pop("T3_CONFIG_DB", None)
+    # Built by exclusion rather than `pop`: a `pop(key, None)` widens the value type to
+    # `str | None`, which is not an environment.
+    dropped = {"XDG_DATA_HOME", "T3_CONFIG_DB"}
+    env: dict[str, str] = {k: v for k, v in {**os.environ, **env_extra}.items() if k not in dropped}
     return subprocess.run(
         [sys.executable, str(HOOK_ROUTER), "--event", event],
         input=json.dumps(payload),

@@ -1,7 +1,9 @@
 <section class="band">
   <h2>Loops</h2>
-  <p class="muted">Per-loop enable/disable is the emergency handle — the normal one is the
-    <a href="{% url 'dash:presets' %}">schedule and preset editor</a>.</p>
+  <p class="muted">Whether a loop runs is decided top-down and shown here, never edited here: the
+    <a href="{% url 'dash:presets' %}">schedule and preset editor</a> is the handle, and a manual
+    override beats it and says why. Break glass in
+    <a href="/admin/core/loopstate/">django-admin</a> when neither is reachable.</p>
   {% comment %}
   The cadence rule is GLOBAL, so it is stated once here rather than repeated on every row —
   a per-row copy of the same sentence says nothing about that row. Only a loop whose OWN
@@ -19,7 +21,7 @@
     <thead>
       <tr>
         <th>loop</th><th>effective</th><th>deciding layer</th><th>cadence</th>
-        <th>last run</th><th>next due</th><th>status</th><th>emergency</th>
+        <th>last run</th><th>next due</th><th>status</th><th>override reason</th>
       </tr>
     </thead>
     <tbody>
@@ -76,39 +78,7 @@
           <td>{{ loop.next_run_at|default:"—" }}</td>
           <td>{{ loop.status }}</td>
           <td>
-            {# Only the applicable verb of each pair — pause XOR resume, disable XOR enable. #}
-            <div class="row-actions">
-              {% if loop.status == "paused" %}
-                <form method="post" action="{% url 'dash:loop_action' %}" hx-post="{% url 'dash:loop_action' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
-                  {% csrf_token %}
-                  <input type="hidden" name="name" value="{{ loop.name }}">
-                  <input type="hidden" name="action" value="resume">
-                  <button class="dash-btn" type="submit">resume</button>
-                </form>
-              {% else %}
-                <form method="post" action="{% url 'dash:loop_action' %}" hx-post="{% url 'dash:loop_action' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
-                  {% csrf_token %}
-                  <input type="hidden" name="name" value="{{ loop.name }}">
-                  <input type="hidden" name="action" value="pause">
-                  <button class="dash-btn" type="submit">pause</button>
-                </form>
-              {% endif %}
-              {% if loop.enabled %}
-                <form method="post" action="{% url 'dash:loop_action' %}" hx-post="{% url 'dash:loop_action' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
-                  {% csrf_token %}
-                  <input type="hidden" name="name" value="{{ loop.name }}">
-                  <input type="hidden" name="action" value="disable">
-                  <button class="dash-btn danger" type="submit">disable</button>
-                </form>
-              {% else %}
-                <form method="post" action="{% url 'dash:loop_action' %}" hx-post="{% url 'dash:loop_action' %}" hx-target="#loops-body" hx-swap="morph:innerHTML">
-                  {% csrf_token %}
-                  <input type="hidden" name="name" value="{{ loop.name }}">
-                  <input type="hidden" name="action" value="enable">
-                  <button class="dash-btn" type="submit">enable</button>
-                </form>
-              {% endif %}
-            </div>
+            {% if loop.override_reason %}<div class="muted">{{ loop.override_reason }}</div>{% else %}—{% endif %}
           </td>
         </tr>
       {% empty %}

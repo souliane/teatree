@@ -26,6 +26,7 @@ Lives in ``teatree.loop`` (orchestration): it composes a ``core`` FSM method wit
 import logging
 
 from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
+from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Ticket
 
@@ -42,7 +43,10 @@ def redispatch_unplanned_tickets() -> int:
     for ticket in _stranded_candidates():
         # Per-item fault isolation (#3441): one poison row must not strand every other.
         try:
-            ticket.begin_planning()
+            with redispatch_window() as refusal:
+                if refusal:
+                    continue
+                ticket.begin_planning()
         except Exception:
             logger.exception("Unplanned-ticket redispatch skipped ticket %s", ticket.pk)
             continue

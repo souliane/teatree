@@ -46,6 +46,7 @@ from teatree.core.models import (
 )
 from teatree.utils.pr_ref import PrRef
 from tests._forge_stub import changed_files_stdout
+from tests.factories import waive_rubric
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 
@@ -144,6 +145,7 @@ class TestClearIssuanceSeam(TestCase):
 
     def test_clear_creates_actionable_mergeclear_row(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         result = cast(
             "dict[str, object]",
             call_command(
@@ -218,6 +220,7 @@ class TestClearIssuanceSeam(TestCase):
         # ``--ticket-id`` is optional and no caller passes it, so a CLEAR was born
         # with no FSM for the keystone to advance. The PR knows its own ticket.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         PullRequest.objects.create(
             ticket=ticket,
             overlay=ticket.overlay,
@@ -261,6 +264,7 @@ class TestClearIssuanceSeam(TestCase):
     def test_clear_then_merge_round_trip(self) -> None:
         """The seam closes the loop: issue a CLEAR, the loop merges by its id."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         issued = cast(
             "dict[str, object]",
             call_command(
@@ -294,6 +298,7 @@ class TestClearIssuanceSeam(TestCase):
         ``transaction.atomic``, so the CLEAR is rolled back with the verdict.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         with patch.object(ReviewVerdict, "record", side_effect=ClearIssuanceError("verdict store unavailable")):
             refusal = _refused_clear(
                 "864",
@@ -407,6 +412,7 @@ class TestClearIssuanceSeam(TestCase):
         silent-failure mode this issue closes for truncated SHAs.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         mixed_case = "ABCDEF1234567890abcdef1234567890ABCDEF12"
         result = cast(
             "dict[str, object]",
@@ -460,6 +466,7 @@ class TestClearIssuanceSeam(TestCase):
         consistent with the rest of the surface.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         result = cast(
             "dict[str, object]",
             call_command(
@@ -508,6 +515,7 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
 
     def test_substrate_clear_without_human_authorizer_is_held(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=870,
@@ -565,6 +573,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
 
     def test_human_authorized_substrate_merges_and_records_authorizer(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=873,
@@ -598,6 +607,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
     def test_substrate_merge_without_human_authorized_flag_is_held(self) -> None:
         """Even an authorised CLEAR will not auto-merge: the human flag is mandatory at execute time."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=874,
@@ -618,6 +628,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
     def test_human_authorized_flag_must_match_recorded_authorizer(self) -> None:
         """The execute-time human flag must match the CLEAR's recorded authoriser."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=875,
@@ -646,6 +657,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
     def test_human_authorized_flag_on_non_substrate_clear_is_refused(self) -> None:
         """The human-substrate escape hatch must not be usable to bypass loop review of logic PRs."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=876,
@@ -687,6 +699,7 @@ class TestAgentExecutesApprovedSubstrateMerge(TestCase):
     def test_agent_cli_invocation_executes_the_approved_substrate_merge(self) -> None:
         """The merge runs through the ordinary agent CLI path — no human actor step."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=877,
@@ -725,13 +738,14 @@ class TestAgentExecutesApprovedSubstrateMerge(TestCase):
 
         Its human-related parameters are ``human_authorized`` (substrate approval)
         and ``expedite_authorized`` (PENDING-checks waiver) — each a recorded
-        *approval* id re-presented for verification. There is no parameter whose
-        presence means 'a human, not the agent, performs the merge'.
+        *approval* id re-presented for verification. ``squash`` is the merge mode, not an
+        actor. There is no parameter whose presence means 'a human, not the agent,
+        performs the merge'.
         """
         import inspect  # noqa: PLC0415
 
         params = set(inspect.signature(merge_ticket_pr).parameters)
-        assert params == {"clear", "executing_loop_identity", "human_authorized", "expedite_authorized"}
+        assert params == {"clear", "executing_loop_identity", "human_authorized", "expedite_authorized", "squash"}
 
 
 class TestPrMergeRedirectedToKeystone(TestCase):
@@ -791,6 +805,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
     def test_full_autonomy_substrate_is_held_without_human_authorizer(self) -> None:
         """MUST-DENY: full + substrate + no authorizer is HELD (the standing grant excludes substrate)."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket)
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
@@ -804,6 +819,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
         ping the owner.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=1731)
         with (
             _overlay_autonomy("t3-teatree", "full"),
@@ -824,6 +840,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
     def test_full_autonomy_substrate_with_human_authorizer_still_merges(self) -> None:
         """MUST-ALLOW: a per-CLEAR ``human_authorizer`` re-presented at merge is the unchanged substrate path."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=1730, human_authorizer="owner:adrien")
         with _overlay_autonomy("t3-teatree", "full"):
             precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
@@ -832,6 +849,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
     def test_notify_autonomy_substrate_without_authorizer_still_refused(self) -> None:
         """MUST-DENY: notify (not full) keeps the per-PR human authorizer mandatory."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=1732)
         with _overlay_autonomy("t3-teatree", "notify"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
@@ -841,6 +859,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
     def test_babysit_autonomy_substrate_without_authorizer_still_refused(self) -> None:
         """MUST-DENY: babysit (the default) keeps the per-PR human authorizer mandatory."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=1733)
         with _overlay_autonomy("t3-teatree", "babysit"), pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
@@ -850,6 +869,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
     def test_full_autonomy_does_not_relax_maker_checker_floor(self) -> None:
         """MUST-DENY: full + reviewer==maker still refuses — the maker≠checker floor is intact."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=1734, reviewer_identity="coding-agent")
         with (
             _overlay_autonomy("t3-teatree", "full"),
@@ -865,6 +885,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
         path); the bind still fails closed on a moved head.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=1735, reviewed_sha="d" * 40, human_authorizer="owner:adrien")
         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="head moved"):
             _assert_preconditions(clear, human_authorized="owner:adrien")
@@ -872,6 +893,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
     def test_full_autonomy_does_not_relax_ci_green_floor(self) -> None:
         """MUST-DENY: full + FAILED recorded verdict still refuses — the CI floor is intact."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=1736, gh_verify_result=MergeClear.VerifyResult.FAILED)
         with (
             _overlay_autonomy("t3-teatree", "full"),
@@ -882,6 +904,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
     def test_full_autonomy_does_not_relax_not_draft_floor(self) -> None:
         """MUST-DENY: full + draft PR still refuses — the not-draft floor is intact."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=1737)
 
         def _draft_stub(argv: list[str]) -> tuple[int, str, str]:
@@ -919,6 +942,7 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
     def test_per_clear_human_authorizer_still_works_under_babysit(self) -> None:
         """A matching per-CLEAR ``human_authorizer`` is the unchanged path for non-full overlays."""
         ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=1739, human_authorizer="owner:adrien")
         with _overlay_autonomy("t3-client", "babysit"):
             precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
@@ -1217,6 +1241,7 @@ class TestSubstrateSelfSignoffIsConfigGated(TestCase):
             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/32233",
             state=Ticket.State.REVIEW_REQUESTED,
         )
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=32233, slug=_OWNED_TOOLING_REPO)
         with (
             _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
@@ -1265,6 +1290,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         false`` at the default ``babysit`` tier was ignored.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=2660, blast_class=MergeClear.BlastClass.LOGIC)
         with _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False):
             precheck = _assert_preconditions(clear)
@@ -1273,6 +1299,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
     def test_explicit_require_false_at_babysit_merges_non_substrate_end_to_end(self) -> None:
         """MUST-ALLOW end-to-end: the keystone merge advances the FSM for a NON-substrate CLEAR."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=2661, blast_class=MergeClear.BlastClass.LOGIC)
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
@@ -1296,6 +1323,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         the owner (ping-and-hold).
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=2666)
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
@@ -1313,6 +1341,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         must-ALLOW above.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=2662)
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=True),
@@ -1333,6 +1362,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         is merely a tier side effect of the collaborative tier.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=2663)
         with (
             _overlay_autonomy("t3-teatree", "notify"),
@@ -1345,6 +1375,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
     def test_require_false_does_not_relax_maker_checker_floor(self) -> None:
         """MUST-DENY: require=false + reviewer==maker still refuses — the maker≠checker floor holds."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=2664, reviewer_identity="coding-agent")
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
@@ -1360,6 +1391,7 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
         otherwise); the bind still fails closed on a moved head.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=2665, reviewed_sha="d" * 40, human_authorizer="owner:adrien")
         with (
             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
@@ -1415,6 +1447,7 @@ class TestClearCanonicalizesVerdictSlug(TestCase):
     def test_qualified_slug_clear_records_verdict_unchanged(self) -> None:
         """An already-qualified ``owner/repo`` clear keys the verdict identically — no behaviour change."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         result = cast(
             "dict[str, object]",
             call_command(
@@ -1481,6 +1514,7 @@ class TestClearCanonicalizesVerdictSlug(TestCase):
     def test_whitespace_padded_qualified_slug_records_verdict_unchanged(self) -> None:
         """An already-qualified slug with surrounding whitespace records identically — no behaviour change."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         result = cast(
             "dict[str, object]",
             call_command(
@@ -1599,6 +1633,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
     def test_config_empty_substrate_still_held(self) -> None:
         """MUST-DENY (a): with the delegation UNSET, a loop substrate merge is held — byte-identical."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=34130)
         with pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear)
@@ -1614,6 +1649,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         bypass when the config is unset.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=34131)
         with pytest.raises(MergePreconditionError, match="substrate"):
             _assert_preconditions(clear, human_authorized=_DELEGATE)
@@ -1623,6 +1659,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
     def test_config_set_delegation_passes_preconditions(self) -> None:
         """MUST-ALLOW (b): config set + the matching id presented passes the substrate gate."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=34132)
         with _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE):
             precheck = _assert_preconditions(clear, human_authorized=_DELEGATE)
@@ -1638,6 +1675,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         stamp ``human_authorizer`` on the CLEAR instead).
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=34133,
@@ -1671,6 +1709,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
     def test_config_set_but_presented_id_mismatch_still_held(self) -> None:
         """MUST-DENY: a presented id that does NOT equal the configured value is held (scoped to the id)."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=34134)
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1688,6 +1727,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         #2829 verdict gate fires in ``execute_bound_merge`` regardless.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=34135,
@@ -1716,6 +1756,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
     def test_config_set_does_not_relax_ci_green_floor(self) -> None:
         """MUST-DENY (c): a FAILED recorded verdict still refuses under the delegation — CI floor intact."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=34136, gh_verify_result=MergeClear.VerifyResult.FAILED)
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1726,6 +1767,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
     def test_config_set_does_not_relax_sha_bind_floor(self) -> None:
         """MUST-DENY (c): a head moved off ``reviewed_sha`` still refuses under the delegation — SHA bind intact."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=34137, reviewed_sha="d" * 40)
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1736,6 +1778,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
     def test_config_set_does_not_relax_not_draft_floor(self) -> None:
         """MUST-DENY (c): a draft PR still refuses under the delegation — the not-draft floor is intact."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=34138)
 
         def _draft_stub(argv: list[str]) -> tuple[int, str, str]:
@@ -1759,6 +1802,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
     def test_config_set_does_not_relax_maker_checker_floor(self) -> None:
         """MUST-DENY (c): reviewer==maker still refuses under the delegation — maker≠checker intact."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _substrate_clear(ticket, pr_id=34139, reviewer_identity="coding-agent")
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1789,6 +1833,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
         distinguishable on the audit.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=34141,

@@ -234,9 +234,9 @@ def record_run(
     runner exported; recorded so ``write-test-plan --from-seams`` (#3329) defaults
     the artifacts dir to the run's. Empty is dropped rather than stored.
 
-    ``env`` is the environment the run executed against — ``"local"``
-    (teatree-managed local stack, the default since ``e2e run`` resolves an
-    on-disk workspace) or ``"dev"`` (a deployed dev run). The DoD gate (#88)
+    ``env`` is the execution target recorded without normalization — ``"local"``
+    (teatree-managed on-disk stack), ``"stack"`` (an overlay-declared remote
+    local stack), or a deployed target such as ``"dev"`` / ``"qa"``. The DoD gate (#88)
     reads it: only a *local* green run satisfies the pre-ship requirement,
     so a dev-after-merge run records provenance without unblocking the gate.
 

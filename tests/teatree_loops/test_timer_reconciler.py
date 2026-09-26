@@ -17,17 +17,17 @@ from django.tasks import TaskResultStatus
 from django.utils import timezone
 from django_tasks_db.models import DBTaskResult, get_date_max
 
-from teatree.core import mode_resolution
 from teatree.core.claim_liveness import driving
-from teatree.core.models import ConfigSetting, Loop, LoopState, Mode, ModeOverride, Session, Task, Ticket
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Session, Task, Ticket
 from teatree.core.tasks import execute_task
-from teatree.live_presence import PRESENCE_FRESHNESS
 from teatree.loops import off_live_tick_driver, timer_chains, timer_reconciler
 from teatree.loops.timer_reconciler import reap_stuck_runs
+from tests._t3_master_env import worker_owns_t3_master
 from tests.teatree_core.test_claim_liveness import _READER_NS, pinned_reader_namespace
 from tests.teatree_loops.mode_scenarios import LOOP, ModeWithoutOverrideMixin
 
-_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
+_READY_HEADLESS_JOB = {"task_path": execute_task.module_path, "status": TaskResultStatus.READY}
 #: A preset of the test's own, so nothing here depends on the seeded production modes.
 _PRESET = "forced-on-4185"
 #: A worker pid that is not the recorded singleton holder — a replaced worker, so gone.
@@ -41,7 +41,12 @@ class TestEnsureLoopTimers(django.test.TestCase):
         DBTaskResult.objects.all().delete()
 
     def _enable(self, name: str = "inbox", **kwargs: object) -> Loop:
-        defaults: dict[str, object] = {"delay_seconds": 60, "enabled": True, "last_run_at": None}
+        defaults: dict[str, object] = {
+            "delay_seconds": 60,
+            "enabled": True,
+            "last_run_at": None,
+            "override_reason": "test override",
+        }
         defaults.update(kwargs)
         return Loop.objects.create(name=name, script=f"src/teatree/loops/{name}/loop.py", **defaults)
 
@@ -69,7 +74,7 @@ class TestEnsureLoopTimers(django.test.TestCase):
         assert len(pending) == 1
         assert pending[0].run_after == now + dt.timedelta(seconds=10)  # earliest kept
 
-    def test_deletes_a_disabled_loops_timer(self) -> None:
+    def test_deletes_a_force_off_loops_timer(self) -> None:
         self._enable(enabled=False)
         timer_chains.enqueue_loop_timer("inbox", run_after=timezone.now())
         counts = timer_reconciler.ensure_loop_timers()
@@ -105,6 +110,7 @@ class TestEnsureLoopTimers(django.test.TestCase):
             delay_seconds=86400,
             script="src/teatree/loops/dream/loop.py",
             enabled=True,
+            override_reason="test override",
         )
         counts = timer_reconciler.ensure_loop_timers()
         assert counts["added"] == 0
@@ -128,9 +134,9 @@ def _claim_and_fire(name: str) -> dict:
 class TestReconcilerHonoursTheAdmissionVerdict(django.test.TestCase):
     """The chain is built from the admission verdict, not the raw ``Loop.enabled`` column (#4185).
 
-    ``Loop.enabled`` is the LOWEST-precedence input to that verdict (hold > forced >
-    preset > column), so an active preset holding an opinion decides the loop and the
-    column is never reached. Building the chain from the column alone left eight
+    ``Loop.enabled`` is the MANUAL-override layer of that verdict (hold > manual >
+    preset), empty on a fleet nobody has intervened on, so the preset decides the loop
+    and the column answers about none of them. Building the chain from it alone left eight
     preset-admitted loops with no timer row of any status, ever — and because
     ``ensure_loop_timers`` PRUNES every timer outside the set it builds, a chain that
     did exist was actively removed rather than merely never created.
@@ -139,18 +145,16 @@ class TestReconcilerHonoursTheAdmissionVerdict(django.test.TestCase):
     def setUp(self) -> None:
         Loop.objects.all().delete()
         DBTaskResult.objects.all().delete()
-        ConfigSetting.objects.set_value("loop_runner_enabled", value=True)
         Loop.objects.create(
             name="inbox",
             script="src/teatree/loops/inbox/loop.py",
             delay_seconds=60,
-            enabled=False,
             last_run_at=None,
         )
         Mode.objects.create(name=_PRESET, entries={"inbox": True})
-        ModeOverride.objects.set_override(_PRESET)
+        ModeOverride.objects.set_override(_PRESET, reason="test override")
 
-    def test_preset_forced_on_disabled_loop_gets_a_head_and_ticks(self) -> None:
+    def test_a_preset_admitted_loop_gets_a_head_and_ticks(self) -> None:
         assert timer_reconciler.ensure_loop_timers()["added"] == 1
         # A row in the results table, not a name the reconciler returned: a stub that
         # merely reported the loop as chained would be undone by the prune pass below it.
@@ -178,16 +182,14 @@ class TestReconcilerHonoursTheAdmissionVerdict(django.test.TestCase):
         assert len(timer_chains.pending_loop_timers("inbox")) == 1
 
     def test_prunes_a_preset_masked_off_loops_timer(self) -> None:
-        # The deliberate inverse: a base-ENABLED loop the preset masks off loses its
-        # chain rather than idle-polling at the cadence floor for every skipped fire.
-        Loop.objects.filter(name="inbox").update(enabled=True)
+        # The deliberate inverse: a loop the preset masks off loses its chain rather than
+        # idle-polling at the cadence floor for every skipped fire.
         Mode.objects.filter(name=_PRESET).update(entries={"inbox": False})
         timer_chains.enqueue_loop_timer("inbox", run_after=timezone.now())
         assert timer_reconciler.ensure_loop_timers()["pruned"] == 1
         assert timer_chains.pending_loop_timers("inbox") == []
 
     def test_prunes_a_held_loops_timer_and_re_heads_on_resume(self) -> None:
-        Loop.objects.filter(name="inbox").update(enabled=True)
         LoopState.objects.pause("inbox")
         timer_chains.enqueue_loop_timer("inbox", run_after=timezone.now())
         assert timer_reconciler.ensure_loop_timers()["pruned"] == 1
@@ -199,20 +201,18 @@ class TestReconcilerHonoursTheAdmissionVerdict(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC", TASKS=_DB_TASKS)
-class TestScheduleUpgradedByPresenceGetsAHeadAndTicks(ModeWithoutOverrideMixin):
+class TestAScheduleSlotGetsAHeadAndTicks(ModeWithoutOverrideMixin):
     """#4185 AC1 in the configuration a source-``override`` test cannot reach (#4196).
 
-    The away-class schedule slot the owner is typing through: the tick's live admission
-    step admits the loop, so the chain the reconciler builds must contain it — and it did
-    not, because membership resolved the mask through the preset layer the presence
-    upgrade never reaches. The timer row alone is not the acceptance criterion: the fire
-    that row carries has to reach the tick.
+    A schedule slot rather than a manual override: membership used to resolve the mask
+    through a layer that stops before the default mode, so the chain the reconciler built
+    disagreed with the tick. The timer row alone is not the acceptance criterion — the
+    fire that row carries has to reach the tick.
     """
 
     def setUp(self) -> None:
         super().setUp()
-        self.activate_away_schedule_slot()
-        self.record_fresh_keystroke()
+        self.use_l0_default_mode()
 
     def test_the_head_exists_and_its_fire_ticks_the_loop(self) -> None:
         assert timer_reconciler.ensure_loop_timers()["added"] == 1
@@ -232,18 +232,6 @@ class TestScheduleUpgradedByPresenceGetsAHeadAndTicks(ModeWithoutOverrideMixin):
         assert result["action"] == "ticked"
         assert ticked == [LOOP]
         assert len(timer_chains.pending_loop_timers(LOOP)) == 1  # the successor carries the chain
-
-    def test_a_presence_lapse_does_not_prune_the_chain(self) -> None:
-        # The regression on two WORKING loops, in the shape it actually occurs: the chain
-        # exists, the owner stops typing for fifteen minutes, and the next reconcile pass
-        # deletes the READY timer because the away slot's mask no longer admits the loop.
-        # `pruned == 0` is the whole claim — an idle timer is a no-op, a deleted one is a
-        # loop that never runs again until something re-heads it (#4196).
-        assert timer_reconciler.ensure_loop_timers()["added"] == 1
-        mode_resolution.PRESENCE.record(session_id="s", now=timezone.now() - PRESENCE_FRESHNESS * 2)
-        counts = timer_reconciler.ensure_loop_timers()
-        assert counts["pruned"] == 0
-        assert len(timer_chains.pending_loop_timers(LOOP)) == 1
 
     def test_an_existing_head_is_not_pruned(self) -> None:
         # The regression direction that stops two working loops: ``ensure_loop_timers``
@@ -310,6 +298,7 @@ class TestMaintenanceChains(django.test.TestCase):
     def test_run_self_improve_releases_its_lease(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
+        self.enterContext(worker_owns_t3_master())
         timer_reconciler.run_self_improve.func()
 
         assert LoopLease.objects.acquire(timer_reconciler.SELF_IMPROVE_LEASE, owner="owner-session")
@@ -317,13 +306,23 @@ class TestMaintenanceChains(django.test.TestCase):
     def test_run_self_improve_skips_when_lease_held(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
+        self.enterContext(worker_owns_t3_master())
         LoopLease.objects.acquire(timer_reconciler.SELF_IMPROVE_LEASE, owner="owner-session")
 
-        assert timer_reconciler.run_self_improve.func() == {"skipped_lease_held": 1}
+        assert timer_reconciler.run_self_improve.func() == {"skipped": 1}
+
+    def test_run_self_improve_runs_while_an_interactive_session_owns_t3_master(self) -> None:
+        """The worker is the machine-wide driver, never a competitor for its own chain."""
+        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415 — deferred: pulls in django.db
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        LoopLease.objects.claim_ownership(T3_MASTER_SLOT, session_id="interactive-session", owner_pid=os.getpid())
+
+        assert "skipped" not in timer_reconciler.run_self_improve.func()
 
     def test_run_self_improve_survives_a_body_fault(self) -> None:
         # Successor-first: a raising body must never orphan the chain.
-        with mock.patch.object(timer_reconciler, "_run_self_improve_cycle_under_lease", side_effect=RuntimeError("x")):
+        with mock.patch.object(timer_reconciler, "_run_self_improve_cycle_via_command", side_effect=RuntimeError("x")):
             assert timer_reconciler.run_self_improve.func() == {"error": 1}
 
         pending = DBTaskResult.objects.filter(
@@ -476,6 +475,56 @@ class TestMaintenanceChains(django.test.TestCase):
 
         assert result["processed"] == 0
         assert "coalesced" not in result
+
+    def test_wake_slack_answer_runs_behind_a_wake_that_ran_no_cycle(self) -> None:
+        # A coalesced wake's own finish must not debounce its re-armed successor,
+        # or the chain re-arms every interval forever and never runs a cycle.
+        for no_cycle in ({"coalesced": 1}, {"deduped": 1}):
+            with self.subTest(no_cycle=no_cycle):
+                DBTaskResult.objects.all().delete()
+                DBTaskResult.objects.create(
+                    task_path=timer_reconciler.wake_slack_answer.module_path,
+                    status=TaskResultStatus.SUCCESSFUL,
+                    args_kwargs={"args": [], "kwargs": {}},
+                    backend_name="default",
+                    queue_name=timer_chains.LOOPS_QUEUE,
+                    finished_at=timezone.now() - dt.timedelta(seconds=1),
+                    return_value=no_cycle,
+                )
+
+                result = timer_reconciler.wake_slack_answer.func()
+
+                assert result["processed"] == 0
+
+    def test_a_coalesced_wake_chain_still_runs_a_cycle(self) -> None:
+        path = timer_reconciler.wake_slack_answer.module_path
+
+        def finished(at: dt.datetime, result: dict[str, int]) -> None:
+            DBTaskResult.objects.create(
+                task_path=path,
+                status=TaskResultStatus.SUCCESSFUL,
+                args_kwargs={"args": [], "kwargs": {}},
+                backend_name="default",
+                queue_name=timer_chains.LOOPS_QUEUE,
+                finished_at=at,
+                return_value=result,
+            )
+
+        last_cycle = timezone.now()
+        finished(last_cycle, {"processed": 0})
+        now = last_cycle + dt.timedelta(seconds=2)
+        results = []
+        for _ in range(12):
+            with mock.patch("django.utils.timezone.now", return_value=now):
+                results.append(timer_reconciler.wake_slack_answer.func())
+            finished(now, results[-1])
+            successor = DBTaskResult.objects.filter(task_path=path, status=TaskResultStatus.READY).first()
+            if successor is None:
+                break
+            now = successor.run_after
+            successor.delete()
+
+        assert "processed" in results[-1], results
 
     def test_wake_slack_answer_ignores_another_chains_recent_finish(self) -> None:
         # The window is keyed on the wake's own path; the cadence chain finishing
@@ -713,6 +762,76 @@ class TestReapStuckHeadlessRuns(django.test.TestCase):
         counts = reap_stuck_runs()
 
         assert counts == {"failed": 0, "reenqueued": 0}
+
+    def test_a_stopped_fleet_holds_a_dead_run_and_lifting_it_re_dispatches_once(self) -> None:
+        task = self._claimed_task(lease_delta_seconds=-120)
+        row = self._running_headless_row(task, age_seconds=self._dead_age())
+        ModeOverride.objects.set_override("off", reason="test: the owner stopped the fleet")
+
+        self._fire_drain_chain()
+
+        assert not DBTaskResult.objects.filter(**_READY_HEADLESS_JOB).exists()
+
+        ModeOverride.objects.all().delete()
+        self._fire_drain_chain()
+        self._fire_drain_chain()
+
+        row.refresh_from_db()
+        assert row.status == TaskResultStatus.FAILED
+        assert DBTaskResult.objects.filter(**_READY_HEADLESS_JOB).count() == 1
+
+    def test_an_unreadable_admission_verdict_holds_the_dead_run(self) -> None:
+        task = self._claimed_task(lease_delta_seconds=-120)
+        self._running_headless_row(task, age_seconds=self._dead_age())
+
+        with mock.patch("teatree.core.managers.claim_admission_block_reason", side_effect=RuntimeError("locked")):
+            counts = reap_stuck_runs()
+
+        assert counts == {"failed": 0, "reenqueued": 0}
+        assert not DBTaskResult.objects.filter(**_READY_HEADLESS_JOB).exists()
+
+    def test_two_reapers_released_from_off_enqueue_one_replacement(self) -> None:
+        task = self._claimed_task(lease_delta_seconds=-120)
+        self._running_headless_row(task, age_seconds=self._dead_age())
+        ModeOverride.objects.set_override("off", reason="test: the owner stopped the fleet")
+        self._fire_drain_chain()
+        ModeOverride.objects.all().delete()
+        is_dead = timer_reconciler._headless_run_is_dead
+        rival_ran: list[bool] = []
+
+        def a_rival_reaper_scans_the_same_row(*args: object, **kwargs: object) -> bool:
+            if not rival_ran:
+                rival_ran.append(True)
+                reap_stuck_runs()
+            return is_dead(*args, **kwargs)
+
+        with mock.patch.object(
+            timer_reconciler, "_headless_run_is_dead", side_effect=a_rival_reaper_scans_the_same_row
+        ):
+            reap_stuck_runs()
+
+        assert DBTaskResult.objects.filter(**_READY_HEADLESS_JOB).count() == 1
+
+    def test_a_stop_landing_after_the_scan_holds_the_dead_run(self) -> None:
+        task = self._claimed_task(lease_delta_seconds=-120)
+        row = self._running_headless_row(task, age_seconds=self._dead_age())
+        is_dead = timer_reconciler._headless_run_is_dead
+
+        def the_fleet_stops_after_the_scan(*args: object, **kwargs: object) -> bool:
+            ModeOverride.objects.set_override("off", reason="test: the owner stopped the fleet mid-reap")
+            return is_dead(*args, **kwargs)
+
+        with mock.patch.object(timer_reconciler, "_headless_run_is_dead", side_effect=the_fleet_stops_after_the_scan):
+            counts = reap_stuck_runs()
+
+        row.refresh_from_db()
+        assert counts == {"failed": 0, "reenqueued": 0}
+        assert row.status == TaskResultStatus.RUNNING
+        assert not DBTaskResult.objects.filter(**_READY_HEADLESS_JOB).exists()
+
+    def _fire_drain_chain(self) -> None:
+        DBTaskResult.objects.filter(task_path=timer_reconciler.drain_chain.module_path).delete()
+        timer_reconciler.drain_chain.func()
 
 
 @django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)

@@ -8,6 +8,7 @@ environment dict.
 """
 
 import os
+import shlex
 import shutil
 import sys
 from collections.abc import Callable, Mapping
@@ -24,7 +25,7 @@ from teatree.core.intake.resolve import _find_env_cache, _get_user_cwd, _parse_e
 from teatree.core.management.commands._e2e_specs_checkout import SpecsCheckoutBusyError
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME
-from teatree.paths import get_data_dir
+from teatree.paths import VENDORED_CORE_PREFIX, get_data_dir
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked, run_streamed
 
 __all__ = ["SpecsCheckoutBusyError"]
@@ -175,23 +176,7 @@ class E2eEnvContext:
     env_cache_override: dict[str, str] | None = None
     artifacts_dir: str = ""
     capture_evidence: bool = True
-
-
-def make_e2e_env_context(
-    test_path: str,
-    compose_project: str | None,
-    env_cache_override: dict[str, str] | None,
-    *,
-    artifacts_dir: str = "",
-    capture_evidence: bool = True,
-) -> E2eEnvContext:
-    return E2eEnvContext(
-        test_path=test_path,
-        compose_project=compose_project,
-        env_cache_override=env_cache_override,
-        artifacts_dir=artifacts_dir,
-        capture_evidence=capture_evidence,
-    )
+    run_target: str = ""
 
 
 def clone_or_update_e2e_repo(repo: E2ERepo, branch_override: str = "") -> Path:
@@ -428,6 +413,16 @@ def _clone_specs_repo(specs_repo: E2ERepo, branch: str) -> Path:
     return playwright_root
 
 
+def _scrub_remote_e2e_secrets(env: dict[str, str]) -> None:
+    """Drop the tenant and environment-bound secrets a stack run inherited; usernames stay the caller's choice."""
+    env.pop("CUSTOMER", None)
+    for key in tuple(env):
+        upper = key.upper()
+        secret_name = upper.endswith(("_PASSWORD", "_TOKEN", "_SECRET"))
+        if secret_name and any(marker in upper for marker in ("E2E", "BROKER", "SSO")):
+            env.pop(key)
+
+
 def build_e2e_env(
     frontend_url: str | None = None,
     *,
@@ -439,7 +434,8 @@ def build_e2e_env(
     When *frontend_url* is given it overrides ``BASE_URL``.
     When it is ``None`` the existing ``BASE_URL`` env var is preserved (DEV / staging mode).
 
-    *target* is the resolved dual-env target (``"dev"`` or ``"local"``); it is
+    *target* is the resolved spec mode (``"dev"``, ``"qa"``, or ``"local"``);
+    an execution target such as ``"stack"`` is normalized before this boundary. It is
     exported as ``T3_E2E_TARGET`` so a single dual-mode spec can branch on
     ``process.env.T3_E2E_TARGET === 'dev'`` instead of re-deriving the target
     from a ``BASE_URL`` host regex.
@@ -471,7 +467,7 @@ def build_e2e_env(
     host process's env at the point ``env_extras`` runs (the constructed *env*
     dict above is local until the subprocess is spawned). Overlay-specific env
     vars (e.g. ``CUSTOMER``) come from that seam — core only knows about
-    ``BASE_URL``, ``T3_E2E_TARGET``, ``COMPOSE_PROJECT_NAME``, ``T3_E2E_TEST_PATH``,
+    ``BASE_URL``, ``E2E_TARGET``, ``T3_E2E_TARGET``, ``COMPOSE_PROJECT_NAME``, ``T3_E2E_TEST_PATH``,
     ``T3_E2E_ARTIFACTS_DIR``, ``T3_E2E_CAPTURE_EVIDENCE`` and ``CI``.
     """
     env = {**os.environ}
@@ -479,6 +475,9 @@ def build_e2e_env(
     if frontend_url is not None:
         env["BASE_URL"] = frontend_url
     env["T3_E2E_TARGET"] = target
+    env["E2E_TARGET"] = target
+    if context.run_target == "stack":
+        _scrub_remote_e2e_secrets(env)
     if context.compose_project:
         env["COMPOSE_PROJECT_NAME"] = context.compose_project
     if context.artifacts_dir:
@@ -500,11 +499,15 @@ def build_e2e_env(
         compose_project=context.compose_project or "",
         base_url=env.get("BASE_URL", ""),
     )
+    # setdefault, never update: explicit env wins over an overlay extra (#121).
     for key, value in get_overlay().e2e.env_extras(env_cache, context=extras_context).items():
         env.setdefault(key, value)
 
     env["CI"] = "1"
     return env
+
+
+_DOCKERENV = Path("/.dockerenv")
 
 
 @dataclass(frozen=True)
@@ -549,6 +552,21 @@ def _docker_managed_env_flags(opts: ProjectRunOptions) -> list[str]:
     return flags
 
 
+def suite_root(checkout: Path, test_dir: str) -> Path:
+    """The directory *test_dir* is relative to: the checkout, or the core a fork vendors in it."""
+    vendored = checkout / VENDORED_CORE_PREFIX
+    if not (checkout / test_dir).exists() and (vendored / test_dir).exists():
+        return vendored
+    return checkout
+
+
+def _suite_pytest_args(test_dir: str, e2e_config: Mapping[str, str]) -> list[str]:
+    # `--ds` rather than `-o DJANGO_SETTINGS_MODULE=`: pytest-django ranks an ini override
+    # below the `--ds` a project's own addopts carry, so the override was silently ignored.
+    settings_module = e2e_config.get("settings_module", "e2e.settings")
+    return [test_dir, f"--ds={settings_module}", *shlex.split(e2e_config.get("pytest_args", ""))]
+
+
 def run_project_suite(opts: ProjectRunOptions, *, write_err: Callable[[str], None]) -> str:
     """Run the project's own e2e suite (in-repo pytest-playwright or the compose ``e2e`` service).
 
@@ -557,30 +575,30 @@ def run_project_suite(opts: ProjectRunOptions, *, write_err: Callable[[str], Non
     flag (#3331). Returns ``"E2E passed."`` on green; raises ``SystemExit`` with
     the Playwright/pytest exit code on red.
     """
-    wt_path = _project_worktree_path()
     e2e_config = get_overlay().metadata.get_e2e_config()
     settings_module = e2e_config.get("settings_module", "e2e.settings")
     test_dir = opts.test_path or e2e_config.get("test_dir", "e2e/")
+    root = suite_root(Path(_project_worktree_path()), test_dir)
+    suite_args = _suite_pytest_args(test_dir, e2e_config)
 
-    if opts.docker and not Path("/.dockerenv").exists():
-        compose_file = Path(wt_path) / "dev" / "docker-compose.yml"
+    if opts.docker and not _DOCKERENV.exists():
+        compose_file = root / "dev" / "docker-compose.yml"
         if compose_file.is_file():
             cmd = ["docker", "compose", "-f", str(compose_file), "run", "--rm"]
             cmd.extend(_docker_managed_env_flags(opts))
-            cmd.extend(["e2e", test_dir])
+            cmd.extend(["e2e", *suite_args])
             if opts.update_snapshots:
                 cmd.append("--update-snapshots")
-            rc = run_streamed(cmd, cwd=wt_path, check=False)
+            rc = run_streamed(cmd, cwd=str(root), check=False)
             if rc == 0:
                 return "E2E passed."
             write_err(f"E2E failed (exit {rc}).")
             raise SystemExit(rc)
 
-    cmd = ["uv", "run", "pytest", test_dir]
-    cmd.extend(["-o", f"DJANGO_SETTINGS_MODULE={settings_module}", "--no-cov", "-p", "no:tach", "-v"])
+    cmd = ["uv", "run", "pytest", *suite_args, "--no-cov", "-p", "no:tach", "-v"]
     if opts.update_snapshots:
         cmd.append("--update-snapshots")
-    rc = run_streamed(cmd, cwd=wt_path, env=_managed_run_env(opts, settings_module), check=False)
+    rc = run_streamed(cmd, cwd=str(root), env=_managed_run_env(opts, settings_module), check=False)
     if rc == 0:
         return "E2E passed."
     write_err(f"E2E failed (exit {rc}).")

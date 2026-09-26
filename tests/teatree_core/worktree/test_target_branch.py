@@ -43,31 +43,42 @@ class TestResolvePrTargetBranch(TestCase):
         self.ticket = Ticket.objects.create(overlay="t3-teatree", extra={})
 
     def test_unset_setting_defers_to_the_forge_default(self) -> None:
-        assert resolve_pr_target_branch(self.ticket, branch="feat/x") == ""
+        assert resolve_pr_target_branch(self.ticket, repo_slug="acme/repo-a", branch="feat/x") == ""
 
     def test_configured_setting_is_the_pr_target(self) -> None:
         ConfigSetting.objects.set_value("target_branch", _INTEGRATION)
-        assert resolve_pr_target_branch(self.ticket, branch="feat/x") == _INTEGRATION
+        assert resolve_pr_target_branch(self.ticket, repo_slug="acme/repo-a", branch="feat/x") == _INTEGRATION
 
     def test_ticket_override_outranks_the_setting(self) -> None:
         ConfigSetting.objects.set_value("target_branch", _INTEGRATION)
-        self.ticket.extra = {"target_branch": "release/1.2"}
-        assert resolve_pr_target_branch(self.ticket, branch="feat/x") == "release/1.2"
+        self.ticket.extra = {"target_branch": {"acme/repo-a": "release/1.2"}}
+        assert resolve_pr_target_branch(self.ticket, repo_slug="acme/repo-a", branch="feat/x") == "release/1.2"
+
+    def test_ticket_override_does_not_leak_to_a_sibling_repo(self) -> None:
+        self.ticket.extra = {"target_branch": {"acme/repo-a": "release/1.2"}}
+
+        assert resolve_pr_target_branch(self.ticket, repo_slug="acme/repo-b", branch="feat/x") == ""
+
+    def test_legacy_scalar_ticket_override_applies_to_every_repo(self) -> None:
+        self.ticket.extra = {"target_branch": "origin/release/legacy-stack"}
+
+        assert resolve_pr_target_branch(self.ticket, repo_slug="acme/repo-a", branch="feat/x") == "release/legacy-stack"
+        assert resolve_pr_target_branch(self.ticket, repo_slug="acme/repo-b", branch="feat/x") == "release/legacy-stack"
 
     def test_the_integration_branch_does_not_target_itself(self) -> None:
         ConfigSetting.objects.set_value("target_branch", _INTEGRATION)
-        assert resolve_pr_target_branch(self.ticket, branch=_INTEGRATION) == ""
+        assert resolve_pr_target_branch(self.ticket, repo_slug="acme/repo-a", branch=_INTEGRATION) == ""
 
     def test_an_origin_qualified_setting_is_returned_bare(self) -> None:
         # The forge API takes a branch name; ``origin/`` is a local ref prefix
         # that GitLab's ``target_branch`` and ``gh pr create --base`` both reject.
         ConfigSetting.objects.set_value("target_branch", f"origin/{_INTEGRATION}")
-        assert resolve_pr_target_branch(self.ticket, branch="feat/x") == _INTEGRATION
+        assert resolve_pr_target_branch(self.ticket, repo_slug="acme/repo-a", branch="feat/x") == _INTEGRATION
 
     def test_an_orphan_branch_with_no_ticket_still_honours_the_setting(self) -> None:
         # ``pr ensure-pr`` opens PRs for branches with no owning Ticket row.
         ConfigSetting.objects.set_value("target_branch", _INTEGRATION)
-        assert resolve_pr_target_branch(None, branch="feat/x") == _INTEGRATION
+        assert resolve_pr_target_branch(None, repo_slug="acme/repo-a", branch="feat/x") == _INTEGRATION
 
 
 class TestResolveTargetBranch(TestCase):
@@ -88,9 +99,25 @@ class TestResolveTargetBranch(TestCase):
     def test_a_prefixed_ticket_override_is_remote_qualified(self) -> None:
         # ``release/1.2`` returned bare would make ``git fetch release`` the
         # fetch step — it fails, and the gate then fails OPEN with no probe.
-        self.ticket.extra = {"target_branch": "release/1.2"}
-        with patch(_DEFAULT_BRANCH, return_value="main"):
+        self.ticket.extra = {"target_branch": {"acme/repo-a": "release/1.2"}}
+        with (
+            patch(_DEFAULT_BRANCH, return_value="main"),
+            patch("teatree.core.worktree.target_branch.git.remote_slug", return_value="acme/repo-a"),
+        ):
             assert resolve_target_branch(self.ticket, "/repo", branch="feat/x") == "origin/release/1.2"
+
+    def test_a_ticket_override_for_another_repo_falls_back_to_this_repos_default(self) -> None:
+        self.ticket.extra = {"target_branch": {"acme/repo-a": "release/1.2"}}
+        with (
+            patch(_DEFAULT_BRANCH, return_value="main"),
+            patch("teatree.core.worktree.target_branch.git.remote_slug", return_value="acme/repo-b"),
+        ):
+            assert resolve_target_branch(self.ticket, "/repo-b", branch="feat/x") == "origin/main"
+
+    def test_legacy_scalar_ticket_override_is_remote_qualified(self) -> None:
+        self.ticket.extra = {"target_branch": "release/legacy-stack"}
+        with patch("teatree.core.worktree.target_branch.git.remote_slug", return_value="acme/repo-a"):
+            assert resolve_target_branch(self.ticket, "/repo", branch="feat/x") == "origin/release/legacy-stack"
 
     def test_the_integration_branch_does_not_target_itself(self) -> None:
         # A PR targeting its own branch is a no-op, and the currency gate would

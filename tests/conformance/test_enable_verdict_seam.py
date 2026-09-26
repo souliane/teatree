@@ -5,18 +5,18 @@ step by discipline; #4196 is the same failure one level up, between chain member
 the tick. Discipline is not the fix — a mechanical one is. This walks the tree and refuses
 a THIRD variant of the verdict rather than waiting for the next incident to find it.
 
-Two rules, each with an explicit allowlist naming why the exception is not a variant:
+One rule, with an explicit allowlist naming why each exception is not a variant: only
+:mod:`teatree.loops.enable_verdict` combines the planes
+(:func:`teatree.loop.loop_state_db.loop_state_admits`).
 
-*   only :mod:`teatree.loops.enable_verdict` combines the planes
-    (:func:`teatree.loop.loop_state_db.loop_state_admits`);
-*   only :func:`teatree.loops.enable_verdict.membership_loop_names` reads the WIDE
-    presence-invariant closure (:meth:`EnablePlanes.admits_any_mask`) — every other
-    reader asks the narrow, instant :meth:`EnablePlanes.admits`, because reporting
-    membership as "running" is how a masked-off loop reads as admitted.
+Plus the preset-layer guard: the override/schedule resolver answers "is an override or a
+schedule slot governing", NOT "does this loop run". Reading it for an enable decision is
+exactly the defect — it cannot see the configured default mode.
 
-Plus the preset-layer guard: the L3/L2 resolver answers "is an override or a schedule slot
-governing", NOT "does this loop run". Reading it for an enable decision is exactly the
-defect — it cannot see the L0 default mode or the live-presence upgrade.
+There is no longer a SECOND, wider reading to guard. Membership and admission were kept
+apart only because the live-presence upgrade could flip with no event to hook; with that
+arm gone they are one set, so the closure and its one-caller rule are both deleted rather
+than left as a guard over nothing.
 """
 
 import ast
@@ -29,9 +29,6 @@ _SEAM_MODULE = "src/teatree/loops/enable_verdict.py"
 #: The plane-combining predicate. Called only where the planes are held together.
 _COMBINER = "loop_state_admits"
 
-#: The WIDE membership reading. One caller, by design.
-_WIDE_READING = "admits_any_mask"
-_WIDE_READING_CALLER = "membership_loop_names"
 
 #: The L3/L2 preset resolver's enable-shaped names.
 _PRESET_LAYER_NAMES = frozenset({"resolve_active_preset", "preset_state_for", "resolve_preset_state"})
@@ -79,21 +76,6 @@ class TestOnlyTheSeamCombinesThePlanes:
             f"{_COMBINER} is called outside {_SEAM_MODULE}: {offenders}. Combining the planes "
             "in a second place is how membership and admission drifted apart (#4196) — ask "
             "EnablePlanes.admits (instant) or membership_loop_names (persisted) instead."
-        )
-
-
-class TestOnlyMembershipReadsTheWideClosure:
-    def test_the_wide_reading_has_exactly_one_caller(self) -> None:
-        callers = sorted(
-            f"{_src_relative(path)}::{node.name}"
-            for path, tree in src_modules()
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and _WIDE_READING in _called_names(node)
-        )
-        assert callers == [f"{_SEAM_MODULE}::{_WIDE_READING_CALLER}"], (
-            f"{_WIDE_READING} is the presence-invariant CLOSURE — the set a persisted chain "
-            f"needs, deliberately wider than what runs now. Reading it anywhere else reports a "
-            f"masked-off loop as admitted. Callers found: {callers}"
         )
 
 

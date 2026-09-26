@@ -35,6 +35,9 @@ _ALLOWED: dict[str, str] = {
     "core/management/commands/_workspace/cleanup.py": (
         "the branch-prune pass's plain-merge class; the squash class in the same loop goes through `is_squash_merged`"
     ),
+    "core/management/commands/_workspace/stash.py": (
+        "asks whether a STASH's content is captured upstream — a stash ref is not a branch, so it has no landed verdict"
+    ),
 }
 
 

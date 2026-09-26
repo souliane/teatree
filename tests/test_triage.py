@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli.tools import tool_app
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.triage import (
     LABEL_KEYWORDS,
     DuplicateFinder,
@@ -26,6 +27,17 @@ def _issue_fixture() -> list[dict]:
         {"number": 2, "title": "Server crash on DB disconnect", "body": "", "labels": []},
         {"number": 3, "title": "Update README", "body": "", "labels": [{"name": "documentation"}]},
     ]
+
+
+@pytest.fixture(autouse=True)
+def _github_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "teatree.triage.resolve_slug_token",
+        lambda slug, **_kwargs: ForgeTokenResolution(
+            "github_token", "owner", ForgeTokenState.TOKEN, token=f"routed-{slug}"
+        ),
+        raising=False,
+    )
 
 
 class TestInferLabels:
@@ -74,6 +86,20 @@ def _fake_list_result(issues: list[dict]):
 
 
 class TestLabelSuggester:
+    def test_unset_route_never_inherits_ambient_login(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[object] = []
+        monkeypatch.setenv("GH_TOKEN", "hostile")
+        monkeypatch.setattr(
+            "teatree.triage.resolve_slug_token",
+            lambda *_args, **_kwargs: ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET),
+            raising=False,
+        )
+        monkeypatch.setattr("teatree.triage.run_allowed_to_fail", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+        with pytest.raises(ForgeEnumerationError, match="github_token_pass_key"):
+            LabelSuggester("souliane/teatree").collect_suggestions()
+        assert calls == []
+
     def test_suggest_skips_already_labeled(self) -> None:
         with patch("teatree.triage.run_allowed_to_fail") as mock_run:
             mock_run.return_value = _fake_list_result(_issue_fixture())

@@ -18,8 +18,9 @@ from unittest.mock import patch
 import pytest
 
 import teatree.agents.runner as runner_mod
-from teatree.agents._runner_options import _get_resume_session_id
+from teatree.agents._runner_env import DispatchCredential
 from teatree.agents.runner import run_agent
+from teatree.agents.session_lineage import resume_session_id
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, DeferredQuestion, DmContext, PendingChatInjection, Session, Task
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
@@ -83,7 +84,7 @@ class TestHeadlessQuestionLoop:
         }
         with (
             _fake_sdk(_success_stream(result, session_id=_RESUME_UUID)),
-            patch.object(runner_mod, "_provider_child_env", return_value=None),
+            patch.object(runner_mod, "_provider_child_env", return_value=DispatchCredential()),
         ):
             run_agent(task, phase="coding", overlay_skill_metadata={})
         task.refresh_from_db()
@@ -132,4 +133,4 @@ class TestHeadlessQuestionLoop:
         resume = parked.child_tasks.get()
         assert resume.parent_task_id == parked.pk
         assert "use postgres-1" in resume.execution_reason
-        assert _get_resume_session_id(resume) == _RESUME_UUID
+        assert resume_session_id(resume) == _RESUME_UUID

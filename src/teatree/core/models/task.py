@@ -1,4 +1,6 @@
+import re
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
@@ -10,7 +12,12 @@ from django_fsm import FSMField, TransitionNotAllowed
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, classify_failure
+from teatree.core.modelkit.task_failure_taxonomy import (
+    AGENT_ABANDONED_PREFIX,
+    FailureKind,
+    classify_failure,
+    exhausted_the_conversation,
+)
 from teatree.core.models.auto_implement import is_auto_implement
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
@@ -26,6 +33,7 @@ from teatree.core.models.task_phase_disposition import (
     transition_source_states,
 )
 from teatree.core.models.ticket import Ticket
+from teatree.core.telemetry.admission import record_lifecycle_transition
 
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
@@ -35,6 +43,9 @@ if TYPE_CHECKING:
 #: :data:`~teatree.core.claim_liveness.RELEASED_CLAIM` — a released claim that kept a stale
 #: ``owner_pid`` would report a dead owner as the executor of whoever holds the row next.
 CLAIM_FIELDS = tuple(RELEASED_CLAIM)
+
+#: A server-held conversation id ``claude_sdk`` resumes by; a metered run's bare hex id names no such conversation.
+SERVER_SESSION_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 class Task(models.Model):
@@ -54,6 +65,18 @@ class Task(models.Model):
             """The states a task is finished in — the terminal half of the partition."""
             return frozenset({cls.COMPLETED, cls.FAILED})
 
+    class SessionContinuation(models.TextChoices):
+        """Which conversation a dispatch of this task carries — a decision, never a guess.
+
+        Phase equality answered neither half: ``spawn_child_tasks`` mints ordinary
+        same-phase children that must start fresh, and a retry that reopens the SAME row
+        keeps its original ``parent_task``, so no parent-chain walk reaches its own attempt.
+        """
+
+        FRESH = "fresh", "Fresh"
+        PARENT = "parent", "Resume parent"
+        SELF = "self", "Resume self"
+
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="tasks")
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="tasks")
     parent_task = models.ForeignKey(
@@ -67,6 +90,12 @@ class Task(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     phase = models.CharField(max_length=64, blank=True)
     execution_reason = models.TextField(blank=True)
+    session_continuation = models.CharField(
+        max_length=8,
+        choices=SessionContinuation.choices,
+        default=SessionContinuation.FRESH,
+        db_default=SessionContinuation.FRESH,
+    )
     # #3957: why this task FAILED, as distinct from ``execution_reason`` (why it was
     # SCHEDULED). Written only by :meth:`fail`, which REQUIRES a reason, so no failure
     # path can land a task in FAILED carrying no cause; cleared by :meth:`reopen`.
@@ -102,7 +131,7 @@ class Task(models.Model):
     # cannot see that registry, but can read this column plus verify owner_pid is alive.
     owner_driving_since = models.DateTimeField(null=True, blank=True)
     # Directive #3 usage-window park gate. When a dispatch hits an exhausted usage
-    # window (and ``limit_autorecovery_enabled`` is on) the task is returned to the
+    # window the task is returned to the
     # queue PENDING with ``not_before`` = the window's re-arm instant; the claim path
     # skips it until then, so a parked task never re-dispatches into the same 429. Null
     # (every task that was never limit-parked) leaves the claim path byte-identical.
@@ -193,6 +222,20 @@ class Task(models.Model):
 
     def claim(self, *, claimed_by: str, claimed_by_session: str = "", lease_seconds: int = 300) -> None:
         _claim_task(self, claimed_by=claimed_by, claimed_by_session=claimed_by_session, lease_seconds=lease_seconds)
+        self.observe_transition("task.claimed")
+
+    def observe_transition(self, kind: str, cause: str = "none") -> None:
+        """Record a committed lifecycle change, including manager-side CAS writes."""
+        transaction.on_commit(
+            partial(
+                record_lifecycle_transition,
+                kind=kind,
+                entity_id=self.pk,
+                ticket_id=self.ticket.pk,
+                task_id=self.pk,
+                cause=cause,
+            )
+        )
 
     def renew_lease(self, *, lease_seconds: int = 300) -> None:
         _renew_task_lease(self, lease_seconds=lease_seconds)
@@ -220,6 +263,7 @@ class Task(models.Model):
         with transaction.atomic():
             _complete_claimed_task(self, result_artifact_path=result_artifact_path)
             self._advance_ticket()
+            self.observe_transition("task.completed")
 
     def complete_surfacing_advance_failure(self, *, result_artifact_path: str = "") -> str:
         """Complete the task; on a TYPED FSM-advance refusal, keep the task done.
@@ -244,6 +288,7 @@ class Task(models.Model):
 
         with transaction.atomic():
             _complete_claimed_task(self, result_artifact_path=result_artifact_path)
+            self.observe_transition("task.completed")
         try:
             self._advance_ticket()
         except (InvalidTransitionError, QualityGateError, TransitionNotAllowed) as exc:
@@ -445,6 +490,7 @@ class Task(models.Model):
                 *CLAIM_FIELDS,
             ],
         )
+        self.observe_transition("task.failed", cause=self.failure_kind)
 
     def fail_claimed(self, *, reason: str) -> None:
         _fail_claimed_task(self, reason=reason)
@@ -459,7 +505,8 @@ class Task(models.Model):
         # The TaskAttempt rows keep the full history.
         self.failure_reason = ""
         self.failure_kind = ""
-        self.save(update_fields=["status", "failure_reason", "failure_kind"])
+        self.session_continuation = self.continuation_on_requeue()
+        self.save(update_fields=["status", "failure_reason", "failure_kind", "session_continuation"])
 
     def park(self, *, not_before: datetime) -> None:
         """Return this task to the queue PENDING, gated until *not_before* (Directive #3).
@@ -473,14 +520,43 @@ class Task(models.Model):
         """
         self.status = self.Status.PENDING
         self.not_before = not_before
+        self.session_continuation = self.continuation_on_requeue()
         self._clear_claim()
         self.save(
             update_fields=[
                 "status",
                 "not_before",
+                "session_continuation",
                 *CLAIM_FIELDS,
             ],
         )
+
+    def continuation_on_requeue(self) -> str:
+        """The conversation a re-queued attempt carries: its own once it has one, else the one it already had.
+
+        Adopting SELF unconditionally strands a needs-input continuation whose run died
+        before the harness opened: the owner's answer lives on the PARENT's conversation and
+        this row has nothing of its own, so SELF would silently retry from scratch.
+
+        A conversation the last run EXHAUSTED carries nothing either, and FRESH rather than the
+        stored discriminator: a needs-input run that filled the window filled the parent's own
+        conversation, which is the very history it was continuing.
+        """
+        last_attempt = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+        if last_attempt is not None and exhausted_the_conversation(last_attempt.error):
+            # Answering FRESH is not enough on its own: the exhausted run's thread stays under this
+            # pk, where the NEXT sweep's ``_holds_a_conversation`` reads it back and stamps SELF.
+            self.ticket.pop_task_thread(int(self.pk))
+            return self.SessionContinuation.FRESH
+        if self._holds_a_conversation(last_attempt):
+            return self.SessionContinuation.SELF
+        return self.session_continuation
+
+    def _holds_a_conversation(self, last_attempt: "TaskAttempt | None") -> bool:
+        """Whether this row holds a conversation a resume can continue: a server-side session, or a stored thread."""
+        if last_attempt is not None and SERVER_SESSION_ID_RE.match(last_attempt.agent_session_id):
+            return True
+        return self.ticket.has_task_thread(int(self.pk))
 
     def complete_with_attempt(
         self,

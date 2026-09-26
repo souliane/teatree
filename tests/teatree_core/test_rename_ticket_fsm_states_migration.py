@@ -1,4 +1,4 @@
-"""The ``0093`` data migration renames the Ticket FSM's misleading state values.
+"""The ``0119`` data migration renames the Ticket FSM's misleading state values.
 
 started/planned/reviewed/shipped/in_review/review_posted/retrospected each become
 a name that says what it means (souliane/teatree#4779) — no dual-read shim, so
@@ -16,8 +16,8 @@ from django.db.migrations.executor import MigrationExecutor
 from django.db.migrations.state import StateApps
 from django.test import TransactionTestCase
 
-_BEFORE = ("core", "0092_taskattempt_taskattempt_recent_ended")
-_AFTER = ("core", "0093_rename_ticket_fsm_states")
+_BEFORE = ("core", "0118_carry_the_dream_toggles_onto_their_settings")
+_AFTER = ("core", "0119_rename_ticket_fsm_states")
 
 _OLD_TO_NEW = {
     "not_started": "not_started",

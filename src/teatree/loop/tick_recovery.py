@@ -17,6 +17,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: The sweeps that mint or reopen work; the boot sweeps hold their own task half, so they run under any posture.
+_REDISPATCH_SWEEPS = frozenset(
+    {"recovery:transient_requeue", "recovery:unplanned_redispatch", "recovery:stuck_redispatch"}
+)
+
+
+def _redispatch_block_reason(errors: dict[str, str] | None) -> str:
+    """Why re-dispatch must wait — the claim composition, failing CLOSED when it cannot be read."""
+    from teatree.core.managers import claim_admission_block_reason  # noqa: PLC0415 — deferred: loaded at tick time
+
+    try:
+        return claim_admission_block_reason()
+    except Exception as exc:
+        logger.exception("Recovery admission read failed; re-dispatch waits for a readable verdict")
+        reason = f"{type(exc).__name__}: {exc}"
+        if errors is not None:
+            errors["recovery:admission"] = reason
+        return reason
+
 
 def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     """Run every recovery sweep INDEPENDENTLY, recording each failure — never silently.
@@ -43,6 +62,9 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
     so a DB-blocked pytest-django harness still renders (its ``RuntimeError: Database
     access not allowed`` lands in *errors* exactly as before) while a real recovery
     failure surfaces loudly instead of freezing the factory in silence.
+
+    The sweeps in :data:`_REDISPATCH_SWEEPS` are skipped while no claim is admitted (the
+    ``off`` posture, a quiescing worker), so a stopped fleet re-creates no work.
     """
     from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.loop import (  # noqa: PLC0415 — deferred: loaded at tick time
@@ -62,7 +84,11 @@ def _reap_stale_task_claims(errors: dict[str, str] | None = None) -> None:
         ("recovery:stuck_redispatch", stuck_ticket_redispatch.redispatch_stuck_tickets),
         ("recovery:question_drain", question_drain.drain_pending_questions),
     )
+    blocked = _redispatch_block_reason(errors)
     for label, sweep in sweeps:
+        if blocked and label in _REDISPATCH_SWEEPS:
+            logger.info("Recovery sweep %s skipped: %s", label, blocked)
+            continue
         try:
             sweep()
         except Exception as exc:

@@ -99,7 +99,14 @@ class TestResolveFlag:
 
 class TestRunMode:
     def test_run_exit_zero_when_clean(self) -> None:
-        ok = PushGateResult(ok=True, doctest_ok=True, astgrep_findings=(), astgrep_deferred=False, notes=("clean",))
+        ok = PushGateResult(
+            ok=True,
+            doctest_ok=True,
+            astgrep_findings=(),
+            astgrep_deferred=False,
+            notes=("clean",),
+            exit_code=0,
+        )
         with (
             patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
@@ -111,7 +118,12 @@ class TestRunMode:
     def test_run_exit_nonzero_on_finding(self) -> None:
         finding = {"check_id": "x", "path": "src/teatree/a.py", "start": {"line": 3}}
         bad = PushGateResult(
-            ok=False, doctest_ok=True, astgrep_findings=(finding,), astgrep_deferred=False, notes=("bad",)
+            ok=False,
+            doctest_ok=True,
+            astgrep_findings=(finding,),
+            astgrep_deferred=False,
+            notes=("bad",),
+            exit_code=1,
         )
         with (
             patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
@@ -121,3 +133,21 @@ class TestRunMode:
             result = runner.invoke(app, ["tool", "push-gate", "--run"])
         assert result.exit_code == 1
         assert "src/teatree/a.py:3" in result.output
+
+    def test_run_preserves_a_signal_style_exit_from_the_doctest_sweep(self) -> None:
+        aborted = PushGateResult(
+            ok=False,
+            doctest_ok=False,
+            astgrep_findings=(),
+            astgrep_deferred=False,
+            notes=("doctest process exited -9",),
+            exit_code=137,
+        )
+        with (
+            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
+            patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
+            patch("teatree.cli.push_gate_tools.run_push_gate", return_value=aborted),
+        ):
+            result = runner.invoke(app, ["tool", "push-gate", "--run"])
+
+        assert result.exit_code == 137

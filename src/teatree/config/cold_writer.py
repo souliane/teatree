@@ -8,8 +8,9 @@ Django-free DB WRITE path, so the tier ``t3 teatree gate`` writes IS the tier th
 reader reads. Without it a ``t3 teatree gate disable`` (a TOML write) is SHADOWED by a seeded DB row,
 and the never-lockout escape can never be lifted once ``t3 setup`` has seeded a row.
 
-Targets the PRIMARY ``~/.local/share/teatree/db.sqlite3`` (never the per-worktree
-isolated copy) by reusing :func:`cold_reader.canonical_config_db`. The write never raises —
+Targets the PRIMARY control DB (never the per-worktree isolated copy) by reusing
+:func:`cold_reader.canonical_config_db`, which resolves the named volume for the
+canonical data dir. The write never raises —
 it returns a :class:`WriteResult` classifying the outcome so the caller (``t3 teatree gate``) can
 tell a genuinely absent DB tier (fall back to the TOML write) apart from a present-but-locked
 DB (the DB row stays authoritative, so a TOML write would be a dead, shadowed row).

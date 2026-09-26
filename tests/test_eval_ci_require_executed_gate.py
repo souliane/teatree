@@ -20,6 +20,7 @@ metered key still selectable), and that ``ci.yml`` no longer carries an eval job
 the PR path. They go RED if ``--require-executed`` is removed.
 """
 
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -58,6 +59,20 @@ def _gh_eval_step_env() -> dict[str, str]:
     for step in cast("list[dict[str, Any]]", jobs["eval"]["steps"]):
         env.update(cast("dict[str, str]", step.get("env", {})))
     return env
+
+
+def _preflight_text(before_script: list[str]) -> str:
+    """The before_script, with any shell script it delegates to inlined after it.
+
+    A preflight that has to tell four indistinguishable API refusals apart outgrows a
+    here-doc in a job definition, so a host project may extract it into a script the
+    before_script invokes. The obligation follows the logic; asserting the shape stays
+    inline would forbid the extraction rather than the regression.
+    """
+    text = "\n".join(before_script)
+    root = _GITLAB_CI.parent
+    delegated = [root / name for name in re.findall(r"\b(?:ba)?sh\s+([\w./-]+\.sh)\b", text)]
+    return "\n".join([text, *(path.read_text(encoding="utf-8") for path in delegated if path.is_file())])
 
 
 def _gitlab_eval_script() -> list[str]:
@@ -300,20 +315,18 @@ class TestGitLabRequireExecutedUnconditional:
         # here; neither may carry none.
         config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
         suite = cast("dict[str, Any]", config[".eval-suite"])
-        before = "\n".join(cast("list[str]", suite["before_script"]))
+        before = _preflight_text(cast("list[str]", suite["before_script"]))
         script = "\n".join(cast("list[str]", suite["script"]))
 
-        if "--backend anthropic_api" not in script:
+        if "--backend anthropic_api" not in script or "--judge" in script:
             assert "claude --version" in before, (
-                "The GitLab eval-suite runs a CLI-backed backend, so it must assert the Claude "
-                "CLI install (`claude --version`) — a missing binary must fail the job."
+                "The GitLab eval-suite uses the Claude CLI for its backend or judge, so it must "
+                "assert the install (`claude --version`)."
             )
+        else:
+            assert "claude --version" not in before
+        if "--backend anthropic_api" not in script:
             return
-
-        assert "claude --version" not in before, (
-            "The CLI-free lane (--backend anthropic_api) must not install or assert the Claude "
-            "CLI: it spawns no `claude` child, so that assertion gates a dependency it does not have."
-        )
         assert "EVAL_BLOCKED=75" in before, (
             "The CLI-free lane must name the blocked-credential exit code its allow_failure scopes to."
         )

@@ -2,7 +2,7 @@
 
 A terminal run can halt for several distinct exhaustion reasons that demand
 DIFFERENT remediations — conflating them sends the operator to the wrong fix.
-The five causes (see :class:`LimitCause`):
+The seven causes (see :class:`LimitCause`):
 
 - API-key CREDIT exhaustion — the billed ``ANTHROPIC_API_KEY`` has a $0 balance;
     a real ``/v1/messages`` call returns HTTP 400 (credit balance too low). Fix:
@@ -12,6 +12,12 @@ The five causes (see :class:`LimitCause`):
     re-dispatching later works.
 - subscription WEEKLY limit — the 7-day window; hard, resets weekly.
 - transient API rate limit — HTTP 429; retry shortly.
+- metered PROVIDER BUDGET — an OpenAI-compatible router refusing on a spend cap (the key's
+    cycle or lifetime limit, the wallet, a member budget); the lane parks until the reset the
+    router states, else it is re-probed after :data:`WINDOW_HORIZON`.
+- LEAK BLOCKED — a request refused for its content, by the router's guardrail (``400
+    guardrail_blocked``) or by teatree's own egress scanner (:class:`EgressBlockedError`); terminal, because
+    re-sending the same context blocks again.
 - provider ACCESS DENIED — HTTP 401/403, the metered lane's own refusal (a router key
     at its cycle spend limit, a revoked key). No Anthropic phrase names it, so it is
     classified from the HTTP status alone.
@@ -59,7 +65,8 @@ so without these a provider-reported throttle classified as no limit at all.
 """
 
 import dataclasses
-from datetime import timedelta
+import re
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from claude_agent_sdk.types import RateLimitType
@@ -77,7 +84,12 @@ class LimitCause(Enum):
     SUBSCRIPTION_SESSION = "subscription_session"
     SUBSCRIPTION_WEEKLY = "subscription_weekly"
     RATE_LIMIT = "rate_limit"
+    PROVIDER_BUDGET = "provider_budget"
+    LEAK_BLOCKED = "leak_blocked"
     PROVIDER_ACCESS_DENIED = "provider_access_denied"
+
+
+EGRESS_BLOCKED_MARKER = "egress_blocked"
 
 
 #: Phrase -> cause, ordered MOST-SPECIFIC first. Credit phrases precede every
@@ -87,6 +99,15 @@ class LimitCause(Enum):
 #: ``rate limit`` / ``quota exceeded`` are last (the lowest-priority transient
 #: bucket). See the module docstring for each phrase's provenance and counts.
 _SIGNATURES: tuple[tuple[str, LimitCause], ...] = (
+    # A content block outranks every limit: its context must never be re-sent.
+    ("guardrail_blocked", LimitCause.LEAK_BLOCKED),
+    (EGRESS_BLOCKED_MARKER, LimitCause.LEAK_BLOCKED),
+    # OrcaRouter's documented spend-stop 403s: key cycle cap, key lifetime quota, wallet, member budget.
+    ("token cycle spend limit reached", LimitCause.PROVIDER_BUDGET),
+    ("pre_consume_token_quota_failed", LimitCause.PROVIDER_BUDGET),
+    ("token quota is not enough", LimitCause.PROVIDER_BUDGET),
+    ("insufficient_user_quota", LimitCause.PROVIDER_BUDGET),
+    ("monthly budget reached", LimitCause.PROVIDER_BUDGET),
     # API-key CREDIT / metered usage-based-billing exhaustion (a $0 balance).
     ("credit balance too low", LimitCause.API_CREDIT),  # CLI x3
     ("credit balance is too low", LimitCause.API_CREDIT),  # CLI x4
@@ -147,6 +168,9 @@ WINDOW_HORIZON: dict[LimitCause, timedelta | None] = {
     LimitCause.SUBSCRIPTION_WEEKLY: timedelta(days=7),
     LimitCause.RATE_LIMIT: timedelta(minutes=5),
     LimitCause.API_CREDIT: None,
+    # Only a re-probe cadence: a budget stop that states its reset is parked until that instant.
+    LimitCause.PROVIDER_BUDGET: timedelta(hours=6),
+    LimitCause.LEAK_BLOCKED: None,
     LimitCause.PROVIDER_ACCESS_DENIED: PROVIDER_ACCESS_DENIED_HORIZON,
 }
 
@@ -249,19 +273,45 @@ _REMEDIATION: dict[LimitCause, str] = {
     ),
     LimitCause.SUBSCRIPTION_WEEKLY: ("subscription weekly limit reached — retry after the weekly reset"),
     LimitCause.RATE_LIMIT: ("Anthropic API rate limit hit (transient) — retry shortly"),
+    LimitCause.PROVIDER_BUDGET: (
+        "metered provider spend limit reached (key cap, key quota, wallet or member budget) — "
+        "the metered lane is parked until the stated reset; raise the cap or fund the wallet to resume sooner"
+    ),
+    LimitCause.LEAK_BLOCKED: (
+        "request refused for its content before the model saw it (router guardrail or teatree egress scan) — "
+        "never re-sent; remove what put that content into the context, or adjust the policy"
+    ),
     LimitCause.PROVIDER_ACCESS_DENIED: (
         "the provider REFUSED the key (HTTP 401/403) — check its spend limit, cycle budget and "
         "permissions in the provider console; the lane is parked and re-probes in an hour"
     ),
 }
 
+_STATED_RESET = re.compile(
+    r"resets at\s+(?P<stamp>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)",
+    re.IGNORECASE,
+)
+
+
+def parse_stated_reset(text: str) -> datetime | None:
+    """The ISO-8601 instant a ``resets at <stamp>`` clause names, as aware UTC; a naive stamp is UTC."""
+    found = _STATED_RESET.search(text)
+    if found is None:
+        return None
+    try:
+        stamp = datetime.fromisoformat(found["stamp"])
+    except ValueError:
+        return None
+    return stamp.astimezone(UTC) if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+
 
 @dataclasses.dataclass(frozen=True)
 class LimitMatch:
-    """A matched exhaustion signal: the phrase that fired and its classified cause."""
+    """A matched exhaustion signal: the phrase that fired, its classified cause, and any reset it stated."""
 
     phrase: str
     cause: LimitCause
+    stated_reset: datetime | None = None
 
     @property
     def remediation(self) -> str:
@@ -290,8 +340,17 @@ def classify_limit(text: str) -> LimitMatch | None:
     haystack = text.casefold()
     for phrase, cause in _SIGNATURES:
         if phrase in haystack:
-            return LimitMatch(phrase=phrase, cause=cause)
+            return (
+                provider_budget_match(phrase, text)
+                if cause is LimitCause.PROVIDER_BUDGET
+                else LimitMatch(phrase, cause)
+            )
     return None
+
+
+def provider_budget_match(phrase: str, text: str) -> LimitMatch:
+    """A :data:`LimitCause.PROVIDER_BUDGET` match carrying the reset *text* states, if any."""
+    return LimitMatch(phrase=phrase, cause=LimitCause.PROVIDER_BUDGET, stated_reset=parse_stated_reset(text))
 
 
 def classify_rate_limit_type(rate_limit_type: RateLimitType | None) -> LimitMatch | None:
@@ -320,3 +379,14 @@ class CreditExhaustedError(RuntimeError):
     raises this distinct, actionable error (carrying the console remediation)
     rather than redding every remaining scenario behind an opaque error result.
     """
+
+
+class EgressBlockedError(RuntimeError):
+    """An outbound model request was refused before sending, for content that must not leave the box.
+
+    The message leads with :data:`EGRESS_BLOCKED_MARKER`, so any reason that keeps only the text still
+    classifies as :data:`LimitCause.LEAK_BLOCKED`.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{EGRESS_BLOCKED_MARKER}: {detail}")

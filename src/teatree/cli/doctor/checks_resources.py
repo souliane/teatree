@@ -17,23 +17,20 @@ alarm arrives long after the trajectory was obvious, which is why a host at 96%
 then 97% full never fired anything (#3852).
 """
 
-import json
 import os
-import shutil
-from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import cast
 
 import typer
 
+from teatree.cli.doctor.checks_plugins import JsonObject, _check_pyright_lsp_plugin, _read_json_object
 from teatree.core.retention.liveness import held_paths
-from teatree.utils.ram_probe import host_total_ram_mib
-from teatree.utils.ram_scope import agent_workload_floor_gib
+from teatree.utils import disk_consumers, disk_probe
+from teatree.utils.ram_probe import cgroup_file, host_total_ram_mib
+from teatree.utils.ram_scope import AGENT_WORKLOAD_FLOOR_ENV, RamHeadroom, agent_workload_floor_gib
 
-# A parsed JSON object (``~/.claude`` settings / installed_plugins). Values are
-# arbitrary JSON, so the leaves stay ``object``; the alias names the shape and keeps
-# the module-health dataclass/TypedDict rule satisfied (mirrors cli/setup/claude_settings).
-type JsonObject = dict[str, object]
+__all__ = ["_check_pyright_lsp_plugin"]
 
 _DEFAULT_TMPFS_WARN_PERCENT = 80
 # A quarter of RAM is generous for scratch on a box whose whole purpose is agent
@@ -51,23 +48,25 @@ _DEFAULT_DISK_CRIT_PERCENT = 95
 # product-broken fault. The lean admin/slack-listener (web UI / socket receiver) being
 # small — and not needing the loop's skills — is correct and must NOT be flagged.
 _AGENT_ROLE = "worker"
+# The role env var is set by whichever compose file brought the container up, and the
+# name is NOT uniform across deployments: core's own stack sets TEATREE_ROLE, while a
+# downstream stack commonly prefixes its own. Reading only TEATREE_ROLE made every
+# role-aware check below silently INERT on such a deployment — the memory-cap check
+# returned OK for fourteen hours on a worker whose cap it was written to refuse
+# (#4201). So resolve GENERICALLY: the canonical name first, then any `*_ROLE` var.
+_ROLE_ENV = "TEATREE_ROLE"
+_ROLE_ENV_SUFFIX = "_ROLE"
+# An alias is only honoured when its VALUE names a role we know. Without this an
+# unrelated `*_ROLE` var (cloud IAM ones are common) would be read as a role and could
+# make a non-worker host emit a worker FAIL.
+_KNOWN_ROLES = frozenset({"worker", "admin", "init", "slack-listener", "watchdog"})
 _CLAUDE_PLUGIN_ID = "t3@souliane"
 
-# The external pyright-lsp plugin + the language-server binary it drives. `t3 setup`
-# registers + enables the plugin AND provisions `pyright-langserver` (npm `pyright`),
-# which the plugin execs to deliver live type diagnostics. Enabled-but-unprovisioned
-# is a HARD FAIL (#3568): the plugin then silently never starts, so a green doctor
-# would misreport a dead LSP as healthy. A merely-disabled plugin is a config choice
-# and stays an advisory WARN.
-_PYRIGHT_PLUGIN_ID = "pyright-lsp@claude-plugins-official"
-_PYRIGHT_LANGSERVER = "pyright-langserver"
-_PYRIGHT_INSTALL_CMD = "npm install -g --prefix ~/.local pyright"
 _BYTES_PER_GIB = 1024**3
+_BYTES_PER_MIB = 1024**2
 # cgroup v1's "unlimited" is a near-2**63 page-aligned sentinel, and cgroup v2 uses
 # the literal "max"; any cap at/above this floor is treated as no real cap.
 _CGROUP_UNLIMITED_MIN = 1 << 60
-_CGROUP_MEMORY_MAX_V2 = Path("/sys/fs/cgroup/memory.max")
-_CGROUP_MEMORY_MAX_V1 = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
 
 
 def _tmpfs_warn_percent(raw: str | None, *, default: int = _DEFAULT_TMPFS_WARN_PERCENT) -> int:
@@ -83,22 +82,12 @@ def _tmpfs_warn_percent(raw: str | None, *, default: int = _DEFAULT_TMPFS_WARN_P
 
 def _disk_percent_threshold(raw: str | None, *, default: int) -> int:
     """Parse a percent-threshold env override into 1..100; fall back to *default* on garbage."""
-    if raw is None:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if 1 <= value <= _PERCENT_MAX else default
+    return disk_probe.disk_percent_threshold(raw, default=default)
 
 
-def _used_percent(path: str) -> int | None:
+def _used_percent(path: str) -> float | None:
     """Percent of *path*'s filesystem in use, or ``None`` when it cannot be measured."""
-    stats = os.statvfs(path)
-    total = stats.f_blocks * stats.f_frsize
-    if total <= 0:
-        return None
-    return round((total - stats.f_bavail * stats.f_frsize) / total * 100)
+    return disk_probe.read_disk_used_percent(path)
 
 
 def _check_root_disk_headroom(*, mount_point: str = _ROOT_MOUNT) -> bool:
@@ -122,19 +111,22 @@ def _check_root_disk_headroom(*, mount_point: str = _ROOT_MOUNT) -> bool:
         return True
     if used_pct is None:
         return True
-    crit = _disk_percent_threshold(os.environ.get("TEATREE_DISK_CRIT_PERCENT"), default=_DEFAULT_DISK_CRIT_PERCENT)
-    warn = _disk_percent_threshold(os.environ.get("TEATREE_DISK_WARN_PERCENT"), default=_DEFAULT_DISK_WARN_PERCENT)
+    crit = disk_probe.disk_crit_percent()
+    warn = disk_probe.disk_warn_percent()
     if used_pct >= crit:
+        consumers = disk_consumers.summary()
         typer.echo(
             f"FAIL  {mount_point} is {used_pct}% used (>= {crit}% critical) — a full root filesystem stops "
-            "builds, docker, the control DB and every agent worktree. Reclaim now: "
+            f"builds, docker, the control DB and every agent worktree. Top consumers: {consumers}. Reclaim now: "
             "`t3 <overlay> workspace reclaim-disk`, then `t3 <overlay> workspace clean-all` and "
             "`t3 <overlay> retention prune --apply`. Tune with TEATREE_DISK_CRIT_PERCENT."
         )
         return False
     if used_pct >= warn:
+        consumers = disk_consumers.summary()
         typer.echo(
             f"WARN  {mount_point} is {used_pct}% used (>= {warn}% threshold) — reclaim before it bites: "
+            f"top consumers: {consumers}. "
             "`t3 <overlay> workspace reclaim-disk`, `t3 <overlay> workspace clean-all`, "
             "`t3 <overlay> retention prune --apply`. Tune with TEATREE_DISK_WARN_PERCENT."
         )
@@ -320,7 +312,7 @@ def _worker_floor_bytes(raw: str | None) -> int:
     return agent_workload_floor_gib(raw) * _BYTES_PER_GIB
 
 
-def _read_cgroup_memory_cap(v2: Path, v1: Path) -> int | None:
+def _read_cgroup_memory_cap(v2: Path | None, v1: Path | None) -> int | None:
     """Return the container's cgroup memory cap in bytes, or ``None`` when uncapped/unknown.
 
     Reads cgroup v2 ``memory.max`` first (``"max"`` = no cap → ``None``), then falls
@@ -329,6 +321,8 @@ def _read_cgroup_memory_cap(v2: Path, v1: Path) -> int | None:
     ever reported.
     """
     for path in (v2, v1):
+        if path is None:
+            continue
         try:
             text = path.read_text(encoding="utf-8").strip()
         except OSError:
@@ -345,11 +339,22 @@ def _read_cgroup_memory_cap(v2: Path, v1: Path) -> int | None:
     return None
 
 
+def _worker_cgroup_paths(v2: Path | None, v1: Path | None) -> tuple[Path | None, Path | None]:
+    """Resolve this worker's own v2/v1 membership, never the mount root by guess."""
+    if v2 is None:
+        with suppress(OSError):
+            v2 = cgroup_file("memory.max")
+    if v1 is None:
+        with suppress(OSError):
+            v1 = cgroup_file("memory.limit_in_bytes", version=1, controller="memory")
+    return v2, v1
+
+
 def _check_worker_memory_cap(
     *,
     role: str | None = None,
-    v2: Path = _CGROUP_MEMORY_MAX_V2,
-    v1: Path = _CGROUP_MEMORY_MAX_V1,
+    v2: Path | None = None,
+    v1: Path | None = None,
 ) -> bool:
     """FAIL when the WORKER container's cgroup memory cap is below the agent-workload floor.
 
@@ -359,19 +364,23 @@ def _check_worker_memory_cap(
     doctor exit code + the watchdog owner DM) rather than a soft WARN. ROLE-AWARE: the
     lean admin (Django web UI) and slack-listener are meant to be small, so this returns
     OK for them; it fires only when doctor runs inside the worker and that container's
-    own cgroup cap is under the floor. Role is read from ``TEATREE_ROLE`` (the
-    compose-set per-service env). No cap (a host / uncapped / cgroup files absent) is
-    OK. Floor overridable via ``TEATREE_WORKER_MEMORY_FLOOR_GIB`` (positive GiB int,
-    default 4). Crash-proof — any probe error degrades to OK so it never aborts the run.
+    own cgroup cap is under the floor. Role comes from :func:`_resolve_agent_role`.
+    An unknown or uncapped worker cannot prove the floor and also FAILs; its
+    stable doctor finding reaches the owner through the watchdog. Floor is
+    overridable via ``TEATREE_WORKER_MEMORY_FLOOR_GIB`` (positive GiB int, default 4).
     """
     try:
-        resolved_role = os.environ.get("TEATREE_ROLE", "") if role is None else role
-        if resolved_role != _AGENT_ROLE:
+        if _resolve_agent_role(role) != _AGENT_ROLE:
             return True
-        cap = _read_cgroup_memory_cap(v2, v1)
+        cap = _read_cgroup_memory_cap(*_worker_cgroup_paths(v2, v1))
         if cap is None:
-            return True
-        floor = _worker_floor_bytes(os.environ.get("TEATREE_WORKER_MEMORY_FLOOR_GIB"))
+            typer.echo(
+                "FAIL  worker cgroup memory cap is absent, uncapped or unreadable — cannot verify "
+                "the agent-workload floor. Inspect /proc/self/cgroup and the worker mem_limit; "
+                "this worker may be reading host scope or running without a usable cap."
+            )
+            return False
+        floor = _worker_floor_bytes(os.environ.get(AGENT_WORKLOAD_FLOOR_ENV))
         if cap < floor:
             typer.echo(
                 f"FAIL  worker container memory cap is {cap / _BYTES_PER_GIB:.2g} GiB "
@@ -381,18 +390,114 @@ def _check_worker_memory_cap(
                 "deploy/docker-compose.yml) and redeploy; tune the floor with TEATREE_WORKER_MEMORY_FLOOR_GIB."
             )
             return False
+    except AmbiguousAgentRoleError as exc:
+        typer.echo(f"FAIL  {exc}")
+        return False
     except OSError:
         return True
     return True
 
 
-def _read_json_object(path: Path) -> JsonObject:
-    """Load ``path`` as a JSON object, or ``{}`` when absent/unreadable/not an object."""
+class AmbiguousAgentRoleError(RuntimeError):
+    """Two or more ``*_ROLE`` aliases name DIFFERENT known roles (#4201).
+
+    Carries the operator-facing sentence naming every conflicting variable and the
+    one-line fix, so each gate can report it verbatim instead of re-composing it.
+    """
+
+
+def _role_aliases() -> dict[str, str]:
+    """Every ``*_ROLE`` env var (excluding :data:`_ROLE_ENV`) whose value is a known role."""
+    return {
+        name: os.environ[name].strip()
+        for name in sorted(os.environ)
+        if name != _ROLE_ENV and name.endswith(_ROLE_ENV_SUFFIX) and os.environ[name].strip() in _KNOWN_ROLES
+    }
+
+
+def _resolve_agent_role(role: str | None) -> str:
+    """The container's role, from an explicit *role*, ``TEATREE_ROLE``, or a ``*_ROLE`` alias.
+
+    Deployment-agnostic on purpose: core cannot know what a downstream stack names its
+    role variable, and guessing wrong makes every role-aware check silently inert
+    rather than loud. Aliases are only accepted when the value is one of
+    :data:`_KNOWN_ROLES`.
+
+    Returns ``""`` when nothing names a role. A blank role is NOT the worker, so a
+    check keyed on it stays OK — the conservative direction for a host or a shell
+    where no compose file has spoken.
+
+    Raises :class:`AmbiguousAgentRoleError` when two aliases name DIFFERENT roles.
+    Picking one of them (this used to take the first in sorted order) turns an
+    unreadable environment into a confident wrong answer: ``IAM_ROLE=admin`` sorts
+    before ``STACK_ROLE=worker``, so a worker resolved as "admin" and every worker
+    hard-gate went inert — the exact silent-inertness this resolver exists to end.
+    "I cannot tell" must not return the same value as "I read it, and it is not the
+    worker". The canonical :data:`_ROLE_ENV` and an explicit *role* both settle a
+    conflict, which is also the fix the message names.
+    """
+    if role is not None:
+        return role
+    direct = os.environ.get(_ROLE_ENV, "").strip()
+    if direct:
+        return direct
+    aliases = _role_aliases()
+    distinct = set(aliases.values())
+    if len(distinct) > 1:
+        named = ", ".join(f"{name}={value}" for name, value in aliases.items())
+        message = (
+            f"conflicting container role: {named} name different roles, so no role-aware check can "
+            f"tell what this container is. Set {_ROLE_ENV} to the authoritative role (it wins over "
+            "every alias) — until then this gate refuses rather than guessing and going inert."
+        )
+        raise AmbiguousAgentRoleError(message)
+    return next(iter(distinct), "")
+
+
+def _check_resume_ceiling_reachable(
+    *,
+    role: str | None = None,
+    v2: Path | None = None,
+    v1: Path | None = None,
+) -> bool:
+    """FAIL when this worker's memory cap sits at/below the governor's RESUME floor.
+
+    A braked admission governor only re-admits above ``RAM_RESUME_FLOOR_GB``. Capped
+    at or below that floor the condition is unsatisfiable with the container EMPTY, so
+    the first brake is permanent and every headless task queues forever. Unlike
+    ``_check_worker_memory_cap`` (which asks "is there room to work?") this asks "can
+    the brake ever release?" — a different, unrecoverable failure that no amount of
+    waiting or idling fixes, which is why it is a HARD FAIL rather than a WARN.
+
+    Crash-proof: any probe error degrades to OK so it never aborts the doctor run.
+    """
+    from teatree.core.admission_governor import resume_ceiling_conflict  # noqa: PLC0415 — deferred: call-time import
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        if _resolve_agent_role(role) != _AGENT_ROLE:
+            return True
+        cap = _read_cgroup_memory_cap(*_worker_cgroup_paths(v2, v1))
+        if cap is None:
+            return True
+        # SCOPE-QUALIFIED, exactly as the governor's own reader does it: a cap too small to
+        # be box-scoped is not this check's to judge — it bounds a reading the watermarks
+        # never see, and "is there room to work at all?" is `_check_worker_memory_cap`'s
+        # question. Handing over the RAW cap made this fire on caps the governor drops.
+        scoped = RamHeadroom(
+            available_mib=None,
+            cgroup_limit_mib=round(cap / _BYTES_PER_MIB),
+            host_available_mib=None,
+        )
+        conflict = resume_ceiling_conflict(scoped.box_watermark_cap_gb)
+        if conflict is not None:
+            typer.echo(f"FAIL  worker {conflict}")
+            return False
+    except AmbiguousAgentRoleError as exc:
+        typer.echo(f"FAIL  {exc}")
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _worker_skills_registered(home: Path) -> bool:
@@ -424,8 +529,17 @@ def _check_worker_skills_present(*, role: str | None = None, home: Path | None =
     worker (the agent-running container) is gated; admin/slack-listener/watchdog and a
     roleless host invocation return OK. Mirrors the entrypoint's ``verify_agent_skills``
     startup precondition, so the running-loop gate and the boot gate stay in lockstep.
+
+    Role comes from :func:`_resolve_agent_role`, the same resolver the two memory gates
+    use — reading ``TEATREE_ROLE`` alone left this gate inert on any deployment that
+    names its role variable differently, which is the same inertness the resolver was
+    introduced to end. An ambiguous role FAILs loudly rather than returning OK.
     """
-    resolved_role = os.environ.get("TEATREE_ROLE", "") if role is None else role
+    try:
+        resolved_role = _resolve_agent_role(role)
+    except AmbiguousAgentRoleError as exc:
+        typer.echo(f"FAIL  {exc}")
+        return False
     if resolved_role != _AGENT_ROLE:
         return True
     if _worker_skills_registered(Path.home() if home is None else home):
@@ -436,38 +550,3 @@ def _check_worker_skills_present(*, role: str | None = None, home: Path | None =
         "container (or redeploy); the worker entrypoint now refuses to start without it."
     )
     return False
-
-
-def _check_pyright_lsp_plugin(*, home: Path | None = None, which: Callable[[str], str | None] | None = None) -> bool:
-    """FAIL when the pyright-lsp plugin is enabled but its langserver is not provisioned (#3568).
-
-    pyright-lsp gives factory agents LIVE pyright type diagnostics while coding. The
-    enabled plugin execs ``pyright-langserver`` (npm ``pyright``); when that binary is
-    missing the LSP silently never starts, so the enabled-but-unprovisioned state is a
-    HARD FAIL (returns ``False``) under the epic #3445 "enabled but not provisioned →
-    FAIL" principle — otherwise a green doctor misreports a dead LSP as healthy. The
-    plugin merely being disabled is a config choice, so that stays an advisory WARN
-    (returns ``True``). ``which`` is injectable for tests (defaults to
-    :func:`shutil.which`). Crash-proof — any read error degrades to a silent pass so
-    this diagnostic never aborts the doctor run.
-    """
-    resolve = shutil.which if which is None else which
-    try:
-        enabled = _read_json_object((home or Path.home()) / ".claude" / "settings.json").get("enabledPlugins")
-    except OSError:
-        return True
-    if not (isinstance(enabled, dict) and cast("JsonObject", enabled).get(_PYRIGHT_PLUGIN_ID) is True):
-        typer.echo(
-            "WARN  pyright-lsp plugin is not enabled — factory agents get no LIVE pyright type "
-            "diagnostics while coding (type errors surface only at CI). Run `t3 setup` to register "
-            "+ enable it (advisory only; nothing is gated)."
-        )
-        return True
-    if resolve(_PYRIGHT_LANGSERVER) is None:
-        typer.echo(
-            f"FAIL  pyright-lsp plugin is enabled but `{_PYRIGHT_LANGSERVER}` is not on PATH — the "
-            "language server cannot start, so the enabled LSP silently delivers no live type "
-            f"diagnostics. Install it: `{_PYRIGHT_INSTALL_CMD}` (or re-run `t3 setup`)."
-        )
-        return False
-    return True

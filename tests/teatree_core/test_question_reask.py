@@ -20,6 +20,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core import notify as notify_module
+from teatree.core.modelkit.fibonacci import fibonacci_bump_index
 from teatree.core.models import BotPing, DeferredQuestion
 from teatree.core.notify_question_drains import _REASK_BATCH, RESURFACE_INTERVAL_HOURS, reask_escalated_questions
 
@@ -68,15 +69,17 @@ class TestTheBumpRidesTheExistingRow(TestCase):
         backend.post_message.assert_called_once()
         assert backend.post_message.call_args.kwargs["thread_ts"] == "100.0"
 
-    def test_the_idempotency_key_carries_the_escalation_generation(self) -> None:
-        row = _mirrored("Which DB host?", slack_ts="100.0")
+    def test_the_idempotency_key_carries_the_rows_own_gap_index(self) -> None:
+        # Keyed on the ROW's position in its own schedule, not a wall-clock window every
+        # question shares — which is what lets the gaps widen per question.
+        row = _mirrored("Which DB host?", slack_ts="100.0", age_days=3)
         backend = _backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
-            reask_escalated_questions(user_id="U_ME", backend=backend)
+            reask_escalated_questions(user_id="U_ME", backend=backend, now=timezone.now())
 
         assert BotPing.objects.filter(
-            idempotency_key=f"reask:{row.stable_notify_ref}:e0",
+            idempotency_key=f"reask:{row.stable_notify_ref}:{fibonacci_bump_index(3)}",
             status=BotPing.Status.SENT,
         ).exists()
 
@@ -105,14 +108,8 @@ class TestTheBumpRidesTheExistingRow(TestCase):
             assert reask_escalated_questions(user_id="U_ME", backend=backend) == (0, 0)
 
 
-class TestTheEscalationGenerationIsTheCadence(TestCase):
-    """One bump per escalation, so the nag ends where the age ladder does (#4706).
-
-    Keyed on the 24h bucket, a row nobody answered was bumped again every bucket for as
-    long as it stayed pending — 105 rows past the ceiling, re-notified daily, forever.
-    """
-
-    def test_a_second_tick_at_the_same_generation_posts_nothing(self) -> None:
+class TestTheGapIsTheCadence(TestCase):
+    def test_a_second_tick_inside_the_same_gap_posts_nothing(self) -> None:
         _mirrored("Which DB host?", slack_ts="100.0")
         now = timezone.now()
         backend = _backend()
@@ -124,8 +121,8 @@ class TestTheEscalationGenerationIsTheCadence(TestCase):
         assert (first, second) == (1, 0)
         assert backend.post_message.call_count == 1, "every tick re-bumped the owner"
 
-    def test_an_unanswered_row_is_not_re_bumped_a_bucket_later(self) -> None:
-        _mirrored("Which DB host?", slack_ts="100.0")
+    def test_the_next_gap_bumps_again(self) -> None:
+        _mirrored("Which DB host?", slack_ts="100.0", age_days=3)
         now = timezone.now()
         backend = _backend()
 
@@ -137,22 +134,31 @@ class TestTheEscalationGenerationIsTheCadence(TestCase):
                 now=now + dt.timedelta(hours=RESURFACE_INTERVAL_HOURS + 1),
             )
 
-        assert later == 0, "the clock alone re-bumped a row nothing had happened to"
-        assert backend.post_message.call_count == 1
+        assert later == 1, "an unanswered question stopped being re-asked after one gap"
 
-    def test_the_next_escalation_bumps_again(self) -> None:
-        # Directive #36 is preserved, re-keyed: an unanswered question IS re-raised —
-        # once per escalation, so the nag terminates when the ladder does.
-        row = _mirrored("Which DB host?", slack_ts="100.0")
+    def test_a_freshly_mirrored_row_is_not_bumped_on_top_of_its_first_post(self) -> None:
+        # The mirror drain has just posted it; index 0 IS that post.
+        _mirrored("Which DB host?", slack_ts="100.0", age_days=0)
         backend = _backend()
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
-            reask_escalated_questions(user_id="U_ME", backend=backend)
-            row.mark_escalated("pending past the ceiling")
-            later, _ = reask_escalated_questions(user_id="U_ME", backend=backend)
+            assert reask_escalated_questions(user_id="U_ME", backend=backend) == (0, 1)
 
-        assert later == 1, "an escalation the owner was never told about"
-        assert backend.post_message.call_count == 2
+        backend.post_message.assert_not_called()
+
+    def test_the_gaps_widen_so_a_stale_question_costs_less_than_a_fresh_one(self) -> None:
+        # Two rows 24h apart bump on the SAME index once the gaps exceed a day, which is
+        # the whole point: an old question stops earning a notification every interval.
+        now = timezone.now()
+        young = _mirrored("Young?", slack_ts="100.0", age_days=13)
+        old = _mirrored("Old?", slack_ts="200.0", age_days=14)
+        backend = _backend()
+
+        with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
+            reask_escalated_questions(user_id="U_ME", backend=backend, now=now)
+
+        keys = set(BotPing.objects.values_list("idempotency_key", flat=True))
+        assert keys == {f"reask:{young.stable_notify_ref}:5", f"reask:{old.stable_notify_ref}:5"}
 
     def test_the_batch_rotates_through_the_backlog(self) -> None:
         # The five slots went to the five most urgent rows every bucket, so row six
@@ -163,6 +169,8 @@ class TestTheEscalationGenerationIsTheCadence(TestCase):
 
         with patch.object(notify_module, "messaging_from_overlay", return_value=backend):
             reask_escalated_questions(user_id="U_ME", backend=backend)
+            # The second pass runs in a later hour, past the owner's hourly question-ping ceiling.
+            BotPing.objects.update(posted_at=timezone.now() - dt.timedelta(hours=2))
             reask_escalated_questions(user_id="U_ME", backend=backend)
 
         threads = {call.kwargs["thread_ts"] for call in backend.post_message.call_args_list}

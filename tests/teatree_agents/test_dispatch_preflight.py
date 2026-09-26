@@ -12,8 +12,12 @@ from teatree.agents.dispatch_preflight import (
     head_state_brief_lines,
     resolve_head_state,
     review_diff_brief_lines,
+    rubric_brief_lines,
 )
-from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
+from teatree.core.models import AutoReviewDispatch, PullRequest, Session, Task, Ticket, Worktree
+from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.types import AdequacySection, PlanAdequacy
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -143,6 +147,80 @@ class TestReviewDiffBriefLines(TestCase):
             assert "DIFF UNDER REVIEW" in block
             assert "widget.py" in block
             assert "def widget" in block
+
+
+_SLUG = "souliane/teatree"
+_PR_ID = 7788
+_HEAD = "e" * 40
+_RUBRIC_AC = ["the brief lists every criterion", "an unlisted criterion cannot be graded"]
+
+
+def _reviewing_task_for_pr(*, pr_id: int = _PR_ID) -> Task:
+    dispatch = AutoReviewDispatch.enqueue(
+        slug=_SLUG,
+        pr_id=pr_id,
+        head_sha=_HEAD,
+        pr_url=f"https://github.com/{_SLUG}/pull/{pr_id}",
+        overlay="teatree",
+    )
+    assert dispatch is not None
+    task = dispatch.task
+    assert task is not None
+    return task
+
+
+def _delivering_ticket(*, criteria: list[str] | None, pr_id: int = _PR_ID) -> Ticket:
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+    PullRequest.objects.create(
+        ticket=ticket,
+        overlay="t3-teatree",
+        url=f"https://github.com/{_SLUG}/pull/{pr_id}",
+        repo=_SLUG,
+        iid=str(pr_id),
+    )
+    if criteria is not None:
+        PlanArtifact.record(
+            ticket=ticket,
+            plan_text="list the rubric in the reviewing brief",
+            recorded_by="planner",
+            base_sha="f" * 40,
+            adequacy=PlanAdequacy(
+                design=AdequacySection(content="render the criteria"),
+                integration_seams=AdequacySection(content=["src/teatree/agents/phase_blocks.py"]),
+                edge_cases=AdequacySection(content=["a PR no ticket owns"]),
+                test_strategy=AdequacySection(content="this module"),
+                acceptance_criteria=AdequacySection(content=criteria),
+            ),
+        )
+    return ticket
+
+
+class TestRubricBriefLines(TestCase):
+    """A reviewer told to grade a checklist it was never shown cannot grade it."""
+
+    def test_every_criterion_is_listed_with_its_ordinal(self) -> None:
+        ticket = _delivering_ticket(criteria=_RUBRIC_AC)
+        block = "\n".join(rubric_brief_lines(_reviewing_task_for_pr()))
+
+        assert f"TICKET RUBRIC (ticket {ticket.pk})" in block
+        for ordinal, text in enumerate(_RUBRIC_AC):
+            assert f"#{ordinal} {text}" in block
+
+    def test_a_pr_no_ticket_owns_carries_no_block(self) -> None:
+        assert rubric_brief_lines(_reviewing_task_for_pr()) == ()
+
+    def test_a_ticket_with_no_rubric_carries_no_block(self) -> None:
+        _delivering_ticket(criteria=None)
+        assert rubric_brief_lines(_reviewing_task_for_pr()) == ()
+
+    def test_the_block_resolves_the_same_ticket_the_recorder_grades(self) -> None:
+        # Same resolver on both sides, so the brief can never list a rubric the
+        # recorder would not stamp — a reviewer shown criteria nobody consumes.
+        ticket = _delivering_ticket(criteria=_RUBRIC_AC)
+        task = _reviewing_task_for_pr()
+
+        assert gated_ticket_for_review_task(task) == ticket
+        assert f"ticket {ticket.pk}" in "\n".join(rubric_brief_lines(task))
 
 
 def _remote_and_clone(root: Path) -> tuple[Path, Path]:

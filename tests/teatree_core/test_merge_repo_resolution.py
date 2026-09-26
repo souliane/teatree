@@ -30,6 +30,7 @@ from teatree.core.merge import (
 )
 from teatree.core.models import MergeClear, Ticket
 from tests._forge_stub import changed_files_stdout
+from tests.factories import waive_rubric
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -63,6 +64,7 @@ def _workstream_clear(ticket: Ticket) -> MergeClear:
 class TestResolvePrRepoSlug(TestCase):
     def test_owner_repo_shaped_slug_passes_through(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=1,
@@ -76,6 +78,7 @@ class TestResolvePrRepoSlug(TestCase):
 
     def test_workstream_slug_resolves_repo_from_clone_remote(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _workstream_clear(ticket)
 
         with patch(
@@ -86,6 +89,7 @@ class TestResolvePrRepoSlug(TestCase):
 
     def test_unresolvable_repo_fails_closed_with_actionable_message(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _workstream_clear(ticket)
 
         with (
@@ -98,6 +102,7 @@ class TestResolvePrRepoSlug(TestCase):
 class TestMergeUsesResolvedRepo(TestCase):
     def test_workstream_slug_merge_calls_gh_with_real_repo(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _workstream_clear(ticket)
         # The workstream slug resolves to the clone-origin repo; seed the verdict there.
         seed_merge_safe_verdict(slug="souliane/teatree", pr_id=clear.pr_id, sha=clear.reviewed_sha)
@@ -138,6 +143,7 @@ class TestMergeUsesResolvedRepo(TestCase):
 
     def test_workstream_slug_unresolvable_repo_is_actionable_not_opaque(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = _workstream_clear(ticket)
 
         with (
@@ -182,6 +188,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
             issue_url=f"https://github.com/{self._OVERLAY_REPO}/issues/139",
             state=Ticket.State.REVIEW_REQUESTED,
         )
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         return MergeClear.objects.create(
             ticket=ticket,
             pr_id=139,
@@ -264,6 +271,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
     def test_clear_with_blank_issue_url_falls_through_to_clone_origin(self) -> None:
         """A ticket with no issue_url keeps the #872 clone-origin behaviour."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=139,
@@ -435,6 +443,7 @@ class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
         so it must still short-circuit straight through ``_looks_like_owner_repo``.
         """
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=1,

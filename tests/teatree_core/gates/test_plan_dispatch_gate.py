@@ -4,6 +4,7 @@ Symmetric must-refuse / must-allow, mirroring ``test_plan_gate.py``: the gate is
 useless if it only ever passes, and harmful if it refuses a reviewer or a planner.
 """
 
+import json
 from typing import cast
 
 from django.core.management import call_command
@@ -17,8 +18,8 @@ from teatree.core.gates.plan_dispatch_gate import (
 )
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE
 from teatree.core.models import Ticket
-from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
+from tests.factories import _FORTY_HEX, TEST_ADEQUACY, record_test_plan
 
 
 def _ticket() -> Ticket:
@@ -75,7 +76,7 @@ class TestRefusesAnUnplannedImplementingDispatch(TestCase):
 class TestAllowsWhenADecisionWasRecorded(TestCase):
     def test_a_plan_artifact_satisfies_the_gate(self) -> None:
         ticket = _ticket()
-        PlanArtifact.record(ticket=ticket, plan_text="Do X by Y", recorded_by="t3:planner")
+        record_test_plan(ticket, plan_text="Do X by Y", recorded_by="t3:planner")
         assert unplanned_dispatch_refusal(ticket, phase="coding") is None
 
     def test_a_trivial_skip_marker_satisfies_the_gate(self) -> None:
@@ -125,7 +126,16 @@ class TestOriginalBugEndToEndThroughTheOperatorRemedies(TestCase):
 
         result = cast(
             "dict[str, object]",
-            call_command("ticket", "plan", str(ticket.pk), "the plan text recorded after the fact"),
+            call_command(
+                "ticket",
+                "plan",
+                str(ticket.pk),
+                "the plan text recorded after the fact",
+                "--base-sha",
+                _FORTY_HEX,
+                "--adequacy-json",
+                json.dumps(TEST_ADEQUACY),
+            ),
         )
         assert not result.get("error")
         ticket.refresh_from_db()

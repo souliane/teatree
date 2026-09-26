@@ -320,9 +320,6 @@ class SelfUpdateStatuslineTests(TestCase):
     def test_up_to_date_is_dropped(self) -> None:
         assert self._zone("self_update.up_to_date", "") is None
 
-    def test_cadence_not_elapsed_is_dropped(self) -> None:
-        assert self._zone("self_update.cadence_not_elapsed", "recent_marker") is None
-
     def test_updated_is_dropped(self) -> None:
         assert self._zone("self_update.updated", "") is None
 

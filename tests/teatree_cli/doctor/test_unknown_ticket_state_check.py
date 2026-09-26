@@ -1,7 +1,7 @@
 """A Ticket value outside ``Ticket.State.values`` is orphaned and must be named (#4779).
 
 The rename ships with no dual-read shim, so a row that pre-rename code writes after
-migration 0093 ran — ``state``, or the ``ignored_from`` / ``reopened_from`` snapshot
+migration 0119 ran — ``state``, or the ``ignored_from`` / ``reopened_from`` snapshot
 ``unignore()`` assigns straight back into ``state`` — matches no transition source and
 no board column. Nothing else reads such a row as wrong, so the doctor check does.
 """

@@ -49,16 +49,15 @@ class PlanCommands(TyperCommand):
             str,
             typer.Option(
                 "--base-sha",
-                help="Target-branch HEAD (40-char hex) the plan was authored against. "
-                "Required under require_plan_adequacy.",
+                help="Target-branch HEAD (40-char hex) the plan was authored against. Required.",
             ),
         ] = "",
         adequacy_json: Annotated[
             str,
             typer.Option(
                 "--adequacy-json",
-                help="Four-section adequacy manifest as a JSON object "
-                "(design/integration_seams/edge_cases/test_strategy). Required under require_plan_adequacy.",
+                help="Five-section adequacy manifest as a JSON object (design/integration_seams/"
+                "edge_cases/test_strategy/acceptance_criteria). Required.",
             ),
         ] = "",
     ) -> PlanResult:
@@ -66,16 +65,29 @@ class PlanCommands(TyperCommand):
 
         The operator-facing plan recorder named by the ``NoPlanArtifactError``
         message: a planning task that finished out-of-band, or a ticket the
-        planner never ran on, advances by recording the plan here. A blank
-        ``plan_text`` is refused — a vacuous artifact cannot advance the FSM. Under
-        ``require_plan_adequacy`` ``--base-sha`` + ``--adequacy-json`` are also
-        required (a thin spec is refused). For an *audited bypass* (no real plan,
-        explicit human sign-off) use ``plan-bypass``; for a trivial mechanical edit
-        use ``skip-planning``.
+        planner never ran on, advances by recording the plan here. ``plan_text``,
+        ``--base-sha`` and ``--adequacy-json`` are all required — a thin or unbound
+        spec is refused. For an *audited bypass* (no real plan, explicit human
+        sign-off) use ``plan-bypass``; for a trivial mechanical edit use
+        ``skip-planning``.
         """
         cleaned_text = plan_text.strip()
         if not cleaned_text:
             self.stderr.write("  refused: plan_text is required (a vacuous plan cannot advance the FSM)")
+            raise SystemExit(1)
+        missing = [
+            flag
+            for flag, value in (("--base-sha", base_sha.strip()), ("--adequacy-json", adequacy_json.strip()))
+            if not value
+        ]
+        if missing:
+            self.stderr.write(
+                f"  refused: {' and '.join(missing)} required — a plan is bound to the base it was authored "
+                f"against and carries a five-section manifest (design, integration_seams, edge_cases, "
+                f"test_strategy, acceptance_criteria). For trivial mechanical work use "
+                f"`ticket skip-planning {ticket_id} --reason <why>`; for an audited human-authorized "
+                f"exemption use `ticket plan-bypass {ticket_id} --human-authorize <who> --reason <why>`."
+            )
             raise SystemExit(1)
 
         adequacy = self._parse_adequacy_json(adequacy_json)
@@ -162,8 +174,10 @@ class PlanCommands(TyperCommand):
         mechanical edit (a typo, a one-line bump): records a durable
         ``trivial_plan_skip`` marker (NO ``PlanArtifact``, no ``--human-authorize``)
         that ``check_plan_artifact`` accepts and ``execute_provision`` reads to
-        skip the auto-planner. ``--reason`` is mandatory — an unreasoned skip is
-        refused and records nothing. See ``models.trivial_plan_skip``.
+        skip the auto-planner. It escapes the PLAN gate ONLY — the rubric done-gate
+        still grades whatever criteria the ticket carries, and the one waiver for that
+        is ``plan-bypass``. ``--reason`` is mandatory — an unreasoned skip is refused
+        and records nothing. See ``models.trivial_plan_skip``.
         """
         cleaned_reason = reason.strip()
         if not cleaned_reason:
@@ -236,7 +250,7 @@ class PlanCommands(TyperCommand):
             str,
             typer.Option(
                 "--adequacy-json",
-                help="Fresh four-section manifest (JSON) — supply to turn a legacy/INADEQUATE plan adequate; "
+                help="Fresh five-section manifest (JSON) — supply to turn a legacy/INADEQUATE plan adequate; "
                 "omit to carry the prior (adequate) plan's manifest forward for a STALE-base rebind.",
             ),
         ] = "",
@@ -283,7 +297,7 @@ class PlanCommands(TyperCommand):
             msg = f"--adequacy-json is not valid JSON: {exc}"
             raise typer.BadParameter(msg) from exc
         if not isinstance(parsed, dict):
-            msg = "--adequacy-json must be a JSON object (the four-section manifest)"
+            msg = "--adequacy-json must be a JSON object (the five-section manifest)"
             raise typer.BadParameter(msg)
         return parsed
 

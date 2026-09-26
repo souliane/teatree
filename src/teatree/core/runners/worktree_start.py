@@ -65,6 +65,34 @@ def docker_compose_down(project: str, *, timeout: int | None = 30, remove_volume
     return None
 
 
+def docker_compose_stop(project: str, *, timeout: int | None = 30) -> str | None:
+    """Stop the compose project's containers, KEEPING them and their volumes.
+
+    The reversible sibling of :func:`docker_compose_down`, for a stack whose state
+    must survive being quieted. ``down`` removes the containers, and with them every
+    ANONYMOUS volume they own — for a repo's test stack that is the populated test
+    database, so the next run pays a full migration replay to rebuild what stopping
+    would have kept. ``stop`` frees the RAM and the CPU and nothing else.
+
+    Same contract as ``down``: ``None`` when the containers are no longer running,
+    a short reason when they may still be. An unavailable docker binary is SUCCESS —
+    no daemon means nothing is up (#1306).
+    """
+    try:
+        result = run_allowed_to_fail(["docker", "compose", "-p", project, "stop"], expected_codes=None, timeout=timeout)
+    except TimeoutExpired:
+        logger.warning("docker compose stop timed out after %ss", timeout)
+        return f"compose stop timed out after {timeout}s"
+    except (FileNotFoundError, PermissionError) as exc:
+        logger.debug("docker compose stop skipped — docker unavailable: %s", exc)
+        return None
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        logger.warning("docker compose stop: %s", stderr[:300])
+        return f"exit {result.returncode}: {stderr.splitlines()[-1] if stderr else '(no stderr)'}"
+    return None
+
+
 class WorktreeStartRunner(RunnerBase):
     """Run the docker side-effects of ``Worktree.start_services()``.
 

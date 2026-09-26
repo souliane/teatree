@@ -17,12 +17,14 @@ from teatree.agents.result_schema import (
     RESULT_JSON_SCHEMA,
     AgentResult,
     DirectiveCandidateEnvelope,
+    JSONSchema,
     ProseSummaryPolicy,
     SingleTestResult,
     candidate_carries_payload,
     check_evidence,
     required_evidence_for_phase,
 )
+from teatree.core.models.plan_adequacy import REQUIRED_ADEQUACY_SECTIONS
 from teatree.core.models.types import FIX_RECORD_FIELDS
 
 _PROPERTIES = cast("dict[str, Any]", RESULT_JSON_SCHEMA["properties"])
@@ -325,3 +327,18 @@ class TestSingleTestResultShape:
         entry: SingleTestResult = {"name": "test_x", "passed": True, "duration_seconds": 0.1}
         assert entry["name"] == "test_x"
         assert entry["passed"] is True
+
+
+def _schema_node(schema: JSONSchema, *path: str) -> JSONSchema:
+    node = schema
+    for key in path:
+        node = cast("JSONSchema", node[key])
+    return node
+
+
+class TestAdequacyChannelMatchesTheModel:
+    def test_adequacy_schema_declares_every_required_section(self) -> None:
+        # A section the schema omits is one a planner is never told to emit, and
+        # `PlanArtifact.record` then refuses the envelope it asked for.
+        declared = set(_schema_node(RESULT_JSON_SCHEMA, "properties", "adequacy", "properties"))
+        assert set(REQUIRED_ADEQUACY_SECTIONS) <= declared

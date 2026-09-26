@@ -1,4 +1,4 @@
-"""Auto-draft DM behaviour under ``DRAFT_OR_ASK`` + ``post_draft_note`` (#960).
+"""Auto-draft DM behaviour for ``post_draft_note`` under a forbidding posture (#960).
 
 When the gate verdict is :attr:`~teatree.on_behalf_gate.OnBehalfVerdict.AUTO_DRAFT`,
 ``require_on_behalf_approval`` calls
@@ -26,9 +26,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from teatree.config import OnBehalfPostMode
 from teatree.core.models import BotPing
 from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
 
 def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
@@ -58,12 +58,17 @@ def _noop() -> None:
     return None
 
 
-def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
+def _forbidding_posture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seed the operator identity under the posture that refuses everything else.
+
+    A draft is colleague-invisible, so no posture withholds it. Staging the strictest one
+    is what makes the receipt below a property of the draft carve-out rather than of a
+    posture that happened to be permissive.
+    """
     # ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it
     # in a config-store sqlite the reader resolves via ``T3_CONFIG_DB``.
-    # ``on_behalf_post_mode`` is DB-home (#1775) — stage it via the ``T3_*`` env tier.
     _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
-    monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode.value)
+    seed_forbidding_posture()
 
 
 def _stub_backend() -> MagicMock:
@@ -85,7 +90,7 @@ class TestAutoDraftDmOnePerTargetAction:
         self.monkeypatch = monkeypatch
 
     def test_one_bot_ping_per_target_action(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.DRAFT_OR_ASK)
+        _forbidding_posture(self.tmp_path, self.monkeypatch)
         backend = _stub_backend()
         # Point notify_user's backend resolver at our stub. Mocking at the
         # MessagingBackend boundary (open_dm + post_message) only — the
@@ -105,7 +110,7 @@ class TestAutoDraftDmOnePerTargetAction:
         assert "delete-draft-note" in sent_text
 
     def test_double_call_is_idempotent(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.DRAFT_OR_ASK)
+        _forbidding_posture(self.tmp_path, self.monkeypatch)
         backend = _stub_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
 
@@ -118,7 +123,7 @@ class TestAutoDraftDmOnePerTargetAction:
         assert backend.post_message.call_count == 1
 
     def test_distinct_targets_get_distinct_pings(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.DRAFT_OR_ASK)
+        _forbidding_posture(self.tmp_path, self.monkeypatch)
         backend = _stub_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
 

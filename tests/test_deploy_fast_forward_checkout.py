@@ -150,6 +150,99 @@ class TestUniqueWorkIsNeverDestroyed:
         assert (clone / "uv.lock").read_text(encoding="utf-8") == 'version = "0.4.11"\n'
 
 
+class TestSubdirectoryRepoRoot:
+    """The argument may be a SUBDIRECTORY of the checkout git manages, not its toplevel.
+
+    A fork that vendors teatree carries `deploy/` at `<fork>/vendor/teatree/deploy`, and
+    `deploy.sh` resolves its own `..` physically — so it hands this script
+    `<fork>/vendor/teatree`. Every path git reports is toplevel-relative, so resolving
+    them against that argument doubles the prefix: each dirty file reads as absent, which
+    `lossless_to_discard` scores as a lossless deletion, and the `checkout` that follows
+    dies on `pathspec ... did not match`. Measured on a live box: one modified tracked
+    file wedged every deploy, and the safety verdict was wrong in the unsafe direction.
+    """
+
+    @staticmethod
+    def _nested_root(clone: Path) -> Path:
+        # git tracks no empty directory, so the clone stays clean.
+        nested = clone / "vendor" / "teatree"
+        nested.mkdir(parents=True)
+        return nested
+
+    def test_an_unrelated_dirty_file_still_fast_forwards(self, repos: tuple[Path, Path]) -> None:
+        clone, _ = repos
+        (clone / "keep.txt").write_text("local work in progress\n", encoding="utf-8")
+
+        result = _run_script(self._nested_root(clone))
+
+        assert result.returncode == 0, result.stderr
+        assert (clone / "uv.lock").read_text(encoding="utf-8") == 'version = "0.4.11"\n'
+        assert (clone / "keep.txt").read_text(encoding="utf-8") == "local work in progress\n"
+
+    def test_lossless_dirt_is_still_discarded(self, repos: tuple[Path, Path]) -> None:
+        clone, _ = repos
+        (clone / "uv.lock").write_text('version = "0.4.11"\n', encoding="utf-8")
+
+        result = _run_script(self._nested_root(clone))
+
+        assert result.returncode == 0, result.stderr
+        assert _git(clone, "status", "--porcelain") == ""
+
+    def test_unique_work_is_reported_as_retained_never_attempted_discarded(self, repos: tuple[Path, Path]) -> None:
+        clone, _ = repos
+        (clone / "uv.lock").write_text("hand-written local work\n", encoding="utf-8")
+
+        result = _run_script(self._nested_root(clone))
+
+        assert result.returncode == 1
+        assert "FATAL" in result.stderr, "a doubled prefix reports git's raw pathspec error instead"
+        assert "uv.lock" in result.stderr, "the diagnostic must NAME the blocking file"
+        assert (clone / "uv.lock").read_text(encoding="utf-8") == "hand-written local work\n"
+
+
+class TestAmbientAutostashCannotOverrideTheVerdict:
+    """`merge.autostash` in the operator's own config must not silently merge retained dirt.
+
+    An operator box commonly carries `merge.autostash = true`. `pull --ff-only` then stashes
+    the very unique work this script decided to RETAIN, fast-forwards, and re-applies it —
+    turning a loud refusal into a merge that leaves conflict markers in a tree the contract
+    promises to leave untouched.
+    """
+
+    def test_unique_work_still_fails_loud_under_an_autostashing_config(self, repos: tuple[Path, Path]) -> None:
+        clone, _ = repos
+        _git(clone, "config", "merge.autostash", "true")
+        _git(clone, "config", "rebase.autostash", "true")
+        (clone / "uv.lock").write_text("hand-written local work\n", encoding="utf-8")
+
+        result = _run_script(clone)
+
+        assert result.returncode == 1
+        assert "FATAL" in result.stderr
+        assert (clone / "uv.lock").read_text(encoding="utf-8") == "hand-written local work\n", (
+            "an autostash-and-reapply would leave conflict markers here"
+        )
+
+    def test_a_bare_ff_pull_under_that_config_no_longer_aborts(self, repos: tuple[Path, Path]) -> None:
+        # Control: the same dirt that aborts a bare pull in `TestControl` merges through
+        # under this config, so the green above is the pin working rather than a setting
+        # that never mattered.
+        clone, _ = repos
+        _git(clone, "config", "merge.autostash", "true")
+        (clone / "uv.lock").write_text("hand-written local work\n", encoding="utf-8")
+
+        pull = subprocess.run(
+            [_GIT, "-C", str(clone), "pull", "--ff-only"],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=git_identity_env(),
+        )
+
+        assert "would be overwritten by merge" not in pull.stderr
+        assert _git(clone, "rev-parse", "HEAD") == _git(clone, "rev-parse", "origin/main")
+
+
 class TestControl:
     def test_a_bare_ff_pull_really_does_abort_on_the_regenerated_file(self, repos: tuple[Path, Path]) -> None:
         # Control for the whole suite: prove the wedge exists, so a green above is

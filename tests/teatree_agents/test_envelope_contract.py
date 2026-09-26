@@ -29,7 +29,8 @@ _VERIFICATION_PHASE = "reviewing"
 
 def _contract_example(text: str) -> dict[str, object]:
     """The JSON example embedded in the contract block of *text*."""
-    block = text.split(CONTRACT_HEADING, 1)[1]
+    marker = "Minimal valid envelope for this phase — copy this shape exactly:"
+    block = text.split(CONTRACT_HEADING, 1)[1].split(marker, 1)[1]
     start = block.index("{")
     decoded, _ = json.JSONDecoder().raw_decode(block, start)
     assert isinstance(decoded, dict)
@@ -150,7 +151,6 @@ class TestVerdictPhasesAreTaughtTheChecksRule(SimpleTestCase):
         assert '"findings"' in VERDICT_CHECKS_RULE
 
     def test_the_clause_does_not_disturb_the_copyable_example(self) -> None:
-        # ``_contract_example`` raw-decodes from the FIRST brace after the heading, so a
-        # clause carrying one would silently make every brief teach an unparsable example.
+        # The copyable example remains decodable after the contract's prose clauses.
         text = "\n".join(envelope_contract_lines("reviewing"))
         assert check_evidence(_contract_example(text), "reviewing") == ""

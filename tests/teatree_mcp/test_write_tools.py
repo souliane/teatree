@@ -6,13 +6,15 @@ that the seam's gates fire identically over MCP.
 """
 
 import asyncio
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import pytest
 from asgiref.sync import async_to_sync
 from django.test import TestCase
 
+from teatree.cli.review.evidence_gate import FindingEvidence
 from teatree.core.models import (
     ConfigSetting,
     DeferredQuestion,
@@ -23,11 +25,13 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
-from teatree.mcp import build_server, review_seam, write_tools
-from teatree.mcp.review_seam import register_review_post_seam
+from teatree.mcp import build_server, review_seam, review_write_tools, write_tools
+from teatree.mcp.review_seam import SeamNote, register_review_post_seam
 from tests.factories import MergeClearFactory, TaskFactory, TicketFactory
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
+
+_NOW = datetime.now(tz=UTC)
 
 
 def _call(tool: str, args: dict[str, Any]) -> Any:
@@ -222,11 +226,11 @@ class _SeamRecorder:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def post_draft_note(self, repo: str, mr: int, note: str) -> tuple[str, int]:
+    def post_draft_note(self, repo: str, mr: int, note: SeamNote) -> tuple[str, int]:
         self.calls.append(("draft", {"repo": repo, "mr": mr, "note": note}))
         return ("draft created", 0)
 
-    def post_comment(self, repo: str, mr: int, note: str, *, live: bool = False) -> tuple[str, int]:
+    def post_comment(self, repo: str, mr: int, note: SeamNote, *, live: bool = False) -> tuple[str, int]:
         self.calls.append(("comment", {"repo": repo, "mr": mr, "note": note, "live": live}))
         return ("posted", 0)
 
@@ -234,10 +238,10 @@ class _SeamRecorder:
 class TestReviewPostTools(TestCase):
     def test_draft_note_routes_through_the_registered_seam(self) -> None:
         recorder = _SeamRecorder()
-        with patch("teatree.mcp.write_tools.review_post_seam", return_value=recorder):
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
             result = _call(
                 "review_post_draft_note",
-                {"repo": "acme/widgets", "mr": 7, "note": "nit: rename"},
+                {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit: rename"}},
             )
 
         assert result == {"message": "draft created", "code": 0}
@@ -245,10 +249,10 @@ class TestReviewPostTools(TestCase):
 
     def test_post_comment_threads_the_live_flag_to_the_gated_seam(self) -> None:
         recorder = _SeamRecorder()
-        with patch("teatree.mcp.write_tools.review_post_seam", return_value=recorder):
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
             _call(
                 "review_post_comment",
-                {"repo": "acme/widgets", "mr": 7, "note": "blocker: bug", "live": True},
+                {"repo": "acme/widgets", "mr": 7, "finding": {"note": "blocker: bug"}, "live": True},
             )
 
         assert recorder.calls[0][1]["live"] is True
@@ -261,8 +265,8 @@ class TestReviewPostTools(TestCase):
         resolution — the multi-overlay outage.
         """
         recorder = _SeamRecorder()
-        with patch("teatree.mcp.write_tools.review_post_seam", return_value=recorder) as seam:
-            _call("review_post_draft_note", {"repo": "acme/widgets", "mr": 7, "note": "nit: rename"})
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder) as seam:
+            _call("review_post_draft_note", {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit: rename"}})
 
         assert seam.call_args.args == ("acme/widgets",)
 
@@ -286,3 +290,311 @@ class TestReviewSeamRegistration(TestCase):
                 review_seam.review_post_seam("acme/widgets")
         finally:
             register_review_post_seam(original)
+
+
+class TestReviewToolsCarryInlineAnchors(TestCase):
+    """Inline anchoring is MCP-native — the review doctrine posts one finding per ``path:line``.
+
+    The tools carried no anchor, so every correctly-shaped finding was forced onto the
+    containerized CLI (two ~32s process startups per comment on this host). The seam is
+    the same gated ``ReviewService``; only the transport changes.
+    """
+
+    def test_post_comment_threads_the_inline_anchor(self) -> None:
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            _call(
+                "review_post_comment",
+                {
+                    "repo": "acme/widgets",
+                    "mr": 7,
+                    "finding": {"note": "blocker: bug", "anchor": "src/a.py:42"},
+                    "live": True,
+                },
+            )
+
+        assert recorder.calls[0][1] == {
+            "repo": "acme/widgets",
+            "mr": 7,
+            "note": SeamNote(note="blocker: bug", anchor=("src/a.py", 42)),
+            "live": True,
+        }
+
+    def test_post_draft_note_threads_the_inline_anchor(self) -> None:
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            _call(
+                "review_post_draft_note",
+                {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit", "anchor": "b.py:3"}},
+            )
+
+        assert recorder.calls[0][1]["note"].anchor == ("b.py", 3)
+
+    def test_a_blank_anchor_posts_a_general_note(self) -> None:
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            _call("review_post_comment", {"repo": "acme/widgets", "mr": 7, "finding": {"note": "verdict"}})
+
+        assert recorder.calls[0][1]["note"].anchor is None
+
+    def test_a_malformed_anchor_is_refused_before_the_seam(self) -> None:
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            # "\u00b2" and "\u0664" both pass ``str.isdigit`` and split ``int()`` two
+            # ways: the first RAISES out of the handler, the second parses quietly as 4.
+            for anchor in ("b.py", "b.py:", ":3", "b.py:zero", "b.py:0", "b.py:\u00b2", "b.py:\u0664"):
+                result = _call(
+                    "review_post_comment",
+                    {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit", "anchor": anchor}},
+                )
+                assert result["code"] == 2, anchor
+                assert "path/to/file.py:LINE" in result["message"]
+
+        assert recorder.calls == []
+
+    def test_the_instructions_advertise_the_inline_anchor(self) -> None:
+        review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
+
+        assert len(review_lines) == 3
+        assert all("anchor" in line for line in review_lines)
+
+    def test_the_instructions_advertise_the_evidence_record(self) -> None:
+        # A tool whose schema takes evidence but whose blurb never says so leaves the
+        # agent posting "X is broken" bodies the gate refuses, back on the CLI.
+        review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
+
+        assert all("evidence" in line for line in review_lines)
+
+
+class TestReviewToolsCarryTheEvidenceRecord(TestCase):
+    """The commonest finding shape a review has is the one the gate refuses bare.
+
+    "X is wrong / broken / missing" needs the #1280 receipts, and with no ``evidence``
+    on these tools that finding had to go back to the ``t3`` CLI they exist to replace —
+    fail-closed, so safe, but it left the batch agents are now told to prefer unable to
+    post most of what a review actually says.
+    """
+
+    _EVIDENCE = '{"master_check_paths": ["src/a.py:42"], "confidence": "verified"}'
+
+    def test_post_comment_threads_the_evidence_and_the_escapes(self) -> None:
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            _call(
+                "review_post_comment",
+                {
+                    "repo": "acme/widgets",
+                    "mr": 7,
+                    "finding": {
+                        "note": "HIGH (correctness): the retry is missing from the new path.",
+                        "anchor": "src/a.py:42",
+                        "evidence": self._EVIDENCE,
+                        "allow_bloat": True,
+                    },
+                },
+            )
+
+        posted = recorder.calls[0][1]["note"]
+        assert posted.evidence_json == self._EVIDENCE
+        assert posted.allow_bloat is True
+        assert posted.force_general is False
+
+    def test_post_draft_note_threads_the_evidence(self) -> None:
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            _call(
+                "review_post_draft_note",
+                {
+                    "repo": "acme/widgets",
+                    "mr": 7,
+                    "finding": {"note": "the helper is missing", "evidence": self._EVIDENCE},
+                },
+            )
+
+        assert recorder.calls[0][1]["note"].evidence_json == self._EVIDENCE
+
+    def test_the_batch_carries_evidence_per_comment_not_per_batch(self) -> None:
+        recorder = _BatchSeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            _call(
+                "review_post_comments",
+                {
+                    "repo": "acme/widgets",
+                    "mr": 7,
+                    "comments": [
+                        {"note": "the retry is missing", "anchor": "src/a.py:42", "evidence": self._EVIDENCE},
+                        {"note": "Nit: rename this helper.", "anchor": "src/b.py:3", "force_general": True},
+                    ],
+                },
+            )
+
+        notes = recorder.calls[0][1]["notes"]
+        assert [item.evidence_json for item in notes] == [self._EVIDENCE, ""]
+        assert [item.force_general for item in notes] == [False, True]
+
+
+class _BatchSeamRecorder(_SeamRecorder):
+    """A seam that also serves the batch surface."""
+
+    def post_comments(self, repo: str, mr: int, notes: list[SeamNote], *, live: bool = False) -> tuple[str, int]:
+        self.calls.append(("batch", {"repo": repo, "mr": mr, "notes": list(notes), "live": live}))
+        return ("posted 2", 0)
+
+
+class TestReviewCommentsPostAsOneBatch(TestCase):
+    """One review is N findings, and the authorization ceremony is per-REVIEW, not per-finding.
+
+    Each live comment previously needed its own recorded authorization and its own pair of
+    ~32s CLI process starts, so a six-finding review paid the whole dance six times.
+    """
+
+    def test_the_batch_threads_every_anchored_note_through_the_seam(self) -> None:
+        recorder = _BatchSeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            result = _call(
+                "review_post_comments",
+                {
+                    "repo": "acme/widgets",
+                    "mr": 7,
+                    "comments": [
+                        {"note": "blocker: the retry is gone", "anchor": "src/a.py:42"},
+                        {"note": "verdict: two blockers"},
+                    ],
+                    "live": True,
+                },
+            )
+
+        assert result["code"] == 0
+        assert recorder.calls[0][1]["notes"] == [
+            SeamNote(note="blocker: the retry is gone", anchor=("src/a.py", 42)),
+            SeamNote(note="verdict: two blockers"),
+        ]
+        assert recorder.calls[0][1]["live"] is True
+
+    def test_a_malformed_anchor_refuses_the_whole_batch_before_the_seam(self) -> None:
+        recorder = _BatchSeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            result = _call(
+                "review_post_comments",
+                {
+                    "repo": "acme/widgets",
+                    "mr": 7,
+                    "comments": [{"note": "ok", "anchor": "src/a.py:42"}, {"note": "nit", "anchor": "src/b.py:zero"}],
+                },
+            )
+
+        assert result["code"] == 2
+        assert "comment 2" in result["message"]
+        assert recorder.calls == []
+
+    def test_a_comment_with_no_note_is_refused(self) -> None:
+        recorder = _BatchSeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            result = _call("review_post_comments", {"repo": "acme/widgets", "mr": 7, "comments": [{"anchor": "a:1"}]})
+
+        assert result["code"] == 2
+        assert "no 'note'" in result["message"]
+        assert recorder.calls == []
+
+    def test_the_instructions_advertise_the_batch(self) -> None:
+        review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
+
+        assert any(line.startswith("- review_post_comments(") for line in review_lines)
+
+
+class TestEvidenceMayBeTheMappingAModelNaturallyPasses(TestCase):
+    """`finding` is a mapping, so `evidence` inside it arrives as one too.
+
+    The tool descriptions call evidence "the #1280 record as JSON", and the surrounding
+    keys are real values -- so a mapping is the shape a model passes. `str()` on it
+    yields a Python repr with single quotes, which `FindingEvidence.from_json` rejects,
+    so the finding class the batch exists to post could not be posted naturally.
+    Accepting a mapping must not degrade into accepting anything: a value that is
+    neither is refused naming its type, not stringified.
+    """
+
+    _MAPPING: ClassVar[dict[str, Any]] = {
+        "master_check_paths": ["src/teatree/cli/review/service.py:42"],
+        "confidence": "verified",
+    }
+    _STRING = '{"master_check_paths": ["src/teatree/cli/review/service.py:42"], "confidence": "verified"}'
+
+    def test_a_mapping_round_trips_through_the_single_evidence_parser(self) -> None:
+        built = review_write_tools._seam_note({"note": "the retry is missing", "evidence": self._MAPPING})
+
+        assert isinstance(built, SeamNote)
+        assert FindingEvidence.from_json(built.evidence_json) == FindingEvidence(
+            master_check_paths=["src/teatree/cli/review/service.py:42"], confidence="verified"
+        )
+
+    def test_a_string_passes_through_byte_identical(self) -> None:
+        built = review_write_tools._seam_note({"note": "the retry is missing", "evidence": self._STRING})
+
+        assert isinstance(built, SeamNote)
+        assert built.evidence_json == self._STRING
+
+    def test_an_absent_or_empty_evidence_stays_empty(self) -> None:
+        for finding in ({"note": "nit"}, {"note": "nit", "evidence": ""}, {"note": "nit", "evidence": None}):
+            built = review_write_tools._seam_note(finding)
+            assert isinstance(built, SeamNote), finding
+            assert built.evidence_json == "", finding
+
+    def test_a_value_that_is_neither_a_mapping_nor_a_string_is_refused_naming_its_type(self) -> None:
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            for evidence, type_name in ((42, "int"), (["src/a.py:42"], "list"), (True, "bool")):
+                result = _call(
+                    "review_post_comment",
+                    {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit", "evidence": evidence}},
+                )
+                assert result["code"] == 2, evidence
+                assert type_name in result["message"], (evidence, result["message"])
+                assert "must be a JSON object" in result["message"], (evidence, result["message"])
+
+        assert recorder.calls == []
+
+    def test_a_mapping_json_cannot_serialise_is_refused_naming_the_reason_not_its_type(self) -> None:
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            result = _call(
+                "review_post_comment",
+                {
+                    "repo": "acme/widgets",
+                    "mr": 7,
+                    "finding": {"note": "nit", "evidence": {"confidence": "verified", "checked_at": _NOW}},
+                },
+            )
+
+        assert result["code"] == 2, result
+        assert "serialis" in result["message"], result["message"]
+        assert "datetime" in result["message"], result["message"]
+        assert "must be a JSON object" not in result["message"], result["message"]
+        assert recorder.calls == []
+
+    def test_a_self_referential_mapping_is_refused_rather_than_crashing_the_tool(self) -> None:
+        looping: dict[str, Any] = {"confidence": "verified"}
+        looping["self"] = looping
+        recorder = _SeamRecorder()
+        with patch("teatree.mcp.review_write_tools.review_post_seam", return_value=recorder):
+            result = _call(
+                "review_post_comment",
+                {"repo": "acme/widgets", "mr": 7, "finding": {"note": "nit", "evidence": looping}},
+            )
+
+        assert result["code"] == 2, result
+        assert "serialis" in result["message"], result["message"]
+        assert "Circular reference" in result["message"], result["message"]
+        assert recorder.calls == []
+
+    def test_a_mapping_carrying_a_bad_confidence_reaches_the_parser_that_refuses_it(self) -> None:
+        built = review_write_tools._seam_note({"note": "nit", "evidence": {"confidence": "bogus"}})
+
+        assert isinstance(built, SeamNote)
+        with pytest.raises(ValueError, match="confidence"):
+            FindingEvidence.from_json(built.evidence_json)
+
+    def test_the_tool_descriptions_name_both_accepted_evidence_shapes(self) -> None:
+        review_lines = [line for line in write_tools.INSTRUCTIONS.splitlines() if line.startswith("- review_post_")]
+
+        assert len(review_lines) == 3
+        assert all("JSON object or its JSON string" in line for line in review_lines)

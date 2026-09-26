@@ -24,8 +24,9 @@ A YAML that ships without an anti-vacuous fail fixture is silently
 toothless, so this test runs on every PR.
 """
 
+import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
@@ -33,12 +34,21 @@ import pytest
 from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.context_budget import HEADING_RE, MissingSectionError, extract_sections
-from teatree.eval.discovery import discover_specs
+from teatree.eval.discovery import discover_specs, fixture_dir_for
 from teatree.eval.matcher_vacuity import negative_only_specs
-from teatree.eval.models import AnyOf, EvalSpec, FinalStateMatcher, Matcher
+from teatree.eval.models import (
+    AnyOf,
+    AssistantTextMatcher,
+    EvalSpec,
+    FinalStateMatcher,
+    Matcher,
+    PlanBeforeToolMatcher,
+    SuccessfulToolCallMatcher,
+)
 from teatree.eval.report import evaluate
 
-FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 #: A synthetic transcript with NO tool calls — an agent that only "thought" and
 #: stopped. A matcher set that stays GREEN against this is satisfied by a no-op
@@ -76,7 +86,7 @@ def _fixtureless_behavioral_specs() -> list[EvalSpec]:
     return [
         spec
         for spec in discover_specs()
-        if _is_behavioral(spec) and not (FIXTURES / f"{spec.name}_fail.stream.jsonl").is_file()
+        if _is_behavioral(spec) and not (fixture_dir_for(spec) / f"{spec.name}_fail.stream.jsonl").is_file()
     ]
 
 
@@ -90,8 +100,9 @@ def _run_against_fixture(spec: EvalSpec, fixture_text: str, tmp_path: Path) -> b
 def _specs_with_fixtures() -> list[tuple[EvalSpec, Path | None, Path | None]]:
     rows: list[tuple[EvalSpec, Path | None, Path | None]] = []
     for spec in discover_specs():
-        fail = FIXTURES / f"{spec.name}_fail.stream.jsonl"
-        pass_ = FIXTURES / f"{spec.name}_pass.stream.jsonl"
+        fixtures = fixture_dir_for(spec)
+        fail = fixtures / f"{spec.name}_fail.stream.jsonl"
+        pass_ = fixtures / f"{spec.name}_pass.stream.jsonl"
         rows.append((spec, fail if fail.is_file() else None, pass_ if pass_.is_file() else None))
     return rows
 
@@ -105,7 +116,7 @@ def _specs_with_noop_fixtures() -> list[tuple[EvalSpec, Path]]:
     """
     rows: list[tuple[EvalSpec, Path]] = []
     for spec in discover_specs():
-        noop = FIXTURES / f"{spec.name}_noop.stream.jsonl"
+        noop = fixture_dir_for(spec) / f"{spec.name}_noop.stream.jsonl"
         if noop.is_file():
             rows.append((spec, noop))
     return rows
@@ -498,4 +509,60 @@ def _fake_spec(*, name: str, matchers: tuple[Any, ...]) -> EvalSpec:
         prompt="synthetic",
         matchers=matchers,
         source_path=Path("synthetic.yaml"),
+    )
+
+
+#: A backslash-escaped backslash in front of a regex-class letter. The loader lifts a
+#: matcher's value VERBATIM from between the `op "..."` quotes (``loader._OP_PATTERN``
+#: group 2) — those quotes are teatree's own delimiters inside a YAML PLAIN scalar, not
+#: YAML quoting, so nothing unescapes them. ``\\s`` therefore reaches ``re`` as a literal
+#: backslash followed by ``s``, and the matcher can never match the whitespace its author
+#: meant. Silent: a positive that can never fire reds a compliant agent, and one inside an
+#: ``any_of`` is simply carried by a sibling alternative and guards nothing forever.
+_OVER_ESCAPED_RE = re.compile(r"\\\\[sSbBdDwWAZ]")
+
+
+def _matcher_regexes(spec: EvalSpec) -> "Iterator[tuple[str, str]]":
+    """Every regex-operator value in *spec*, paired with the field that carries it."""
+    for item in spec.matchers:
+        alternatives = item.alternatives if isinstance(item, AnyOf) else (item,)
+        for matcher in alternatives:
+            if isinstance(matcher, FinalStateMatcher):
+                yield "final_state", matcher.value
+                continue
+            if isinstance(matcher, AssistantTextMatcher):
+                yield "assistant_text", matcher.value
+                continue
+            if isinstance(matcher, PlanBeforeToolMatcher):
+                yield from (("assistant_text.before_first_tool", pattern) for pattern in matcher.patterns)
+                continue
+            if isinstance(matcher, SuccessfulToolCallMatcher):
+                yield f"{matcher.tool}.{matcher.arg_path}", matcher.value
+                yield "result", matcher.result_value
+                yield f"{matcher.before_tool}.{matcher.before_arg_path} (before)", matcher.before_value
+                continue
+            yield f"{matcher.tool}.{matcher.arg_path}", matcher.value
+            if matcher.guard_value:
+                yield f"{matcher.tool}.{matcher.guard_arg_path} (guard)", matcher.guard_value
+            if matcher.unless_value:
+                yield f"{matcher.tool}.{matcher.unless_arg_path} (unless)", matcher.unless_value
+
+
+def test_no_matcher_regex_is_over_escaped() -> None:
+    r"""No matcher may double-escape a regex class — the loader never unescapes it.
+
+    Observed: ``background_long_operations_full_suite`` shipped
+    ``^\\s*(...pytest\\b...)``, which reds an agent that correctly armed a Monitor on
+    ``pytest``, because the pattern demanded a literal backslash. Write ``\s`` / ``\b``.
+    """
+    offenders = [
+        f"  - {spec.name} ({spec.source_path.name}) {field}: {value}"
+        for spec in discover_specs()
+        for field, value in _matcher_regexes(spec)
+        if _OVER_ESCAPED_RE.search(value)
+    ]
+    assert not offenders, (
+        "matcher regex(es) double-escape a character class. The loader takes the value "
+        "between the operator's quotes VERBATIM, so `\\\\s` matches a literal backslash and "
+        "the matcher can never fire. Write a single backslash:\n" + "\n".join(offenders)
     )

@@ -15,7 +15,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Iterator
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -23,7 +23,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.config import OnBehalfPostMode, UserSettings
+from teatree.config import UserSettings
 from teatree.core.backend_protocols import DraftState
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import (
@@ -34,7 +34,7 @@ from teatree.core.models import (
     ReviewRequestPost,
     Ticket,
 )
-from tests.teatree_core._on_behalf_gate_helpers import mode_gate_on_cm
+from tests.teatree_core._on_behalf_gate_helpers import posture_forbids_cm, posture_permits_cm
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
@@ -62,7 +62,10 @@ def _forge_answers_non_draft() -> Iterator[None]:
     would refuse ``draft_state_unknown`` and drown the behaviour under test.
     Draft-gate cases re-patch this same target with their own host.
     """
-    with patch(_FORGE, return_value=_DraftProbeHost(DraftState.NOT_DRAFT)):
+    with (
+        patch(_FORGE, return_value=_DraftProbeHost(DraftState.NOT_DRAFT)),
+        patch(f"{_CMD}._owner_authorship", return_value=True, create=True),
+    ):
         yield
 
 
@@ -94,6 +97,19 @@ class _BodyReturningBackend:
     def get_permalink(self, *, channel: str, ts: str) -> str:
         _ = (channel, ts)
         return ""
+
+
+@pytest.fixture(autouse=True)
+def _cli_overlay_pin() -> Iterator[None]:
+    """Run every case as the ``t3 <overlay>`` bridge does, with the overlay pinned.
+
+    The pin is what attributes the ``ReviewRequestPost`` row the nag, the resume and
+    the merge-react select by, so a suite without it exercises a shape the bridge
+    never produces. The cases about attribution itself patch ``overlay_for_mr_url``
+    over the pin.
+    """
+    with patch.dict(os.environ, {"T3_OVERLAY_NAME": "t3-acme"}):
+        yield
 
 
 def _run(*extra: str) -> tuple[int, dict[str, object]]:
@@ -162,6 +178,49 @@ class TestReviewExemptRepoIsRefusedFirst(_DataDirMixin, TestCase):
         assert payload["mr_url"] == _MR_URL
         assert backend.posts == []
         assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+
+class TestReviewRequestOwnerAuthorship(_DataDirMixin, TestCase):
+    def test_colleague_authorship_refuses_before_dedup_claim(self) -> None:
+        backend = _FakeBackend()
+        with (
+            patch(f"{_CMD}._owner_authorship", return_value=False),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request") as claim,
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run()
+
+        assert code == 2
+        assert payload["reason"] == "foreign_author"
+        claim.assert_not_called()
+        assert backend.posts == []
+
+    def test_unknown_authorship_refuses_before_dedup_claim(self) -> None:
+        with (
+            patch(f"{_CMD}._owner_authorship", return_value=None),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request") as claim,
+        ):
+            code, payload = _run()
+
+        assert code == 2
+        assert payload["reason"] == "authorship_unreadable"
+        claim.assert_not_called()
+
+    def test_owner_authorship_reaches_the_existing_guard(self) -> None:
+        backend = _FakeBackend()
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")) as claim,
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run()
+
+        assert code == 0, payload
+        claim.assert_called_once()
+        assert len(backend.posts) == 1
 
     def test_refuses_ahead_of_the_anti_vacuity_gate_and_the_channel_resolve(self) -> None:
         ConfigSetting.objects.set_value("review_exempt_repos", ["org/repo"])
@@ -396,6 +455,48 @@ class TestReviewRequestPostOverlayResolution(_DataDirMixin, TestCase):
         assert payload["action"] == "post"
         assert seen == {"guard": "t3-acme", "draft": "t3-acme", "messaging": "t3-acme"}
 
+    def test_an_unattributable_url_refuses_rather_than_writing_an_orphan_row(self) -> None:
+        # The nag, the resume and the merge-react all select by concrete overlay name,
+        # so a row written with overlay="" is invisible to every one of them forever —
+        # and the 0102 backfill fills NULL, never "".
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+
+        with (
+            patch(f"{_CMD}.overlay_for_mr_url", return_value=""),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "t")
+
+        assert code == 2, payload
+        assert payload["action"] == "refused"
+        assert payload["reason"] == "overlay_unattributable"
+        assert backend.posts == []
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_the_cli_overlay_pin_is_recorded_on_the_claim_and_the_post(self) -> None:
+        seen: dict[str, object] = {}
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+
+        def _claim(**kw: object) -> GuardDecision:
+            seen["claim"] = kw.get("overlay")
+            return GuardDecision(action="post")
+
+        with (
+            patch.dict(os.environ, {"T3_OVERLAY_NAME": "t3-acme"}),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.draft_refusal_reason", return_value=""),
+            patch(f"{_CMD}.should_post_review_request", side_effect=_claim),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=_FakeBackend()),
+        ):
+            code, payload = _run("--title", "t")
+
+        assert code == 0, payload
+        assert seen["claim"] == "t3-acme"
+        assert ReviewRequestPost.objects.get(mr_url=_MR_URL).overlay == "t3-acme"
+
 
 class TestReviewRequestPostDedup(TestCase):
     def test_no_review_channel_or_token_falls_back_to_draft_dm(self) -> None:
@@ -470,7 +571,7 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
     def _gate_on(self) -> Iterator[None]:
         # The shipped autonomy collapses an unset mode to IMMEDIATE (#3895); this
         # case is about the gate BLOCKING, so it pins the mode it exercises.
-        with mode_gate_on_cm():
+        with posture_forbids_cm():
             yield
 
     def test_refuses_without_approval_and_rolls_back_claim(self) -> None:
@@ -478,8 +579,13 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
         # Real guard would claim ReviewRequestPost; mock it to the post verdict
         # AND take the real claim so the rollback path is exercised.
 
-        def _real_claim(*, mr_url: str, target: GuardTarget) -> GuardDecision:
-            ReviewRequestPost.objects.create(mr_url=mr_url, slack_channel_id=target.channel_id, slack_thread_ts="")
+        def _real_claim(*, mr_url: str, target: GuardTarget, overlay: str) -> GuardDecision:
+            ReviewRequestPost.objects.create(
+                mr_url=mr_url,
+                slack_channel_id=target.channel_id,
+                slack_thread_ts="",
+                overlay=overlay,
+            )
             return GuardDecision(action="post")
 
         with (
@@ -500,8 +606,13 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
     def test_refusal_message_names_approve_on_behalf_command(self) -> None:
         backend = _FakeBackend()
 
-        def _real_claim(*, mr_url: str, target: GuardTarget) -> GuardDecision:
-            ReviewRequestPost.objects.create(mr_url=mr_url, slack_channel_id=target.channel_id, slack_thread_ts="")
+        def _real_claim(*, mr_url: str, target: GuardTarget, overlay: str) -> GuardDecision:
+            ReviewRequestPost.objects.create(
+                mr_url=mr_url,
+                slack_channel_id=target.channel_id,
+                slack_thread_ts="",
+                overlay=overlay,
+            )
             return GuardDecision(action="post")
 
         buf = io.StringIO()
@@ -526,10 +637,10 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
         """
         backend = _FakeBackend()
 
-        def _real_claim(*, mr_url: str, target: GuardTarget) -> GuardDecision:
+        def _real_claim(*, mr_url: str, target: GuardTarget, overlay: str) -> GuardDecision:
             _, created = ReviewRequestPost.objects.get_or_create(
                 mr_url=mr_url,
-                defaults={"slack_channel_id": target.channel_id, "slack_thread_ts": ""},
+                defaults={"slack_channel_id": target.channel_id, "slack_thread_ts": "", "overlay": overlay},
             )
             return (
                 GuardDecision(action="post") if created else GuardDecision(action="suppress", reason="already_claimed")
@@ -565,31 +676,40 @@ class TestReviewRequestPostMissingApproval(_DataDirMixin, TestCase):
 class TestReviewRequestPostAgentDisabled(_DataDirMixin, TestCase):
     """``review_request_post_disabled`` refuses the auto-post end-to-end (#2579).
 
-    The customer-overlay scenario: the autonomy collapse has set
-    ``on_behalf_post_mode = immediate`` (which would otherwise auto-post a review
-    request with no approval), but the overlay runs the ``notify`` tier, which
+    The scoped-overlay scenario: the posture permits the owner's voice (which would
+    otherwise auto-post a review request with no approval), but the overlay runs the
+    ``notify`` tier, which
     resolves ``review_request_post_disabled = True``. The command must refuse with
     no post — the agent stops at "MR is mergeable + review-requestable".
     """
 
-    def _immediate_with_disable(self, *, disabled: bool) -> AbstractContextManager[object]:
-        return patch(
-            "teatree.on_behalf_gate.get_effective_settings",
-            return_value=UserSettings(
-                on_behalf_post_mode=OnBehalfPostMode.IMMEDIATE,
-                review_request_post_disabled=disabled,
-            ),
+    def _permitting_posture_with_disable(self, *, disabled: bool) -> AbstractContextManager[object]:
+        # Without the posture pin the fail-closed chokepoint refuses either way, and the
+        # disable — the only thing these two cases contrast — decides nothing.
+        stack = ExitStack()
+        stack.enter_context(posture_permits_cm())
+        stack.enter_context(
+            patch(
+                "teatree.on_behalf_gate.get_effective_settings",
+                return_value=UserSettings(review_request_post_disabled=disabled),
+            )
         )
+        return stack
 
-    def test_disabled_refuses_auto_post_under_immediate(self) -> None:
+    def test_disabled_refuses_auto_post_under_a_permitting_posture(self) -> None:
         backend = _FakeBackend()
 
-        def _real_claim(*, mr_url: str, target: GuardTarget) -> GuardDecision:
-            ReviewRequestPost.objects.create(mr_url=mr_url, slack_channel_id=target.channel_id, slack_thread_ts="")
+        def _real_claim(*, mr_url: str, target: GuardTarget, overlay: str) -> GuardDecision:
+            ReviewRequestPost.objects.create(
+                mr_url=mr_url,
+                slack_channel_id=target.channel_id,
+                slack_thread_ts="",
+                overlay=overlay,
+            )
             return GuardDecision(action="post")
 
         with (
-            self._immediate_with_disable(disabled=True),
+            self._permitting_posture_with_disable(disabled=True),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CMD}.should_post_review_request", side_effect=_real_claim),
             patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
@@ -603,13 +723,13 @@ class TestReviewRequestPostAgentDisabled(_DataDirMixin, TestCase):
         # The orphan claim is rolled back exactly as the missing-approval path.
         assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
 
-    def test_not_disabled_auto_posts_under_immediate(self) -> None:
-        # The control: WITHOUT the disable, ``immediate`` auto-posts (no
+    def test_not_disabled_auto_posts_under_a_permitting_posture(self) -> None:
+        # The control: WITHOUT the disable, a permitting posture auto-posts (no
         # recorded approval needed). This pins the disable as the only thing
         # that changes the outcome — the test above is anti-vacuous.
         backend = _FakeBackend()
         with (
-            self._immediate_with_disable(disabled=False),
+            self._permitting_posture_with_disable(disabled=False),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
             patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
@@ -626,7 +746,7 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
     def _gate_on(self) -> Iterator[None]:
         # The shipped autonomy collapses an unset mode to IMMEDIATE (#3895); this
         # case is about the gate BLOCKING, so it pins the mode it exercises.
-        with mode_gate_on_cm():
+        with posture_forbids_cm():
             yield
 
     def test_records_consumes_audits_and_persists(self) -> None:
@@ -697,7 +817,6 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         missing_cli = FileNotFoundError(2, "No such file or directory", "glab")
 
         with (
-            patch(f"{_CMD}.overlay_for_mr_url", return_value=""),
             patch(_FORGE, return_value=_DraftProbeHost(missing_cli)),
             patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
@@ -864,10 +983,10 @@ class TestReviewRequestPostFinalizesClaim(_DataDirMixin, TestCase):
         )
         backend = _FakeBackend()
 
-        def _real_claim(*, mr_url: str, target: GuardTarget) -> GuardDecision:
+        def _real_claim(*, mr_url: str, target: GuardTarget, overlay: str) -> GuardDecision:
             ReviewRequestPost.objects.get_or_create(
                 mr_url=mr_url,
-                defaults={"slack_channel_id": target.channel_id, "slack_thread_ts": ""},
+                defaults={"slack_channel_id": target.channel_id, "slack_thread_ts": "", "overlay": overlay},
             )
             return GuardDecision(action="post")
 
@@ -916,12 +1035,17 @@ class TestReviewRequestPostSlackApiFailure(_DataDirMixin, TestCase):
 
     @pytest.fixture(autouse=True)
     def _gate_on(self) -> Iterator[None]:
-        with mode_gate_on_cm():
+        with posture_forbids_cm():
             yield
 
     @staticmethod
-    def _real_claim(*, mr_url: str, target: GuardTarget) -> GuardDecision:
-        ReviewRequestPost.objects.create(mr_url=mr_url, slack_channel_id=target.channel_id, slack_thread_ts="")
+    def _real_claim(*, mr_url: str, target: GuardTarget, overlay: str) -> GuardDecision:
+        ReviewRequestPost.objects.create(
+            mr_url=mr_url,
+            slack_channel_id=target.channel_id,
+            slack_thread_ts="",
+            overlay=overlay,
+        )
         return GuardDecision(action="post")
 
     def _post_via(self, backend: object) -> tuple[int, dict[str, object]]:

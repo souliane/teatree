@@ -19,6 +19,7 @@ import pytest
 from teatree.core import forge_pr_probe, mcp_connectivity
 from teatree.core.forge_pr_probe import PrProbeOutcome, probe_github_open_pr
 from teatree.core.mcp_connectivity import ConfiguredMcpServer, check_mcp_connectivity, probe_mcp_servers
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.utils import run as run_module
 from teatree.utils.run import CommandFailedError, CompletedProcess
 
@@ -70,6 +71,16 @@ class TestMcpProbeRaisesOnASubprocessFailure:
 
 
 class TestOpenPrProbeRejectsAMalformedRow:
+    @pytest.fixture(autouse=True)
+    def _routed_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            forge_pr_probe,
+            "resolve_repo_token",
+            lambda *_args, **_kwargs: ForgeTokenResolution(
+                "github_token", "test", ForgeTokenState.TOKEN, token="routed"
+            ),
+        )
+
     def test_row_without_the_url_key_is_unknown(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setattr(
             forge_pr_probe,

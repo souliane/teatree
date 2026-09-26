@@ -11,9 +11,9 @@ family (sibling of the #1829 anti-vacuity gate) with one dimension: the ticket's
 :class:`teatree.core.models.rubric.Rubric` must be fully PASS — every criterion
 graded PASS by a positively-identified independent grader
 (``is_independent_reviewer_identity``), bound to
-the merge-time live head SHA. It is **fail-closed**: an empty, ungraded, failed,
-maker-graded, or stale-SHA rubric is treated as not-passed and the merge is
-refused. It never skip-as-passes (the standing "gate must fail loud" rule).
+the merge-time live head SHA, each PASS citing what proves it. It is **fail-closed**:
+an empty, ungraded, failed, uncited, maker-graded, or stale-SHA rubric is treated as
+not-passed and the merge is refused. It never skip-as-passes (the standing "gate must fail loud" rule).
 
 SHA-binding mirrors ``MergeClear.reviewed_sha`` and the anti-vacuity attestation:
 each grade records the ``reviewed_sha`` it was produced against, so when the live
@@ -21,36 +21,56 @@ head moves off it (force-push, new commits) the recorded grade is treated as sta
 and the rubric must be re-graded — closing the replay window where a grade for an
 old tree authorises a later, unverified one.
 
-``require_rubric_verification`` is ``False`` unless configured. With it unset the
-gate is a NO-OP — projects that do not require rubric verification keep merging
-unchanged. The gate is a pure function over the durable rubric row plus the live
-head SHA, mirroring :mod:`teatree.core.gates.anti_vacuity_gate`. On a block it
-raises :class:`RubricNotSatisfiedError` with a remediation naming the
-``rubric-set`` / ``rubric-grade`` commands; the merge precondition gate surfaces it
-as a refusal (re-wrapped as a ``MergePreconditionError``).
+The gate runs on TWO transitions, and there is no setting that relaxes either. At
+``merge`` :func:`check_rubric_satisfied` additionally binds to the live head SHA. At
+``mark_delivered`` :func:`check_rubric_verified` drops that bind — a delivered ticket's
+head has long since moved on, and re-binding there would refuse every delivery — but
+keeps every other condition. It is the successor to the deleted spec-coverage DoD gate:
+a missing rubric blocks exactly as a missing manifest did, and the audited waiver is the
+human-authorized ``ticket plan-bypass`` — which waives a missing rubric and every rung
+except a recorded FAIL, because a bypass says "there was nothing to declare", never "the
+verifier's FAIL does not count".
+
+Both are pure functions over the durable rubric row, mirroring
+:mod:`teatree.core.gates.anti_vacuity_gate`. The merge block raises
+:class:`RubricNotSatisfiedError`, which the merge precondition gate re-wraps as a
+``MergePreconditionError``; the delivery block raises :class:`RubricNotVerifiedError`,
+an ``InvalidTransitionError`` so the loop's outer atomic rolls the advance back and the
+ticket stays RETRO_RECORDED — merged on the forge, not yet *done*.
 """
 
 from typing import TYPE_CHECKING
 
-from teatree.config import get_effective_settings
+from teatree.core.modelkit.gate_registry import register_gate
+from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.honesty_escalation import HonestyEscalation
+from teatree.core.models.plan_adequacy import is_plan_bypass_shaped
+from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.rubric import Rubric
 
 if TYPE_CHECKING:
-    from teatree.core.models.rubric import Rubric
     from teatree.core.models.ticket import Ticket
+
+_NO_RUBRIC_REASON = (
+    "no rubric is recorded for this ticket — declaring done on zero proven acceptance "
+    "criteria is the partial-subset claim this gate forecloses"
+)
+
+_REMEDY = (
+    "Have an INDEPENDENT verifier (grader != maker) grade the criteria with `t3 <overlay> ticket "
+    'rubric-grade {pk} --grader-identity <reviewer> --reviewed-sha <full-40-char-sha> --grades-json \'[{{"ordinal": '
+    '0, "status": "pass", "rationale": "<what proves it>"}}, ...]\'`. The criteria come from the plan\'s '
+    "`acceptance_criteria` section; a ticket with genuinely nothing to grade records "
+    "`ticket plan-bypass --human-authorize`."
+)
 
 
 class RubricNotSatisfiedError(RuntimeError):
     """A merge was refused because the ticket's rubric is not fully PASS at the head SHA."""
 
 
-def rubric_gate_required(overlay: str | None = None) -> bool:
-    """Whether the rubric done-gate is in force for *overlay* (overlay -> global).
-
-    *overlay* threads the ticket's own overlay so a per-overlay opt-in binds even
-    when the evaluating process has no ambient ``T3_OVERLAY_NAME`` (the merge
-    keystone runs env-less). ``None`` resolves the ambient overlay as before.
-    """
-    return get_effective_settings(overlay).require_rubric_verification
+class RubricNotVerifiedError(InvalidTransitionError):
+    """A delivery was refused because the ticket's rubric is not fully PASS."""
 
 
 def latest_rubric(ticket: "Ticket") -> "Rubric | None":
@@ -60,9 +80,27 @@ def latest_rubric(ticket: "Ticket") -> "Rubric | None":
     the manager's ``active_for_ticket`` (order by ``-created_at``, first) is the
     active row.
     """
-    from teatree.core.models.rubric import Rubric  # noqa: PLC0415 — deferred: ORM import needs the app registry
-
     return Rubric.objects.active_for_ticket(ticket)
+
+
+def _plan_is_bypassed(ticket: "Ticket") -> bool:
+    """Whether the ticket's LATEST plan is the human-authorized bypass — the ONE waiver."""
+    latest = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
+    return latest is not None and is_plan_bypass_shaped(latest.adequacy)
+
+
+def _refusal_reason(ticket: "Ticket", head_sha: str | None) -> str:
+    """Why the ticket's rubric refuses this transition, or ``""``.
+
+    *head_sha* binds the grade to the live tree (merge) or is ``None`` (delivered,
+    whose head has long since moved). A bypassed plan waives the missing rubric and
+    every rung except a recorded FAIL.
+    """
+    waived = _plan_is_bypassed(ticket)
+    rubric = latest_rubric(ticket)
+    if rubric is None:
+        return "" if waived else _NO_RUBRIC_REASON
+    return rubric.unverified_reason(head_sha, waived=waived)
 
 
 def _record_shipped_incomplete_escalation(ticket: "Ticket") -> None:
@@ -76,8 +114,6 @@ def _record_shipped_incomplete_escalation(ticket: "Ticket") -> None:
     (ticket-wide, ``task_id=None``). Fail-SAFE: any error recording the row is
     swallowed — the backstop must never block the (already-refusing) gate.
     """
-    from teatree.core.models.honesty_escalation import HonestyEscalation  # noqa: PLC0415 — deferred: ORM/app-registry
-
     try:
         session = ticket.sessions.exclude(agent_id="").order_by("-started_at").first()
         if session is not None and session.agent_id:
@@ -86,36 +122,57 @@ def _record_shipped_incomplete_escalation(ticket: "Ticket") -> None:
         return
 
 
+def clear_honesty_escalation_on_pass(ticket: "Ticket") -> None:
+    """Clear the ticket's active honesty escalations on a verified-complete landing.
+
+    The mirror of :func:`_record_shipped_incomplete_escalation` above, and why it lives
+    here: this gate is what RECORDS ``shipped_incomplete`` when the rubric refuses, so
+    the clear on a full pass belongs beside it rather than in one of the two producers
+    that call it. Keyed to the ticket's session ``agent_id``s. Fail-SAFE: a recording
+    error never blocks the caller — the grade is already recorded, this is cleanup.
+    """
+    try:
+        sessions = ticket.sessions.exclude(agent_id="")
+        for agent_id in sessions.values_list("agent_id", flat=True).distinct():
+            HonestyEscalation.mark_cleared(agent_id)
+    except Exception:  # noqa: BLE001 — best-effort side-effect; a failure degrades to no-op
+        return
+
+
 def check_rubric_satisfied(ticket: "Ticket", head_sha: str, *, transition: str) -> None:
     """Refuse a ``transition`` whose ticket rubric is not fully PASS at ``head_sha``.
 
-    NO-OP when ``require_rubric_verification`` is off (the opt-in default).
-    Otherwise the ticket must carry a rubric that
-    :meth:`Rubric.is_fully_passed_at` accepts — every criterion PASS by an
-    independent grader bound to ``head_sha``. Fail-closed: a missing, empty,
-    ungraded, failed, maker-graded, or stale-SHA rubric is refused. ``transition``
-    names the gated action (e.g. ``"merge"``) for the remediation message.
+    Fail-closed: a missing, empty, ungraded, failed, uncited, maker-graded or
+    stale-SHA rubric is refused. ``transition`` names the gated action for the message.
 
     On a refusal it also records a ``shipped_incomplete`` honesty escalation
     (teatree#2263 trigger #4 backstop) for the ticket's active session before
     raising, so the next verification spawn routes to the most-honest model.
     """
-    if not rubric_gate_required(ticket.overlay or None):
-        return
-    rubric = latest_rubric(ticket)
-    if rubric is not None and rubric.is_fully_passed_at(head_sha):
+    reason = _refusal_reason(ticket, head_sha)
+    if not reason:
         return
     _record_shipped_incomplete_escalation(ticket)
-    reason = rubric.block_reason(head_sha) if rubric is not None else "no rubric is recorded for this ticket"
     short_sha = head_sha.strip()[:8] or head_sha.strip()
     msg = (
-        f"refusing the '{transition}' transition for ticket {ticket.pk} at head "
-        f"{short_sha}: {reason} (require_rubric_verification). The ticket's "
-        f"acceptance-criteria rubric must be fully PASS, graded by an INDEPENDENT "
-        f"verifier (grader != maker) at the current head SHA. Set the criteria with "
-        f"`ticket rubric-set {ticket.pk} --criteria-json '[\"AC1\", ...]'`, then have "
-        f"the verifier grade them with `ticket rubric-grade {ticket.pk} --grader-identity "
-        f"<reviewer> --reviewed-sha <full-40-char-sha> --grades-json "
-        f'\'[{{"ordinal": 0, "status": "pass"}}, ...]\'`, then retry.'
+        f"refusing the '{transition}' transition for ticket {ticket.pk} at head {short_sha}: {reason}. "
+        + _REMEDY.format(pk=ticket.pk)
     )
     raise RubricNotSatisfiedError(msg)
+
+
+def check_rubric_verified(ticket: "Ticket") -> None:
+    """Refuse ``mark_delivered`` when the ticket's rubric is not fully verified.
+
+    The delivered-time sibling of :func:`check_rubric_satisfied`, minus the head bind:
+    a delivered ticket's head has long since moved off the reviewed one, so re-binding
+    here would refuse every delivery.
+    """
+    reason = _refusal_reason(ticket, None)
+    if not reason:
+        return
+    msg = f"Refusing to mark ticket {ticket.pk} done — {reason}. " + _REMEDY.format(pk=ticket.pk)
+    raise RubricNotVerifiedError(msg)
+
+
+register_gate("rubric_verified", check_rubric_verified)

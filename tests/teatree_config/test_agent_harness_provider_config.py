@@ -108,9 +108,13 @@ class TestAgentHarnessProviderParse:
 
 
 class TestAgentHarnessProviderValidFor:
-    def test_claude_sdk_accepts_the_two_anthropic_credentials(self) -> None:
+    def test_claude_sdk_accepts_the_anthropic_credentials_and_the_plans_first_policy(self) -> None:
         assert AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK) == frozenset(
-            {AgentHarnessProvider.SUBSCRIPTION_OAUTH, AgentHarnessProvider.API_KEY},
+            {
+                AgentHarnessProvider.SUBSCRIPTION_OAUTH,
+                AgentHarnessProvider.API_KEY,
+                AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY,
+            },
         )
 
     def test_pydantic_ai_accepts_the_router_byok_and_native_anthropic_credentials(self) -> None:

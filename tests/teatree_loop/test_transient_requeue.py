@@ -26,7 +26,13 @@ from teatree.core.repair_loop import max_phase_iterations
 from teatree.core.worktree.recovery_sweeps import run_boot_sweeps
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from teatree.loop.tick_recovery import _reap_stale_task_claims
-from teatree.loop.transient_requeue import HALT_STAMP, _non_terminal_failed_tasks, requeue_transient_failed
+from teatree.loop.transient_requeue import (
+    HALT_STAMP,
+    _escalate_once,
+    _non_terminal_failed_tasks,
+    escalation_marker,
+    requeue_transient_failed,
+)
 from teatree.loop.transient_requeue_disposal import SUPERSEDED_HEAD_STAMP
 
 if TYPE_CHECKING:
@@ -614,17 +620,56 @@ class TestTransientRequeue(TestCase):
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
 
+class TestTheSweepDropsAConversationNothingWillContinue(TestCase):
+    """A stored agent conversation lives exactly as long as a retry of its row can still happen."""
+
+    @staticmethod
+    def _store_thread(task: Task) -> None:
+        task.ticket.merge_extra(merge_into_dicts={"pydantic_ai_threads": {str(task.pk): [{"kind": "request"}]}})
+
+    @staticmethod
+    def _holds_thread(task: Task) -> bool:
+        task.ticket.refresh_from_db()
+        return str(task.pk) in task.ticket.extra.get("pydantic_ai_threads", {})
+
+    def test_an_escalated_row_drops_its_conversation(self) -> None:
+        task = _failed_task()
+        self._store_thread(task)
+
+        requeue_transient_failed()
+
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+        assert not self._holds_thread(task)
+
+    def test_a_retired_row_drops_its_conversation(self) -> None:
+        task = _failed_task(phase="testing", state=Ticket.State.TESTED)
+        _add_failed_attempt(task, error="result_error: no terminal ResultMessage")
+        self._store_thread(task)
+
+        requeue_transient_failed()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert not self._holds_thread(task)
+
+    def test_a_reopened_row_keeps_its_conversation_for_the_retry(self) -> None:
+        task = _failed_task()
+        _add_failed_attempt(task, error="outage_death: connection refused")
+        self._store_thread(task)
+
+        assert requeue_transient_failed() == 1
+
+        assert self._holds_thread(task)
+
+
 class TestExhaustionAutoRequeue(TestCase):
     """#3407: exhaustion-killed FAILED tasks auto-requeue once their window resets.
 
     A task that died on a subscription session/weekly or transient rate limit is a
-    capacity failure, not a defect — while ``limit_autorecovery_enabled`` is ON it is
+    capacity failure, not a defect — it is
     reopened once the window HORIZON has elapsed, never escalated to a human. API-credit
-    exhaustion (no timed reset) and the flag-off path keep the existing escalation.
+    exhaustion (no timed reset) keeps the existing escalation.
     """
-
-    def setUp(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
 
     def test_session_limit_task_is_reopened_after_the_window_resets(self) -> None:
         task = _failed_task()
@@ -722,20 +767,6 @@ class TestExhaustionAutoRequeue(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
-
-    def test_flag_off_keeps_the_pre_3407_escalation(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
-        task = _failed_task()
-        _add_failed_attempt(
-            task, error=_exhaustion_error(LimitCause.SUBSCRIPTION_SESSION), ended_at=timezone.now() - timedelta(hours=6)
-        )
-
-        assert requeue_transient_failed() == 0
-        task.refresh_from_db()
-        assert task.status == Task.Status.FAILED
-        # Byte-identical to before #3407: an exhaustion failure follows the deterministic
-        # escalation path while the flag is off.
-        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
 
 class TestDeadReviewTargetRetired(TestCase):
@@ -1096,7 +1127,15 @@ class TestTheKindDecidesTheRecovery(TestCase):
     reached the owner unreviewed because its reviewing task died this way.
     """
 
-    _CRASH = "Traceback (most recent call last):\n  File 'runner.py'\nException: Control request timeout"
+    #: A raw traceback with no further marker — the shape ``harness_crash`` is FOR. It used
+    #: to read "Control request timeout", which now names its own kind and no longer stands
+    #: in for a generic crash; ``test_a_control_request_timeout_is_never_reopened`` below
+    #: covers that string, so both halves keep a test rather than one silently taking the
+    #: other's verdict.
+    _CRASH = "Traceback (most recent call last):\n  File 'runner.py'\nException: boom"
+    _CONTROL_TIMEOUT = (
+        "Traceback (most recent call last):\n  File 'runner.py'\nException: Control request timeout: initialize"
+    )
 
     def test_a_harness_crash_is_reopened(self) -> None:
         task = _failed_task(phase="reviewing")
@@ -1121,6 +1160,21 @@ class TestTheKindDecidesTheRecovery(TestCase):
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
 
+    def test_a_control_request_timeout_is_never_reopened(self) -> None:
+        """The named sibling HALTs on the FIRST one: a retry walks into the same deadline.
+
+        It arrives dressed as a traceback, so it used to be read as ``harness_crash`` and
+        reopened — 53 of 60 tasks on the deployed box died that way and kept being retried
+        into a session-start path that could not answer any faster the second time.
+        """
+        task = _failed_task(phase="reviewing")
+        _add_failed_attempt(task, error=self._CONTROL_TIMEOUT)
+
+        assert requeue_transient_failed() == 0
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+
     def test_an_unusable_envelope_still_earns_its_one_correction(self) -> None:
         """``unexpected keys`` was unnamed before #4505; naming it must not cost it the retry."""
         task = _failed_task()
@@ -1142,6 +1196,32 @@ class TestTheKindDecidesTheRecovery(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+class TestARepairHaltIsInternalLikeItsSiblings(TestCase):
+    """`repair-halt` joins `repair-stall` / `repair-cap` / `reoffer-budget` as INTERNAL.
+
+    All four say the same thing — a phase has stopped being re-tried because retrying is
+    not working — and three of them already record INTERNAL. The fourth DM'd the owner, so
+    the one class of escalation reached them by whichever route it happened to take.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ticket = Ticket.objects.create(issue_url="https://example.com/i/9", overlay="test")
+        self.session = Session.objects.create(ticket=self.ticket, overlay="test", agent_id="agent-1")
+
+    def _halted_task(self) -> Task:
+        task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding", status=Task.Status.FAILED)
+        TaskAttempt.objects.create(task=task, ended_at=timezone.now(), exit_code=1, error="coding failed")
+        return task
+
+    def test_the_halt_escalation_never_reaches_the_owner_feed(self) -> None:
+        task = self._halted_task()
+        _escalate_once(task, reason="budget exhausted")
+        row = DeferredQuestion.objects.get()
+        assert row.audience == DeferredQuestion.Audience.INTERNAL
+        assert row.dedupe_marker == escalation_marker(task)
 
 
 _REASON = f"{HEAD_SUPERSEDED_PREFIX}souliane/teatree#4716 advanced from bf526560 to 21023d20"

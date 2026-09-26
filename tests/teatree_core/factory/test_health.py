@@ -5,6 +5,7 @@ evidence; ``add`` records a manual issue; ``dismiss`` closes one by id.
 """
 
 import json
+import re
 from io import StringIO
 from unittest.mock import patch
 
@@ -54,6 +55,33 @@ class TestShow:
         assert "health: red · 1 open" in out
         assert "loop wedged" in out
         assert "https://example.test/run/9" in out
+
+    def test_header_carries_a_measurement_stamp(self) -> None:
+        """A verdict with no measurement time is what lets a fixed problem be relayed as current."""
+        with patch("teatree.core.factory.operational_health.collect_signals", return_value=SignalCollection()):
+            out = _call("health", "show")
+        assert re.search(r"measured \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", out), out
+
+    def test_each_open_issue_carries_its_age(self) -> None:
+        signal = HealthSignal("f", KnownIssue.Severity.WARNING, "a warning")
+        with patch(
+            "teatree.core.factory.operational_health.collect_signals",
+            return_value=SignalCollection((signal,)),
+        ):
+            out = _call("health", "show")
+        assert "Last seen" in out
+        assert "ago" in out
+
+    def test_json_output_exposes_both_timestamps(self) -> None:
+        signal = HealthSignal("f", KnownIssue.Severity.WARNING, "a warning")
+        with patch(
+            "teatree.core.factory.operational_health.collect_signals",
+            return_value=SignalCollection((signal,)),
+        ):
+            out = _call("health", "show", "--json")
+        issue = json.loads(out)["issues"][0]
+        assert issue["first_seen"]
+        assert issue["last_seen"]
 
     def test_json_output(self) -> None:
         signal = HealthSignal("f", KnownIssue.Severity.WARNING, "a warning")

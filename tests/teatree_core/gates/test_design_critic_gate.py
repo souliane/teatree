@@ -53,9 +53,14 @@ def _sketch() -> MechanismSketch:
 
 
 def _conforming_manifest() -> dict:
-    """A plan adequacy carrying a mechanism_placement that conforms to :func:`_sketch`."""
+    """An ADEQUATE plan adequacy whose mechanism_placement conforms to :func:`_sketch`."""
     sketch = _sketch()
     return {
+        "design": {"content": "cap the open PRs at the core seam"},
+        "integration_seams": {"none_reason": "one chokepoint, no registry touched"},
+        "edge_cases": {"none_reason": "none beyond the cap itself"},
+        "test_strategy": {"content": "red-first on the chokepoint"},
+        "acceptance_criteria": {"content": ["the cap refuses a second open PR"]},
         "mechanism_placement": {
             "setting_key": sketch.setting_key,
             "neutral_default": sketch.neutral_default,
@@ -63,7 +68,7 @@ def _conforming_manifest() -> dict:
             "activation_scope": sketch.activation_scope,
             "activation_value": sketch.activation_value,
             "rejected_alternatives": list(sketch.rejected_alternatives),
-        }
+        },
     }
 
 
@@ -287,10 +292,9 @@ class TestPlanTransitionWiring(TestCase):
         directive.mechanism_sketch = _sketch().to_dict()
         directive.ticket = ticket
         directive.save(update_fields=["mechanism_sketch", "ticket"])
-        # plan() → schedule_coding() → plan_currency_gate, whose directive mechanism teeth
-        # now run UNCONDITIONALLY (H3) — so a directive plan must CONFORM to its sketch to
-        # reach coder dispatch, regardless of require_plan_adequacy. A conforming plan keeps
-        # these tests focused on the design-critic arming they exercise.
+        # plan() → schedule_coding() → plan_currency_gate: a directive plan must be
+        # ADEQUATE and CONFORM to its sketch to reach coder dispatch. A plan satisfying
+        # both keeps these tests focused on the design-critic arming they exercise.
         PlanArtifact.objects.create(
             ticket=ticket,
             plan_text="plan",

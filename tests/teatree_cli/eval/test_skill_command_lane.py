@@ -9,6 +9,7 @@ docs against it — the skills tree, ``agents/*.md``, ``BLUEPRINT.md`` and
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
@@ -17,6 +18,27 @@ from teatree.cli.eval.skill_command_lane import (
     skill_command_validity_lane,
     validate_shipped_skill_commands,
 )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _registry_provider_registered() -> None:
+    """Fill the registry seam the way the CLI does — by dispatching into ``t3 eval``.
+
+    ``teatree.cli`` used to call ``register_command_registry_provider`` at its own
+    import time, which is exactly what made the eval package a startup dependency;
+    it now registers inside the lazy ``eval`` loader. Every RUNTIME route to
+    ``build_command_registry`` is an ``eval`` subcommand, so the loader has always
+    run by the time a lane executes — but a test that imports the lane directly has
+    not been through it, and got a bare "provider not registered" RuntimeError per
+    test. Whether it passed depended on some other test in the same shard having
+    dispatched first.
+
+    Driving the real dispatch rather than calling the private loader (or re-doing
+    the registration here) keeps one copy of the wiring and makes this fixture fail
+    loudly if that route ever stops filling the seam.
+    """
+    result = CliRunner().invoke(app, ["eval", "--help"])
+    assert result.exit_code == 0, result.output
 
 
 class TestLiveRegistry:

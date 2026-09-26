@@ -82,6 +82,9 @@ class LauncherInstall(StrEnum):
     REFUSED = "refused"
     UNWRITABLE = "unwritable"
     UNVERIFIED = "unverified"
+    #: The checkout's ``deploy/t3`` is not executable in the venue that will run the
+    #: launcher, so nothing was written — an install decided by the caller, never here.
+    NO_TARGET = "no-target"
 
 
 def compose_path(repo: Path) -> Path:
@@ -193,6 +196,10 @@ def install_launcher(path: Path, repo: Path) -> LauncherInstall:
     the intended script for *repo*, or is not executable, is
     :attr:`LauncherInstall.UNVERIFIED` — the caller must not act on it as an
     installed launcher.
+
+    Whether *repo*'s ``deploy/t3`` is REACHABLE is not asked here: only a caller in
+    the venue that will run the launcher can answer it, and a container writing the
+    host's launcher has no window onto the host filesystem. The host installer asks it.
     """
     script = _render_launcher_script(repo)
     if path.is_symlink() or path.exists():

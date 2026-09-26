@@ -358,7 +358,6 @@ class TestIsShippedContract:
         "path",
         [
             "src/teatree/config/settings.py",
-            "src/teatree/config/defaults_approvals.toml",
             "src/teatree/core/models/enumerations.py",
             "BLUEPRINT.md",
         ],

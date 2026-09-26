@@ -10,12 +10,11 @@ unchanged.
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 
+from teatree.backends.github.api import _run_gh
 from teatree.backends.types import dig
 from teatree.types import RawAPIDict
-from teatree.utils.run import run_checked
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +47,13 @@ def _gh_graphql(query: str, *, token: str = "") -> RawAPIDict:
     Bearer <token>"`` — an argv header leaks the credential to
     ``/proc/<pid>/cmdline`` and ``ps``.
     """
-    env = {**os.environ, "GH_TOKEN": token} if token else None
-    result = run_checked(
-        ["gh", "api", "graphql", "-f", f"query={query}"],
-        env=env,
+    result = _run_gh(
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={query}",
+        token=token,
         timeout=_GRAPHQL_TIMEOUT_SECONDS,
     )
     return json.loads(result.stdout)

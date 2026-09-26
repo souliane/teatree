@@ -4,8 +4,8 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.mode_resolution import DEFAULT_MODE_SETTING, resolve_active_mode
-from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
-from teatree.core.models.loop_preset import LOW_POWER_PRESET_SETTING
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
+from teatree.core.models.loop_preset import TOKEN_OUTAGE_PRESET_SETTING
 from teatree.loops.preset_admin import create_preset, delete_preset, preset_referrers, rename_preset, update_preset_meta
 from teatree.loops.preset_editing import PresetEditError
 
@@ -20,9 +20,13 @@ class CreatePresetTestCase(TestCase):
         create_preset("night-shift", description="Nights only.")
         assert Mode.objects.by_name("night-shift").description == "Nights only."
 
-    def test_create_starts_with_no_opinion_on_anything(self) -> None:
+    def test_create_starts_with_every_loop_off(self) -> None:
+        """A newborn preset runs nothing — admitting a loop is always a deliberate edit (B1)."""
         create_preset("night-shift")
-        assert Mode.objects.by_name("night-shift").entries == {}
+
+        entries = Mode.objects.by_name("night-shift").entries
+        assert set(entries) == set(Loop.objects.values_list("name", flat=True))
+        assert not any(entries.values())
 
     def test_duplicate_name_is_refused(self) -> None:
         create_preset("night-shift")
@@ -36,51 +40,51 @@ class CreatePresetTestCase(TestCase):
 
 class PresetMetadataTestCase(TestCase):
     def setUp(self) -> None:
-        _preset("low-token", description="stale text")
+        _preset("token-outage", description="stale text")
 
     def test_description_is_editable(self) -> None:
-        update_preset_meta("low-token", description="Token-budget guard.")
-        assert Mode.objects.by_name("low-token").description == "Token-budget guard."
+        update_preset_meta("token-outage", description="Token-budget guard.")
+        assert Mode.objects.by_name("token-outage").description == "Token-budget guard."
 
 
 class RenamePresetTestCase(TestCase):
     """A rename re-points every by-name referrer in one transaction — never orphans one."""
 
     def setUp(self) -> None:
-        _preset("low-token", description="Token-budget guard.")
+        _preset("token-outage", description="Token-budget guard.")
         _preset("present")
         self.schedule = ModeSchedule.objects.create(name="renametest")
-        self.addCleanup(ConfigSetting.objects.clear, LOW_POWER_PRESET_SETTING)
+        self.addCleanup(ConfigSetting.objects.clear, TOKEN_OUTAGE_PRESET_SETTING)
         self.addCleanup(ModeOverride.objects.clear)
 
     def test_rename_moves_the_row(self) -> None:
-        rename_preset("low-token", "low-tokens")
-        assert Mode.objects.by_name("low-token") is None
-        assert Mode.objects.by_name("low-tokens").description == "Token-budget guard."
+        rename_preset("token-outage", "token-outages")
+        assert Mode.objects.by_name("token-outage") is None
+        assert Mode.objects.by_name("token-outages").description == "Token-budget guard."
 
     def test_rename_repoints_the_auto_engage_setting(self) -> None:
-        ConfigSetting.objects.set_value(LOW_POWER_PRESET_SETTING, "low-token")
-        rename_preset("low-token", "low-tokens")
-        assert ConfigSetting.objects.get_effective(LOW_POWER_PRESET_SETTING) == "low-tokens"
+        ConfigSetting.objects.set_value(TOKEN_OUTAGE_PRESET_SETTING, "token-outage")
+        rename_preset("token-outage", "token-outages")
+        assert ConfigSetting.objects.get_effective(TOKEN_OUTAGE_PRESET_SETTING) == "token-outages"
 
     def test_rename_repoints_a_setting_left_at_its_default(self) -> None:
-        # The auto-engage target defaults to "low-token" with no row written; a rename
+        # The auto-engage target defaults to "token-outage" with no row written; a rename
         # must pin the new name so the unset default cannot dangle.
-        rename_preset("low-token", "low-tokens")
-        assert ConfigSetting.objects.get_effective(LOW_POWER_PRESET_SETTING) == "low-tokens"
+        rename_preset("token-outage", "token-outages")
+        assert ConfigSetting.objects.get_effective(TOKEN_OUTAGE_PRESET_SETTING) == "token-outages"
 
     def test_rename_repoints_schedule_slots(self) -> None:
         slot = ModeScheduleSlot.objects.create(
-            schedule=self.schedule, days=[0], start_time="08:00", preset_name="low-token"
+            schedule=self.schedule, days=[0], start_time="08:00", preset_name="token-outage"
         )
-        rename_preset("low-token", "low-tokens")
-        assert ModeScheduleSlot.objects.get(pk=slot.pk).preset_name == "low-tokens"
+        rename_preset("token-outage", "token-outages")
+        assert ModeScheduleSlot.objects.get(pk=slot.pk).preset_name == "token-outages"
 
     def test_rename_repoints_the_live_override(self) -> None:
-        ModeOverride.objects.set_override("low-token")
-        rename_preset("low-token", "low-tokens")
-        assert ModeOverride.objects.current().preset_name == "low-tokens"
-        assert resolve_active_mode().name == "low-tokens"
+        ModeOverride.objects.set_override("token-outage", reason="test override")
+        rename_preset("token-outage", "token-outages")
+        assert ModeOverride.objects.current().preset_name == "token-outages"
+        assert resolve_active_mode().name == "token-outages"
 
     def test_rename_repoints_the_default_mode_setting(self) -> None:
         ConfigSetting.objects.set_value(DEFAULT_MODE_SETTING, "present")
@@ -90,13 +94,13 @@ class RenamePresetTestCase(TestCase):
 
     def test_rename_onto_an_existing_name_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
-            rename_preset("low-token", "present")
-        assert Mode.objects.by_name("low-token") is not None
+            rename_preset("token-outage", "present")
+        assert Mode.objects.by_name("token-outage") is not None
 
     def test_rename_to_a_non_slug_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
-            rename_preset("low-token", "low tokens!")
-        assert Mode.objects.by_name("low-token") is not None
+            rename_preset("token-outage", "low tokens!")
+        assert Mode.objects.by_name("token-outage") is not None
 
     def test_rename_of_an_unknown_preset_is_refused(self) -> None:
         with pytest.raises(PresetEditError):
@@ -109,14 +113,14 @@ class DeletePresetTestCase(TestCase):
         _preset("present")
         self.schedule = ModeSchedule.objects.create(name="deletetest")
         self.addCleanup(ModeOverride.objects.clear)
-        self.addCleanup(ConfigSetting.objects.clear, LOW_POWER_PRESET_SETTING)
+        self.addCleanup(ConfigSetting.objects.clear, TOKEN_OUTAGE_PRESET_SETTING)
 
     def test_unreferenced_preset_is_deleted(self) -> None:
         delete_preset("spare")
         assert Mode.objects.by_name("spare") is None
 
     def test_active_preset_is_refused(self) -> None:
-        ModeOverride.objects.set_override("spare")
+        ModeOverride.objects.set_override("spare", reason="test override")
         with pytest.raises(PresetEditError, match="active"):
             delete_preset("spare")
         assert Mode.objects.by_name("spare") is not None
@@ -128,8 +132,8 @@ class DeletePresetTestCase(TestCase):
         assert Mode.objects.by_name("spare") is not None
 
     def test_preset_named_by_a_setting_is_refused(self) -> None:
-        ConfigSetting.objects.set_value(LOW_POWER_PRESET_SETTING, "spare")
-        with pytest.raises(PresetEditError, match=LOW_POWER_PRESET_SETTING):
+        ConfigSetting.objects.set_value(TOKEN_OUTAGE_PRESET_SETTING, "spare")
+        with pytest.raises(PresetEditError, match=TOKEN_OUTAGE_PRESET_SETTING):
             delete_preset("spare")
         assert Mode.objects.by_name("spare") is not None
 

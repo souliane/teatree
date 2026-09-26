@@ -17,12 +17,16 @@ code. django-typer swallows a ``typer.Exit`` into a returned value (exit
 here would regress to a silent exit 0.
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 
+from teatree.core.management.commands.dogfood import _worktree_path_resolver
 from teatree.loop.dogfood_smoke import SmokeOutcomeKind, SmokeReport, SmokeStep, StepResult
+from tests.factories import TicketFactory, WorktreeFactory
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -66,6 +70,8 @@ def _parse_args(args: tuple[str, ...]) -> dict[str, object]:
             kwargs["notify_on_failure"] = True
         elif arg == "--no-overlay":
             kwargs["overlay"] = ""
+        elif arg.startswith("--overlay="):
+            kwargs["overlay"] = arg.removeprefix("--overlay=")
     return kwargs
 
 
@@ -189,6 +195,7 @@ class TestExitCodeMapping:
             (SmokeOutcomeKind.TEARDOWN_FAILED, 14),
             (SmokeOutcomeKind.CLEAN_FAILED, 15),
             (SmokeOutcomeKind.TIMEOUT, 16),
+            (SmokeOutcomeKind.OVERLAY_RESOLUTION_FAILED, 17),
             (SmokeOutcomeKind.UNKNOWN, 19),
         ],
     )
@@ -196,6 +203,77 @@ class TestExitCodeMapping:
         from teatree.core.management.commands.dogfood import _exit_code_for  # noqa: PLC0415
 
         assert _exit_code_for(outcome) == expected_code
+
+    def test_every_outcome_kind_has_an_exit_code(self) -> None:
+        from teatree.core.management.commands.dogfood import _exit_code_for  # noqa: PLC0415  # (#1308)
+
+        # The generic ``.get(outcome, 1)`` fallback must never be what a real
+        # outcome hits — an unmapped kind would collide with a generic failure.
+        codes = {kind: _exit_code_for(kind) for kind in SmokeOutcomeKind}
+        assert 1 not in codes.values()
+        assert len(set(codes.values())) == len(codes)
+
+
+class TestSmokeVariantResolution:
+    """#1308 acceptance: pick a NON-identity variant, or say it is uncovered."""
+
+    def test_explicit_variant_wins_and_covers_nothing_extra(self) -> None:
+        from teatree.core.management.commands.dogfood import _resolve_smoke_variant  # noqa: PLC0415  # (#1308)
+
+        assert _resolve_smoke_variant("teatree", "handpicked") == ("handpicked", [])
+
+    def test_overlay_alias_is_used_when_no_explicit_variant(self) -> None:
+        from teatree.core.management.commands import dogfood  # noqa: PLC0415  # deferred: loads Django settings (#1308)
+
+        with (
+            patch.object(dogfood, "get_overlay", return_value=object()),
+            patch.object(dogfood, "pick_alias_variant", return_value="acme-metro"),
+        ):
+            variant, uncovered = dogfood._resolve_smoke_variant("acme-overlay", "")
+
+        assert variant == "acme-metro"
+        assert uncovered == []
+
+    def test_identity_only_overlay_reports_the_acceptance_item_uncovered(self) -> None:
+        from teatree.core.management.commands import dogfood  # noqa: PLC0415  # deferred: loads Django settings (#1308)
+
+        with (
+            patch.object(dogfood, "get_overlay", return_value=object()),
+            patch.object(dogfood, "pick_alias_variant", return_value=""),
+        ):
+            variant, uncovered = dogfood._resolve_smoke_variant("teatree", "")
+
+        assert variant == ""
+        assert len(uncovered) == 1
+        assert dogfood.ALIAS_VARIANT_UNCOVERED in uncovered[0]
+        # The SPECIFIC reason, not just the marker: the unloadable-overlay branch emits the
+        # same marker, which is how this test passed while `pick_alias_variant` never ran.
+        assert "declares no non-identity variant" in uncovered[0]
+
+    def test_unloadable_overlay_reports_uncovered_instead_of_raising(self) -> None:
+        from teatree.core.management.commands import dogfood  # noqa: PLC0415  # deferred: loads Django settings (#1308)
+
+        with patch.object(dogfood, "get_overlay", side_effect=ImproperlyConfigured("no such overlay")):
+            variant, uncovered = dogfood._resolve_smoke_variant("ghost", "")
+
+        assert variant == ""
+        assert dogfood.ALIAS_VARIANT_UNCOVERED in uncovered[0]
+        assert "not loadable" in uncovered[0]
+
+    def test_uncovered_items_reach_the_echoed_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from teatree.core.management.commands import dogfood  # noqa: PLC0415  # deferred: loads Django settings (#1308)
+
+        report = SmokeReport(outcome=SmokeOutcomeKind.PASS, steps=[], uncovered=["dslr-alias-variant (no alias)"])
+        with (
+            patch.object(dogfood, "_resolve_smoke_variant", return_value=("", ["dslr-alias-variant (no alias)"])),
+            patch.object(dogfood, "run_smoke", return_value=report) as mock_run,
+        ):
+            out, code = _call_smoke(capsys)
+
+        assert code == 0
+        assert "uncovered" in out
+        assert "dslr-alias-variant" in out
+        assert mock_run.call_args.kwargs["uncovered"] == ["dslr-alias-variant (no alias)"]
 
 
 class TestNotifyFailureBody:
@@ -303,6 +381,37 @@ class TestOverlayResolution:
         with patch("teatree.config.discover_active_overlay", return_value=_Overlay()):
             assert _resolve_active_overlay() == "teatree"
 
+    def test_explicit_full_overlay_name_dispatches_under_its_cli_short_name(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An explicit full/dispatchable ``--overlay`` still dispatches under the CLI short name.
+
+        ``--overlay t3-teatree`` (the dispatchable ``Ticket.overlay`` form the scanner queues) must
+        shell out as ``t3 teatree ...`` — the registered CLI sub-app is named after
+        :meth:`OverlayEntry.canonical_overlay_name`, not the full entry-point name, so passing the
+        full form straight through made every step fail with ``No such command 't3-teatree'``.
+        """
+        with patch("teatree.core.management.commands.dogfood.run_smoke") as mock_run:
+            out, code = _call_smoke(capsys, "--overlay=t3-teatree", "--dry-run")
+
+        assert code == 0
+        assert "t3-teatree workspace ticket" not in out
+        assert "t3 teatree workspace ticket" in out
+        mock_run.assert_not_called()
+
+    def test_short_overlay_name_is_resolved_before_the_variant_lookup(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """``--overlay teatree`` reaches ``get_overlay`` as its dispatchable ``t3-teatree`` form.
+
+        ``get_overlay`` keys on the registered entry-point name, so handing it the ambient short
+        form degraded every run to ``uncovered: ... not loadable`` — a green smoke that had
+        silently stopped exercising the variant→tenant path it exists to prove.
+        """
+        with patch("teatree.core.management.commands.dogfood.run_smoke"):
+            out, code = _call_smoke(capsys, "--overlay=teatree", "--dry-run")
+
+        assert code == 0
+        assert "not loadable" not in out
+
 
 class TestFailingStepCommandLookup:
     """Cover the ``command_str`` lookup loop inside the smoke command (#1308)."""
@@ -360,3 +469,39 @@ class TestFailingStepCommandLookup:
         assert code == 11
         kwargs = mock_notify.call_args.kwargs
         assert kwargs["command_str"] == "t3 teatree worktree provision"
+
+
+class TestWorktreePathResolver:
+    """The smoke targets the worktree ``workspace_ticket`` created, not the caller's CWD."""
+
+    URL = "https://github.com/souliane/teatree/issues/1308"
+
+    def test_resolver_yields_the_materialised_worktree_path(self, tmp_path: Path) -> None:
+        ticket = TicketFactory(issue_url=self.URL, overlay="t3-teatree")
+        WorktreeFactory(ticket=ticket, overlay="t3-teatree", extra={"worktree_path": str(tmp_path)})
+
+        resolve = _worktree_path_resolver(issue_url=self.URL, overlay="t3-teatree")
+
+        assert resolve() == str(tmp_path)
+
+    def test_resolver_is_empty_when_the_recorded_checkout_is_gone(self, tmp_path: Path) -> None:
+        ticket = TicketFactory(issue_url=self.URL, overlay="t3-teatree")
+        WorktreeFactory(ticket=ticket, overlay="t3-teatree", extra={"worktree_path": str(tmp_path / "vanished")})
+
+        assert _worktree_path_resolver(issue_url=self.URL, overlay="t3-teatree")() == ""
+
+    def test_resolver_is_empty_when_no_ticket_row_exists(self) -> None:
+        assert _worktree_path_resolver(issue_url=self.URL, overlay="t3-teatree")() == ""
+
+    def test_resolver_keys_on_the_dispatchable_overlay_form(self, tmp_path: Path) -> None:
+        ticket = TicketFactory(issue_url=self.URL, overlay="t3-teatree")
+        WorktreeFactory(ticket=ticket, overlay="t3-teatree", extra={"worktree_path": str(tmp_path)})
+
+        assert _worktree_path_resolver(issue_url=self.URL, overlay="teatree")() == ""
+
+    def test_smoke_run_injects_the_resolver(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch("teatree.core.management.commands.dogfood.run_smoke") as mock_run:
+            mock_run.return_value = SmokeReport()
+            _call_smoke(capsys)
+
+        assert callable(mock_run.call_args.kwargs["resolve_worktree_path"])

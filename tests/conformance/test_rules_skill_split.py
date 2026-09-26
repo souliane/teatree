@@ -18,7 +18,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RULES = _REPO_ROOT / "skills" / "rules"
 _CORE = _RULES / "SKILL.md"
 
-_CORE_MAX_BYTES = 18_432
+# The fork's own non-negotiables add ~0.5 KiB to upstream's 18 KiB core; the phase-context budget still bounds it.
+_CORE_MAX_BYTES = 19_456
 
 _FENCE_RE = re.compile(r"^\s*```")
 _HEADING_RE = re.compile(r"^(#{2,3}) +(.+?)\s*$")

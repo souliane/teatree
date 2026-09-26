@@ -25,7 +25,7 @@ class TestMainCheckFailed:
     def test_requests_every_page(self, gh_check_runs: StubGh) -> None:
         fake = gh_check_runs(adapters_mod, runs=[check_run(CHECK)])
 
-        GhPrApiClient(token="").main_check_failed(slug=SLUG, check_name=CHECK)
+        GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK)
 
         argv = fake.argv_log[0]
         assert "--paginate" in argv
@@ -37,32 +37,32 @@ class TestMainCheckFailed:
     def test_true_when_the_named_check_failed(self, gh_check_runs: StubGh) -> None:
         gh_check_runs(adapters_mod, runs=[check_run(CHECK, conclusion="failure")])
 
-        assert GhPrApiClient(token="").main_check_failed(slug=SLUG, check_name=CHECK) is True
+        assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is True
 
     def test_false_when_the_named_check_succeeded(self, gh_check_runs: StubGh) -> None:
         gh_check_runs(adapters_mod, runs=[check_run(CHECK)])
 
-        assert GhPrApiClient(token="").main_check_failed(slug=SLUG, check_name=CHECK) is False
+        assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
     def test_false_when_the_named_check_is_pending(self, gh_check_runs: StubGh) -> None:
         gh_check_runs(adapters_mod, runs=[check_run(CHECK, status="in_progress", conclusion="")])
 
-        assert GhPrApiClient(token="").main_check_failed(slug=SLUG, check_name=CHECK) is False
+        assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
     def test_false_when_the_named_check_is_absent(self, gh_check_runs: StubGh) -> None:
         gh_check_runs(adapters_mod, runs=[check_run("lint")])
 
-        assert GhPrApiClient(token="").main_check_failed(slug=SLUG, check_name=CHECK) is False
+        assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
     def test_false_on_non_zero_rc(self, gh_check_runs: StubGh) -> None:
         gh_check_runs(adapters_mod, returncode=1)
 
-        assert GhPrApiClient(token="").main_check_failed(slug=SLUG, check_name=CHECK) is False
+        assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
     def test_false_on_unparsable_output(self, gh_check_runs: StubGh) -> None:
         gh_check_runs(adapters_mod, raw_stdout="not json")
 
-        assert GhPrApiClient(token="").main_check_failed(slug=SLUG, check_name=CHECK) is False
+        assert GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK) is False
 
     def test_a_failing_check_past_the_first_page_is_still_found(self, gh_check_runs: StubGh) -> None:
         """The concrete failure mode, end to end: the failing check is the last of many.
@@ -76,7 +76,7 @@ class TestMainCheckFailed:
         runs = [check_run(f"job-{i}") for i in range(PAGE_SIZE)] + [check_run(CHECK, conclusion="failure")]
         fake = gh_check_runs(adapters_mod, runs=runs)
 
-        failed = GhPrApiClient(token="").main_check_failed(slug=SLUG, check_name=CHECK)
+        failed = GhPrApiClient().main_check_failed(slug=SLUG, check_name=CHECK)
 
         assert fake.pages_served == 2, "the probe stopped at page 1 — the failing check was never read"
         assert fake.runs_served == len(runs)

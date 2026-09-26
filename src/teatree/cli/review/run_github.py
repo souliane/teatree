@@ -8,9 +8,9 @@ keys, same complexity classifier, same findings catalog — so a reviewer
 sub-agent parses one contract regardless of which forge the URL names.
 """
 
-import os
 from typing import cast
 
+from teatree.cli.review.guarded_read import ReadOutcome
 from teatree.cli.review.run import (
     JSONObject,
     ReviewRunResult,
@@ -21,8 +21,24 @@ from teatree.cli.review.run import (
     _ReviewState,
 )
 from teatree.core.backend_protocols import PrOpenState, ReviewState
+from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
 from teatree.url_classify import repo_and_iid
 from teatree.utils.run import CommandFailedError
+
+
+def read_github_token_for_repo(repo: str) -> ReadOutcome[str]:
+    """Resolve the owning overlay's GitHub route without ambient fallbacks."""
+    resolution = resolve_slug_token(repo, forge="github", credential="github_token")
+    if resolution.state is ForgeTokenState.TOKEN:
+        return ReadOutcome(value=resolution.token, failed=False)
+    if resolution.state is ForgeTokenState.UNSET:
+        return ReadOutcome(value="", failed=False)
+    return ReadOutcome(value="", failed=True, error=RuntimeError(resolution.detail))
+
+
+def github_token_for_repo(repo: str) -> str:
+    """Resolve GitHub auth from the repo-owning overlay."""
+    return read_github_token_for_repo(repo).value
 
 
 def diff_stats_from_files(files: list[JSONObject]) -> _DiffStats:
@@ -108,7 +124,14 @@ def audit_github_pr(url: str) -> ReviewRunResult:
         msg = "bad_url"
         raise ValueError(msg)
     repo, pr_iid = parsed
-    host = GitHubCodeHost(token=os.environ.get("TEATREE_GH_TOKEN", ""))
+    token = read_github_token_for_repo(repo)
+    if token.failed:
+        msg = f"could not resolve GitHub credential for {repo}: {token.error}"
+        raise _ReviewRunAPIError(msg)
+    if not token.value:
+        msg = f"github_token_pass_key resolved no usable credential for {repo}; refusing ambient gh authentication"
+        raise _ReviewRunAPIError(msg)
+    host = GitHubCodeHost(token=token.value)
 
     try:
         open_state = host.get_pr_open_state(pr_url=url)

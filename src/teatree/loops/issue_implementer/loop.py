@@ -1,11 +1,11 @@
 """Issue-implementer mini-loop — discover + claim labelled issues to auto-implement.
 
-Per-overlay loop, default-OFF behind the ``issue_implementer_enabled``
-triple gate (#1553). Consumes ``Domain.ISSUE_IMPLEMENTER`` through the
-public :func:`teatree.loop.domain_jobs.jobs_for_domain` seam, so the
+Per-overlay loop behind the intake triple gate (#1553). Consumes
+``Domain.ISSUE_IMPLEMENTER`` through the public
+:func:`teatree.loop.domain_jobs.jobs_for_domain` seam, so the
 ``_issue_intake_scanner_for`` gate stays the single decision point
-for whether any scanner is emitted — with the default-OFF config this
-mini-loop contributes nothing and the registry/legacy parity stays
+for whether any scanner is emitted — whether the loop runs at all is the
+active preset's opinion, and the registry/legacy parity stays
 byte-for-byte unchanged.
 
 The emitted ``issue_intake.admitted`` signals route to

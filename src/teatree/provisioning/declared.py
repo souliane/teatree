@@ -69,28 +69,16 @@ class DeclaredDependency:
 
 
 def skill_remediation(spec: str) -> str:
-    """The runnable fix for an absent mandated skill, naming its declared source.
-
-    The command is spelled out with the manifest's own pinned spec rather than a
-    generic ``apm install`` shape: an operator reading a FAIL can paste the line,
-    and pinning it to the declaration keeps the fix and the mandate the same fact.
-    """
-    return (
-        f"`apm install {spec}` — or run `t3 setup` in this environment, "
-        "which provisions every declared skill dependency idempotently"
-    )
+    """The setup-owned fix for an absent mandated skill."""
+    return f"run `t3 setup`; it installs `{spec}` through the pinned skills CLI for Claude Code and Codex"
 
 
 def skill_bump_remediation(spec: str) -> str:
     """The runnable fix for a pin its source has moved past, at the NEW spec.
 
-    Same pasteable shape as :func:`skill_remediation`, and deliberately a
-    different sentence: an absent skill is installed from the pin the manifest
-    already carries, while a trailing pin is two facts — the declaration moves
-    first, then the install follows it — and a reader handed only the install
-    would fix this box and leave the mandate behind.
+    The declaration moves first, then setup installs from the new pin.
     """
-    return f"set the `dependencies.apm` entry to `{spec}`, then `apm install {spec}`"
+    return f"set the `dependencies.apm` entry to `{spec}`, then run `t3 setup`"
 
 
 def _read_text(path: Path, surface: str) -> str:
@@ -133,10 +121,8 @@ def pinned_specs_in_apm_manifest(manifest: Path) -> list[str]:
     The pin surface's counterpart to :func:`skills_declared_in_apm_manifest`, and
     deliberately a different question. That one enumerates entries naming ONE
     installable skill, so it drops a two-segment whole-repo bundle — right for "is this
-    skill present", wrong for "is this pin current": a bundle pin
-    (``obra/superpowers#<sha>``) mandates a commit like any other, and dropping it left
-    the manifest's only third-party pin unmeasured while doctor's silence read as "every
-    pin is current".
+    skill present", wrong for "is this pin current": a bundle pin mandates a commit
+    like any other.
 
     Returns raw specs rather than :class:`DeclaredDependency` rows precisely so this
     cannot be mistaken for an install mandate and handed to the provisioner, which would

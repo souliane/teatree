@@ -163,6 +163,23 @@ class TestAgentSessionPinsCheck:
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
 
+    def test_ordered_harness_routes_are_validated_without_treating_provider_models_as_claude(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        db = tmp_path / "config.sqlite3"
+        _seed(
+            db,
+            agent_skill_models={
+                "code": [
+                    {"harness": "codex_app_server", "model": "gpt-5.6-codex", "tier": "frontier"},
+                    {"harness": "claude_sdk", "model": "opus"},
+                ]
+            },
+        )
+        _point_at(monkeypatch, db)
+        assert _check_agent_session_pins() is True
+        assert capsys.readouterr().out == ""
+
     def test_operator_tier_model_override_value_does_not_warn(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:

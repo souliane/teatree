@@ -3,9 +3,9 @@
 #3895 graduated ``directive_loop_enabled`` to default-ON, so the tick is no longer a
 TOTAL no-op: at default resolution the INTAKE arc runs and a captured directive IS
 interpreted. What keeps a fresh install inert is now structural rather than a flag —
-the seeded ``Loop`` row ships disabled (so nothing ticks unprompted), the ``DIRECTIVE``
-router DROPs (so nothing is captured unprompted), and the human ratify gate stops the
-arc before anything effectful.
+the seeded ``Loop`` row forges no manual override (so what ticks is the preset's
+decision, never a value the seed wrote), the ``DIRECTIVE`` router DROPs (so nothing is
+captured unprompted), and the human ratify gate stops the arc before anything effectful.
 
 These pin exactly that, honestly: intake advances, and the EFFECTFUL counts stay zero.
 Delta vs ``tests/teatree_loops/directive_loop/test_flag_off_parity.py`` (which passes a
@@ -46,9 +46,11 @@ class TestDefaultResolutionInertness(TestCase):
         assert not ConfigSetting.objects.filter(key="factory_score_enabled").exists()
         assert evaluate_execution_guards(settings=get_effective_settings()).reason == SCORE_OFF
 
-    def test_seeded_loop_row_ships_disabled(self) -> None:
+    def test_the_seeded_loop_row_forges_no_manual_override(self) -> None:
+        # What keeps the row from ticking is the preset's opinion, not a value the seed
+        # writes into the manual-override slot — which would outrank every preset.
         seed_default_loops_and_prompts()
-        assert Loop.objects.get(name=DIRECTIVE_LOOP_NAME).enabled is False
+        assert Loop.objects.get(name=DIRECTIVE_LOOP_NAME).enabled is None
 
     def test_directive_intent_drops_at_default_routing(self) -> None:
         # #105: ambient directive detection is deleted — a DIRECTIVE-classified event is

@@ -226,6 +226,53 @@ def _bash(command: str) -> dict:
     return {"session_id": "sess-liveness", "tool_name": "Bash", "tool_input": {"command": command}}
 
 
+def _visible_plan_event(ctx: GateContext, assistant_text: str) -> dict:
+    transcript = ctx.tmp_path / "visible-plan.jsonl"
+    entries = [
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Handle TEST-4101 and TEST-202. Present a per-ticket plan before any edit, commit, or push."
+                        ),
+                    }
+                ],
+            },
+        }
+    ]
+    if assistant_text:
+        entries.append(
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": assistant_text}]},
+            }
+        )
+    transcript.write_text("\n".join(json.dumps(entry) for entry in entries), encoding="utf-8")
+    return {
+        "session_id": ctx.session_id,
+        "transcript_path": str(transcript),
+        "tool_name": "Bash",
+        "tool_input": {"command": 'echo "dispatch placeholder"'},
+    }
+
+
+def _visible_plan_deny(ctx: GateContext) -> dict:
+    return _visible_plan_event(ctx, "")
+
+
+def _visible_plan_allow(ctx: GateContext) -> dict:
+    return _visible_plan_event(
+        ctx,
+        "Plan before action:\n"
+        "TEST-4101: implement the forms fix, then run and verify its focused tests.\n"
+        "TEST-202: implement the views fix, then run and verify its focused tests.",
+    )
+
+
 def _slack_send(tool: str, text: str) -> dict:
     return {"session_id": "sess-liveness", "tool_name": tool, "tool_input": {"text": text}}
 
@@ -433,6 +480,21 @@ def _headless_authoring_deny(ctx: GateContext) -> dict:
         "tool_name": "Edit",
         "tool_input": {"file_path": str(target), "new_string": "hand-written"},
     }
+
+
+# orchestrator delegation gate (PreToolUse Bash): the same interactive+engaged lane as the
+# authoring gate above, so its two live decisions (lane, engagement) are exercised rather than
+# stubbed. An unbounded `rg` sweep denies; the same sweep given a count bound allows.
+
+
+def _delegation_deny(ctx: GateContext) -> dict:
+    _arrange_headless_interactive(ctx)
+    return {"session_id": ctx.session_id, "tool_name": "Bash", "tool_input": {"command": "rg 'autonomy' src/"}}
+
+
+def _delegation_allow(ctx: GateContext) -> dict:
+    _arrange_headless_interactive(ctx)
+    return {"session_id": ctx.session_id, "tool_name": "Bash", "tool_input": {"command": "rg -m 5 'autonomy' src/"}}
 
 
 def _headless_authoring_allow(ctx: GateContext) -> dict:
@@ -926,6 +988,51 @@ def _oob_merge_allow(ctx: GateContext) -> dict:
     return {"tool_name": "Bash", "tool_input": {"command": "gh pr merge 1"}, "cwd": str(repo)}
 
 
+# block-unapprovable-author-create (PreToolUse Bash): a raw `glab mr create` on a repo that
+# DECLARES a non-owner author denies (it would open the MR under the owner's credential
+# instead, and a forge bars an author from approving their own MR); the same create on a repo
+# no overlay declares a distinct credential for allows — including a merely-MANAGED one (managed-ness
+# alone is not this gate's scope) — since it has no such credential to lose.
+
+
+class _BotAuthoredOverlay(OverlayBase):
+    """Declares ``attacker-org/acme-product`` written under a resolvable non-owner credential."""
+
+    def __init__(self) -> None:
+        self.config = _BotAuthoredConfig()
+
+    def get_repos(self) -> list[str]:
+        return []
+
+    def get_provision_steps(self, worktree: "Worktree") -> list["ProvisionStep"]:
+        _ = worktree
+        return []
+
+
+class _BotAuthoredConfig(OverlayConfig):
+    def get_gitlab_token(self) -> str:
+        return "owner-token"
+
+    def get_gitlab_token_for_remote(self, remote: str) -> str:
+        return "bot-token" if "acme-product" in remote else "owner-token"
+
+
+def _raw_create_deny(ctx: GateContext) -> dict:
+    repo = ctx.tmp_path / "acme-product"
+    _init_repo(repo, "main", "attacker-org/acme-product")
+    ctx.monkeypatch.setattr(
+        "teatree.core.authoring_credential.get_all_overlays",
+        lambda: {"acme": _BotAuthoredOverlay()},
+    )
+    return {"tool_name": "Bash", "tool_input": {"command": "glab mr create --title x"}, "cwd": str(repo)}
+
+
+def _raw_create_allow(ctx: GateContext) -> dict:
+    repo = ctx.tmp_path / "unmanaged-create"
+    _init_repo(repo, "main", "someone-else/public")
+    return {"tool_name": "Bash", "tool_input": {"command": "glab mr create --title x"}, "cwd": str(repo)}
+
+
 # block-unknown-repo-push (PreToolUse Bash): a ``git push`` to a repo NO
 # registered overlay owns HOLDS for approval; a push to an OWNED repo allows.
 # The gate ships INERT (``require_owned_repo_approval`` defaults False), so the
@@ -1045,6 +1152,14 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 
 GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
     GateRow(
+        gate_id="visible-plan-before-tools",
+        handler=router.handle_enforce_visible_plan_before_tools,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_visible_plan_deny,
+        allow_input=_visible_plan_allow,
+    ),
+    GateRow(
         gate_id="enforce-skill-loading",
         handler=router.handle_enforce_skill_loading,
         event="PreToolUse",
@@ -1114,6 +1229,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Edit",
         deny_input=_headless_authoring_deny,
         allow_input=_headless_authoring_allow,
+    ),
+    GateRow(
+        gate_id="block-undelegated-investigation",
+        handler=router.handle_block_undelegated_investigation,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_delegation_deny,
+        allow_input=_delegation_allow,
     ),
     GateRow(
         gate_id="validate-mr-metadata-bash",
@@ -1312,12 +1435,28 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         allow_input=_oob_merge_allow,
     ),
     GateRow(
+        gate_id="block-unapprovable-author-create",
+        handler=router.handle_block_unapprovable_author_create,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_raw_create_deny,
+        allow_input=_raw_create_allow,
+    ),
+    GateRow(
         gate_id="block-unknown-repo-push",
         handler=router.handle_block_unknown_repo_push,
         event="PreToolUse",
         matched="Bash",
         deny_input=_unknown_push_deny,
         allow_input=_unknown_push_allow,
+    ),
+    GateRow(
+        gate_id="block-foreign-branch-push",
+        handler=router.handle_block_foreign_branch_push,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=lambda _c: _bash("git push --all"),
+        allow_input=lambda _c: _bash("git push --dry-run origin HEAD"),
     ),
     GateRow(
         gate_id="block-raw-review-post",

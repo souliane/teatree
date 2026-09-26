@@ -36,9 +36,10 @@ def _contained_target(base: Path, path_str: str) -> Path | None:
     disk too. The target ITSELF is left unresolved — replacing a symlink is the
     documented ``symlink`` mode, and ``shutil.rmtree`` refuses one outright.
     """
+    base_absolute = base.absolute()
     base_resolved = base.resolve()
-    candidate = Path(os.path.normpath(base_resolved / path_str))
-    if not candidate.is_relative_to(base_resolved) or not candidate.parent.resolve().is_relative_to(base_resolved):
+    candidate = Path(os.path.normpath(base_absolute / path_str))
+    if not candidate.is_relative_to(base_absolute) or not candidate.parent.resolve().is_relative_to(base_resolved):
         logger.warning("Refusing symlink/copy target %r — escapes worktree base %s", path_str, base_resolved)
         return None
     return candidate

@@ -18,27 +18,37 @@ network, no credential, zero tokens.
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+import httpx2
 import pytest
 from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, ToolUseBlock
 from claude_agent_sdk.types import RateLimitInfo
 from django.test import TestCase
+from openai import AsyncOpenAI
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.models import override_allow_model_requests
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RunUsage
 
 import teatree.agents.runner as runner_mod
 from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
 from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
 from teatree.agents.pydantic_ai_session import _turns_made
-from teatree.agents.runner import TaskUsage, run_agent
+from teatree.agents.pydantic_ai_turn import SessionRun
+from teatree.agents.runner import HarnessOutcome, TaskUsage, _record_success, run_agent
+from teatree.agents.runner_failure_taxonomy import limit_match
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt
+from teatree.llm.anthropic_limits import EgressBlockedError, LimitCause
+from teatree.llm.usage_tee import UsageTee
 from tests.factories import planned_ticket
+from tests.teatree_agents._router_fake import RESOLVED_MODEL, spend_stop, text_reply, tool_call_reply
 
 _MODEL = "claude-opus-4-8"
 
@@ -239,7 +249,9 @@ class TestTerminalResultReportsProviderFailure:
         # limits", so the matcher alone can no longer carry this property.
         from teatree.agents.runner_failure_taxonomy import limit_match  # noqa: PLC0415 — test-local assertion
 
-        session = PydanticAiHarnessSession(Agent(_two_request_model()), model_name=_MODEL, request_limit=1)
+        session = PydanticAiHarnessSession(
+            Agent(_two_request_model()), model_name=_MODEL, run=SessionRun.start(request_limit=1)
+        )
 
         terminal = _terminal(_drive(session))
 
@@ -390,6 +402,7 @@ class TestAFailedTurnStillReportsWhatItSpent:
             "output_tokens",
             "cache_read_input_tokens",
             "cache_creation_input_tokens",
+            "tool_calls",
         }
 
     def test_every_error_branch_reports_usage_not_none(self) -> None:
@@ -400,7 +413,9 @@ class TestAFailedTurnStillReportsWhatItSpent:
             _dropped_mid_stream_model(after_requests=2),
             _two_request_model(),
         ):
-            session = PydanticAiHarnessSession(Agent(agent_model), model_name=_MODEL, request_limit=1)
+            session = PydanticAiHarnessSession(
+                Agent(agent_model), model_name=_MODEL, run=SessionRun.start(request_limit=1)
+            )
 
             terminal = _terminal(_drive(session))
 
@@ -544,7 +559,11 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
 
     def _dispatch(self, harness: PydanticAiHarness) -> TaskAttempt:
         with (
-            patch.object(runner_mod, "resolve_harness", return_value=harness),
+            patch.object(
+                runner_mod,
+                "resolve_dispatch_harness",
+                return_value=runner_mod.DispatchHarness(harness=harness, name="fake_harness", provider=None),
+            ),
             patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
         ):
             return run_agent(self.task, phase="coding", overlay_skill_metadata={})
@@ -557,8 +576,6 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
     def test_a_rate_limited_run_parks_for_auto_recovery_instead_of_crashing(self) -> None:
         from teatree.core.models import UsageWindowState  # noqa: PLC0415 — test-local
 
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
-
         attempt = self._dispatch_api_error(
             status_code=429,
             error_type="rate_limit_error",
@@ -570,31 +587,16 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
         assert attempt.error.startswith("limit_parked: ")
         assert UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED) is not None
 
-    def test_a_rate_limited_run_with_auto_recovery_off_fails_naming_the_cause(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
-
-        attempt = self._dispatch_api_error(
-            status_code=429, error_type="rate_limit_error", message="Number of requests has exceeded your rate limit"
-        )
-
-        self.task.refresh_from_db()
-        assert self.task.status == Task.Status.FAILED
-        assert attempt.error.startswith("rate_limit: "), "a cause-marked reason, never an sdk_error traceback"
-        assert "Traceback" not in attempt.error
-
     def test_an_overloaded_server_is_classified_transient_like_a_rate_limit(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
-
         attempt = self._dispatch_api_error(status_code=529, error_type="overloaded_error", message="Overloaded")
 
         self.task.refresh_from_db()
-        assert self.task.status == Task.Status.FAILED
-        assert attempt.error.startswith("rate_limit: ")
+        assert self.task.status == Task.Status.PENDING, "PARKED for auto-resume, NOT a terminal FAILED"
+        assert "rate_limit" in attempt.error
 
     def test_a_credit_exhausted_key_fails_and_is_never_parked(self) -> None:
         # API-credit exhaustion has no timed window, so auto-recovery ON must STILL
         # land a terminal FAILED — nothing re-arms until the operator adds credits.
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
 
         attempt = self._dispatch_api_error(
             status_code=400,
@@ -607,7 +609,6 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
         assert attempt.error.startswith("api_credit: ")
 
     def test_a_run_that_hits_its_own_step_cap_fails_and_is_never_parked(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
         harness = PydanticAiHarness(
             model=_two_request_model(),
             config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(request_limit=1)),
@@ -628,7 +629,6 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
         """
         from teatree.core.models import UsageWindowState  # noqa: PLC0415 — test-local
 
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=True)
         harness = PydanticAiHarness(model=_refused_model(headers={"retry-after": "3600"}))
 
         first = self._dispatch(harness)
@@ -652,16 +652,6 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
         window.refresh_from_db()
         assert window.resets_at == parked_until, "the park is not extended by a task that never ran"
 
-    def test_control_a_refused_run_with_auto_recovery_off_fails_naming_the_refusal(self) -> None:
-        ConfigSetting.objects.set_value("limit_autorecovery_enabled", value=False)
-
-        attempt = self._dispatch(PydanticAiHarness(model=_refused_model()))
-
-        self.task.refresh_from_db()
-        assert self.task.status == Task.Status.FAILED
-        assert attempt.error.startswith("provider_access_denied: ")
-        assert "Traceback" not in attempt.error
-
     def test_a_successful_run_stamps_the_real_turns_and_session_id_on_the_attempt(self) -> None:
         attempt = self._dispatch(PydanticAiHarness(model=_two_request_model()))
 
@@ -669,6 +659,196 @@ class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
         assert self.task.status == Task.Status.COMPLETED
         assert attempt.num_turns == 2, "the watchdog's turn ceiling reads this — a hardcoded 1 never bounds a run"
         assert attempt.agent_session_id, "resume/audit needs an independent handle on the run"
+
+
+_ROUTER_MODEL = "orcarouter/teatree-auto"
+
+
+def _router_session(
+    replies: Iterator[httpx2.Response],
+    *,
+    before_send: list[object] | None = None,
+    sent: list[httpx2.Request] | None = None,
+) -> PydanticAiHarnessSession:
+    """A real OpenAI-compatible model over a fake network, with the usage tee on its HTTP client."""
+    tee = UsageTee()
+
+    def reply(request: httpx2.Request) -> httpx2.Response:
+        if sent is not None:
+            sent.append(request)
+        return next(replies)
+
+    http_client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(reply),
+        event_hooks={"request": list(before_send or []), "response": [tee.capture]},
+    )
+    client = AsyncOpenAI(base_url="https://router.example/v1", api_key="test-key", http_client=http_client)
+    agent: Agent[None, str] = Agent(OpenAIChatModel(_ROUTER_MODEL, provider=OpenAIProvider(openai_client=client)))
+
+    @agent.tool_plain
+    def lookup(command: str = "") -> str:
+        return "found"
+
+    return PydanticAiHarnessSession(agent, model_name=_ROUTER_MODEL, run=SessionRun(session_id="run-7", usage_tee=tee))
+
+
+def _drive_router(session: PydanticAiHarnessSession, prompt: str = "go") -> list[object]:
+    """:func:`_drive` for a :func:`_router_session`, whose only transport is the fake network."""
+    with override_allow_model_requests(allow_model_requests=True):
+        return _drive(session, prompt)
+
+
+class TestTerminalResultCarriesTheWireReportedSpend:
+    """A metered router's own cost and resolved model reach the terminal message, on success and failure."""
+
+    def test_a_run_reports_the_router_cost_and_the_model_that_actually_ran(self) -> None:
+        session = _router_session(iter([text_reply(_RESULT_JSON, cost_usd=0.000382)]))
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is False
+        assert terminal.total_cost_usd == pytest.approx(0.000382)
+        assert terminal.model_usage == {RESOLVED_MODEL: {}}
+        assert terminal.usage is not None
+        assert terminal.usage["cache_read_input_tokens"] == 21824
+        assert terminal.usage["per_request"] == [
+            {
+                "model": RESOLVED_MODEL,
+                "router": "teatree-auto",
+                "request_id": "req-1",
+                "session_tier": "",
+                "fallback_level": "",
+                "fallback_model": "",
+                "prompt_tokens": 21870,
+                "completion_tokens": 5,
+                "cached_tokens": 21824,
+                "cost_usd": 0.000382,
+            }
+        ]
+
+    def test_a_turn_refused_after_billing_still_reports_its_usage_and_cost(self) -> None:
+        session = _router_session(iter([tool_call_reply("lookup", cost_usd=0.00004), spend_stop()]))
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is True
+        assert terminal.api_error_status == 403
+        assert terminal.total_cost_usd == pytest.approx(0.00004)
+        assert terminal.usage is not None
+        assert terminal.usage["input_tokens"] == 100
+        assert [request["cost_usd"] for request in terminal.usage["per_request"]] == [0.00004, None]
+
+    def test_each_turn_reports_only_the_requests_it_made(self) -> None:
+        session = _router_session(
+            iter([text_reply(_RESULT_JSON, cost_usd=0.001642), text_reply(_RESULT_JSON, cost_usd=0.000382)])
+        )
+
+        first = _terminal(_drive_router(session))
+        second = _terminal(_drive_router(session))
+
+        assert first.total_cost_usd == pytest.approx(0.001642)
+        assert second.total_cost_usd == pytest.approx(0.000382)
+        assert second.usage is not None
+        assert len(second.usage["per_request"]) == 1
+
+    def test_a_turn_refused_on_its_third_request_keeps_the_trajectory_it_made(self) -> None:
+        session = _router_session(
+            iter(
+                [tool_call_reply("lookup", cost_usd=0.00001), tool_call_reply("lookup", cost_usd=0.00002), spend_stop()]
+            )
+        )
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is True
+        assert terminal.usage is not None
+        calls = terminal.usage["tool_calls"]
+        assert [call["tool"] for call in calls] == ["lookup", "lookup"]
+        assert all(call["arg_keys"] == [] and call["args_bytes"] == len(b"{}") for call in calls)
+        assert all(call["output_bytes"] == len(b"found") for call in calls)
+        assert all(isinstance(call["duration_ms"], int) and call["duration_ms"] >= 0 for call in calls)
+        assert [request["request_id"] for request in terminal.usage["per_request"]] == ["req-1", "req-1", ""]
+
+    def test_a_successful_turn_keeps_its_trajectory_too(self) -> None:
+        session = _router_session(
+            iter([tool_call_reply("lookup", cost_usd=0.00001), text_reply(_RESULT_JSON, cost_usd=0.00002)])
+        )
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is False
+        assert terminal.usage is not None
+        assert [call["tool"] for call in terminal.usage["tool_calls"]] == ["lookup"]
+
+    def test_a_turn_without_tool_calls_records_none(self) -> None:
+        terminal = _terminal(_drive_router(_router_session(iter([text_reply(_RESULT_JSON, cost_usd=0.00002)]))))
+
+        assert terminal.usage is not None
+        assert "tool_calls" not in terminal.usage
+
+    def test_an_egress_block_ends_the_turn_as_a_leak_block_without_sending(self) -> None:
+        sent: list[httpx2.Request] = []
+
+        def refuse(_request: httpx2.Request) -> None:
+            detail = "secret-shaped token in the request body"
+            raise EgressBlockedError(detail)
+
+        session = _router_session(iter([text_reply(_RESULT_JSON, cost_usd=0.00002)]), before_send=[refuse], sent=sent)
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is True
+        assert (terminal.result or "").startswith("egress_blocked: ")
+        match = limit_match(terminal)
+        assert match is not None
+        assert match.cause is LimitCause.LEAK_BLOCKED
+        assert sent == [], "the refused body never reached the network"
+
+    def test_a_session_given_an_id_stamps_that_id(self) -> None:
+        run = SessionRun(session_id="minted-before-the-provider", usage_tee=UsageTee())
+        session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL, run=run)
+
+        assert _terminal(_drive(session)).session_id == "minted-before-the-provider"
+
+
+_CANARY = "T3CANARY-5b0f3c1e9a"
+_BEARER_CANARY = "bearer-canary-value"
+
+
+class TestATrajectoryNeverCarriesArgumentValues(TestCase):
+    """A tool call's arguments hold commands, file contents and credentials; only their shape is recorded."""
+
+    def test_secrets_in_tool_arguments_reach_neither_the_result_message_nor_the_attempt(self) -> None:
+        arguments = json.dumps(
+            {"command": f"curl -H 'Authorization: Bearer {_BEARER_CANARY}' https://h.example/{_CANARY}"}
+        )
+        session = _router_session(
+            iter(
+                [
+                    tool_call_reply("lookup", cost_usd=0.00001, arguments=arguments),
+                    text_reply(_RESULT_JSON, cost_usd=0.00002),
+                ]
+            )
+        )
+
+        terminal = _terminal(_drive_router(session))
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="retro")
+        attempt = _record_success(
+            task,
+            HarnessOutcome(agent_text=_RESULT_JSON, result_message=terminal, stuck_reason=None),
+            phase="retro",
+            lane=TaskAttempt.Lane.METERED,
+        )
+        attempt.refresh_from_db()
+
+        assert terminal.usage is not None
+        recorded = {"result_message": json.dumps(terminal.usage), "attempt": json.dumps(attempt.result)}
+        for where, text in recorded.items():
+            for secret in (_CANARY, _BEARER_CANARY, "Bearer"):
+                assert secret not in text, f"{secret!r} leaked into the {where}"
+        assert [call["arg_keys"] for call in terminal.usage["tool_calls"]] == [["command"]]
+        assert terminal.usage["tool_calls"][0]["args_bytes"] == len(arguments.encode())
 
 
 def test_turns_made_counts_requests_and_never_returns_zero() -> None:

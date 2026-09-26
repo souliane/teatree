@@ -21,6 +21,7 @@ from django.db import transaction
 
 from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.loader import get_code_host_for_url
+from teatree.config import worktree_root
 from teatree.core.intake.resolve import _get_user_cwd
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind, parse_kind
 from teatree.core.management.commands._workspace import helpers as _wh
@@ -51,6 +52,10 @@ class ForeignIssueWorktreeRefusedError(Exception):
     leaves no ticket row behind; the ``ticket`` command catches it and exits 1
     (the refusal message was already written to stderr).
     """
+
+
+class TerminalTicketRefusedError(Exception):
+    """Raised by :func:`build_ticket` for a shipped ticket; the ``ticket`` command exits 1 on it."""
 
 
 class InvalidTicketKindError(ValueError):
@@ -237,15 +242,14 @@ def locked_get_or_create_ticket(
     transaction. Caller must be inside ``transaction.atomic()``.
 
     ``kind`` (#17) and ``overlay_name`` are stamped only on a freshly-created
-    row (``defaults``), so re-running ``workspace ticket`` never reclassifies
+    row (its create fields), so re-running ``workspace ticket`` never reclassifies
     an existing ticket nor re-attributes it to another overlay. Stamping the
     INVOKING overlay is what keeps attribution independent of
     ``Ticket.save()``'s URL inference, which returns blank for an issue filed
     in a tracker repo no overlay declares among its workspace repos.
     """
-    ticket, created = Ticket.objects.get_or_create(
-        issue_url=issue_url,
-        defaults={"overlay": overlay_name, "variant": variant, "repos": repo_names, "kind": kind},
+    ticket, created = Ticket.objects.get_or_create_for_issue(
+        issue_url, overlay=overlay_name, variant=variant, repos=repo_names, kind=kind
     )
     if created:
         return ticket
@@ -261,12 +265,13 @@ def build_ticket(
     """Get-or-create + scope/start the ticket inside one transaction, guarding the seam (#2217).
 
     Raises :class:`ForeignIssueWorktreeRefusedError` when the foreign-dir guard
-    refuses; the ``raise`` inside ``transaction.atomic()`` rolls back any
-    freshly-created ticket so a refusal leaves zero DB trace.
+    refuses, and :class:`TerminalTicketRefusedError` for a MERGED/DELIVERED ticket;
+    the ``raise`` inside ``transaction.atomic()`` rolls back any freshly-created
+    ticket so a refusal leaves zero DB trace.
     """
     with transaction.atomic():
         # #17: classify BEFORE the get-or-create so the FIX/FEATURE kind is stamped
-        # in the row's ``defaults`` (create-only, never reclassifying an existing
+        # in the row's create fields (create-only, never reclassifying an existing
         # ticket). The title feeds the inference; an explicit ``--kind`` wins.
         description = intake.description or overlay.get_issue_title(intake.issue_url)
         ticket = locked_get_or_create_ticket(
@@ -277,11 +282,13 @@ def build_ticket(
             overlay_name=overlay_name_of(overlay),
         )
 
+        _refuse_a_shipped_ticket(write, ticket, overlay_name_of(overlay))
+
         # Refuse a silent rebind when --variant disagrees with the existing ticket's variant (#1306).
         _wh.reject_variant_mismatch(write, ticket, intake.variant)
 
         if ticket.state == Ticket.State.NOT_STARTED:
-            ticket.scope(issue_url=intake.issue_url, variant=intake.variant or None, repos=intake.repo_names)
+            ticket.scope(variant=intake.variant or None, repos=intake.repo_names)
 
         ticket.repos = list(dict.fromkeys((ticket.repos or []) + intake.repo_names))
 
@@ -344,6 +351,19 @@ def build_ticket(
     return ticket
 
 
+def _refuse_a_shipped_ticket(write: Callable[[str], None], ticket: Ticket, overlay_name: str) -> None:
+    """Refuse re-running intake on a shipped ticket: it would skip scope/start and exit 0 having changed nothing."""
+    if ticket.state not in {Ticket.State.MERGED, Ticket.State.DELIVERED}:
+        return
+    transition = f"t3 {overlay_name} ticket transition {ticket.pk}"
+    write(
+        f"  Refused: ticket #{ticket.pk} is {ticket.state} (already shipped); --take-over only overrides "
+        f"worktree occupancy. Reopen it first — `{transition} reopen_for_followup` (to reviewed, for a "
+        f"follow-up MR) or `{transition} reopen` (to started, restarting the lifecycle) — then re-run."
+    )
+    raise TerminalTicketRefusedError
+
+
 def _refuse_on_foreign_issue_worktree(
     write: Callable[[str], None], ticket: Ticket, workspace_root: Path, ticket_dir: Path
 ) -> None:
@@ -378,7 +398,6 @@ def finalize_ticket_provision(
     write_err: Callable[[str], None],
     ticket: Ticket,
     adopt_ctx: AdoptContext | None,
-    workspace_root: Path,
 ) -> int:
     """Provision the ticket's worktrees, discard an unattested failure, print the summary.
 
@@ -388,9 +407,13 @@ def finalize_ticket_provision(
     unattested ticket was discarded.
     """
     branch = cast("TicketExtra", ticket.extra)["branch"]
-    # In adopt mode the checkout lives where the operator ran the command, not
-    # under the worktree root — surface that path in the summary.
-    ticket_dir = Path(adopt_ctx.worktree_path).parent if adopt_ctx else ticket_dir_for(workspace_root, branch)
+    # Re-derived from the TICKET as the provisioner derives it, so the dir printed
+    # here is the dir the worktrees actually landed in.
+    ticket_dir = (
+        Path(adopt_ctx.worktree_path).parent
+        if adopt_ctx
+        else ticket_dir_for(worktree_root(overlay=ticket.overlay or None), branch)
+    )
 
     # Run the provisioner synchronously so the CLI gives immediate feedback; the
     # worker that ``start()`` enqueued is idempotent and no-ops when it finds the

@@ -2,7 +2,7 @@
 
 The pure DB config / env readers that the ``_*_scanner_for`` builders
 in :mod:`teatree.loop.scanner_factories` need — resolving per-overlay Slack id,
-identity aliases, and the GitLab-approval feature flag. Kept apart from the
+identity aliases, and the GitLab-approval opt-in. Kept apart from the
 scanner-construction concern so ``scanner_factories`` stays under the
 module-health LOC cap; re-exported there so existing import sites are unchanged.
 """
@@ -30,17 +30,14 @@ def stranger_pr_admission(overlay_name: str) -> tuple[tuple[str, ...], str]:
     )
 
 
-def _gitlab_approvals_enabled() -> bool:
-    """Resolve the GitLab-approval poll-scanner feature flag.
+def gitlab_approvals_enabled(overlay_name: str) -> bool:
+    """Whether the poll-driven GitLab-approval scanner is opted into for *overlay_name*.
 
-    DB-home (#1775): resolved via the effective-settings tier — an overlay-scoped
-    ``ConfigSetting`` row wins over the global one. Default off — the scanner is
-    poll-driven and overlaps with the webhook path; deployments that already wire
-    ``/hooks/gitlab/`` do not need it. Set via
-    ``t3 <overlay> config_setting set gitlab_approval_scanner_enabled true``.
+    Off by default: it overlaps the webhook path, and a box that wires ``/hooks/gitlab/``
+    does not need it. An unreadable setting answers off rather than breaking the tick.
     """
     try:
-        return get_effective_settings().gitlab_approval_scanner_enabled
+        return get_effective_settings(overlay_name or None).gitlab_approval_scanner_enabled
     except Exception:  # noqa: BLE001 — never break a tick on a config read.
         logger.warning("Failed to resolve gitlab_approval_scanner_enabled; defaulting to off")
         return False
@@ -68,8 +65,8 @@ def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:
 
     DB-home (#1775): resolved via the effective-settings tier for the named
     overlay — an overlay-scoped ``ConfigSetting`` row wins over the global one;
-    with no row anywhere we return the empty tuple so the disposition scanner
-    keeps its legacy behaviour.
+    with no readable value we return the empty tuple so nothing counts as the
+    owner and a broken config read does not crash the tick.
     """
     try:
         return tuple(get_effective_settings(overlay_name or None).user_identity_aliases)
