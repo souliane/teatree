@@ -334,6 +334,37 @@ class TestMergedTreeOid:
         assert _merged_tree_oid("/repo", "sha", "origin/main") == "deadbeeftree"
 
 
+class TestNonMigrationModulesBesideMigrations:
+    """Django's loader skips ``_``/``~``-prefixed modules; the probe must count the same graph (#4854)."""
+
+    @pytest.mark.parametrize("module_name", ["_cadence_fold", "~tmp"])
+    def test_skipped_module_is_not_a_leaf(self, tmp_path: Path, module_name: str) -> None:
+        bare = _make_remote_with_base_migration(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _git(clone, "checkout", "-b", "feat/helper")
+        _write_migration(clone, "0002_linear", _child_migration("0001_initial"))
+        _write_migration(clone, module_name, "def fold():\n    return None\n")
+        _git(clone, "add", "-A")
+        _git(clone, "commit", "-m", f"feature: add 0002 and {module_name}")
+
+        assert sha_forks_migration_graph(str(clone), _git(clone, "rev-parse", "HEAD")) is None
+
+    def test_genuine_second_leaf_beside_a_helper_is_still_refused(self, tmp_path: Path) -> None:
+        bare = _make_remote_with_base_migration(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _git(clone, "checkout", "-b", "feat/b")
+        _write_migration(clone, "0002_branch_b", _child_migration("0001_initial"))
+        _write_migration(clone, "_cadence_fold", "def fold():\n    return None\n")
+        _git(clone, "add", "-A")
+        _git(clone, "commit", "-m", "feature: fork 0001 beside a helper")
+        _advance_remote_with_migration(tmp_path, bare, name="0002_branch_a", parent="0001_initial")
+
+        result = sha_forks_migration_graph(str(clone), _git(clone, "rev-parse", "HEAD"))
+
+        assert isinstance(result, MigrationLeafConflict)
+        assert sorted(result.leaf_names) == ["0002_branch_a", "0002_branch_b"]
+
+
 class TestMigrationBlobs:
     def test_ls_tree_failure_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(probe_module, "_git", lambda repo, *args: (1, ""))

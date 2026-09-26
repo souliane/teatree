@@ -40,6 +40,8 @@ _LABEL_FIELD = "label"
 _DEPENDENCY_PAIR_LEN = 2
 _LS_TREE_MIN_FIELDS = 3
 _CLEAN_AND_CONFLICT_CODES = frozenset({0, 1})
+#: Mirrors ``MigrationLoader.load_disk``, which drops these modules (``__init__``, helpers) from the graph.
+_LOADER_SKIPPED_PREFIXES = ("_", "~")
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +103,7 @@ def _migration_blobs(repo: str, tree_oid: str) -> dict[str, str]:
     """Map ``"<app label>/<name>"`` → blob oid for every REAL migration file in ``tree_oid``.
 
     Recursively lists the tree; a ``src/``-rooted path under a ``…/migrations/``
-    directory ending in ``.py`` (excluding ``__init__.py``) is a migration. Scoping to
+    directory ending in ``.py`` is a migration unless Django's loader skips its name. Scoping to
     ``src/`` excludes ``tests/**/migrations/`` — pytest modules mirroring the src
     layout (souliane/teatree#3862), never Django migrations. The app is keyed by its
     Django label (:func:`_app_label`), the name every ``dependencies`` tuple uses.
@@ -121,7 +123,7 @@ def _migration_blobs(repo: str, tree_oid: str) -> dict[str, str]:
                 apps_modules[path.removesuffix(_APPS_MODULE_SUFFIX)] = parts[2]
             continue
         name = path.rsplit("/", 1)[-1].removesuffix(".py")
-        if name == "__init__":
+        if name.startswith(_LOADER_SKIPPED_PREFIXES):
             continue
         app_dir, _, _ = path.partition(_MIGRATIONS_SEGMENT)
         migrations_by_app_dir.setdefault(app_dir, {})[name] = parts[2]
