@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, TypedDict
 
@@ -81,6 +82,28 @@ _PROBE_PATH_EXTRA: Final[tuple[str, ...]] = (
     "/bin",
     str(Path.home() / ".local" / "bin"),
 )
+
+# Why a forge-CLI probe produced no stdout. Kept apart because they have
+# DIFFERENT remedies: a timeout says nothing about the credential, so a refusal
+# that reports one as the other sends the operator to `auth status` on a CLI
+# that is authenticated and would have answered.
+PROBE_ABSENT: Final[str] = "tool-absent"
+PROBE_UNRUNNABLE: Final[str] = "exec-failed"
+PROBE_TIMED_OUT: Final[str] = "timeout"
+PROBE_FAILED: Final[str] = "exit-nonzero"
+
+
+@dataclass(frozen=True, slots=True)
+class ForgeProbe:
+    """One forge-CLI invocation's stdout, or the CAUSE there is none.
+
+    ``unresolved`` is empty exactly when ``stdout`` is present; it carries one
+    of the ``PROBE_*`` tokens otherwise (the timeout one suffixed with the
+    budget it exceeded, so the observation names its own number).
+    """
+
+    stdout: str | None
+    unresolved: str = ""
 
 
 def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
@@ -224,15 +247,15 @@ def _is_canonical_host(host: str) -> bool:
 def _cache_root() -> Path:
     """Resolve a writable cache dir for the visibility verdict cache.
 
-    Routes through the single :func:`teatree.hooks._hook_state.hook_state_root`
-    resolver (``T3_DATA_DIR`` else the canonical XDG data dir) so hook state does
-    not scatter across ``~/.teatree`` / ``~/.cache`` / the data dir. If the chosen
+    HOST-WIDE (:func:`teatree.hooks._hook_state.shared_hook_state_root`), not the per-worktree
+    data dir the rest of the hook state uses: the cached fact belongs to the remote
+    repo, so every checkout on this host must read the same answer. If the chosen
     root already exists as a non-directory, fall back to a sibling so the write
     still succeeds.
     """
-    from teatree.hooks._hook_state import hook_state_root  # noqa: PLC0415 — deferred: keep the cold-hook top light
+    from teatree.hooks._hook_state import shared_hook_state_root  # noqa: PLC0415 — deferred: cold-hook top
 
-    root = hook_state_root()
+    root = shared_hook_state_root()
     if root.exists() and not root.is_dir():
         return Path.home() / ".teatree-data"
     return root
@@ -309,18 +332,19 @@ def _probe_env() -> dict[str, str]:
     return {**os.environ, "PATH": _probe_search_path()}
 
 
-def run_forge_tool(tool: str, args: list[str]) -> str | None:
-    """Run ``tool`` with *args* against the augmented probe PATH; stdout, or ``None``.
+def run_forge_tool(tool: str, args: list[str]) -> ForgeProbe:
+    """Run ``tool`` with *args* against the augmented probe PATH.
 
-    ``None`` covers every way the question went unasked — the tool is not
-    installed, it exited non-zero, it timed out, the OS refused to run it. A
-    caller must read it as "could not ask", never as an answer. Shared with the
-    foreign-open-MR guard (:mod:`teatree.hooks.foreign_mr_cli`) so both forge
-    probes resolve their binary and their environment identically.
+    An absent :attr:`ForgeProbe.stdout` means the question went unasked, and
+    :attr:`ForgeProbe.unresolved` says WHICH way — the four outcomes are kept
+    apart because a caller that REFUSES on the answer has to name the cause it
+    observed instead of asserting one. Shared with the foreign-open-MR guard
+    (:mod:`teatree.hooks.foreign_mr_cli`) so both forge probes resolve their
+    binary and their environment identically.
     """
     binary = _resolve_probe_tool(tool)
     if binary is None:
-        return None
+        return ForgeProbe(stdout=None, unresolved=PROBE_ABSENT)
     try:
         result = run_allowed_to_fail(
             [binary, *args],
@@ -328,16 +352,20 @@ def run_forge_tool(tool: str, args: list[str]) -> str | None:
             env=_probe_env(),
             timeout=_PROBE_TIMEOUT_S,
         )
-    except (CommandFailedError, OSError, TimeoutExpired):
-        return None
-    return result.stdout
+    except TimeoutExpired:
+        return ForgeProbe(stdout=None, unresolved=f"{PROBE_TIMED_OUT}={_PROBE_TIMEOUT_S}s")
+    except CommandFailedError:
+        return ForgeProbe(stdout=None, unresolved=PROBE_FAILED)
+    except OSError:
+        return ForgeProbe(stdout=None, unresolved=PROBE_UNRUNNABLE)
+    return ForgeProbe(stdout=result.stdout)
 
 
 def _probe_gh(repo_path: str) -> str | None:
     stdout = run_forge_tool(
         FORGE_TOOL[GITHUB],
         ["repo", "view", repo_path, "--json", "visibility", "--jq", ".visibility"],
-    )
+    ).stdout
     if stdout is None:
         return None
     verdict = stdout.strip().upper()
@@ -349,7 +377,7 @@ def _probe_glab(repo_path: str) -> str | None:
     # parsed from the full project JSON in Python. Passing ``--jq`` makes glab
     # exit non-zero with "Unknown flag", silently defeating the carve-out for
     # every GitLab repo.
-    stdout = run_forge_tool(FORGE_TOOL[GITLAB], ["api", f"projects/{repo_path.replace('/', '%2F')}"])
+    stdout = run_forge_tool(FORGE_TOOL[GITLAB], ["api", f"projects/{repo_path.replace('/', '%2F')}"]).stdout
     if stdout is None:
         return None
     try:

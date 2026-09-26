@@ -64,6 +64,14 @@ class TokenSlotMismatchError(ValueError):
     """
 
 
+class SlackTokenMissingError(RuntimeError):
+    """A Slack read was attempted with no token configured — never "Slack returned nothing"."""
+
+    def __init__(self, method: str) -> None:
+        super().__init__(f"Cannot call Slack {method}: no Slack token configured. This is NOT an empty result.")
+        self.method = method
+
+
 def assert_bot_token(token: str) -> None:
     """Reject ``token`` if it is non-empty and lacks the ``xoxb-`` prefix."""
     if not token:
@@ -126,6 +134,7 @@ __all__ = [
     "BOT_TOKEN_RE",
     "USER_SLOT_DEGRADE_WARNING",
     "USER_TOKEN_RE",
+    "SlackTokenMissingError",
     "TokenSlotMismatchError",
     "assert_app_token",
     "assert_bot_token",

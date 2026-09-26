@@ -17,6 +17,7 @@ of whether an overlay implements ``get_gitlab_username()``.
 """
 
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -24,6 +25,7 @@ from django.test import TestCase
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.models import ScannedBroadcast
 from teatree.loop.scanner_factories import _slack_broadcasts_scanner_for
+from teatree.loop.scanner_factory_broadcast_claims import _own_author_identity
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_broadcasts import MrState
 from teatree.types import RawAPIDict
@@ -93,14 +95,15 @@ class OwnAuthorBroadcastIdentityTests(TestCase):
     """
 
     def _build_and_scan(self, backend: OverlayBackends) -> list[ScanSignal]:
-        from unittest.mock import patch  # noqa: PLC0415
-
         from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier  # noqa: PLC0415
 
         def _classify(_self: GlabGhMrStateClassifier, urls: list[str]) -> list[MrState]:
             return [MrState(url=url, merged=False, approved=False, author_username=OWN_AUTHOR) for url in urls]
 
-        with patch.object(GlabGhMrStateClassifier, "__call__", _classify):
+        with (
+            patch.object(GlabGhMrStateClassifier, "__call__", _classify),
+            patch("teatree.backends.loader.get_code_host_for_url", return_value=_FreeHost()),
+        ):
             scanner = _slack_broadcasts_scanner_for(backend)
             assert scanner is not None
             return scanner.scan()
@@ -136,14 +139,15 @@ class OwnAuthorBroadcastIdentityTests(TestCase):
             identities=("someone.else",),
         )
 
-        from unittest.mock import patch  # noqa: PLC0415
-
         from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier  # noqa: PLC0415
 
         def _classify(_self: GlabGhMrStateClassifier, urls: list[str]) -> list[MrState]:
             return [MrState(url=url, merged=False, approved=False, author_username=OWN_AUTHOR) for url in urls]
 
-        with patch.object(GlabGhMrStateClassifier, "__call__", _classify):
+        with (
+            patch.object(GlabGhMrStateClassifier, "__call__", _classify),
+            patch("teatree.backends.loader.get_code_host_for_url", return_value=_FreeHost()),
+        ):
             scanner = _slack_broadcasts_scanner_for(backend)
             assert scanner is not None
             signals = scanner.scan()
@@ -152,6 +156,18 @@ class OwnAuthorBroadcastIdentityTests(TestCase):
         # #113/#86: a colleague MR is dispatched but NOT :eyes:-claimed at
         # discovery — the claim reaction belongs to review-DONE.
         assert (CHANNEL, TS_A, "eyes") not in messaging.react_calls
+
+
+class _FreeHost:
+    """A code host whose MR carries no note and no approval — the forge probe answers FREE (#159)."""
+
+    def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
+        _ = (repo, pr_iid)
+        return []
+
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> dict[str, object]:
+        _ = (repo, pr_iid)
+        return {"approvals_left": 0, "approved_by": [], "unresolved_resolvable": 0}
 
 
 @dataclass
@@ -165,8 +181,45 @@ class _FakeHost:
 class OwnAuthorIdentityResolutionTests(TestCase):
     """``_own_author_identity`` mirrors ``ReviewerPrsScanner._resolve_identities``."""
 
+    def test_factory_wires_configured_owner_aliases_into_the_seeding_guard(self) -> None:
+        messaging = _FakeMessaging()
+        overlay = _FakeOverlay(config=_EmptyUsernameConfig(channel_id=CHANNEL))
+        backend = OverlayBackends(name="acme", overlay=overlay, messaging=messaging, identities=("bot",))
+
+        with patch(
+            "teatree.loop.scanner_factories._user_identity_aliases_for_overlay",
+            return_value=(OWN_AUTHOR, "owner-alias"),
+        ) as aliases:
+            scanner = _slack_broadcasts_scanner_for(backend)
+
+        assert scanner is not None
+        assert scanner.owner_identities == (OWN_AUTHOR, "owner-alias")
+        aliases.assert_called_once_with("acme")
+
+    def test_factory_fails_closed_on_an_unreadable_owner_alias_setting(self) -> None:
+        messaging = _FakeMessaging()
+        overlay = _FakeOverlay(config=_EmptyUsernameConfig(channel_id=CHANNEL))
+        backend = OverlayBackends(name="acme", overlay=overlay, messaging=messaging)
+
+        with (
+            self.assertLogs("teatree.loop.scanner_factory_config", level="WARNING") as logs,
+            patch(
+                "teatree.loop.scanner_factory_config.get_effective_settings",
+                side_effect=RuntimeError("settings resolution failure"),
+            ),
+        ):
+            scanner = _slack_broadcasts_scanner_for(backend)
+
+        assert scanner is not None
+        assert scanner.owner_identities == ()
+        assert logs.output == [
+            (
+                "WARNING:teatree.loop.scanner_factory_config:"
+                "Failed to resolve user_identity_aliases for 'acme'; defaulting to empty"
+            )
+        ]
+
     def test_identities_take_precedence(self) -> None:
-        from teatree.loop.scanner_factories import _own_author_identity  # noqa: PLC0415
 
         backend = OverlayBackends(
             name="acme",
@@ -177,7 +230,6 @@ class OwnAuthorIdentityResolutionTests(TestCase):
         assert _own_author_identity(backend) == OWN_AUTHOR
 
     def test_falls_back_to_first_host_current_user(self) -> None:
-        from teatree.loop.scanner_factories import _own_author_identity  # noqa: PLC0415
 
         backend = OverlayBackends(
             name="acme",
@@ -188,7 +240,6 @@ class OwnAuthorIdentityResolutionTests(TestCase):
         assert _own_author_identity(backend) == OWN_AUTHOR
 
     def test_empty_when_no_identity_and_no_host_user(self) -> None:
-        from teatree.loop.scanner_factories import _own_author_identity  # noqa: PLC0415
 
         backend = OverlayBackends(name="acme", identities=(), hosts=())
 

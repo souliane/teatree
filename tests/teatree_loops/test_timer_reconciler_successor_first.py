@@ -15,7 +15,7 @@ from django_tasks_db.models import DBTaskResult
 
 from teatree.loops import timer_reconciler
 
-_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops"]}}
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
 
 def _boom(*_args: object, **_kwargs: object) -> object:

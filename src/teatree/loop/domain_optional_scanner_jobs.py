@@ -20,11 +20,8 @@ from teatree.loop.scanners import BoardReconcileScanner, Scanner
 
 
 def _arch_review_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Periodic architectural-review scanner (core platform cadence)."""
-    scanner = _architectural_review_scanner_for(backend)
-    if scanner is None:
-        return []
-    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
+    """Periodic architectural-review scanner — core platform cadence, never opted out here."""
+    return [_ScannerJob(scanner=_architectural_review_scanner_for(backend), overlay=backend.name)]
 
 
 def _failed_e2e_scanner_for(backend: OverlayBackends) -> Scanner | None:
@@ -72,12 +69,11 @@ def _issue_implementer_jobs_for_overlay(backend: OverlayBackends) -> list[_Scann
 
 
 def _issue_disposition_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay issue-disposition scanner behind the default-OFF gate (#2122).
+    """Issue-disposition scanner scoped to the canonical core overlay (#2122).
 
-    Empty by default — :func:`_issue_disposition_scanner_for` returns ``None``
-    unless the overlay opts in (``auto_disposition_enabled``) — so this domain
-    slice contributes nothing to either fan-out path until an overlay enables
-    the triage scanner, keeping the registry/legacy parity green.
+    :func:`_issue_disposition_scanner_for` returns ``None`` unless the overlay is
+    the canonical core one, keeping other people's backlogs outside this domain
+    slice without a configurable admission gate.
     """
     scanner = _issue_disposition_scanner_for(backend)
     if scanner is None:
@@ -86,13 +82,7 @@ def _issue_disposition_jobs_for_overlay(backend: OverlayBackends) -> list[_Scann
 
 
 def _triage_assessor_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
-    """Per-overlay triage-assessor scanner behind the default-OFF gate.
-
-    Empty by default — :func:`_triage_assessor_scanner_for` returns ``None`` unless
-    the overlay opts in (``triage_assessor_enabled``) — so this domain slice
-    contributes nothing to either fan-out path until an overlay enables the
-    assessor, keeping the registry/legacy parity green.
-    """
+    """Per-overlay triage-assessor scanner, empty for an overlay with no code host."""
     scanner = _triage_assessor_scanner_for(backend)
     if scanner is None:
         return []

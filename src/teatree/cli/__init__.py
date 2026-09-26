@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 import typer
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from teatree.config import OverlayEntry
 
 import teatree.cli.admin as _admin
@@ -55,11 +57,10 @@ from teatree.cli.directive import directive_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.dogfood import dogfood_app
 from teatree.cli.dream import dream_app
-from teatree.cli.eval import eval_app
-from teatree.cli.eval.skill_command_lane import register_command_registry_provider
 from teatree.cli.goal import goal_app
 from teatree.cli.hook import hook_app
 from teatree.cli.identities import identities_app
+from teatree.cli.lazy_group import lazy_typer_group
 from teatree.cli.loop import loop_app
 from teatree.cli.loops import loops_app
 from teatree.cli.mcp import mcp_app
@@ -73,6 +74,7 @@ from teatree.cli.prompts import prompts_app
 from teatree.cli.recover import recover_app
 from teatree.cli.review import mcp_seam as _review_mcp_seam
 from teatree.cli.review import review_app, review_request_app
+from teatree.cli.settings import settings_app
 from teatree.cli.setup import setup_app
 from teatree.cli.slack.listen import slack_app
 from teatree.cli.task_alias import task_app
@@ -191,7 +193,42 @@ app.add_typer(ci_app, name="ci")
 app.add_typer(codex_app, name="codex")
 app.add_typer(review_app, name="review")
 app.add_typer(review_request_app, name="review-request")
-app.add_typer(eval_app, name="eval")
+
+
+def _load_eval_app() -> "typer.Typer":
+    """Import the real ``t3 eval`` app, and register the seam it owns on the way.
+
+    ``register_command_registry_provider`` used to be called at this module's import
+    time, which is what made the eval package a startup dependency in the first
+    place. Moving the call here keeps the seam filled for every consumer that can
+    reach it - the provider is read by ``build_command_registry``, and the only route
+    to that is the ``skill-command-validity`` lane, which is itself an ``eval``
+    subcommand and therefore cannot run without this loader having run first.
+    """
+    from teatree.cli.eval import eval_app  # noqa: PLC0415 — deferred: THE point of this module's laziness
+    from teatree.cli.eval.skill_command_lane import (  # noqa: PLC0415 — deferred: same package, same reason
+        register_command_registry_provider,
+    )
+
+    register_command_registry_provider(_build_skill_command_registry)
+    return eval_app
+
+
+def _lazy_eval_app() -> "typer.Typer":
+    """A stand-in carrying only what the parent's ``--help`` prints.
+
+    The help text is duplicated from ``teatree.cli.eval.app`` deliberately: reading it
+    from there would import the module this exists to defer. ``test_cli_lazy_eval.py``
+    pins the two strings equal, so a reworded help cannot drift unnoticed.
+    """
+    return typer.Typer(
+        cls=lazy_typer_group(_load_eval_app),
+        no_args_is_help=False,
+        help="Behavioral eval harness — bare `t3 eval` runs the whole suite; subcommands target one lane.",
+    )
+
+
+app.add_typer(_lazy_eval_app(), name="eval")
 app.add_typer(doctor_app, name="doctor")
 app.add_typer(tool_app, name="tool")
 app.add_typer(hook_app, name="hook")
@@ -216,6 +253,7 @@ app.add_typer(mutation_app, name="mutation")
 app.add_typer(outer_app, name="outer")
 app.add_typer(directive_app, name="directive")
 app.add_typer(peer_app, name="peer")
+app.add_typer(settings_app, name="settings")
 
 
 # ── Django-dependent overlay command groups ───────────────────────────
@@ -328,7 +366,9 @@ def _build_command_catalogue() -> list[CommandRecord]:
     return command_catalogue(_assemble_teatree_app())
 
 
-register_command_registry_provider(_build_skill_command_registry)
+# The eval-owned seam is filled by `_load_eval_app` instead: registering it here is
+# what forced the eval package to be a startup import. The catalogue seam stays eager
+# because `teatree.mcp.command_catalogue` is cheap and outside that package.
 register_command_catalogue_provider(_build_command_catalogue)
 
 
@@ -371,8 +411,15 @@ def _overlay_editable_from_source(top_package: str) -> bool:
 def _reinstall_editable_if_needed() -> None:
     """Re-editable teatree + every overlay whose distribution is not editable.
 
-    The ``packages_distributions()`` map is resolved ONCE (it is invariant across
-    overlays) instead of per iteration.
+    The ``packages_distributions()`` map is resolved AT MOST once (it is invariant
+    across overlays) and only once an overlay actually needs it. It is a scan of every
+    installed distribution - MEASURED at 838ms - and it is read on exactly one branch:
+    the lookup for an overlay that is NOT already editable from source. Since
+    `_ensure_editable_if_contributing` runs on EVERY `t3` invocation whenever
+    `contribute` is on, a steady state where every overlay is already editable paid
+    that scan forever to answer a question it never asked. Deferring it into the loop
+    changes no outcome - the repair still happens for any overlay that needs it - it
+    only stops charging the healthy case.
     """
     if not IntrospectionHelpers.editable_info("teatree")[0]:
         repo = DoctorService.find_teatree_repo()
@@ -383,11 +430,13 @@ def _reinstall_editable_if_needed() -> None:
 
     from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: keeps CLI startup light
 
-    dist_map = packages_distributions()
+    dist_map: Mapping[str, list[str]] | None = None
     for overlay_inst in get_all_overlays().values():
         top_package = type(overlay_inst).__module__.split(".", maxsplit=1)[0]
         if _overlay_editable_from_source(top_package):
             continue
+        if dist_map is None:
+            dist_map = packages_distributions()
         dist_names = dist_map.get(top_package, [top_package])
         overlay_dist = dist_names[0] if dist_names else top_package
         if IntrospectionHelpers.editable_info(overlay_dist)[0]:

@@ -1,5 +1,6 @@
 """The SDK-message mapper folds hook events into `EvalRun.gate_events`."""
 
+import dataclasses
 from pathlib import Path
 
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock
@@ -7,8 +8,8 @@ from claude_agent_sdk.types import HookEventMessage
 
 from teatree.eval import message_mapping
 from teatree.eval.message_mapping import _block_to_dict, eval_run_from_messages
-from teatree.eval.models import EvalSpec, Matcher
-from teatree.eval.report import evaluate
+from teatree.eval.models import EvalSpec, Matcher, PlanBeforeToolMatcher
+from teatree.eval.report import evaluate, render_html, render_text
 from teatree.eval.transcript import (
     StreamJsonEvent,
     extract_terminal_reason,
@@ -70,6 +71,59 @@ def test_hook_response_stop_block_becomes_a_gate_event() -> None:
     assert any(event.is_stop_block for event in run.gate_events)
     # The hook event never leaks into the tool-call stream the grader reads.
     assert [c.name for c in run.tool_calls] == ["Bash"]
+
+
+def test_hook_response_preserves_pretool_audit_context() -> None:
+    messages = [
+        HookEventMessage(
+            subtype="hook_response",
+            hook_event_name="PreToolUse",
+            data={
+                "hook_event": "PreToolUse",
+                "outcome": "allow",
+                "output": '{"permissionDecision":"allow"}',
+                "sequence": 2,
+                "tool_name": "Bash",
+                "tool_use_id": "call-2",
+                "gate_id": "visible_plan_gate",
+                "assistant_text": "Plan — PROJ-4521: implement, test, verify.",
+            },
+        ),
+        _result(),
+    ]
+
+    event = eval_run_from_messages(_spec(), messages).gate_events[0]
+    assert event.sequence == 2
+    assert event.tool_name == "Bash"
+    assert event.tool_use_id == "call-2"
+    assert event.gate_id == "visible_plan_gate"
+    assert event.assistant_text == "Plan — PROJ-4521: implement, test, verify."
+
+
+def test_sdk_hook_response_is_enriched_from_the_governed_tool_turn() -> None:
+    spec = dataclasses.replace(
+        _spec(),
+        matchers=(PlanBeforeToolMatcher(governed_tools=("Bash",), patterns=(r"PROJ-4521",)),),
+    )
+    messages = [
+        AssistantMessage(
+            content=[
+                TextBlock(text="Plan — PROJ-4521: inspect, implement, and verify."),
+                ToolUseBlock(id="t1", name="Bash", input={"command": "echo hi"}),
+            ],
+            model="haiku",
+        ),
+        HookEventMessage(
+            subtype="hook_response",
+            hook_event_name="PreToolUse",
+            data={"hook_event": "PreToolUse", "outcome": "allow", "output": "allowed"},
+        ),
+        _result(),
+    ]
+
+    result = evaluate(spec, eval_run_from_messages(spec, messages))
+
+    assert result.passed
 
 
 def test_hook_started_is_dropped_and_not_a_gate_event() -> None:
@@ -154,3 +208,56 @@ def test_a_captured_run_grades_green() -> None:
     ]
     result = evaluate(_spec(), eval_run_from_messages(_spec(), messages))
     assert result.passed
+
+
+class TestTerminalErrorTextReachesTheReport:
+    """A provider/run error's own message survives into the run and the rendered report.
+
+    The non-CLI lanes (`pydantic_ai` / `anthropic_api`) report a failed run as an
+    error-shaped terminal message carrying `str(exc)` and yield no tool blocks and no
+    text, so the trajectory is empty. Dropping that message left `error_during_execution`
+    with an empty transcript and the cause nowhere in any lane artifact.
+    """
+
+    @staticmethod
+    def _error_result(message: str) -> ResultMessage:
+        return ResultMessage(
+            subtype="error_during_execution",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=True,
+            num_turns=3,
+            session_id="s",
+            total_cost_usd=0.0,
+            result=message,
+        )
+
+    def test_error_message_lands_on_raw_stderr(self) -> None:
+        run = eval_run_from_messages(_spec(), [self._error_result("Exceeded maximum retries (2)")])
+
+        assert run.terminal_reason == "error_during_execution"
+        assert run.is_error
+        assert run.raw_stderr == "Exceeded maximum retries (2)"
+
+    def test_a_clean_run_carries_no_stderr(self) -> None:
+        run = eval_run_from_messages(_spec(), [_result()])
+
+        assert run.raw_stderr == ""
+
+    def test_text_report_shows_the_cause_beside_the_failed_matcher(self) -> None:
+        spec = _spec()
+        results = [evaluate(spec, eval_run_from_messages(spec, [self._error_result("boom: the provider refused")]))]
+
+        rendered = render_text(results)
+
+        assert "run errored: error_during_execution" in rendered
+        assert "boom: the provider refused" in rendered
+
+    def test_html_report_shows_the_cause_beside_the_failed_matcher(self) -> None:
+        spec = _spec()
+        results = [evaluate(spec, eval_run_from_messages(spec, [self._error_result("boom: the provider refused")]))]
+
+        rendered = render_html(results)
+
+        assert "run errored:" in rendered
+        assert "boom: the provider refused" in rendered

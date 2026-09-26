@@ -56,11 +56,11 @@ def test_every_promoted_code_default_equals_the_shipped_file_value() -> None:
     # The provider hands the resolver EVERY promoted key off the OverlayConfig class
     # default, declared or not, and that tier sits ABOVE `defaults.toml` — so with any
     # overlay active the file's value for these nine keys is never the one in force.
-    # `test_toml_default_tier.py` exempts them from its no-unapproved-divergence guard, and
+    # `test_declared_default_base.py` exempts them from its no-unapproved-divergence guard, and
     # unlike the AUTONOMY exemption beside it nothing bounded that hole: a maintainer
-    # following the file's own "HAND-EDITABLE. Edit a value here and the box serves it"
-    # header ships a value the box does not read, with no test going red. This is the
-    # bound — the two sources agree by construction or this fails.
+    # moving the file's value for one of them ships a value the box does not read, with
+    # no test going red. This is the bound — the two sources agree by construction or this
+    # fails.
     shipped = flatten_settings_table(tomllib.loads(_DEFAULTS_TOML.read_text(encoding="utf-8"))["teatree"])
     config = OverlayConfig()
     drift = {

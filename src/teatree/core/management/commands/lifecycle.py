@@ -3,10 +3,11 @@
 import logging
 from typing import Annotated, TypedDict
 
+import click
 import typer
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
-from django_typer.management import command, initialize
+from django_typer.management import DTCommand, command, initialize
 
 from teatree.core.gates.review_context_gate import ReviewContextError, check_review_context
 from teatree.core.gates.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
@@ -31,11 +32,34 @@ class RecordE2ERunResult(TypedDict, total=False):
     ticket_id: int
     head_sha: str
     result: str
+    target: str
     posted_url: str
 
 
 class ReviewerAttestationError(RuntimeError):
     """A ``reviewing`` phase visit was attempted without a valid reviewer identity."""
+
+
+def _capture_e2e_target(ctx: click.Context, _param: click.Parameter, value: str) -> str:
+    """Keep ``--target`` in Click's context for the grouped evidence write."""
+    ctx.meta["e2e_target"] = value
+    return value
+
+
+class _RecordE2ERunCommand(DTCommand):
+    """Expose target provenance without widening the command callback."""
+
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        return [
+            *super().get_params(ctx),
+            click.Option(
+                ["--target"],
+                default="unknown",
+                callback=_capture_e2e_target,
+                expose_value=False,
+                help="Environment target where the E2E run executed: dev, qa, local, or stack.",
+            ),
+        ]
 
 
 # #4234: `record-e2e-run` RETURNS its refusal so the MCP twin keeps the dict; the base
@@ -216,7 +240,7 @@ class Command(RefusalExitTyperCommand):
         ticket.record_review_context(work_item, document_list, analysis)
         return f"Recorded review context for ticket {ticket.pk} ({len(document_list)} document(s))"
 
-    @command(name="record-e2e-run")
+    @command(name="record-e2e-run", cls=_RecordE2ERunCommand)
     def record_e2e_run(
         self,
         ticket_id: str,
@@ -247,7 +271,10 @@ class Command(RefusalExitTyperCommand):
         row in place (idempotent). A red run, or a green run with no
         ``--posted-url``, records provenance without satisfying the gate.
         """
-        from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415 — deferred: ORM/app-registry
+        from teatree.core.models.e2e_mandatory_run import (  # noqa: PLC0415 — deferred: ORM/app-registry
+            E2eMandatoryRun,
+            E2eRunEvidence,
+        )
         from teatree.core.models.merge_clear import is_commit_sha  # noqa: PLC0415 — deferred: ORM/app-registry
         from teatree.core.models.worktree import Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
@@ -261,17 +288,29 @@ class Command(RefusalExitTyperCommand):
                 "  record-e2e-run refused: --head-sha must be a full 40-char hex SHA of the reviewed tree."
             )
             raise SystemExit(1)
-        run = E2eMandatoryRun.record(ticket=ticket, head_sha=head_sha, spec=spec, result=result, posted_url=posted_url)
+        target = str(click.get_current_context().meta.get("e2e_target", E2eMandatoryRun.Target.UNKNOWN))
+        try:
+            run = E2eMandatoryRun.record_evidence(
+                ticket=ticket,
+                head_sha=head_sha,
+                spec=spec,
+                evidence=E2eRunEvidence(result=result, posted_url=posted_url, target=target),
+            )
+        except ValueError as exc:
+            self.stderr.write(f"  record-e2e-run refused: {exc}")
+            raise SystemExit(1) from exc
         Worktree.objects.stamp_e2e_run(int(ticket.pk))
         posted_note = "" if run.posted_url else " (UNPOSTED — does not satisfy the gate until --posted-url is set)"
         self.stdout.write(
-            f"  recorded E2E run ({run.result}) for ticket {ticket.pk} @ {run.head_sha[:8]} ({run.spec}){posted_note}"
+            f"  recorded E2E run ({run.result}, target={run.target}) for ticket {ticket.pk} "
+            f"@ {run.head_sha[:8]} ({run.spec}){posted_note}"
         )
         return {
             "recorded": True,
             "ticket_id": int(ticket.pk),
             "head_sha": run.head_sha,
             "result": run.result,
+            "target": run.target,
             "posted_url": run.posted_url,
         }
 

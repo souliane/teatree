@@ -47,6 +47,15 @@ the halt is manufactured rather than observed. :func:`stall_fingerprints` theref
 them from the stall comparison; the attempt still burns iteration budget and still
 escalates at the cap.
 
+A fourth axis: harness fault
+----------------------------
+:func:`is_harness_fault` answers "did the harness even get the work running?". It feeds
+:mod:`teatree.core.factory.operational_health` alone, which trips RED on a RUN of them:
+one is noise, a run of them is a factory that dispatches and completes nothing. It is
+NOT :func:`is_environmental` — :attr:`FailureKind.HARNESS_CONTROL_TIMEOUT` is a defect in
+a path teatree owns, and calling it weather is exactly what let 53 of 60 tasks die
+unattended on a deployed box.
+
 Membership is decided by that absence-of-a-cause test, NOT by whether the recorded text
 happens to repeat: ``no_result_envelope`` is a module constant
 (:data:`teatree.agents.envelope_refusal.NO_ENVELOPE_ERROR`), so it always self-collides on
@@ -84,6 +93,22 @@ SUPERSEDED_PREFIX = "superseded: "
 #: Prefix an agent-initiated failure that named no cause of its own carries.
 AGENT_ABANDONED_PREFIX = "agent_abandoned: "
 
+#: Prefix a review refused for a pull request with no recorded head carries — written by
+#: both the pre-dispatch gate and the post-hoc recorder, so one defect keeps one name.
+REVIEW_UNRECORDABLE_PREFIX = "review_unrecordable: "
+
+#: What a recorded reason carries when the run's own CONVERSATION ran out rather than the work
+#: failing: Claude Code reached for a compaction teatree blocks, or the context window had no room
+#: left. The runner stamps its reasons FROM these, so the requeue decision below cannot drift from
+#: the wording it reads.
+COMPACTION_BLOCKED_MARKER = "compaction_blocked: "
+CONTEXT_EXHAUSTED_MARKER = "context_exhausted"
+
+#: The prefix the runner stamps on a failed run's recorded reason, and the anchor the markers
+#: above sit immediately behind. Shared so ``teatree.agents.runner_failure_taxonomy`` stamps the
+#: exact token the requeue decision below reads back.
+RESULT_ERROR_MARKER = "result_error:"
+
 #: Prefix a review refusal carries when the PR head advanced past the tree the review
 #: was dispatched for, so the reviewer judged neither (souliane/teatree#4737).
 HEAD_SUPERSEDED_PREFIX = "head_superseded: "
@@ -103,6 +128,7 @@ class FailureKind(models.TextChoices):
     HARNESS_CONFIG_INVALID = "harness_config_invalid", "Invalid harness configuration"
     OVERLAY_UNKNOWN = "overlay_unknown", "Overlay not installed or misnamed"
     HARNESS_CRASH = "harness_crash", "Harness crashed"
+    HARNESS_CONTROL_TIMEOUT = "harness_control_timeout", "Harness control request timed out"
     OUTAGE = "outage", "Network or API outage"
     RESULT_ERROR = "result_error", "Run ended without a clean result"
     RESULT_SCHEMA_INVALID = "result_schema_invalid", "Result envelope violated the schema"
@@ -112,6 +138,7 @@ class FailureKind(models.TextChoices):
     EVIDENCE_MISSING = "evidence_missing", "Required evidence missing"
     RECORDING_REFUSED = "recording_refused", "Recording refused by a gate"
     PLAN_MISSING = "plan_missing", "No plan recorded before an implementing dispatch"
+    REVIEW_UNRECORDABLE = "review_unrecordable", "Review verdict could not be recorded"
     ISSUE_CLOSED = "issue_closed", "Issue already closed on the forge"
     CANCELLED = "cancelled", "Cancelled by an operator"
     SUPERSEDED = "superseded", "Superseded by rework"
@@ -170,6 +197,15 @@ RECOVERY: Mapping[str, Recovery] = {
     # the remedy is a different phase (planning), which `unplanned_ticket_redispatch` schedules off
     # this very name rather than off the reason text (souliane/teatree#4578).
     FailureKind.PLAN_MISSING: Recovery(_HALT, environmental=False),
+    # Same shape, same reason: re-running the SAME phase on the SAME ticket reproduces it
+    # exactly, because the missing pull-request head is a fact about the ticket rather than
+    # about the run. Not CORRECTIVE_RETRY — nothing a reviewer does can supply a head it was
+    # never given, so a correction here is the retry-into-the-same-wall this table forbids.
+    FailureKind.REVIEW_UNRECORDABLE: Recovery(_HALT, environmental=False),
+    # A control request the CLI child never answered: retrying walks into the same
+    # session-start deadline, and the remedy is a path teatree owns — so it is neither
+    # retried nor weather, which is what lets `stall_kinds` count two in a row.
+    FailureKind.HARNESS_CONTROL_TIMEOUT: Recovery(_HALT, environmental=False),
     # ISSUE_CLOSED is HALT for the same reason and one more: the remedy is a DECISION
     # (reopen the issue, or ignore the ticket), and the tick's disposition scan takes
     # the ticket out of the population on its own — so a retry would burn budget racing
@@ -185,6 +221,13 @@ RECOVERY: Mapping[str, Recovery] = {
     # Re-running re-reviews the head this task pinned; the recovery is a fresh dispatch.
     FailureKind.HEAD_SUPERSEDED: Recovery(_HALT, environmental=True),
 }
+
+#: Kinds where the HARNESS itself failed to run the work — the agent never got to be
+#: wrong about anything. Distinct from :data:`_ENVIRONMENTAL` on purpose: a control
+#: timeout is a defect in a path teatree owns, so it is deterministic to the operator
+#: while still being a harness fault to the health aggregator, which trips on a RUN of
+#: them (a factory dispatching and crashing is a factory completing nothing).
+_HARNESS_FAULT: frozenset[str] = frozenset({FailureKind.HARNESS_CRASH, FailureKind.HARNESS_CONTROL_TIMEOUT})
 
 #: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT
 #: fingerprint collision — ``no_result_envelope``'s constant reason self-collides,
@@ -231,7 +274,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.AGENT_ABANDONED, (AGENT_ABANDONED_PREFIX,)),
     (FailureKind.LEASE_LOST, ("stuck_loop: lease lost",)),
     (FailureKind.RUNTIME_CEILING, ("stuck_loop:",)),
-    # The four ``LimitCause`` markers a limit-killed run records (``LimitMatch.as_reason``),
+    # The ``LimitCause`` markers a limit-killed run records (``LimitMatch.as_reason``),
     # plus the legacy ``usage_limit:`` spelling still on stored rows. API-credit exhaustion
     # is a drained CREDENTIAL, not a usage window — its remedy is billing, not waiting.
     (FailureKind.CREDENTIAL_EXHAUSTED, ("api_credit:",)),
@@ -239,12 +282,15 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
         FailureKind.USAGE_LIMIT_PARKED,
         ("limit_parked:", "subscription_session:", "subscription_weekly:", "rate_limit:", "usage_limit:"),
     ),
+    # After the park row: a parked budget stop is a usage window, a terminal one a drained credential.
+    (FailureKind.CREDENTIAL_EXHAUSTED, ("provider_budget:",)),
     (FailureKind.OUTAGE, ("outage_death:",)),
-    (FailureKind.RESULT_ERROR, ("result_error:",)),
+    (FailureKind.RESULT_ERROR, (RESULT_ERROR_MARKER,)),
     (FailureKind.PROVISION_FAILED, ("provision_failed:",)),
     (FailureKind.LANDING_UNVERIFIED, ("landing_unverified:",)),
     (FailureKind.NO_RESULT_ENVELOPE, ("no_result_envelope:",)),
     (FailureKind.PLAN_MISSING, ("plan_missing:",)),
+    (FailureKind.REVIEW_UNRECORDABLE, (REVIEW_UNRECORDABLE_PREFIX,)),
     (FailureKind.ISSUE_CLOSED, ("issue_closed:",)),
     (FailureKind.CREDENTIAL_EXHAUSTED, ("accounts are exhausted", "credit balance is too low")),
     # ``CredentialSpec._missing_message`` — both its branches carry this phrase.
@@ -253,6 +299,10 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # Ahead of the traceback matcher: an ``ImproperlyConfigured`` overlay lookup arrives AS a
     # traceback, and calling it a crash hides a config defect behind an environmental name.
     (FailureKind.OVERLAY_UNKNOWN, ("unknown overlay ", "not found. available:")),
+    # Same reason, same position: the SDK's own message for a CLI child that never answered
+    # a control request. It arrives as a traceback, and the remedy is a slow session-start
+    # path we own, not a wait — so ``harness_crash`` would file a config defect as weather.
+    (FailureKind.HARNESS_CONTROL_TIMEOUT, ("control request timeout",)),
     (FailureKind.EVIDENCE_MISSING, ("missing required evidence",)),
     (
         FailureKind.RESULT_SCHEMA_INVALID,
@@ -285,6 +335,24 @@ def classify_failure(error: str) -> str:
     return FailureKind.UNCLASSIFIED
 
 
+def exhausted_the_conversation(error: str) -> bool:
+    """Whether *error* says the run's own conversation ran out, so a requeue must open a new one.
+
+    Orthogonal to :func:`classify_failure`: both markers classify as
+    :attr:`FailureKind.RESULT_ERROR` and earn a retry, and this decides what that retry CARRIES.
+    Resuming a conversation with no room left re-pays its whole history into the same wall.
+
+    Anchored on the stamped :data:`RESULT_ERROR_MARKER` the runner writes the marker behind,
+    never loose in the text: a transient failure whose CLI detail merely QUOTES a marker — a test
+    name, a grep line — would otherwise be read as an exhaustion and lose a resume it should keep.
+    """
+    haystack = error.casefold().strip()
+    if not haystack.startswith(RESULT_ERROR_MARKER):
+        return False
+    stamped = haystack.removeprefix(RESULT_ERROR_MARKER).lstrip()
+    return stamped.startswith((COMPACTION_BLOCKED_MARKER, CONTEXT_EXHAUSTED_MARKER))
+
+
 def recovery_strategy(kind: str) -> RecoveryStrategy:
     """What *kind* has earned. A kind this build cannot place HALTs — never auto-reopened."""
     recovery = RECOVERY.get(kind)
@@ -299,6 +367,15 @@ def is_environmental(kind: str) -> bool:
     """
     recovery = RECOVERY.get(kind)
     return recovery is not None and recovery.environmental
+
+
+def is_harness_fault(kind: str) -> bool:
+    """Whether *kind* means the harness never got the work running.
+
+    The health axis only — see :data:`_HARNESS_FAULT` on why this is neither the
+    operator axis nor the requeue predicate.
+    """
+    return kind in _HARNESS_FAULT
 
 
 def is_causeless(kind: str) -> bool:
@@ -353,6 +430,7 @@ __all__ = [
     "CANCELLED_PREFIX",
     "LEASE_EXPIRED_PREFIX",
     "RECOVERY",
+    "REVIEW_UNRECORDABLE_PREFIX",
     "SUPERSEDED_PREFIX",
     "FailureKind",
     "Recovery",
@@ -360,6 +438,7 @@ __all__ = [
     "classify_failure",
     "is_causeless",
     "is_environmental",
+    "is_harness_fault",
     "recovery_strategy",
     "stall_fingerprints",
     "stall_kinds",

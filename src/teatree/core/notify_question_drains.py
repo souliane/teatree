@@ -34,13 +34,22 @@ import datetime as dt
 import json
 import logging
 import os
-from collections.abc import Sequence
+import threading
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from functools import reduce
+from operator import or_
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core.loop_lease_liveness import namespace_is_proven
 from teatree.core.modelkit.notify_policy import NotifyAudience
-from teatree.core.models import BotPing, DeferredQuestion
+from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, RESURFACE_INTERVAL_HOURS, bump_due, reask_key
+from teatree.core.models import BotPing, DeferredQuestion, LoopLease
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome
 from teatree.core.notify_types import NotifyOptions, NotifyReason
 
@@ -86,19 +95,136 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: How long one backlog-digest bucket lasts. The digest's idempotency key is the
-#: bucket index, so the ``BotPing`` ledger collapses every tick inside a bucket to
-#: a single delivered message and a new bucket is the next nag.
-RESURFACE_INTERVAL_HOURS = 24
-
 #: How many questions one re-ask bucket bumps in their own Slack threads. The
 #: digest can name a hundred rows in one message and none of them is answerable
 #: there; five bumps are five threads the owner can actually reply into, which is
 #: the number that decides how fast the backlog can shrink.
 _REASK_BATCH = 5
 
-#: Prefix of the ``BotPing`` idempotency key :func:`reask_escalated_questions` writes.
-_REASK_KEY_PREFIX = "reask:"
+_MIRROR_KEY_PREFIX = "mirror-deferred-question:"
+_DIGEST_KEY_PREFIX = "question-backlog-digest:"
+
+#: Owner DMs the four drains may send in any rolling hour; what the hour cannot carry waits for the next one.
+OWNER_QUESTION_PINGS_PER_HOUR = 6
+_CEILING_WINDOW = dt.timedelta(hours=1)
+
+_QUESTION_PING_KEY_PREFIXES = (_RESURFACE_KEY_PREFIX, _MIRROR_KEY_PREFIX, _DIGEST_KEY_PREFIX, REASK_KEY_PREFIX)
+
+#: One sender across every process: a live holder keeps it for its whole send, a dead one frees it.
+_QUESTION_PING_SLOT = "work:owner-question-ping"
+_QUESTION_PING_SESSION_PREFIX = "question-ping:"
+#: ``starttime`` is field 22 of ``/proc/<pid>/stat``; the fields after the ``)``-closed comm start at field 3.
+_PROCFS_STARTTIME_INDEX = 19
+#: How long a sender whose liveness this venue cannot verify keeps the slot.
+_QUESTION_PING_SLOT_TTL_SECONDS = 120
+#: Threads of one process share its pid, which the slot's liveness check cannot tell apart.
+_QUESTION_PING_THREAD_GUARD = threading.Lock()
+
+
+def _question_ping_keys() -> Q:
+    return reduce(or_, (Q(idempotency_key__startswith=prefix) for prefix in _QUESTION_PING_KEY_PREFIXES))
+
+
+def _in_flight(now: dt.datetime) -> Q:
+    # In-flight sends hold their slot past the lease; a crashed one frees it at the send path's staleness bound.
+    return Q(status=BotPing.Status.SENDING, posted_at__gt=now - BotPing.SENDING_STALE_AFTER)
+
+
+def _question_pings_left(*, reserved: int) -> int:
+    now = timezone.now()
+    delivered = Q(
+        status__in=(BotPing.Status.SENT, BotPing.Status.SENT_UNVERIFIED),
+        posted_at__gt=now - _CEILING_WINDOW,
+    )
+    spent = BotPing.objects.filter(_question_ping_keys(), delivered | _in_flight(now)).count()
+    return OWNER_QUESTION_PINGS_PER_HOUR - spent - reserved
+
+
+def _first_post_reserve() -> int:
+    """Slots a nag leaves for never-posted questions — capped at one poster tick so a stuck poster cannot mute it."""
+    return min(DeferredQuestion.unmirrored_pending().count(), _MAX_MIRRORS_PER_TICK)
+
+
+@contextmanager
+def _question_ping_slot(*, reserved: int = 0) -> Iterator[bool]:
+    if not _QUESTION_PING_THREAD_GUARD.acquire(blocking=False):
+        yield False
+        return
+    try:
+        with _held_question_ping_slot() as held:
+            open_slot = held and _question_pings_left(reserved=reserved) > 0
+            if held and not open_slot:
+                logger.info(
+                    "Owner question pings are at %d this hour; the backlog waits for the next slot",
+                    OWNER_QUESTION_PINGS_PER_HOUR,
+                )
+            yield open_slot
+    finally:
+        _QUESTION_PING_THREAD_GUARD.release()
+
+
+def _process_start_token(pid: int) -> str:
+    """When *pid* started, from procfs, so a pid reused by a later process reads differently; ``""`` if unreadable."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    fields = stat.rpartition(")")[2].split()
+    return fields[_PROCFS_STARTTIME_INDEX] if len(fields) > _PROCFS_STARTTIME_INDEX else ""
+
+
+def _pid_names_a_later_process(session: str) -> bool:
+    pid_text, _, rest = session.removeprefix(_QUESTION_PING_SESSION_PREFIX).partition(":")
+    recorded_start = rest.partition(":")[0]
+    current_start = _process_start_token(int(pid_text)) if pid_text.isdigit() and recorded_start else ""
+    return bool(current_start) and current_start != recorded_start
+
+
+def _release_a_stranded_holder() -> None:
+    """Free the slot from a sender that cannot still be sending, whether its pid was reused or cannot be verified."""
+    holder = (
+        LoopLease.objects.filter(name=_QUESTION_PING_SLOT)
+        .values("session_id", "owner_pid_namespace", "acquired_at", "lease_expires_at")
+        .first()
+    )
+    if holder is None or not holder["session_id"].startswith(_QUESTION_PING_SESSION_PREFIX):
+        return
+    session = holder["session_id"]
+    # Another container's pid names an unrelated process there, so only a proven namespace may act on the pid.
+    if namespace_is_proven(holder["owner_pid_namespace"]):
+        if _pid_names_a_later_process(session):
+            LoopLease.objects.release_ownership(_QUESTION_PING_SLOT, session_id=session)
+        return
+    now = timezone.now()
+    if holder["lease_expires_at"] is None or holder["lease_expires_at"] >= now:
+        return
+    with transaction.atomic():
+        # A send claimed inside the hour can still land in the window it is counted in, even past the stale bound.
+        if BotPing.objects.filter(
+            _question_ping_keys(), status=BotPing.Status.SENDING, posted_at__gt=now - _CEILING_WINDOW
+        ).exists():
+            return
+        LoopLease.objects.filter(
+            name=_QUESTION_PING_SLOT, session_id=session, acquired_at=holder["acquired_at"]
+        ).update(session_id="", owner_pid=None, owner_pid_namespace="", acquired_at=None, lease_expires_at=None)
+
+
+@contextmanager
+def _held_question_ping_slot() -> Iterator[bool]:
+    pid = os.getpid()
+    session = f"{_QUESTION_PING_SESSION_PREFIX}{pid}:{_process_start_token(pid)}:{threading.get_ident()}"
+    _release_a_stranded_holder()
+    won, _holder = LoopLease.objects.claim_ownership(
+        _QUESTION_PING_SLOT, session_id=session, owner_pid=pid, ttl_seconds=_QUESTION_PING_SLOT_TTL_SECONDS
+    )
+    if not won:
+        logger.info("Another live sender holds the owner question-ping slot; this ping waits for the next pass")
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        LoopLease.objects.release_ownership(_QUESTION_PING_SLOT, session_id=session)
 
 
 def _resurface_text(row: DeferredQuestion) -> str:
@@ -188,14 +314,15 @@ def resurface_question_backlog(
     bucket = int(stamped_at.timestamp()) // (RESURFACE_INTERVAL_HOURS * 3600)
     previous_overlay = _scoped_overlay_env(overlay)
     try:
-        posted = notify_user(
-            format_backlog_digest(rows, now=stamped_at),
-            kind=NotifyKind.QUESTION,
-            idempotency_key=f"question-backlog-digest:{bucket}",
-            audience=NotifyAudience.OWNER_QUESTION,
-            backend=backend,
-            user_id=user_id or None,
-        )
+        with _question_ping_slot(reserved=_first_post_reserve()) as open_slot:
+            posted = open_slot and notify_user(
+                format_backlog_digest(rows, now=stamped_at),
+                kind=NotifyKind.QUESTION,
+                idempotency_key=f"{_DIGEST_KEY_PREFIX}{bucket}",
+                audience=NotifyAudience.OWNER_QUESTION,
+                backend=backend,
+                user_id=user_id or None,
+            )
     finally:
         _restore_overlay_env(overlay, previous_overlay)
     return posted, len(rows)
@@ -251,14 +378,12 @@ def reask_escalated_questions(
     EXISTING pending row for a dedupe marker — a pending row IS the mute — and
     dismissing-and-recreating would break that mute and cut the single-use audit
     chain. So the bump rides the row and the mirror thread it already has, and the
-    only new state is one ``BotPing`` under
-    ``reask:<stable_notify_ref>:e<escalation_count>``. The ESCALATION is the cadence:
-    every tick collapses onto the delivered ping until the age backstop stamps the next
-    escalation, so an unanswered row is bumped once per rung and the nag stops when the
-    ladder does — rather than once per 24h bucket, for as long as the row stayed pending.
+    only new state is one ``BotPing`` under ``reask:<stable_notify_ref>:<gap>``, where
+    ``gap`` is the widening bump index :func:`~teatree.core.modelkit.reask_cadence.bump_due`
+    derives from the row's age, so every tick between two bumps collapses onto the delivered ping.
 
     The count is of NEW bumps: a key the ledger has already delivered returns a sent
-    outcome too, so counting that would report a fresh nag on every tick.
+    outcome too, so counting that would report a fresh nag on every tick between bumps.
 
     Escalated rows come first and, within each half, the oldest — the rows the age
     backstop has already stamped as sat-past-the-ceiling. Only MIRRORED rows are
@@ -266,10 +391,10 @@ def reask_escalated_questions(
     :func:`drain_unmirrored_deferred_questions`, which posts its FIRST copy at root
     and stamps the mirror this function then rides.
 
-    A row already bumped at its current generation is dropped BEFORE the batch is cut,
-    which is what makes the five slots rotate: keyed on the clock, they went to the same
-    five most-urgent rows every bucket, so those five were re-notified daily forever
-    while row six was never bumped at all (#4706).
+    A row already bumped at its current gap is dropped BEFORE the batch is cut, which is
+    what makes the five slots rotate: otherwise the same five most-urgent rows hold the
+    batch while their delivered pings answer ALREADY_SENT, and row six is never bumped
+    at all (#4706).
     """
     rows = [
         row for row in DeferredQuestion.pending() if row.audience != DeferredQuestion.Audience.INTERNAL and row.slack_ts
@@ -278,21 +403,28 @@ def reask_escalated_questions(
         return 0, 0
 
     stamped_at = now or timezone.now()
-    delivered = _bumped_generations(rows)
-    unbumped = [row for row in rows if _reask_key(row) not in delivered]
-    urgent = sorted(unbumped, key=lambda row: (row.escalated_at is None, row.created_at))[:_REASK_BATCH]
+    due = [(row, gap) for row in rows if (gap := bump_due(row.created_at, now=stamped_at))]
+    delivered = BotPing.delivered_keys(reask_key(row.stable_notify_ref, gap) for row, gap in due)
+    urgent = sorted(
+        ((row, gap) for row, gap in due if reask_key(row.stable_notify_ref, gap) not in delivered),
+        key=lambda pair: (pair[0].escalated_at is None, pair[0].created_at),
+    )[:_REASK_BATCH]
 
+    reserved = _first_post_reserve()
     previous_overlay = _scoped_overlay_env(overlay)
     bumped = 0
     try:
-        for row in urgent:
-            outcome = notify_user_outcome(
-                _reask_text(row, now=stamped_at),
-                kind=NotifyKind.QUESTION,
-                idempotency_key=_reask_key(row),
-                audience=NotifyAudience.OWNER_QUESTION,
-                options=_answerable_options(row, backend=backend, user_id=user_id),
-            )
+        for row, gap in urgent:
+            with _question_ping_slot(reserved=reserved) as open_slot:
+                if not open_slot:
+                    break
+                outcome = notify_user_outcome(
+                    _reask_text(row, now=stamped_at),
+                    kind=NotifyKind.QUESTION,
+                    idempotency_key=reask_key(row.stable_notify_ref, gap),
+                    audience=NotifyAudience.OWNER_QUESTION,
+                    options=_answerable_options(row, backend=backend, user_id=user_id),
+                )
             # NEW bumps only. ``sent`` is also true for a key the ledger already
             # delivered, so counting it would report a fresh nag on every tick inside
             # the bucket — the count is what says whether the owner was disturbed.
@@ -301,26 +433,6 @@ def reask_escalated_questions(
     finally:
         _restore_overlay_env(overlay, previous_overlay)
     return bumped, len(rows)
-
-
-def _reask_key(row: DeferredQuestion) -> str:
-    """The bump's idempotency key — the row AND the escalation generation it is bumping."""
-    return f"{_REASK_KEY_PREFIX}{row.stable_notify_ref}:e{row.escalation_count}"
-
-
-def _bumped_generations(rows: Sequence[DeferredQuestion]) -> set[str]:
-    """Which of *rows*' current generations the ledger has already DELIVERED, in one query.
-
-    Only a ``SENT`` ping counts: a bump that never reached the owner has to stay a
-    candidate, so an undelivered one retries on the next tick rather than being counted
-    as a nag the owner has had.
-    """
-    return set(
-        BotPing.objects.filter(
-            idempotency_key__in=[_reask_key(row) for row in rows],
-            status=BotPing.Status.SENT,
-        ).values_list("idempotency_key", flat=True)
-    )
 
 
 def _scoped_overlay_env(overlay: str) -> str | None:
@@ -397,13 +509,17 @@ def drain_deferred_questions(
             # root and stamped as the mirror when it has none. A resurfaced question
             # the owner cannot answer is worse than one not resurfaced at all: it
             # spends the owner's attention and returns nothing.
-            if not notify_user_outcome(
-                _resurface_text(row),
-                kind=NotifyKind.QUESTION,
-                idempotency_key=key,
-                audience=NotifyAudience.OWNER_QUESTION,
-                options=_answerable_options(row, backend=backend, user_id=user_id),
-            ).sent:
+            with _question_ping_slot() as open_slot:
+                if not open_slot:
+                    break
+                sent = notify_user_outcome(
+                    _resurface_text(row),
+                    kind=NotifyKind.QUESTION,
+                    idempotency_key=key,
+                    audience=NotifyAudience.OWNER_QUESTION,
+                    options=_answerable_options(row, backend=backend, user_id=user_id),
+                ).sent
+            if not sent:
                 continue
             delivered += 1
             if not row.slack_ts:
@@ -467,7 +583,7 @@ def drain_unmirrored_deferred_questions(
     mirrored = 0
     try:
         for row in rows:
-            key = f"mirror-deferred-question:{row.stable_notify_ref}"
+            key = f"{_MIRROR_KEY_PREFIX}{row.stable_notify_ref}"
             # AT ROOT, never nested — ``_answerable_options`` gives an un-mirrored
             # row exactly that. This ``posted_ts`` becomes the row's ``slack_ts``
             # two lines down, the identity a Slack reply's ``thread_ts`` is joined
@@ -475,13 +591,17 @@ def drain_unmirrored_deferred_questions(
             # reply with the ROOT's ts, so a mirror nested under the owner's active
             # DM thread is a ts no reply can ever carry: the join misses every time
             # and the answer falls through unbound.
-            if not notify_user_outcome(
-                _resurface_text(row),
-                kind=NotifyKind.QUESTION,
-                idempotency_key=key,
-                audience=NotifyAudience.OWNER_QUESTION,
-                options=_answerable_options(row, backend=backend, user_id=user_id),
-            ).sent:
+            with _question_ping_slot() as open_slot:
+                if not open_slot:
+                    break
+                sent = notify_user_outcome(
+                    _resurface_text(row),
+                    kind=NotifyKind.QUESTION,
+                    idempotency_key=key,
+                    audience=NotifyAudience.OWNER_QUESTION,
+                    options=_answerable_options(row, backend=backend, user_id=user_id),
+                ).sent
+            if not sent:
                 continue
             if _stamp_mirror_from(row, key):
                 mirrored += 1

@@ -50,6 +50,14 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json emits the per-table retention plan; dry-run unless --apply (#3693)",
     ),
     Capability(
+        "teatree retention artifacts",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the checkout pool's dormant build artifacts with a per-entry "
+        "EVICT/STOPPED/KEEP/DEFER verdict, plus `refused` when the process table could not "
+        "be read; dry-run unless --apply, and a refusal exits 1 on the dry run too (#4244)",
+    ),
+    Capability(
         "teatree retention scratch",
         json_output=True,
         exit_codes=("0", "1"),
@@ -89,6 +97,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         note="--json emits each pending question's automated-resolver coverage; empty resolvers = human-only (#4178)",
     ),
     Capability("teatree signals", json_output=True, exit_codes=("0",)),
+    Capability(
+        "teatree settings_compare",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the settings comparison; 1 when fewer than two instances answered",
+    ),
     Capability(
         "teatree workspace emit",
         json_output=True,
@@ -161,6 +175,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         json_output=True,
         exit_codes=("0",),
         note="--json emits the CLEARs consumed because their PR already settled; --dry-run to preview",
+    ),
+    Capability(
+        "teatree ticket set-target-branch",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="--json emits the repo-scoped stacked-delivery target override; 1 when ticket, repo, or branch is invalid",
     ),
     Capability(
         "teatree review record",

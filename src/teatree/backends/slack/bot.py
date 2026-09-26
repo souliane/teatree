@@ -41,18 +41,17 @@ re-probed on the next call so a transient failure that recovers
 resolves correctly.
 """
 
-from typing import cast
-
 from teatree.backends.slack import egress
 from teatree.backends.slack.audio_upload import AudioDmRequest, upload_audio_dm
 from teatree.backends.slack.dm_history import read_single_message, read_thread_replies, read_user_dms
 from teatree.backends.slack.http import SlackHttpClient
 from teatree.backends.slack.inbound import SlackInbound
 from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
-from teatree.backends.slack.routing import assert_owner_dm, is_self_dm, select_routed_token
+from teatree.backends.slack.routing import assert_owner_call, assert_owner_dm, is_self_dm, select_routed_token
 from teatree.backends.slack.self_identity import OwnSlackIdentity, resolve_own_identity, strip_self_audio_attachments
 from teatree.backends.slack.token_policy import SlackOp, channel_token
 from teatree.backends.slack.token_validation import (
+    SlackTokenMissingError,
     TokenSlotMismatchError,
     assert_app_token,
     assert_bot_token,
@@ -62,7 +61,7 @@ from teatree.backends.slack.token_validation import (
 from teatree.backends.slack.voice_classifier import ClassifierMode as VoiceClassifierMode
 from teatree.backends.slack.voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
 from teatree.backends.slack.web_ops import join_conversation as join_slack_conversation
-from teatree.backends.slack.web_ops import open_im_channel, read_permalink, run_auth_test
+from teatree.backends.slack.web_ops import open_im_channel, read_ext_shared, read_permalink, run_auth_test
 from teatree.backends.slack.web_reads import read_channel_history, read_channel_history_or_refuse, read_reactions
 from teatree.backends.slack.web_reads import resolve_user_id as resolve_slack_user_id
 from teatree.slack_mrkdwn import wrap_slack_message
@@ -139,7 +138,7 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         # the per-overlay attribution leak the issue reports).
         self._dm_channel_id = dm_channel_id
         # dm_only profile: refuse every outbound but the owner's own DM (enforced
-        # at the ``_channel_token`` / ``_route_token`` funnels).
+        # at the ``_channel_token`` / ``_route_token`` funnels and in ``_post``).
         self._owner_dm_only = owner_dm_only
         self._http = SlackHttpClient()
         # #1395 voice/token gate; factory overrides via set_voice_classifier_mode.
@@ -227,6 +226,9 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         remembering it. *wrap_exempt_reason* is the one sanctioned escape;
         ``blocks`` are never rewritten (Block Kit lays itself out).
         """
+        assert_owner_call(
+            method, payload, owner_dm_only=self._owner_dm_only, dm_channel_id=self._dm_channel_id, user_id=self._user_id
+        )
         auth = token or self._bot_token
         if not auth:
             return {}
@@ -237,40 +239,15 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def _get(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
         auth = token or self._bot_token
         if not auth:
-            return {}
+            raise SlackTokenMissingError(method)
         return self._http.get(method, token=auth, params=params)
 
     def _is_ext_shared(self, channel: str) -> bool | None:
-        """Whether *channel* is a Slack-Connect externally-shared channel.
-
-        Resolved deterministically from ``conversations.info``
-        (``is_ext_shared`` / ``is_shared``) on the bot token — the bot
-        can always *read* channel metadata even on channels it cannot
-        *post* to.  Returns ``True`` (confirmed externally-shared) or
-        ``False`` (confirmed internal) only when the API call succeeds
-        (``ok:true``).  On any API-level lookup failure (``ok:false`` —
-        bad token, missing scope, channel not found, rate-limit) it
-        returns ``None`` (membership *unknown*) so the policy decides by
-        operation class — reads fail safe to the bot, writes/reactions
-        fail toward the user ``xoxp`` (#1110).  Only the confirmed
-        ``True`` / ``False`` answer is cached per channel id; an unknown
-        is **not** cached, so a transient failure that later recovers is
-        re-probed and resolves correctly.  A transport-level failure
-        (5xx / connection error) instead propagates out of ``_get``'s
-        ``raise_for_status()`` through ``_channel_token`` and aborts the
-        call — still conservative (no wrong-token send), but the call
-        does not complete.
-        """
+        """Whether *channel* is Slack-Connect shared; only a confirmed answer is cached (#1110)."""
         cached = self._ext_shared_cache.get(channel)
-        if cached is not None:
-            return cached
-        data = self._get("conversations.info", {"channel": channel})
-        if not data.get("ok"):
-            return None
-        info = cast("RawAPIDict", data.get("channel") or {})
-        is_ext = bool(info.get("is_ext_shared")) or bool(info.get("is_shared"))
-        self._ext_shared_cache[channel] = is_ext
-        return is_ext
+        if cached is None and (cached := read_ext_shared(self._get, channel)) is not None:
+            self._ext_shared_cache[channel] = cached
+        return cached
 
     def _channel_token(self, channel: str, *, op: SlackOp) -> str:
         """The token authorising an outbound *op* against *channel*.
@@ -377,9 +354,9 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
         """Fetch a single message by ``(channel, ts)``.
 
-        ``{}`` on any failure or no match. Read body in
-        :mod:`~teatree.backends.slack.dm_history`; own TTS audio stripped
-        at the backend read chokepoint.
+        ``{}`` on a Slack ``ok:false`` or no match; a missing token raises. Read
+        body in :mod:`~teatree.backends.slack.dm_history`; own TTS audio
+        stripped at the backend read chokepoint.
         """
         message = read_single_message(get=self._get, channel=channel, ts=ts)
         if not message:
@@ -388,14 +365,13 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         return stripped
 
     def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
-        """Return every message in the thread rooted at ``thread_ts`` (#2061).
+        """Return every message in the thread rooted at ``thread_ts`` (#2061); a refused read raises.
 
-        Keyed on the thread ROOT — a reply re-parents to the root, so the
-        answer pipeline's dedup/verification read-back must query the root,
-        not a non-root user-message ts. Read body in
-        :mod:`~teatree.backends.slack.dm_history`; own TTS audio stripped here.
+        Keyed on the thread ROOT, where a reply re-parents. Read body and the
+        user-token retry live in :mod:`~teatree.backends.slack.dm_history`.
         """
-        return self._strip_own_tts_audio(read_thread_replies(get=self._get, channel=channel, thread_ts=thread_ts))
+        replies = read_thread_replies(get=self._get, channel=channel, thread_ts=thread_ts, user_token=self._user_token)
+        return self._strip_own_tts_audio(replies)
 
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]:
         """Return the most recent *limit* messages in *channel* (#1255).
@@ -530,11 +506,19 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         return self._route_token(channel)
 
     def post_routed(self, *, channel: str, text: str, thread_ts: str = "", wrap_exempt_reason: str = "") -> RawAPIDict:
-        """Post to *channel*, token chosen by destination (#1750)."""
+        """Post to *channel*, token chosen by destination (#1750).
+
+        The bot is NOT in the user's own IM — `open_dm` resolved that under the user's
+        token — so posting there answers `channel_not_found`. Addressing the user id makes
+        Slack use the bot↔user IM, where every other bot DM lands. Posts only: a reaction's
+        `ts` names a message in ONE conversation.
+        """
+        token = self._route_token(channel)
+        to_self = bool(token) and token == self._bot_token and self._user_id and self._is_self_dm(channel)
         return egress.publish_routed(
             self._post,
-            token=self._route_token(channel),
-            message=egress.ChatMessage(channel=channel, text=text, thread_ts=thread_ts),
+            token=token,
+            message=egress.ChatMessage(channel=self._user_id if to_self else channel, text=text, thread_ts=thread_ts),
             wrap_exempt_reason=wrap_exempt_reason,
         )
 

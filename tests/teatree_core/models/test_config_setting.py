@@ -16,6 +16,8 @@ from django.test import TestCase
 
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER, GLOBAL_SCOPE, SeedOutcome, scope_label
+from teatree.core.session_identity import LOOP_RUNNER_SESSION_ID
+from tests._loop_principal_env import pinned_loop_principal
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,17 +36,17 @@ class TestScopeLabel:
 class TestConfigSettingStore(TestCase):
     def test_get_effective_absent_key_is_none(self) -> None:
         # Empty table -> fall-through sentinel, never an exception.
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is None
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is None
 
     def test_set_value_then_get_effective_returns_it(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is True
 
     def test_set_value_is_an_upsert_on_unique_key(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        assert ConfigSetting.objects.filter(key="issue_implementer_enabled").count() == 1
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is False
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=False)
+        assert ConfigSetting.objects.filter(key="adaptive_intake_concurrency_enabled").count() == 1
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is False
 
     def test_value_round_trips_non_bool_json(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_label", "ready-to-implement")
@@ -57,17 +59,17 @@ class TestConfigSettingStore(TestCase):
         assert ConfigSetting.objects.get_effective("excluded_skills") == ["a", "b"]
 
     def test_clear_removes_the_row(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
-        removed = ConfigSetting.objects.clear("issue_implementer_enabled")
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
+        removed = ConfigSetting.objects.clear("adaptive_intake_concurrency_enabled")
         assert removed is True
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is None
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is None
 
     def test_clear_absent_key_returns_false(self) -> None:
         assert ConfigSetting.objects.clear("never_set") is False
 
     def test_str_is_informative(self) -> None:
-        row = ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
-        assert "issue_implementer_enabled" in str(row)
+        row = ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
+        assert "adaptive_intake_concurrency_enabled" in str(row)
 
 
 class TestConfigSettingEmptyValuesRoundTrip(TestCase):
@@ -96,12 +98,12 @@ class TestConfigSettingScope(TestCase):
     """
 
     def test_global_and_overlay_rows_for_same_key_coexist(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=False)
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True, scope="my-overlay")
         # Two distinct rows for one key — the composite (scope, key) uniqueness.
-        assert ConfigSetting.objects.filter(key="issue_implementer_enabled").count() == 2
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is False
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled", scope="my-overlay") is True
+        assert ConfigSetting.objects.filter(key="adaptive_intake_concurrency_enabled").count() == 2
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is False
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled", scope="my-overlay") is True
 
     def test_set_value_is_per_scope_upsert(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 1, scope="ov")
@@ -113,25 +115,25 @@ class TestConfigSettingScope(TestCase):
         # An overlay read never silently borrows the global row — absence in the
         # overlay scope is the None fall-through sentinel; the resolver, not the
         # manager, layers global-then-overlay.
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled", scope="other") is None
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled", scope="other") is None
 
     def test_clear_is_scope_isolated(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=False)
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="ov")
-        assert ConfigSetting.objects.clear("issue_implementer_enabled", scope="ov") is True
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=False)
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True, scope="ov")
+        assert ConfigSetting.objects.clear("adaptive_intake_concurrency_enabled", scope="ov") is True
         # The global row survives an overlay-scoped clear.
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is False
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled", scope="ov") is None
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is False
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled", scope="ov") is None
 
     def test_overrides_for_scope_returns_only_that_scope(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
         ConfigSetting.objects.set_value("issue_implementer_label", "ready", scope="ov")
-        assert ConfigSetting.objects.overrides_for_scope("") == {"issue_implementer_enabled": True}
+        assert ConfigSetting.objects.overrides_for_scope("") == {"adaptive_intake_concurrency_enabled": True}
         assert ConfigSetting.objects.overrides_for_scope("ov") == {"issue_implementer_label": "ready"}
 
     def test_str_names_overlay_scope(self) -> None:
-        row = ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
+        row = ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True, scope="my-overlay")
         assert "my-overlay" in str(row)
 
 
@@ -207,12 +209,11 @@ class TestSeedProvenance(TestCase):
             fired.append(value)
             ConfigSetting.objects.set_value(key, value)
 
-        post_init.connect(pin_it, sender=ConfigSetting)
-
-        def _disconnect() -> None:
+        def unpin() -> None:
             post_init.disconnect(pin_it, sender=ConfigSetting)
 
-        return _disconnect
+        post_init.connect(pin_it, sender=ConfigSetting)
+        return unpin
 
     def test_an_operator_pin_landing_during_the_seed_read_is_preserved(self) -> None:
         ConfigSetting.objects.seed("provision_ram_ceiling_percent", 70, code_default=85)
@@ -310,5 +311,53 @@ class TestConfigSettingCrossKeyConsistency(TestCase):
         assert ConfigSetting.objects.get_effective("agent_harness_provider", scope="acme") == "openai_compatible"
 
     def test_unrelated_key_write_is_never_touched(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
+        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
+        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is True
+
+
+class TestGovernedWritesAreTheOwnersAct(TestCase):
+    """An unattended principal may not decide a governed key, and every write says who did.
+
+    The MCP tool already refused these by class; the CLI and any programmatic ``set_value``
+    did not, so the same key was refusable on one surface and free on another. The refusal
+    moves to the one write seam, and the row records the decider so a surprising value can
+    be attributed rather than guessed at.
+    """
+
+    def test_an_ordinary_write_records_the_principal_that_decided_it(self) -> None:
+        with pinned_loop_principal("sess-owner"):
+            row = ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 4)
+        assert row.written_by == "sess-owner"
+
+    def test_a_governed_key_is_refused_from_the_unattended_principal(self) -> None:
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID), pytest.raises(ValidationError, match="authorization"):
+            ConfigSetting.objects.set_value("substrate_auto_merge_authorized_by", "someone")
+        assert ConfigSetting.objects.filter(key="substrate_auto_merge_authorized_by").count() == 0
+
+    def test_the_same_governed_key_is_writable_by_a_session_principal(self) -> None:
+        with pinned_loop_principal("sess-owner"):
+            ConfigSetting.objects.set_value("substrate_auto_merge_authorized_by", "someone")
+        assert ConfigSetting.objects.get_effective("substrate_auto_merge_authorized_by") == "someone"
+
+    def test_a_ratified_authorizer_carries_the_unattended_write_through(self) -> None:
+        # The directive loop applies a key/value a human ratified byte-for-byte; refusing it
+        # would refuse the human's own decision because a machine typed it.
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID):
+            row = ConfigSetting.objects.set_value(
+                "substrate_auto_merge_authorized_by", "someone", authorized_by="ratifier"
+            )
+        assert row.written_by == "ratifier"
+
+    def test_an_ungoverned_loop_write_is_untouched(self) -> None:
+        # The anti-vacuity control: the refusal keys on the CLASS, not on the principal alone,
+        # so the stamps the preset-transition chain writes every tick still land.
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID):
+            ConfigSetting.objects.set_value("loop_preset_transition_stamp", "afk")
+        assert ConfigSetting.objects.get_effective("loop_preset_transition_stamp") == "afk"
+
+    def test_a_bulk_write_is_judged_key_by_key(self) -> None:
+        with pinned_loop_principal(LOOP_RUNNER_SESSION_ID), pytest.raises(ValidationError, match="authorization"):
+            ConfigSetting.objects.set_values(
+                [("loop_preset_transition_stamp", "afk", GLOBAL_SCOPE), ("trusted_issue_authors", ["x"], GLOBAL_SCOPE)]
+            )
+        assert ConfigSetting.objects.filter(key="loop_preset_transition_stamp").count() == 0

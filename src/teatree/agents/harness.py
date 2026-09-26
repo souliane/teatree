@@ -14,7 +14,7 @@ provider-agnostic backend, :class:`PydanticAiHarness`: a Pydantic AI
 :class:`~pydantic_ai.Agent` targeting the configured OpenAI-compatible,
 metered endpoint. Both backends yield the SAME ``claude_agent_sdk`` message
 vocabulary (``AssistantMessage`` / ``ResultMessage``) from :meth:`HarnessSession.receive_response`
-so the driver (:func:`teatree.agents.runner._collect`) never special-cases the
+so the driver (:func:`teatree.agents.runner_stream._collect`) never special-cases the
 transport — that vocabulary IS the seam's provider-agnostic contract, proved by
 the ``FakeHarnessSession`` test double yielding the identical shape.
 
@@ -28,7 +28,6 @@ given the resuming ``Task``. The transport stays pure/injectable — persistence
 lives in the sibling module, never inside the harness classes themselves.
 """
 
-import logging
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, Protocol, cast
@@ -40,19 +39,13 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, ReasoningEffort
 
 from teatree.agents.claude_cli_spawn import assert_spawnable, prepared_spawn, spawn_error
+from teatree.agents.codex_app_server import codex_app_server_spec
 from teatree.agents.harness_options import HarnessOptions
-from teatree.agents.harness_registry import (
-    HarnessBuildContext,
-    HarnessCapabilities,
-    assert_provider_valid_for_harness,
-    register_harness,
-    resolve_harness_spec,
-    valid_providers_for,
-)
+from teatree.agents.harness_registry import HarnessBuildContext, HarnessCapabilities, HarnessSpec, register_harness
 from teatree.agents.lane_b.compaction import CompactionPolicy, elide_stale_tool_results
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
-from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_phase_harness, resolve_pydantic_ai_model
+from teatree.agents.model_tiering import HARNESS_EFFORT_SCALE, resolve_pydantic_ai_model
 from teatree.agents.pydantic_ai_config import (
     PYDANTIC_AI_NATIVE_CAPABILITIES,
     PYDANTIC_AI_ROUTER_CAPABILITIES,
@@ -65,11 +58,10 @@ from teatree.agents.pydantic_ai_config import (
 )
 from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
 from teatree.agents.pydantic_ai_session import PydanticAiHarnessSession
+from teatree.agents.pydantic_ai_turn import SessionRun
 from teatree.agents.regulated_path import RegulatedPathPolicy
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.llm.credentials import Credential
-
-logger = logging.getLogger(__name__)
 
 CLAUDE_SDK_CAPABILITIES = HarnessCapabilities(
     hooks=True,
@@ -296,7 +288,7 @@ class PydanticAiHarness:
         if self.resume_source is not None and self._history:
             persist_parked_thread(self.resume_source, self._history)
 
-    def _resolve_model(self, options: HarnessOptions) -> Model:
+    def _resolve_model(self, options: HarnessOptions, run: SessionRun) -> Model:
         if self._model is not None:
             return self._model
         if self._binding is PydanticAiBinding.NATIVE_ANTHROPIC:
@@ -314,7 +306,7 @@ class PydanticAiHarness:
         # ineligible name and an explicit provider-prefixed pin (which passes through
         # normalisation unchanged); an absent pin falls back to the resolved id.
         RegulatedPathPolicy.resolve(self._regulated_path).assert_allowed(options.model or model_name)
-        return OpenAIChatModel(model_name, provider=build_openai_compatible_provider(self._backend))
+        return OpenAIChatModel(model_name, provider=build_openai_compatible_provider(self._backend, run))
 
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
@@ -323,12 +315,23 @@ class PydanticAiHarness:
         # ``ClaudeAgentOptions`` type never reaches ``_resolve_model`` / ``resolve_effort`` /
         # the tool config, so the pydantic_ai (and future Vertex) path is vendor-type-free.
         harness_options = HarnessOptions.from_sdk_options(options)
-        model = self._resolve_model(harness_options)
+        # A positive caller ``max_turns`` (an OneShotSpec cap, an eval override) wins over the
+        # lane's own ``request_limit``; ``0`` (a agent dispatch, an SDK-``None`` coercion)
+        # keeps ``request_limit`` — so every uncapped dispatch stays byte-identical.
+        request_limit = harness_options.max_turns if harness_options.max_turns > 0 else self._backend.request_limit
+        # Minted before the provider exists, so the router session, its prompt cache and the
+        # session the run reports all carry one id.
+        run = SessionRun.start(request_limit=request_limit)
+        model = self._resolve_model(harness_options, run)
         # The effort key is BINDING-specific (``openai_reasoning_effort`` vs
         # ``anthropic_effort``) and a foreign key is dropped silently, so the settings
         # are built per binding — see :func:`build_model_settings`.
         model_settings = build_model_settings(
-            model, resolve_effort(harness_options), binding=self._binding, max_tokens=self._max_tokens
+            model,
+            resolve_effort(harness_options),
+            binding=self._binding,
+            max_tokens=self._max_tokens,
+            prompt_cache_key=run.session_id if self._backend.sends_prompt_cache_key else None,
         )
         # PR-03: a phased dispatch wires the phase-scoped, gated tool/MCP layer
         # onto the Agent (``toolsets=`` + ``tool_timeout=``); an un-phased one
@@ -359,17 +362,13 @@ class PydanticAiHarness:
         # (the OpenAI-compatible connection pool) closes cleanly on
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
-        # A positive caller ``max_turns`` (an OneShotSpec cap, an eval override) wins over the
-        # lane's own ``request_limit``; ``0`` (a agent dispatch, an SDK-``None`` coercion)
-        # keeps ``request_limit`` — so every uncapped dispatch stays byte-identical.
-        request_limit = harness_options.max_turns if harness_options.max_turns > 0 else self._backend.request_limit
         async with agent:
             yield PydanticAiHarnessSession(
                 agent,
                 model_name=model.model_name,
                 history=self._history,
                 phase=self._phase,
-                request_limit=request_limit,
+                run=run,
             )
 
 
@@ -392,7 +391,7 @@ def _routed_anthropic_credential(binding: PydanticAiBinding, task: "Task | None"
         return None
     from teatree.credential_config import resolve_api_key_credential  # noqa: PLC0415 — deferred: ORM-backed selector
 
-    return resolve_api_key_credential(scope=_task_overlay(task) or "")
+    return resolve_api_key_credential(scope=task.ticket.overlay if task is not None else "")
 
 
 def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
@@ -442,34 +441,40 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
                 base_url=settings.openai_compatible_base_url,
                 credential_entry=settings.openai_compatible_credential_entry or None,
                 model=settings.openai_compatible_model or None,
+                extra_headers=dict(settings.openai_compatible_extra_headers),
+                sends_prompt_cache_key=settings.openai_compatible_sends_prompt_cache_key,
             ),
         ),
     )
 
 
 register_harness(
-    AgentHarness.CLAUDE_SDK.value,
-    _build_claude_sdk_harness,
-    capabilities=CLAUDE_SDK_CAPABILITIES,
-    valid_providers=frozenset({AgentHarnessProvider.SUBSCRIPTION_OAUTH.value, AgentHarnessProvider.API_KEY.value}),
+    HarnessSpec(
+        name=AgentHarness.CLAUDE_SDK.value,
+        factory=_build_claude_sdk_harness,
+        capabilities=CLAUDE_SDK_CAPABILITIES,
+        valid_providers=frozenset(
+            {
+                AgentHarnessProvider.SUBSCRIPTION_OAUTH.value,
+                AgentHarnessProvider.API_KEY.value,
+                AgentHarnessProvider.SUBSCRIPTION_THEN_API_KEY.value,
+            }
+        ),
+    )
 )
 register_harness(
-    AgentHarness.PYDANTIC_AI.value,
-    _build_pydantic_ai_harness,
-    capabilities=PYDANTIC_AI_ROUTER_CAPABILITIES,
-    valid_providers=frozenset({AgentHarnessProvider.OPENAI_COMPATIBLE.value, AgentHarnessProvider.ANTHROPIC_API.value}),
+    HarnessSpec(
+        name=AgentHarness.PYDANTIC_AI.value,
+        factory=_build_pydantic_ai_harness,
+        capabilities=PYDANTIC_AI_ROUTER_CAPABILITIES,
+        valid_providers=frozenset(
+            {AgentHarnessProvider.OPENAI_COMPATIBLE.value, AgentHarnessProvider.ANTHROPIC_API.value}
+        ),
+    )
 )
 
-
-def _task_overlay(task: "Task | None") -> str | None:
-    """The overlay name a dispatch's config resolves under — the task's ticket overlay.
-
-    ``None`` (no task, or a task whose ticket carries no overlay) keeps the
-    active-overlay resolution so the interactive/default path is unchanged.
-    """
-    if task is None:
-        return None
-    return task.ticket.overlay or None
+_CODEX_APP_SERVER_SPEC = codex_app_server_spec()
+register_harness(_CODEX_APP_SERVER_SPEC)
 
 
 def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> Harness:
@@ -507,66 +512,22 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     the CONFIG harness (never the phase-pinned one), so a verification-phase pin never turns a
     provider valid for the configured harness into a spurious failure; an unpinned provider
     always passes. The dispatch's Layer-2 credential must therefore come from
-    :func:`resolve_dispatch_provider`, which applies the SAME pin to the provider — reading
+    :func:`resolve_dispatch_harness`, which applies the SAME pin to the provider — reading
     ``settings.agent_harness_provider`` directly re-opens exactly the failure this validation
     deliberately declines to raise.
+
+    When the task's overlay declares ``factory_phase_harness_candidates`` for *phase*, that
+    ordered list stands in for ``agent_harness``: each entry goes through the same phase pin,
+    and the first registered backend whose availability probe passes is built
+    (:func:`~teatree.agents.harness_registry.select_harness`). Rejections are logged; an
+    exhausted list raises :class:`~teatree.agents.harness_registry.NoAvailableHarnessError`.
+    A phase with no list resolves exactly as above and probes nothing.
     """
-    settings = get_effective_settings(_task_overlay(task))
-    provider = settings.agent_harness_provider
-    assert_provider_valid_for_harness(settings.agent_harness, provider.value if provider is not None else None)
-    harness_name = resolve_phase_harness(settings.agent_harness, phase)
-    spec = resolve_harness_spec(harness_name)
-    return spec.factory(HarnessBuildContext(task=task, phase=phase, settings=settings))
+    from teatree.agents.harness_dispatch import (  # noqa: PLC0415 — defers Django models until runtime setup
+        resolve_dispatch_harness,
+    )
 
-
-def resolve_dispatch_provider(task: "Task | None" = None, *, phase: str | None = None) -> AgentHarnessProvider | None:
-    """The Layer-2 provider that APPLIES to the harness :func:`resolve_harness` just resolved.
-
-    ``agent_harness_provider`` is Layer 2 and is CONSTRAINED BY Layer 1: the operator pins
-    it for the ``agent_harness`` they configured. When
-    :func:`~teatree.agents.model_tiering.resolve_phase_harness` PINS a verification *phase*
-    onto a different transport, that Layer-1 flip does not carry the Layer-2 pin with it —
-    the pin was never made for the pinned harness. Reading the configured provider straight
-    off the settings would hand the dispatch a credential selector invalid under the harness
-    it is actually running, which the claude_sdk child-env resolver
-    (:func:`~teatree.agents._runner_env._provider_child_env`) then refuses, failing every
-    verification dispatch of an otherwise-VALID deployment.
-
-    So a pin the phase flip invalidated is DROPPED (to the ambient-credential default,
-    ``None``) with a WARNING — never silently, and never by inventing a substitute
-    credential the operator did not choose. This mirrors
-    :func:`~teatree.agents._runner_env.system_child_env`, which already warns-and-falls-back
-    for the same shape.
-
-    Nothing else is weakened. A pair no phase pin explains is untouched here and still fails
-    loud: the ``ConfigSetting`` cross-key gate
-    (:func:`~teatree.config.cross_key_consistency.validate_cross_key_write`) refuses to store
-    it, and :func:`resolve_harness` above raises
-    :class:`~teatree.agents.harness_registry.InvalidHarnessProviderError` on it at dispatch.
-
-    Resolved at the same TASK-OVERLAY settings scope as :func:`resolve_harness`, so the
-    transport and the credential can never be read from two different scopes.
-    """
-    settings = get_effective_settings(_task_overlay(task))
-    provider = settings.agent_harness_provider
-    if provider is None:
-        return None
-    harness_name = resolve_phase_harness(settings.agent_harness, phase)
-    if harness_name == settings.agent_harness:
-        return provider
-    valid = valid_providers_for(harness_name)
-    if valid and provider.value not in valid:
-        logger.warning(
-            "phase=%s pins agent_harness=%s, under which the configured "
-            "agent_harness_provider=%s is not valid; this dispatch drops the Layer-2 pin and "
-            "uses the ambient credential (the configured agent_harness=%s is unaffected)",
-            phase,
-            harness_name,
-            provider.value,
-            settings.agent_harness,
-        )
-        return None
-    return provider
+    return resolve_dispatch_harness(task, phase=phase).harness
 
 
 def pydantic_ai_thread(session: HarnessSession) -> "list[ModelMessage] | None":

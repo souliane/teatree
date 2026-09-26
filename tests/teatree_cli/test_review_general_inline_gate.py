@@ -27,8 +27,7 @@ from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.general_inline_gate import check_general_inline_findings, looks_like_inline_findings
 from teatree.cli.review.guarded_read import ReadOutcome
-from teatree.config import OnBehalfPostMode
-from teatree.core.models import ConfigSetting
+from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -41,9 +40,9 @@ def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     Mirrors the sibling ``test_review_shape_gate`` helper: the gate under
     test is independent of the on-behalf gate, so IMMEDIATE keeps the latter
-    silent. ``on_behalf_post_mode`` is DB-home (#1775).
+    silent.
     """
-    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
+    seed_permitting_posture()
 
 
 class _StubAPI:

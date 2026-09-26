@@ -89,12 +89,15 @@ class TestCostCommand:
         now = timezone.now()
         self._attempt(cost=1.0, when=now, model="opus", input_tokens=1000, lane=TaskAttempt.Lane.SUBSCRIPTION)
         self._attempt(cost=2.0, when=now, model="opus", input_tokens=1000, lane=TaskAttempt.Lane.METERED)
+        self._attempt(cost=3.0, when=now, model="gpt-5.6-sol", input_tokens=1000, lane=TaskAttempt.Lane.MANAGED)
         payload = json.loads(_call(json_output=True))
-        assert payload["effective_tokens_total"] == pytest.approx(2000.0)
+        assert payload["effective_tokens_total"] == pytest.approx(3000.0)
         assert payload["per_lane_usd"]["subscription"] == pytest.approx(1.0)
         assert payload["per_lane_usd"]["metered"] == pytest.approx(2.0)
+        assert payload["per_lane_usd"]["managed"] == pytest.approx(3.0)
         assert payload["per_lane_effective_tokens"]["subscription"] == pytest.approx(1000.0)
         assert payload["per_lane_effective_tokens"]["metered"] == pytest.approx(1000.0)
+        assert payload["per_lane_effective_tokens"]["managed"] == pytest.approx(1000.0)
 
     def test_human_output_shows_effective_tokens(self) -> None:
         self._attempt(cost=1.0, when=timezone.now(), model="opus", input_tokens=1000)

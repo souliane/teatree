@@ -56,15 +56,13 @@ class MiniLoopSchedule:
     all". Both render as no instant, and the overdue predicate had only the instant to judge
     by, so it called every DISABLED loop late forever.
 
-    :attr:`enabled` is the ``Loop.enabled`` base config — the same column ``t3 loop list``
-    prints — so "the operator turned this off" is answerable HERE rather than inferred from
-    the absence of a schedule.
+    Only ADMITTED loops reach this list, and a preset that admits a loop IS someone asking
+    for it — so an admitted loop with no fire instant is late, full stop.
     """
 
     name: str
     next_fire_at: datetime | None
     cadence_seconds: int
-    enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,14 +310,11 @@ def _mini_loop_overdue(schedule: MiniLoopSchedule) -> bool:
     that has slipped its cadence (or never fired at all), NOT one merely due-soon
     on its normal cadence (which the engaged preset handle already represents).
 
-    A DISABLED loop is never late (#4066). Lateness is a claim about a schedule someone asked
-    for; a loop the operator turned off has none, so its missing fire instant is an ABSENT
-    signal, not a failure signal. Judging it by the instant alone reported ``snapshot_warmer``
-    and ``triage_assessor`` overdue permanently — an alarm with no state that clears it, which
-    is indistinguishable from no alarm and spends the banner a genuinely-late loop needs.
+    Lateness is a claim about a schedule someone asked for, and the caller has already
+    filtered to the loops the active preset admits — which IS the asking. A loop nobody
+    admits never reaches here, so its missing fire instant can no longer be read as a
+    failure signal the way it was when the list carried every enabled row (#4066).
     """
-    if not schedule.enabled:
-        return False
     return schedule.next_fire_at is None or _seconds_until(schedule.next_fire_at) <= 0
 
 

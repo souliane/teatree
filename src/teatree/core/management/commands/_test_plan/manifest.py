@@ -1,7 +1,7 @@
 """Parse + validate one run's ``--manifest`` input.
 
 The manifest is the CLI-supplied description of one capture run: ticket, MRs,
-per-side (dev/local) commit blocks and per-workflow artifacts, optional steps
+per-side (dev/local/stack) commit blocks and per-workflow artifacts, optional steps
 and blocked-workflow reasons. Every artifact path is validated against disk
 and media kind here so :class:`TestPlanValidationError` fires BEFORE any
 upload runs. The parsed :class:`TestPlanManifest` is a pure value object the
@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from teatree.core.evidence.bdd_scenario_source import BddScenarioSource, BddSourceError, parse_bdd_source_mapping
 from teatree.core.management.commands._test_plan.state import (
     _ENVS,
     DEFAULT_TEMPLATE,
@@ -36,7 +37,7 @@ class WorkflowArtifacts:
 
 @dataclass(frozen=True, slots=True)
 class SideManifest:
-    """One side (dev/local): commits, when it ran, gap, per-workflow artifacts.
+    """One side (dev/local/stack): commits, when it ran, gap, per-workflow artifacts.
 
     ``present`` is False when the run did not carry this side (merge freezes it).
     ``ran_at`` is the run's ISO-8601 UTC instant, empty when the run did not
@@ -60,10 +61,16 @@ class TestPlanManifest:
     mrs: tuple[str, ...]
     dev: SideManifest
     local: SideManifest
+    stack: SideManifest = field(default_factory=lambda: SideManifest(present=False))
     title: str = ""
     steps: dict[str, tuple[str, ...]] = field(default_factory=dict)
     template: str = DEFAULT_TEMPLATE
     blocked_workflows: dict[str, str] = field(default_factory=dict)
+    scenario_source: BddScenarioSource | None = None
+
+    def present_sides(self) -> dict[str, SideManifest]:
+        sides = {"dev": self.dev, "local": self.local, "stack": self.stack}
+        return {env: side for env, side in sides.items() if side.present}
 
 
 def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifest:
@@ -79,7 +86,7 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifes
         msg = f"--manifest is not valid JSON: {exc}"
         raise TestPlanValidationError(msg) from None
     if not isinstance(data, dict):
-        msg = "--manifest must be a JSON object with 'ticket', 'mrs', 'dev'/'local', and 'workflows'."
+        msg = "--manifest must be a JSON object with 'ticket', 'mrs', 'dev'/'local'/'stack', and 'workflows'."
         raise TestPlanValidationError(msg)
     raw_workflows = data.get("workflows")
     if not isinstance(raw_workflows, list) or not raw_workflows:
@@ -88,11 +95,16 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifes
     mrs = tuple(str(m).strip() for m in data.get("mrs", []) if str(m).strip())
     template = _parse_template(data.get("template"))
     sides = {env: _parse_side(data, raw_workflows, env=env, base_dir=base_dir) for env in _ENVS}
-    if not sides["dev"].present and not sides["local"].present:
-        msg = "--manifest carries no 'dev' or 'local' captures; nothing to post."
+    if not any(side.present for side in sides.values()):
+        msg = "--manifest carries no 'dev', 'local' or 'stack' captures; nothing to post."
         raise TestPlanValidationError(msg)
     steps = _parse_workflow_steps(raw_workflows)
     blocked_workflows = _parse_blocked_workflows(data.get("blocked_workflows"))
+    raw_source = data.get("scenario_source")
+    try:
+        scenario_source = None if raw_source is None else parse_bdd_source_mapping(raw_source)
+    except BddSourceError as error:
+        raise TestPlanValidationError(str(error)) from None
     has_media = any(sides[env].workflows for env in _ENVS if sides[env].present)
     if not has_media and not steps and not blocked_workflows:
         msg = "--manifest carries no media (no screenshots or video); nothing to post."
@@ -103,9 +115,11 @@ def parse_manifest(raw: str, *, base_dir: Path | None = None) -> TestPlanManifes
         title=str(data.get("title", "")).strip(),
         dev=sides["dev"],
         local=sides["local"],
+        stack=sides["stack"],
         steps=steps,
         template=template,
         blocked_workflows=blocked_workflows,
+        scenario_source=scenario_source,
     )
 
 
@@ -147,7 +161,7 @@ def _parse_workflow_steps(raw_workflows: list[object]) -> dict[str, tuple[str, .
 def _parse_side(
     data: Mapping[str, object], raw_workflows: list[object], *, env: str, base_dir: Path | None
 ) -> SideManifest:
-    """Validate one side (dev/local): its commit block + its per-workflow captures."""
+    """Validate one side (dev/local/stack): its commit block + its per-workflow captures."""
     side_meta = data.get(env)
     workflows = {
         wf.workflow: wf

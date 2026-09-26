@@ -10,16 +10,10 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
+from teatree.core import agent_admission as gate_mod
+from teatree.core import task_dispatch as task_dispatch_mod
 from teatree.core.models import Session, Task, Ticket
-from tests.teatree_core.conftest import CommandOverlay
-
-IMMEDIATE_BACKEND = {
-    "TASKS": {
-        "default": {
-            "BACKEND": "django.tasks.backends.immediate.ImmediateBackend",
-        },
-    },
-}
+from tests.teatree_core.conftest import HEALTHY_MACHINE_SIGNAL, HEALTHY_QUOTA_SIGNAL, IMMEDIATE_BACKEND, CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
@@ -33,7 +27,9 @@ class TestNonLoopDispatchedTaskStillAutoEnqueued(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="t")
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.tasks.execute_task") as headless,
+            patch.object(gate_mod, "read_machine_signal", return_value=HEALTHY_MACHINE_SIGNAL),
+            patch.object(gate_mod, "read_quota_signal", return_value=HEALTHY_QUOTA_SIGNAL),
+            patch.object(task_dispatch_mod, "execute_task") as headless,
         ):
             task = Task.objects.create(
                 ticket=ticket,

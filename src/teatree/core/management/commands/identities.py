@@ -103,6 +103,7 @@ class Command(TyperCommand):
             raise SystemExit(1)
 
         existing = list(get_effective_settings().user_identity_aliases)
+        # `list` is invariant, so the stored value's element type is the alias's, not `str`.
         merged: list[object] = [*existing, *(handle for handle in derived if handle not in existing)]
         ConfigSetting.objects.set_value("user_identity_aliases", merged)
 

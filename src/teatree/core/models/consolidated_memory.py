@@ -10,6 +10,16 @@ that re-clusters the same members finds the existing row (idempotent on
 tracks each cluster from a raw CANDIDATE through a cited VERIFIED rule, a
 PROMOTED durable line, and finally SUPERSEDED or EXPIRED retirement.
 
+Every rung has a writer, so the ladder reaches its terminal states and
+:meth:`ConsolidatedMemoryManager.prunable` — the decay pass's
+transfer-before-prune rail — is fed rather than structurally empty:
+recording a cited cluster lands it VERIFIED, a later cluster that covers an
+untriaged row's whole member set supersedes it
+(:meth:`ConsolidatedMemoryManager.supersede_covered_by`), and the merged fix
+of a core gap promotes the rule into that fix's home and expires the prose
+(:meth:`ConsolidatedMemory.retire`). Only PROMOTED and EXPIRED count as a durable
+home: a superseded rule's lesson lives in its replacement, which has to land first.
+
 A CANDIDATE may not advance without a real cited mistake
 (``verified_citation``) — an uncited rule is a hallucinated lesson and is
 refused promotion. BINDING feedback is never silently dropped: expiring a
@@ -21,6 +31,7 @@ Mirrors the durable-gate family already in core —
 transitions, custom manager).
 """
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models
@@ -43,18 +54,34 @@ class ConsolidatedMemoryManager(models.Manager["ConsolidatedMemory"]):
     """Read surface for the consolidation engine and the index pruner."""
 
     def prunable(self) -> "models.QuerySet[ConsolidatedMemory]":
-        """Rows whose terminal status + recorded durable home let an index line be pruned."""
-        return self.filter(
-            status__in=[
-                ConsolidatedMemory.Status.PROMOTED,
-                ConsolidatedMemory.Status.SUPERSEDED,
-                ConsolidatedMemory.Status.EXPIRED,
-            ],
-        ).exclude(durable_destination="")
+        """Rows whose landed lesson + recorded durable home let an index line be pruned."""
+        return self.filter(status__in=ConsolidatedMemory.Status.homed()).exclude(durable_destination="")
 
     def verified_for_overlay(self, overlay: str) -> "models.QuerySet[ConsolidatedMemory]":
         """VERIFIED rows for *overlay* — distilled rules with a real cited mistake."""
         return self.filter(overlay=overlay, status=ConsolidatedMemory.Status.VERIFIED)
+
+    def supersede_covered_by(self, row: "ConsolidatedMemory") -> list["ConsolidatedMemory"]:
+        """Supersede every untriaged row whose members *row* wholly covers, returning them.
+
+        A re-clustered lesson gains a member and so a NEW ``cluster_key`` (sha256 over
+        the member paths), leaving the narrower row queued for triage beside the wider
+        one that carries the same lesson plus more. The narrow row is retired from the
+        queue and pointed at its replacement. Superseding is not a durable home — the
+        replacement still has to land before :meth:`prunable` lets decay act on either.
+        A strict superset only: a partial overlap is a different cluster. A row Pass 2
+        already routed keeps its disposition decision, and a BINDING row is never
+        absorbed (Decision-3, the merge phase's rule for two binding near-duplicates).
+        """
+        live = (
+            self.exclude(pk=row.pk)
+            .filter(overlay=row.overlay, is_binding=False, disposition=ConsolidatedMemory.Disposition.UNTRIAGED)
+            .exclude(status__in=ConsolidatedMemory.Status.terminal())
+        )
+        covered = [other for other in live if other.member_paths and other.member_paths < row.member_paths]
+        for other in covered:
+            other.supersede(row)
+        return covered
 
     def schema_count(self, overlay: str) -> int:
         """Count of all consolidation rows recorded for *overlay*."""
@@ -99,6 +126,16 @@ class ConsolidatedMemory(models.Model):
         PROMOTED = "promoted", "Promoted"
         SUPERSEDED = "superseded", "Superseded"
         EXPIRED = "expired", "Expired"
+
+        @classmethod
+        def terminal(cls) -> frozenset["ConsolidatedMemory.Status"]:
+            """The rungs a rule stops on — landed in a durable home, replaced, or retired."""
+            return frozenset({cls.PROMOTED, cls.SUPERSEDED, cls.EXPIRED})
+
+        @classmethod
+        def homed(cls) -> frozenset["ConsolidatedMemory.Status"]:
+            """The terminal rungs whose lesson has landed somewhere durable; a replaced rule has not."""
+            return frozenset({cls.PROMOTED, cls.EXPIRED})
 
     class Disposition(models.TextChoices):
         """Pass-2 (#2426) draining queue: where a consolidated rule's lesson belongs.
@@ -165,13 +202,18 @@ class ConsolidatedMemory(models.Model):
         is_binding: bool,
         overlay: str = "",
         durable_destination: str = "",
+        verified_citation: str = "",
     ) -> "ConsolidatedMemory":
         """Idempotently record one cluster keyed on ``cluster_key``.
 
         A re-run that re-clusters the same members (same ``cluster_key``)
         returns the existing row untouched rather than distilling a
-        duplicate. The row is created as a CANDIDATE on first record.
+        duplicate. A cited cluster is recorded VERIFIED — the caller's citation
+        was already proven present in a cited snippet, so a second trust step
+        would assert nothing; an uncited one is a CANDIDATE until
+        :meth:`mark_verified` supplies the mistake it rests on.
         """
+        cited = verified_citation.strip()
         row, _ = cls.objects.get_or_create(
             cluster_key=cluster_key,
             defaults={
@@ -182,6 +224,8 @@ class ConsolidatedMemory(models.Model):
                 "is_binding": is_binding,
                 "overlay": overlay,
                 "durable_destination": durable_destination,
+                "verified_citation": cited,
+                "status": cls.Status.VERIFIED if cited else cls.Status.CANDIDATE,
             },
         )
         return row
@@ -273,26 +317,45 @@ class ConsolidatedMemory(models.Model):
         """TICKETED → RESOLVED_RETIRED, archiving the prose now its fix has landed.
 
         The end of the drain: the gap the memory confessed is closed in code, so the
-        prose is retired (archived, never silently dropped). Refuses a BINDING row —
-        binding feedback is load-bearing user doctrine, raising
-        :class:`BindingFeedbackError` rather than retiring it.
+        rule is PROMOTED into the home that fix landed in and the prose EXPIRED
+        (archived, never silently dropped) — the terminal pair
+        :meth:`ConsolidatedMemoryManager.prunable` reads, so decay may finally age out
+        the memories this row homes. Refuses a BINDING row — binding feedback is
+        load-bearing user doctrine, raising :class:`BindingFeedbackError` rather than
+        retiring it.
         """
         if self.is_binding:
             msg = f"refusing to retire BINDING consolidated rule {self.pk} — binding feedback is never dropped"
             raise BindingFeedbackError(msg)
+        self.mark_promoted(self.durable_destination)
+        self.expire(archive_path)
         self.disposition = self.Disposition.RESOLVED_RETIRED
-        self.archive_path = archive_path.strip()
-        self.expired_at = timezone.now()
-        self.save(update_fields=["disposition", "archive_path", "expired_at", "updated_at"])
+        self.save(update_fields=["disposition", "updated_at"])
+
+    @property
+    def member_paths(self) -> frozenset[str]:
+        """The member path strings behind this cluster, whatever shape they were stored in.
+
+        A member is a bare path string (what the engine writes) or a ``{"path": ...}``
+        object (older / hand-written rows); anything else is not a member.
+        """
+        if not isinstance(self.source_files, list):
+            return frozenset()
+        paths = {member for member in self.source_files if isinstance(member, str)}
+        paths.update(
+            str(member["path"])
+            for member in self.source_files
+            if isinstance(member, Mapping) and isinstance(member.get("path"), str)
+        )
+        return frozenset(paths)
 
     @property
     def can_prune_index_line(self) -> bool:
-        """True iff this row is terminal and has a recorded durable home.
+        """True iff this row's lesson has landed and its durable home is recorded.
 
-        The index pruner removes a MEMORY.md index line only once the rule
-        has reached a terminal status (promoted/superseded/expired) AND its
-        durable destination is recorded — otherwise pruning the line would
-        orphan the rule with no recoverable home.
+        The index pruner removes a MEMORY.md index line only once the rule has
+        landed (promoted or expired) AND its durable destination is recorded —
+        otherwise pruning the line would orphan the rule with no recoverable home.
+        A superseded rule has not landed; its replacement carries the lesson.
         """
-        terminal = {self.Status.PROMOTED, self.Status.SUPERSEDED, self.Status.EXPIRED}
-        return self.status in terminal and bool(self.durable_destination)
+        return self.status in self.Status.homed() and bool(self.durable_destination)

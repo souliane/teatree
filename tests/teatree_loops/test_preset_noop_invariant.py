@@ -1,10 +1,11 @@
-"""The #3159 empty-table no-op invariant at the loop-admission level.
+"""The empty-table fail-open invariant at the loop-admission level.
 
-With no presets, no active schedule, and no override, every loop's admission is
-byte-for-byte the pre-#3159 two-plane verdict (``Loop.enabled`` AND not
-``LoopState``-held). A NON-activated preset (a row with entries but no override /
-active schedule) never changes admission — only activation does. This mirrors the
-#1913/#1775 no-regression shape at the level that actually gates the fleet.
+With no presets, no active schedule and no override, nothing can resolve a posture at all
+— so admission FAILS OPEN and every loop runs unless a hold or a manual override refuses
+it. A NON-activated preset (a row with entries but no override / active schedule) never
+changes admission; only activation does. The direction matters: a resolution that cannot
+answer must not mask the fleet, which is what an empty TOTAL table would say if it were
+read as an answer.
 """
 
 import datetime as dt
@@ -32,9 +33,12 @@ class TestEmptyTableNoOpInvariant(django.test.TestCase):
         # representative spread WITHOUT recreating rows (an update never trips the
         # prompt-xor-script constraint a fresh create would on a prompt-backed loop).
         seed_default_loops_and_prompts()
+        Mode.objects.all().delete()
         self.names = _interval_loop_names()
         if self.names:
-            Loop.objects.filter(name=self.names[0]).update(enabled=False, last_run_at=None)
+            Loop.objects.filter(name=self.names[0]).update(
+                enabled=False, override_reason="test override", last_run_at=None
+            )
         if len(self.names) >= 2:
             LoopState.objects.pause(self.names[1])
 
@@ -48,10 +52,10 @@ class TestEmptyTableNoOpInvariant(django.test.TestCase):
             if name in due_registry
             and (row := rows.get(name)) is not None
             and row.is_due(now)
-            and loop_state_admits(configured_enabled=row.enabled, held=name in held, preset_state=None, forced=None)
+            and loop_state_admits(held=name in held, manual=row.enabled, preset_state=True)
         }
 
-    def test_admission_matches_base_two_plane_verdict(self) -> None:
+    def test_admission_matches_the_fail_open_verdict(self) -> None:
         now = timezone.now()
         assert set(admitted_loop_names(now)) & set(self.names) == self._base_expected(now)
 
@@ -60,6 +64,6 @@ class TestEmptyTableNoOpInvariant(django.test.TestCase):
         before = set(admitted_loop_names(now)) & set(self.names)
         # A preset that would force everything off — but it is NOT activated
         # (no override, no active schedule), so admission is unchanged.
-        Mode.objects.create(name="off", entries=dict.fromkeys(self.names, False))
+        Mode.objects.update_or_create(name="off", defaults={"entries": dict.fromkeys(self.names, False)})
         after = set(admitted_loop_names(now)) & set(self.names)
         assert after == before == self._base_expected(now)

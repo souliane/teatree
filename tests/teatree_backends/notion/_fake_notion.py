@@ -46,6 +46,10 @@ class FakeNotion:
         self.page_parent: dict[str, Any] = {"type": "workspace", "workspace": True}
         # What `POST /v1/search` answers: the objects granted to this integration.
         self.shared_objects: list[dict[str, Any]] = [{"object": "page", "id": self.page_id}]
+        self.unshared_pages: set[str] = set()
+        self.unshared_blocks: set[str] = set()
+        self.unshared_databases: set[str] = set()
+        self.search_has_more = False
         self.rows: list[dict[str, Any]] | None = None
         self.query_fail_with: tuple[int, str] | None = None
         self.query_filters: list[dict[str, Any]] = []
@@ -115,7 +119,8 @@ class FakeNotion:
         self.bearer_tokens.append(request.headers.get("authorization", "").removeprefix("Bearer "))
         if path == "/users/me":
             return self._identity_response()
-        if self.fail_with is not None:
+        # A forced failure targets the operation under test, never the parent read the write guard makes first.
+        if self.fail_with is not None and not _is_parent_read(request, path):
             status, code = self.fail_with
             return httpx.Response(status, json={"object": "error", "status": status, "code": code, "message": code})
         return self._route(request, path)
@@ -131,16 +136,27 @@ class FakeNotion:
 
     def _route(self, request: httpx.Request, path: str) -> httpx.Response:
         if path == "/search":
-            return httpx.Response(200, json={"results": self.shared_objects, "has_more": False})
-        if path.startswith("/pages/"):
-            return self._page_response(request, path.removeprefix("/pages/"))
+            return httpx.Response(
+                200,
+                json={"results": self.shared_objects, "has_more": self.search_has_more, "next_cursor": "next"},
+            )
+        if path.endswith("/query"):
+            return self._query_response(request)
+        if path.startswith(("/pages/", "/databases/")):
+            return self._page_or_database_response(request, path)
         if path == "/comments":
             if request.method == "POST":
                 return self._create_comment_response(request)
             return httpx.Response(200, json={"results": self.comments, "has_more": False})
-        if path.endswith("/query"):
-            return self._query_response(request)
         return self._route_block(request, path)
+
+    def _page_or_database_response(self, request: httpx.Request, path: str) -> httpx.Response:
+        if path.startswith("/pages/"):
+            return self._page_response(request, path.removeprefix("/pages/"))
+        database_id = path.removeprefix("/databases/")
+        if database_id in self.unshared_databases:
+            return httpx.Response(404, json={"object": "error", "status": 404, "code": "object_not_found"})
+        return httpx.Response(200, json={"object": "database", "id": database_id})
 
     def _query_response(self, request: httpx.Request) -> httpx.Response:
         if self.query_fail_with is not None:
@@ -151,6 +167,8 @@ class FakeNotion:
         return httpx.Response(200, json={"results": rows, "has_more": False})
 
     def _page_response(self, request: httpx.Request, page_id: str) -> httpx.Response:
+        if page_id in self.unshared_pages:
+            return httpx.Response(404, json={"object": "error", "status": 404, "code": "object_not_found"})
         if request.method == "PATCH" and not self.suppress_property_writes:
             payload = json.loads(request.content.decode())
             for name, value in payload.get("properties", {}).items():
@@ -193,9 +211,23 @@ class FakeNotion:
                 return self._children_response(block_id)
             return self._append_response(request, block_id)
         block_id = path.removeprefix("/blocks/")
+        if request.method == "GET":
+            if block_id in self.unshared_blocks:
+                return httpx.Response(404, json={"object": "error", "status": 404, "code": "object_not_found"})
+            return httpx.Response(200, json={"object": "block", "id": block_id, "parent": self._parent_link(block_id)})
         if request.method == "DELETE":
             return self._delete_response(block_id)
         return self._update_response(request, block_id)
+
+    def _parent_link(self, block_id: str) -> dict[str, Any]:
+        if block_id == self.page_id:
+            return self.page_parent
+        holder = next((parent for parent, kids in self.children.items() if block_id in kids), None)
+        if holder is None:
+            return {"type": "workspace", "workspace": True}
+        if holder == self.page_id:
+            return {"type": "page_id", "page_id": holder}
+        return {"type": "block_id", "block_id": holder}
 
     def _children_response(self, block_id: str) -> httpx.Response:
         results = [self.blocks[child] for child in self.children.get(block_id, [])]
@@ -236,6 +268,10 @@ class FakeNotion:
         return httpx.Response(200, json=block)
 
 
+def _is_parent_read(request: httpx.Request, path: str) -> bool:
+    return request.method == "GET" and path.startswith("/blocks/") and not path.endswith("/children")
+
+
 def _span(text: str) -> dict[str, Any]:
     return {"type": "text", "plain_text": text, "annotations": {}, "text": {"content": text}}
 
@@ -269,4 +305,6 @@ def install_fake_notion(monkeypatch: Any) -> FakeNotion:
         original(self, **kwargs)
 
     monkeypatch.setattr(httpx.Client, "__init__", patched)
+    # The fake page is the internal root every write in these tests lands under.
+    monkeypatch.setattr("teatree.backends.notion.write_guard.notion_write_roots", lambda _overlay: ([fake.page_id], []))
     return fake

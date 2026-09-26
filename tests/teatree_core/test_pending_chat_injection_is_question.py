@@ -9,6 +9,7 @@ implementation must turn AT LEAST three of the assertions below RED
 """
 
 import pytest
+from django.test import TestCase
 
 from teatree.core.models import PendingChatInjection
 from teatree.core.models.pending_chat_injection import _classify_is_question
@@ -53,6 +54,31 @@ REAL_INFO: tuple[str, ...] = (
     "seems you still don't know how to comply with the MR title/desc...",
     "someone reviewed my MR: <gitlab url>",
 )
+
+
+class TestQuestionPrefilter(TestCase):
+    def test_database_question_prefilter_covers_python_heuristic(self) -> None:
+        examples = (
+            *REAL_QUESTIONS,
+            *REAL_DIRECTIVES,
+            *REAL_INFO,
+            "why2 is odd",
+            "  please explain\nthis",
+            "hi\nthere?",
+            "why_not",
+        )
+        rows = PendingChatInjection.objects.bulk_create(
+            PendingChatInjection(channel="D", slack_ts=f"filter-{index}", text=value)
+            for index, value in enumerate(examples)
+        )
+
+        matched = set(
+            PendingChatInjection.objects.filter(text__regex=PendingChatInjection.question_text_regex).values_list(
+                "pk", flat=True
+            )
+        )
+
+        assert matched == {row.pk for row in rows if row.is_question}
 
 
 class TestRealQuestionsClassifyTrue:

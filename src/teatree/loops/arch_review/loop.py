@@ -28,7 +28,7 @@ def _build_jobs(
 
 MINI_LOOP = MiniLoop(
     name="arch_review",
-    default_cadence_seconds=3600,  # 1h tick rate — internal cadence gates daily firing
+    default_cadence_seconds=3600,  # inert: the live cadence is the shipped daily row, not this
     build_jobs=_build_jobs,
     declared_reach=frozenset(),
     determinism=LoopDeterminism.AI,

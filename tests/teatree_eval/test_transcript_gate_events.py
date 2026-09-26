@@ -1,6 +1,13 @@
 """`extract_gate_events` reads the runner-synthesized hook_response events."""
 
-from teatree.eval.transcript import _GATE_OUTPUT_SNIPPET_CAP, extract_gate_events, parse_stream_json
+import json
+
+from teatree.eval.transcript import (
+    _GATE_ASSISTANT_TEXT_CAP,
+    _GATE_OUTPUT_SNIPPET_CAP,
+    extract_gate_events,
+    parse_stream_json,
+)
 
 
 def _events(*lines: str) -> list:
@@ -23,6 +30,22 @@ def test_a_non_block_pretooluse_response_is_not_a_stop_block() -> None:
     gate_events = extract_gate_events(events)
     assert len(gate_events) == 1
     assert gate_events[0].is_stop_block is False
+
+
+def test_pretooluse_audit_context_is_extracted_and_text_is_capped() -> None:
+    assistant_text = "p" * (_GATE_ASSISTANT_TEXT_CAP + 20)
+    events = parse_stream_json(
+        '{"type":"system","subtype":"hook_response","hook_event":"PreToolUse",'
+        '"outcome":"allow","sequence":3,"tool_name":"Bash","tool_use_id":"call-3",'
+        '"gate_id":"visible_plan_gate","assistant_text":' + json.dumps(assistant_text) + "}"
+    )
+
+    event = extract_gate_events(events)[0]
+    assert event.sequence == 3
+    assert event.tool_name == "Bash"
+    assert event.tool_use_id == "call-3"
+    assert event.gate_id == "visible_plan_gate"
+    assert event.assistant_text == assistant_text[:_GATE_ASSISTANT_TEXT_CAP]
 
 
 def test_hook_started_and_assistant_events_are_ignored() -> None:

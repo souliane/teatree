@@ -20,8 +20,26 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
+
 #: GitHub's own page size when the request names none.
 GITHUB_DEFAULT_PER_PAGE = 30
+
+
+@pytest.fixture(autouse=True)
+def routed_github_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give loop unit tests an explicit owner-routed token, never ambient CLI auth."""
+    monkeypatch.setattr(
+        "teatree.forge_credentials.resolve_slug_token",
+        lambda _slug, **_kwargs: ForgeTokenResolution(
+            credential="github_token",
+            overlay_name="test-overlay",
+            state=ForgeTokenState.TOKEN,
+            token="test-token",
+            pass_key="test/github",
+            route_source="overlay_db",
+        ),
+    )
 
 
 def check_run(name: str, status: str = "completed", conclusion: str = "success") -> dict[str, str]:

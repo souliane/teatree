@@ -13,7 +13,7 @@ from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionErro
 from teatree.core.merge.execution import MergeOutcome, assert_merge_preconditions, execute_bound_merge, merge_ticket_pr
 from teatree.core.merge.head_guard import restore_caller_branch
 from teatree.core.merge.host_kind import resolve_host_kind
-from teatree.core.merge.post_hook import MergeAuditAuthorizers, record_merge_and_advance
+from teatree.core.merge.post_hook import MergeAuditStamps, record_merge_and_advance
 from teatree.core.merge.pr_slug_resolution import (
     _GIT_BRANCH_PREFIXES,
     _looks_like_owner_repo,
@@ -29,7 +29,7 @@ from teatree.core.merge.pr_slug_resolution import (
 __all__ = [
     "_GIT_BRANCH_PREFIXES",
     "CodeHostQuery",
-    "MergeAuditAuthorizers",
+    "MergeAuditStamps",
     "MergeHeadMovedError",
     "MergeOutcome",
     "MergePrecheck",

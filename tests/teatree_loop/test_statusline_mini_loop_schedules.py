@@ -29,14 +29,8 @@ def _prompt() -> Prompt:
     return prompt
 
 
-def _make_loop(name: str, cadence: int, *, last_run_at: dt.datetime | None = None, enabled: bool = True) -> Loop:
-    return Loop.objects.create(
-        name=name,
-        delay_seconds=cadence,
-        prompt=_prompt(),
-        enabled=enabled,
-        last_run_at=last_run_at,
-    )
+def _make_loop(name: str, cadence: int, *, last_run_at: dt.datetime | None = None) -> Loop:
+    return Loop.objects.create(name=name, delay_seconds=cadence, prompt=_prompt(), last_run_at=last_run_at)
 
 
 @django.test.override_settings(USE_TZ=True)
@@ -58,10 +52,11 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
         schedules = {row.name: row.next_fire_at for row in mini_loop_schedules()}
         assert schedules["inbox"] is None
 
-    def test_disabled_loop_is_excluded(self) -> None:
+    def test_a_force_off_loop_is_excluded(self) -> None:
         Loop.objects.all().delete()
         _make_loop("dispatch", 300)
-        _make_loop("review", 300, enabled=False)
+        _make_loop("review", 300)
+        Loop.objects.set_manual_override("review", runs=False, reason="test override")
         names = [row.name for row in mini_loop_schedules()]
         assert names == ["dispatch"]
         assert "review" not in names
@@ -93,27 +88,26 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
 class TestMiniLoopSchedulesHonourPresetMask(django.test.TestCase):
     """The statusline countdown mirrors the #3159 preset mask, not just enabled+held.
 
-    A preset-masked-off loop must NOT show a live countdown for a tick that skips
-    it; a preset-forced-ON (base-disabled) loop MUST appear because the tick fires
-    it. Before this fix the ``enabled and not held`` filter got both wrong.
+    A preset-masked-off loop must NOT show a live countdown for a tick that skips it; a
+    preset-admitted one MUST appear because the tick fires it.
     """
 
     def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
         Mode.objects.create(name=preset_name, entries=entries)
-        ModeOverride.objects.set_override(preset_name)
+        ModeOverride.objects.set_override(preset_name, reason="test override")
 
     def test_preset_masked_off_loop_is_excluded(self) -> None:
         Loop.objects.all().delete()
         _make_loop("dispatch", 300, last_run_at=timezone.now())
         _make_loop("review", 300, last_run_at=timezone.now())
-        self._activate("maintenance", {"review": False})
+        self._activate("maintenance", {"review": False, "dispatch": True})
         names = [row.name for row in mini_loop_schedules()]
         assert "review" not in names
         assert "dispatch" in names
 
-    def test_preset_forced_on_base_disabled_loop_is_included(self) -> None:
+    def test_a_preset_admitted_loop_is_included(self) -> None:
         Loop.objects.all().delete()
-        _make_loop("audit", 300, last_run_at=timezone.now(), enabled=False)
+        _make_loop("audit", 300, last_run_at=timezone.now())
         self._activate("present", {"audit": True})
         names = [row.name for row in mini_loop_schedules()]
         assert "audit" in names

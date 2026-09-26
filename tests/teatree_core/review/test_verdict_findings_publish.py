@@ -14,6 +14,7 @@ from teatree.core.review.verdict_findings import marker_for
 from teatree.core.review.verdict_findings_publish import ACTION, FindingsPublishError, publish_verdict_findings
 from teatree.core.send_proxy import OutboundLeakError
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -50,7 +51,7 @@ class _PublishBase(TestCase):
 
     @pytest.fixture(autouse=True)
     def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_POST_MODE", "T3_ON_BEHALF_AUTO_ACTIONS", "T3_BANNED_TERMS"):
+        for env in ("T3_OVERLAY_NAME", "T3_ON_BEHALF_AUTO_ACTIONS", "T3_BANNED_TERMS"):
             monkeypatch.delenv(env, raising=False)
         self.monkeypatch = monkeypatch
 
@@ -69,7 +70,7 @@ class _PublishBase(TestCase):
 
     @staticmethod
     def _allow_posting() -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        seed_permitting_posture()
         ConfigSetting.objects.set_value("private_repos", [_PRIVATE_SLUG])
 
 
@@ -127,7 +128,7 @@ class TestPublishFailsLoud(_PublishBase):
         assert "no code-host backend resolved" in str(exc.value)
 
     def test_a_banned_term_bound_for_a_public_repo_is_refused_and_never_posted(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
+        seed_permitting_posture()
         self.monkeypatch.setenv("T3_BANNED_TERMS", "democorp")
         verdict = self._verdict([{"severity": "blocker", "summary": "democorp secret in the log"}], slug="pub/repo")
         host = _FakeHost()

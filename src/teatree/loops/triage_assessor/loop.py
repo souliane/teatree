@@ -1,11 +1,10 @@
 """Triage-assessor mini-loop — assess OPEN needs-triage issues behind an ask-gate.
 
-Per-overlay loop, default-OFF behind the ``triage_assessor_enabled`` gate.
-Consumes ``Domain.TRIAGE_ASSESSOR`` through the public
+Per-overlay loop. Consumes ``Domain.TRIAGE_ASSESSOR`` through the public
 :func:`teatree.loop.domain_jobs.jobs_for_domain` seam, so
 :func:`teatree.loop.scanner_factories._triage_assessor_scanner_for` stays the
-single decision point for whether any scanner is emitted — with the default-OFF
-config this mini-loop contributes nothing and the registry/legacy parity stays
+single decision point for whether any scanner is emitted — whether the loop runs
+at all is the active preset's opinion, and the registry/legacy parity stays
 byte-for-byte unchanged.
 
 The emitted ``triage_assessor.queued`` signal routes to the shell-denied

@@ -15,10 +15,12 @@ hook and when imported as ``hooks.scripts.hook_router`` in tests.
 
 import re
 import shlex
+import stat
 from pathlib import Path
+from typing import Final
 from urllib.parse import unquote
 
-from hooks.scripts.forge_api_detect import _is_api_create_endpoint_write
+from hooks.scripts.forge_api_detect import API_FIELD_SEPARATOR, _is_api_create_endpoint_write
 from hooks.scripts.gate_result import GateSkipped
 
 # The MR-mutation verb itself — ``glab mr create``/``update``. Matched against
@@ -50,6 +52,15 @@ _MR_DESC_FLAG_RE = re.compile(r"""--description[ =]+(['"])(?P<val>.*?)\1""", re.
 # description WAS intended — re-read it from the resolvable file arg if any.
 _MR_DESC_FLAG_PRESENT_RE = re.compile(r"(?:--description-file|--description\b|\s-F\b)")
 
+# Every shape an unreadable file path raises. Only the first is an OSError: a latin-1 file read
+# as utf-8 raises UnicodeDecodeError, an unknown `~user` raises RuntimeError, and a NUL byte in
+# the path raises ValueError. A raise here is a gate BYPASS rather than a crash — the router
+# treats a handler's exception as cannot-evaluate and skips the whole gate.
+_UNREADABLE_FILE: Final[tuple[type[Exception], ...]] = (OSError, ValueError, RuntimeError)
+# GitLab's own MR-description limit, so the cap can never refuse a body the forge would
+# have accepted (GitHub's PR-body cap is 64 KiB).
+_MAX_MESSAGE_FILE_BYTES: Final[int] = 1_048_576
+
 # An unexpanded shell construct inside a DOUBLE-quoted value — command
 # substitution ``$(…)``, parameter expansion ``${…}``/``$VAR``, or a backtick.
 _DYNAMIC_VALUE_RE = re.compile(r"\$[({A-Za-z_]|`")
@@ -61,6 +72,19 @@ _DYNAMIC_FIELD_REASON = (
     "that only the shell resolves at runtime, so the hook never sees the real text"
 )
 _UPDATE_SETS_NO_FIELD_REASON = "this `glab mr update` sets neither a title nor a description"
+# The file-arg twin of ``_DYNAMIC_FIELD_REASON`` — see ``_dynamic_message_file_arg``.
+_DYNAMIC_FILE_ARG_REASON = (
+    "the description-file path is an unexpanded shell construct ({field}) that only the "
+    "shell resolves at runtime, so the hook cannot read the description it names — this is "
+    "NOT an empty description. Write the body to a literal path first, then pass that path "
+    "(`--description-file <path>`), if you want the gate to validate it locally"
+)
+
+# A help invocation prints usage and mutates nothing, so it carries no metadata to
+# govern — and it is the FIRST thing an operator reaches for once this gate has refused
+# them, which is exactly when refusing it again is worst. Matched as a whole argument so
+# a `--title '--help me'` is untouched.
+_HELP_FLAG_RE = re.compile(r"(?:^|\s)(?:--help|-h)(?=\s|$)")
 
 # File-based message arg — the standard multi-line path (#831's shape):
 # ``glab mr create --description-file FILE`` / ``-F FILE``. The captured token
@@ -68,7 +92,8 @@ _UPDATE_SETS_NO_FIELD_REASON = "this `glab mr update` sets neither a title nor a
 # :func:`_read_message_file`. Long flags require a space or ``=`` separator;
 # the short ``-F``/``-C`` branch also accepts git's glued form (``-F<path>``).
 _MSG_FILE_FLAG_RE = re.compile(
-    r"(?:(?:--description-file|--body-file|--file|--description)[ =]+|-[FC][ =]*)['\"]?([^'\"\s]+)['\"]?",
+    r"(?:(?:--description-file|--body-file|--file|--description)[ =]+|-[FC][ =]*)"
+    r"(?P<quote>['\"]?)(?P<arg>[^'\"\s]+)['\"]?",
 )
 
 
@@ -85,9 +110,18 @@ def strip_quoted_and_heredoc(command: str) -> str:
     common case (a commit message / doc / verification script that merely quotes
     the phrase) no longer false-blocks.
     """
-    without_heredoc = _HEREDOC_RE.sub(" ", command)
-    without_squote = _SQUOTE_SPAN_RE.sub(" ", without_heredoc)
+    without_squote = _SQUOTE_SPAN_RE.sub(" ", strip_heredoc(command))
     return _DQUOTE_SPAN_RE.sub(" ", without_squote)
+
+
+def strip_heredoc(command: str) -> str:
+    """Command with heredoc bodies removed, quoted spans KEPT.
+
+    The half of the skeleton a caller wants when it must still read INSIDE a
+    quoted span — ``foreign_branch_push_gate`` tokenizes ``bash -c '<payload>'``
+    and would lose the payload to the quote pass.
+    """
+    return _HEREDOC_RE.sub(" ", command)
 
 
 def _looks_dynamic_value(match: "re.Match[str] | None") -> bool:
@@ -152,22 +186,67 @@ def _resolved_literal_value(command: str, flag: str, regex_match: "re.Match[str]
     return regex_match.group("val")
 
 
-def _read_message_file(command: str) -> str | None:
-    """Read a file-based message arg (``-F``/``--description-file``/etc.).
+def _message_file_arg(command: str) -> str | None:
+    """The raw token captured as the file-based message arg, or ``None`` if absent."""
+    match = _MSG_FILE_FLAG_RE.search(command)
+    return match.group("arg") if match else None
 
-    The standard multi-line path is exactly #831's shape. A
-    missing/unreadable/binary file fails open (returns ``None``: no scan, no
-    crash) — matching the other t3-shelling hooks' posture of never blocking the
-    agent on a broken environment.
+
+def _dynamic_message_file_arg(command: str) -> str | None:
+    """The file-arg token when it is an unexpanded shell construct, else ``None``.
+
+    ``--description-file "$(cat body.md)"`` captures ``$(cat`` as the "filename":
+    the hook sees the command BEFORE the shell expands it, and the capture stops
+    at the first whitespace inside the substitution. Reading that fails, and the
+    old fall-through returned ``""`` — so the gate refused the MR with "MR
+    description is empty", a reason that is simply untrue. Detected with the same
+    :data:`_DYNAMIC_VALUE_RE` the inline ``--description "$(…)"`` branch uses, so
+    both spellings of the same unresolvable body reach the same skip verdict.
     """
     match = _MSG_FILE_FLAG_RE.search(command)
     if match is None:
         return None
-    path = Path(match.group(1))
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    arg = match.group("arg")
+    # Shell expansion is inert inside single quotes. Retaining the opening quote
+    # from the raw command keeps a literal ``'$BODY.md'`` distinct from the
+    # unresolvable ``"$BODY.md"`` and ``$BODY.md`` spellings.
+    if match.group("quote") == "'" or not _DYNAMIC_VALUE_RE.search(arg):
         return None
+    return arg
+
+
+def _read_capped_regular_file(path: Path) -> str | None:
+    """Text of a REGULAR file no larger than the forge itself accepts, else ``None``.
+
+    ``stat`` comes FIRST because it answers without opening: ``open`` on a FIFO with no
+    writer blocks forever and a character device never ends, and a read that outlives the
+    router's budget gets the whole process killed — skipping every OTHER gate in the
+    chain, not just this one. Reading cap+1 rather than trusting ``st_size`` closes the
+    stat-then-open race on a file still growing. Never raises: a raise is the same
+    gate BYPASS the caller's ``_UNREADABLE_FILE`` arm exists to prevent.
+    """
+    try:
+        if not stat.S_ISREG(path.stat().st_mode):
+            return None
+        with path.open("rb") as handle:
+            raw = handle.read(_MAX_MESSAGE_FILE_BYTES + 1)
+        return None if len(raw) > _MAX_MESSAGE_FILE_BYTES else raw.decode("utf-8")
+    except _UNREADABLE_FILE:
+        return None
+
+
+def _read_message_file(command: str) -> str | None:
+    """Read a file-based message arg (``-F``/``--description-file``/etc.).
+
+    The standard multi-line path is exactly #831's shape. A
+    missing/unreadable/binary/non-regular/over-cap file fails open (returns ``None``: no
+    scan, no crash) — matching the other t3-shelling hooks' posture of never blocking the
+    agent on a broken environment.
+    """
+    arg = _message_file_arg(command)
+    if arg is None:
+        return None
+    return _read_capped_regular_file(Path(arg))
 
 
 def _extract_inline_or_file_desc(command: str) -> "str | GateSkipped":
@@ -180,11 +259,13 @@ def _extract_inline_or_file_desc(command: str) -> "str | GateSkipped":
     trivially "valid"-looking) string.
 
     Returns a :class:`GateSkipped` when the inline value is an unexpanded
-    ``$(…)``/``$VAR`` the hook cannot resolve (:func:`_looks_dynamic_value`) — the
-    caller then skips validation entirely and SAYS SO (never-lockout; the remote
-    CI gate validates the real, runtime-expanded body). Returns ``""`` only when a
-    file-based source is unreadable — the validator then rejects the empty first
-    line, the correct verdict for a genuinely empty description.
+    ``$(…)``/``$VAR`` the hook cannot resolve (:func:`_looks_dynamic_value`), and
+    likewise when the FILE ARG itself is one (:func:`_dynamic_message_file_arg`)
+    — the caller then skips validation entirely and SAYS SO (never-lockout; the
+    remote CI gate validates the real, runtime-expanded body). Returns ``""``
+    only when a file-based source names a real path that is unreadable — the
+    validator then rejects the empty first line, the correct verdict for a
+    genuinely empty description.
     """
     inline = _MR_DESC_FLAG_RE.search(command)
     if inline is not None and inline.group("val"):
@@ -192,6 +273,9 @@ def _extract_inline_or_file_desc(command: str) -> "str | GateSkipped":
             return GateSkipped(_DYNAMIC_FIELD_REASON.format(field="--description"))
         return _resolved_literal_value(command, "--description", inline)
     if _MR_DESC_FLAG_PRESENT_RE.search(command):
+        dynamic_arg = _dynamic_message_file_arg(command)
+        if dynamic_arg is not None:
+            return GateSkipped(_DYNAMIC_FILE_ARG_REASON.format(field=dynamic_arg))
         from_file = _read_message_file(command)
         if from_file is not None:
             return from_file
@@ -203,10 +287,11 @@ def extract_cli_mr_fields(command: str) -> "tuple[str, str] | GateSkipped | None
 
     Three outcomes, deliberately distinct (the mute-skip class, #1528's sibling):
 
-    ``None`` — NOT an MR mutation at all. The command does not actually invoke
-    ``glab mr create/update``; the verb only appears inside a quoted arg or a
-    heredoc body (see :func:`strip_quoted_and_heredoc`). The one outcome that is
-    legitimately silent — this gate has no opinion on the call.
+    ``None`` — NOT an MR mutation at all. Either the command does not actually invoke
+    ``glab mr create/update`` (the verb only appears inside a quoted arg or a heredoc
+    body, see :func:`strip_quoted_and_heredoc`), or it is a ``--help`` that prints usage
+    and changes nothing. The one outcome that is legitimately silent — this gate has no
+    opinion on the call.
 
     :class:`GateSkipped` — it IS an MR mutation, but the gate cannot evaluate it,
     carrying the human-readable reason the caller must print. Either a field is an
@@ -222,8 +307,9 @@ def extract_cli_mr_fields(command: str) -> "tuple[str, str] | GateSkipped | None
     both-fields contract — an empty title/description on a create is exactly the
     bad metadata the gate must catch (#119).
     """
-    op_match = _MR_OP_RE.search(strip_quoted_and_heredoc(command))
-    if op_match is None:
+    stripped = strip_quoted_and_heredoc(command)
+    op_match = _MR_OP_RE.search(stripped)
+    if op_match is None or _HELP_FLAG_RE.search(stripped):
         return None
     operation = op_match.group(1)
     title_match = _MR_TITLE_FLAG_RE.search(command)
@@ -356,22 +442,112 @@ def merge_target_managed_state(command: str, managed_slugs: list[str]) -> bool |
 
 
 # REST-API field args set on a ``glab api``/``gh api`` MR/PR write
-# (``--field title=…`` / ``-f description=…`` / ``--raw-field …``). Three
-# shapes, in order:
-#   1. whole token quoted — ``--field 'description=multi word …'`` (the common
-#      shell form; the value runs to the matching CLOSING outer quote, so
-#      embedded spaces and newlines are kept);
-#   2. value quoted only — ``--field description='multi word …'``;
-#   3. bare value — ``--field description=oneword`` (runs to next whitespace).
-# ``body`` is GitHub's PR-description field (``gh api … -f body=…``); it is
-# normalised to ``description`` so the overlay validator sees one key.
+# (``--field title=…`` / ``-f description=…`` / ``--raw-field …``). The value is matched
+# as ONE SHELL WORD — a run of quoted spans and bare characters ending at the next
+# whitespace — rather than as an enumeration of the shapes an author might write. The
+# enumeration kept missing spellings the shell treats identically, each miss silent: a
+# quoted KEY (``-F "description"=JUNK``) matched nothing at all, and a quoted span the
+# shell CONCATENATES with what follows (``-F 'title=fix(x): ok'"JUNK"``) matched only the
+# compliant prefix — so the gate reported a PASS on text the forge would never store.
+# ``body`` is GitHub's PR-description field (``gh api … -f body=…``); it is normalised to
+# ``description`` so the overlay validator sees one key.
+# The long/short prefix split mirrors ``_MSG_FILE_FLAG_RE``: only the SHORT flag may be
+# glued to its value (``-Fkey=value``), because ``--fieldkey=value`` is a spelling neither
+# pflag nor cobra accepts. The separator class is ``[\s=]`` — a TAB or a newline separates
+# a flag from its value exactly as a space does, and both CLIs tokenise it that way.
+#: One piece of a shell word — a quoted span (the capture is its CONTENTS) or a bare run.
+#: The same pattern both matches a whole value (repeated below) and splits it back into
+#: pieces, so the two readings of one value cannot drift apart.
+_SHELL_WORD_PIECE = r"""'([^']*)'|"([^"]*)"|([^\s'"]+)"""
+_SHELL_WORD_PIECE_RE = re.compile(_SHELL_WORD_PIECE)
 _API_FIELD_RE = re.compile(
-    r"""(?:--field|--raw-field|-f|-F)[ =]+"""
-    r"""(?:(?P<oq>['"])(?P<key>title|description|body)=(?P<oqval>.*?)(?P=oq)"""
-    r"""|(?P<key2>title|description|body)=(?:(?P<q>['"])(?P<qval>.*?)(?P=q)|(?P<bval>[^\s'"]*)))""",
-    re.DOTALL,
+    rf"""(?:(?P<longflag>--field|--raw-field){API_FIELD_SEPARATOR}+"""
+    rf"""|(?P<shortflag>-[fF]){API_FIELD_SEPARATOR}*)"""
+    rf"""(?P<word>(?:{_SHELL_WORD_PIECE})+)""",
 )
+#: The MR/PR metadata keys this gate governs. ``state_event``, labels and the rest set no
+#: text the validator grades, so a command touching only those has nothing to validate.
+_API_FIELD_KEYS: Final[frozenset[str]] = frozenset({"title", "description", "body"})
+
+
+def _unquote_shell_word(word: str) -> str:
+    """The value the forge receives — every quoted span joined to its neighbours, unquoted."""
+    return "".join(m.group(1) or m.group(2) or m.group(3) or "" for m in _SHELL_WORD_PIECE_RE.finditer(word))
+
+
 _API_VERB_RE = re.compile(r"\b(?:gh|glab)\s+api\b")
+_VALIDATION_FAILED = "MR title/description failed overlay validation."
+# Named in full because every condition is one an operator would otherwise discover by trial.
+_AT_FILE_LITERAL_NOTE = (
+    "NOTE: `--field`/`-F` reads a value opening with `@` as a FILENAME, so what was validated "
+    "above is the literal {literals}, not any file's text. `@path` is dereferenced only when the "
+    "path is ABSOLUTE, names a REGULAR file, and is at most {cap} bytes; `@-` (stdin) is never "
+    "read. Pass an absolute path, or inline the text."
+)
+# The two flags that dereference `@filename`, per both CLIs' help text: `-F`/`--field` applies the
+# magic conversion, `-f`/`--raw-field` adds a static string the forge stores verbatim. Matching is
+# case-SENSITIVE — folding `-f` in with `-F` would validate a file the forge never sees.
+_AT_FILE_FLAGS: Final[frozenset[str]] = frozenset({"--field", "-F"})
+
+
+def _at_file_field_text(value: str) -> str:
+    """Resolve ``--field``/``-F``'s documented ``@filename`` indirection to the file's text.
+
+    Under those two flags — and ONLY those two, per both CLIs' help text — a value
+    opening with ``@`` names a file to read, so the literal ``@path`` is a string the
+    forge never receives. Validating it judges the wrong thing in both directions, and
+    the dangerous direction is silent: a NON-compliant body sails through, because
+    ``@/tmp/body.md`` never looks like a malformed title.
+
+    Two values are returned untouched. A RELATIVE path resolves against this process's
+    directory, which is not the one ``glab`` runs in once the command opens with a ``cd``
+    — and that one guard also keeps the CLIs' ``@-`` stdin sentinel and a bare ``@``
+    literal, since neither is ever absolute. And a path that is unreadable, not a regular
+    file, or larger than the forge accepts keeps the literal, which fails loudly rather
+    than opening the gate — the read must never RAISE, because the router treats a
+    handler's exception as cannot-evaluate and skips the whole gate.
+    """
+    if not value.startswith("@"):
+        return value
+    try:
+        path = Path(value[1:]).expanduser()
+    except _UNREADABLE_FILE:
+        return value
+    if not path.is_absolute():
+        return value
+    text = _read_capped_regular_file(path)
+    return value if text is None else text
+
+
+def _api_field_args(command: str) -> list[tuple[str, str, str]]:
+    """Every ``(flag, key, raw value)`` the api-field matcher finds, in command order."""
+    found: list[tuple[str, str, str]] = []
+    for match in _API_FIELD_RE.finditer(command):
+        key, assigned, value = _unquote_shell_word(match.group("word")).partition("=")
+        if assigned and key in _API_FIELD_KEYS:
+            found.append((match.group("longflag") or match.group("shortflag"), key, value))
+    return found
+
+
+def mr_deny_reason(data: dict, validator_text: str) -> str:
+    """The gate's refusal text, plus a note for each ``@value`` that was judged as a literal.
+
+    An ``@`` value the indirection did NOT resolve is validated as text, so the refusal
+    otherwise quotes a path the operator never meant as a description and names no rule —
+    leaving the ``@`` contract to be rediscovered by trial against a gate that refuses
+    every attempt.
+    """
+    reason = (validator_text or "").strip() or _VALIDATION_FAILED
+    command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
+    literals = [
+        value
+        for flag, _key, value in _api_field_args(command)
+        if flag in _AT_FILE_FLAGS and value.startswith("@") and _at_file_field_text(value) == value
+    ]
+    if not literals:
+        return reason
+    named = ", ".join(f"`{value}`" for value in dict.fromkeys(literals))
+    return f"{reason}\n\n{_AT_FILE_LITERAL_NOTE.format(literals=named, cap=_MAX_MESSAGE_FILE_BYTES)}"
 
 
 def extract_api_mr_fields(command: str) -> tuple[str, str] | None:
@@ -400,13 +576,9 @@ def extract_api_mr_fields(command: str) -> tuple[str, str] | None:
     if not _API_VERB_RE.search(command) or not _is_api_create_endpoint_write(command):
         return None
     fields: dict[str, str] = {}
-    for match in _API_FIELD_RE.finditer(command):
-        if match.group("oq"):
-            key, value = match.group("key"), (match.group("oqval") or "")
-        else:
-            key = match.group("key2")
-            value = (match.group("qval") if match.group("q") else match.group("bval")) or ""
-        fields["description" if key == "body" else key] = value
+    for flag, key, value in _api_field_args(command):
+        text = _at_file_field_text(value) if flag in _AT_FILE_FLAGS else value
+        fields["description" if key == "body" else key] = text
     if not fields:
         return None
     title = fields.get("title")

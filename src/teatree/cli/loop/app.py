@@ -10,10 +10,9 @@ prints the slot id to unregister; ``list`` / ``status`` read live loop state; an
 the reactive infra loops (``self-improve``, ``slack-answer``, ``drain-queue``) each
 expose their own ``run`` / ``start`` subcommands here.
 
-Durability model: the worker owns the per-loop tick cadence by default, so the DB
-loops run with NO Claude Code session open (the SessionStart supervisor keeps at
-least one worker alive; ``loop_runner_enabled`` OFF stops them entirely — there is
-no fallback plane, PR-28 retired the native ``/loop`` cron mirror). Each per-loop
+Durability model: the worker owns the per-loop tick cadence, so the DB loops run with
+NO Claude Code session open (the SessionStart supervisor keeps at least one worker
+alive; a preset admitting zero loops stops them entirely — there is no fallback plane). Each per-loop
 tick atomically claims the next pending DB unit (``t3 loop claim-next``) and spawns
 ONE fresh, bounded sub-agent for just that unit, which returns; spawning the
 sub-agent requires the Agent tool, which exists only inside a live Claude session,
@@ -37,7 +36,6 @@ from teatree.agents import permission_modes
 from teatree.cli.loop.claim_next import claim_next_command
 from teatree.cli.loop.directives import directives_app
 from teatree.cli.loop.drain_queue import drain_queue_app
-from teatree.cli.loop.intake_loops import intake_loops_command
 from teatree.cli.loop.listing import list_command
 from teatree.cli.loop.owner import register as register_loop_owner
 from teatree.cli.loop.preset import register as register_loop_preset
@@ -54,16 +52,15 @@ from teatree.utils.django_bootstrap import ensure_django
 loop_app = typer.Typer(
     name="loop",
     help=(
-        "Manage the tick-driven autonomous loops. Under #1796 / PR-28 the singleton "
-        "`t3 worker` owns the per-loop tick cadence by default (`loop_runner_enabled` "
-        "ON): it drains durable self-rescheduling loop-timer chains (django-tasks "
-        "`run_after` rows), one per enabled DB `Loop` row firing "
-        "`t3 loops tick --loop <name>` on its own cadence — there is no master tick, "
+        "Manage the tick-driven autonomous loops. Under #1796 the singleton "
+        "`t3 worker` owns the per-loop tick cadence: it drains durable self-rescheduling "
+        "loop-timer chains (django-tasks `run_after` rows), one per admitted DB `Loop` row "
+        "firing `t3 loops tick --loop <name>` on its own cadence — there is no master tick, "
         "and the DB loops run with no Claude session open (the SessionStart supervisor "
         "keeps one worker alive; on a headless box start it once from a login "
-        "profile). `loop_runner_enabled` is the kill-switch — set it false to stop the "
-        "loops entirely (there is no fallback plane; PR-28 retired the native `/loop` "
-        "cron mirror). Each per-loop tick atomically claims the next pending unit "
+        "profile). The active preset is the stop condition — one that admits zero loops "
+        "stops them entirely (there is no fallback plane). Each per-loop tick atomically "
+        "claims the next pending unit "
         "(`t3 loop claim-next`), spawns one fresh bounded sub-agent for it, and records "
         "the outcome when that sub-agent returns (`tasks record-attempt --claim-token`) "
         "— the claim is the spawn boundary, not the finish, and an unrecorded unit is "
@@ -199,9 +196,8 @@ def _stdin_is_terminal() -> bool:
 
 
 _REGISTER_GUIDANCE = (
-    "PR-28: the singleton `t3 worker` owns the per-loop tick cadence by default "
-    "(`loop_runner_enabled` ON), draining the durable self-rescheduling loop-timer "
-    "chains — so the DB loops run with no Claude session open. Check it with "
+    "The singleton `t3 worker` owns the per-loop tick cadence, draining the durable "
+    "self-rescheduling loop-timer chains — so the DB loops run with no Claude session open. Check it with "
     "`t3 worker status`; ensure one is running with `t3 worker ensure`. Enable or "
     "disable an individual loop with `t3 loop enable|disable <name>` (the reconciler "
     "adds/prunes its timer at once). The worker drives the reactive infra loops "
@@ -294,10 +290,11 @@ def _session_pin_flags() -> list[str]:
 def stop_command() -> None:
     """Print how to stop the durable, worker-driven loops."""
     typer.echo(
-        "To stop the loops, turn the kill-switch off:\n"
-        "    t3 <overlay> config_setting set loop_runner_enabled false\n"
-        "The worker stays alive and idle so `loop_runner_enabled true` resumes without a restart. "
-        "To end the worker process itself, run `t3 worker stop`; check it with `t3 worker status`."
+        "To stop the loops, switch to a posture that admits none:\n"
+        '    t3 loop preset use off --reason "<why you are stopping>"\n'
+        "The worker stays alive with its executors stopped, so the next schedule boundary still "
+        "lands; check it with `t3 worker status`. Restart the fleet by picking another preset, or "
+        "`t3 loop preset auto` to fall back to the schedule."
     )
 
 
@@ -423,10 +420,6 @@ loop_app.command("list")(list_command)
 # ``show --json`` is the contract another harness reads to build its own delivery
 # adapter; ``disable`` is the reachable off switch, ``--all`` the whole-feature kill.
 loop_app.add_typer(directives_app, name="directives")
-
-# #3632 — the DB-free owner-intake loop names the deploy fleet policy must never
-# force off; a flat ``t3 loop intake-loops`` the entrypoint reseed reads.
-loop_app.command("intake-loops")(intake_loops_command)
 
 # #3275 — the on-demand issue-marker reconciler: flat ``t3 loop reclaim-markers``.
 # The sanctioned way to unjam stranded intake budget (raw SQL is classifier-blocked).

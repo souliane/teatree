@@ -19,6 +19,14 @@ class ReviewRequestPost(models.Model):
     """One review-channel post tracked for nag re-pings."""
 
     mr_url = models.URLField(max_length=512, unique=True)
+    # Null means the legacy row could not be attributed unambiguously. Per-overlay
+    # scanners deliberately skip that state instead of claiming somebody else's post.
+    overlay = models.CharField(  # noqa: DJ001 -- NULL is the deliberate unattributed state.
+        max_length=255,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     slack_channel_id = models.CharField(max_length=64)
     slack_thread_ts = models.CharField(max_length=64)
     bot_id = models.CharField(max_length=64, blank=True)
@@ -26,6 +34,7 @@ class ReviewRequestPost(models.Model):
     # Null ⇒ never re-pinged; the scanner reads it to enforce no double-ping within
     # the current window. Claimed together with ``nag_count`` in one conditional UPDATE.
     last_nag_at = models.DateTimeField(null=True, blank=True)
+    last_nag_reply_ts = models.CharField(max_length=64, blank=True)
     # How many times this MR has been re-asked. Drives the Fibonacci re-ask backoff:
     # each nag is due ``base_interval * fib(nag_count)`` after ``last_nag_at``, so the
     # interval widens as the count grows.

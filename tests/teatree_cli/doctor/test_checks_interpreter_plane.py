@@ -8,6 +8,7 @@ this venue does not have.
 """
 
 import io
+import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -16,6 +17,12 @@ import teatree.config as config_mod
 from teatree.cli.doctor.checks_interpreter_plane import _check_interpreter_plane, _required_python_floor
 
 FLOOR = "{}.{}".format(*_required_python_floor())
+
+# uv's own OS tag for the platform this suite is running on, and one that is not it.
+# Derived rather than hardcoded: a literal `linux` reads as native on CI and foreign
+# on a developer's Mac, so the two arms below would swap meaning between venues.
+NATIVE_OS_TAG = {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
+FOREIGN_OS_TAG = "macos" if NATIVE_OS_TAG != "macos" else "linux"
 
 
 def _run(interpreter_root: Path, worktree_root: Path) -> tuple[bool, str]:
@@ -29,9 +36,9 @@ def _run(interpreter_root: Path, worktree_root: Path) -> tuple[bool, str]:
     return ok, out.getvalue()
 
 
-def _build_interpreter_root(tmp_path: Path, version: str = FLOOR) -> Path:
+def _build_interpreter_root(tmp_path: Path, version: str = FLOOR, os_tag: str = NATIVE_OS_TAG) -> Path:
     root = tmp_path / "uv" / "python"
-    (root / f"cpython-{version}.9-linux-x86_64-gnu" / "bin").mkdir(parents=True)
+    (root / f"cpython-{version}.9-{os_tag}-aarch64-none" / "bin").mkdir(parents=True)
     return root
 
 
@@ -88,3 +95,28 @@ class TestCheckInterpreterPlane:
         assert "WARN" in message
         assert str(empty_root) in message
         assert FLOOR in message, "the message must name the version that is missing"
+
+    def test_fails_when_a_recorded_home_exists_but_names_another_platform(self, tmp_path: Path) -> None:
+        """The residue the identity mount CREATES, where existence stops discriminating.
+
+        Before the interpreter root was bound at ONE address, a foreign
+        environment was recognisable by its recorded ``home`` being absent here.
+        Under one shared root that home is PRESENT in both venues — the very
+        point of the mount — so the probe must read the uv platform tag instead
+        or it reports a clean plane while uv is still rebuilding a gigabyte.
+        """
+        root = _build_interpreter_root(tmp_path)
+        worktree_root = tmp_path / "t3-workspaces"
+        home = root / f"cpython-{FLOOR}.9-{FOREIGN_OS_TAG}-aarch64-none" / "bin"
+        home.mkdir(parents=True)
+        checkout = _build_checkout(worktree_root, home)
+
+        ok, message = _run(root, worktree_root)
+
+        # The control: an ABSENT home would fail for the pre-existing reason and
+        # say nothing about the platform-tag arm this test exists for.
+        assert home.is_dir()
+        assert ok is False
+        assert "FAIL" in message
+        assert str(home) in message, "the message must name the interpreter the environment recorded"
+        assert str(checkout) in message, "the message must name the checkout that would be rebuilt"

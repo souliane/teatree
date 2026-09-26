@@ -24,11 +24,14 @@ class SlackManifestError(RuntimeError):
 _BOT_SCOPES = [
     "app_mentions:read",
     "channels:history",
+    "channels:join",
+    "channels:manage",
     "channels:read",
     "chat:write",
     "files:write",
     "groups:history",
     "groups:read",
+    "groups:write",
     "im:history",
     "im:read",
     "im:write",
@@ -67,13 +70,19 @@ _USER_SCOPES = [
     "canvases:read",
     "canvases:write",
     "channels:history",
+    "channels:read",
     "chat:write",
     "files:read",
     "groups:history",
+    "groups:read",
+    "groups:write.invites",
     "im:history",
+    "im:read",
     "mpim:history",
+    "mpim:read",
     "reactions:read",
     "reactions:write",
+    "search:read",
     "search:read.files",
     "search:read.im",
     "search:read.mpim",
@@ -86,13 +95,13 @@ _USER_SCOPES = [
 _BOT_EVENTS = ["app_mention", "message.im", "reaction_added"]
 
 # ``dm_only`` scope profile (e.g. ``t3-teatree``): a bot that exists solely to
-# talk to its one owner's DM. Only the scopes needed to post to, read, and react
-# in that 1:1 IM — NO channel/group/mpim scopes, NO ``app_mentions:read`` (there
-# are no channels to be mentioned in), and NO ``user`` (xoxp) section at all.
-# ``files:write`` is kept for voice/audio DMs (``post_audio_dm``); drop it if the
-# overlay never sends audio. The ``SlackBotBackend`` built with ``owner_dm_only=True``
-# enforces the same restriction in-process.
+# talk to its one owner's DM — the DM post/read/react scopes, plus ``channels:manage``,
+# the only scope Slack accepts for a bot to leave a public channel. NO other channel,
+# group, or mpim scope, NO ``app_mentions:read``, and NO ``user`` (xoxp) section.
+# ``files:write`` is kept for voice/audio DMs (``post_audio_dm``). The ``SlackBotBackend``
+# built with ``owner_dm_only=True`` enforces the same restriction in-process.
 _DM_ONLY_BOT_SCOPES = [
+    "channels:manage",
     "chat:write",
     "files:write",
     "im:history",

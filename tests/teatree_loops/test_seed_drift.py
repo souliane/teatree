@@ -22,16 +22,14 @@ class TestModeEntryDrift:
 
     def test_a_dropped_entry_reads_as_inheriting(self) -> None:
         assert mode_entry_drift({"issue_implementer": False}, {}) == (
-            "issue_implementer shipped=false live=absent (inherits Loop.enabled)",
+            "issue_implementer shipped=false live=absent (reads off)",
         )
 
     def test_an_entry_the_shipped_mask_never_had_is_named_too(self) -> None:
-        assert mode_entry_drift({}, {"dream": True}) == ("dream shipped=absent (inherits Loop.enabled) live=true",)
+        assert mode_entry_drift({}, {"dream": True}) == ("dream shipped=absent (reads off) live=true",)
 
     def test_a_corrupt_live_value_reads_as_inheriting_not_as_an_opinion(self) -> None:
-        assert mode_entry_drift({"ship": True}, {"ship": "yes"}) == (
-            "ship shipped=true live=absent (inherits Loop.enabled)",
-        )
+        assert mode_entry_drift({"ship": True}, {"ship": "yes"}) == ("ship shipped=true live=absent (reads off)",)
 
     def test_every_diverging_loop_is_named_in_a_stable_order(self) -> None:
         assert mode_entry_drift({"ship": False, "tickets": False}, {"ship": True, "tickets": True}) == (

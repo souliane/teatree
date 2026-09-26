@@ -111,7 +111,10 @@ class Command(TyperCommand):
             bool,
             typer.Option(
                 "--propose-evals",
-                help="Also derive inert eval candidates from grounded drift clusters (default OFF).",
+                help=(
+                    "Force deriving inert eval candidates from grounded drift clusters for this pass; "
+                    "without it the `dream_propose_evals` setting decides, exactly as it does for `tick`."
+                ),
             ),
         ] = False,
         full: Annotated[
@@ -248,7 +251,11 @@ class Command(TyperCommand):
         # SKIPped never spent any of it. Everything metered inside the pass is measured
         # against this, and `tail_reserve` is what it may not spend.
         budget = PassBudget.start(total=DREAM_PASS_BUDGET_SECONDS, tail_reserve=DREAM_TAIL_RESERVE_SECONDS)
-        resolved = replace(mode, propose_evals=mode.propose_evals or _env_propose_evals())
+        # `run --propose-evals` FORCES the phase for one pass; otherwise both entry points
+        # read the one setting, which is what stopped them carrying disagreeing defaults.
+        from teatree.loops.dream.loop import propose_evals_enabled  # noqa: PLC0415 — deferred: keeps import light
+
+        resolved = replace(mode, propose_evals=mode.propose_evals or propose_evals_enabled())
         try:
             outcome = self._consolidate_and_mark(since=since, dry_run=dry_run, now=now, mode=resolved, budget=budget)
         finally:
@@ -584,21 +591,6 @@ def _surface_exit_code(outcome: PassOutcome) -> None:
     """
     if outcome is PassOutcome.FAILED:
         raise SystemExit(1)
-
-
-def _env_propose_evals() -> bool:
-    """Resolve the ``dream_propose_evals`` opt-in for the manual ``run`` path.
-
-    The manual ``run`` enables the eval phase when ``--propose-evals`` is given OR
-    this setting is on. DB-home (#1775): resolved via the effective-settings tier
-    (set with ``t3 <overlay> config_setting set dream_propose_evals true``). The
-    cadence-driven ``tick`` path does NOT route through here — it resolves the
-    seam (LIVE by default, env/toml kill-switch) via
-    :func:`teatree.loops.dream.loop.propose_evals_enabled`.
-    """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps command import light
-
-    return get_effective_settings().dream_propose_evals
 
 
 def _parse_since(raw: str) -> dt.datetime | None:

@@ -28,10 +28,11 @@ from django.test import TestCase
 
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import _OP_PATTERN, _parse_matcher, load_eval_yaml
-from teatree.eval.models import MATCHER_KINDS, MATCHER_OPERATORS, UNDER_LOAD_LANE
+from teatree.eval.models import MATCHER_KINDS, MATCHER_OPERATORS, UNDER_LOAD_LANE, EvalSpec, SuccessfulToolCallMatcher
 from teatree.loops.dream.llm_eval_proposer import (
     SpecSynthesizer,
     SynthesizedSpec,
+    _matchers_to_mappings,
     default_staging_dir,
     derive_eval_from_candidate,
     stage_derived_evals,
@@ -73,6 +74,31 @@ _FROM_STORE_CMD = 'TOKEN="$(pass show svc/token)"; deploy --token="$TOKEN" svc'
 #: documented ~28k-char envelope floor is enforced by the synthesizer, so a short
 #: slice still yields a saturated preamble.
 _TRANSCRIPT_SLICE = "backlog sweep note. migration-fork guard. lease liveness. cost ledger. " * 50
+
+
+def test_staged_matcher_roundtrips_a_successful_tool_call() -> None:
+    matcher = SuccessfulToolCallMatcher(
+        tool="Bash",
+        arg_path="command",
+        operator="~",
+        value=r"\./run_tests",
+        result_operator="~",
+        result_value="OK",
+        before_tool="Bash",
+        before_arg_path="command_span",
+        before_operator="~",
+        before_value="git push",
+    )
+    spec = EvalSpec(
+        name="outcome",
+        scenario="verify before push",
+        agent_path="skills/code/SKILL.md",
+        prompt="verify",
+        matchers=(matcher,),
+        source_path=Path("spec.yaml"),
+    )
+    mapping = _matchers_to_mappings(spec)[0]
+    assert _parse_matcher(mapping, spec.name, spec.source_path) == matcher
 
 
 def _teeth_passing_synthesizer(candidate: dict[str, object], transcript_slice: str) -> SynthesizedSpec:

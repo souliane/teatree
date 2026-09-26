@@ -248,6 +248,27 @@ def test_list_open_issues_for_assignee_returns_empty_on_no_pages(monkeypatch: py
     assert client.list_open_issues_for_assignee("adrien") == []
 
 
+def test_list_open_issues_for_assignee_scopes_each_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    captured_endpoints: list[str] = []
+
+    def _capture(endpoint: str) -> list[dict[str, object]]:
+        captured_endpoints.append(endpoint)
+        return []
+
+    monkeypatch.setattr(client, "get_json_paginated", _capture)
+
+    client.list_open_issues_for_assignee(
+        "adrien",
+        project_slugs=("acme/backend", "acme/frontend"),
+    )
+
+    assert [endpoint.split("?", 1)[0] for endpoint in captured_endpoints] == [
+        "projects/acme%2Fbackend/issues",
+        "projects/acme%2Ffrontend/issues",
+    ]
+
+
 def test_list_open_issues_for_author(monkeypatch: pytest.MonkeyPatch) -> None:
     """#3235 — the author-scoped intake query: ``author_username``, never ``assignee_username``."""
     client = gitlab_api.GitLabAPI(token="test-token")

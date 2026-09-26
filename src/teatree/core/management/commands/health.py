@@ -10,10 +10,12 @@ Read-mostly: ``show`` reconciles (upserts derived rows, auto-resolves cleared
 ones) but never mutates a ticket; ``add``/``dismiss`` write exactly one row.
 """
 
+import datetime as dt
 import io
 from typing import IO, Annotated, TypedDict, cast
 
 import typer
+from django.utils import timezone
 from django_typer.management import command, initialize
 
 from teatree.core.factory.operational_health import HealthReport, reconcile_health
@@ -30,6 +32,8 @@ class _IssueRow(TypedDict):
     kind: str
     summary: str
     evidence_url: str
+    first_seen: str
+    last_seen: str
 
 
 class HealthPayload(TypedDict):
@@ -38,10 +42,29 @@ class HealthPayload(TypedDict):
     issues: list[_IssueRow]
 
 
+_AGE_UNITS: tuple[tuple[int, str], ...] = ((86_400, "d"), (3_600, "h"), (60, "m"), (1, "s"))
+
+
+def _age(moment: dt.datetime, *, now: dt.datetime) -> str:
+    seconds = max(int((now - moment).total_seconds()), 0)
+    return next(
+        (f"{seconds // size}{label} ago" for size, label in _AGE_UNITS if seconds >= size),
+        "0s ago",
+    )
+
+
 def _render_report(report: HealthReport) -> str:
-    """Render the verdict header + a table of the open issues (clickable evidence)."""
+    """Render the verdict header + a table of the open issues (clickable evidence).
+
+    The header stamp and the per-row age are load-bearing: this output gets pasted
+    into reports and read hours later, and a finding with no age is indistinguishable
+    from one taken seconds ago — which is how a fixed problem goes on being relayed as
+    current.
+    """
+    now = timezone.now()
     buffer = io.StringIO()
-    buffer.write(f"health: {report.status.value} · {report.open_count} open\n")
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    buffer.write(f"health: {report.status.value} · {report.open_count} open · measured {stamp}\n")
     if not report.open_issues:
         return buffer.getvalue().rstrip("\n")
     rows = [
@@ -49,11 +72,17 @@ def _render_report(report: HealthReport) -> str:
             str(issue.pk),
             issue.severity,
             issue.overlay or "-",
+            _age(issue.last_seen, now=now),
             render_ref(issue.summary, url=issue.evidence_url),
         ]
         for issue in report.open_issues
     ]
-    print_table(["Id", "Severity", "Overlay", "Issue"], rows, title="Open issues", stream=buffer)
+    print_table(
+        ["Id", "Severity", "Overlay", "Last seen", "Issue"],
+        rows,
+        title="Open issues",
+        stream=buffer,
+    )
     return buffer.getvalue().rstrip("\n")
 
 
@@ -84,6 +113,8 @@ class Command(MachineOutputCommand):
                     "kind": issue.kind,
                     "summary": issue.summary,
                     "evidence_url": issue.evidence_url,
+                    "first_seen": issue.first_seen.isoformat(),
+                    "last_seen": issue.last_seen.isoformat(),
                 }
                 for issue in report.open_issues
             ],

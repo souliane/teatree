@@ -17,8 +17,11 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from teatree.core.admission_pressure import MeteredSignal
+
 if TYPE_CHECKING:
     from teatree.core.models.task_attempt import TaskAttempt
+    from teatree.core.models.usage_window_state import UsageWindowState
 
 logger = logging.getLogger(__name__)
 
@@ -120,4 +123,35 @@ def _window_totals(window_start: dt.datetime) -> tuple[int, int, float]:
     return tokens, rows["unknown"] or 0, float(rows["cost"] or 0.0)
 
 
-__all__ = ["ESTIMATE_LABEL", "MeteredSpend", "read_metered_spend"]
+def read_metered_signal() -> MeteredSignal:
+    """Fold the metered ledger and its active park into one admission signal."""
+    from django.apps import apps  # noqa: PLC0415 — deferred: Django app-registry read at call time
+
+    spend = read_metered_spend()
+    if not spend.fresh:
+        return MeteredSignal(fresh=False)
+    try:
+        attempts = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
+        windows = cast("type[UsageWindowState]", apps.get_model("core", "UsageWindowState"))
+        window = windows.objects.active_for_lane(attempts.Lane.METERED)
+    except Exception:
+        logger.exception("metered usage-window read failed — reporting the lane unparked")
+        window = None
+    return MeteredSignal(
+        fresh=True,
+        utilization=spend.utilization(),
+        parked=window is not None,
+        spend_detail=spend.detail(),
+        park_detail=_park_detail(window),
+    )
+
+
+def _park_detail(window: "object | None") -> str:
+    if window is None:
+        return ""
+    resets_at = getattr(window, "resets_at", None)
+    until = f" until {resets_at.isoformat()}" if resets_at is not None else " with no recorded reset"
+    return f"the metered lane is parked on a {getattr(window, 'cause', '')} window{until} — re-probing it is pure burn"
+
+
+__all__ = ["ESTIMATE_LABEL", "MeteredSpend", "read_metered_signal", "read_metered_spend"]

@@ -23,8 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
-from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
+from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_SETTINGS
 from tests.conformance._src_tree import REPO_ROOT, SRC_DIR, parsed_modules
 
 _HOOKS_DIR = REPO_ROOT / "hooks"
@@ -42,11 +41,9 @@ _DECLARATION_MODULES: frozenset[Path] = frozenset(
         "setting_registries.py",
         "setting_groups.py",
         "registries.py",
-        "cold_hook_settings.py",
         "secret_settings.py",
         "known_settings.py",
         "overlay_code_defaults.py",
-        "defaults_approvals.py",
         "host_projection.py",
         "retired_settings.py",
     )

@@ -1,0 +1,12 @@
+{% if assurance %}
+  <div class="small" aria-label="Skill assurance">
+    <span class="chip{% if assurance.status != 'declared' %} warn{% endif %}">{{ assurance.label }}</span><br>
+    requested: {{ assurance.requested|join:", "|default:"—" }}<br>
+    found: {{ assurance.found|join:", "|default:"—" }}<br>
+    injected: {{ assurance.injected|join:", "|default:"—" }}<br>
+    explicit load: {{ assurance.explicit_load|join:", "|default:"—" }}<br>
+    {% if assurance.observed_loads %}observed loads: {{ assurance.observed_loads|join:", " }}<br>{% endif %}
+    {% if assurance.missing %}missing: {{ assurance.missing|join:", " }}<br>{% endif %}
+    evidence: {{ assurance.evidence_skills|join:", "|default:"none recorded" }}
+  </div>
+{% else %}<span class="muted small">No per-attempt assurance recorded</span>{% endif %}

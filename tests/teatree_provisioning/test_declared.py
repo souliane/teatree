@@ -14,11 +14,22 @@ from teatree.provisioning.declared import (
 )
 
 _DEFAULT_SPECS = (
-    "obra/superpowers#1f20bef",
+    "vendor/bundle#1f20bef",
     "souliane/skills/ac-python#d0008a3",
     "souliane/skills/ac-django#d0008a3",
     "souliane/teatree",
 )
+
+_SUPERPOWERS_SHA = "1f20bef3f59b85ad7b52718f822e37c4478a3ff5"
+_METHODOLOGY_SKILLS = {
+    "finishing-a-development-branch",
+    "receiving-code-review",
+    "requesting-code-review",
+    "systematic-debugging",
+    "test-driven-development",
+    "verification-before-completion",
+    "writing-plans",
+}
 
 
 def _manifest_body(*specs: str) -> str:
@@ -33,6 +44,21 @@ def _write_manifest(tmp_path: Path, body: str | None = None) -> Path:
 
 
 class TestSkillsDeclaredInApmManifest:
+    def test_repository_manifest_pins_only_required_superpowers_skills_individually(self) -> None:
+        manifest = Path(__file__).resolve().parents[2] / "apm.yml"
+        declared = skills_declared_in_apm_manifest(manifest)
+        methodology = {
+            dependency.name: dependency.source
+            for dependency in declared
+            if dependency.source.startswith("obra/superpowers/")
+        }
+
+        assert set(methodology) == _METHODOLOGY_SKILLS
+        assert set(methodology.values()) == {
+            f"obra/superpowers/skills/{name}#{_SUPERPOWERS_SHA}" for name in _METHODOLOGY_SKILLS
+        }
+        assert not any(dependency.source.startswith("souliane/teatree/skills/") for dependency in declared)
+
     def test_named_skill_dependencies_are_enumerated(self, tmp_path: Path) -> None:
         declared = skills_declared_in_apm_manifest(_write_manifest(tmp_path))
 
@@ -53,10 +79,11 @@ class TestSkillsDeclaredInApmManifest:
     def test_remediation_is_the_runnable_install_line_for_the_declared_spec(self, tmp_path: Path) -> None:
         declared = skills_declared_in_apm_manifest(_write_manifest(tmp_path))
 
-        # A pasteable command, pinned to the manifest's own spec — not a generic
-        # `apm install` shape the reader still has to resolve to a source.
-        assert "apm install souliane/skills/ac-python#d0008a3" in declared[0].remediation
-        assert "t3 setup" in declared[0].remediation
+        assert declared[0].remediation == (
+            "run `t3 setup`; it installs `souliane/skills/ac-python#d0008a3` "
+            "through the pinned skills CLI for Claude Code and Codex"
+        )
+        assert "apm install" not in declared[0].remediation
 
     def test_an_absent_manifest_raises_rather_than_reporting_zero_dependencies(self, tmp_path: Path) -> None:
         with pytest.raises(DeclarationUnreadableError):

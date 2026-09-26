@@ -13,14 +13,10 @@ from typing import Final
 
 from django.db import transaction
 
-from teatree.core.mode_resolution import (
-    DEFAULT_MODE_SETTING,
-    FALLBACK_DEFAULT_MODE,
-    FALLBACK_UPGRADE_MODE,
-    PRESENCE_UPGRADE_SETTING,
-)
+from teatree.core.mode_resolution import DEFAULT_MODE_SETTING, FALLBACK_DEFAULT_MODE
 from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeScheduleSlot
-from teatree.core.models.loop_preset import DEFAULT_LOW_POWER_PRESET, LOW_POWER_PRESET_SETTING
+from teatree.core.models.loop_preset import DEFAULT_TOKEN_OUTAGE_PRESET, TOKEN_OUTAGE_PRESET_SETTING
+from teatree.core.models.preset_totality import totalized_entries
 from teatree.loops.preset_editing import PresetEditError, require_preset
 from teatree.loops.shipped_guard import require_shipped_delete_confirm
 
@@ -31,8 +27,7 @@ _SLUG_RE: Final = re.compile(r"^[-a-zA-Z0-9_]+$")
 #: sitting on its unset default, so the default cannot dangle either.
 _PRESET_NAME_SETTINGS: Final[tuple[tuple[str, str], ...]] = (
     (DEFAULT_MODE_SETTING, FALLBACK_DEFAULT_MODE),
-    (PRESENCE_UPGRADE_SETTING, FALLBACK_UPGRADE_MODE),
-    (LOW_POWER_PRESET_SETTING, DEFAULT_LOW_POWER_PRESET),
+    (TOKEN_OUTAGE_PRESET_SETTING, DEFAULT_TOKEN_OUTAGE_PRESET),
 )
 
 
@@ -73,12 +68,12 @@ def preset_referrers(name: str) -> PresetReferrers:
 
 
 def create_preset(name: str, *, description: str = "") -> Mode:
-    """Create an empty preset — no opinion on any loop until entries are set."""
+    """Create a preset that runs nothing — every loop admitted afterwards is a deliberate edit."""
     slug = _validated_slug(name)
     if Mode.objects.by_name(slug) is not None:
         msg = f"preset {slug!r} already exists"
         raise PresetEditError(msg)
-    return Mode.objects.create(name=slug, entries={}, description=description)
+    return Mode.objects.create(name=slug, entries=totalized_entries({}), description=description)
 
 
 def update_preset_meta(name: str, *, description: str | None = None) -> Mode:

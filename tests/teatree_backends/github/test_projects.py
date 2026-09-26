@@ -35,7 +35,7 @@ def _node(number: int, labels: list[str], page_size: int) -> dict[str, object]:
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, labels: list[str]) -> None:
-    def fake_run_checked(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run_gh(*argv: str, **_kwargs: object) -> subprocess.CompletedProcess[str]:
         match = _LABEL_PAGE_SIZE_IN_QUERY.search(argv[-1])
         assert match is not None, "the board query must request a labels page"
         body = {
@@ -50,9 +50,9 @@ def _install(monkeypatch: pytest.MonkeyPatch, labels: list[str]) -> None:
                 }
             }
         }
-        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(body), stderr="")
+        return subprocess.CompletedProcess(list(argv), 0, stdout=json.dumps(body), stderr="")
 
-    monkeypatch.setattr("teatree.backends.github.projects.run_checked", fake_run_checked)
+    monkeypatch.setattr("teatree.backends.github.projects._run_gh", fake_run_gh)
 
 
 class TestLabelCompleteness:

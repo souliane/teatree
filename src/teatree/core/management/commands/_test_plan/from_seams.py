@@ -136,7 +136,7 @@ def assemble_scenario_state(*, title: str, scenarios: tuple[Scenario, ...], run:
     state = empty_state(ticket=run.ticket_number, title=title)
     state["template"] = _SCENARIO_TEMPLATE
     state["scenarios"] = [_render_scenario(scenario, run=run) for scenario in scenarios]
-    side = "dev" if run.env == "dev" else "local"
+    side = run.env if run.env in {"dev", "local", "stack"} else "local"
     state[side]["commits"] = dict(run.per_repo_shas)
     state[side]["env"] = side
     state[side]["ran_at"] = run.ran_at
@@ -203,7 +203,7 @@ def _assemble_and_write(request: FromSeamsRequest) -> PlanWriteResult:
     state = assemble_scenario_state(title=request.title.strip() or issue_url, scenarios=scenarios, run=run)
     body = render_body(state)
     path = plan_path_for_ticket(resolved_ticket)
-    refuse_invalid_committed_captures(evidence_dir_for(path), incoming=[])
+    refuse_invalid_committed_captures(evidence_dir_for(path), incoming={})
     action = "updated" if path.is_file() else "created"
     write_plan(path, body)
     return PlanWriteResult(path=str(path), envs=[run.env], action=action)

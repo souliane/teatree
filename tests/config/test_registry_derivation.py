@@ -29,17 +29,9 @@ from typing import Any
 
 import pytest
 
-from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
-from teatree.config.schema import (
-    Registry,
-    _keys_in,
-    derive_cold_hook_settings,
-    derive_cold_settings,
-    derive_overlay_overridable_settings,
-    derive_registry_settings,
-)
+from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_SETTINGS, ColdHookSetting
+from teatree.config.schema import Registry, _keys_in, derive_cold_entries, derive_overlay_overridable_settings
 from teatree.config.setting_parsers import _parse_strict_bool, _parse_strict_int
 from teatree.config.setting_registries import OVERLAY_OVERRIDABLE_SETTINGS
 
@@ -93,6 +85,14 @@ def test_parity_helper_detects_a_genuine_divergence() -> None:
         _assert_parser_parity(_parse_strict_bool, _parse_strict_int, "control")
 
 
+def _assert_cold_entry_parity(hand: ColdHookSetting, derived: ColdHookSetting, key: str) -> None:
+    """Both halves of a cold entry — parser AND shipped default — pinned against the model."""
+    assert derived.default == hand.default, key
+    assert type(derived.default) is type(hand.default), key
+    assert derived.scope == hand.scope, key
+    _assert_parser_parity(hand.parse, derived.parse, key)
+
+
 @pytest.mark.parametrize("key", sorted(OVERLAY_OVERRIDABLE_SETTINGS))
 def test_overlay_registry_derives_from_model(key: str) -> None:
     derived = derive_overlay_overridable_settings()
@@ -102,32 +102,22 @@ def test_overlay_registry_derives_from_model(key: str) -> None:
 
 @pytest.mark.parametrize("key", sorted(COLD_SETTINGS))
 def test_cold_registry_derives_from_model(key: str) -> None:
-    derived = derive_cold_settings()
-    assert key in derived
-    _assert_parser_parity(COLD_SETTINGS[key], derived[key], key)
+    _assert_cold_entry_parity(COLD_SETTINGS[key], derive_cold_entries(Registry.COLD)[key], key)
 
 
 @pytest.mark.parametrize("key", sorted(REGISTRY_SETTINGS))
 def test_registry_settings_derive_from_model(key: str) -> None:
-    derived = derive_registry_settings()
-    assert key in derived
-    _assert_parser_parity(REGISTRY_SETTINGS[key], derived[key], key)
+    _assert_cold_entry_parity(REGISTRY_SETTINGS[key], derive_cold_entries(Registry.REGISTRY)[key], key)
 
 
 @pytest.mark.parametrize("key", sorted(COLD_HOOK_SETTINGS))
 def test_cold_hook_registry_derives_from_model(key: str) -> None:
-    derived = derive_cold_hook_settings()
-    hand = COLD_HOOK_SETTINGS[key]
-    assert key in derived
-    assert derived[key].default == hand.default
-    assert type(derived[key].default) is type(hand.default)
-    assert derived[key].scope == hand.scope
-    _assert_parser_parity(hand.parse, derived[key].parse, key)
+    _assert_cold_entry_parity(COLD_HOOK_SETTINGS[key], derive_cold_entries(Registry.COLD_HOOK)[key], key)
 
 
 def test_registry_modules_stay_pydantic_free() -> None:
     # The reason the four registries above stay hand-maintained rather than deriving from
-    # the model at import: ``teatree.config``'s package init eagerly imports the three
+    # the model at import: ``teatree.config``'s package init eagerly imports both
     # registry-defining modules, and the cold path loads that package init, so a
     # module-scope ``derive_*()`` call would import ``schema`` -> pydantic (~110ms) onto
     # every cold-hook invocation. A fresh subprocess is the only honest probe — the test
@@ -138,7 +128,6 @@ def test_registry_modules_stay_pydantic_free() -> None:
         import sys
         import teatree.config.setting_registries
         import teatree.config.registries
-        import teatree.config.cold_hook_settings
         assert "pydantic" not in sys.modules, "pydantic leaked onto the cold path via a registry module"
         assert "teatree.config.schema" not in sys.modules, "schema leaked onto the cold path via a registry module"
         print("clean")
@@ -154,13 +143,13 @@ class TestDerivedKeysetsMatchTheHandRegistries:
         assert set(derive_overlay_overridable_settings()) == set(OVERLAY_OVERRIDABLE_SETTINGS)
 
     def test_cold_keyset(self) -> None:
-        assert set(derive_cold_settings()) == set(COLD_SETTINGS)
+        assert set(derive_cold_entries(Registry.COLD)) == set(COLD_SETTINGS)
 
     def test_registry_keyset(self) -> None:
-        assert set(derive_registry_settings()) == set(REGISTRY_SETTINGS)
+        assert set(derive_cold_entries(Registry.REGISTRY)) == set(REGISTRY_SETTINGS)
 
     def test_cold_hook_keyset(self) -> None:
-        assert set(derive_cold_hook_settings()) == set(COLD_HOOK_SETTINGS)
+        assert set(derive_cold_entries(Registry.COLD_HOOK)) == set(COLD_HOOK_SETTINGS)
 
 
 class TestTaxonomyPartitionsEveryKey:

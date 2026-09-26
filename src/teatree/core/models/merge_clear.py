@@ -260,6 +260,9 @@ class MergeClear(models.Model):
     local_ci_green_sha = models.CharField(max_length=64, blank=True, default="")
     issued_at = models.DateTimeField(default=timezone.now)
     consumed_at = models.DateTimeField(null=True, blank=True)
+    # Set when ``ticket merge --no-squash`` landed a merge commit instead of the default squash.
+    # Bound before the forge call, so a retry that only reconciles a landed merge keeps the mode it used.
+    merged_without_squash = models.BooleanField(default=False)
 
     # Non-persisted: the diff paths the merge gate fetched live for this CLEAR.
     # Populated at merge time (``_assert_clear_authorized``) from the forge's
@@ -502,6 +505,11 @@ class MergeClear(models.Model):
         self.ticket = ticket
         self.save(update_fields=["ticket"])
         return ticket
+
+    def bind_merge_mode(self, *, squash: bool) -> None:
+        """Record the requested merge mode before the irreversible forge call, so a reconcile reuses it."""
+        self.merged_without_squash = not squash
+        type(self).objects.filter(pk=self.pk).update(merged_without_squash=self.merged_without_squash)
 
     def is_actionable(self) -> bool:
         """True iff every load-bearing field is populated and the CLEAR is unconsumed.

@@ -23,7 +23,16 @@ vacuous class this guard flags. A matcherless (judge-only) scenario carries no
 negative matcher, so it is exempt — there is nothing to pair.
 """
 
-from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, FinalStateMatcher, Matcher
+from teatree.eval.models import (
+    AnyOf,
+    AssistantTextMatcher,
+    EvalSpec,
+    ExpectItem,
+    FinalStateMatcher,
+    Matcher,
+    PlanBeforeToolMatcher,
+    SuccessfulToolCallMatcher,
+)
 
 
 def is_positive_anchor(matcher: ExpectItem) -> bool:
@@ -33,7 +42,9 @@ def is_positive_anchor(matcher: ExpectItem) -> bool:
     each require the agent to produce something a do-nothing run cannot. A
     negative ``Matcher`` is satisfied by inaction, so it is NOT an anchor.
     """
-    if isinstance(matcher, AnyOf | FinalStateMatcher):
+    if isinstance(
+        matcher, AnyOf | FinalStateMatcher | AssistantTextMatcher | PlanBeforeToolMatcher | SuccessfulToolCallMatcher
+    ):
         return True
     return isinstance(matcher, Matcher) and matcher.kind == "positive"
 

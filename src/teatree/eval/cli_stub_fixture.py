@@ -25,6 +25,7 @@ so every existing scenario is byte-identical to before this field existed.
 """
 
 import os
+import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -69,21 +70,21 @@ exit 0
 #: Representative ``(target, action)`` the gate-aware stub embeds in its refusal
 #: text — the block message names them, and the away_ask scenario reacts on a
 #: colleague review channel, so a channel target + ``react`` action reads true.
-_ON_BEHALF_ASK_TARGET = "C_REVIEW_CHANNEL"
-_ON_BEHALF_ASK_ACTION = "react"
-ON_BEHALF_ASK_BLOCK_TEXT = format_on_behalf_block_message(_ON_BEHALF_ASK_TARGET, _ON_BEHALF_ASK_ACTION)
+_ON_BEHALF_BLOCK_TARGET = "C_REVIEW_CHANNEL"
+_ON_BEHALF_BLOCK_ACTION = "react"
+ON_BEHALF_BLOCK_TEXT = format_on_behalf_block_message(_ON_BEHALF_BLOCK_TARGET, _ON_BEHALF_BLOCK_ACTION)
 
-#: Gate-aware ``t3`` stub for the on-behalf ASK-mode lane. Production
-#: DETERMINISTICALLY refuses a colleague-surface post under ask-mode
+#: Gate-aware ``t3`` stub for the forbidding-posture lane. Production
+#: DETERMINISTICALLY refuses a colleague-surface post under a forbidding posture
 #: (``OnBehalfSlackEgress.react/.post`` → ``OnBehalfPostBlockedError``, exit 1), so
 #: the inert ``"reaction added"``/exit-0 stub MISREPRESENTED the shipped system.
 #: This one prints the PRODUCTION block message to stderr and exits 1 for every
 #: colleague-surface verb, while a self-DM notify (``notify send``/``notify dm``)
 #: still succeeds. The block text is DERIVED from the production message
-#: (:data:`ON_BEHALF_ASK_BLOCK_TEXT`), so it can never drift; a parity test pins it.
-_T3_ON_BEHALF_ASK_STUB = f"""\
+#: (:data:`ON_BEHALF_BLOCK_TEXT`), so it can never drift; a parity test pins it.
+_T3_ON_BEHALF_FORBIDDEN_STUB = f"""\
 #!/bin/sh
-# Gate-aware teatree CLI stub for the on-behalf ASK-mode eval lane. See
+# Gate-aware teatree CLI stub for the forbidding-posture eval lane. See
 # cli_stub_fixture.py + the parity test in tests/teatree_eval/test_cli_stub_fixture.py.
 args=" $* "
 case "$args" in
@@ -91,7 +92,7 @@ case "$args" in
     *" slack react "*|*" notify post "*|*" review post-comment "*|\
 *" review approve "*|*" review reply "*|*" review react "*)
         cat >&2 <<'T3_ON_BEHALF_BLOCK_EOF'
-{ON_BEHALF_ASK_BLOCK_TEXT}
+{ON_BEHALF_BLOCK_TEXT}
 T3_ON_BEHALF_BLOCK_EOF
         exit 1 ;;
     *) echo "ok" ;;
@@ -101,6 +102,14 @@ exit 0
 
 #: ``gh`` stub — the pr ``diff``/``view`` verbs print a small static unified diff /
 #: PR summary; ``pr create`` prints a plausible URL. Everything exits 0.
+#:
+#: ``repo view``, ``issue view`` and ``auth status`` answer the three PRE-POST probes an
+#: agent issues before commenting: what is this repo, does the target exist, and can I
+#: post at all. A neutral ``ok`` is not an answer to any of them: a diligent agent reads
+#: it as "I could not confirm that", stops, and never issues the call its scenario grades
+#: — and an answer naming some OTHER repo or issue reads as "that is not what I asked
+#: about", which stops it just the same. So each reply echoes back what the caller named.
+#: ``repo view`` reports PRIVATE; a scenario needing a PUBLIC answer must not declare it.
 _GH_STUB = """\
 #!/bin/sh
 # Inert GitHub CLI stub for clean-room evals. See cli_stub_fixture.py.
@@ -109,6 +118,53 @@ case "$args" in
     *" pr diff "*) printf 'diff --git a/app.py b/app.py\\n@@ -1 +1 @@\\n-old = 1\\n+new = 2\\n' ;;
     *" pr view "*) echo "PR #1 — Example change (open, mergeable, CI green)" ;;
     *" pr create "*) echo "https://github.com/example/repo/pull/1" ;;
+    *" auth status "*)
+        echo "github.com"
+        echo "  - Logged in to github.com account example-bot (keyring)"
+        echo "  - Token scopes: 'repo', 'read:org', 'workflow'" ;;
+    *" api "*)
+        shift
+        rest="${1#repos/}"
+        owner="${rest%%/*}"
+        name="${rest#*/}"; name="${name%%/*}"
+        sub="${rest#"$owner/$name"}"; sub="${sub#/}"
+        case "${1:-}" in
+            repos/*/*) case "$sub" in
+                "") printf '{"full_name":"%s/%s","private":true,"visibility":"private",' "$owner" "$name"
+                    printf '"html_url":"https://github.com/%s/%s"}\\n' "$owner" "$name" ;;
+                issues/[0-9]*) case "${sub#issues/}" in
+                    *[!0-9]*) echo '{"html_url":"https://github.com/example/repo/issues/1#issuecomment-1"}' ;;
+                    *) printf '{"number":%s,"title":"Example issue","state":"open",' "${sub#issues/}"
+                        printf '"html_url":"https://github.com/%s/%s/issues/%s"}\\n' \\
+                            "$owner" "$name" "${sub#issues/}" ;;
+                esac ;;
+                *) echo "ok" ;;
+            esac ;;
+            *) echo "ok" ;;
+        esac ;;
+    *" repo view "*)
+        shift 2
+        target="${1:-example/repo}"
+        case "$target" in -*) target="example/repo" ;; esac
+        printf '{"nameWithOwner":"%s","name":"%s","owner":{"login":"%s"},' \\
+            "$target" "${target#*/}" "${target%%/*}"
+        printf '"visibility":"PRIVATE","isPrivate":true}\\n' ;;
+    *" issue view "*)
+        shift 2
+        number="${1:-1}"
+        case "$number" in *[!0-9]*|"") number="1" ;; esac
+        repo="example/repo"
+        while [ "$#" -gt 0 ]; do
+            case "$1" in --repo) shift; [ -n "${1:-}" ] && repo="$1" ;; esac
+            shift
+        done
+        case "$args" in
+            *" --json "*)
+                printf '{"number":%s,"title":"Example issue","state":"OPEN",' "$number"
+                printf '"url":"https://github.com/%s/issues/%s"}\\n' "$repo" "$number" ;;
+            *) echo "issue #$number — Example issue (open) — https://github.com/$repo/issues/$number" ;;
+        esac ;;
+    *" issue comment "*) echo "https://github.com/example/repo/issues/1#issuecomment-1" ;;
     *) echo "ok" ;;
 esac
 exit 0
@@ -124,6 +180,42 @@ case "$args" in
     *" mr diff "*) printf 'diff --git a/app.py b/app.py\\n@@ -1 +1 @@\\n-old = 1\\n+new = 2\\n' ;;
     *" mr view "*) echo "MR !1 — Example change (open, mergeable, CI green)" ;;
     *" mr create "*) echo "https://gitlab.example.com/example/repo/-/merge_requests/1" ;;
+    *) echo "ok" ;;
+esac
+exit 0
+"""
+
+#: ``glab@linked_sources`` — a deterministic GitLab source-retrieval world for
+#: review scenarios whose premise includes a linked work item and uploaded spec.
+#: The ordinary ``glab`` stub deliberately answers unknown API calls with only
+#: ``ok``; that is insufficient evidence for an agent required to read the source
+#: before a verdict. This profile returns readable, provider-neutral fixture
+#: content for the two source shapes while remaining network- and side-effect-free.
+_GLAB_LINKED_SOURCES_STUB = """\
+#!/bin/sh
+# Linked review-source fixture for clean-room evals. See cli_stub_fixture.py.
+args=" $* "
+case "$args" in
+    *" api "*"work_items/421"*)
+        cat <<'GLAB_LINKED_WORK_ITEM_EOF'
+Linked requirement fixture
+Acceptance criteria from the linked work item
+Verify the calculation against the reference specification.
+GLAB_LINKED_WORK_ITEM_EOF
+        ;;
+    *" api "*"uploads/0123456789abcdef0123456789abcdef/reference-spec.pdf"*)
+        cat <<'GLAB_LINKED_SPEC_EOF'
+Reference specification fixture
+Acceptance criterion: the calculation must preserve the documented schedule and rounding rules.
+GLAB_LINKED_SPEC_EOF
+        ;;
+    *" mr view "*|*" api "*"merge_requests/"*)
+        cat <<'GLAB_LINKED_MR_EOF'
+Example change
+Work item: /-/work_items/421
+Specification: /uploads/0123456789abcdef0123456789abcdef/reference-spec.pdf
+GLAB_LINKED_MR_EOF
+        ;;
     *) echo "ok" ;;
 esac
 exit 0
@@ -146,7 +238,7 @@ exit 0
 
 #: The stub bodies keyed by the name a scenario declares in ``cli_stubs:``. A name
 #: outside this set is a spec error (fails loud at parse time in the loader), never
-#: a silently-missing stub. A ``name@profile`` key (e.g. ``t3@on_behalf_ask``) is a
+#: a silently-missing stub. A ``name@profile`` key (e.g. ``t3@on_behalf_forbidden``) is a
 #: distinct BEHAVIOUR provisioned under the binary name ``name`` (the part before
 #: ``@``) — the gate-aware profile shares the ``t3`` binary but refuses colleague
 #: posts, so a scenario picks the ordinary or the gate-aware ``t3``, never both.
@@ -154,13 +246,46 @@ KNOWN_CLI_STUBS: dict[str, str] = {
     "t3": _T3_STUB,
     "gh": _GH_STUB,
     "glab": _GLAB_STUB,
+    "glab@linked_sources": _GLAB_LINKED_SOURCES_STUB,
     "uv": _UV_STUB,
-    "t3@on_behalf_ask": _T3_ON_BEHALF_ASK_STUB,
+    "t3@on_behalf_forbidden": _T3_ON_BEHALF_FORBIDDEN_STUB,
 }
+
+_LOCAL_PROFILE_RE = re.compile(r"[a-z][a-z0-9_-]*@[a-z][a-z0-9_-]*\Z")
+
+
+def _local_stub_path(name: str, source_path: Path | None) -> Path | None:
+    """Return an overlay-owned profile beside *source_path*, if one exists.
+
+    Core owns the built-in generic profiles above. An overlay may add a scenario-
+    specific world without putting its private nouns in vendored core by shipping
+    ``cli_stubs/<binary>@<profile>.sh`` beside its eval YAML. Requiring the profiled
+    form prevents an overlay from silently replacing a generic built-in, and the
+    strict name grammar makes traversal outside ``cli_stubs/`` impossible.
+    """
+    if source_path is None or not _LOCAL_PROFILE_RE.fullmatch(name):
+        return None
+    candidate = source_path.parent / "cli_stubs" / f"{name}.sh"
+    return candidate if candidate.is_file() else None
+
+
+def is_known_cli_stub(name: str, *, source_path: Path | None = None) -> bool:
+    """Whether *name* is a built-in stub or an overlay-local profile."""
+    return name in KNOWN_CLI_STUBS or _local_stub_path(name, source_path) is not None
+
+
+def _stub_body(name: str, source_path: Path | None) -> str:
+    if name in KNOWN_CLI_STUBS:
+        return KNOWN_CLI_STUBS[name]
+    local = _local_stub_path(name, source_path)
+    if local is not None:
+        return local.read_text(encoding="utf-8")
+    msg = f"unknown cli_stub: {name!r}"
+    raise ValueError(msg)
 
 
 @contextmanager
-def provision_cli_stubs(names: Sequence[str]) -> Iterator[Path]:
+def provision_cli_stubs(names: Sequence[str], *, source_path: Path | None = None) -> Iterator[Path]:
     """Yield a throwaway ``bin/`` dir holding an executable stub for each name.
 
     The directory (and every stub in it) is removed when the context exits. Prepend
@@ -168,7 +293,7 @@ def provision_cli_stubs(names: Sequence[str]) -> Iterator[Path]:
     agent's ``t3``/``gh``/``glab`` invocations resolve to the inert stub instead of
     erroring on a missing binary.
     """
-    unknown = [n for n in names if n not in KNOWN_CLI_STUBS]
+    unknown = [n for n in names if not is_known_cli_stub(n, source_path=source_path)]
     if unknown:
         msg = f"unknown cli_stubs: {unknown} (known: {sorted(KNOWN_CLI_STUBS)})"
         raise ValueError(msg)
@@ -181,7 +306,7 @@ def provision_cli_stubs(names: Sequence[str]) -> Iterator[Path]:
             # to the selected profile's behaviour.
             binary = name.split("@", 1)[0]
             stub = bindir / binary
-            stub.write_text(KNOWN_CLI_STUBS[name], encoding="utf-8")
+            stub.write_text(_stub_body(name, source_path), encoding="utf-8")
             stub.chmod(0o755)
         yield bindir
 
@@ -196,7 +321,8 @@ def prepend_to_path(env: dict[str, str], bindir: Path) -> dict[str, str]:
 
 __all__ = [
     "KNOWN_CLI_STUBS",
-    "ON_BEHALF_ASK_BLOCK_TEXT",
+    "ON_BEHALF_BLOCK_TEXT",
+    "is_known_cli_stub",
     "prepend_to_path",
     "provision_cli_stubs",
 ]

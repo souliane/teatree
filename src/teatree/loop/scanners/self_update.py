@@ -3,38 +3,40 @@
 The editable-installed teatree clone (resolved via ``T3_REPO`` / the
 ``uv`` tool receipt) and every registered overlay clone drift behind
 ``origin/<default-branch>`` until a human runs ``t3 update``. This
-scanner closes the loop: every tick, for each configured clone, it
-checks the cadence gate, then — if the working tree is clean, on the
-default branch, AND the default branch's CI is green — fast-forwards the
-clone to its tracking branch.
+scanner closes the loop: on each fire of the hourly ``housekeeping``
+``Loop`` row, for each configured clone — if the working tree is clean,
+on the default branch, AND the default branch's CI is green — it
+fast-forwards the clone to its tracking branch.
 
 The scanner deliberately does **not** reinstall the editable install or
 run ``t3 setup`` inline: those mutate the running interpreter and would
 steal the foreground mid-tick. Instead, when ``auto_update_reinstall``
-is enabled and a clone actually advances, the scanner upserts a
+is on and a clone actually advances, the scanner upserts a
 :class:`teatree.core.models.pending_reinstall.PendingReinstall` row; the
 next per-tick subprocess drains it in a clean process before any scanner
-imports (:mod:`teatree.loop.self_update_reinstall`). With the flag off
-(the default) the scanner's contract is unchanged — a ``git pull
---ff-only`` per repo, no more.
+imports (:mod:`teatree.loop.self_update_reinstall`).
 
 Decision ladder per repo (per tick):
 
-1. cadence elapsed since last pull? → skip (``cadence_not_elapsed``)
-2. repo path missing on disk? → ``failed`` (logged + signal emitted)
-3. ``git fetch origin`` fails? → ``failed``
-4. on a non-default branch? → ``skipped`` (``branch=<name>``)
-5. tracked-dirty working tree? → ``skipped`` (``dirty_tracked``)
-6. origin not ahead of HEAD? → ``up_to_date`` (CI is NOT queried)
-7. ``require_green_main`` and default-branch CI not green? → ``skipped``
+1. repo path missing on disk? → ``failed`` (logged + signal emitted)
+2. ``git fetch origin`` fails? → ``failed``
+3. on a non-default branch? → ``skipped`` (``branch=<name>``)
+4. tracked-dirty working tree? → ``skipped`` (``dirty_tracked``)
+5. origin not ahead of HEAD? → ``up_to_date`` (CI is NOT queried)
+6. ``require_green_main`` and default-branch CI not green? → ``skipped``
     (``ci_red`` / ``ci_pending`` / ``ci_unknown`` — fail closed: only
-    an explicit green proceeds)
-8. ``git pull --ff-only`` advances HEAD? → ``updated`` (+ deferred
-    reinstall row when ``auto_update_reinstall`` is on)
+    an explicit green proceeds). With ``require_green_main`` off the CI
+    source is never queried and the pull proceeds unverified — the
+    documented back-compat case for a clone whose default branch has no
+    CI.
+7. ``git pull --ff-only`` advances HEAD? → ``updated`` (+ deferred
+    reinstall row when ``auto_update_reinstall`` is on). The reinstall rides exactly the
+    tree step 6 admitted, and the outcome's reason records which
+    (``ci_verified`` / ``ci_unverified``).
 
 The post-pass :class:`SelfUpdateMarker` row records the outcome + the
-new HEAD SHA so the cadence gate can short-circuit cheaply on the next
-tick without re-shelling git.
+new HEAD SHA, so a reader can see what the last pass did without
+re-shelling git.
 """
 
 import logging
@@ -67,6 +69,12 @@ CORE_REPO_LABEL = "teatree"
 # The clone advanced but nothing was queued to re-anchor the running
 # interpreter — carried on the outcome so the signal and marker both show it.
 REINSTALL_QUEUE_FAILED_REASON = "reinstall_queue_failed"
+
+# Which tree the pull admitted, carried on an `updated` outcome's reason so the signal
+# and the marker distinguish a green-gated pull from one `auto_update_require_green_main`
+# false let through with no CI read at all.
+CI_VERIFIED_REASON = "ci_verified"
+CI_UNVERIFIED_REASON = "ci_unverified"
 
 _CI_SKIP_REASON: dict[CiVerdict, str] = {
     CiVerdict.RED: "ci_red",
@@ -107,7 +115,7 @@ def _parse_off_default_branch(reason: str) -> str:
 class _PullOutcome:
     """Internal record of one repo's pass through the decision ladder."""
 
-    outcome: str  # "updated" | "up_to_date" | "skipped" | "failed" | "cadence_not_elapsed"
+    outcome: str  # "updated" | "up_to_date" | "skipped" | "failed"
     reason: str = ""
     old_sha: str = ""
     new_sha: str = ""
@@ -119,10 +127,7 @@ class SelfUpdateScanner:
 
     *repos* is an ordered list of ``(label, path)`` pairs; *label* is the
     stable identity used both for the persisted :class:`SelfUpdateMarker`
-    row and for the emitted signal payloads. *cadence_hours* gates how
-    often the scanner is allowed to issue git operations against a given
-    clone — it is decoupled from the loop tick cadence so a sub-minute
-    tick doesn't degenerate into sub-minute git fetches.
+    row and for the emitted signal payloads.
 
     The scanner is a stateless pure-Python object; all persistence is
     in :class:`SelfUpdateMarker`, all logging goes through ``logger`` so
@@ -136,16 +141,20 @@ class SelfUpdateScanner:
     (still fail closed). Set *require_green_main* false for back-compat /
     a clone whose default branch has no CI.
 
-    *auto_update_reinstall* opts into the deferred-reinstall queue: on an
-    actual ``updated`` outcome the scanner upserts a
+    *auto_update_reinstall* opts into the deferred-reinstall queue (off by default: it
+    re-anchors the running orchestrator). On an actual ``updated`` outcome the scanner
+    upserts a
     :class:`teatree.core.models.pending_reinstall.PendingReinstall` row so
     the next per-tick subprocess re-anchors the running interpreter in a
-    clean process. Off by default — the genuinely new side-effect on the
-    running orchestrator is never enabled silently.
+    clean process. The reinstall rides exactly the tree the pull gate
+    admitted: verified-green under the *require_green_main* default, and
+    whatever the operator opted into when they turn it off. Which one it
+    was is recorded on the outcome's reason (:data:`CI_VERIFIED_REASON` /
+    :data:`CI_UNVERIFIED_REASON`), so a bypassed pull is legible rather
+    than silent.
     """
 
     repos: tuple[tuple[str, Path], ...] = ()
-    cadence_hours: int = 1
     name: str = "self_update"
     ci_status: MainCiStatus | None = None
     require_green_main: bool = True
@@ -171,8 +180,6 @@ class SelfUpdateScanner:
         return signals
 
     def _process_one(self, *, label: str, path: Path) -> _PullOutcome:
-        if self._cadence_blocks(label=label):
-            return _PullOutcome(outcome="cadence_not_elapsed", reason="recent_marker")
         if not path.is_dir():
             return _record_marker(
                 label=label,
@@ -198,28 +205,17 @@ class SelfUpdateScanner:
             return CiVerdict.UNKNOWN
         return self.ci_status.verdict(repo=repo)
 
-    def _cadence_blocks(self, *, label: str) -> bool:
-        """Return True iff a recent enough marker for *label* exists."""
-        # Import inside the method so the scanner module imports cleanly even
-        # when Django app loading hasn't run yet (the wiring layer imports
-        # this class at module load time).
-        from teatree.core.models.self_update_marker import SelfUpdateMarker  # noqa: PLC0415 — lazy ORM import
-
-        marker = SelfUpdateMarker.objects.filter(repo_label=label).first()
-        if marker is None:
-            return False
-        elapsed_hours = (timezone.now() - marker.last_pull_at).total_seconds() / 3600.0
-        return elapsed_hours < self.cadence_hours
-
 
 def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) -> None:
-    """Emit a durable notice when the clone was skipped as dirty / off-default (#2836).
+    """Emit a durable notice when a skip will not clear on its own (#2836).
 
-    Only the silently-stale skip classes notify: ``dirty_tracked`` and the
-    off-default ``branch=…`` reason (which includes a detached HEAD —
-    ``_current_branch`` returns ``HEAD`` when detached). CI-gated and
-    no-origin skips are expected waits, not a clone the operator must fix, so
-    they stay log-only. The notice is idempotent per (clone, reason, HEAD), so a
+    ``dirty_tracked`` and the off-default ``branch=…`` reason (which includes a
+    detached HEAD — ``_current_branch`` returns ``HEAD`` when detached) both need a
+    human. So does ``ci_unknown``: red and pending are answers that change on their
+    own, but a verdict nothing can READ leaves the fail-closed gate refusing every
+    tick while reporting an ordinary skip — this repo ran a whole fork's worth of
+    commits behind on exactly that. ``ci_red`` / ``ci_pending`` / ``no_origin_head``
+    stay log-only. The notice is idempotent per (clone, reason, HEAD), so a
     persistent skip is surfaced once rather than every tick.
     """
     if outcome.outcome != "skipped":
@@ -236,6 +232,8 @@ def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) 
     elif reason.startswith(_OFF_DEFAULT_REASON_PREFIX):
         kind = StaleCloneReason.OFF_DEFAULT
         default_branch = _parse_off_default_branch(reason)
+    elif reason == _CI_SKIP_REASON[CiVerdict.UNKNOWN]:
+        kind, default_branch = StaleCloneReason.CI_UNVERIFIABLE, ""
     else:
         return
     notify_stale_clone_skip(
@@ -390,7 +388,8 @@ def _attempt_pull(*, repo: Path, ci_gate: _CiGate) -> _PullOutcome:
         return pre_check
     if not _origin_ahead(repo, pre_sha=pre_sha):
         return _PullOutcome(outcome="up_to_date", old_sha=pre_sha, new_sha=pre_sha)
-    ci_check = _ci_skip(repo=repo, pre_sha=pre_sha, ci_gate=ci_gate)
+    verdict = ci_gate(repo)
+    ci_check = _ci_skip(verdict=verdict, pre_sha=pre_sha)
     if ci_check is not None:
         return ci_check
     pull = _git(repo, "pull", "--ff-only")
@@ -399,15 +398,24 @@ def _attempt_pull(*, repo: Path, ci_gate: _CiGate) -> _PullOutcome:
     new_sha = _full_sha(repo)
     if new_sha == pre_sha:
         return _PullOutcome(outcome="up_to_date", old_sha=pre_sha, new_sha=new_sha)
-    return _PullOutcome(outcome="updated", old_sha=pre_sha, new_sha=new_sha)
+    return _PullOutcome(
+        outcome="updated",
+        reason=_admitted_tree_reason(verdict),
+        old_sha=pre_sha,
+        new_sha=new_sha,
+    )
 
 
-def _ci_skip(*, repo: Path, pre_sha: str, ci_gate: _CiGate) -> _PullOutcome | None:
+def _ci_skip(*, verdict: CiVerdict | None, pre_sha: str) -> _PullOutcome | None:
     """Fail-closed CI gate: return a skip outcome unless the verdict is green."""
-    verdict = ci_gate(repo)
     if verdict is None or verdict is CiVerdict.GREEN:
         return None
     return _PullOutcome(outcome="skipped", reason=_CI_SKIP_REASON[verdict], old_sha=pre_sha)
+
+
+def _admitted_tree_reason(verdict: CiVerdict | None) -> str:
+    """Name what the gate admitted: a green verdict, or the operator's ungated bypass."""
+    return CI_VERIFIED_REASON if verdict is CiVerdict.GREEN else CI_UNVERIFIED_REASON
 
 
 def _pre_pull_gate(*, repo: Path, pre_sha: str) -> _PullOutcome | None:
@@ -457,10 +465,10 @@ def _queue_reinstall(*, label: str, outcome: _PullOutcome) -> _PullOutcome:
     """Upsert a deferred-reinstall row; never crash the tick on a DB error.
 
     A failed upsert leaves the clone advanced with the running interpreter
-    still anchored at the old code and nothing queued to re-anchor it, and the
-    marker this outcome writes closes the cadence window — so the failure is
-    carried on the outcome's reason, where the emitted signal and the persisted
-    marker both surface it, rather than being swallowed into a clean "updated".
+    still anchored at the old code and nothing queued to re-anchor it — so the
+    failure is carried on the outcome's reason, where the emitted signal and the
+    persisted marker both surface it, rather than being swallowed into a clean
+    "updated".
     """
     from teatree.core.models.pending_reinstall import PendingReinstall  # noqa: PLC0415 — deferred: ORM/app-registry
 

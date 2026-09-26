@@ -296,11 +296,10 @@ def _probe_listener(*, headless: bool) -> RoundtripFinding:
 def _probe_answer_pipeline() -> list[RoundtripFinding]:
     """The answer path is live: the ``inbox`` loop is enabled + unmasked AND a worker drains it.
 
-    A paused/disabled/preset-masked ``inbox`` loop, or a ``loop_runner_enabled``
-    kill-switch OFF, or no worker holding the flock, all leave a queued message
-    forever unanswered — teatree reacts but never answers.
+    A paused/disabled/preset-masked ``inbox`` loop, or no worker holding the flock, both
+    leave a queued message forever unanswered — teatree reacts but never answers. A preset
+    admitting nothing at all masks ``inbox`` too, so it is named by the first finding.
     """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keep import light
     from teatree.loops.enable_verdict import loop_admits  # noqa: PLC0415 — deferred: ORM-backed read
     from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held  # noqa: PLC0415 — deferred: keep import light
 
@@ -314,16 +313,7 @@ def _probe_answer_pipeline() -> list[RoundtripFinding]:
                 f"(`t3 loop override {_ANSWER_LOOP} clear`).",
             )
         )
-    settings = get_effective_settings()
-    if not settings.loop_runner_enabled:
-        findings.append(
-            RoundtripFinding(
-                Level.FAIL,
-                "the loop runner is OFF (loop_runner_enabled=false) — no headless answer cycle runs; teatree reacts "
-                "but never answers. Re-enable the loop runner.",
-            )
-        )
-    elif not flock_is_held(WORKER_SINGLETON):
+    if not flock_is_held(WORKER_SINGLETON):
         findings.append(
             RoundtripFinding(
                 Level.FAIL,

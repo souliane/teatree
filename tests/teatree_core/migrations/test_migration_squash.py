@@ -86,7 +86,12 @@ def _snapshot() -> dict[str, dict]:
     return out
 
 
-@pytest.mark.timeout(240)
+# A fresh/unsquashed/squashed comparison performs several full migration cycles.
+# Loaded CI runners have measured just over four minutes for one case, and a locally
+# saturated runner exceeded ten minutes, so the former 240-second budget killed
+# correct progress. Keep a finite per-test ceiling while leaving enough room for the
+# deliberately expensive acceptance path under maximum parallel contention.
+@pytest.mark.timeout(900)
 class TestCoreMigrationSquash(TransactionTestCase):
     """The squash reproduces the unsquashed chain's seeds, and is a deployed no-op."""
 

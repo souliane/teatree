@@ -10,6 +10,11 @@ confirmed-internal channels (and *all* ``D…`` DMs) on the bot and cannot tell 
 colleague DM from the self DM — exactly the distinction #1750 turns on.
 """
 
+from collections.abc import Mapping
+
+# ``channels:manage`` (granted so a dm_only bot can leave public channels) also permits these.
+_CHANNEL_REACH_METHODS = frozenset({"conversations.join", "conversations.invite", "conversations.create"})
+
 
 class OwnerDmOnlyError(RuntimeError):
     """A ``dm_only`` (owner-restricted) bot attempted an outbound to a non-owner surface.
@@ -19,10 +24,9 @@ class OwnerDmOnlyError(RuntimeError):
     or a channel, even when a caller passes the wrong destination.
     """
 
-    def __init__(self, channel: str) -> None:
-        super().__init__(
-            f"owner-restricted bot refused an outbound to {channel!r}: this bot may only reach its owner's own DM.",
-        )
+    def __init__(self, channel: str, *, method: str = "") -> None:
+        action = f"{method} to {channel!r}" if method else f"an outbound to {channel!r}"
+        super().__init__(f"owner-restricted bot refused {action}: this bot may only reach its owner's own DM.")
 
 
 def assert_owner_dm(channel: str, *, owner_dm_only: bool, dm_channel_id: str, user_id: str) -> None:
@@ -34,6 +38,24 @@ def assert_owner_dm(channel: str, *, owner_dm_only: bool, dm_channel_id: str, us
     """
     if owner_dm_only and not is_self_dm(channel, dm_channel_id=dm_channel_id, user_id=user_id):
         raise OwnerDmOnlyError(channel)
+
+
+def assert_owner_call(
+    method: str, payload: Mapping[str, object], *, owner_dm_only: bool, dm_channel_id: str, user_id: str
+) -> None:
+    """Refuse channel reach outright, and any post or DM open not addressed to the owner."""
+    if not owner_dm_only:
+        return
+    if method in _CHANNEL_REACH_METHODS:
+        raise OwnerDmOnlyError(str(payload.get("channel") or payload.get("name") or ""), method=method)
+    if method == "chat.postMessage":
+        channel = str(payload.get("channel") or "")
+        if not is_self_dm(channel, dm_channel_id=dm_channel_id, user_id=user_id):
+            raise OwnerDmOnlyError(channel, method=method)
+    elif method == "conversations.open":
+        users = str(payload.get("users") or "")
+        if not user_id or users != user_id:
+            raise OwnerDmOnlyError(users, method=method)
 
 
 def is_self_dm(channel: str, *, dm_channel_id: str, user_id: str) -> bool:

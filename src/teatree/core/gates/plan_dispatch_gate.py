@@ -8,7 +8,7 @@ coding / testing / debugging ``Task`` directly — so that edge is never taken a
 the absence is never seen. The currency sibling declines the case by name:
 :func:`~teatree.core.gates.plan_currency_gate.check_plan_current` returns True on
 ``artifact is None`` because absence "is the plan-first gate's concern, not this
-one's", and it is behind the default-OFF ``require_plan_adequacy`` besides.
+one's".
 
 This closes absence at the seam a headless dispatch cannot avoid, and it is
 deliberately unconditional — a gate behind a flag is the reminder it replaces.

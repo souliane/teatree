@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, override
 
 from django.core.cache import cache
 
+from teatree import forge_credentials
 from teatree.core.cleanup.cleanup import WorktreeBusyError, cleanup_worktree
 from teatree.types import PENDING_REVIEWS_CACHE_KEY, RawAPIDict, SyncBackend, SyncResult
 from teatree.utils.run import run_allowed_to_fail
@@ -84,7 +85,11 @@ class GitHubSyncBackend(SyncBackend):
     def is_configured(self, overlay: object) -> bool:
         from teatree.core.overlay import OverlayBase  # noqa: PLC0415 — deferred: avoids a backends ↔ core cycle
 
-        return isinstance(overlay, OverlayBase) and bool(overlay.config.get_github_token())
+        return (
+            isinstance(overlay, OverlayBase)
+            and forge_credentials.resolve_overlay_token(overlay, credential="github_token").state
+            is forge_credentials.ForgeTokenState.TOKEN
+        )
 
     @override
     def sync(self, overlay: object) -> SyncResult:
@@ -95,7 +100,10 @@ class GitHubSyncBackend(SyncBackend):
         if not isinstance(overlay, OverlayBase):
             return SyncResult(errors=["Invalid overlay"])
 
-        token = overlay.config.get_github_token()
+        resolution = forge_credentials.resolve_overlay_token(overlay, credential="github_token")
+        if resolution.state is not forge_credentials.ForgeTokenState.TOKEN:
+            return SyncResult(errors=[f"{resolution.setting} is {resolution.state.value}: {resolution.detail}"])
+        token = resolution.token
         owner = overlay.config.github_owner
         project_number = overlay.config.github_project_number
 
@@ -213,6 +221,9 @@ class GitHubSyncBackend(SyncBackend):
         gh_bin = shutil.which("gh")
         if not gh_bin:
             return []
+        env: dict[str, str] = dict(os.environ)
+        env["GH_TOKEN"] = token
+        env.pop("GITHUB_TOKEN", None)
 
         out = run_allowed_to_fail(
             [
@@ -226,7 +237,7 @@ class GitHubSyncBackend(SyncBackend):
                 "--limit",
                 "50",
             ],
-            env={**os.environ, "GH_TOKEN": token},
+            env=env,
             expected_codes=None,
             timeout=30,
         )

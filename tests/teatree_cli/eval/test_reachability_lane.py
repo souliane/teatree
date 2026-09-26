@@ -13,12 +13,25 @@ gaps close — the stage ``t3 eval coverage`` has already left behind.
 import contextlib
 import io
 
+import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.eval import reachability_lane
 from teatree.cli.eval.reachability_lane import reachability, validate_shipped_scenario_reachability
 from teatree.eval.scenario_reachability import ReachabilityReport, UnreachableCommand
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _registry_provider_registered() -> None:
+    """Fill the registry seam through the real dispatch, as `test_skill_command_lane` does.
+
+    The provider is registered by the lazy ``eval`` loader, so a test importing the lane
+    directly has not been through it and whether it passed depended on another test in the
+    same shard having dispatched first.
+    """
+    result = CliRunner().invoke(app, ["eval", "--help"])
+    assert result.exit_code == 0, result.output
 
 
 def _unreachable_report() -> ReachabilityReport:

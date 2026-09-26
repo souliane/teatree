@@ -38,7 +38,6 @@ CONTESTED_FROM_CLAIMANTS: int = 2
 #: reporting it would bury the findings that do. Declared here, beside the check that
 #: reads them, so adding a gate needs no edit elsewhere.
 CONTESTED_GATE_KEYS: tuple[str, ...] = (
-    "on_behalf_post_mode",
     "require_human_approval_to_merge",
     "require_human_approval_to_answer",
     "autonomy",

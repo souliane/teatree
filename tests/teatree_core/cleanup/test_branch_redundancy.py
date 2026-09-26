@@ -65,17 +65,8 @@ def _no_forge() -> AbstractContextManager[object]:
 
 
 def _forge_merged() -> AbstractContextManager[object]:
-    """A forge reporting a MERGED PR and no open one.
-
-    Answering every probe alike would also answer the open-PR veto `branch_redundancy`
-    consults, vetoing the very verdict these cases are about.
-    """
-
-    def fake(cmd: list[str], repo: str, extract: object, *, timeout: float = 30.0) -> str:
-        del repo, extract, timeout
-        return "42" if "merged" in " ".join(cmd) else ""
-
-    return patch.object(bc, "probe_host_cli", side_effect=fake)
+    """A forge reporting a MERGED PR and no open one."""
+    return forge_reporting(merged_head_sha="merged-tip")
 
 
 def test_squash_merged_via_b_when_forge_absent_is_redundant(tmp_path: Path) -> None:

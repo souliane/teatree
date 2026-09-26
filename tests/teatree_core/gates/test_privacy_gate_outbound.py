@@ -32,7 +32,7 @@ REDACT = "SECRETCORP"
 def inject_rules(monkeypatch: pytest.MonkeyPatch):
     def _set(*, public: bool, redact: Sequence[str] = (), block: Sequence[str] = ()) -> None:
         monkeypatch.setattr(privacy_gate, "_target_is_public", lambda _repo, _forge: public)
-        monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda: (list(redact), list(block)))
+        monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda _name="": (list(redact), list(block)))
 
     return _set
 
@@ -121,7 +121,7 @@ class TestFullForgeUrlTarget:
         conn.commit()
         conn.close()
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda: ([REDACT], []))
+        monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda _name="": ([REDACT], []))
         return db
 
     def test_internal_work_item_url_passes_flagged_body(self, internal_config) -> None:
@@ -154,7 +154,7 @@ def test_classification_error_fails_closed_to_scanning(monkeypatch: pytest.Monke
     # patching it here makes the classification raise → the gate must fail
     # CLOSED (treat as public, scan), so the built-in anchor still blocks.
     monkeypatch.setattr(publish_destination, "is_public_destination", _boom)
-    monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda: ([], []))
+    monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda _name="": ([], []))
     result = scan_outbound_text(text="User mandate (verbatim leak here.", target_repo=REAL_PUBLIC, forge="github")
     assert result.refused
 
@@ -212,7 +212,7 @@ def test_public_publish_refused_when_overlay_rules_unresolvable(monkeypatch: pyt
     # The confidentiality boundary: a PUBLIC target whose overlay rules cannot be
     # resolved is REFUSED (fail closed + loud), NOT scanned with only the built-ins.
     monkeypatch.setattr(privacy_gate, "_target_is_public", lambda _repo, _forge: True)
-    monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda: None)
+    monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda _name="": None)
     result = scan_outbound_text(text="A perfectly ordinary note.", target_repo=REAL_PUBLIC, forge="github")
     assert result.refused
     assert result.is_public
@@ -223,7 +223,7 @@ def test_private_target_not_refused_even_when_rules_unresolvable(monkeypatch: py
     # A provably-PRIVATE target is a clean pass regardless of rule resolution —
     # the fail-closed refusal is scoped to public targets only.
     monkeypatch.setattr(privacy_gate, "_target_is_public", lambda _repo, _forge: False)
-    monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda: None)
+    monkeypatch.setattr(privacy_gate, "overlay_privacy_rules", lambda _name="": None)
     result = scan_outbound_text(text="A note.", target_repo="acme/private", forge="github")
     assert not result.refused
     assert result.is_public is False

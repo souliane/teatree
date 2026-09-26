@@ -10,7 +10,9 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.config import UserSettings
 from teatree.loop.dispatch import dispatch
+from teatree.loop.global_scanner_factories import _resource_pressure_scanner
 from teatree.loop.scanners.base import ScanSignal
 
 
@@ -61,9 +63,6 @@ class ConfigDefaultsTests(TestCase):
 
         return UserSettings()
 
-    def test_scanner_enabled_by_default(self) -> None:
-        assert self._settings().resource_pressure_disabled is False
-
     def test_destructive_flags_default_off(self) -> None:
         settings = self._settings()
         assert settings.allow_destructive_disk is False
@@ -75,11 +74,6 @@ class ConfigDefaultsTests(TestCase):
         assert settings.disk_crit_free_gb == pytest.approx(10.0)
         assert settings.ram_warn_avail_gb == pytest.approx(3.0)
         assert settings.ram_crit_avail_gb == pytest.approx(1.5)
-
-    def test_cadence_and_rate_limit_defaults(self) -> None:
-        settings = self._settings()
-        assert settings.resource_pressure_cadence_minutes == 5
-        assert settings.resource_pressure_min_free_interval_minutes == 30
 
     def test_default_cache_allowlist_excludes_prek_and_projects(self) -> None:
         allowlist = self._settings().disk_cache_allowlist
@@ -93,10 +87,9 @@ class ConfigDefaultsTests(TestCase):
     def test_ram_kill_allowlist_defaults_empty(self) -> None:
         assert self._settings().ram_kill_allowlist == []
 
-    def test_worktree_gc_caps(self) -> None:
+    def test_worktree_stale_days_default(self) -> None:
         settings = self._settings()
         assert settings.worktree_stale_days == 30
-        assert settings.max_worktree_gc_per_tick == 3
 
 
 class ConfigParsingTests(TestCase):
@@ -135,40 +128,39 @@ class ConfigParsingTests(TestCase):
         settings = get_effective_settings()
         assert "~/.cache/pre-commit" in settings.disk_cache_allowlist
 
-    def test_kill_switch_is_overlay_overridable(self) -> None:
+    def test_the_thresholds_are_overlay_overridable(self) -> None:
         from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS  # noqa: PLC0415
 
-        assert "resource_pressure_disabled" in OVERLAY_OVERRIDABLE_SETTINGS
         assert "allow_destructive_disk" in OVERLAY_OVERRIDABLE_SETTINGS
         assert "disk_crit_free_gb" in OVERLAY_OVERRIDABLE_SETTINGS
 
 
 class BuilderTests(TestCase):
-    """``_resource_pressure_scanner`` honours the kill-switch and threads config."""
+    """``_resource_pressure_scanner`` threads every threshold through to the scanner."""
 
-    def test_builds_scanner_from_settings(self) -> None:
-        from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.global_scanner_factories import _resource_pressure_scanner  # noqa: PLC0415
-
-        settings = UserSettings(disk_crit_free_gb=8.0, allow_destructive_disk=True)
-        with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": settings})(),
-        ):
+    def test_builds_scanner_from_the_resolved_settings(self) -> None:
+        settings = UserSettings(disk_crit_free_gb=8.0, scratch_retention_days=11)
+        with patch("teatree.loop.global_scanner_factories.get_effective_settings", return_value=settings):
             scanner = _resource_pressure_scanner()
         assert scanner is not None
         assert scanner.disk_crit_free_gb == pytest.approx(8.0)
-        assert scanner.allow_destructive_disk is True
+        assert scanner.scratch_retention_days == 11
 
-    def test_kill_switch_returns_none(self) -> None:
-        from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.global_scanner_factories import _resource_pressure_scanner  # noqa: PLC0415
+    def test_a_stored_destructive_lever_does_not_reach_the_scanner(self) -> None:
+        """The deliberate hold: repairing the resolver read must not ARM a deleter.
 
-        with patch(
-            "teatree.loop.global_scanner_factories.load_config",
-            return_value=type("Cfg", (), {"user": UserSettings(resource_pressure_disabled=True)})(),
-        ):
-            assert _resource_pressure_scanner() is None
+        No stored row has ever reached this scanner, so honouring these two here would
+        start deleting on a box that set either flag at any point and has never seen a
+        deletion. Whether to arm them is the owner's decision, and until it is taken the
+        levers stay at their shipped value.
+        """
+        settings = UserSettings(allow_destructive_disk=True, allow_destructive_ram=True)
+        with patch("teatree.loop.global_scanner_factories.get_effective_settings", return_value=settings):
+            scanner = _resource_pressure_scanner()
+        assert scanner is not None
+        assert scanner.allow_destructive_disk is False
+        assert scanner.allow_destructive_ram is False
+        assert UserSettings().allow_destructive_disk is False, "the shipped value is what the hold pins to"
 
     def test_build_default_jobs_wires_global_scanner(self) -> None:
         from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415

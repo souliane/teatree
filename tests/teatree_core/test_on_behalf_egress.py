@@ -24,7 +24,9 @@ from django.test import TestCase
 
 from teatree.core.models import BotPing, OnBehalfApproval, PendingChatInjection
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.on_behalf_gate import OnBehalfContext
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
 
 def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
@@ -110,18 +112,17 @@ class _NoRouteFake:
         return "https://slack.example/p1"
 
 
-def _write_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+def _seed_slack_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it
     # in a config-store sqlite the reader resolves via ``T3_CONFIG_DB``.
-    # ``on_behalf_post_mode`` is DB-home (#1775) — stage it via the ``T3_*`` env tier.
     _seed_cold_slack_user(tmp_path, monkeypatch, _USER_ID)
-    monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode)
 
 
 class TestColleagueGate(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_mode(tmp_path, monkeypatch, "ask")
+        _seed_slack_identity(tmp_path, monkeypatch)
+        seed_forbidding_posture()
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
         self.monkeypatch = monkeypatch
 
@@ -163,6 +164,7 @@ class TestColleagueGate(TestCase):
             text="day-1 nag",
             target=_TARGET,
             action="review_nag_post",
+            context=OnBehalfContext(own_mr=True, target=_TARGET),
         )
         assert fake.post_routed_calls == [(_COLLEAGUE, "day-1 nag", "")]
         assert BotPing.objects.filter(
@@ -181,7 +183,8 @@ class TestColleagueGate(TestCase):
 class TestSelfDmCarveOut(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_mode(tmp_path, monkeypatch, "ask")
+        _seed_slack_identity(tmp_path, monkeypatch)
+        seed_forbidding_posture()
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
     def test_self_dm_react_emits_ungated_unaudited(self) -> None:
@@ -230,9 +233,10 @@ class TestSelfDmCarveOut(TestCase):
 class TestFailClosed(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_mode(tmp_path, monkeypatch, "ask")
+        _seed_slack_identity(tmp_path, monkeypatch)
+        seed_forbidding_posture()
 
-    def test_no_route_token_backend_blocks_under_ask(self) -> None:
+    def test_no_route_token_backend_blocks_under_a_forbidding_posture(self) -> None:
         fake = _NoRouteFake()
         with pytest.raises(OnBehalfPostBlockedError):
             OnBehalfSlackEgress(fake).react(
@@ -248,7 +252,8 @@ class TestFailClosed(TestCase):
 class TestAuditOnlyOnRealSuccess(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_mode(tmp_path, monkeypatch, "immediate")
+        _seed_slack_identity(tmp_path, monkeypatch)
+        seed_permitting_posture()
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
     def test_no_audit_when_ok_false(self) -> None:
@@ -274,7 +279,7 @@ class TestAuditOnlyOnRealSuccess(TestCase):
         )
         assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
 
-    def test_audit_fires_under_immediate_on_success(self) -> None:
+    def test_audit_fires_under_a_permitting_posture_on_success(self) -> None:
         fake = _RouteAwareFake()
         OnBehalfSlackEgress(fake).react(
             channel=_COLLEAGUE,
@@ -301,7 +306,8 @@ class TestThreadedAnswerRetiresQuestion(TestCase):
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_mode(tmp_path, monkeypatch, "ask")
+        _seed_slack_identity(tmp_path, monkeypatch)
+        seed_forbidding_posture()
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
     def _record_question(self) -> None:
@@ -388,7 +394,8 @@ class TestThreadedAnswerRetiresQuestion(TestCase):
 class TestUnknownSurfaceRouting(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_mode(tmp_path, monkeypatch, "ask")
+        _seed_slack_identity(tmp_path, monkeypatch)
+        seed_forbidding_posture()
 
     def test_unknown_surface_logs_explicitly_and_fails_closed(self) -> None:
         """Unknown surface (no route_token) logs surface name and fails closed to gate."""
@@ -424,3 +431,26 @@ class TestUnknownSurfaceRouting(TestCase):
         mock_logger.warning.assert_called()
         call_args = str(mock_logger.warning.call_args)
         assert "C_UNKNOWN" in call_args or "unclassifiable" in call_args.lower()
+
+
+class TestAnEmptyWireBodyIsNamed(TestCase):
+    """A backend that resolved no token answers ``{}``; the egress names it so no caller prints ``unknown_error``."""
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _seed_slack_identity(tmp_path, monkeypatch)
+        seed_forbidding_posture()
+        monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
+
+    def test_post_reports_no_token_for_destination_and_keeps_the_approval(self) -> None:
+        OnBehalfApproval.record(target=_TARGET, action="cli_notify_post", approver_id=_APPROVER)
+        fake = _RouteAwareFake(routed_response={})
+        response = OnBehalfSlackEgress(fake).post(
+            channel=_COLLEAGUE,
+            text="hi",
+            target=_TARGET,
+            action="cli_notify_post",
+        )
+        assert response == {"ok": False, "error": "no_token_for_destination"}
+        assert OnBehalfApproval.has_unconsumed(_TARGET, "cli_notify_post")
+        assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()

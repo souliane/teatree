@@ -16,7 +16,7 @@ import datetime as dt
 import pytest
 from django.utils import timezone
 
-from teatree.core.loop_lease_manager import EXPIRED_LEASE_REAP_GRACE, PER_LOOP_OWNER_PREFIX, T3_MASTER_SLOT
+from teatree.core.loop_lease_manager import EXPIRED_LEASE_REAP_GRACE, INFRA_SLOTS, PER_LOOP_OWNER_PREFIX, T3_MASTER_SLOT
 from teatree.core.models import LoopLease
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -49,6 +49,14 @@ class TestReapExpiredLeases:
 
         assert LoopLease.objects.reap_expired_leases() == 0
         assert LoopLease.objects.filter(name="work:issue:def456").exists()
+
+    @pytest.mark.parametrize("slot", INFRA_SLOTS)
+    def test_an_infra_slot_row_keeps_its_last_run_anchor(self, slot: str) -> None:
+        """The statusline reads when a reactive slot last ran from this row."""
+        _lease(slot, expired_for=_LONG_AGO)
+
+        assert LoopLease.objects.reap_expired_leases() == 0
+        assert LoopLease.objects.filter(name=slot).exists()
 
     def test_a_row_still_held_by_a_session_is_never_reaped(self) -> None:
         _lease("work:pr:held", session_id="a-live-session", expired_for=_LONG_AGO)

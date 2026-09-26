@@ -26,6 +26,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
+from teatree.core.authoring_credential import unapprovable_author_refusal, unresolvable_author_refusal
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend, PullRequestSpec
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
@@ -45,6 +46,7 @@ from teatree.core.runners.ship import (
     should_close_ticket,
 )
 from teatree.core.worktree.target_branch import resolve_pr_target_branch
+from teatree.quality.gate_receipt import append_gate_notice
 from teatree.utils import git, git_remote
 from teatree.utils.disposable_checkout import is_disposable_checkout
 from teatree.utils.run import CommandFailedError
@@ -156,13 +158,16 @@ def defer_unreadable_pr_state(repo_path: str, branch_name: str) -> EnsurePrResul
 def skip_for_classified(report: BranchReport, repo_path: str, branch_name: str) -> EnsurePrResult | None:
     """The answer a classification already carries, or ``None`` when a PR must be created.
 
-    A pure mapping over the classification — five of the six branch states are
+    A pure mapping over the classification — six of the seven branch states are
     a no-op carrying their own reason, and only ``PUSHED_ORPHAN`` is work.
     """
     if report.status is BranchStatus.SYNCED:
         return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
-    if report.status is BranchStatus.EMPTY_DELTA:
-        return EnsurePrResult(skipped=EMPTY_DELTA_SKIP, branch=branch_name)
+    if report.status in {BranchStatus.EMPTY_DELTA, BranchStatus.BRANCH_MISSING}:
+        reason = (
+            EMPTY_DELTA_SKIP if report.status is BranchStatus.EMPTY_DELTA else f"branch ref {branch_name!r} is missing"
+        )
+        return EnsurePrResult(skipped=reason, branch=branch_name)
     if report.status is BranchStatus.OPEN_PR:
         return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
     if report.status is BranchStatus.UNPUSHED_ORPHAN:
@@ -261,6 +266,24 @@ def _owning_ticket_pre_create_gate(
     return None
 
 
+def _no_host_error(repo_path: str, branch_name: str) -> str:
+    """The refusal for a branch whose forge host would not build, scoped to its owning ticket.
+
+    The overlay is resolved from the branch's ticket so a repo a NON-ambient overlay declares
+    still reports its own declared author rather than the ambient overlay's.
+
+    Never raises: this runs inside the git pre-push hook, where an exception aborts the push
+    itself, so an unreadable ticket or overlay registry degrades to the generic message.
+    """
+    try:
+        owning_ticket = _ticket_for_branch(branch_name)
+        overlay = get_overlay_for_ticket(owning_ticket) if owning_ticket is not None else get_overlay()
+    except Exception:  # noqa: BLE001 — a pre-push hook must never raise; degrade to the generic message.
+        logger.warning("could not resolve the overlay owning %s — leaving the generic no-host message", branch_name)
+        return "no code host configured"
+    return unresolvable_author_refusal(repo_path, overlay_config=overlay.config) or "no code host configured"
+
+
 def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     """Build the PR spec from the branch's own commit and create it, or defer (#792).
 
@@ -277,7 +300,11 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     except BackendResolutionError as exc:
         return EnsurePrResult(error=str(exc))
     if host is None:
-        return EnsurePrResult(error="no code host configured")
+        return EnsurePrResult(error=_no_host_error(repo_path, branch_name))
+    # An MR its own author cannot approve is refused before it exists: afterwards the only remedy
+    # is to close it and open another under the right identity.
+    if refusal := unapprovable_author_refusal(host, git.remote_url(repo=repo_path)):
+        return EnsurePrResult(error=refusal)
 
     commit_subject, commit_body = _branch_own_commit_message(repo_path, branch_name)
     title = commit_subject or f"WIP: {branch_name}"
@@ -303,6 +330,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         required_sections=overlay.metadata.get_required_description_sections(),
         section_defaults=overlay.metadata.get_description_section_defaults(),
     )
+    description = append_gate_notice(description, repo_path)
     warn_if_open_questions_missing(description)
     warn_if_owner_ratification_unbacked(description)
     warn_if_precheck_incomplete(description)
@@ -324,7 +352,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         branch=branch_name,
         title=title,
         description=description,
-        target_branch=resolve_pr_target_branch(owning_ticket, branch=branch_name),
+        target_branch=resolve_pr_target_branch(owning_ticket, repo_slug=repo_slug, branch=branch_name),
         labels=overlay_pr_labels(overlay),
         assignee=assignee,
         reviewers=pr_reviewers_for_remote(overlay, remote),

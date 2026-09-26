@@ -9,6 +9,7 @@ against the real DB.
 
 import datetime as dt
 import io
+import itertools
 import zoneinfo
 from importlib import import_module
 from pathlib import Path
@@ -20,17 +21,12 @@ from django.core.management import call_command
 from django.db.utils import OperationalError
 
 from teatree.config.seed_defaults import shipped_seed_table
-from teatree.core.mode_resolution import resolve_active_mode
-from teatree.core.models import ConfigSetting, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
-from teatree.core.models.loop_preset import DEFAULT_LOW_POWER_PRESET
+from teatree.core.mode_resolution import owner_voice_forbidden, resolve_active_mode
+from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
+from teatree.core.models.config_setting import ENTRYPOINT_SEEDER
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING, resolve_active_preset
-from teatree.loops.mode_shape import (
-    INTAKE_LOOPS,
-    LOAD_BEARING_LOOPS,
-    backup_without_reclaim,
-    intake_without_delivery,
-    quieted_load_bearing,
-)
+from teatree.loops.base import LoopDeterminism
+from teatree.loops.mode_shape import backup_without_reclaim
 from teatree.loops.preset_seed import (
     PresetSpec,
     ScheduleSpec,
@@ -39,12 +35,13 @@ from teatree.loops.preset_seed import (
     default_schedule_specs,
     seed_default_presets_and_schedules,
 )
-from teatree.loops.seed import DEFAULT_LOOPS, load_loop_specs
+from teatree.loops.registry import iter_loops
+from teatree.loops.seed import DEFAULT_LOOPS
 
-_EXPECTED_PRESETS = {"present", "away", "maintenance", "low-token", "off"}
-_EXPECTED_SCHEDULES = {"standard", "always-away"}
-#: The pre-#4202 names. Seeding one again would resurrect a preset the collapse retired.
-_RETIRED_PRESETS = {"engaged", "heads-down", "low-power", "unattended", "offline"}
+_EXPECTED_PRESETS = {"present", "afk", "maintenance", "token-outage", "off"}
+_EXPECTED_SCHEDULES = {"standard", "always-afk"}
+#: Names earlier collapses retired. Seeding one again would resurrect a dead posture.
+_RETIRED_PRESETS = {"engaged", "heads-down", "low-power", "unattended", "offline", "away", "low-token", "factory-solo"}
 _VIENNA = zoneinfo.ZoneInfo("Europe/Vienna")
 
 
@@ -66,62 +63,58 @@ class TestSeedDefaultPresets(django.test.TestCase):
         seed_default_presets_and_schedules()
         assert not Mode.objects.filter(name__in=_RETIRED_PRESETS).exists()
 
-    def test_off_forces_every_work_loop_off_and_the_load_bearing_tier_on(self) -> None:
-        """A halt mode stops the WORK, never the tier that can still recover the box (#4188)."""
+    def test_off_runs_nothing_at_all(self) -> None:
+        """B3: a real off. What it strands, the switch reports — it no longer refuses to stop."""
         seed_default_presets_and_schedules()
         entries = Mode.objects.get(name="off").entries
-        assert {loop for loop, value in entries.items() if value} == set(LOAD_BEARING_LOOPS)
         assert set(entries) == {spec.name for spec in DEFAULT_LOOPS}
+        assert not any(entries.values())
 
-    def test_low_token_keeps_only_deterministic_local_loops(self) -> None:
+    def test_token_outage_keeps_only_the_loops_that_never_call_a_model(self) -> None:
         seed_default_presets_and_schedules()
-        entries = Mode.objects.get(name="low-token").entries
-        assert entries["inbox"] is True
+        entries = Mode.objects.get(name="token-outage").entries
         assert entries["housekeeping"] is True
+        assert entries["resource_pressure"] is True
+        # ``inbox`` routes through an agent, so a token outage stops it too — the box is
+        # then reachable only out of band, which is the cost the posture exists to pay.
+        assert entries["inbox"] is False
         assert entries["review"] is False
-        assert entries["dispatch"] is False
 
-    def test_maintenance_drains_in_flight_work_and_takes_no_new_intake(self) -> None:
-        """The #4202 redefinition: finish and merge what is in flight, claim nothing new."""
+    def test_maintenance_is_self_repair_with_no_delivery_and_no_voice(self) -> None:
         seed_default_presets_and_schedules()
-        entries = Mode.objects.get(name="maintenance").entries
-        assert entries["ship"] is True
-        assert entries["review"] is True
-        assert entries["tickets"] is False
-        assert entries["issue_implementer"] is False
+        row = Mode.objects.get(name="maintenance")
+        assert row.entries["ci_eval_heal"] is True
+        assert row.entries["db_backup"] is True
+        assert row.entries["ship"] is False
+        assert row.entries["review"] is False
+        assert row.entries["tickets"] is False
+        assert row.forbids_egress
 
-    def test_away_is_not_present_under_another_name(self) -> None:
-        """#4202's open question: the two intake-taking presets are genuinely different.
-
-        ``away`` masks the sole colleague-facing loop OFF and leaves the two self-QA
-        loops inheriting their own flag rather than forcing them on.
-        """
+    def test_afk_does_the_daily_job_without_a_voice(self) -> None:
+        """B6: everything runs except directive interpretation; nothing goes out on the owner's behalf."""
         seed_default_presets_and_schedules()
-        present = Mode.objects.get(name="present").entries
-        away = Mode.objects.get(name="away").entries
-        assert {loop for loop in present if present[loop] != away.get(loop)} == {
-            "followup",
-            "eval_local",
-            "dogfood",
-        }
-        assert away["followup"] is False
-        assert "eval_local" not in away
+        row = Mode.objects.get(name="afk")
+        assert {loop for loop, value in row.entries.items() if not value} == {"directive_loop"}
+        assert row.forbids_egress
 
-    def test_a_freshly_seeded_away_resolves_through_an_override(self) -> None:
+    def test_present_acts_on_the_owners_behalf(self) -> None:
+        seed_default_presets_and_schedules()
+        assert not Mode.objects.get(name="present").forbids_egress
+
+    def test_a_freshly_seeded_afk_resolves_through_an_override(self) -> None:
         """The seed → override → resolve chain lands on the row the operator named."""
         seed_default_presets_and_schedules()
-        ModeOverride.objects.set_override("away")
+        ModeOverride.objects.set_override("afk", reason="test override")
 
         resolved = resolve_active_mode()
 
-        assert resolved.name == "away"
-        assert resolved.state_for("followup") is False
+        assert resolved.name == "afk"
+        assert resolved.state_for("followup") is True
 
-    def test_destructive_loops_inherit_in_present(self) -> None:
+    def test_present_runs_every_loop(self) -> None:
+        """B6: "do everything". The subtraction is ``afk``'s, and it is one loop plus egress."""
         seed_default_presets_and_schedules()
-        entries = Mode.objects.get(name="present").entries
-        for name in ("issue_implementer", "backlog_sweep", "outer_loop", "directive_loop"):
-            assert name not in entries
+        assert all(Mode.objects.get(name="present").entries.values())
 
     def test_standard_schedule_has_the_owner_working_hours_slots(self) -> None:
         seed_default_presets_and_schedules()
@@ -129,8 +122,8 @@ class TestSeedDefaultPresets(django.test.TestCase):
         slots = {(tuple(sorted(slot.weekdays)), slot.start_time, slot.preset_name) for slot in standard.slots.all()}
         assert slots == {
             ((0, 1, 2, 3, 4), dt.time(9, 0), "present"),
-            ((0, 1, 2, 3, 4), dt.time(16, 0), "away"),
-            ((5, 6), dt.time(0, 0), "away"),
+            ((0, 1, 2, 3, 4), dt.time(16, 0), "afk"),
+            ((5, 6), dt.time(0, 0), "afk"),
         }
 
     def test_standard_schedule_uses_the_vienna_timezone(self) -> None:
@@ -158,6 +151,31 @@ class TestSeedDefaultPresets(django.test.TestCase):
     def test_standard_ships_as_the_active_schedule(self) -> None:
         seed_default_presets_and_schedules()
         assert ConfigSetting.objects.get_effective(ACTIVE_SCHEDULE_SETTING) == "standard"
+
+    def test_the_shipped_pin_is_written_with_its_seed_provenance(self) -> None:
+        """`seeded_by` + `seed_value` are what let a later reseed tell its own row from a pin.
+
+        This is the ONE call site that writes them, so without this assertion the two
+        columns can go unpopulated with nothing failing — the live control DB carries 64
+        rows and not one of them has either.
+        """
+        seed_default_presets_and_schedules()
+
+        row = ConfigSetting.objects.get(key=ACTIVE_SCHEDULE_SETTING)
+        assert row.seeded_by == ENTRYPOINT_SEEDER
+        assert row.seed_value == row.value
+
+    def test_an_operator_written_pin_is_never_adopted_by_a_later_seed(self) -> None:
+        # The control for the assertion above: a row the seeder does not own must stay
+        # provenance-free, so a passing `seeded_by` cannot come from the seeder claiming
+        # whatever it finds.
+        ConfigSetting.objects.set_value(ACTIVE_SCHEDULE_SETTING, "always-away")
+
+        seed_default_presets_and_schedules()
+
+        row = ConfigSetting.objects.get(key=ACTIVE_SCHEDULE_SETTING)
+        assert row.seeded_by == ""
+        assert row.seed_value is None
 
     def test_idempotent_second_run_creates_nothing(self) -> None:
         seed_default_presets_and_schedules()
@@ -210,19 +228,19 @@ class TestSeededStandardScheduleResolvesViennaHours(django.test.TestCase):
         # 2026-07-14 is a Tuesday (summer, CEST UTC+2).
         assert self._active_at(dt.datetime(2026, 7, 14, 10, 0, tzinfo=_VIENNA)) == "present"
 
-    def test_weekday_evening_resolves_away(self) -> None:
-        assert self._active_at(dt.datetime(2026, 7, 14, 22, 0, tzinfo=_VIENNA)) == "away"
+    def test_weekday_evening_resolves_afk(self) -> None:
+        assert self._active_at(dt.datetime(2026, 7, 14, 22, 0, tzinfo=_VIENNA)) == "afk"
 
-    def test_weekday_early_morning_resolves_away(self) -> None:
-        assert self._active_at(dt.datetime(2026, 7, 14, 7, 0, tzinfo=_VIENNA)) == "away"
+    def test_weekday_early_morning_resolves_afk(self) -> None:
+        assert self._active_at(dt.datetime(2026, 7, 14, 7, 0, tzinfo=_VIENNA)) == "afk"
 
-    def test_summer_saturday_resolves_away(self) -> None:
+    def test_summer_saturday_resolves_afk(self) -> None:
         # 2026-07-18 is a Saturday under CEST (UTC+2).
-        assert self._active_at(dt.datetime(2026, 7, 18, 12, 0, tzinfo=_VIENNA)) == "away"
+        assert self._active_at(dt.datetime(2026, 7, 18, 12, 0, tzinfo=_VIENNA)) == "afk"
 
-    def test_winter_saturday_resolves_away_across_the_dst_boundary(self) -> None:
+    def test_winter_saturday_resolves_afk_across_the_dst_boundary(self) -> None:
         # 2026-01-17 is a Saturday under CET (UTC+1) — the DST counterpart of the summer case.
-        assert self._active_at(dt.datetime(2026, 1, 17, 12, 0, tzinfo=_VIENNA)) == "away"
+        assert self._active_at(dt.datetime(2026, 1, 17, 12, 0, tzinfo=_VIENNA)) == "afk"
 
     def test_management_command_reports_creates(self) -> None:
         Mode.objects.all().delete()
@@ -232,140 +250,141 @@ class TestSeededStandardScheduleResolvesViennaHours(django.test.TestCase):
         assert "presets:" in out.getvalue()
 
 
-#: The shipped mask of every mode, as (forced ON, forced OFF) loop names — a loop in
-#: NEITHER set is absent from the mode and inherits its own enabled flag. Transcribed from
-#: the pre-move in-code constants and pinned here so relocating the data into
-#: ``defaults.toml`` cannot retune a single loop.
+#: The shipped posture of every mode as (ON, OFF) loop names — every loop named by both
+#: sets together, because a preset holds no partial opinions (B1). Pinned here so a
+#: retune of one loop in ``defaults.toml`` is a reviewed change rather than a whim.
+_ALL_LOOPS = frozenset(spec.name for spec in DEFAULT_LOOPS)
+_PRESENT_ON = _ALL_LOOPS
+_TOKEN_OUTAGE_ON = frozenset(loop.name for loop in iter_loops() if loop.determinism is LoopDeterminism.DETERMINISTIC)
+_MAINTENANCE_ON = frozenset(
+    {
+        "ci_eval_heal",
+        "db_backup",
+        "dispatch",
+        "housekeeping",
+        "idle_stack_reaper",
+        "inbox",
+        "local_stack_queue",
+        "resource_pressure",
+        "snapshot_warmer",
+    }
+)
+_AFK_OFF = frozenset({"directive_loop"})
+
 _SHIPPED_MASKS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
-    "present": (
-        frozenset(
-            {
-                "inbox",
-                "dispatch",
-                "tickets",
-                "ship",
-                "review",
-                "followup",
-                "audit",
-                "news",
-                "arch_review",
-                "dream",
-                "eval_local",
-                "dogfood",
-                "snapshot_warmer",
-                "housekeeping",
-                "idle_stack_reaper",
-                "local_stack_queue",
-                "resource_pressure",
-            }
-        ),
-        frozenset(),
-    ),
-    "away": (
-        frozenset(
-            {
-                "inbox",
-                "dispatch",
-                "tickets",
-                "ship",
-                "review",
-                "audit",
-                "news",
-                "arch_review",
-                "dream",
-                "snapshot_warmer",
-                "housekeeping",
-                "idle_stack_reaper",
-                "local_stack_queue",
-                "resource_pressure",
-            }
-        ),
-        frozenset({"followup"}),
-    ),
-    "maintenance": (
-        frozenset(
-            {
-                "inbox",
-                "dispatch",
-                "ship",
-                "review",
-                "dream",
-                "eval_local",
-                "dogfood",
-                "arch_review",
-                "news",
-                "snapshot_warmer",
-                "housekeeping",
-                "idle_stack_reaper",
-                "local_stack_queue",
-                "resource_pressure",
-            }
-        ),
-        frozenset({"tickets", "issue_implementer", "followup", "audit"}),
-    ),
-    "low-token": (
-        frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}),
-        frozenset(spec.name for spec in DEFAULT_LOOPS)
-        - frozenset({"inbox", "idle_stack_reaper", "local_stack_queue", "resource_pressure", "housekeeping"}),
-    ),
-    "off": (
-        frozenset(LOAD_BEARING_LOOPS),
-        frozenset(spec.name for spec in DEFAULT_LOOPS) - frozenset(LOAD_BEARING_LOOPS),
-    ),
+    "present": (_PRESENT_ON, _ALL_LOOPS - _PRESENT_ON),
+    "afk": (_ALL_LOOPS - _AFK_OFF, _AFK_OFF),
+    "maintenance": (_MAINTENANCE_ON, _ALL_LOOPS - _MAINTENANCE_ON),
+    "token-outage": (_TOKEN_OUTAGE_ON, _ALL_LOOPS - _TOKEN_OUTAGE_ON),
+    "off": (frozenset(), _ALL_LOOPS),
 }
 
+#: The postures ordered by how much they run, widest first (B13). ``token-outage`` is NOT a
+#: member: it is defined by a property, not by a position in the ordering.
+_POSTURE_CHAIN: tuple[str, ...] = ("present", "afk", "maintenance", "off")
 
-class TestShippedSpecsAreUnchangedByTheMoveIntoTheFile:
-    """The relocation into ``defaults.toml`` retunes nothing — every mask holds."""
+#: Which shipped postures refuse to act outward on the owner's behalf (B6).
+_SHIPPED_EGRESS_FORBIDDEN = frozenset({"afk", "maintenance"})
+
+#: Two moments the shipped ``standard`` calendar answers differently — inside the owner's
+#: Mon-Fri 09:00-16:00 window and outside it.
+_WEDNESDAY_WORKING_HOURS = dt.datetime(2026, 9, 9, 10, 0, tzinfo=_VIENNA)
+_WEDNESDAY_NIGHT = dt.datetime(2026, 9, 9, 22, 0, tzinfo=_VIENNA)
+
+
+def _shipped_masks() -> dict[str, dict[str, bool]]:
+    return {spec.name: spec.entries for spec in default_preset_specs()}
+
+
+class TestShippedSpecsCarryTheOwnersPostures:
+    """Every mask holds, and every posture declares its egress opinion explicitly."""
 
     def test_every_mode_ships_its_recorded_mask(self) -> None:
-        by_name = {spec.name: spec.entries for spec in default_preset_specs()}
+        by_name = _shipped_masks()
         assert set(by_name) == set(_SHIPPED_MASKS)
         for name, (on, off) in _SHIPPED_MASKS.items():
             entries = by_name[name]
             assert {loop for loop, value in entries.items() if value} == on, name
             assert {loop for loop, value in entries.items() if not value} == off, name
 
-    def test_the_exhaustive_modes_name_every_shipped_loop(self) -> None:
-        # `low-token` / `off` used to be built programmatically over every seed spec, so a
-        # new loop was covered automatically. As shipped DATA they must name each loop
-        # explicitly — an omitted one would silently INHERIT instead of being masked off.
-        shipped = {spec.name for spec in DEFAULT_LOOPS}
-        for name in ("low-token", "off"):
-            entries = next(spec.entries for spec in default_preset_specs() if spec.name == name)
-            assert set(entries) == shipped, name
+    def test_every_mode_names_every_shipped_loop(self) -> None:
+        """A loop a mask omits reads OFF, which is the fail-safe answer rather than a chosen one."""
+        for spec in default_preset_specs():
+            assert set(spec.entries) == _ALL_LOOPS, spec.name
 
-    def test_always_away_is_one_all_week_slot(self) -> None:
-        holiday = next(spec for spec in default_schedule_specs() if spec.name == "always-away")
+    def test_each_posture_in_the_chain_is_a_superset_of_the_next(self) -> None:
+        """B13: ``present >= afk >= maintenance >= off`` — stepping down only ever REMOVES work.
+
+        Asserted rather than left to the seed data, because seed data that merely happens to
+        satisfy the order is exactly how it broke: ``present`` was written from this box's
+        ``default_enabled`` column, which made it the second most restrictive posture after
+        ``off``, so a present -> afk switch ADDED eighteen loops including ``ship`` and
+        ``review``. ``token-outage`` is deliberately outside the chain — it is defined by a
+        property (a loop needs no tokens), not by a position in the ordering.
+        """
+        on = {name: {loop for loop, runs in entries.items() if runs} for name, entries in _shipped_masks().items()}
+
+        for wider, narrower in itertools.pairwise(_POSTURE_CHAIN):
+            assert on[narrower] <= on[wider], (
+                f"{narrower} runs what {wider} does not: {sorted(on[narrower] - on[wider])}"
+            )
+
+    def test_token_outage_runs_exactly_the_loops_that_never_call_a_model(self) -> None:
+        """B13: ``token-outage`` skips every loop that USES AI — derived, never hand-listed.
+
+        The registry already answers it (``MiniLoop.determinism``), so the shipped table is
+        held to that answer rather than to a list someone maintains: a loop added later is
+        classified where it is defined, and this turns RED if the two drift.
+        """
+        deterministic = {loop.name for loop in iter_loops() if loop.determinism is LoopDeterminism.DETERMINISTIC}
+        on = {loop for loop, runs in _shipped_masks()["token-outage"].items() if runs}
+
+        assert on == deterministic, {"wrongly on": sorted(on - deterministic), "missing": sorted(deterministic - on)}
+
+    def test_the_forbidding_postures_say_so_rather_than_leaving_it_inferred(self) -> None:
+        forbidding = {spec.name for spec in default_preset_specs() if spec.egress == "forbid"}
+        assert forbidding == _SHIPPED_EGRESS_FORBIDDEN
+
+    def test_always_afk_is_one_all_week_slot(self) -> None:
+        holiday = next(spec for spec in default_schedule_specs() if spec.name == "always-afk")
         assert holiday.timezone == ""
         assert [(slot.days, slot.start_time, slot.preset_name) for slot in holiday.slots] == [
-            ([0, 1, 2, 3, 4, 5, 6], dt.time(0, 0), "away")
+            ([0, 1, 2, 3, 4, 5, 6], dt.time(0, 0), "afk")
         ]
 
 
-class TestNoShippedModeFillsWhatItCannotDrain:
-    """A shipped mode masking delivery off must not leave intake admitted (#4096).
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestTheSeededPosturesDecideTheOwnersVoice(django.test.TestCase):
+    """What ``egress`` DOES once seeded, executed through the chokepoint an operator acts on.
 
-    ``maintenance`` masked ``tickets`` / ``ship`` off but named no opinion on
-    ``issue_implementer``, so it inherited ``Loop.enabled`` and kept claiming issues
-    overnight that nothing could merge. It now names both, and ``off`` / ``low-token``
-    name every loop.
+    ``TestShippedSpecsCarryTheOwnersPostures`` reads the column; this selects each seeded
+    posture and asks :func:`owner_voice_forbidden`, so a posture DOCUMENTED as closing the
+    owner's voice that does not close it turns this RED instead of surviving in prose.
     """
 
-    def test_no_shipped_mode_masks_delivery_while_admitting_intake(self) -> None:
-        """Judged on a box that RUNS the factory.
+    def setUp(self) -> None:
+        ModeOverride.objects.all().delete()
+        Mode.objects.all().delete()
+        ModeSchedule.objects.all().delete()
+        seed_default_presets_and_schedules()
 
-        The intake loop's own flag is the operator's switch, so a shipped mask must express
-        the intent rather than lean on that switch happening to be off.
-        """
-        running = dict.fromkeys(INTAKE_LOOPS, True)
-        offenders = {
-            spec.name: found.detail
-            for spec in default_preset_specs()
-            if (found := intake_without_delivery(spec.entries, base_enabled=running)) is not None
-        }
+    def test_exactly_the_shipped_forbidding_postures_close_the_owners_voice(self) -> None:
+        refusing = set()
+        for name in Mode.objects.values_list("name", flat=True):
+            ModeOverride.objects.set_override(name, reason="posture under test")
+            if owner_voice_forbidden():
+                refusing.add(name)
 
-        assert offenders == {}, offenders
+        assert refusing == _SHIPPED_EGRESS_FORBIDDEN
+
+    def test_a_fresh_install_leaves_colleague_egress_open_inside_working_hours(self) -> None:
+        """The disclosed reversal, executed: ``t3 setup`` alone opens the owner's voice."""
+        assert resolve_active_mode(_WEDNESDAY_WORKING_HOURS).name == "present"
+        assert owner_voice_forbidden(_WEDNESDAY_WORKING_HOURS) is False
+
+    def test_a_fresh_install_closes_it_again_outside_them(self) -> None:
+        assert resolve_active_mode(_WEDNESDAY_NIGHT).name == "afk"
+        assert owner_voice_forbidden(_WEDNESDAY_NIGHT) is True
 
 
 class TestSpecsAreShippedDataNotCode:
@@ -414,6 +433,7 @@ class TestSpecsAreShippedDataNotCode:
         (mode,) = default_preset_specs(fixture)
         (schedule,) = default_schedule_specs(fixture)
         assert mode.entries == {}
+        assert mode.egress == "allow"
         assert (schedule.slots, schedule.timezone) == ((), "")
 
     def test_every_shipped_mode_and_schedule_name_matches_the_file(self) -> None:
@@ -422,65 +442,112 @@ class TestSpecsAreShippedDataNotCode:
 
 
 class TestNoShippedModeConsumesWhatItCannotReclaim:
-    """No mask may keep the backup writing once every reclaim loop is quiet (#4188).
+    """No mask may keep the backup writing once every reclaim loop is quiet (B4).
 
-    Judged against the shipped ``[loops]`` flags, so an absent entry resolves the way a
-    fresh box resolves it. Asserted over EVERY mode rather than the one that had the bug,
-    because the point is that a future mode cannot reintroduce the shape.
+    Asserted over EVERY mode rather than the one that had the bug, because the point is
+    that a future mode cannot reintroduce the shape.
     """
 
     def test_no_shipped_mode_admits_the_backup_over_a_quiet_reclaim_pair(self) -> None:
-        base = {spec.name: spec.default_enabled for spec in load_loop_specs()}
         offenders = {
             spec.name: found.detail
             for spec in default_preset_specs()
-            if (found := backup_without_reclaim(spec.entries, base_enabled=base)) is not None
+            if (found := backup_without_reclaim(spec.entries)) is not None
         }
 
         assert offenders == {}, offenders
 
-    def test_only_the_low_token_mode_may_quiet_the_load_bearing_tier(self) -> None:
-        offenders = {
-            spec.name: quieted_load_bearing(spec.entries)
-            for spec in default_preset_specs()
-            if spec.name != DEFAULT_LOW_POWER_PRESET and quieted_load_bearing(spec.entries)
-        }
 
-        assert offenders == {}, offenders
+class TestThePostureMigrationsReplacementTextMatchesWhatShips:
+    """What ``0086`` writes onto a live row is what ``defaults.toml`` ships.
 
-    def test_the_halt_mode_forces_the_tier_on_rather_than_leaning_on_the_column(self) -> None:
-        """``off`` must ADMIT the tier, not merely decline to mask it — the column may be off."""
-        specs = {spec.name: spec for spec in default_preset_specs()}
-
-        assert all(specs["off"].entries.get(loop) is True for loop in LOAD_BEARING_LOOPS)
-
-
-class TestTheCollapseMigrationsReplacementTextMatchesWhatShips:
-    """The collapse's REPLACEMENT text is what a refreshed row ends up carrying.
-
-    ``0071`` rewrites a description only while the row still holds the SHIPPED text, so
-    drift between its replacement and ``defaults.toml`` leaves a live box's wording
-    permanently behind the shipped table with nothing failing — the two files had no
-    link at all until this test.
+    The migration rewrites descriptions unconditionally, so drift between the two leaves
+    a live box's wording permanently apart from the shipped table with nothing failing.
     """
 
     @staticmethod
-    def _collapse():
-        return import_module("teatree.core.migrations.0071_collapse_modes_to_five_presets")
+    def _postures():
+        return import_module("teatree.core.migrations.0086_total_presets_and_the_five_postures")
 
-    def test_every_replacement_description_equals_the_shipped_mode_description(self) -> None:
+    def test_every_written_description_equals_the_shipped_mode_description(self) -> None:
         shipped = {name: entry["description"] for name, entry in shipped_seed_table("modes").items()}
 
         drift = {
-            name: (replacement, shipped.get(name))
-            for name, (_, replacement) in self._collapse()._DESCRIPTIONS.items()
-            if shipped.get(name) != replacement
+            name: (written, shipped.get(name))
+            for name, written in self._postures()._DESCRIPTIONS.items()
+            if shipped.get(name) != written
         }
 
         assert drift == {}, drift
 
-    def test_the_replacement_schedule_description_equals_the_shipped_one(self) -> None:
-        _, replacement = self._collapse()._SCHEDULE_DESCRIPTIONS
-        _, new_name = self._collapse()._SCHEDULE_RENAME
+    def test_the_written_schedule_description_equals_the_shipped_one(self) -> None:
+        postures = self._postures()
 
-        assert shipped_seed_table("schedules")[new_name]["description"] == replacement
+        assert shipped_seed_table("schedules")[postures._SCHEDULE]["description"] == postures._SCHEDULE_DESCRIPTION
+
+    def test_the_masks_it_writes_satisfy_the_posture_chain(self) -> None:
+        """B13 holds on a LIVE box too — the migration lands every posture in the chain itself."""
+        postures = self._postures()
+        loops = set(shipped_seed_table("loops"))
+        landed = {
+            "present": loops,
+            "afk": loops - set(postures._AFK_OFF),
+            "maintenance": set(postures._MAINTENANCE_ON),
+            "off": set(),
+        }
+
+        for wider, narrower in itertools.pairwise(_POSTURE_CHAIN):
+            assert landed[narrower] <= landed[wider], sorted(landed[narrower] - landed[wider])
+
+    def test_the_maintenance_and_afk_masks_it_writes_equal_the_shipped_tables(self) -> None:
+        postures = self._postures()
+        shipped = {name: entry["entries"] for name, entry in shipped_seed_table("modes").items()}
+
+        assert {loop for loop, on in shipped["maintenance"].items() if on} == set(postures._MAINTENANCE_ON)
+        assert {loop for loop, on in shipped["afk"].items() if not on} == set(postures._AFK_OFF)
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestSeedNamesEveryLiveLoop(django.test.TestCase):
+    """The seed is a write seam like any other, so it may not create a preset with a gap.
+
+    Every other seam folds through ``totalized_entries``. This one wrote the shipped table
+    verbatim, so a live loop the shipped ``[modes]`` tables never named — an overlay's own
+    loop, or one added to ``DEFAULT_LOOPS`` ahead of the tables — was seeded ABSENT rather
+    than off: read OFF by ``Mode.state_for`` but refused by ``Mode.clean``, which locks the
+    row out of the one surface (django-admin) that could repair it.
+    """
+
+    def setUp(self) -> None:
+        ModeOverride.objects.all().delete()
+        Mode.objects.all().delete()
+        ModeSchedule.objects.all().delete()
+
+    def test_a_loop_the_shipped_tables_never_named_is_seeded_off_in_every_preset(self) -> None:
+        Loop.objects.create(name="overlay_only", script="overlay/tick.py", delay_seconds=300)
+
+        seed_default_presets_and_schedules()
+
+        seeded = {preset.name: preset.entries.get("overlay_only") for preset in Mode.objects.all()}
+        assert seeded == dict.fromkeys(_EXPECTED_PRESETS, False)
+
+    def test_every_seeded_preset_holds_an_opinion_on_every_live_loop(self) -> None:
+        Loop.objects.create(name="overlay_only", script="overlay/tick.py", delay_seconds=300)
+        live = set(Loop.objects.values_list("name", flat=True))
+
+        seed_default_presets_and_schedules()
+
+        for preset in Mode.objects.all():
+            assert set(preset.entries) == live, preset.name
+
+    def test_seeding_before_any_loop_exists_keeps_the_shipped_opinions(self) -> None:
+        """Totalizing against an empty loop table would drop every shipped opinion.
+
+        ``present`` seeded as ``{}`` runs nothing, and the ``post_save`` backfill then
+        writes each loop in as ``False`` — a box that ships "do everything" doing none of it.
+        """
+        Loop.objects.all().delete()
+
+        seed_default_presets_and_schedules()
+
+        assert Mode.objects.get(name="present").entries == _shipped_masks()["present"]

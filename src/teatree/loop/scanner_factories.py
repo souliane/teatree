@@ -25,8 +25,14 @@ from teatree.core.models import ImplementedIssueMarker
 from teatree.core.overlay_repos import owned_repo_slugs
 from teatree.core.review.pr_review_backend import resolve_pr_review_backend
 from teatree.core.worktree.clone_paths import find_clone_path
-from teatree.loop.job_identity import _TUPLE_PAIR
+from teatree.loop.job_identity import _TUPLE_PAIR, CANONICAL_CORE_OVERLAY
 from teatree.loop.reconcile_lanes import reconcile_holder_pr_rows_best_effort, reconcile_settled_clears_best_effort
+from teatree.loop.scanner_factory_broadcast_claims import (
+    _own_author_identity,
+    _review_taken_probe,
+    _self_forge_identities,
+)
+from teatree.loop.scanner_factory_config import _user_identity_aliases_for_overlay
 from teatree.loop.scanner_host_fanout import _competing_url_prefixes, _jobs_for_backend_hosts
 from teatree.loop.scanners import (
     ArchitecturalReviewScanner,
@@ -52,12 +58,12 @@ from teatree.loop.scanners import (
     TaskSweepScanner,
     TriageAssessorScanner,
 )
+from teatree.loop.scanners.my_prs import CiEnricher
 from teatree.loop.scanners.review_nag import default_repo_owner
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -88,28 +94,6 @@ def _resolve_broadcast_channels(config: object) -> list[tuple[str, str]]:
     return pairs
 
 
-def _own_author_identity(backend: OverlayBackends) -> str:
-    """Resolve the user's forge username for the own-MR review skip (#1844 L3).
-
-    The own-author ``:eyes:``-and-dispatch skip in
-    :class:`SlackBroadcastsScanner` needs to know who "we" are. Deriving
-    this from ``overlay.config.get_gitlab_username()`` breaks for every
-    overlay that leaves the getter at the core default ``""`` — an empty
-    value disables the skip and the loop reviews the user's own MRs. The
-    self-identity source of truth is the same one
-    :class:`ReviewerPrsScanner` uses: ``backend.identities`` (the
-    multi-alias operator set) with a ``host.current_user()`` fallback, so
-    the skip works regardless of whether an overlay implements the getter.
-    """
-    if backend.identities:
-        return backend.identities[0]
-    for host in backend.hosts:
-        user = host.current_user()
-        if user:
-            return user
-    return ""
-
-
 def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsScanner | None:
     """Build a per-overlay broadcast scanner from the overlay's review channel (#1255).
 
@@ -127,16 +111,15 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
     channel_ids = [cid for _name, cid in channels_pairs if cid]
     if not channel_ids:
         return None
-    glab_token = overlay.config.get_gitlab_token()
-    github_token = overlay.config.get_github_token()
-    current_gitlab_username = _own_author_identity(backend)
     return SlackBroadcastsScanner(
         backend=backend.messaging,
         channels=channel_ids,
         fetch_channel_history=BackendChannelHistoryFetcher(backend=backend.messaging),
-        classify_mrs=GlabGhMrStateClassifier(glab_token=glab_token, github_token=github_token),
+        classify_mrs=GlabGhMrStateClassifier(),
         overlay=backend.name,
-        current_gitlab_username=current_gitlab_username,
+        current_gitlab_username=_own_author_identity(backend),
+        owner_identities=_user_identity_aliases_for_overlay(backend.name),
+        review_taken=_review_taken_probe(overlay, _self_forge_identities(backend)),
     )
 
 
@@ -161,7 +144,6 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     repos = tuple(overlay.metadata.get_followup_repos())
     if not repos:
         return None
-    github_token = overlay.config.get_github_token()
     gitlab_token = overlay.config.get_gitlab_token()
     notifier: SlackMergeNotifier | NullMergeNotifier
     if backend.messaging is not None and slack_user_id:
@@ -184,7 +166,7 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         # #72: a bare slug carries no host, so routing per slug is what stops a GitLab
         # project being probed with the GitHub CLI and read as "no open MRs".
         api=ForgePrApiClient(
-            github=GhPrApiClient(token=github_token),
+            github=GhPrApiClient(),
             gitlab=GlabPrApiClient(token=gitlab_token),
         ),
         keystone=CallCommandMergeKeystone(),
@@ -248,10 +230,15 @@ def _admit_colleague_prs_to_board(overlay_name: str) -> bool:
     """#3569: whether COLLEAGUE / requested-reviewer PRs are admitted to the review board.
 
     Self-authored PRs are always admitted; colleague PRs only when this is ON (the
-    default). The review intake builds :class:`ReviewerPrsScanner` only when true.
+    default) AND the active posture permits acting outward. Reviewing a colleague's MR
+    IS posting on the owner's behalf, so ``afk`` skips the arm rather than queueing it:
+    a queued review of a branch that moves is worth less than none, and self-review —
+    the half that must not stall — is a different scanner.
     """
+    from teatree.core.mode_resolution import egress_forbidden  # noqa: PLC0415 — deferred: ORM needs the app registry
+
     settings = _effective_settings_for_overlay(overlay_name)
-    return settings.admit_colleague_prs_to_board
+    return settings.admit_colleague_prs_to_board and not egress_forbidden()
 
 
 def _self_pr_review_scanner_for(backend: OverlayBackends) -> "ClaudeSelfPrReviewScanner | CodexReviewScanner | None":
@@ -277,7 +264,7 @@ def _self_pr_review_scanner_for(backend: OverlayBackends) -> "ClaudeSelfPrReview
     repos = tuple(overlay.metadata.get_followup_repos())
     if not repos:
         return None
-    api = GhCodexPrApi(token=overlay.config.get_github_token())
+    api = GhCodexPrApi()
     if resolve_pr_review_backend(backend.name) is PrReviewBackend.CODEX:
         return CodexReviewScanner(repos=repos, api=api, overlay=backend.name)
     return ClaudeSelfPrReviewScanner(repos=repos, api=api, overlay=backend.name)
@@ -306,7 +293,7 @@ def _task_sweep_scanner_for(backend: OverlayBackends) -> TaskSweepScanner | None
     )
 
 
-def _architectural_review_scanner_for(backend: OverlayBackends) -> ArchitecturalReviewScanner | None:
+def _architectural_review_scanner_for(backend: OverlayBackends) -> ArchitecturalReviewScanner:
     """Build a per-overlay architectural-review scanner from teatree-core config.
 
     #1136 / #1152 re-architecture: the architectural-review cadence is a
@@ -317,23 +304,17 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
     standard ``[overlays.<name>]`` shape — see
     ``OVERLAY_OVERRIDABLE_SETTINGS``). The scanner is instantiated once
     per registered overlay so each overlay's task queue gets its own
-    cadence; a single core ``architectural_review_disabled = true``
-    escape hatch suppresses scanning for the active overlay (and an
-    overlay-scoped override allows pinning the toggle per-overlay).
+    cadence. Turning the review off is the ``arch_review`` Loop row (or a preset
+    masking it), never a per-scanner flag.
 
-    Returns ``None`` when the active overlay has
-    ``architectural_review_disabled = true`` (the escape hatch).
-    Unlike the previous wiring, this no longer skips overlays without a
-    Python class — the scanner only needs ``backend.name`` to operate.
+    This does not skip overlays without a Python class — the scanner only needs
+    ``backend.name`` to operate.
     """
     settings = _effective_settings_for_overlay(backend.name)
-    if settings.architectural_review_disabled:
-        return None
     return ArchitecturalReviewScanner(
         overlay_name=backend.name,
         skill=settings.architectural_review_skill,
         cadence_hours=settings.architectural_review_cadence_hours,
-        retry_backoff_hours=settings.architectural_review_retry_backoff_hours,
         after_merge_count=settings.architectural_review_after_merge_count,
     )
 
@@ -346,9 +327,6 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     here; the third — per-issue claim idempotency — lives in the scanner
     (:meth:`ImplementedIssueMarker.claim` returns ``None`` for an already-claimed
     issue).
-
-    The master gate is ``issue_implementer_enabled``, ON since #3895, so the default
-    config DOES emit this domain's job; flipping it off emits nothing at all.
 
     The builder resolves the CONFIG tier of the trusted-author set
     (:func:`~teatree.config.effective_trusted_issue_authors`) and the admit label
@@ -374,8 +352,6 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     from teatree.core.intake import factory_admission  # noqa: PLC0415 — leaf import
 
     settings = _effective_settings_for_overlay(backend.name)
-    if not settings.issue_implementer_enabled:
-        return None
     code_host = backend.host
     if code_host is None:
         return None
@@ -432,61 +408,55 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
 
 
 def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDispositionScanner | None:
-    """Build a per-overlay issue-disposition scanner behind the default-OFF gate (#2122).
+    """Build the issue-disposition scanner for the canonical core overlay (#2122).
 
-    Returns a scanner ONLY when ``auto_disposition_enabled`` is flipped on for
-    this overlay. With the default-OFF config no scanner is built, so neither
-    ``build_loop_table_jobs`` nor ``build_default_jobs`` emits anything for this
-    domain — the fan-out stays byte-for-byte unchanged until an overlay opts in.
+    Returns a scanner ONLY for the canonical core overlay, and only once
+    ``auto_disposition_enabled`` opts it in: closing issues is an owner decision, so it
+    ships off. Closing an issue is a judgement
+    about someone's backlog, and this loop may make it only about repos teatree itself
+    owns — the owner's rule is "only for t3-teatree owned repos", and it is
+    POSTURE-INDEPENDENT: it holds in ``present`` exactly as it holds under an egress
+    forbid, which is why it is a condition here rather than an egress opinion. The
+    constraint is stated in the loop's shipped description too, so the loop file, the
+    dash and the doctor all show it.
 
-    ``repo`` (the duplicate-search target) and the obsolescence ``path_exists``
-    oracle both come from the overlay's repos: the first followup/workspace repo
-    names the duplicate-search project, and a clone-relative resolver answers
-    whether a body-referenced path still exists on disk. An overlay with no
-    Python class — hence no repo list — still gets a scanner, but with the
-    duplicate and obsolete buckets self-disabled (empty ``repo`` /
-    ``path_exists=None``); only the already-shipped bucket (pure local-DB
-    evidence) stays active, which is the safe conservative default.
+    Scoped at BOTH boundaries: only the canonical backend gets a scanner, and its
+    assignee search carries the overlay's owned ``owner/repo`` slugs to the forge.
+    An overlay with no owned-repo declaration scans nothing rather than falling back
+    to the host's account-wide assigned-issue listing.
+
+    This loop is also mechanical, so the owner's usual home for such a constraint — the
+    loop's PROMPT — does not exist: its signals route to ``close_dead_issue``, which is
+    physically unable to enqueue work. No agent, no prompt.
+
+    Neither evidence bucket takes a repo from here: the listing spans every owned repo,
+    so the duplicate search and the obsolescence oracle both follow each candidate to its
+    own repo, and a repo with no local clone is unjudgeable and keeps its issue open.
     """
+    if backend.name != CANONICAL_CORE_OVERLAY:
+        return None
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.auto_disposition_enabled:
         return None
     code_host = backend.host
     if code_host is None:
         return None
-    overlay = backend.overlay
-    repo = ""
-    path_exists: Callable[[str], bool] | None = None
-    if overlay is not None:
-        repos = list(overlay.metadata.get_followup_repos()) or list(overlay.get_workspace_repos())
-        repo = repos[0] if repos else ""
-        path_exists = _clone_relative_path_exists(overlay.get_workspace_repos())
     return IssueDispositionScanner(
         host=code_host,
-        repo=repo,
+        repo_slugs=owned_repo_slugs(backend.overlay),
         overlay_name=backend.name,
         identities=backend.identities,
-        max_closes_per_tick=settings.auto_disposition_max_closes_per_tick,
-        path_exists=path_exists,
+        path_exists=_path_exists_in_own_clone,
     )
 
 
 def _triage_assessor_scanner_for(backend: OverlayBackends) -> TriageAssessorScanner | None:
     """Build a per-overlay triage-assessor scanner behind its master gate.
 
-    Returns a scanner ONLY when ``triage_assessor_enabled`` is on for this overlay —
-    ON since #3895. Flipped off, no scanner is built, so neither
-    ``build_loop_table_jobs`` nor ``build_default_jobs`` emits anything for this
-    domain and the fan-out is byte-for-byte the pre-#3895 one.
-
-    ``None`` also when the overlay has no code host (nothing to list issues on).
-    The cadence / per-tick bound / operator identities are threaded from effective
-    settings; the scanner never writes to the host — it only queues an assessment
-    task behind the ask-gate.
+    ``None`` when the overlay has no code host (nothing to list issues on) — whether the
+    loop runs at all is the active preset's opinion. The scanner never writes to the
+    host — it only queues an assessment task behind the ask-gate.
     """
-    settings = _effective_settings_for_overlay(backend.name)
-    if not settings.triage_assessor_enabled:
-        return None
     code_host = backend.host
     if code_host is None:
         return None
@@ -494,22 +464,21 @@ def _triage_assessor_scanner_for(backend: OverlayBackends) -> TriageAssessorScan
         host=code_host,
         overlay_name=backend.name,
         identities=backend.identities,
-        cadence_hours=settings.triage_assessor_cadence_hours,
-        max_issues_per_tick=settings.triage_assessor_max_issues_per_tick,
+        repo_slugs=owned_repo_slugs(backend.overlay),
     )
 
 
-def _mr_triage_scanner_for(backend: OverlayBackends) -> MrTriageScanner | None:
-    """Build a per-overlay MR-triage surveyor behind the default-OFF gate.
+def _mr_triage_scanner_for(backend: OverlayBackends, *, ci_enricher: CiEnricher) -> MrTriageScanner | None:
+    """Build the MR-triage surveyor for an overlay that opted in with ``mr_triage_enabled``.
 
-    Returns a scanner ONLY when ``mr_triage_enabled`` is flipped on for this overlay.
-    With the default-OFF config no scanner is built, so neither ``build_loop_table_jobs``
-    nor ``build_default_jobs`` emits anything for this domain — the fan-out stays
-    byte-for-byte unchanged until an overlay opts in.
-
-    ``None`` also when the overlay has no code host (no MRs to read). The nag-patience
+    ``None`` when the overlay has not opted in, or has no code host (no MRs to read). The nag-patience
     inputs are resolved from the same overlay hook the review nag uses, so the two can
     never disagree about how long a repo waits.
+
+    *ci_enricher* is required, not optional: GitLab's MR list payload carries no
+    pipeline, so a surveyor without one reads UNKNOWN for every merge request on that
+    forge. The caller passes the enricher it already holds so the per-tick read budget
+    stays one shared bound rather than one per scanner.
     """
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.mr_triage_enabled:
@@ -522,21 +491,19 @@ def _mr_triage_scanner_for(backend: OverlayBackends) -> MrTriageScanner | None:
         host=code_host,
         overlay_name=backend.name,
         identities=backend.identities,
+        allowed_url_prefixes=_allowed_url_prefixes_for_host(backend, code_host),
         repo_owner=overlay.review.repo_owner_for_slug if overlay is not None else default_repo_owner,
-        max_mrs_per_tick=settings.mr_triage_max_mrs_per_tick,
+        ci_enricher=ci_enricher,
     )
 
 
 def _mr_conflict_scanner_for(backend: OverlayBackends, code_host: CodeHostBackend) -> MrConflictScanner | None:
-    """Build the per-host merge-conflict sweep behind the default-OFF gate.
+    """Build the per-host merge-conflict sweep once ``mr_conflict_scan_enabled`` opts in.
 
-    Returns a scanner ONLY when ``mr_conflict_scan_enabled`` is flipped on for this
-    overlay. With the default-OFF config none is built, so the fan-out is
-    byte-for-byte what it was before the sweep existed — it ships inert.
-
-    Per HOST rather than per overlay because the conflict probe is a forge call:
-    it must go to the host that lists the merge request, and an overlay with both
-    a GitHub and a GitLab credential lists on both.
+    It costs one forge merge-state read per open merge request, so it ships off. Per
+    HOST rather than per overlay because the conflict probe is a forge call: it must go
+    to the host that lists the merge request, and an overlay with both a GitHub and a
+    GitLab credential lists on both.
     """
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.mr_conflict_scan_enabled:
@@ -549,23 +516,14 @@ def _mr_conflict_scanner_for(backend: OverlayBackends, code_host: CodeHostBacken
     )
 
 
-def _clone_relative_path_exists(workspace_repos: list[str]) -> "Callable[[str], bool] | None":
-    """Resolve the obsolescence oracle: does *path* still exist under any clone?
+def _path_exists_in_own_clone(repo: str, path: str) -> bool | None:
+    """Whether *path* exists in *repo*'s own clone; ``None`` when no clone of *repo* resolves.
 
-    Returns ``None`` when no workspace repo resolves to an on-disk clone — with
-    no clone to check against, the obsolete bucket must stay disabled rather than
-    guess. Otherwise returns a predicate that is True when the relative *path*
-    exists under at least one resolved clone.
+    Another repo's clone says nothing about this one, and an absent clone cannot prove a
+    path gone, so neither may count as evidence for closing an issue.
     """
-    workspace = clone_root()
-    clones = [clone for name in workspace_repos if (clone := find_clone_path(workspace, name)) is not None]
-    if not clones:
-        return None
-
-    def _exists(path: str) -> bool:
-        return any((clone / path).exists() for clone in clones)
-
-    return _exists
+    clone = find_clone_path(clone_root(), repo)
+    return None if clone is None else (clone / path).exists()
 
 
 def _effective_settings_for_overlay(overlay_name: str) -> "UserSettings":

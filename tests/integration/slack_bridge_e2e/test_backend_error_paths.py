@@ -4,6 +4,7 @@ import pytest
 from inline_snapshot import snapshot
 
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.token_validation import SlackTokenMissingError
 from teatree.core.models import PendingChatInjection
 from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport
@@ -183,10 +184,14 @@ class TestSlackBotBackendErrorPathsE2E:
         backend = SlackBotBackend()  # no token at all
         assert backend.post_message(channel="C", text="hi") == snapshot({})
 
-    def test_get_when_no_token_returns_empty_dict(self) -> None:
-        """RED if ``_get`` removes its no-token early-return."""
+    def test_get_when_no_token_fails_loud_before_calling_slack(self, transport: FakeSlackTransport) -> None:
+        """RED if ``_get`` reads a missing token as an empty answer, or calls Slack without one."""
         backend = SlackBotBackend()
-        assert backend.get_permalink(channel="C", ts="1.0") == snapshot("")
+
+        with pytest.raises(SlackTokenMissingError, match="no Slack token configured"):
+            backend.get_permalink(channel="C", ts="1.0")
+
+        assert transport.calls_to("chat.getPermalink") == []
 
     def test_post_reply_routes_to_chat_post_message_with_thread_ts(
         self,

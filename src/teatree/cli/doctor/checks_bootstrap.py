@@ -138,7 +138,7 @@ def _check_gh_token_permissions() -> bool:
 
 
 def _check_git_hooks_installed() -> bool:
-    """FAIL when ANY checkout teatree commits from has no git hooks installed.
+    """FAIL when ANY checkout teatree commits from has no git hooks installed, or a parked one.
 
     A ``.git/hooks`` holding only ``*.sample`` files is a silent-broken install of
     the same class as #3523's PAT scopes: every push from that checkout — and from
@@ -147,6 +147,10 @@ def _check_git_hooks_installed() -> bool:
     hooks landing in one clone while work happens in another: judging only the
     installed clone reads green while another pushes ungated. A deliberate
     ``core.hooksPath`` override is reported, never failed on.
+
+    A pre-existing hook parked out of ``prek install -f``'s way is the second finding, and
+    it needs no code here: ``format_remediation`` reads the same quarantine the installer
+    line does, so the repair and the verification cannot disagree about it.
     """
     from teatree.core.gates.git_checkouts import discover_checkouts  # noqa: PLC0415 — deferred (ORM)
     from teatree.core.gates.git_hooks_preflight import (  # noqa: PLC0415 — deferred import

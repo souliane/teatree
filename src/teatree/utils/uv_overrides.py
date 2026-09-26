@@ -1,16 +1,14 @@
 """The ``--overrides`` argument every ``uv tool install`` of teatree must carry.
 
-``uv tool install`` resolves the package it installs WITHOUT reading that package's
-``[tool.uv] override-dependencies`` — the working directory makes no difference. So the
-override that lets ``uv lock``/``uv sync`` resolve ``claude-agent-sdk`` against
-``mcp>=2,<3`` is invisible to the global/deployed ``t3`` install, which fails outright
-with an unsatisfiable-requirements resolver error.
+``claude-agent-sdk==0.2.152`` declares ``mcp<3.0.0``, which already admits teatree's
+``mcp>=2,<3``, so the current override set is empty. ``uv tool install`` still does not
+read the installed package's ``[tool.uv] override-dependencies`` table.
 
-The same override is therefore committed as a requirements file
+The override set is therefore committed as a requirements file
 (:data:`UV_OVERRIDES_FILENAME`) that every install site passes explicitly. This module is
 the one place that builds the flag, so the three code paths that reinstall teatree
 (``t3 update``'s :mod:`teatree.self_update`, the dep-drift repair plan, and the editable
-receipt repair) cannot drift apart or forget it.
+receipt repair) remain ready for a future override without drifting apart.
 """
 
 from pathlib import Path

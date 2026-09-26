@@ -49,10 +49,15 @@ class BranchStatus(StrEnum):
     ``EMPTY_DELTA`` is kept apart from ``SYNCED`` because it is a statement about
     the pull request rather than about the work: the branch may hold commits no
     layer can prove landed, yet the PR it would open shows zero files.
+
+    ``BRANCH_MISSING`` identifies a stale worktree row whose local branch ref no
+    longer exists. Workspace-wide scans report and skip it without hiding real
+    git failures from the command boundary.
     """
 
     SYNCED = "synced"
     EMPTY_DELTA = "empty_delta"
+    BRANCH_MISSING = "branch_missing"
     OPEN_PR = "open_pr"
     PR_UNKNOWN = "pr_unknown"
     UNPUSHED_ORPHAN = "unpushed_orphan"
@@ -120,8 +125,11 @@ def classify_branch(repo: str, branch: str) -> BranchReport:
     target = _origin_default_branch_target(repo)
     classification = prefilter_branch_commits_by_subject(repo, branch, target=target)
     ahead = len(classification.genuinely_ahead)
-
-    local = _local_content_verdict(repo, branch, target, ahead)
+    local = (
+        BranchReport(repo=repo, branch=branch, status=BranchStatus.BRANCH_MISSING, ahead_count=0)
+        if classification.branch_missing
+        else _local_content_verdict(repo, branch, target, ahead)
+    )
     if local is not None:
         return local
 
@@ -158,11 +166,10 @@ def find_orphans_in_workspace(*, rows: QuerySet | None = None) -> list[BranchRep
     """Return orphan branches across all tracked worktrees in the workspace.
 
     Deduplicates by ``(repo, branch)`` — multiple Worktree rows sharing a
-    branch produce a single report. A single worktree whose classification
-    fails (a real git error — corrupt checkout, unresolvable target ref) is
-    logged and skipped rather than aborting the whole scan (#2937): this
-    sweep spans every tracked worktree in the workspace, and one bad row
-    must not hide every other worktree's orphan status.
+    branch produce a single report. A stale row whose branch ref is missing is
+    reported and skipped. Other git failures propagate to the command boundary:
+    corrupt or unreadable repositories must not be mistaken for harmless stale
+    rows, nor may a failed scan silently allow intake to continue.
 
     ``rows`` narrows which Worktree rows are scanned — it is the CALLER's
     scoping decision, made per call site. The default stays ``.all()``:
@@ -184,14 +191,12 @@ def find_orphans_in_workspace(*, rows: QuerySet | None = None) -> list[BranchRep
         if key in seen:
             continue
         seen.add(key)
-        try:
-            report = classify_branch(str(repo_main), wt.branch)
-        except CommandFailedError:
+        report = classify_branch(str(repo_main), wt.branch)
+        if report.status is BranchStatus.BRANCH_MISSING:
             logger.warning(
-                "orphan scan: could not classify %s@%s (git command failed) — skipping",
+                "orphan scan: branch missing for %s@%s — skipping",
                 repo_main,
                 wt.branch,
-                exc_info=True,
             )
             continue
         if report.is_orphan:

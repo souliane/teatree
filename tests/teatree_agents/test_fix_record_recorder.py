@@ -17,6 +17,7 @@ from teatree.agents.fix_record_recorder import record_returned_fix_record
 from teatree.core.gates.fix_dod_gate import FixRecordDodError
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.types import FIX_RECORD_FIELDS, fix_record_missing_fields
+from tests.factories import waive_rubric
 
 _COMPLETE_RECORD = {
     "root_cause": "the recorder never wrote extra['fix_record']; only test factories did",
@@ -56,6 +57,7 @@ class TestPositivePath(TestCase):
         ticket = _at_retrospected(task.ticket)
         assert ticket.extra["fix_record"] == _COMPLETE_RECORD
         assert "fix_record_override" not in ticket.extra
+        waive_rubric(ticket)
         ticket.mark_delivered()
         assert ticket.state == Ticket.State.DELIVERED
 
@@ -67,6 +69,7 @@ class TestPositivePath(TestCase):
         assert task.status == Task.Status.COMPLETED
         ticket = _at_retrospected(task.ticket)
         assert "fix_record" not in (ticket.extra or {})
+        waive_rubric(ticket)
         with pytest.raises(FixRecordDodError):
             ticket.mark_delivered()
 

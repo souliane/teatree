@@ -11,6 +11,7 @@ invoke Claude — that is the dispatcher's job.
 
 from teatree.loop.scanners.active_tickets import ActiveTicketsScanner
 from teatree.loop.scanners.architectural_review import ArchitecturalReviewScanner
+from teatree.loop.scanners.artifact_eviction import ArtifactEvictionScanner
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.backlog_sweep import BacklogSweepScanner
 from teatree.loop.scanners.base import Scanner, ScanSignal
@@ -77,6 +78,7 @@ from teatree.loop.scanners.work_state import WorkStateScanner
 __all__ = [
     "ActiveTicketsScanner",
     "ArchitecturalReviewScanner",
+    "ArtifactEvictionScanner",
     "AskUserQuestionReplyScanner",
     "AutoReviewTaskDispatcher",
     "BackendChannelHistoryFetcher",

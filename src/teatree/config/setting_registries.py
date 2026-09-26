@@ -9,26 +9,20 @@ declares the dataclasses themselves; re-exported from ``teatree.config`` so ever
 ``teatree.config.<name>`` path stays valid.
 """
 
+import os
 from collections.abc import Callable
 from typing import Any, Final
 
 from teatree.config.agent_enums import AgentHarnessProvider, parse_harness_name
-from teatree.config.enums import (
-    Autonomy,
-    CriticGateMode,
-    MissingIssuePolicy,
-    Mode,
-    OnBehalfPostMode,
-    PrReviewBackend,
-    SendProxyMode,
-    Wip,
-)
+from teatree.config.enums import Autonomy, CriticGateMode, MissingIssuePolicy, Mode, PrReviewBackend, SendProxyMode, Wip
 from teatree.config.mr_reminder import parse_mr_reminder_setting
 from teatree.config.setting_parsers import (
     _parse_env_bool,
     _parse_env_bool_default_on,
     _parse_env_str_list,
     _parse_handover_mirror_path,
+    _parse_harness_skill_exclusions,
+    _parse_header_map,
     _parse_overridable_positive_int,
     _parse_str_list,
     _parse_strict_bool,
@@ -62,6 +56,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "merge_wip": _parse_strict_int,
     "agent_harness": parse_harness_name,
     "agent_harness_provider": AgentHarnessProvider.parse,
+    "harness_skill_exclusions": _parse_harness_skill_exclusions,
     "enforce_regulated_path": _parse_strict_bool,
     "regulated_path_model_allowlist": _parse_str_list,
     "pydantic_ai_request_limit": _parse_strict_int,
@@ -80,27 +75,25 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "openai_compatible_model": _parse_strict_str,
     "openai_compatible_credential_entry": _parse_strict_str,
     "openai_compatible_lane": _parse_strict_str,
+    "openai_compatible_extra_headers": _parse_header_map,
+    "openai_compatible_sends_prompt_cache_key": _parse_strict_bool,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
-    "loop_runner_enabled": _parse_strict_bool,
     "worker_quiescing": _parse_strict_bool,
     "require_human_approval_to_merge": _parse_strict_bool,
     "substrate_self_signoff": _parse_strict_bool,
     "substrate_auto_merge_authorized_by": _parse_strict_str,
     "max_open_prs_per_repo_per_ticket": _parse_strict_int,
     "require_human_approval_to_answer": _parse_strict_bool,
-    "on_behalf_post_mode": OnBehalfPostMode.parse,
     "missing_issue_ref_policy": MissingIssuePolicy.parse,
     "on_behalf_auto_actions": _parse_str_list,
     "review_request_post_disabled": _parse_strict_bool,
     "notify_user_via_bot": _parse_strict_bool,
     "notify_on_post_on_behalf": _parse_strict_bool,
     "user_identity_aliases": _parse_user_identity_aliases,
-    "architectural_review_disabled": _parse_strict_bool,
     "architectural_review_skill": _parse_strict_str,
     "architectural_review_cadence_hours": _parse_strict_int,
-    "architectural_review_retry_backoff_hours": _parse_strict_int,
     "architectural_review_after_merge_count": _parse_strict_int,
     "review_skill": _parse_strict_str,
     "review_skill_alternates": _parse_str_list,
@@ -121,7 +114,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_reviewed_state_for_review_request": _parse_strict_bool,
     "require_integration_review": _parse_strict_bool,
     "require_merge_evidence": _parse_strict_bool,
-    "require_plan_adequacy": _parse_strict_bool,
     "require_executed_repro": _parse_strict_bool,
     "require_debt_delta": _parse_strict_bool,
     "require_merge_quality_verdict": _parse_strict_bool,
@@ -130,32 +122,26 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "send_proxy_mode": SendProxyMode.parse,
     "send_proxy_allowlist": _parse_str_list,
     "bulk_close_threshold": _parse_strict_int,
-    "require_rubric_verification": _parse_strict_bool,
-    "require_spec_coverage": _parse_strict_bool,
     "e2e_confidence_threshold": _parse_strict_int,
-    "scanning_news_disabled": _parse_strict_bool,
     "scanning_news_skill": _parse_strict_str,
+    "scanner_overlay_scope": _parse_str_list,
     "scanning_news_cadence_hours": _parse_strict_int,
     "ask_before_creating_news_tickets": _parse_strict_bool,
-    "eval_local_disabled": _parse_strict_bool,
     "eval_local_skill": _parse_strict_str,
-    "eval_local_cadence_hours": _parse_strict_int,
-    "backlog_sweep_disabled": _parse_strict_bool,
     "backlog_sweep_skill": _parse_strict_str,
-    "backlog_sweep_cadence_hours": _parse_strict_int,
     "ask_before_backlog_sweep_closes": _parse_strict_bool,
-    "dogfood_smoke_disabled": _parse_strict_bool,
     "dogfood_smoke_skill": _parse_strict_str,
-    "dogfood_smoke_cadence_hours": _parse_strict_int,
     "dogfood_smoke_overlay": _parse_strict_str,
     "schema_readiness_gate_enabled": _parse_strict_bool,
     "self_update_disabled": _parse_strict_bool,
-    "self_update_cadence_hours": _parse_strict_int,
-    "auto_update_reinstall": _parse_strict_bool,
     "auto_update_require_green_main": _parse_strict_bool,
-    "resource_pressure_disabled": _parse_strict_bool,
-    "resource_pressure_cadence_minutes": _parse_strict_int,
-    "resource_pressure_min_free_interval_minutes": _parse_strict_int,
+    "auto_disposition_enabled": _parse_strict_bool,
+    "auto_update_reinstall": _parse_strict_bool,
+    "gitlab_approval_scanner_enabled": _parse_strict_bool,
+    "mr_conflict_scan_enabled": _parse_strict_bool,
+    "mr_triage_enabled": _parse_strict_bool,
+    "review_nag_enabled": _parse_strict_bool,
+    "review_resume_reply_enabled": _parse_strict_bool,
     "disk_warn_free_gb": _parse_strict_float,
     "disk_crit_free_gb": _parse_strict_float,
     "ram_warn_avail_gb": _parse_strict_float,
@@ -165,9 +151,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "intake_ram_per_agent_gb": _parse_strict_float,
     "disk_cache_allowlist": _parse_str_list,
     "allow_destructive_disk": _parse_strict_bool,
-    "venv_idle_days": _parse_strict_float,
+    "artifact_idle_days": _parse_strict_float,
     "worktree_stale_days": _parse_strict_int,
-    "max_worktree_gc_per_tick": _parse_strict_int,
     "allow_destructive_ram": _parse_strict_bool,
     "ram_kill_allowlist": _parse_str_list,
     "task_sweep_disabled": _parse_strict_bool,
@@ -175,44 +160,27 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "target_branch": _parse_strict_str,
     "max_concurrent_local_stacks": _parse_strict_int,
     "worktree_occupancy_gate_enabled": _parse_strict_bool,
-    "worktree_occupancy_lease_seconds": _parse_strict_int,
     "task_attempt_retention_days": _parse_strict_int,
-    "deferred_question_age_ceiling_days": _parse_strict_int,
-    "deferred_question_max_escalations": _parse_strict_int,
-    "incoming_event_retention_days": _parse_strict_int,
-    "park_attempt_retention_days": _parse_strict_int,
     "ticket_transition_prune_disabled": _parse_strict_bool,
     "task_result_retention_days": _parse_strict_int,
     "scratch_retention_days": _parse_strict_int,
     "scratch_sweep_root": _parse_strict_str,
     "session_stale_after_hours": _parse_strict_int,
     "provision_step_timeout_seconds": _parse_strict_int,
-    "idle_stack_reaper_disabled": _parse_strict_bool,
     "idle_stack_idle_minutes": _parse_strict_int,
-    "idle_stack_reaper_cadence_minutes": _parse_strict_int,
     "idle_stack_e2e_recent_minutes": _parse_strict_int,
     "stale_stack_min_age_minutes": _parse_strict_int,
-    "local_stack_queue_disabled": _parse_strict_bool,
-    "local_stack_queue_max_attempts": _parse_strict_int,
     "clean_ignore": _parse_str_list,
+    "notion_write_allowed_roots": _parse_str_list,
+    "notion_write_denied_roots": _parse_str_list,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
     "pull_main_clone_disabled": _parse_strict_bool,
     "pull_main_clone_cadence_hours": _parse_strict_int,
-    "review_nag_enabled": _parse_strict_bool,
     "review_nag_max_interval_days": _parse_strict_int,
-    "review_request_dedup_window_days": _parse_overridable_positive_int(30),
-    "review_request_dedup_max_pages": _parse_overridable_positive_int(5),
     "review_exempt_repos": _parse_str_list,
     "review_exempt_repos_count_toward_group_readiness": _parse_strict_bool,
     "require_work_group_batch": _parse_strict_bool,
-    "work_group_generic_scopes": _parse_str_list,
-    "work_group_max_members": _parse_strict_int,
-    "review_pause_reaction_emojis": _parse_str_list,
-    "review_resume_reply_enabled": _parse_strict_bool,
-    "mr_state_questions_max_per_tick": _parse_strict_int,
-    "mr_conflict_scan_enabled": _parse_strict_bool,
     "mr_title_regex": _parse_strict_str,
-    "issue_implementer_enabled": _parse_strict_bool,
     "issue_implementer_label": _parse_strict_str,
     "issue_implementer_max_concurrent": _parse_strict_int,
     "issue_intake_pass_budget_seconds": _parse_strict_float,
@@ -220,8 +188,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "independent_reviewer_identities": _parse_str_list,
     "umbrella_issue_labels": _parse_str_list,
     "fleet_claim_enabled": _parse_strict_bool,
-    "auto_disposition_enabled": _parse_strict_bool,
-    "limit_autorecovery_enabled": _parse_strict_bool,
     # #3201 PR-3b — the CI-eval self-heal autonomous-fixer OFF switch (DARK flag).
     "ci_eval_heal_autofix_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
@@ -241,19 +207,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # per-overlay overridable — an overlay can trial the score while the global stays OFF.
     "factory_score_enabled": _parse_strict_bool,
     "approved_recipe_sha": _parse_strict_str,
-    "auto_disposition_max_closes_per_tick": _parse_strict_int,
-    "mr_triage_enabled": _parse_strict_bool,
-    "mr_triage_max_mrs_per_tick": _parse_strict_int,
-    "triage_assessor_enabled": _parse_strict_bool,
-    "triage_assessor_cadence_hours": _parse_strict_int,
-    "triage_assessor_max_issues_per_tick": _parse_strict_int,
     # Directive #2 DB-backup scanner knobs. Cadence / retention use the fail-SAFE
     # coercer (a non-positive or mistyped value degrades to the default), so the
     # "keep a week of backups" bound cannot be configured away to 0.
     "dashboard_instance_label": _parse_strict_str,
     "dashboard_logo": _parse_strict_str,
-    "db_backup_disabled": _parse_strict_bool,
-    "db_backup_cadence_hours": _parse_overridable_positive_int(24),
     "db_backup_retention_days": _parse_overridable_positive_int(7),
     "orchestrate_claim_enabled": _parse_strict_bool,
     "boost_concurrency": _parse_strict_int,
@@ -266,9 +224,18 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "billing_cycle_anchor_day": _parse_strict_int,
     "sdk_monthly_credit_usd": _parse_strict_float,
     # #2697 — bypass readers migrated from bespoke ``os.environ`` reads to DB-home.
-    "gitlab_approval_scanner_enabled": _parse_strict_bool,
     "contribute_plugin_dir": _parse_strict_bool,
+    "dream_automation_asks": _parse_strict_bool,
+    "dream_compliance_escalate": _parse_strict_bool,
+    "dream_compliance_measure": _parse_strict_bool,
+    "dream_cross_link": _parse_strict_bool,
+    "dream_decay": _parse_strict_bool,
+    "dream_derive_evals": _parse_strict_bool,
+    "dream_memory_promote": _parse_strict_bool,
+    "dream_merge": _parse_strict_bool,
     "dream_propose_evals": _parse_strict_bool,
+    "dream_reindex": _parse_strict_bool,
+    "dream_validate_live": _parse_strict_bool,
     "hook_fetch_titles": _parse_strict_bool,
     # Per-account ``pass`` routing for the Anthropic credentials (llm/credentials.py):
     # an ORDERED LIST of ``pass`` entries the routing selector fans out over per
@@ -357,7 +324,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # the warmer instead of silently paying the slow restore+migrate path.
     # Per-overlay overridable.
     "snapshot_warmer_max_age_days": _parse_strict_int,
-    "snapshot_warmer_disabled": _parse_strict_bool,
     # DB-home cutover: the last two carve-out fields — the nested
     # structured tables ``speak`` / ``mr_reminder``. Each parser validates + stores
     # the CANONICAL ``to_dict()`` JSON object; the resolver rebuilds the dataclass
@@ -379,6 +345,20 @@ TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
 # global setting. Mapped to ``(UserSettings field, parser)``.
+#: Keys whose reader takes NO overlay, so a per-overlay row is an opinion the box cannot
+#: honour — a loop timer is one clock per box. Hand-maintained beside the other registries
+#: for the same cold-path reason (a module-scope ``derive_*()`` would drag pydantic onto
+#: every cold-hook read); ``schema.derive_box_global_settings`` keeps this copy honest.
+BOX_GLOBAL_SETTINGS: frozenset[str] = frozenset(
+    {
+        "harness_skill_exclusions",
+        "loop_cadence_seconds",
+        "scanning_news_cadence_hours",
+        "snapshot_warmer_max_age_days",
+    }
+)
+
+
 ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_WIP": ("wip", Wip.parse),
@@ -390,25 +370,31 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_OPENAI_COMPATIBLE_BASE_URL": ("openai_compatible_base_url", str),
     "T3_OPENAI_COMPATIBLE_MODEL": ("openai_compatible_model", str),
     "T3_OPENAI_COMPATIBLE_LANE": ("openai_compatible_lane", str),
-    "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
     "T3_REVIEW_SKILL": ("review_skill", str),
-    "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
     # #3895 shipped these two master gates ON, so each needs the same one-command
     # kill switch its sibling loop gates already had — an operator stopping a
     # default-ON loop cannot be made to write a DB row first.
-    "T3_TRIAGE_ASSESSOR_ENABLED": ("triage_assessor_enabled", _parse_env_bool),
     "T3_DIRECTIVE_LOOP_ENABLED": ("directive_loop_enabled", _parse_env_bool),
     "T3_TRUSTED_ISSUE_AUTHORS": ("trusted_issue_authors", _parse_env_str_list),
     "T3_FLEET_CLAIM_ENABLED": ("fleet_claim_enabled", _parse_env_bool),
+    "T3_DREAM_AUTOMATION_ASKS": ("dream_automation_asks", _parse_env_bool),
+    "T3_DREAM_COMPLIANCE_ESCALATE": ("dream_compliance_escalate", _parse_env_bool),
+    "T3_DREAM_COMPLIANCE_MEASURE": ("dream_compliance_measure", _parse_env_bool),
+    "T3_DREAM_CROSS_LINK": ("dream_cross_link", _parse_env_bool),
+    "T3_DREAM_DECAY": ("dream_decay", _parse_env_bool),
+    "T3_DREAM_DERIVE_EVALS": ("dream_derive_evals", _parse_env_bool),
+    "T3_DREAM_MEMORY_PROMOTE": ("dream_memory_promote", _parse_env_bool),
+    "T3_DREAM_MERGE": ("dream_merge", _parse_env_bool),
+    "T3_DREAM_PROPOSE_EVALS": ("dream_propose_evals", _parse_env_bool),
+    "T3_DREAM_REINDEX": ("dream_reindex", _parse_env_bool),
+    "T3_DREAM_VALIDATE_LIVE": ("dream_validate_live", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
     "T3_FACTORY_SCORE_ENABLED": ("factory_score_enabled", _parse_env_bool),
     "T3_OUTER_LOOP_ENABLED": ("outer_loop_enabled", _parse_env_bool),
-    "T3_LIMIT_AUTORECOVERY_ENABLED": ("limit_autorecovery_enabled", _parse_env_bool),
     "T3_BOOST_CONCURRENCY": ("boost_concurrency", _parse_strict_int),
-    "T3_LOOP_RUNNER_ENABLED": ("loop_runner_enabled", _parse_env_bool),
     "T3_WORKER_QUIESCING": ("worker_quiescing", _parse_env_bool),
     "T3_CONTRIBUTE": ("contribute_plugin_dir", _parse_env_bool),
     "T3_HOOK_FETCH_TITLES": ("hook_fetch_titles", _parse_env_bool_default_on),
@@ -421,7 +407,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
 # CONFIGURE a gate: it grants authority (``substrate_auto_merge_authorized_by`` — "the
 # config write IS the human authorization"), delegates a keystone sign-off
 # (``substrate_self_signoff``), disarms an egress/on-behalf pre-gate
-# (``on_behalf_post_mode = IMMEDIATE``, ``on_behalf_auto_actions``), or WIDENS a
+# (a permitting posture, ``on_behalf_auto_actions``), or WIDENS a
 # fail-closed intake / egress / regulated / maker≠checker allowlist
 # (``trusted_issue_authors``, ``send_proxy_allowlist``, ``regulated_path_model_allowlist``,
 # ``independent_reviewer_identities``), raises the global
@@ -435,6 +421,83 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
 # and fails CLOSED if a delegation/allowlist/authorization-shaped field is in neither this
 # set nor the explicit reviewed ``teatree.mcp.write_tools.MCP_SETTABLE_OK`` allowlist — so
 # a future safety-posture field can never ship silently MCP-settable.
+#: Which ``T3_*`` var carries each env-overridable setting — ``ENV_SETTING_OVERRIDES`` read
+#: the other way round, for the surfaces that start from a setting name.
+ENV_VAR_BY_SETTING: Final[dict[str, str]] = {
+    field_name: env_var for env_var, (field_name, _parser) in ENV_SETTING_OVERRIDES.items()
+}
+
+
+def env_pinned_value(env_var: str) -> str | None:
+    """What *env_var* pins in THIS process, or ``None`` when it pins nothing.
+
+    An exported-but-EMPTY var pins only what its parser can represent. ``T3_FOO=`` is how a
+    shell neutralises an inherited pin, and reading it as a bool resolved every
+    ``T3_DREAM_*`` phase to ``False`` and stopped the memory phases running — but for a list
+    the empty string IS the value, the empty allowlist. The parser answers which, so the two
+    cases cannot drift apart the way a second registry of "empty means unset" keys would.
+
+    Only the EMPTY case consults the parser: a non-empty value is handed on unexamined, so a
+    typo (``T3_ENFORCE_REGULATED_PATH=treu``) still raises where the operator can see it
+    rather than falling silently through to the tier below.
+
+    The resolver and :func:`env_pin` share this one predicate so a surface can never report
+    a pin the resolver does not apply.
+    """
+    raw = os.environ.get(env_var)
+    if raw is None or raw.strip():
+        return raw
+    _field, parser = ENV_SETTING_OVERRIDES.get(env_var, ("", None))
+    if parser is None:
+        return None
+    try:
+        parser(raw)
+    except ValueError:
+        return None
+    return raw
+
+
+#: Settings a code path deliberately reads from the SHIPPED default rather than the resolver,
+#: mapped to the sentence a grid shows instead of an edit box. A stored row for one of these
+#: is written and then read by nobody, so an editable control in front of it invites an
+#: operator to believe they armed something. Declared here because it is what the dash needs
+#: to render, not a fact any walk can derive from the pinning call site.
+CODE_PINNED_SETTINGS: Final[dict[str, str]] = {
+    "allow_destructive_disk": "pinned to its shipped value in the resource-pressure scanner",
+    "allow_destructive_ram": "pinned to its shipped value in the resource-pressure scanner",
+}
+
+
+#: Settings whose only consumer is prose — a skill or a document reads the value, so no
+#: `src` reader exists and none is missing. Mapped to the reason, because "nothing reads
+#: this" and "a human reads this" are the same measurement and opposite verdicts.
+PROSE_CONSUMED_SETTINGS: Final[dict[str, str]] = {
+    "e2e_confidence_threshold": "read by the `/t3:e2e` verify-review loop, which is agent prose rather than a gate",
+}
+
+#: Every key DECLARED to have no `src` reader, whichever reason it carries. The readership
+#: lanes subtract this; `teatree.quality` cannot, being a foundation layer that may not
+#: reach config — which is why the matcher there stays a pure derivation and the policy
+#: lives here, named once for both lanes.
+READER_LESS_SETTINGS: Final[frozenset[str]] = frozenset(CODE_PINNED_SETTINGS) | frozenset(PROSE_CONSUMED_SETTINGS)
+
+
+def code_pin_refusal(key: str) -> str:
+    """Why *key* cannot usefully be written from a grid, or ``""`` when it can."""
+    return CODE_PINNED_SETTINGS.get(key, "")
+
+
+def env_pin(key: str) -> str:
+    """The ``T3_*`` var pinning *key* in THIS process, or ``""`` when none is.
+
+    The env tier outranks every stored tier, so while such a var carries a value a DB write
+    to *key* lands in a layer nothing reads back: the write reports success and changes
+    nothing an operator can observe. Every surface that offers or accepts an edit asks here.
+    """
+    env_var = ENV_VAR_BY_SETTING.get(key, "")
+    return env_var if env_var and env_pinned_value(env_var) is not None else ""
+
+
 SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "autonomy",
@@ -442,7 +505,6 @@ SAFETY_POSTURE_KEYS: Final[frozenset[str]] = frozenset(
         "regulated_path_model_allowlist",
         "substrate_self_signoff",
         "substrate_auto_merge_authorized_by",
-        "on_behalf_post_mode",
         "on_behalf_auto_actions",
         "send_proxy_allowlist",
         "trusted_issue_authors",

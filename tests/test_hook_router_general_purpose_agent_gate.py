@@ -201,8 +201,10 @@ def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
 
 def _run_router(payload: dict, *, settings: dict[str, object]) -> subprocess.CompletedProcess[str]:
     with tempfile.TemporaryDirectory() as home:
-        env: dict[str, str] = {**os.environ, "HOME": home, "USERPROFILE": home}
-        env.pop("XDG_DATA_HOME", None)
+        # Built by exclusion rather than `pop`: a `pop(key, None)` widens the value type to
+        # `str | None`, which is not an environment.
+        base = {**os.environ, "HOME": home, "USERPROFILE": home}
+        env: dict[str, str] = {k: v for k, v in base.items() if k != "XDG_DATA_HOME"}
         db = Path(home) / "db.sqlite3"
         _seed_config_db(db, settings)
         env["T3_CONFIG_DB"] = str(db)

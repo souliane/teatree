@@ -19,6 +19,7 @@ from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.loop_table import admitted_loop_names, build_loop_table_jobs
+from teatree.loops.preset_seed import seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
 
 if TYPE_CHECKING:
@@ -29,7 +30,9 @@ _MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 
 def _resolved(*, entries: dict[str, bool] | None = None, source: str = "override") -> ResolvedMode:
     """A ResolvedMode carrying only the availability posture (no loop-mask opinion)."""
-    return ResolvedMode(mode=Mode(name="m", entries=entries or {}), source=source, until=None)
+    return ResolvedMode(
+        mode=Mode(name="m", entries=entries or {}), source=source, until=None, fail_open=entries is None
+    )
 
 
 def _mini(name: str) -> MiniLoop:
@@ -489,7 +492,7 @@ class TestColleagueFacingLoopHeldOffByTheModeMask(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="cf-internal", delay_seconds=60, prompt=_prompt(), colleague_facing=False)
         with (
-            patch(_MODE_SEAM, return_value=_resolved(entries={"cf-review": False})),
+            patch(_MODE_SEAM, return_value=_resolved(entries={"cf-review": False, "cf-internal": True})),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-internal"),)),
         ):
             jobs = build_loop_table_jobs({}, now=now)
@@ -521,22 +524,23 @@ class TestColleagueFacingLoopHeldOffByTheModeMask(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True)
-class TestAutoMergePathAdmittedUnderAway(django.test.TestCase):
-    """#3274/#61/#3569: `ship` AND `review` are admitted under the `away` mode.
+class TestAutoMergePathAdmittedUnderAfk(django.test.TestCase):
+    """#3274/#61/#3569: `ship` AND `review` are admitted under `afk`.
 
-    End-to-end over the REAL seed + registry + resolver (no stub): a green own-PR
-    still gets its review verdict and auto-merges while the owner is away, because
-    the merge sweep lives on the `ship` loop (#3244). #3569 unmasked `review` too so
-    self-review keeps going when away — only `followup` is masked off. Both are loop
-    membership, which since #4202 is the only axis there is.
+    End-to-end over the REAL seed + registry + resolver (no stub): a green own-PR still
+    gets its review verdict and auto-merges while the owner is away, because the merge
+    sweep lives on the `ship` loop (#3244). `followup` RUNS too under B6 — its colleague
+    pings are what `afk` forbids, at the on-behalf chokepoint rather than by masking the
+    loop — so what this pins is that the delivery pair is admitted, not that anything is
+    masked.
     """
 
-    def test_ship_and_review_admitted_followup_masked_under_away(self) -> None:
+    def test_ship_and_review_are_admitted_under_afk(self) -> None:
         seed_default_loops_and_prompts()
-        Mode.objects.update_or_create(name="away", defaults={"entries": {"followup": False}})
-        ModeOverride.objects.set_override("away")
-        Loop.objects.filter(name__in=["ship", "review", "followup"]).update(enabled=True, last_run_at=None)
+        seed_default_presets_and_schedules()
+        ModeOverride.objects.set_override("afk", reason="test override")
+        Loop.objects.filter(name__in=["ship", "review", "followup"]).update(last_run_at=None)
         admitted = admitted_loop_names(timezone.now())
         assert "ship" in admitted
         assert "review" in admitted
-        assert "followup" not in admitted
+        assert "followup" in admitted

@@ -24,14 +24,14 @@ gate would report a green it never earned — the identical vacuity
 :func:`load_cost_bounds` already refuses for an ABSENT file, which an EMPTY one
 otherwise walks straight through.
 
-All three REDs presuppose a backend that RECORDS cost — ``--backend api`` alone.
-Every backend in :data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS` reports
-none, so a healthy run there records ``$0`` and every ceiling below reads
-``MISSING``: the gate is unsatisfiable in both directions and a calibration makes it
-worse. That pairing is refused at the CLI boundary
-(:func:`~teatree.cli.eval.app_helpers.require_metering_backend_for_cost_bounds`)
-rather than handled here, so no run is billed to produce violations that cannot mean
-what they say.
+All three REDs presuppose a TRANSPORT-REPORTED bill — ``--backend api`` alone. Every
+backend in :data:`~teatree.eval.backends.UNMETERED_FRESH_BACKENDS` reports none of its
+own; its ``cost_usd`` is derived from token usage at list price
+(:func:`~teatree.eval.cost_observation.observe_cost`), which is a different quantity from
+the one these ceilings are calibrated against. That pairing is refused at the CLI boundary
+(:func:`~teatree.cli.eval.app_helpers.require_metering_backend_for_cost_bounds`) rather
+than handled here, so no run is billed to produce violations that cannot mean what they
+say; enabling it means recalibrating against the derived figure, not flipping the flag.
 """
 
 import dataclasses

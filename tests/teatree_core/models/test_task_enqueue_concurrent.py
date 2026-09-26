@@ -63,17 +63,20 @@ def _enqueue_with_the_shipped_guard(ticket: Ticket) -> Task:
     return enqueue_phase_task_once(ticket=ticket, phase=_PHASE, reason=_REASON)
 
 
-def _enqueue_without_the_guard(ticket: Ticket) -> Task:
+def _enqueue_without_the_guard(ticket: Ticket, *, probes_aligned: threading.Barrier | None = None) -> Task:
     """``enqueue_phase_task_once`` with ``atomic()`` and ``select_for_update()`` removed.
 
     Built from the seam's own probe and create so it stays the shipped body minus the
-    guard, with no window-widening hold to manufacture the race. ``select_for_update()``
+    guard. The optional barrier is test-only scheduling: every caller first observes
+    the same empty precondition, then they continue together. ``select_for_update()``
     goes with the ``atomic()`` because Django refuses it outside a transaction.
     """
     existing = _unstarted_tasks(ticket, _PHASE).first()
     if existing is not None:
         msg = f"TODO-{existing.pk} is already queued for {_PHASE} — nothing to enqueue."
         raise DuplicatePhaseTaskError(msg)
+    if probes_aligned is not None:
+        probes_aligned.wait(timeout=30)
     return enqueue_phase_task(ticket=ticket, phase=_PHASE, reason=_REASON, agent_id="dashboard")
 
 
@@ -146,6 +149,7 @@ def _unblocked_db(django_db_blocker: pytest.FixtureRequest) -> Iterator[None]:
 
 
 @pytest.mark.usefixtures("_unblocked_db")
+@pytest.mark.timeout(300)
 class TestEnqueuePhaseTaskOnceUnderConcurrentCallers:
     """K real threads race the dashboard's enqueue seam on a file-backed SQLite."""
 
@@ -172,11 +176,16 @@ class TestEnqueuePhaseTaskOnceUnderConcurrentCallers:
     def test_the_same_race_double_enqueues_once_the_guard_is_removed(self, tmp_path: Path) -> None:
         """Anti-vacuity: without ``atomic()`` the callers all probe empty and all create.
 
-        Measured at 8 of 8 on this harness. The assertion is the contract the guard
-        exists to hold — *exactly one* — rather than that count, so a caller that happens
-        to probe after a rival's commit cannot make the control flaky.
+        Align the unguarded probes after they all observe the same empty precondition.
+        This makes the mutation control deterministic instead of relying on the runner
+        scheduler to keep every probe ahead of the first commit.
         """
-        outcomes, rows = self._race(tmp_path, _enqueue_without_the_guard)
+        probes_aligned = threading.Barrier(_CALLERS)
+
+        def unguarded_control(ticket: Ticket) -> Task:
+            return _enqueue_without_the_guard(ticket, probes_aligned=probes_aligned)
+
+        outcomes, rows = self._race(tmp_path, unguarded_control)
 
         assert outcomes.count(_CREATED) > 1, f"the harness cannot detect a double-enqueue: {outcomes}"
         assert rows == outcomes.count(_CREATED), f"{rows} rows for {outcomes.count(_CREATED)} creates"

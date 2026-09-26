@@ -7,17 +7,21 @@ not complete cleanly so it is recorded rather than laundered into a completion
 verdict is reproducible without a task, a harness, or a database.
 """
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from claude_agent_sdk import ResultMessage
 from claude_agent_sdk.types import RateLimitInfo
 
 from teatree.agents.runner_failure_taxonomy import (
     RESULT_ERROR_PREFIX,
     TURN_CEILING_SUBTYPE,
+    context_exhaustion_reason,
     error_result_reason,
+    is_context_exhaustion,
     limit_match,
 )
+from teatree.core.modelkit.task_failure_taxonomy import RecoveryStrategy, classify_failure, recovery_strategy
 from teatree.llm.anthropic_limits import (
     RECOVERABLE_EXHAUSTION_CAUSES,
     LimitCause,
@@ -46,6 +50,75 @@ def _result(
         errors=errors,
         api_error_status=api_error_status,
     )
+
+
+def _http_error(status: int, body: str) -> ResultMessage:
+    return _result(
+        is_error=True,
+        subtype="error_during_execution",
+        result=f"status_code: {status}, model_name: m, body: {body}",
+        api_error_status=status,
+    )
+
+
+_CYCLE_STOP = "{'error': {'message': 'token cycle spend limit reached, resets at 2026-10-01T00:00:00Z'}}"
+
+
+class TestLimitMatchByHttpStatus:
+    """A metered router's refusal is classified by its status, not only by prose it may not carry."""
+
+    @staticmethod
+    def _metered(message: ResultMessage) -> LimitMatch | None:
+        return limit_match(message, metered_transport=True)
+
+    def test_a_402_is_a_provider_budget_even_without_any_phrase(self) -> None:
+        match = self._metered(_http_error(402, "{'error': {'message': 'payment required'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_BUDGET
+
+    def test_a_403_cycle_stop_is_a_provider_budget_carrying_its_stated_reset(self) -> None:
+        match = self._metered(_http_error(403, _CYCLE_STOP))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_BUDGET
+        assert match.stated_reset == datetime(2026, 10, 1, tzinfo=UTC)
+
+    def test_a_bare_403_is_an_access_denial_not_a_budget(self) -> None:
+        match = self._metered(_http_error(403, "{'error': {'message': 'model not in this key allow-list'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_ACCESS_DENIED
+
+    def test_the_cycle_stop_body_without_its_phrase_is_an_access_denial(self) -> None:
+        match = self._metered(_http_error(403, "{'error': {'message': 'access denied, resets at 2026-10-01'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_ACCESS_DENIED
+
+    def test_a_429_with_no_rate_limit_wording_is_a_rate_limit(self) -> None:
+        match = self._metered(_http_error(429, "{'error': {'message': 'slow down'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.RATE_LIMIT
+
+    def test_a_429_naming_a_budget_keeps_the_more_specific_budget_cause(self) -> None:
+        match = self._metered(_http_error(429, "{'error': {'message': 'monthly budget reached for this member'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_BUDGET
+
+    def test_a_status_on_a_healthy_result_is_never_a_limit(self) -> None:
+        assert self._metered(_result(result="done", api_error_status=429)) is None
+
+
+class TestAClaudeSdkStatusIsNeverAMeteredLimit:
+    """The status-only fallback is the metered router's; a claude_sdk result is classified by type and prose alone."""
+
+    def test_a_bare_402_on_claude_sdk_is_no_limit(self) -> None:
+        assert limit_match(_http_error(402, "{'error': {'message': 'payment required'}}")) is None
+
+    def test_a_wording_less_429_on_claude_sdk_is_no_limit(self) -> None:
+        assert limit_match(_http_error(429, "{'error': {'message': 'slow down'}}")) is None
+
+    def test_prose_still_classifies_on_claude_sdk(self) -> None:
+        match = limit_match(_http_error(429, "{'error': {'type': 'rate_limit_error'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.RATE_LIMIT
 
 
 class TestErrorResultReason:
@@ -88,6 +161,39 @@ class TestLimitMatch:
         assert match is not None
 
 
+class TestContextExhaustion:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Prompt is too long",
+            "prompt is too long: 1048577 tokens > 1048576 maximum",
+            "input is too long for requested model",
+            "input length and `max_tokens` exceed context limit: 990000 + 64000 > 1000000",
+        ],
+    )
+    def test_a_full_context_window_is_recognised(self, text: str) -> None:
+        assert is_context_exhaustion(_result(is_error=True, result=text, api_error_status=400))
+
+    def test_the_errors_list_is_read_when_there_is_no_result_text(self) -> None:
+        assert is_context_exhaustion(
+            _result(is_error=True, subtype="error_during_execution", errors=["Prompt is too long"])
+        )
+
+    def test_a_healthy_result_that_mentions_it_is_not_exhaustion(self) -> None:
+        assert not is_context_exhaustion(_result(result="the prompt is too long to paste here"))
+        assert not is_context_exhaustion(None)
+
+    def test_an_ordinary_error_is_not_exhaustion(self) -> None:
+        assert not is_context_exhaustion(_result(is_error=True, result="boom"))
+
+    def test_the_reason_names_it_and_re_dispatches_a_fresh_session(self) -> None:
+        reason = context_exhaustion_reason(_result(is_error=True, result="Prompt is too long", api_error_status=400))
+
+        assert reason.startswith(f"{RESULT_ERROR_PREFIX}context_exhausted")
+        assert "Prompt is too long" in reason
+        assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.RETRY
+
+
 class TestProviderAccessDenied:
     """A hard 401/403 is a provider REFUSAL, and no Anthropic prose names it (#4816).
 
@@ -98,6 +204,14 @@ class TestProviderAccessDenied:
 
     def test_a_403_is_a_provider_refusal(self) -> None:
         match = limit_match(
+            _result(is_error=True, subtype="error_during_execution", result="access_denied", api_error_status=403)
+        )
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_ACCESS_DENIED
+        assert "403" in match.phrase
+
+    def test_a_403_naming_a_spend_stop_keeps_the_more_specific_budget_cause(self) -> None:
+        match = limit_match(
             _result(
                 is_error=True,
                 subtype="error_during_execution",
@@ -106,8 +220,7 @@ class TestProviderAccessDenied:
             )
         )
         assert match is not None
-        assert match.cause is LimitCause.PROVIDER_ACCESS_DENIED
-        assert "403" in match.phrase
+        assert match.cause is LimitCause.PROVIDER_BUDGET
 
     def test_a_401_is_the_same_refusal(self) -> None:
         match = limit_match(_result(is_error=True, result="invalid api key", api_error_status=401))

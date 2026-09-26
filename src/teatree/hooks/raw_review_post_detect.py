@@ -14,16 +14,24 @@ dedup, on-behalf approval), while an issue/work-item note goes to
 and cannot address an issue at all. Naming one remedy for both blocked the caller and
 then sent them to a command that could not do the job.
 
-The command is classified by its EFFECTIVE HTTP method — the LAST ``-X``/
-``--method`` value wins; with no method flag the forge defaults to POST when a
-body/field flag is present, else GET. Only a GET is a read. The method regexes are
-carried self-contained here (the same shapes ``hook_router`` keeps for its own
-gates), so the leaf stays importable by Lane B; the deny-corpus parity test binds
-this leaf to ``hooks.scripts.raw_review_post_guard.is_raw_review_write``. Pure and
-stdlib-only.
+The review-endpoint pattern is matched on the WHOLE command, exactly as before —
+an endpoint carried in a shell variable assigned in a prior segment
+(``URL=<endpoint>; glab api "$URL" -X POST -f body=hi``) never puts the literal
+endpoint text in the segment that performs the write, so a per-segment endpoint
+check would miss it. Only the HTTP METHOD is classified per
+``glab api`` / ``gh api`` shell SEGMENT — the LAST ``-X``/``--method`` value wins;
+with no method flag the forge defaults to POST when a body/field flag is present,
+else GET. Only a GET is a read. A body flag in another segment of the same Bash
+call (``rm -f``, ``pgrep -f``, ``glab repo view -F json``) never reclassifies a
+read. The method regexes are carried self-contained here (the same shapes
+``hook_router`` keeps for its own gates), so the leaf stays importable by Lane B;
+the deny-corpus parity test binds this leaf to
+``hooks.scripts.raw_review_post_guard.is_raw_review_write``. Pure and stdlib-only.
 """
 
 import re
+
+from teatree.hooks._shell_lexer import Token, split_commands, tokenize
 
 REVIEW_POST_ENDPOINT_RE = re.compile(r"(?:merge_requests|pulls|issues)/\d+/(?:discussions|notes|comments)\b")
 ISSUE_NOTE_ENDPOINT_RE = re.compile(r"issues/\d+/(?:notes|comments)\b")
@@ -57,21 +65,43 @@ ISSUE_NOTE_DENY_REASON = (
 def is_raw_review_write(command: str) -> bool:
     """Whether *command* is a raw forge REST WRITE to a review-comment endpoint.
 
-    True only when the command targets a ``.../discussions``/``.../notes``/
-    ``.../comments`` endpoint AND its effective HTTP method is not GET.
+    True only when the WHOLE command targets a ``.../discussions``/``.../notes``/
+    ``.../comments`` endpoint AND some ``glab api`` / ``gh api`` shell segment's own
+    effective HTTP method is not GET. The endpoint is checked on the whole command
+    (an endpoint carried in a shell variable set in an earlier segment must still be
+    caught); the method is read from each api segment on its own.
     """
     if not command or not _GLAB_GH_API_RE.search(command):
         return False
     if not REVIEW_POST_ENDPOINT_RE.search(command):
         return False
-    methods = [m.upper() for pair in _METHOD_FLAG_RE.findall(command) for m in pair if m]
+    try:
+        segments = split_commands(tokenize(command))
+    except Exception:  # noqa: BLE001 — an unlexable command keeps the whole-text verdict rather than a weaker one
+        return _segment_is_review_write(command)
+    return any(_segment_is_review_write(_segment_text(segment)) for segment in segments)
+
+
+def _segment_text(segment: list[Token]) -> str:
+    return " ".join(token.raw for token in segment)
+
+
+def _segment_is_review_write(text: str) -> bool:
+    """Whether ONE segment's own effective method is a write, given it is an api segment.
+
+    Only the METHOD is read from *text* — the ENDPOINT is checked once, on the whole
+    command, by the caller (:func:`is_raw_review_write`). Checking the endpoint per
+    segment too would miss an endpoint carried in a shell variable assigned in a PRIOR
+    segment (``URL=<endpoint>; glab api "$URL" -X POST -f body=hi``): the literal
+    endpoint text never appears in the segment that performs the write, so a
+    per-segment endpoint re-check silently allows it.
+    """
+    if not _GLAB_GH_API_RE.search(text):
+        return False
+    methods = [m.upper() for pair in _METHOD_FLAG_RE.findall(text) for m in pair if m]
     if methods:
-        is_read = methods[-1] == "GET"
-    elif _BODY_FLAG_RE.search(command):
-        is_read = False
-    else:
-        is_read = True
-    return not is_read
+        return methods[-1] != "GET"
+    return bool(_BODY_FLAG_RE.search(text))
 
 
 def raw_review_deny_reason(command: str) -> str | None:

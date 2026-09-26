@@ -50,17 +50,25 @@ class TestRecordPresenceHook:
         assert handle_record_presence({"prompt": "hi", "session_id": "s1"}) is None
 
     @pytest.mark.django_db  # ast-grep-ignore: ac-django-no-pytest-django-db
-    def test_stamped_heartbeat_upgrades_away_mode_to_present(self, presence: live_presence.PresenceHeartbeat) -> None:
-        # End-to-end: the hook records, the unified resolver upgrades. A default
-        # away-class mode (presence-sensitive) is upgraded to the present-class mode
-        # by the fresh keystroke the hook just stamped.
+    def test_a_stamped_heartbeat_records_presence_without_moving_the_mode(
+        self, presence: live_presence.PresenceHeartbeat
+    ) -> None:
+        """A keystroke is evidence a human is here, never a vote on which loops run.
+
+        It used to upgrade the resolved mode to ``present`` — the one arm that flipped on
+        no observable event, raised by typing and lowered by the absence of it, so nothing
+        could keep a decision persisted under one side of it correct. Presence still routes
+        live-turn questions; the three durable layers alone decide the mode.
+        """
         Mode.objects.create(name="present", entries={})
         Mode.objects.create(name="away", entries={})
         ConfigSetting.objects.set_value("default_mode", "away")
+
         handle_record_presence({"prompt": "ship it?", "session_id": "s1"})
+
         resolved = resolve_active_mode()
-        assert resolved.name == "present"
-        assert resolved.source == "live"
+        assert resolved.name == "away"
+        assert resolved.source == "default"
         assert presence.last_seen() is not None
 
     def test_record_failure_never_raises(

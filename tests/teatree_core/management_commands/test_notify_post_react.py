@@ -22,6 +22,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 
+from teatree.backends.messaging_noop import NoopMessagingBackend
+from teatree.core import on_behalf_egress
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
@@ -52,8 +55,8 @@ def _colleague_backend() -> MagicMock:
 def _colleague_egress_patches() -> ExitStack:
     """Pass the on-behalf gate + silence the after-receipt DM for a colleague post.
 
-    A colleague post is gated (BLOCK under the default ``draft_or_ask`` with no
-    recorded approval); this CLI test pins the destination *routing* contract
+    A colleague post is gated (BLOCK under a forbidding posture with no recorded
+    approval); this CLI test pins the destination *routing* contract
     (colleague → ``post_routed`` xoxp), not the gate, so satisfy the gate by
     publishing directly and stub the after-receipt notify. The gate itself is
     covered in ``tests/teatree_core/test_on_behalf_egress.py``.
@@ -62,7 +65,7 @@ def _colleague_egress_patches() -> ExitStack:
     stack.enter_context(
         patch(
             "teatree.core.on_behalf_egress.require_on_behalf_approval",
-            lambda *, target, action, publish: publish(),
+            lambda *, target, action, context, publish: publish(),
         )
     )
     stack.enter_context(patch("teatree.core.on_behalf_egress.notify_user_on_behalf_post", lambda *_a, **_k: None))
@@ -170,6 +173,39 @@ class TestNotifyPost:
 
         assert code == 1
         assert "no messaging backend" in err.lower()
+
+    def test_post_refuses_an_overlay_with_no_transport_before_the_gate(self) -> None:
+        """A noop overlay can never land a post: refuse up front, naming the overlay, before any gate or approval."""
+        with (
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                return_value=NoopMessagingBackend(),
+            ),
+            patch.object(on_behalf_egress, "require_on_behalf_approval") as gate,
+        ):
+            _out, err, code = _call("notify", "post", "--channel", "C_TEAM", "--text", "x", "--overlay", "t3-teatree")
+
+        assert code == 1
+        assert "'t3-teatree'" in err
+        assert "no slack messaging transport" in err.lower()
+        gate.assert_not_called()
+
+    def test_post_with_no_token_for_destination_is_named_not_unknown_error(self) -> None:
+        """An empty wire body (no token resolved) reaches the operator under its name, never as ``unknown_error``."""
+        backend = _colleague_backend()
+        backend.post_routed.return_value = {}
+        with (
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                return_value=backend,
+            ),
+            _colleague_egress_patches(),
+        ):
+            _out, err, code = _call("notify", "post", "--channel", "C_TEAM", "--text", "x")
+
+        assert code == 1
+        assert "no_token_for_destination" in err
+        assert "unknown_error" not in err
 
     def test_post_empty_text_exits_two(self) -> None:
         _out, err, code = _call("notify", "post", "--channel", "C_TEAM", "--text", "   ")

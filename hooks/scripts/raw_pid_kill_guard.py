@@ -1,8 +1,8 @@
-"""Deny a Bash command that signals a process by a raw, guessed pid (#2384 PR5).
+"""Deny a Bash command that signals a process by a raw, guessed pid.
 
-The agent has twice killed the WRONG, LIVE process by guessing which ``claude``
-pid 'looked dead'. A bare ``kill <pid>`` / ``kill -9 <pid>`` at a command
-position is exactly that guessed-pid shape; this gate denies it so the agent must
+Guessing which ``claude`` pid 'looks dead' kills a live one. A bare
+``kill <pid>`` / ``kill -9 <pid>`` at a command position is exactly that
+guessed-pid shape; this gate denies it so the agent must
 go through the runnable ``t3 teatree safe-kill <pid> --hang-cause`` command
 (positive session/task id + non-live proof) instead. ``kill -0`` (the no-op
 liveness probe), ``pkill`` / ``killall`` (signal by name), ``%job`` / ``$VAR`` /
@@ -10,16 +10,14 @@ liveness probe), ``pkill`` / ``killall`` (signal by name), ``%job`` / ``$VAR`` /
 command's argument are NOT flagged.
 
 The raw-pid shape detection lives in the ``teatree.hooks.safe_kill_detect`` leaf
-(lazily imported inside the sibling ``src/`` bootstrap, #1314); this module is the
-PreToolUse gate that drives it. Extracted whole from ``hook_router`` (the #2384
-Wave-2 router split, PR5) so the dispatcher shrinks; the router re-exports
-:func:`handle_block_raw_pid_kill` into ``_HANDLERS`` unchanged.
+(lazily imported inside the sibling ``src/`` bootstrap); this module is the
+PreToolUse gate that drives it, re-exported by the router into ``_HANDLERS``.
 
 Because the gate sits on the broad ``Bash`` matcher, its deny routes through the
 router's shared ``_fail_open_or_deny`` chokepoint (back-imported lazily), so the
 always-allowed self-rescue commands and the master ``danger_gate_fail_open``
-kill-switch keep it from ever wedging a session (the never-lockout contract,
-#2349); the ``emit_pretooluse_deny`` / ``_write_pretooluse_deny`` deny writer
+kill-switch keep it from ever wedging a session (the never-lockout contract);
+the ``emit_pretooluse_deny`` / ``_write_pretooluse_deny`` deny writer
 stays in the router. Fails OPEN on any import/internal error — a gate bug must
 never wedge the agent.
 

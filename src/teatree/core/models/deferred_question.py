@@ -25,77 +25,21 @@ audited — so the team can reason about all four (DB, on-behalf, merge,
 question) as the same primitive.
 """
 
-import hashlib
-import re
+from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from teatree.core.models.question_text import (  # noqa: F401 — public re-exports
+    is_tool_lack_selfreport,
+    question_fingerprint,
+)
+from teatree.core.telemetry.admission import record_lifecycle_transition
+
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
-
-_WHITESPACE_RE = re.compile(r"\s+")
-
-
-def question_fingerprint(text: str) -> str:
-    """A normalized-text fingerprint that collapses cosmetically-different clones.
-
-    Lowercases, strips, and collapses runs of whitespace before hashing, so eight
-    "I lack the tools to review" review-failure clones — differing only in
-    trailing whitespace or casing — map to one marker and dedup to a single
-    :class:`DeferredQuestion` instead of eight identical rows.
-    """
-    normalized = _WHITESPACE_RE.sub(" ", text.strip().lower())
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
-
-
-#: Signals that a ``needs_user_input`` reason is a tool-lack / mis-provisioned
-#: DISPATCH fault — a session reporting it lacks the tools / checkout / access to do
-#: its assigned work — not a genuine decision the owner must make. Any one branch is
-#: sufficient. Each keys on a signal owner *decision* questions do not carry, so a
-#: real "how should I proceed on X?" ("cannot decide", "no clean approach") stays
-#: OWNER_QUESTION. Branches (4)-(7) were added after (1)-(3) still leaked review
-#: parks that reported the same fault by its consequence/symptom (#201/#202).
-_TOOL_LACK_SELFREPORT_RE = re.compile(
-    r"(?:"
-    # (1) capability negation adjacent to a tool word
-    r"\b(?:lack|lacks|lacking|no|without|missing|denied|deprived of)\b[^.]{0,40}?"
-    r"\b(?:shell|bash|gh|tool|tools|toolset)\b"
-    r"|\bshell[- ]?denied\b"  # (2) bare "shell-denied"
-    r"|\bneeds?\b[^.]{0,40}?\bsession\b[^.]{0,40}?\btool"  # (3) hand-off phrasings
-    r"|\bsession with (?:the )?(?:standard )?tool"
-    r"|\bpicked up by (?:a )?session\b"
-    # (4) dispatch-provisioning phrase ("tool access") — only in a provisioning report
-    r"|\btool access\b"
-    # (5) no accessible checkout / working tree / working copy / repo access
-    r"|\bno\b[^.]{0,30}?\b(?:accessible )?(?:checkout|working tree|working copy|repo(?:sitory)? access)\b"
-    # (6) internal task-context tools (TaskGet/TaskList/TaskRead) returning nothing
-    r"|\btask(?:get|list|read)\b[^.]{0,60}?\b(?:returned nothing|nothing|empty|unavailable|no rows)\b"
-    # (7) inability to do tool-requiring work (the consequence phrasing of a lack)
-    r"|\b(?:cannot|can't|can not|unable to|couldn't|could not)\b[^.]{0,60}?"
-    r"\b(?:inspect|make code changes|run the required|run [^.]{0,20}?verify-gates|verify-gates"
-    r"|clone|check ?out|apply the patch)\b"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def is_tool_lack_selfreport(text: str) -> bool:
-    """True if *text* is an agent's own "I lack the tools to proceed" dispatch fault.
-
-    An agent that stops with ``needs_user_input`` because its session was
-    dispatched WITHOUT the shell / ``gh`` / toolset / checkout its own work needs is
-    reporting a DISPATCH fault — a phase mis-provisioned for its job — not asking the
-    owner to decide anything. Surfacing that self-report to the owner's DM is the
-    exact leak this classifier defends (it reached the owner as "*Pending question* …
-    This session lacks any shell/write tool …", and later as the review-phase
-    "launched without … tool access, so I cannot inspect the PR diff …" / "no shell,
-    TaskGet/TaskList returned nothing" leaks). Such a reason is recorded ``INTERNAL``
-    — logged / statusline-only, never DM'd. See ``_TOOL_LACK_SELFREPORT_RE``.
-    """
-    return bool(_TOOL_LACK_SELFREPORT_RE.search(_WHITESPACE_RE.sub(" ", text.strip())))
 
 
 class DeferredQuestionError(ValueError):
@@ -173,7 +117,7 @@ class DeferredQuestion(models.Model):
     applied_at = models.DateTimeField(null=True, blank=True)
     # #4178 age-backstop stamps. An escalation records that a row has sat past the
     # ceiling WITHOUT resolving it — the row stays pending. #4706 bounds that ladder:
-    # past deferred_question_max_escalations the sweep drains the row stale with an
+    # past question_drain.MAX_ESCALATIONS the sweep drains the row stale with an
     # audited reason, so directive #45's "never silently dropped" holds as "never
     # dropped unaudited, and never before the owner was asked N times".
     escalated_at = models.DateTimeField(null=True, blank=True)
@@ -268,7 +212,7 @@ class DeferredQuestion(models.Model):
                 )
                 if existing is not None:
                     return existing
-            return cls.objects.create(
+            row = cls.objects.create(
                 question=clean_question,
                 options_json=options_json or "",
                 session_id=session_id or "",
@@ -282,6 +226,15 @@ class DeferredQuestion(models.Model):
                 parked_task=parked_task,
                 audience=audience or cls.Audience.OWNER_QUESTION,
             )
+            transaction.on_commit(
+                partial(
+                    record_lifecycle_transition,
+                    kind="question.recorded",
+                    entity_id=row.pk,
+                    ticket_id=parked_task.ticket.pk if parked_task is not None else 0,
+                )
+            )
+            return row
 
     @classmethod
     def unmirrored_pending(cls) -> models.QuerySet["DeferredQuestion"]:
@@ -336,6 +289,7 @@ class DeferredQuestion(models.Model):
         if updated:
             self.slack_ts = slack_ts
             self.slack_channel = channel
+            transaction.on_commit(partial(record_lifecycle_transition, kind="question.mirrored", entity_id=self.pk))
         return updated
 
     @classmethod
@@ -556,10 +510,13 @@ class DeferredQuestion(models.Model):
                 row.answered_at = now
                 row.answer_text = answer
                 row.save(update_fields=["answered_at", "answer_text"], using=using)
+                kind = "question.answered"
             else:
                 row.dismissed_at = now
                 row.dismissed_reason = dismissed_reason
                 row.save(update_fields=["dismissed_at", "dismissed_reason"], using=using)
+                kind = "question.dismissed"
+            transaction.on_commit(partial(record_lifecycle_transition, kind=kind, entity_id=row.pk), using=using)
             return row
 
 

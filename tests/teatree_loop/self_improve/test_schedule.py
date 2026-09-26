@@ -1,5 +1,6 @@
 """Scheduler meta-tests: budget skipping, tier filtering, lease, Slack cap downgrade."""
 
+import datetime as dt
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar
@@ -7,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import SelfImproveFiring
 from teatree.loop.self_improve import (
@@ -18,7 +20,8 @@ from teatree.loop.self_improve import (
     record_firing,
     run_tier,
 )
-from teatree.loop.self_improve.schedule import detectors_for_tier, require_implemented_tier
+from teatree.loop.self_improve.budget import DEFAULT_SPAWN_CAP, DEFAULT_SPAWN_CAP_WINDOW_SECONDS
+from teatree.loop.self_improve.schedule import DeliveryRoutes, detectors_for_tier, require_implemented_tier
 
 
 @dataclass(slots=True)
@@ -65,8 +68,8 @@ class SchedulerMetaTests(TestCase):
         assert SelfImproveFiring.objects.count() == 0
 
     def test_implemented_tiers_resolve_to_the_shipped_detectors(self) -> None:
-        assert len(detectors_for_tier(Tier.CHEAP)) == 3
-        assert len(detectors_for_tier(Tier.ALL)) == 3
+        assert len(detectors_for_tier(Tier.CHEAP)) == 7
+        assert len(detectors_for_tier(Tier.ALL)) == 7
 
     def test_unbuilt_tier_is_refused_naming_what_is_missing(self) -> None:
         for tier in (Tier.MEDIUM, Tier.EXPENSIVE):
@@ -136,7 +139,7 @@ class SchedulerMetaTests(TestCase):
         result = run_tier(
             Tier.CHEAP,
             detectors=[detector],
-            messaging=messaging,
+            delivery=DeliveryRoutes(messaging=messaging),
             budget=BudgetVerdict.allow(),
         )
         # Slack cap hit ⇒ downgrade.
@@ -255,7 +258,9 @@ class SchedulerAutoFixAdapterTests(TestCase):
         def _fake_ladder(
             report: DetectorReport,
             *,
+            overlay_name: str | None = None,
             messaging: object = None,
+            owner_alert: object = None,
             auto_fix_callable: Callable[[DetectorReport], None] | None = None,
         ) -> None:
             captured["callable"] = auto_fix_callable
@@ -276,7 +281,14 @@ class SchedulerAutoFixAdapterTests(TestCase):
 
         captured: dict[str, object] = {}
 
-        def _fake_ladder(report: DetectorReport, *, messaging: object = None, auto_fix_callable: object = None) -> None:
+        def _fake_ladder(
+            report: DetectorReport,
+            *,
+            overlay_name: str | None = None,
+            messaging: object = None,
+            owner_alert: object = None,
+            auto_fix_callable: object = None,
+        ) -> None:
             captured["callable"] = auto_fix_callable
 
         sentinel = MagicMock()
@@ -285,3 +297,48 @@ class SchedulerAutoFixAdapterTests(TestCase):
             run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), auto_fix_callable=sentinel)
 
         assert captured["callable"] is sentinel
+
+
+class TheSpawnCapTripsOnRealFirings(TestCase):
+    """The guard fires from the DB, not from a sample only a test supplies.
+
+    Every production call site left ``recent_self_improve_spawns`` at its default,
+    so the cap could never trip however many cycles a box had already run.
+    """
+
+    @staticmethod
+    def _fire(count: int) -> None:
+        for index in range(count):
+            SelfImproveFiring.objects.create(detector="d", dedup_key=f"k{index}", state_hash="h", severity="info")
+
+    def _run_with_ample_ram(self) -> object:
+        with (
+            patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=10.0),
+            patch("teatree.loop.self_improve.budget.read_disk_used_percent", return_value=10.0),
+        ):
+            return run_tier(Tier.CHEAP, detectors=[_StubDetector()])
+
+    def test_a_box_at_the_cap_skips_the_cycle(self) -> None:
+        self._fire(DEFAULT_SPAWN_CAP)
+
+        result = self._run_with_ample_ram()
+
+        assert result.skipped is True
+        assert "spawn_cap" in result.budget.reason
+
+    def test_a_box_below_the_cap_runs(self) -> None:
+        self._fire(DEFAULT_SPAWN_CAP - 1)
+
+        result = self._run_with_ample_ram()
+
+        assert result.skipped is False
+
+    def test_firings_older_than_the_window_do_not_count(self) -> None:
+        self._fire(DEFAULT_SPAWN_CAP)
+        SelfImproveFiring.objects.update(
+            last_fired_at=timezone.now() - dt.timedelta(seconds=DEFAULT_SPAWN_CAP_WINDOW_SECONDS + 60)
+        )
+
+        result = self._run_with_ample_ram()
+
+        assert result.skipped is False

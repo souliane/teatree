@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
+from django.utils import timezone
+
 from teatree.loop.loop_cadences import (
     drain_cadence_seconds,
     loop_owner_ttl_seconds,
@@ -57,17 +59,46 @@ def overlays_anchor() -> list[str]:
     return [f"overlays: {' · '.join(names)}"]
 
 
+#: Coarse age units for the health chip's stamp, largest first.
+_CHIP_AGE_UNITS = ((86400, "d"), (3600, "h"), (60, "m"))
+
+
+def _chip_age(measured_at: datetime | None, now: datetime) -> str:
+    """How long ago the verdict was measured, in one or two characters.
+
+    ``age?`` when nothing dates it — an unknown age is reported as unknown, never
+    rounded down to ``now``.
+    """
+    if measured_at is None:
+        return "age?"
+    seconds = max(0.0, (now - measured_at).total_seconds())
+    for size, suffix in _CHIP_AGE_UNITS:
+        if seconds >= size:
+            return f"{int(seconds // size)}{suffix}"
+    return "now"
+
+
 def health_chip(*, colorize: bool = False) -> list[str]:
     """Return the single global-health chip line, or ``[]`` (PR-17).
 
     Reads the persisted operational-health verdict (read-only —
     :func:`teatree.core.factory.operational_health.read_health`, never a reconcile at
-    render time) and renders a colored status dot plus the open-issue count:
-    ``health: ●`` when green and clean, ``health: ● 3`` when three issues are
-    open. The dot is green/yellow/red per the verdict; when *colorize* is set it
-    resets to the loop line's dim baseline (not a full reset) so the ``health:``
-    label and count stay dim around it. Fails open to ``[]`` so a broken read
-    never blanks the statusline.
+    render time) and renders a colored status dot, the open-issue count and the
+    AGE of the verdict: ``health: ● (4m)`` when green and clean, ``health: ● 3 (4m)``
+    when three issues are open. The dot is green/yellow/red per the verdict; when
+    *colorize* is set it resets to the loop line's dim baseline (not a full reset)
+    so the ``health:`` label and count stay dim around it. Fails open to ``[]`` so
+    a broken read never blanks the statusline.
+
+    The age is not decoration. A health verdict rendered with no indication of when
+    it was measured is read as current, and this chip is persisted state that only a
+    reconcile refreshes — so when the loop that reconciles is stopped, an hours-old
+    green sits there looking like a live all-clear. Stamping it is what makes the
+    difference between "checked, clear" and "nobody has looked since Tuesday" visible
+    at a glance. The stamp is ``HealthReport.measured_at``, which the read itself
+    dates — the freshest open issue when there is one, else the last time a reconcile
+    touched the registry at all — so the chip renders a date it was given rather than
+    reaching past its own layer into the models to derive one.
     """
     try:
         from teatree.core.factory.operational_health import HealthStatus, read_health  # noqa: PLC0415 — deferred read
@@ -82,7 +113,35 @@ def health_chip(*, colorize: bool = False) -> list[str]:
     }.get(report.status, _ANSI_GREEN)
     dot = _colorize_chunk("●", color, colorize=colorize)
     count = f" {report.open_count}" if report.open_count else ""
-    return [f"health: {dot}{count}"]
+    measured_at = max((issue.last_seen for issue in report.open_issues), default=None) or report.measured_at
+    return [f"health: {dot}{count} ({_chip_age(measured_at, timezone.now())})"]
+
+
+def config_tier_chip(*, colorize: bool = False) -> list[str]:
+    """``config: UNREADABLE`` while the override tier is degraded, else ``[]``.
+
+    The fault had one consumer, inside ``t3 doctor check`` — a command agents are told not
+    to run — so a box running on :data:`SAFETY_FAIL_CLOSED_STORED_VALUES` instead of its
+    stored settings said so nowhere a session looks. The chip names the CONSEQUENCE rather
+    than the file, because what matters to a reader is that the gates in force are not the
+    ones they configured.
+
+    A marker past its TTL is not evidence about now, so the chip goes quiet rather than
+    accusing a healed box forever. Fails open to ``[]`` like every sibling: a broken read
+    never blanks the statusline.
+    """
+    try:
+        from teatree.config.override_read_health import (  # noqa: PLC0415 — deferred: cold-path read
+            MARKER_TTL_SECONDS,
+            degraded_read_report,
+        )
+
+        report = degraded_read_report()
+    except Exception:  # noqa: BLE001 — fail-open: a broken marker read never blanks the statusline
+        return []
+    if report is None or report.age_seconds > MARKER_TTL_SECONDS:
+        return []
+    return [f"config: {_colorize_chunk('UNREADABLE', _ANSI_RED, colorize=colorize)} (fail-closed values in force)"]
 
 
 def dashboard_head_anchor(*, colorize: bool = False) -> list[str]:
@@ -95,7 +154,12 @@ def dashboard_head_anchor(*, colorize: bool = False) -> list[str]:
     fail-open, so a broken read drops only its own segment; the line is ``[]``
     only when all three are empty.
     """
-    parts = [*live_loops_anchor(colorize=colorize), *overlays_anchor(), *health_chip(colorize=colorize)]
+    parts = [
+        *live_loops_anchor(colorize=colorize),
+        *overlays_anchor(),
+        *health_chip(colorize=colorize),
+        *config_tier_chip(colorize=colorize),
+    ]
     if not parts:
         return []
     return [" · ".join(parts)]

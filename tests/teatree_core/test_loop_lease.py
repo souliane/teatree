@@ -10,11 +10,13 @@ vacuous for concurrency).
 """
 
 from datetime import timedelta
+from pathlib import Path
 
 from django.db import connection
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core import loop_lease_manager
 from teatree.core.models import LoopLease
 
 
@@ -47,12 +49,79 @@ class TestLoopLeaseAcquireRelease(TestCase):
         assert LoopLease.objects.acquire("loop-tick", owner="successor") is True
         assert LoopLease.objects.get(name="loop-tick").owner == "successor"
 
+    def test_release_preserves_the_last_acquired_anchor(self) -> None:
+        """A release clears the CLAIM, never the record that the slot ran.
+
+        ``acquired_at`` is the live claim and is nulled on release, so it cannot
+        answer "when did this slot last run?" — every cleanly-released infra slot
+        read as never-fired forever. ``last_acquired_at`` is the durable anchor
+        the status surfaces read instead.
+        """
+        assert LoopLease.objects.acquire("loop-slack-answer", owner="pid-1") is True
+        fired_at = LoopLease.objects.get(name="loop-slack-answer").last_acquired_at
+        assert fired_at is not None
+
+        assert LoopLease.objects.release("loop-slack-answer", owner="pid-1") is True
+        lease = LoopLease.objects.get(name="loop-slack-answer")
+        assert lease.acquired_at is None, "the live claim is cleared on release"
+        assert lease.last_acquired_at == fired_at, "the fire anchor survives the release"
+
+    def test_reacquire_advances_the_last_acquired_anchor(self) -> None:
+        LoopLease.objects.acquire("loop-slack-answer", owner="pid-1")
+        first = LoopLease.objects.get(name="loop-slack-answer").last_acquired_at
+        LoopLease.objects.release("loop-slack-answer", owner="pid-1")
+
+        LoopLease.objects.acquire("loop-slack-answer", owner="pid-2")
+        second = LoopLease.objects.get(name="loop-slack-answer").last_acquired_at
+        assert second is not None
+        assert first is not None
+        assert second > first
+
     def test_release_only_by_holder(self) -> None:
         LoopLease.objects.acquire("loop-tick", owner="pid-1")
         assert LoopLease.objects.release("loop-tick", owner="someone-else") is False
         assert LoopLease.objects.get(name="loop-tick").owner == "pid-1"
         assert LoopLease.objects.release("loop-tick", owner="pid-1") is True
         assert LoopLease.objects.get(name="loop-tick").owner == ""
+
+
+class TestFireAnchorSurvivesEveryReleasePath(TestCase):
+    """Every acquisition stamps the anchor and no release clears it.
+
+    Scoped to the CLASS, not the one call site that produced the ticket: the slot
+    status surfaces read one column, so an acquisition path that forgets to stamp
+    it — or a release path that nulls it — re-creates "this loop has never fired"
+    for whichever slot uses that path.
+    """
+
+    def test_claim_ownership_stamps_the_anchor(self) -> None:
+        won, _ = LoopLease.objects.claim_ownership("t3-master", session_id="sess-A")
+        assert won is True
+        assert LoopLease.objects.get(name="t3-master").last_acquired_at is not None
+
+    def test_release_ownership_preserves_the_anchor(self) -> None:
+        LoopLease.objects.claim_ownership("t3-master", session_id="sess-A")
+        anchored = LoopLease.objects.get(name="t3-master").last_acquired_at
+
+        assert LoopLease.objects.release_ownership("t3-master", session_id="sess-A") is True
+
+        lease = LoopLease.objects.get(name="t3-master")
+        assert lease.acquired_at is None
+        assert lease.last_acquired_at == anchored
+
+    def test_every_acquisition_write_stamps_the_anchor(self) -> None:
+        """No ``acquired_at=now`` write may land without its ``last_acquired_at`` twin.
+
+        A source-level parity check over the manager, because an acquisition path
+        added later would otherwise pass every behavioural test above while
+        silently regressing the surface those tests exist to protect.
+        """
+        source = Path(loop_lease_manager.__file__).read_text(encoding="utf-8")
+        anchored = source.count("last_acquired_at=now,")
+        # ``last_acquired_at=now,`` contains ``acquired_at=now,``, so the plain
+        # claim writes are the difference between the two counts.
+        claims = source.count("acquired_at=now,") - anchored
+        assert claims == anchored, "every `acquired_at=now` write must be paired with `last_acquired_at=now`"
 
 
 class TestLoopLeaseModelSurface(TestCase):

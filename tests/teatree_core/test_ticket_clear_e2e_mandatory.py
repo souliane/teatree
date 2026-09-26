@@ -16,6 +16,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import E2EBypassApproval, E2eMandatoryRun, Ticket, Worktree
+from teatree.core.overlay import OverlayReview
 
 _SHA = "9" * 40
 
@@ -24,7 +25,7 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 
-class _ImpactingReview:
+class _ImpactingReview(OverlayReview):
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         _ = changed_files
         return True
@@ -34,7 +35,7 @@ class _ImpactingOverlay:
     review = _ImpactingReview()
 
 
-class _SafeReview:
+class _SafeReview(OverlayReview):
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         _ = changed_files
         return False

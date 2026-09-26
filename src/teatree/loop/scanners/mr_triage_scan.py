@@ -4,26 +4,27 @@ The decision is :func:`teatree.core.review.mr_triage.triage`, which is pure; thi
 module is the other half — it reads the forge and does the arithmetic the ladder
 refuses to do, then emits what it found.
 
-It never POSTS. Every action the ladder can name is colleague-visible (a group
-ping, a review request, a draft proposal), so nothing here reaches a colleague:
-the scanner emits a statusline signal and stops. The one exception is the merge
-request the ladder finds ready for a review NOBODY HAS ASKED FOR — a statusline
-zone is where that fact goes to die, so it is put to the owner over
+It never posts to colleagues or dispatches an action. It does create a durable
+owner question when the ladder finds a merge request ready for a review NOBODY
+HAS ASKED FOR — a statusline zone is where that fact goes to die, so it is put
+to the owner over
 :func:`~teatree.core.review.mr_state_question.ask_mr_state`, the bot→owner
 channel that carries no publishing gate and is bounded per tick.
 
 The pass is TWO-PASS because a work group is a property of the whole listing: the
-groups are built first, over the UNFILTERED global listing, and only then is each
-merge request triaged. Grouping a url-prefix-filtered subset would make a
-cross-repo group look smaller than it is, and a group that looks settled releases
-a fragment for review — the premature broadcast
-:mod:`teatree.core.gates.review_request_batch_gate` exists to prevent.
+groups are built first over everything the operator authored, and only then is each
+in-scope merge request triaged. Grouping a scope-filtered subset would make a
+cross-repo group look smaller than it is, and a group that looks settled releases a
+fragment for review — the premature broadcast
+:mod:`teatree.core.gates.review_request_batch_gate` exists to prevent. Reads beyond the
+listing — CI enrichment, approval probes, the channel — stay inside the repository
+scope, so a sibling outside it is judged from its listing payload alone and holds its
+group when that payload cannot show it green.
 
 Facts it cannot read honestly are left UNKNOWN rather than assumed, so an MR whose
 review-request state or approval is unreadable surfaces as an owner question instead
-of a confident wrong action. The whole scanner is gated default-OFF one layer up
-(:func:`teatree.loop.scanner_factories._mr_triage_scanner_for`): with
-``mr_triage_enabled = false`` no scanner is built, so none of this runs.
+of a confident wrong action. With no code host, no scanner is built and none of
+this runs.
 """
 
 import datetime as dt
@@ -51,13 +52,12 @@ from teatree.core.review.mr_triage import (
     triage,
 )
 from teatree.core.review.repo_exemption import is_review_exempt, review_exempt_patterns
-from teatree.core.review.work_group import group_members
-from teatree.core.review.work_group_settings import generic_scopes_from_settings
+from teatree.core.review.work_group import GENERIC_SCOPES, group_members
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.my_prs import CiEnricher, _str_field
 from teatree.loop.scanners.pr_payload import head_sha
+from teatree.loop.scanners.repository_scope import RepositoryScope
 from teatree.loop.scanners.review_nag import default_repo_owner
-from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.types import RawAPIDict
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -163,19 +163,24 @@ class MrTriageScanner:
     repo_owner: Callable[[str], RepoOwner] = default_repo_owner
     thresholds: TriageThresholds = DEFAULT_THRESHOLDS
     ci_enricher: CiEnricher | None = None
+    #: Bounds ONE survey pass, so a wide open-MR listing stays one reviewable batch.
     max_mrs_per_tick: int = 20
     now: dt.datetime | None = None
     name: str = "mr_triage"
+    _scope: RepositoryScope = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._scope = RepositoryScope(self.allowed_url_prefixes, scanner=self.name, log=logger)
 
     def scan(self) -> list[ScanSignal]:
+        if self._scope.refuses():
+            return []
         authors = self._resolve_identities()
         if not authors:
             return []
         survey = self._survey(authors)
         signals: list[ScanSignal] = []
         for url, pr in survey.merge_requests.items():
-            if not self._url_allowed(url):
-                continue
             verdict = triage(self._facts(pr, url=url, survey=survey), thresholds=self.thresholds)
             if verdict.action in _QUIET:
                 continue
@@ -188,12 +193,13 @@ class MrTriageScanner:
 
     def _survey(self, authors: tuple[str, ...]) -> _Survey:
         """Pass one: read the listing whole, group it, and resolve each group's readiness."""
-        merge_requests = self._collect(authors)
+        listing = self._collect(authors)
+        merge_requests = {url: pr for url, pr in listing.items() if self._scope.admits(url)}
         ci = _CiReadings(read=self._read_ci)
         return _Survey(
             merge_requests=merge_requests,
             requests=self._open_review_requests(),
-            groups=self._work_groups(merge_requests, ci),
+            groups=self._work_groups(listing, merge_requests, ci),
             ci=ci,
             right_now=self.now or timezone.now(),
             asks=self._asks(merge_requests),
@@ -212,26 +218,35 @@ class MrTriageScanner:
             logger.warning("mr_triage: review-channel read failed: %s", exc)
             return None
 
-    def _work_groups(self, collected: dict[str, RawAPIDict], ci: _CiReadings) -> _WorkGroups:
+    def _work_groups(
+        self, listing: dict[str, RawAPIDict], in_scope: dict[str, RawAPIDict], ci: _CiReadings
+    ) -> _WorkGroups:
         members_by_url = group_members(
-            ((url, _str_field(pr, "title")) for url, pr in collected.items()),
-            generic_scopes=generic_scopes_from_settings(self.overlay_name),
+            ((url, _str_field(pr, "title")) for url, pr in listing.items()),
+            generic_scopes=GENERIC_SCOPES,
         )
         with_siblings = (url for url, members in members_by_url.items() if len(members) > 1)
         return _WorkGroups(
             members_by_url=members_by_url,
-            unready=frozenset(url for url in with_siblings if not self._review_ready(collected[url], url, ci)),
+            unready=frozenset(
+                url for url in with_siblings if not self._review_ready(listing[url], url, ci, in_scope=url in in_scope)
+            ),
         )
 
     @staticmethod
-    def _review_ready(pr: RawAPIDict, url: str, ci: _CiReadings) -> bool:
+    def _review_ready(pr: RawAPIDict, url: str, ci: _CiReadings, *, in_scope: bool) -> bool:
         """Whether a group member is far enough along to be reviewed with its siblings.
 
-        Draft state and CI are the two axes the listing itself answers, and both
-        fail CLOSED: a merge request whose pipeline cannot be read is not a green,
-        so it holds its group rather than releasing a fragment for review.
+        Draft state and CI both fail CLOSED: a merge request whose pipeline cannot be
+        read is not a green, so it holds its group rather than releasing a fragment for
+        review. A member outside the repository scope is never enriched, so only a
+        pipeline its listing payload already carries can show it green.
         """
-        return not _is_draft(pr) and ci.of(pr, url) is CiState.GREEN
+        if _is_draft(pr):
+            return False
+        if in_scope:
+            return ci.of(pr, url) is CiState.GREEN
+        return carries_pipeline_field(pr) and ci_state(pr) is CiState.GREEN
 
     @staticmethod
     def _signal(verdict: TriageVerdict, *, url: str, title: str) -> ScanSignal:
@@ -316,14 +331,9 @@ class MrTriageScanner:
         ref = pr_ref_from_url(url)
         return ref.slug if ref is not None else ""
 
-    @staticmethod
-    def _open_review_requests() -> dict[str, ReviewRequestPost]:
-        return {row.mr_url: row for row in ReviewRequestPost.objects.filter(done_at__isnull=True)}
-
-    def _url_allowed(self, url: str) -> bool:
-        if not self.allowed_url_prefixes:
-            return bool(url)
-        return bool(url) and best_url_match_specificity(url, self.allowed_url_prefixes) > 0
+    def _open_review_requests(self) -> dict[str, ReviewRequestPost]:
+        rows = ReviewRequestPost.objects.filter(done_at__isnull=True, overlay=self.overlay_name)
+        return {row.mr_url: row for row in rows}
 
     def _resolve_identities(self) -> tuple[str, ...]:
         if self.identities:
@@ -332,12 +342,7 @@ class MrTriageScanner:
         return (user,) if user else ()
 
     def _collect(self, authors: tuple[str, ...]) -> dict[str, RawAPIDict]:
-        """Every open merge request the operator authored, keyed by url, listed once.
-
-        Deliberately GLOBAL and unfiltered: the whole listing is what the work-group
-        pass needs, and the overlay's url claim narrows only what is SURFACED. A
-        payload carrying no url can be neither grouped nor surfaced, so it is dropped.
-        """
+        """Every open merge request the operator authored, keyed by URL — the whole listing, which grouping needs."""
         collected: dict[str, RawAPIDict] = {}
         for author in authors:
             try:

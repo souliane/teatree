@@ -13,9 +13,10 @@ package just unified got built in the first place.
 from typing import TYPE_CHECKING
 
 from teatree.core.models import MergeClear, PullRequest
+from teatree.core.models.review_target import review_target_for_task
 
 if TYPE_CHECKING:
-    from teatree.core.models import Ticket
+    from teatree.core.models import Task, Ticket
 
 
 def resolve_gated_ticket(*, slug: str, pr_id: int) -> "Ticket | None":
@@ -37,3 +38,18 @@ def resolve_gated_ticket(*, slug: str, pr_id: int) -> "Ticket | None":
     if clear is not None and clear.ticket is not None:
         return clear.ticket
     return None
+
+
+def gated_ticket_for_review_task(task: "Task") -> "Ticket | None":
+    """The ticket whose merge *task*'s review gates, or ``None`` when it gates none.
+
+    A reviewing task's own ``task.ticket`` is a REVIEWER-ROLE row keyed by the PR url,
+    not the ticket the PR delivers — so the rubric a reviewer must grade is never
+    reachable from it. Resolving through the PR identity instead means the recorder
+    writes under exactly the key :func:`resolve_gated_ticket` reads at merge time, and
+    a grade can never land on a ticket the gate does not consult.
+    """
+    target = review_target_for_task(task)
+    if target is None:
+        return None
+    return resolve_gated_ticket(slug=target.slug, pr_id=target.pr_id)

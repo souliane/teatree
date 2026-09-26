@@ -14,7 +14,8 @@ is a layer BELOW the dashboard and may not import it:
     credential coordinate / personal identifier). A key that is a personal identifier or
     ``Category.SECRET`` but not on the denylist is masked here too, so no surface can
     regress toward exposure.
-- :func:`masked_display` — the two composed: the mask for a secret key, else the text.
+- :func:`withholds_value` — :func:`is_secret`, plus the value test a stored extra-headers map needs.
+- :func:`masked_display` — the two composed: the mask for a withheld value, else the text.
 
 Masking a credential ENTRY NAME (the ``pass`` coordinate the credentials readout shows)
 is a DIFFERENT question — "does this coordinate NAME carry an internal
@@ -23,9 +24,9 @@ broadening it to :func:`is_secret` would hide every credential name (they are al
 credential coordinates) and defeat the band. See ``CredentialEntry.mask_if_private``.
 """
 
-from teatree.config.schema import TeatreeSettingsSchema, setting_meta
+from teatree.config.extra_headers import carries_unlisted_header
+from teatree.config.schema import Category, TeatreeSettingsSchema, setting_meta
 from teatree.config.secret_settings import PERSONAL_IDENTIFIERS, SECRET_SETTINGS, is_credential_reference
-from teatree.config.setting_taxonomy import Category
 
 #: Rendered in place of a secret VALUE — never the real value.
 MASKED = "***"
@@ -81,9 +82,14 @@ def is_secret(setting: str) -> bool:
     return setting_meta(setting).category is Category.SECRET
 
 
+def withholds_value(setting: str, value: object) -> bool:
+    """Whether *value* must never be rendered: *setting* is secret, or the value names a header off its allowlist."""
+    return is_secret(setting) or carries_unlisted_header(setting, value)
+
+
 def masked_display(setting: str, value: object) -> str:
-    """*value* as display text, replaced by :data:`MASKED` when *setting* is secret."""
-    return MASKED if is_secret(setting) else render_value(value)
+    """*value* as display text, replaced by :data:`MASKED` when it is withheld."""
+    return MASKED if withholds_value(setting, value) else render_value(value)
 
 
-__all__ = ["MASKED", "NO_SHIPPED_DEFAULT", "UNSET", "is_secret", "masked_display", "render_value"]
+__all__ = ["MASKED", "NO_SHIPPED_DEFAULT", "UNSET", "is_secret", "masked_display", "render_value", "withholds_value"]

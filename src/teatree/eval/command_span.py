@@ -47,10 +47,23 @@ _SCRIPT_OPERAND_TOKEN = re.compile(r"eval|-[A-Za-z]*c")
 #: is a separate defect class (#4433); both only ever over-keep, which reds loudly.
 _STDIN_READERS = frozenset({"cat", "egrep", "fgrep", "grep", "head", "sort", "t3", "tail", "tee", "tr", "uniq", "wc"})
 
-#: Words at or above which a standalone quoted operand reads as prose rather than as a
-#: fragment of the command's own word chain (``t3 example 'ticket clear' 42``). Below it
-#: the two are indistinguishable, and eliding an act is the failure that costs teeth.
+#: Words at or above which an otherwise-unclassified standalone quoted operand reads as
+#: prose rather than as a fragment of the command's own word chain
+#: (``t3 example 'ticket clear' 42``). Below it the two are indistinguishable, and
+#: eliding an act is the failure that costs teeth.
 _PROSE_WORD_FLOOR = 4
+
+#: Quoted option values are data only for commands that define the option. Treating
+#: ``-b`` or ``-m`` as payload globally lets an unrelated executable token disappear.
+_PAYLOAD_OPTIONS_BY_COMMAND = {
+    ("gh", "pr", "review"): frozenset({"-b", "--body"}),
+    ("git", "commit"): frozenset({"-m"}),
+    ("t3", "notify", "send"): frozenset({"-m", "--body"}),
+}
+
+#: Commands whose quoted operands are reports, while substitutions inside those operands
+#: still execute and are emitted by :meth:`_SpanScanner._emit_substitutions`.
+_QUOTED_PAYLOAD_COMMANDS = frozenset({("echo",), ("printf",)})
 
 _TOKEN_BOUNDARY = re.compile(r"[\s;|&()]")
 
@@ -83,12 +96,17 @@ _HEREDOC_OP = re.compile(
 def executed_span(command: str) -> str:
     """*command* with its literal quoted payloads elided.
 
-    A quoted region is dropped only where the scanner can NAME it a payload: attached
-    to an unquoted word fragment (``-m'…'``, ``--body='…'``), or a standalone operand
-    of :data:`_PROSE_WORD_FLOOR` words or more. ``$( … )`` and backtick bodies inside a
-    dropped double-quoted region survive (a substitution is executed), as does the
-    quoted operand of ``-c``/``eval``. Redirected text — a quoted-delimiter heredoc
-    body, a ``<<<`` here-string operand — is dropped only where every stage of the
+    A quoted region is dropped only where the scanner can NAME it a payload: the value
+    of a command's known payload option (``-m'…'``, ``-b '…'``, ``--body='…'``),
+    a quoted operand of a known reporting command, or an
+    otherwise-unclassified standalone operand of :data:`_PROSE_WORD_FLOOR` words or
+    more. Quoted fragments composing a shell token survive (``app'rove'``). ``$( … )``
+    and backtick bodies are recursively reduced to their own executed spans (a
+    substitution is executed), as is a reporting command's quoted output when a later
+    pipeline stage may execute it. The quoted operand of ``-c``/``eval`` also stays.
+    Redirected text — a
+    quoted-delimiter heredoc body, a ``<<<`` here-string operand — is dropped only where
+    every stage of the
     command segment provably just READS its stdin (:data:`_STDIN_READERS`); an unknown,
     expanded, globbed or compound command word leaves it kept, however long it is.
     An unquoted-delimiter heredoc body is always kept. A kept region has its quotes
@@ -192,6 +210,8 @@ class _SpanScanner:
                 self._herestring_pending = True
             elif self._src.startswith("<<", self._pos):
                 self._scan_heredoc_operator()
+            elif self._scan_substitution():
+                pass
             else:
                 self._emit(self._pos, self._pos + 1)
                 self._pos += 1
@@ -239,12 +259,49 @@ class _SpanScanner:
             # the operator's own ``<`` as the unquoted word fragment of ``-m'…'`` and
             # drop the act — the silent failure this module exists to prevent.
             return not self._is_data_only() or len(self._herestring_operand.split()) < _PROSE_WORD_FLOOR
+        words = _command_words_before_quote(self._src[: self._pos])
         token = self._preceding_token()
-        if token is None or _SCRIPT_OPERAND_TOKEN.fullmatch(token) is not None:
+        if token is not None and _SCRIPT_OPERAND_TOKEN.fullmatch(token) is not None:
             return True
-        if self._pos > 0 and _TOKEN_BOUNDARY.match(self._src[self._pos - 1]) is None:
+        options = _payload_options(words)
+        attached = self._pos > 0 and _TOKEN_BOUNDARY.match(self._src[self._pos - 1]) is None
+        if attached:
+            return token is None or token.removesuffix("=") not in options
+        if token in options:
             return False
-        return len(body.split()) < _PROSE_WORD_FLOOR
+        if self._is_reporting_command(words):
+            return self._stdout_may_reach_an_executable_sink()
+        return token is None or len(body.split()) < _PROSE_WORD_FLOOR
+
+    @staticmethod
+    def _is_reporting_command(words: tuple[str | None, ...] | None) -> bool:
+        return any(words is not None and words[: len(command)] == command for command in _QUOTED_PAYLOAD_COMMANDS)
+
+    def _stdout_may_reach_an_executable_sink(self) -> bool:
+        start = self._segment_start
+        segment = self._src[start : segment_end(self._src, start, enclosing(self._src, start))]
+        downstream = segment[self._pos - start :]
+        pipe = next((index for index, char in unquoted_scan(downstream) if char == "|"), None)
+        if pipe is None:
+            return False
+        return any(
+            _stage_command_word(stage) not in _STDIN_READERS for stage in _pipeline_stages(downstream[pipe + 1 :])
+        )
+
+    def _emit_quoted_body(self, start: int, end: int) -> None:
+        # A reporting command's payload becomes a fresh command when its stdout feeds
+        # an interpreter. Give that derived command a boundary without splitting ordinary
+        # quoted token fragments such as ``app'rove'`` in the same pipeline.
+        words = _command_words_before_quote(self._src[: self._pos])
+        attached = self._pos > 0 and _TOKEN_BOUNDARY.match(self._src[self._pos - 1]) is None
+        if self._is_reporting_command(words) and self._stdout_may_reach_an_executable_sink():
+            self._out.append("\n")
+            if attached and words is not None:
+                self._out.append(" ".join(word for word in words[1:] if word is not None))
+            self._emit(start, end)
+            self._out.append("\n")
+            return
+        self._emit(start, end)
 
     def _scan_single_quoted(self) -> None:
         close = self._src.find("'", self._pos + 1)
@@ -253,7 +310,7 @@ class _SpanScanner:
             return
         body = self._src[self._pos + 1 : close]
         if self._keeps(body):
-            self._emit(self._pos + 1, close)
+            self._emit_quoted_body(self._pos + 1, close)
         self._pos = close + 1
 
     def _scan_double_quoted(self) -> None:
@@ -263,16 +320,45 @@ class _SpanScanner:
             return
         body = self._src[self._pos + 1 : close]
         if self._keeps(body):
-            self._emit(self._pos + 1, close)
+            self._emit_quoted_body(self._pos + 1, close)
         else:
             self._emit_substitutions(self._pos + 1, body)
         self._pos = close + 1
 
     def _emit_substitutions(self, body_start: int, body: str) -> None:
-        """The ``$( … )`` and backtick spans of an elided double-quoted *body*, joined."""
-        self._out.append(
-            " ".join(self._splice.bytes_of(body_start + a, body_start + b) for a, b in _substitution_spans(body))
-        )
+        """The derived ``$( … )`` spans of substitutions in an elided double-quoted *body*."""
+        for start, end in _substitution_spans(body):
+            self._emit_substitution(body_start + start, body_start + end)
+
+    def _emit_substitution(self, start: int, end: int) -> None:
+        body_start = start + (2 if self._src.startswith("$(", start) else 1)
+        body = self._splice.bytes_of(body_start, end - 1)
+        self._out.append(f"$({executed_span(body)})")
+
+    def _scan_substitution(self) -> bool:
+        if self._src.startswith("$(", self._pos):
+            self._scan_dollar_substitution()
+            return True
+        if self._src[self._pos] == "`":
+            self._scan_backtick_substitution()
+            return True
+        return False
+
+    def _scan_dollar_substitution(self) -> None:
+        close = matching_paren(self._src, self._pos + 1)
+        if close is None:
+            self._keep_raw_remainder()
+            return
+        self._emit_substitution(self._pos, close + 1)
+        self._pos = close + 1
+
+    def _scan_backtick_substitution(self) -> None:
+        close = self._src.find("`", self._pos + 1)
+        if close == -1:
+            self._keep_raw_remainder()
+            return
+        self._emit_substitution(self._pos, close + 1)
+        self._pos = close + 1
 
     def _scan_heredoc_operator(self) -> None:
         match = _HEREDOC_OP.match(self._src, self._pos)
@@ -372,6 +458,72 @@ def _resolve_word(raw: str) -> str | None:
             out.append(char)
             index += 1
     return "".join(out) or None
+
+
+def _word_region_end(prefix: str, index: int) -> int | None:
+    if prefix.startswith("$(", index):
+        close = matching_paren(prefix, index + 1)
+        return None if close is None else close + 1
+    return quoted_region_end(prefix, index)
+
+
+def _raw_simple_command_words(prefix: str) -> tuple[str, ...] | None:
+    """Raw words of the innermost simple command in *prefix*."""
+    words: list[str] = []
+    word: list[str] = []
+    index = 0
+
+    def flush() -> None:
+        if word:
+            words.append("".join(word))
+            word.clear()
+
+    while index < len(prefix):
+        char = prefix[index]
+        if char == "\\" and index + 1 < len(prefix):
+            word.append(prefix[index : index + 2])
+            index += 2
+        elif char in "'\"" or prefix.startswith("$(", index):
+            close = _word_region_end(prefix, index)
+            if close is None:
+                return None
+            word.append(prefix[index:close])
+            index = close
+        elif char.isspace():
+            flush()
+            index += 1
+        elif char in ";&|(){}":
+            flush()
+            words.clear()
+            index += 1
+        else:
+            word.append(char)
+            index += 1
+    flush()
+    return tuple(words)
+
+
+def _command_words_before_quote(prefix: str) -> tuple[str | None, ...] | None:
+    """Resolved words of the innermost simple command before a quote."""
+    raw_words = _raw_simple_command_words(prefix)
+    if raw_words is None:
+        return None
+    resolved: list[str | None] = []
+    for raw in raw_words:
+        value = _resolve_word(raw)
+        if value is not None and not resolved and (_ASSIGNMENT.fullmatch(value) is not None or value in _NOT_A_COMMAND):
+            continue
+        resolved.append(value.rsplit("/", 1)[-1] if value is not None and not resolved else value)
+    return tuple(resolved)
+
+
+def _payload_options(words: tuple[str | None, ...] | None) -> frozenset[str]:
+    if words is None:
+        return frozenset()
+    for command, options in _PAYLOAD_OPTIONS_BY_COMMAND.items():
+        if words[: len(command)] == command:
+            return options
+    return frozenset()
 
 
 def _pipeline_stages(segment: str) -> list[str]:

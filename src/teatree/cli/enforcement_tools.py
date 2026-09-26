@@ -18,6 +18,7 @@ from pathlib import Path
 import typer
 
 from teatree.cli.tools import ToolRunner
+from teatree.core.invocation_cwd import invocation_cwd
 
 
 def ai_sig_scan(
@@ -56,7 +57,7 @@ def _coverage_is_stale(coverage_file: Path, repo: Path) -> bool:
 
 def diff_coverage(
     *,
-    repo: Path = typer.Option(Path.cwd, "--repo", help="Repo root (default: cwd)"),
+    repo: Path = typer.Option(invocation_cwd, "--repo", help="Repo root (default: where t3 was invoked)"),
     base: str = typer.Option(
         "",
         "--base",
@@ -118,7 +119,7 @@ def diff_coverage(
 
 def gate_relaxation(
     *,
-    repo: Path = typer.Option(Path.cwd, "--repo", help="Repo root (default: cwd)"),
+    repo: Path = typer.Option(invocation_cwd, "--repo", help="Repo root (default: where t3 was invoked)"),
     base: str = typer.Option("", "--base", help="Diff <merge-base>..HEAD against this ref instead of the staged diff."),
     output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
@@ -170,7 +171,7 @@ def gate_relaxation(
 def open_pr(
     *,
     branch: str = typer.Option("", "--branch", help="Branch to probe (default: the repo's checked-out branch)"),
-    repo: Path = typer.Option(Path.cwd, "--repo", help="Repo root (default: cwd)"),
+    repo: Path = typer.Option(invocation_cwd, "--repo", help="Repo root (default: where t3 was invoked)"),
 ) -> None:
     """Report the OPEN PR/MR backing a branch as an explicit tri-state, as JSON.
 
@@ -179,6 +180,16 @@ def open_pr(
     without hand-rolling a fourth ``gh pr list`` — the drift that probe exists to
     prevent. ``outcome`` is ``found`` / ``none`` / ``unknown``; a caller must not
     read ``unknown`` (missing CLI, auth failure, unparsable JSON) as "no PR".
+
+    Every ``--repo`` in this module defaults to
+    :func:`~teatree.core.invocation_cwd.invocation_cwd`, not ``Path.cwd``: ``deploy/t3``
+    runs the CLI through a container exec that starts in the image WORKDIR and passes no
+    container workdir (a host cwd usually has no container counterpart), so the operator's
+    directory crosses ONLY as ``TEATREE_INVOCATION_CWD``. Defaulting to the process cwd
+    therefore probed the image WORKDIR and answered ``unknown`` for a branch whose merge
+    request exists — silently, since ``unknown`` is a legitimate tri-state value.
+    Host-native runs are unchanged: ``invocation_cwd()`` falls back to ``Path.cwd()`` when
+    nothing was declared.
 
     Always exits 0: this is a probe, not a gate. The tri-state IS the answer.
     """

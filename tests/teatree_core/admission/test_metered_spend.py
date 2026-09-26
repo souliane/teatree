@@ -15,6 +15,14 @@ from django.utils import timezone
 from teatree.core.admission.metered_spend import read_metered_spend
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 
+
+def test_metered_signal_reader_is_owned_by_the_metered_ledger_module() -> None:
+    from teatree.core import admission_governor  # noqa: PLC0415 — assert the compatibility re-export
+    from teatree.core.admission import metered_spend  # noqa: PLC0415 — assert the public boundary
+
+    assert admission_governor.read_metered_signal is metered_spend.read_metered_signal
+
+
 _CEILING = 1_000_000
 
 

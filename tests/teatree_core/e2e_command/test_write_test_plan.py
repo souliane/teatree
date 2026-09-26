@@ -14,7 +14,9 @@ updates that one file, nothing is posted to any forge, and the capture /
 blocked-body gates refuse a bad plan with nothing written.
 """
 
+import io
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,6 +28,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.evidence import test_plan_validation as _validation
+from teatree.core.evidence.bdd_scenario_source import BddScenarioSource, render_bdd_source
 from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError
 from teatree.core.management.commands._test_plan import mr_post as _mr_post
 from teatree.core.management.commands._test_plan import render as _render
@@ -38,8 +41,15 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
-_ISSUE_URL = "https://gitlab.com/org/repo/-/issues/8521"
+_ISSUE_URL = "https://gitlab.com/org/repo/-/issues/4521"
 _E2E_REPO = "client-workspace"
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_FINAL_BDD_SOURCE: BddScenarioSource = {
+    "prd_page": "https://notion.so/example-prd",
+    "bdd_revision": "2026-09-22",
+    "status": "final",
+    "scenario_ids": ["BDD-4521-001"],
+}
 
 
 class _E2eRepoMetadata(OverlayMetadata):
@@ -120,11 +130,12 @@ class TestRenderBody:
             "https://gitlab.com/org/product/-/merge_requests/7585",
         ]
         return {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "My feature",
             "mrs": default_mrs if mrs is None else mrs,
             "dev": dev if dev is not None else {"commits": {}, "missing_on_dev": [], "workflows": {}},
             "local": local if local is not None else {"commits": {}, "workflows": {}},
+            "stack": _empty_side(env="stack"),
             "steps": steps or {},
         }
 
@@ -133,7 +144,7 @@ class TestRenderBody:
             local={"commits": {"client": "aaaa", "product": "bbbb"}, "workflows": {"Login": self._embedded()}},
         )
         body = render_body(state)
-        assert "<!-- t3-e2e-evidence ticket=8521 -->" in body
+        assert "<!-- t3-e2e-evidence ticket=4521 -->" in body
         assert "<!-- t3-e2e-data " in body
         assert "## Test Plan — My feature" in body
         # Multi-repo MR links, terse repo!num labels.
@@ -355,7 +366,7 @@ class TestMergeState:
 
     def _local_manifest(self) -> _test_plan.TestPlanManifest:
         return _test_plan.TestPlanManifest(
-            ticket="8521",
+            ticket="4521",
             mrs=("https://gitlab.com/org/client/-/merge_requests/6331",),
             dev=_test_plan.SideManifest(present=False),
             local=_test_plan.SideManifest(present=True, commits={"client": "aabb"}),
@@ -363,7 +374,7 @@ class TestMergeState:
 
     def _dev_manifest(self) -> _test_plan.TestPlanManifest:
         return _test_plan.TestPlanManifest(
-            ticket="8521",
+            ticket="4521",
             mrs=(),
             dev=_test_plan.SideManifest(present=True, commits={"client": "ddee"}, missing_on_dev=()),
             local=_test_plan.SideManifest(present=False),
@@ -371,7 +382,7 @@ class TestMergeState:
 
     def test_dev_only_run_preserves_existing_local_column(self) -> None:
         prior: PlanState = {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "t",
             "mrs": [],
             "dev": {"commits": {}, "missing_on_dev": ["client!6331 (unmerged)"], "workflows": {}},
@@ -379,6 +390,7 @@ class TestMergeState:
                 "commits": {"client": "aabb"},
                 "workflows": {"Login": {"video_md": "![v](/uploads/s/l.webm)", "image_md": []}},
             },
+            "stack": _empty_side(env="stack"),
             "steps": {},
         }
         merged = _test_plan.merge_state(
@@ -399,11 +411,12 @@ class TestMergeState:
         # A workflow's steps were recorded on a prior run; a later run that omits
         # steps must NOT erase them (workflow-level, persisted across re-renders).
         prior: PlanState = {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "t",
             "mrs": [],
             "dev": {"commits": {}, "missing_on_dev": [], "workflows": {}},
             "local": {"commits": {"client": "aabb"}, "workflows": {}},
+            "stack": _empty_side(env="stack"),
             "steps": {"Login": ["Open the app", "Click Login"]},
         }
         merged = _test_plan.merge_state(
@@ -415,10 +428,10 @@ class TestMergeState:
         assert merged["steps"]["Login"] == ["Open the app", "Click Login"]
 
     def test_steps_in_this_run_overwrite_prior_steps_for_that_workflow(self) -> None:
-        prior = _render.empty_state(ticket="8521", title="t")
+        prior = _render.empty_state(ticket="4521", title="t")
         prior["steps"] = {"Login": ["old step"]}
         manifest = _test_plan.TestPlanManifest(
-            ticket="8521",
+            ticket="4521",
             mrs=(),
             dev=_test_plan.SideManifest(present=False),
             local=_test_plan.SideManifest(present=True, commits={"client": "aabb"}),
@@ -429,7 +442,7 @@ class TestMergeState:
 
     def test_local_only_run_over_empty_prior_leaves_dev_empty(self) -> None:
         merged = _test_plan.merge_state(
-            _render.empty_state(ticket="8521", title="t"),
+            _render.empty_state(ticket="4521", title="t"),
             manifest=self._local_manifest(),
             title="t",
             embeds={"dev": {}, "local": {"Login": {"video_md": "", "image_md": ["![i](/uploads/s/x.png)"]}}},
@@ -440,7 +453,7 @@ class TestMergeState:
     def test_add_dev_section_preserves_then_renders_both(self) -> None:
         # local first → render → recover state → dev run merges → both columns render.
         local_state = _test_plan.merge_state(
-            _render.empty_state(ticket="8521", title="My feature"),
+            _render.empty_state(ticket="4521", title="My feature"),
             manifest=self._local_manifest(),
             title="My feature",
             embeds={
@@ -448,7 +461,7 @@ class TestMergeState:
                 "local": {"Login": {"video_md": "![v](/uploads/s/l.webm)", "image_md": ["![i](/uploads/s/l1.png)"]}},
             },
         )
-        local_state["ticket"] = "8521"
+        local_state["ticket"] = "4521"
         body_after_local = render_body(local_state)
         recovered = _test_plan.parse_state_blob(body_after_local)
 
@@ -461,7 +474,7 @@ class TestMergeState:
                 "local": {},
             },
         )
-        dev_state["ticket"] = "8521"
+        dev_state["ticket"] = "4521"
         final = render_body(dev_state)
         # Both columns are present and paired.
         assert "| ![v](/uploads/s/d.webm) | ![v](/uploads/s/l.webm) |" in final
@@ -476,7 +489,7 @@ class TestParseManifest:
     def _manifest(self, tmp_path: Path, *, video: str | None, images: list[str]) -> str:
         return json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "mrs": ["https://gitlab.com/org/client/-/merge_requests/6331"],
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": {"video": video, "images": images}}],
@@ -488,7 +501,7 @@ class TestParseManifest:
         vid = _write_webm(tmp_path / "v.webm", b"V")
         manifest = self._manifest(tmp_path, video=vid, images=[img])
         parsed = _test_plan.parse_manifest(manifest)
-        assert parsed.ticket == "8521"
+        assert parsed.ticket == "4521"
         assert parsed.local.present is True
         assert parsed.dev.present is False
         wf = parsed.local.workflows["Login"]
@@ -501,7 +514,7 @@ class TestParseManifest:
 
     def test_rejects_missing_workflows(self) -> None:
         with pytest.raises(_test_plan.TestPlanValidationError, match="workflows"):
-            _test_plan.parse_manifest(json.dumps({"ticket": "8521", "local": {}}))
+            _test_plan.parse_manifest(json.dumps({"ticket": "4521", "local": {}}))
 
     def test_rejects_missing_artifact_file(self, tmp_path: Path) -> None:
         manifest = self._manifest(tmp_path, video=None, images=[str(tmp_path / "absent.png")])
@@ -517,16 +530,16 @@ class TestParseManifest:
 
     def test_rejects_when_no_side_carries_captures(self, tmp_path: Path) -> None:
         manifest = json.dumps(
-            {"ticket": "8521", "workflows": [{"workflow": "Login"}]},
+            {"ticket": "4521", "workflows": [{"workflow": "Login"}]},
         )
-        with pytest.raises(_test_plan.TestPlanValidationError, match="no 'dev' or 'local'"):
+        with pytest.raises(_test_plan.TestPlanValidationError, match="no 'dev', 'local' or 'stack'"):
             _test_plan.parse_manifest(manifest)
 
     def test_parses_workflow_level_steps(self, tmp_path: Path) -> None:
         img = _write_png(tmp_path / "a.png", b"A")
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [
                     {
@@ -584,7 +597,7 @@ def _seed_ticket_with_e2e_worktree(tmp: Path) -> Ticket:
         ticket=ticket,
         overlay="test",
         repo_path=_E2E_REPO,
-        branch="8521-feat-thing",
+        branch="4521-feat-thing",
         extra={"worktree_path": str(checkout)},
     )
     return ticket
@@ -612,7 +625,7 @@ class TestNoVideoGateAtCommand(TestCase):
             local["video"] = _real_video(self._tmp / "v.mp4")
         return json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": local}],
             },
@@ -692,7 +705,7 @@ class TestVideoPrerollGateAtCommand(TestCase):
     def _manifest(self, video_path: str) -> str:
         return json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [
                     {
@@ -751,7 +764,7 @@ class TestManifestPathResolution:
         # The manifest carries BARE relative names; base_dir is the manifest's dir.
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": {"video": "run.webm", "images": ["shot.png"]}}],
             },
@@ -765,7 +778,7 @@ class TestManifestPathResolution:
         abs_img = _write_png(tmp_path / "abs.png", b"A")
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": {"images": [abs_img]}}],
             },
@@ -779,7 +792,7 @@ class TestManifestPathResolution:
         _write_png(tmp_path / "shot.png", b"A")
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": {"images": ["shot.png"]}}],
             },
@@ -809,7 +822,7 @@ class TestTicketFallbackFromManifest(TestCase):
         img = _red_boxed_png(self._tmp / "a.png")
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": {"images": [str(img)]}}],
             },
@@ -863,7 +876,7 @@ class _PlanFileTestBase(TestCase):
 
     @property
     def _plan_path(self) -> Path:
-        return self._tmp / "checkout" / "test-plans" / "repo-8521.md"
+        return self._tmp / "checkout" / "test-plans" / "repo-4521.md"
 
     def _run(self, **kwargs: object) -> dict[str, object]:
         self._monkeypatch.setattr(_write, "_resolve_worktree_or_none", lambda: None)
@@ -878,7 +891,8 @@ class _PlanFileTestBase(TestCase):
         img = str(_red_boxed_png(self._tmp / "step1.png"))
         return json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
+                "scenario_source": _FINAL_BDD_SOURCE,
                 "mrs": ["https://gitlab.com/org/client/-/merge_requests/6331"],
                 "local": {"commits": {"client": "aabb"}, "ran_at": "2026-08-13T09:00:00Z"},
                 "workflows": [{"workflow": "Login", "local": {"images": [img]}}],
@@ -901,7 +915,7 @@ class TestWritesThePlanFile(_PlanFileTestBase):
         assert result["envs"] == ["local"]
         assert result["path"] == str(self._plan_path)
         body = self._plan_path.read_text(encoding="utf-8")
-        assert "<!-- t3-e2e-evidence ticket=8521 -->" in body
+        assert "<!-- t3-e2e-evidence ticket=4521 -->" in body
         assert "`step1.png`" in body
         assert "2026-08-13T09:00:00Z" in body
 
@@ -919,15 +933,15 @@ class TestWritesThePlanFile(_PlanFileTestBase):
         result = self._run_local()
 
         assert result["action"] == "updated"
-        assert [p.name for p in self._plan_path.parent.iterdir()] == ["repo-8521.md"]
-        assert self._plan_path.read_text(encoding="utf-8").count("<!-- t3-e2e-evidence ticket=8521 -->") == 1
+        assert [p.name for p in self._plan_path.parent.iterdir()] == ["repo-4521.md"]
+        assert self._plan_path.read_text(encoding="utf-8").count("<!-- t3-e2e-evidence ticket=4521 -->") == 1
 
     def test_a_dev_run_merges_over_the_local_run_already_recorded(self) -> None:
         self._ticket()
         self._run_local()
         dev_manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "dev": {"commits": {"client": "ccdd"}, "ran_at": "2026-08-14T11:30:00Z"},
                 "workflows": [{"workflow": "Login", "steps": ["Open the app"]}],
             },
@@ -980,7 +994,8 @@ class TestCapturePreflightAtCommand(_PlanFileTestBase):
         Image.new("RGB", (400, 300), (240, 240, 240)).save(plain, "PNG")
         return json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
+                "scenario_source": _FINAL_BDD_SOURCE,
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": {"images": [str(plain)]}}],
             },
@@ -1000,7 +1015,7 @@ class TestCapturePreflightAtCommand(_PlanFileTestBase):
         self._ticket()
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {}},
                 "workflows": [{"workflow": "Login", "local": {"images": [str(self._tmp / "absent.png")]}}],
             },
@@ -1036,7 +1051,8 @@ class TestBlockedBodyGateAtCommand(_PlanFileTestBase):
         self._ticket()
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
+                "scenario_source": _FINAL_BDD_SOURCE,
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "steps": ["Open the app"]}],
                 "blocked_workflows": {"Login": "deploy blocked on cred"},
@@ -1052,15 +1068,15 @@ class TestPureHelpers:
     """The marker / state-blob / existing-note helpers are independently testable."""
 
     def test_marker_round_trip(self) -> None:
-        marker = _render.render_ticket_marker(ticket_id="8521")
-        assert _render.find_ticket_marker(f"prefix {marker} suffix", ticket_id="8521") is True
+        marker = _render.render_ticket_marker(ticket_id="4521")
+        assert _render.find_ticket_marker(f"prefix {marker} suffix", ticket_id="4521") is True
         assert _render.find_ticket_marker(f"{marker}", ticket_id="9999") is False
 
     def test_parse_state_blob_recovers_and_coerces(self) -> None:
-        state = {"ticket": "8521", "title": "t", "mrs": [], "dev": {}, "local": {}}
+        state = {"ticket": "4521", "title": "t", "mrs": [], "dev": {}, "local": {}}
         body = "<!-- t3-e2e-data " + json.dumps(state) + " -->\nrendered"
         recovered = _test_plan.parse_state_blob(body)
-        assert recovered["ticket"] == "8521"
+        assert recovered["ticket"] == "4521"
         assert recovered["title"] == "t"
         # A coerced side always carries the typed keys.
         assert recovered["dev"]["workflows"] == {}
@@ -1073,13 +1089,13 @@ class TestPureHelpers:
         comments = [
             {"id": 1, "body": "no marker"},
             {"id": 2, "body": "<!-- t3-e2e-evidence ticket=9999 -->\nother ticket"},
-            {"id": 3, "body": '<!-- t3-e2e-evidence ticket=8521 -->\n<!-- t3-e2e-data {"ticket":"8521"} -->'},
+            {"id": 3, "body": '<!-- t3-e2e-evidence ticket=4521 -->\n<!-- t3-e2e-data {"ticket":"4521"} -->'},
         ]
-        found = _mr_post.find_existing_note(comments, ticket_id="8521")
+        found = _mr_post.find_existing_note(comments, ticket_id="4521")
         assert found is not None
         assert found.comment_id == 3
-        assert found.state["ticket"] == "8521"
-        assert _mr_post.find_existing_note([], ticket_id="8521") is None
+        assert found.state["ticket"] == "4521"
+        assert _mr_post.find_existing_note([], ticket_id="4521") is None
 
 
 # --- zero-media rejection ---------------------------------------------------
@@ -1091,7 +1107,7 @@ class TestZeroMediaRejection:
     def test_rejects_when_present_side_has_no_media_anywhere(self, tmp_path: Path) -> None:
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [
                     {"workflow": "Login", "local": {"images": [], "video": None}},
@@ -1105,7 +1121,7 @@ class TestZeroMediaRejection:
     def test_rejects_manifest_with_commits_but_zero_workflow_captures(self, tmp_path: Path) -> None:
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": {}}],
             },
@@ -1117,7 +1133,7 @@ class TestZeroMediaRejection:
         img = _write_png(tmp_path / "a.png", b"A")
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": {"images": [img]}}],
             },
@@ -1129,7 +1145,7 @@ class TestZeroMediaRejection:
         vid = _write_webm(tmp_path / "run.webm", b"V")
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "local": {"video": vid}}],
             },
@@ -1140,7 +1156,7 @@ class TestZeroMediaRejection:
     def test_two_sides_both_zero_media_rejected(self, tmp_path: Path) -> None:
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "dev": {"commits": {"client": "ddee"}},
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "dev": {}, "local": {}}],
@@ -1153,7 +1169,7 @@ class TestZeroMediaRejection:
         img = _write_png(tmp_path / "a.png", b"A")
         manifest = json.dumps(
             {
-                "ticket": "8521",
+                "ticket": "4521",
                 "dev": {"commits": {"client": "ddee"}},
                 "local": {"commits": {"client": "aabb"}},
                 "workflows": [{"workflow": "Login", "dev": {}, "local": {"images": [img]}}],
@@ -1169,7 +1185,7 @@ class TestZeroMediaRejection:
 class TestBrowserClickFirstTemplate(TestCase):
     def _state(self, *, steps: list[str] | None = None) -> PlanState:
         return {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "Login flow",
             "mrs": [],
             "dev": _empty_side(env="dev"),
@@ -1184,6 +1200,7 @@ class TestBrowserClickFirstTemplate(TestCase):
                     }
                 }
             ),
+            "stack": _empty_side(env="stack"),
             "steps": {"Login": steps or ["Open the app", "Click Login", "Expect dashboard"]},
             "template": "browser-click-first",
         }
@@ -1203,6 +1220,12 @@ class TestBrowserClickFirstTemplate(TestCase):
         assert "![s1](/uploads/s/s1.png)" in body
         assert "![s2](/uploads/s/s2.png)" in body
 
+    def test_stack_screenshots_render_inline(self) -> None:
+        state = self._state()
+        state["stack"] = {"commits": {}, "workflows": {"Login": {"video_md": "", "image_md": ["![k](stack/k1.png)"]}}}
+
+        assert "![k](stack/k1.png)" in _render.render_body(state).split("-->")[-1]
+
     def test_blocked_workflow_renders_blocked_marker(self) -> None:
         state = self._state()
         state["blocked_workflows"] = {"Checkout": "Not deployed yet"}
@@ -1217,11 +1240,12 @@ class TestBrowserClickFirstStepsWithoutMedia(TestCase):
 
     def _steps_only_state(self) -> PlanState:
         return {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "Login flow",
             "mrs": [],
             "dev": _empty_side(env="dev"),
             "local": {"commits": {"client": "aabb"}, "workflows": {}},
+            "stack": _empty_side(env="stack"),
             "steps": {"Login": ["Open the app", "Click Login", "Expect dashboard"]},
             "template": "browser-click-first",
         }
@@ -1238,7 +1262,7 @@ class TestBrowserClickFirstStepsWithoutMedia(TestCase):
         manifest = _render.parse_manifest(
             json.dumps(
                 {
-                    "ticket": "8521",
+                    "ticket": "4521",
                     "template": "browser-click-first",
                     "local": {"commits": {"client": "aabb"}},
                     "workflows": [{"workflow": "Login", "steps": ["Open the app", "Click Login"]}],
@@ -1246,7 +1270,7 @@ class TestBrowserClickFirstStepsWithoutMedia(TestCase):
             )
         )
         merged = _render.merge_state(
-            _render.empty_state(ticket="8521", title="t"),
+            _render.empty_state(ticket="4521", title="t"),
             manifest=manifest,
             title="Login flow",
             embeds={"dev": {}, "local": {}},
@@ -1259,11 +1283,12 @@ class TestBrowserClickFirstStepsWithoutMedia(TestCase):
 
     def test_media_and_steps_both_render(self) -> None:
         state: PlanState = {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "Login flow",
             "mrs": [],
             "dev": _empty_side(env="dev"),
             "local": _local_side({"Login": {"video_md": "", "image_md": ["![s1](/uploads/s/s1.png)"]}}),
+            "stack": _empty_side(env="stack"),
             "steps": {"Login": ["Open the app", "Click Login"]},
             "template": "browser-click-first",
         }
@@ -1276,7 +1301,7 @@ class TestBrowserClickFirstStepsWithoutMedia(TestCase):
 class TestLinkApiTemplate(TestCase):
     def _state(self) -> PlanState:
         return {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "API check",
             "mrs": [],
             "dev": _empty_side(env="dev"),
@@ -1285,11 +1310,12 @@ class TestLinkApiTemplate(TestCase):
                     "Create user": {
                         "video_md": "",
                         "image_md": [],
-                        "link_md": "[POST /users](https://gitlab.com/org/repo/-/issues/8521)",
+                        "link_md": "[POST /users](https://gitlab.com/org/repo/-/issues/4521)",
                         "code_md": '```json\n{"id": 1}\n```',
                     }
                 }
             ),
+            "stack": _empty_side(env="stack"),
             "steps": {},
             "template": "link-api",
         }
@@ -1302,6 +1328,14 @@ class TestLinkApiTemplate(TestCase):
         body = _render.render_body(self._state())
         assert "```json" in body
 
+    def test_renders_a_stack_side_link(self) -> None:
+        state = self._state()
+        state["local"] = {"commits": {}, "workflows": {}}
+        stack_embed: _render.WorkflowEmbed = {"video_md": "", "image_md": [], "link_md": "[GET /users/1](u)"}
+        state["stack"] = {"commits": {}, "workflows": {"Create user": stack_embed}}
+
+        assert "[GET /users/1](u)" in _render.render_body(state).split("-->")[-1]
+
     def test_no_dev_local_table(self) -> None:
         body = _render.render_body(self._state())
         assert "| Dev | Local |" not in body
@@ -1312,11 +1346,12 @@ class TestLinkApiStepsRendered(TestCase):
 
     def _steps_only_state(self) -> PlanState:
         return {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "API check",
             "mrs": [],
             "dev": _empty_side(env="dev"),
             "local": {"commits": {"client": "aabb"}, "workflows": {}},
+            "stack": _empty_side(env="stack"),
             "steps": {"Create user": ["POST /users", "Assert 201", "GET /users/1"]},
             "template": "link-api",
         }
@@ -1334,7 +1369,7 @@ class TestLinkApiStepsRendered(TestCase):
         manifest = _render.parse_manifest(
             json.dumps(
                 {
-                    "ticket": "8521",
+                    "ticket": "4521",
                     "template": "link-api",
                     "local": {"commits": {"client": "aabb"}},
                     "workflows": [{"workflow": "Create user", "steps": ["POST /users", "Assert 201"]}],
@@ -1342,7 +1377,7 @@ class TestLinkApiStepsRendered(TestCase):
             )
         )
         merged = _render.merge_state(
-            _render.empty_state(ticket="8521", title="t"),
+            _render.empty_state(ticket="4521", title="t"),
             manifest=manifest,
             title="API check",
             embeds={"dev": {}, "local": {}},
@@ -1355,7 +1390,7 @@ class TestLinkApiStepsRendered(TestCase):
 
     def test_renders_steps_alongside_link_and_code(self) -> None:
         state: PlanState = {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "API check",
             "mrs": [],
             "dev": _empty_side(env="dev"),
@@ -1364,11 +1399,12 @@ class TestLinkApiStepsRendered(TestCase):
                     "Create user": {
                         "video_md": "",
                         "image_md": [],
-                        "link_md": "[POST /users](https://gitlab.com/org/repo/-/issues/8521)",
+                        "link_md": "[POST /users](https://gitlab.com/org/repo/-/issues/4521)",
                         "code_md": '```json\n{"id": 1}\n```',
                     }
                 }
             ),
+            "stack": _empty_side(env="stack"),
             "steps": {"Create user": ["POST /users", "Assert 201"]},
             "template": "link-api",
         }
@@ -1409,6 +1445,7 @@ class TestScenarioPlanTemplate(TestCase):
             "mrs": [],
             "dev": _empty_side(env="dev"),
             "local": _empty_side(env="local"),
+            "stack": _empty_side(env="stack"),
             "steps": {},
             "template": "scenario-plan",
             "scenarios": scenarios,
@@ -1501,11 +1538,12 @@ class TestScenarioPlanTemplate(TestCase):
 class TestNeverEmptyRender(TestCase):
     def test_raises_on_empty_state(self) -> None:
         state: PlanState = {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "Empty",
             "mrs": [],
             "dev": _empty_side(env="dev"),
             "local": _empty_side(env="local"),
+            "stack": _empty_side(env="stack"),
             "steps": {},
         }
         with pytest.raises(_render.TestPlanValidationError, match="empty"):
@@ -1522,7 +1560,13 @@ class TestBodyFile(_PlanFileTestBase):
 
     def test_body_file_content_lands_in_the_plan_file(self) -> None:
         self._ticket()
-        body = "<!-- t3-e2e-evidence ticket=8521 -->\n## Test Plan\n\nSome steps.\n"
+        body = f"""\
+{render_bdd_source(_FINAL_BDD_SOURCE)}
+<!-- t3-e2e-evidence ticket=4521 -->
+## Test Plan
+
+Some steps.
+"""
 
         self._run(ticket=_ISSUE_URL, body_file=self._body_file(body))
 
@@ -1542,9 +1586,117 @@ class TestBodyFile(_PlanFileTestBase):
         )
 
 
+class TestFinalBddSourceGate(_PlanFileTestBase):
+    def _body_file(self, body: str) -> str:
+        path = self._tmp / "plan.md"
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def _source_marker(self, **overrides: object) -> str:
+        return f"<!-- t3-bdd-source {json.dumps(_FINAL_BDD_SOURCE | overrides)} -->"
+
+    def _unsourced_local_manifest(self) -> str:
+        manifest = json.loads(self._local_manifest())
+        del manifest["scenario_source"]
+        return json.dumps(manifest)
+
+    def test_missing_declaration_refuses(self) -> None:
+        self._ticket()
+
+        self._run_expecting_exit(ticket=_ISSUE_URL, body_file=self._body_file("## Test Plan\n"))
+
+        assert not self._plan_path.exists()
+
+    def test_manifest_missing_declaration_refuses(self) -> None:
+        self._ticket()
+        manifest = json.dumps(
+            {
+                "ticket": "4521",
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "steps": ["Open the app"]}],
+            }
+        )
+
+        self._run_expecting_exit(ticket=_ISSUE_URL, manifest=manifest)
+
+        assert not self._plan_path.exists()
+
+    def test_preflight_declaration_refuses(self) -> None:
+        self._ticket()
+        body = f"{self._source_marker(status='preflight')}\n## Test Plan\n"
+
+        self._run_expecting_exit(ticket=_ISSUE_URL, body_file=self._body_file(body))
+
+        assert not self._plan_path.exists()
+
+    def test_final_declaration_passes_and_is_rendered(self) -> None:
+        self._ticket()
+        manifest = json.dumps(
+            {
+                "ticket": "4521",
+                "scenario_source": _FINAL_BDD_SOURCE,
+                "local": {"commits": {"client": "aabb"}},
+                "workflows": [{"workflow": "Login", "steps": ["Open the app"]}],
+            }
+        )
+
+        self._run(ticket=_ISSUE_URL, manifest=manifest, embed_captures=True)
+
+        written = self._plan_path.read_text(encoding="utf-8")
+        visible = _HTML_COMMENT.sub("", written)
+        assert render_bdd_source(_FINAL_BDD_SOURCE) in written
+        assert _FINAL_BDD_SOURCE["prd_page"] not in visible
+        assert "BDD-4521-001" not in visible
+
+    def test_embed_rerun_inherits_the_prior_source(self) -> None:
+        self._ticket()
+        self._run_local(embed_captures=True)
+
+        result = self._run(
+            ticket=_ISSUE_URL, manifest=self._unsourced_local_manifest(), allow_no_video=True, embed_captures=True
+        )
+
+        assert result["action"] == "updated"
+        assert render_bdd_source(_FINAL_BDD_SOURCE) in self._plan_path.read_text(encoding="utf-8")
+
+    def test_refused_embed_copies_no_capture(self) -> None:
+        self._ticket()
+
+        self._run_expecting_exit(
+            ticket=_ISSUE_URL, manifest=self._unsourced_local_manifest(), allow_no_video=True, embed_captures=True
+        )
+
+        assert not self._plan_path.exists()
+        assert [path for path in self._plan_path.parent.rglob("*") if path.is_file()] == []
+
+    def test_invalid_stored_source_is_refused_as_not_final(self) -> None:
+        self._ticket()
+        stored = _render.empty_state(ticket="4521", title="Example") | {
+            "scenario_source": _FINAL_BDD_SOURCE | {"status": "preflight"}
+        }
+        self._plan_path.parent.mkdir(parents=True, exist_ok=True)
+        self._plan_path.write_text(f"<!-- t3-e2e-data {json.dumps(stored)} -->\n## Test Plan\n", encoding="utf-8")
+        err = io.StringIO()
+
+        self._run_expecting_exit(
+            ticket=_ISSUE_URL, manifest=self._unsourced_local_manifest(), allow_no_video=True, stderr=err
+        )
+
+        assert "preflight" in err.getvalue()
+        assert "missing" not in err.getvalue()
+
+    def test_trace_to_unknown_scenario_id_refuses(self) -> None:
+        self._ticket()
+        body = f'{self._source_marker()}\n<!-- t3-bdd-trace ["BDD-4521-999"] -->\n## Test Plan\n'
+
+        self._run_expecting_exit(ticket=_ISSUE_URL, body_file=self._body_file(body))
+
+        assert not self._plan_path.exists()
+
+
 _BROWSER_MANIFEST = json.dumps(
     {
-        "ticket": "8521",
+        "ticket": "4521",
         "template": "browser-click-first",
         "local": {"commits": {"client": "aabb"}},
         "workflows": [{"workflow": "Login", "steps": ["Open the app", "Click Login"]}],
@@ -1563,7 +1715,7 @@ class TestTemplateThroughManifest(TestCase):
 
     def test_parse_manifest_defaults_template_to_capture_matrix(self) -> None:
         manifest = _render.parse_manifest(
-            json.dumps({"ticket": "8521", "local": {}, "workflows": [{"workflow": "X", "steps": ["s"]}]})
+            json.dumps({"ticket": "4521", "local": {}, "workflows": [{"workflow": "X", "steps": ["s"]}]})
         )
         assert manifest.template == "capture-matrix"
 
@@ -1573,7 +1725,7 @@ class TestTemplateThroughManifest(TestCase):
 
     def test_merge_state_sets_template_from_manifest(self) -> None:
         merged = _render.merge_state(
-            _render.empty_state(ticket="8521", title="t"),
+            _render.empty_state(ticket="4521", title="t"),
             manifest=self._browser_manifest(),
             title="Login flow",
             embeds={"dev": {}, "local": {"Login": {"video_md": "", "image_md": ["![s](/uploads/s/s.png)"]}}},
@@ -1582,7 +1734,7 @@ class TestTemplateThroughManifest(TestCase):
 
     def test_browser_template_body_via_production_path(self) -> None:
         merged = _render.merge_state(
-            _render.empty_state(ticket="8521", title="t"),
+            _render.empty_state(ticket="4521", title="t"),
             manifest=self._browser_manifest(),
             title="Login flow",
             embeds={"dev": {}, "local": {"Login": {"video_md": "", "image_md": ["![s](/uploads/s/s.png)"]}}},
@@ -1598,7 +1750,7 @@ class TestTemplateRoundTrip(TestCase):
 
     def _seeded_state(self) -> PlanState:
         return {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "Login flow",
             "mrs": [],
             "dev": _empty_side(env="dev"),
@@ -1607,11 +1759,12 @@ class TestTemplateRoundTrip(TestCase):
                     "Create user": {
                         "video_md": "",
                         "image_md": [],
-                        "link_md": "[POST /users](https://gitlab.com/org/repo/-/issues/8521)",
+                        "link_md": "[POST /users](https://gitlab.com/org/repo/-/issues/4521)",
                         "code_md": '```json\n{"id": 1}\n```',
                     }
                 }
             ),
+            "stack": _empty_side(env="stack"),
             "steps": {},
             "template": "link-api",
             "blocked_workflows": {"Checkout": "Not deployed yet"},
@@ -1628,7 +1781,7 @@ class TestTemplateRoundTrip(TestCase):
 
     def test_link_md_and_code_md_survive_round_trip(self) -> None:
         embed = self._reread(self._seeded_state())["local"]["workflows"]["Create user"]
-        assert embed.get("link_md") == "[POST /users](https://gitlab.com/org/repo/-/issues/8521)"
+        assert embed.get("link_md") == "[POST /users](https://gitlab.com/org/repo/-/issues/4521)"
         assert embed.get("code_md") == '```json\n{"id": 1}\n```'
 
     def test_re_render_after_round_trip_stays_link_api(self) -> None:
@@ -1641,11 +1794,12 @@ class TestTemplateRoundTrip(TestCase):
 class TestCaptureMatrixRendersBlocked(TestCase):
     def test_capture_matrix_renders_blocked_workflow(self) -> None:
         state: PlanState = {
-            "ticket": "8521",
+            "ticket": "4521",
             "title": "Login flow",
             "mrs": [],
             "dev": _empty_side(env="dev"),
             "local": _local_side({"Login": {"video_md": "", "image_md": ["![s](/uploads/s/s.png)"]}}),
+            "stack": _empty_side(env="stack"),
             "steps": {},
             "blocked_workflows": {"Checkout": "Not deployed yet"},
         }

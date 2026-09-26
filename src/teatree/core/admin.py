@@ -5,7 +5,9 @@ from django.contrib import admin
 from django.forms.renderers import BaseRenderer
 from django.utils.safestring import SafeString
 
-from teatree.core.config_display import is_secret, masked_display
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
+from teatree.config.write_validation import ConfigWriteError, validate_config_write
+from teatree.core.config_display import is_secret, masked_display, withholds_value
 from teatree.core.models import (
     ConfigSetting,
     Loop,
@@ -86,6 +88,8 @@ class LoopAdmin(ShippedDeleteRouting):
     list_display = (
         "name",
         "enabled",
+        "override_reason",
+        "override_expected_lift_at",
         "colleague_facing",
         "action",
         "run_in_sub_agent",
@@ -173,11 +177,17 @@ class ConfigSettingAdminForm(forms.ModelForm):
         return bool(self.instance.pk) and is_secret(self.instance.key)
 
     def clean_value(self) -> ConfigValue | None:
-        """A blank write-only submission means "leave the stored secret alone"."""
+        """Run the key's registry parser like every write surface; a blank write-only submission keeps a secret."""
         value = self.cleaned_data.get("value")
         if value is None and self._edits_a_secret():
             return self.instance.value
-        return value
+        key = self.cleaned_data.get("key", "")
+        if value is None or key not in ALL_KNOWN_CONFIG_SETTINGS:
+            return value
+        try:
+            return validate_config_write(key, value)
+        except ConfigWriteError as exc:
+            raise forms.ValidationError(str(exc)) from exc
 
 
 @admin.register(ConfigSetting)
@@ -203,8 +213,8 @@ class ConfigSettingAdmin(admin.ModelAdmin):
     def get_form(
         self, request: "HttpRequest", obj: ConfigSetting | None = None, change: bool = False, **kwargs: object
     ) -> type[forms.ModelForm]:
-        """Give a secret key a write-only ``value`` widget so its stored value never renders."""
-        if obj is not None and is_secret(obj.key):
+        """Give a withheld value a write-only ``value`` widget so it never renders."""
+        if obj is not None and withholds_value(obj.key, obj.value):
             kwargs["widgets"] = {"value": WriteOnlyJSONWidget(attrs=_WRITE_ONLY_ATTRS)}
         return super().get_form(request, obj, change, **kwargs)
 
@@ -232,14 +242,14 @@ class ConfigSettingAdmin(admin.ModelAdmin):
 @admin.register(Mode)
 class ModeAdmin(ShippedDeleteRouting):
     shipped_family = "preset"
-    list_display = ("name", "entry_count", "description", "updated_at")
+    list_display = ("name", "entry_count", "egress", "description", "updated_at")
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(ModeOverride)
 class ModeOverrideAdmin(admin.ModelAdmin):
-    list_display = ("preset_name", "until", "reason", "set_at")
+    list_display = ("preset_name", "reason", "expected_lift_at", "set_at")
     search_fields = ("preset_name",)
     readonly_fields = ("set_at",)
 

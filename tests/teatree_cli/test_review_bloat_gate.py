@@ -31,8 +31,7 @@ from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.bloat_gate import check_review_bloat, references_project_chatter
 from teatree.cli.review.guarded_read import ReadOutcome
-from teatree.config import OnBehalfPostMode
-from teatree.core.models import ConfigSetting
+from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -42,7 +41,7 @@ _AUTHOR_ALICE = "alice"
 
 def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the on-behalf gate to IMMEDIATE so it does NOT also block the call."""
-    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
+    seed_permitting_posture()
 
 
 class _StubAPI:
@@ -290,3 +289,27 @@ class TestAllowBloatReachesGateViaCLI:
         )
         assert result.exit_code == 0, result.output
         assert any(c[0] == "post_json" for c in self.stub.calls), "POST must fire with --allow-bloat"
+
+
+class TestGherkinTagsAreNotStakeholders:
+    """An ``@tag`` in a code span or from the Gherkin tag vocabulary is not an ``@handle``.
+
+    Observed: a finding whose subject was ``every scenario is `@ready``` was refused as
+    "project chatter" — the tag was read as a stakeholder mention.
+    """
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "the report prints every scenario is `@ready` even when a hold exists",
+            "```gherkin\n@blocked\nScenario: hold without a reason\n```\nis dropped by HOLD_RE",
+            "@awaiting-merge and @ready are swapped on line 58 — the hold is rendered as an all-clear",
+            "`@alice` is the fixture handle the parser must keep verbatim",
+        ],
+    )
+    def test_tag_in_code_or_gherkin_vocabulary_is_not_chatter(self, body: str) -> None:
+        assert references_project_chatter(body) is False
+        assert check_review_bloat(body=body) == ""
+
+    def test_a_bare_stakeholder_handle_is_still_chatter(self) -> None:
+        assert references_project_chatter("@alice said the tag should be `@ready`") is True

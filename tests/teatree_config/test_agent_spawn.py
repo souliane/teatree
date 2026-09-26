@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 
 from teatree.config import AgentHarness, cold_reader
-from teatree.config.agent_spawn import EFFORT_SCALE, AgentConfig, parse_effort, resolve_agent_config
+from teatree.config.agent_spawn import (
+    EFFORT_SCALE,
+    AgentConfig,
+    AgentRouteCandidate,
+    parse_effort,
+    resolve_agent_config,
+)
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.write_validation import ConfigWriteError, validate_config_write
 
@@ -79,6 +85,18 @@ class TestAgentConfigDefaults:
         monkeypatch.delenv("T3_CONFIG_DB", raising=False)
         assert resolve_agent_config() == AgentConfig()
 
+    def test_overlay_scope_wins_then_falls_back_to_global(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_skill_models", {"code": "global"})
+        _seed(db, "agent_skill_models", {"code": "overlay"}, scope="customer-overlay")
+        _point_at(monkeypatch, db)
+
+        assert resolve_agent_config("customer-overlay").skill_models == {"code": "overlay"}
+        assert resolve_agent_config("another-overlay").skill_models == {"code": "global"}
+        assert resolve_agent_config().skill_models == {"code": "global"}
+
 
 class TestHonestyModelParse:
     """``agent_honesty_model`` parsing (teatree#2263)."""
@@ -141,6 +159,59 @@ class TestSkillModelsParse:
         _seed(db, "agent_skill_models", "oops")
         _point_at(monkeypatch, db)
         assert resolve_agent_config().skill_models == {}
+
+    def test_ordered_route_candidates_are_typed_and_keep_order(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(
+            db,
+            "agent_skill_models",
+            {
+                "t3:code": [
+                    {
+                        "harness": "codex_app_server",
+                        "model": "gpt-5.6-codex",
+                        "tier": "frontier",
+                        "effort": "high",
+                    },
+                    {"harness": "claude_sdk", "model": "opus", "provider": "subscription_oauth"},
+                ]
+            },
+        )
+        _point_at(monkeypatch, db)
+
+        assert resolve_agent_config().skill_models["t3:code"] == (
+            AgentRouteCandidate("codex_app_server", "gpt-5.6-codex", tier="frontier", effort="high"),
+            AgentRouteCandidate("claude_sdk", "opus", provider="subscription_oauth"),
+        )
+
+    def test_route_candidate_rejects_invalid_effort(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(
+            db,
+            "agent_skill_models",
+            {"code": [{"harness": "codex_app_server", "model": "gpt-5.6-sol", "effort": "turbo"}]},
+        )
+        _point_at(monkeypatch, db)
+
+        with pytest.raises(ValueError, match=r"agent_skill_models.*code.*effort"):
+            resolve_agent_config()
+
+    def test_empty_route_list_is_legacy_inherit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_skill_models", {"code": []})
+        _point_at(monkeypatch, db)
+
+        assert resolve_agent_config().skill_models == {"code": None}
+
+    def test_malformed_route_candidate_fails_loud(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_skill_models", {"t3:code": [{"harness": "claude_sdk"}]})
+        _point_at(monkeypatch, db)
+
+        with pytest.raises(ValueError, match=r"agent_skill_models.*t3:code.*model"):
+            resolve_agent_config()
 
 
 class TestSessionModelParse:

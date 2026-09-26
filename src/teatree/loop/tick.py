@@ -34,11 +34,7 @@ from teatree.loop.global_scanner_factories import build_default_jobs, build_defa
 from teatree.loop.job_identity import Domain, _ScannerJob
 from teatree.loop.phases import act_phase, render_phase, scan_phase, sweep_phase
 from teatree.loop.scanner_factories import _jobs_for_backend_hosts
-from teatree.loop.scanner_factory_config import (
-    _gitlab_approvals_enabled,
-    _user_identity_aliases_for_overlay,
-    _user_slack_id_for_overlay,
-)
+from teatree.loop.scanner_factory_config import _user_identity_aliases_for_overlay, _user_slack_id_for_overlay
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.tick_freshness import (
@@ -62,7 +58,6 @@ __all__ = [
     "_canonical_overlay_names",
     "_collect_repo_freshness",
     "_execute_mechanical",
-    "_gitlab_approvals_enabled",
     "_identity_alias_groups_for_overlay",
     "_jobs_for_backend_hosts",
     "_persist_agent_dispatches",

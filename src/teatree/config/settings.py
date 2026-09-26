@@ -11,18 +11,27 @@ from pathlib import Path
 from typing import Any, ClassVar, Final
 
 from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider
-from teatree.config.enums import (
-    Autonomy,
-    CriticGateMode,
-    MissingIssuePolicy,
-    Mode,
-    OnBehalfPostMode,
-    PrReviewBackend,
-    SendProxyMode,
-    Wip,
-)
+from teatree.config.enums import Autonomy, CriticGateMode, MissingIssuePolicy, Mode, PrReviewBackend, SendProxyMode, Wip
 from teatree.config.mr_reminder import MrReminderConfig
 from teatree.config.settings_loop_flags import _LoopFlagAndCredentialSettings
+from teatree.config.settings_loop_owned import (
+    _ArchReviewLoopSettings,
+    _BacklogSweepLoopSettings,
+    _DirectiveLoopSettings,
+    _DogfoodLoopSettings,
+    _DreamLoopSettings,
+    _FollowupLoopSettings,
+    _HousekeepingLoopSettings,
+    _IssueDispositionLoopSettings,
+    _IssueImplementerLoopSettings,
+    _NewsLoopSettings,
+    _OuterLoopSettings,
+    _ResourcePressureLoopSettings,
+    _ReviewLoopSettings,
+    _ShipLoopSettings,
+    _SnapshotWarmerLoopSettings,
+    _TicketsLoopSettings,
+)
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
 
 
@@ -113,6 +122,13 @@ class _ModeHarnessSettings:
 
     mode: Mode = Mode.AUTO
     autonomy: Autonomy = Autonomy.FULL
+    harness_skill_exclusions: list[str] = field(default_factory=list)
+    # Skill selectors are also read by the cross-cutting skill-supply inventory,
+    # so they belong with the agent harness rather than below any one loop.
+    scanning_news_skill: str = "scanning-news"
+    eval_local_skill: str = "eval"
+    backlog_sweep_skill: str = "sweeping-tickets"
+    dogfood_smoke_skill: str = "dogfood-smoke"
     # Layer 1 of the two-layer harness config model (#2887): which in-process
     # TRANSPORT an agent run uses — the transport that opens the agent session behind the
     # ``teatree.agents.harness.Harness`` protocol. ``claude_sdk`` (default, today's
@@ -219,6 +235,13 @@ class _ModeHarnessSettings:
     # until an overlay opts into ``agent_harness=pydantic_ai``. Per-overlay overridable;
     # ``T3_OPENAI_COMPATIBLE_LANE`` env wins.
     openai_compatible_lane: str = "factory"
+    # Extra headers every OpenAI-compatible request carries beside ``x-lane`` (a router's
+    # session-affinity and cost headers); ``{session}`` in a value becomes the run's session id.
+    # Inert until an overlay opts into ``agent_harness=pydantic_ai``. Per-overlay overridable.
+    openai_compatible_extra_headers: dict[str, str] = field(default_factory=dict)
+    # Whether the OpenAI-compatible endpoint accepts ``prompt_cache_key``; a standard-strict upstream 400s on it,
+    # so it is sent only when declared. Per-overlay overridable.
+    openai_compatible_sends_prompt_cache_key: bool = False
     # Absolute per-RUN watchdog ceilings for the headless ``claude_sdk`` lane (#882,
     # F9.5). Folded off the former Django-settings ``TEATREE_LOOP_WATCHDOG`` dict into
     # the DB-home config tier so ``config_setting get`` sees them (the third config
@@ -288,29 +311,14 @@ class _LoopSettings:
     merge_wip: int = 1
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
-    # #1796 / PR-28 — the loop-cadence kill-switch. Default ON: the singleton
-    # `t3 worker` owns the tick cadence, draining the self-rescheduling loop-timer
-    # chains, and the SessionStart supervisor keeps at-least-one worker alive. There
-    # is NO fallback plane — the legacy native-`/loop` cron mirror was retired in
-    # PR-28, so flipping this OFF is the instant runtime escape that STOPS the loops
-    # entirely; the worker supervisor re-reads this flag every ~5s and stops the
-    # executor pool on flip-off. The `default`-queue drain still runs under OFF via
-    # the reactive drain loop, so OFF halts loop ticks without stranding queued
-    # FSM/headless work.
-    # DB-home (#1775): resolved from the `ConfigSetting` store (global + overlay
-    # rows) + `T3_LOOP_RUNNER_ENABLED` env; a `[teatree]`/`[overlays.<name>]` TOML
-    # value is ignored on read. Set via `config_setting set loop_runner_enabled`.
-    # The worker_supervisor cold-read default is pinned equal to this by
-    # `tests/config/test_worker_default_parity.py` so a fresh install spawns a worker.
-    loop_runner_enabled: bool = True
     # The drain-then-deploy admission gate (rolling/zero-downtime deploy). Default
     # OFF: the worker admits new work normally. `t3 worker drain` flips it ON for the
     # deploy window so the claim/admission path admits ZERO new tasks — the CAS
     # `claim_next_pending` and the `_claimable_for_target` query both short-circuit —
     # while in-flight CLAIMED leases keep renewing and finish. It is READ only at the
     # claim chokepoint; it deliberately does NOT feed the worker supervisor's
-    # `loop_runner_enabled` stop condition, so quiescing never stops the supervisor or
-    # kills a live sub-agent. The FRESH worker's init clears it so admission resumes.
+    # zero-admitted stop condition, so quiescing never stops the supervisor or kills a
+    # live sub-agent. The FRESH worker's init clears it so admission resumes.
     # DB-home (#1775): resolved from the `ConfigSetting` store (global + overlay rows)
     # + `T3_WORKER_QUIESCING` env; a TOML value is ignored on read. Set via `t3 worker
     # drain` (which writes it) or `config_setting set worker_quiescing`.
@@ -381,40 +389,23 @@ class _OnBehalfSettings:
     # direct posting without flipping the global). Default on, mirroring
     # `require_human_approval_to_merge`.
     require_human_approval_to_answer: bool = True
-    # Tri-state pre-gate over on-behalf colleague/customer posts (#960):
-    #
-    # * ``DRAFT_OR_ASK`` (default) — colleague-invisible, revocable draft
-    #   notes (``t3 review post-draft-note``) publish autonomously and
-    #   the agent DMs the user with the publish/delete commands; every
-    #   other gated action collapses to BLOCK identical to ``ASK``.
-    # * ``ASK`` — every gated action requires an explicit recorded
-    #   approval (``t3 review approve-on-behalf``) before it publishes.
-    # * ``IMMEDIATE`` — the gate is off; gated actions publish directly
-    #   (subject to the always-gated list in ``Mode``).
-    #
-    # DB-home (#1775): resolves from the ``ConfigSetting`` store + env only.
-    # The pre-partition shim that translated a legacy ``[teatree]
-    # ask_before_post_on_behalf`` TOML key into this mode is retired — that
-    # TOML key is ignored on read now; migrate it with ``config_setting import``.
-    # The default when no row is set is ``DRAFT_OR_ASK``.
-    on_behalf_post_mode: OnBehalfPostMode = OnBehalfPostMode.DRAFT_OR_ASK
     # Carve-out from the on-behalf pre-gate: actions in this allowlist resolve
-    # to PROCEED even under ASK / DRAFT_OR_ASK, because they are the user's
+    # to PROCEED even under a forbidding egress posture, because they are the user's
     # routine self-documentation on their OWN ticket (E2E evidence), not a
     # colleague-facing voice that needs the user's per-post approval. Default
     # includes ``post_e2e_evidence`` so the user never has to approve their own
     # evidence posts; clear the list (``on_behalf_auto_actions = []``) to
-    # re-gate evidence under a blocking mode. Per-overlay overridable; env
+    # re-gate evidence under a forbidding posture. Per-overlay overridable; env
     # ``T3_ON_BEHALF_AUTO_ACTIONS`` (comma-separated) wins over both.
     on_behalf_auto_actions: list[str] = field(default_factory=lambda: ["post_e2e_evidence"])
     # Whether agent-driven review-request posting is BLOCKED for this overlay
     # (#2579). Resolved off the autonomy TIER by ``_apply_autonomy``: the
     # ``notify`` tier (collaborative/customer surface) sets it ``True`` so
-    # ``resolve_on_behalf_verdict("review_request_post")`` BLOCKs even under an
-    # explicitly pinned ``on_behalf_post_mode = immediate``; the ``full`` tier (solo
-    # tooling surface) leaves it ``False`` so review-request PROCEEDs; ``babysit``
-    # keeps the default ``False`` and review-request follows ``on_behalf_post_mode``
-    # like any other colleague-visible post. This is the customer-overlay
+    # ``resolve_on_behalf_verdict("review_request_post")`` BLOCKs even under a
+    # permitting posture; the ``full`` tier (solo tooling surface) leaves it
+    # ``False`` so review-request PROCEEDs; ``babysit`` keeps the default
+    # ``False`` and review-request follows the active posture like any other
+    # colleague-visible post. This is the customer-overlay
     # done-definition gate: an overlay running ``notify`` stops at "MR is mergeable
     # + review-requestable" and never auto-requests review. An explicit per-overlay
     # pin always wins over the tier (Option A — the per-overlay escape): a ``full``
@@ -460,7 +451,7 @@ class _OnBehalfSettings:
     # followed by a bot→user DM naming the destination, a clickable
     # artifact link, and a one-line summary — durable enforcement that
     # retires the per-session memory `notify-user-on-every-post-on-behalf`.
-    # Distinct from the `on_behalf_post_mode` pre-gate (which decides
+    # Distinct from the posture pre-gate (which decides
     # *whether* a post may publish): this fires *after* a successful
     # publish and never blocks or rolls back the post. DB-home: flip off via
     # `t3 <overlay> config_setting set notify_on_post_on_behalf false`
@@ -472,6 +463,10 @@ class _OnBehalfSettings:
     notify_on_post_on_behalf: bool = True
     # Derived under the ``notify`` tier by ``_apply_autonomy``; ORed with the field above.
     notify_on_behalf: bool = False
+    # Notion ids the integration token may write under; with none configured every write is refused.
+    notion_write_allowed_roots: list[str] = field(default_factory=list)
+    # Notion ids never written under, even when an allowed root sits above them.
+    notion_write_denied_roots: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -522,24 +517,15 @@ class _IdentityRoutingSettings:
 
 @dataclass
 class _ArchitecturalReviewSettings:
-    """The periodic architectural-review cadence + its post-failure backoff."""
+    """The skill the periodic architectural review dispatches — its cadence is the loop's."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Architectural review")
 
-    # #1136 / #1152 Periodic architectural-review scanner — CORE
-    # always-on (not per-overlay opt-in). The cadence applies uniformly
-    # to every overlay's worktrees because it is a teatree-platform
-    # behaviour. Set ``architectural_review_disabled = true`` in
-    # ``[teatree]`` (or per-overlay) as the escape hatch.
-    architectural_review_disabled: bool = False
+    # #1136 / #1152 Periodic architectural-review scanner — CORE always-on (not
+    # per-overlay opt-in). The cadence applies uniformly to every overlay's
+    # worktrees because it is a teatree-platform behaviour; the ``arch_review``
+    # Loop row (and any preset masking it) is what turns the scanner off.
     architectural_review_skill: str = "ac-reviewing-codebase"
-    architectural_review_cadence_hours: int = 168
-    # After a FAILED review (none completed since), re-fire once the failed
-    # attempt reaches this shorter age instead of the full cadence — bounds the
-    # post-failure retry so a persistent failure backs off to every 12h rather
-    # than storming the expensive review hourly.
-    architectural_review_retry_backoff_hours: int = 12
-    architectural_review_after_merge_count: int = 25
 
 
 @dataclass
@@ -585,15 +571,6 @@ class _ReviewGateSettings:
     # an exhausted account keeps getting reviews. An explicit ``claude`` /
     # ``codex`` pin is honoured as written and never silently degrades.
     pr_review_backend: PrReviewBackend = PrReviewBackend.AUTO
-    # #3569 The single review-board admission knob. Self-authored open PRs are
-    # ALWAYS admitted to the review board (always cold-reviewed by ``t3:reviewer``,
-    # per-SHA deduped). COLLEAGUE / requested-reviewer PRs are admitted to the same
-    # board ONLY when this is ``true`` (the default): the review intake builds the
-    # ``ReviewerPrsScanner`` only when set, so ``false`` stops colleague PRs reaching
-    # the board (self-review still runs). The author distinction lives HERE, upstream
-    # in the intake — the review execution (the ``reviewing`` → ``t3:reviewer`` task)
-    # is blind to author. Per-overlay overridable (DB-home).
-    admit_colleague_prs_to_board: bool = True
     # Opt-in deep-retrieval gate on ``-> reviewing`` (``review_context_gate``);
     # default false = NO-OP. Per-overlay overridable.
     require_review_context: bool = False
@@ -632,21 +609,6 @@ class _MergeGateSettings:
     # back off is the operator's audited escape if a forge outage would otherwise
     # wedge a genuinely-merged ticket the forge cannot confirm. Per-overlay overridable.
     require_merge_evidence: bool = False
-    # SELFCATCH-3 Opt-in plan-adequacy + late-bound-plan gate on ``code()`` /
-    # ``schedule_coding`` (``plan_currency_gate``): coding is unreachable without an
-    # ADEQUATE plan (a complete four-section manifest — design, integration_seams,
-    # edge_cases, test_strategy — each substantive OR an explicit reasoned negative)
-    # that is BOUND to the current target HEAD (a plan whose base_sha moved and whose
-    # intervening commits touch a declared seam is treated ABSENT — stale-is-absent).
-    # Forecloses the named root cause of the 26-bug integration campaign:
-    # thin-spec-as-plan and stale-base coding. Also flips ``PlanArtifact.record()``
-    # strict — a new row needs a 40-char base_sha + complete manifest. Default false =
-    # NO-OP so the generic FSM never blocks; the operator flips it ON per-overlay
-    # (``config_setting set require_plan_adequacy true --overlay <name>``) once the
-    # planner produces manifests. Its OWN kill-switch (setting it back off) is the
-    # audited never-lockout escape alongside ``plan-reaffirm``. A feature flag
-    # (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
-    require_plan_adequacy: bool = False
     # #118 Opt-in forced-repro gate on ``ship()`` for FIX-kind tickets
     # (``repro_gate``): a fix cannot ship without a harness-recorded, provenance-
     # verified RED->GREEN reproduction — a failing command captured against the
@@ -744,21 +706,10 @@ class _CriticGateSettings:
 
 @dataclass
 class _DoneCriteriaSettings:
-    """The acceptance-criteria done-gates — rubric verification, spec coverage, E2E confidence."""
+    """The acceptance-criteria done-gates — E2E confidence."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Gates", "Quality", "Definition of done")
 
-    # #2241 Opt-in rubric->verifier done-gate on the keystone merge precondition
-    # (``rubric_gate``): the ticket's rubric of acceptance criteria must be fully
-    # PASS by an independent verifier (grader != maker) at the merge-time head
-    # SHA. Default false = NO-OP. Per-overlay overridable.
-    require_rubric_verification: bool = False
-    # #2232 Opt-in per-ticket spec-coverage DoD gate on ``mark_delivered``
-    # (``spec_coverage_gate``): when on, a ticket cannot reach DELIVERED unless
-    # every acceptance criterion in ``extra['spec_coverage']`` has a backing
-    # test — done cannot be declared on a partial subset. Default false = NO-OP.
-    # Per-overlay overridable.
-    require_spec_coverage: bool = False
     # E2E confidence threshold (0-100): the rubric score a Playwright spec must
     # reach to be VERIFIED by the verify<->review loop. The single knob both the
     # `e2e-review` rubric (`/t3:e2e-review` § "E2E Confidence Rubric") and the
@@ -773,81 +724,14 @@ class _DoneCriteriaSettings:
 
 @dataclass
 class _ScannerSettings:
-    """The periodic loop scanners — news, local-eval, backlog-sweep, dogfood-smoke, self-update cadences."""
+    """What the loop fan-out sweeps, and whether it may start at all — box facts, not one loop's."""
 
-    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Scanners")
+    GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Fan-out & admission")
 
-    # #1191 Periodic scanning-news scanner — CORE always-on with a daily
-    # cadence (24h). Companion to the `scanning-news` skill (#1190): the
-    # loop fires a `scanning_news` task daily so the news-scan workflow
-    # runs without depending on an external cron. Set
-    # ``scanning_news_disabled = true`` in ``[teatree]`` (or per-overlay)
-    # as the escape hatch.
-    scanning_news_disabled: bool = False
-    scanning_news_skill: str = "scanning-news"
-    scanning_news_cadence_hours: int = 24
-    # #1391 Ask-gate for news-scan ticket creation. When true (default),
-    # the scanning-news skill must NOT auto-create issues — it records a
-    # ``PendingArticleSuggestion`` per candidate and surfaces the batch
-    # to the user, filing an issue only on explicit approval. Default ON:
-    # backlog pollution from unconfirmed auto-filing is the failure mode
-    # this gate forecloses. Per-overlay overridable.
-    ask_before_creating_news_tickets: bool = True
-    # Periodic local-eval scanner — CORE always-on with a weekly cadence
-    # (168h). User directive (2026-06-05): "AI evals should be run locally
-    # from time to time, and in CI once a week." The loop fires an
-    # ``eval_local`` task per cadence window so the SCOPED eval suite runs
-    # locally via the no-API-key subscription runner (the same path
-    # ``t3 eval run`` defaults to), without depending on an external cron.
-    # Set ``eval_local_disabled = true`` in ``[teatree]`` (or per-overlay)
-    # as the escape hatch.
-    eval_local_disabled: bool = False
-    eval_local_skill: str = "eval"
-    eval_local_cadence_hours: int = 168
-    # #2419/#4344 Periodic backlog-sweep scanner — a DAILY cadence (24h), the
-    # rate at which the backlog actually grows. Companion to the
-    # `sweeping-tickets` skill: the loop fires a `backlog_sweep` task that
-    # GROUPS the issue tracker, bundling related rows into an existing host so
-    # the fixed per-ticket delivery cost is paid once for the bundle. The kill
-    # switch ships OPEN, leaving the `backlog_sweep` Loop row as the single
-    # switch (the `issue_implementer` / `triage_assessor` / `directive_loop`
-    # shape) — set ``backlog_sweep_disabled = true`` in ``[teatree]`` (or
-    # per-overlay) to stop scheduling sweeps without touching the row.
-    backlog_sweep_disabled: bool = False
-    backlog_sweep_skill: str = "sweeping-tickets"
-    backlog_sweep_cadence_hours: int = 24
-    # #2419 Ask-gate for backlog-sweep row retirements. When true (default),
-    # the sweeping-tickets skill must NOT mass-close or mass-fold issues
-    # unattended — it records each fold proposal with its citation and
-    # surfaces the batch to the user, retiring a row only on explicit approval
-    # and only once its fold is verified. Default ON: an unattended wrong
-    # close destroys tracker signal, the failure mode this gate forecloses.
-    # Per-overlay overridable.
-    ask_before_backlog_sweep_closes: bool = True
-    # #1308 Periodic provision-smoke scanner — CORE always-on with a
-    # 24h cadence by default. Queues a ``dogfood_smoke`` task per cadence
-    # window so the loop exercises the active overlay's provision path
-    # before the user reaches for E2E. Set
-    # ``dogfood_smoke_disabled = true`` in ``[teatree]`` (or per-overlay)
-    # as the escape hatch. ``dogfood_smoke_overlay`` pins which overlay
-    # anchor the placeholder task is created against — empty falls back
-    # to the active overlay resolved via ``discover_active_overlay``.
-    dogfood_smoke_disabled: bool = False
-    dogfood_smoke_skill: str = "dogfood-smoke"
-    dogfood_smoke_cadence_hours: int = 24
-    dogfood_smoke_overlay: str = ""
-    # #1249 Auto t3-update scanner — fast-forwards the editable teatree
-    # clone + every registered overlay clone to ``origin/<default>`` once
-    # the cadence has elapsed. Hourly default keeps the orchestrator
-    # current without spamming the upstream remote on every tick. Set
-    # ``self_update_disabled = true`` in ``[teatree]`` (or per-overlay)
-    # as the escape hatch.
-    self_update_disabled: bool = False
-    self_update_cadence_hours: int = 1
-    # ``T3_LOOP_AUTO_UPDATE`` env overrides ``auto_update_reinstall``;
-    # ``auto_update_require_green_main`` fails closed on non-green default-branch CI.
-    auto_update_reinstall: bool = False
-    auto_update_require_green_main: bool = True
+    #: Which overlays the full-fleet scanners sweep; empty sweeps every registered overlay.
+    #: A property of the BOX, not of whichever preset is active — it answers "whose repos
+    #: does this factory look after", and that does not change when the operator goes AFK.
+    scanner_overlay_scope: list[str] = field(default_factory=list)
     # #3901 The deploy-order gate on the other side of that hot pull: while the
     # control DB is BEHIND the running code's migration graph — or the probe cannot
     # tell — the claim chokepoint admits ZERO new work rather than execute against a
@@ -875,47 +759,29 @@ _DEFAULT_DISK_CACHE_ALLOWLIST = [
 
 @dataclass
 class _ResourcePressureSettings:
-    """The resource-pressure scanner cadence and its disk / RAM warn + critical thresholds."""
+    """The free-disk bands auto-free acts on, what it may reclaim, and the intake arm it drives."""
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Resource pressure", "Thresholds & cadence")
 
-    # #128 Resource-pressure scanner — teatree-controlled auto-free before
-    # the host hits OOM / full-disk. Measures ABSOLUTE free bytes
-    # (``os.statvfs`` for disk, ``vm_stat`` reclaimable pages for RAM) — never
-    # percent-of-nominal (the APFS shared-container total and macOS "99 % RAM
-    # used" both mislead). Monitoring + regenerable-cache purge are on by
-    # default; every irreversible lever (worktree GC, process SIGTERM) is
-    # flag-gated OFF. ``resource_pressure_disabled = true`` is the durable
-    # kill-switch (mirrors ``self_update_disabled``): the scanner is never
-    # wired. All knobs are per-overlay overridable.
-    resource_pressure_disabled: bool = False
-    resource_pressure_cadence_minutes: int = 5
-    resource_pressure_min_free_interval_minutes: int = 30
-    disk_warn_free_gb: float = 25.0
-    disk_crit_free_gb: float = 10.0
-    ram_warn_avail_gb: float = 3.0
-    ram_crit_avail_gb: float = 1.5
     # #3992 The resource loop derives issue-intake concurrency from observed headroom
     # instead of it being a hand-set constant. Flipping this OFF is the kill-switch:
     # ``issue_implementer_max_concurrent`` is then used verbatim, as before.
     adaptive_intake_concurrency_enabled: bool = True
-    # Headroom held back rather than admitted against, so a burst is absorbed instead of
-    # becoming an OOM — and so tightening lowers the limit BEFORE the memory ceiling.
-    intake_ram_reserve_gb: float = 4.0
-    # Measured cost of one agent in full verification over the idle baseline. The number
-    # that varies by box, hence a setting: it is what one admitted ticket is sized at.
-    intake_ram_per_agent_gb: float = 6.2
     # Allow-LIST only (never a denylist): exactly these regenerable cache dirs
     # are auto-purged at CRITICAL. ``uv`` is handled via ``uv cache prune``.
     # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
     # the latter is hard-protected even if a user adds it.
     disk_cache_allowlist: list[str] = field(default_factory=_DEFAULT_DISK_CACHE_ALLOWLIST.copy)
+    # Measures ABSOLUTE free bytes (``os.statvfs``) — never percent-of-nominal, which
+    # the APFS shared-container total misleads about.
+    disk_crit_free_gb: float = 10.0
+    disk_warn_free_gb: float = 25.0
     # #4244 The retention policy for the checkout pool: a ``.venv`` untouched for
     # this long is evicted as the pure cache it is (``uv sync`` rebuilds it), so
     # the pool's steady state is roughly one venv per checkout worked inside the
     # window rather than one per checkout ever created. Not a destructive lever —
-    # a venv holds no work — but a live process inside a checkout always wins.
-    venv_idle_days: float = 2.0
+    # a build product holds no work — but a live process inside a checkout always wins.
+    artifact_idle_days: float = 2.0
     # #4580 A process group whose leader is gone is reported once it has run this long
     # and is still burning. The only knob: the age is what an operator retunes when the
     # finding nags, while the burn-rate floor and the never-reap protect-list stay in code
@@ -930,12 +796,11 @@ class _DestructiveLeverSettings:
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Resource pressure", "Destructive levers")
 
     # Opt-in: enables stale-worktree GC (clean + fully pushed + unmodified
-    # ``worktree_stale_days``) at CRITICAL, capped at
-    # ``max_worktree_gc_per_tick`` per pass and never the active session's
-    # worktree. Always logged + DM.
+    # ``worktree_stale_days``) at CRITICAL, capped per pass (see
+    # `loop/worktree_gc.py`) and never the active session's worktree.
+    # Always logged + DM.
     allow_destructive_disk: bool = False
     worktree_stale_days: int = 30
-    max_worktree_gc_per_tick: int = 3
     # Opt-in: enables SIGTERM (never SIGKILL) of allow-listed renderer
     # processes after >= 2 consecutive CRITICAL-RAM ticks, never a process in
     # the active-session ancestry. Empty ``ram_kill_allowlist`` means no
@@ -950,26 +815,16 @@ class _RetentionSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Infrastructure", "Retention & sweeps")
 
-    # #129 task-sweep scanner — per-overlay; verifies open teatree Task rows
-    # against their artifact's terminal state (issue closed / PR merged) and
-    # completes only on durable proof, never in bulk and never on a stale read.
-    # On by default; ``task_sweep_disabled = true`` is the escape hatch.
-    # ``task_sweep_recheck_interval_hours`` is the per-task anti-thrash window
-    # (a task swept within it is skipped this tick) and the idempotency window
-    # for the atomic ``last_sweep_check_ts`` stamp. Pre-rename, these keys were
-    # ``todo_sweep_*``; a stored row under the old name still resolves via the
-    # retired-key registry in ``config/retired_settings.py``.
-    task_sweep_disabled: bool = False
-    task_sweep_recheck_interval_hours: int = 1
     # The branch every shipped PR targets when the ticket does not name one
     # itself. Empty (the default) keeps the historical behaviour — the repo's
     # own default branch. Set it when a whole line of work stacks onto ONE
     # long-lived integration branch instead of ``main``: every PR then targets
     # that branch, and ``run_branch_currency_gate`` merges it into each
     # worktree before shipping, so a merge into the integration branch
-    # propagates to the branches still in flight. ``Ticket.extra['target_branch']``
-    # still wins, and a branch that IS the configured target falls back to the
-    # repo default so the integration branch itself never targets itself.
+    # propagates to the branches still in flight. The repo-keyed
+    # ``Ticket.extra['target_branch'][repo_slug]`` override still wins, and a
+    # branch that IS the configured target falls back to the repo default so
+    # the integration branch itself never targets itself.
     target_branch: str = ""
     # #1397 Cap on concurrent locally-running stacks for a single overlay.
     # Each running worktree (``services_up``/``ready``) holds docker
@@ -990,47 +845,15 @@ class _RetentionSettings:
     # tree at a time. The gate refuses a SECOND requester naming the incumbent;
     # it never evicts, kills or deletes. ``false`` is the never-lockout kill
     # switch (every requester is handed the checkout ungated, the pre-#3952
-    # behaviour). The TTL bounds a claim whose holder died without releasing:
-    # 30 minutes is long enough that no live agent's own heartbeat can miss it,
-    # short enough that a crashed operator lane does not hold a checkout for a
-    # working day. Both per-overlay overridable.
+    # behaviour). Per-overlay overridable.
     worktree_occupancy_gate_enabled: bool = True
-    worktree_occupancy_lease_seconds: int = 1800
-    # #3693 retention windows for the high-churn control-DB tables. A ``prune``
+    # #3693 retention window for the high-churn ``TaskAttempt`` table. A ``prune``
     # deletes rows OLDER than the window whose owning ticket/task is TERMINAL —
     # never a live/in-flight row, and never within the window. Days, not a byte
-    # ceiling: age is the operator-legible, safe-by-construction lever. Both
-    # default to a conservative 30 so a fresh install never prunes recent history;
+    # ceiling: age is the operator-legible, safe-by-construction lever. It
+    # defaults to a conservative 30 so a fresh install never prunes recent history;
     # ``0`` disables that table's pruning entirely. Per-overlay overridable.
     task_attempt_retention_days: int = 30
-    incoming_event_retention_days: int = 30
-    # #4178 age backstop over the pending DeferredQuestion backlog. A row past this
-    # many days with no resolution is ESCALATED — stamped and audited, at most once per
-    # window, and left pending. One RUNG of the ladder that deferred_question_max_
-    # escalations below ends. 3 days because that is where the measured backlog turned
-    # from a queue into a graveyard (46 of 70 rows). ``0`` disables the backstop.
-    # Per-overlay overridable.
-    deferred_question_age_ceiling_days: int = 3
-    # #4706 bound on the ladder above. The ceiling only ever RE-asked: it suppressed
-    # re-escalation while the last stamp was inside the window, so a row nobody answered
-    # escalated again every window, forever (measured: 116 pending, oldest 41d, 105 past
-    # the ceiling). After this many escalations the row is drained STALE with an audited
-    # reason — a question unanswered through 3 asks over 9 days was decided by default,
-    # and recording that is quieter and more honest than asking a fourth time. ``0``
-    # restores the unbounded ladder. Per-overlay overridable.
-    deferred_question_max_escalations: int = 3
-    # The PARK lane's own window — separate from the terminal-owned rule above, and
-    # deliberately shorter. A limit-park is a scheduling event on a task the park
-    # itself RETURNS to the queue PENDING, so a park row's owning task is by
-    # construction NON-terminal and the terminal-owned double guard can never see
-    # one: the very rows that grew this table to ~340k are the rows the sanctioned
-    # prune structurally cannot reach. This lane keys on the canonical
-    # ``limit_parked:`` marker instead, and never touches a row carrying billed
-    # telemetry. 7 days because a park's diagnostic value is "is the fleet parked
-    # NOW", which the 24h park-spin detector and ``park_repeats`` already answer;
-    # a week is generous for after-the-fact forensics. ``0`` disables the lane.
-    # Per-overlay overridable.
-    park_attempt_retention_days: int = 7
     # #3871 kill switch for the FSM-audit-trail lane. There is no window: the lane's
     # trigger is the ticket CLOSING, not a row aging, and what it removes is decided
     # per row — a ``from_state == to_state`` row records no edge, so it is not history
@@ -1180,19 +1003,15 @@ class _ProvisioningSettings:
     single_branch_repos: list[str] = field(default_factory=list)
     # RAM-used-percent ceiling above which a new provision is HELD (queued,
     # not started) rather than admitted, so a cold multi-repo provision never
-    # pushes the host into OOM. Mirrors the self-improve budget gate's
-    # ``DEFAULT_RAM_USED_CEILING_PCT``. Per-overlay overridable.
-    provision_ram_ceiling_percent: int = 85
+    # pushes the host into OOM. 75 rather than the self-improve budget gate's
+    # ``DEFAULT_RAM_USED_CEILING_PCT`` (85): provisioning arrives in bursts a
+    # per-sample gate reads too late, and every live box already pins 75.
+    # Per-overlay overridable.
+    provision_ram_ceiling_percent: int = 75
     # A provision whose total duration exceeds this many seconds fires a
     # best-effort out-of-band user alert — a regression in provisioning speed
     # must never be silently absorbed. Per-overlay overridable.
     provision_slow_threshold_seconds: int = 600
-    # Reference-DB DSLR snapshots older than this many days are STALE; the
-    # snapshot-warmer loop refreshes them out-of-band so a ticket-critical-path
-    # provision never has to. Per-overlay overridable.
-    snapshot_warmer_max_age_days: int = 1
-    # On by default; ``snapshot_warmer_disabled = true`` is the escape hatch.
-    snapshot_warmer_disabled: bool = False
     # #2190 Idle-stack reaper — a loop scanner that stops the docker stack of
     # an IDLE locally-running worktree (``services_up``/``ready``) and demotes
     # it to ``provisioned`` (REVERSIBLE: DB + worktree preserved), freeing the
@@ -1200,12 +1019,8 @@ class _ProvisioningSettings:
     # session/task on the ticket AND ``last_used_at`` older than
     # ``idle_stack_idle_minutes`` AND not the currently-active worktree AND no
     # active-delivery lease / recent E2E run / explicit pin (#2227).
-    # Fail-safe: uncertainty ⇒ KEEP. On by default;
-    # ``idle_stack_reaper_disabled = true`` is the escape hatch. All knobs are
-    # per-overlay overridable.
-    idle_stack_reaper_disabled: bool = False
+    # Fail-safe: uncertainty ⇒ KEEP. All knobs are per-overlay overridable.
     idle_stack_idle_minutes: int = 30
-    idle_stack_reaper_cadence_minutes: int = 5
     # #2227 Recency window for the E2E-run KEEP guard: a worktree whose
     # ``Worktree.last_e2e_run`` is within this many minutes is the live target of
     # in-flight evidence work and is never reaped, even when otherwise idle.
@@ -1217,42 +1032,22 @@ class _ProvisioningSettings:
     # fresh manual stack is never reaped; an unknown age fails safe (keep).
     # Runs automatically before ``worktree start`` / ``workspace start`` /
     # ``workspace provision`` and on demand via
-    # ``t3 <overlay> workspace reap-stale``. Default ``0`` keeps the sweep
-    # OPT-IN (mirroring ``max_concurrent_local_stacks``): a positive value
-    # (e.g. ``240``) enables it. Opt-in also keeps the suite hermetic — a
-    # default-on sweep would let unit tests of start/provision reach the
-    # developer's real docker daemon. Per-overlay overridable.
-    stale_stack_min_age_minutes: int = 0
+    # ``t3 <overlay> workspace reap-stale``. ``0`` disables the sweep; a test
+    # that must not reach the developer's real docker daemon sets it to ``0``
+    # rather than relying on the default, which has been ON since #2207 landed.
+    # Per-overlay overridable.
+    stale_stack_min_age_minutes: int = 240
     # #2190/#44 Acquisition queue — when ``worktree start`` / ``workspace
     # start`` hits the cap, it reaps idle, retries, then ENQUEUES (no
     # SystemExit). A loop scanner drains the queue each tick with a
     # Fibonacci-minute backoff, never tearing down another ticket's stack.
-    # On by default; ``local_stack_queue_disabled = true`` is the escape hatch.
-    # ``local_stack_queue_max_attempts`` caps the Fibonacci retries before a
-    # queued request is marked DEAD and surfaced.
-    local_stack_queue_disabled: bool = False
-    local_stack_queue_max_attempts: int = 13
+    # `MAX_QUEUE_ATTEMPTS` caps the Fibonacci retries before a queued request
+    # is marked DEAD and surfaced.
     # fnmatch globs of branch names ``clean-all`` must NEVER reap even when the
     # squash-merge classifier says shipped — never-merge dev overrides, long-lived
     # spikes. Matched against the full branch name. Default empty: nothing
     # protected beyond the data-loss guards. Per-overlay overridable.
     clean_ignore: list[str] = field(default_factory=list)
-
-
-# The conventional-commit scopes a work group must NOT be keyed on (the
-# ``work_group_generic_scopes`` default). A module constant so the field default stays a
-# single line; ``.copy`` gives each settings instance its own list.
-_DEFAULT_WORK_GROUP_GENERIC_SCOPES = [
-    "build",
-    "chore",
-    "ci",
-    "config",
-    "deps",
-    "docs",
-    "infra",
-    "test",
-    "tooling",
-]
 
 
 @dataclass
@@ -1289,41 +1084,10 @@ class _PrePublishGateSettings:
     # ``t3 <overlay> config_setting set ban_close_trailers_on_namespaces``;
     # the TOML value is ignored on read.
     ban_close_trailers_on_namespaces: list[str] = field(default_factory=list)
-    # Pull-main-clone scanner — fast-forwards each work-repo *main clone*
-    # under ``$T3_WORKSPACE_DIR`` to ``origin/<default>`` once the cadence
-    # has elapsed, so a clone never drifts behind after a merge and
-    # poisons ``git show`` / ``grep`` investigations. Hourly default keeps
-    # the clones current without spamming each work repo's remote on every
-    # tick. Set ``pull_main_clone_disabled = true`` in ``[teatree]`` (or
-    # per-overlay) as the escape hatch.
-    pull_main_clone_disabled: bool = False
-    pull_main_clone_cadence_hours: int = 1
-    # Review-channel nag scanner (#1038). Ships DISABLED: a
-    # concurrent-tick race on ``ReviewRequestPost`` let two
-    # sessions double-post bump replies into the colleague review channel,
-    # including against already-merged MRs. Re-enable per-overlay via
-    # ``[overlays.<name>].review_nag_enabled = true`` only after the
-    # concurrency + merged-MR fixes are validated.
-    review_nag_enabled: bool = False
     # Ceiling for the nag's Fibonacci re-ask backoff. Uncapped, the sequence runs past
     # the point where a reminder still reads as one — a request nobody answered would
     # go quiet for months instead of settling into a monthly rhythm.
     review_nag_max_interval_days: int = 30
-    # Live-Slack dedup window for the review-request guard (#1084 follow-up).
-    # The guard reads the review channel's recent history bounded to this many
-    # days when deciding POST vs SUPPRESS; a posted ``ReviewRequestPost`` row is
-    # NOT trusted on its own beyond this window — the guard live-verifies the
-    # exact thread. Default 30 days (>= the previous hard-coded 24h) so live
-    # Slack, not the DB row's age, decides. Fail-safe positive int: a
-    # non-positive / mistyped value degrades to 30. Per-overlay overridable.
-    review_request_dedup_window_days: int = 30
-    # Channel-scan page cap for the review-request live dedup read (#3292 part 4).
-    # The guard pages ``conversations.history`` up to this many times when
-    # deciding POST vs SUPPRESS; the old hard-coded 5 could leave a ~30-day
-    # window unreachable on a busy channel, so an old MANUAL user post fell
-    # outside the scan and the request was duplicated. Fail-safe positive int:
-    # a non-positive / mistyped value degrades to 5. Per-overlay overridable.
-    review_request_dedup_max_pages: int = 5
     # Repo patterns whose merge requests need no review request: the user asks for
     # review in person there, so a posted request is noise a colleague has to dismiss.
     # Matched by ``teatree.core.review.repo_exemption`` on the same host-stripped
@@ -1342,28 +1106,6 @@ class _PrePublishGateSettings:
     # anyway) into a hard refusal: no member is broadcast while a sibling is not yet
     # review-ready. Default false = INERT, the advisory behaviour. Per-overlay overridable.
     require_work_group_batch: bool = False
-    # Conventional-commit scopes too generic to group merge requests on — two changes
-    # sharing ``chore`` say nothing about being one unit of work, so keying a group on
-    # one would batch unrelated merge requests and hold each behind the others.
-    work_group_generic_scopes: list[str] = field(default_factory=_DEFAULT_WORK_GROUP_GENERIC_SCOPES.copy)
-    # Above this many members a work group is surfaced to the user as a question rather
-    # than held silently: past a dozen the grouping key is likelier wrong than the batch
-    # real, and silence would strand every member behind that bad key.
-    work_group_max_members: int = 12
-    # Slack reaction names meaning "paused — not reviewable yet", so a thread carrying
-    # one reads as deliberately held rather than un-actioned.
-    review_pause_reaction_emojis: list[str] = field(default_factory=lambda: ["double_vertical_bar", "pause_button"])
-    # Arms the in-thread "now ready for review" reply once a paused request resumes.
-    # Default false = INERT: nothing reaches a colleague thread until an operator opts in.
-    review_resume_reply_enabled: bool = False
-    # Anti-spam bound on "what is the state of this merge request?" questions raised per
-    # tick, so a backlog of ambiguous merge requests cannot arrive as one flood the user
-    # answers none of.
-    mr_state_questions_max_per_tick: int = 2
-    # Arms the merge-conflict scanner. Default false = INERT: each open merge request
-    # costs a forge merge-state read, so an operator opts in per overlay once that
-    # per-tick cost is acceptable.
-    mr_conflict_scan_enabled: bool = False
     # Orchestrator-execution-boundary gate (#115, §17.6 gate 2). When
     # enabled (default), the main agent is blocked from running a HEAVY /
     # long-running foreground Bash command (test suite, build, dev
@@ -1471,6 +1213,22 @@ class UserSettings(
     _ProvisioningSettings,
     _PrePublishGateSettings,
     _LoopFlagAndCredentialSettings,
+    _ArchReviewLoopSettings,
+    _BacklogSweepLoopSettings,
+    _DirectiveLoopSettings,
+    _DogfoodLoopSettings,
+    _DreamLoopSettings,
+    _FollowupLoopSettings,
+    _HousekeepingLoopSettings,
+    _IssueDispositionLoopSettings,
+    _IssueImplementerLoopSettings,
+    _NewsLoopSettings,
+    _OuterLoopSettings,
+    _ResourcePressureLoopSettings,
+    _ReviewLoopSettings,
+    _ShipLoopSettings,
+    _SnapshotWarmerLoopSettings,
+    _TicketsLoopSettings,
 ):
     """The ``[teatree]`` settings — the FLAT, 160-field persisted contract.
 

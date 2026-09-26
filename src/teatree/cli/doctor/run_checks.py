@@ -18,19 +18,23 @@ from teatree.cli.doctor.checks_admission_pressure import (
     _check_box_occupancy,
     _check_drain_lane_starved,
     _check_intake_budget_deadlock,
+    _check_merge_brake,
     _check_orphaned_process_groups,
+    _check_queue_stall,
     _check_starved_intake_candidates,
 )
 from teatree.cli.doctor.checks_agent_spawn import _check_agent_spawn_headroom
 from teatree.cli.doctor.checks_bootstrap import run_bootstrap_checks
 from teatree.cli.doctor.checks_branch_upstream import check_branch_upstreams
 from teatree.cli.doctor.checks_checkout_debris import check_checkout_untracked_debris
+from teatree.cli.doctor.checks_ci_oauth_pool import check_ci_oauth_pool
 from teatree.cli.doctor.checks_cold_hooks import (
     _check_autoload_engages_platform_skill,
     _check_cold_hook_settings_readable,
     _check_config_override_tier_healthy,
 )
 from teatree.cli.doctor.checks_config_drift import _check_config_rows_shadowing_shipped_defaults
+from teatree.cli.doctor.checks_container_env import check_deployed_gnupg_home
 from teatree.cli.doctor.checks_db_integrity import _check_database_health
 from teatree.cli.doctor.checks_dead_ticket_rows import check_dead_ticket_rows
 from teatree.cli.doctor.checks_docker import _check_control_db_reachable, _check_t3_launcher_managed
@@ -41,6 +45,7 @@ from teatree.cli.doctor.checks_environment import (
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
+    _check_project_venv_editable_pths,
     _check_single_db,
     _check_skills,
     _check_stale_path_t3,
@@ -89,6 +94,7 @@ from teatree.cli.doctor.checks_recommendations import _check_recommended_skills
 from teatree.cli.doctor.checks_reconciliation import _check_reconciliation_ledger
 from teatree.cli.doctor.checks_resources import (
     _check_pyright_lsp_plugin,
+    _check_resume_ceiling_reachable,
     _check_root_disk_headroom,
     _check_scratch_sweep_probe,
     _check_tmp_tmpfs_headroom,
@@ -98,6 +104,7 @@ from teatree.cli.doctor.checks_resources import (
 )
 from teatree.cli.doctor.checks_reviewing_ledger import check_reviewing_ledger
 from teatree.cli.doctor.checks_runtime import (
+    _check_clean_exit_restart_loop,
     _check_singletons,
     _check_ttyd_for_dashboard,
     _check_worker_running,
@@ -175,86 +182,117 @@ def _run_worker_gates() -> bool:
     precondition. ``_check_worker_singleton_holder`` (#3976) is the third HARD FAIL and
     the one a HELD flock hides: the loops tick, the flock is held and the service is Up,
     yet the holder is a process outside the deployment and the deployed worker has never
-    run. Each runs independently (no short-circuit) so every finding is emitted;
-    returns their AND for the caller's ``ok`` aggregation.
+    run. ``_check_resume_ceiling_reachable`` is the fourth: a cap at/under the governor's
+    RESUME floor makes the first brake permanent, which no amount of idling clears.
+    ``_check_clean_exit_restart_loop`` is the fifth: a service Docker keeps restarting, which
+    the watchdog only ever revives. Each
+    runs independently (no short-circuit) so every finding is emitted; returns their AND
+    for the caller's ``ok`` aggregation.
     """
     running = _check_worker_running()
     holder = _check_worker_singleton_holder()
     skills = _check_worker_skills_present()
     memory = _check_worker_memory_cap()
-    return running and holder and skills and memory
+    ceiling = _check_resume_ceiling_reachable()
+    restart_loop = _check_clean_exit_restart_loop()
+    return running and holder and skills and memory and ceiling and restart_loop
+
+
+def _run_schema_freshness_gates() -> bool:
+    """The self-DB schema guard plus its process-side mirror; their AND for ``ok``.
+
+    Django is configured before this runs (the editable-sanity check above needs it), so
+    the self-DB guard reports the REAL pending-migration state rather than silently
+    WARNing on ``ImproperlyConfigured`` and masking a stale runtime self-DB that locks out
+    the merge path (#126). ``doctor_check_process_code_freshness`` is the MIRROR reading
+    (#4387/#4390): is a long-running role behind the schema the DB has applied? This
+    process cannot answer that about another one — a fresh interpreter's own snapshot is
+    always current — so it reads what those roles publish. Both run independently (no
+    short-circuit) so neither finding masks the other.
+    """
+    from teatree.core.gates.schema_guard import (  # noqa: PLC0415 — lazy CLI import
+        doctor_check_process_code_freshness,
+        doctor_check_self_db_migrations,
+    )
+
+    migrations = doctor_check_self_db_migrations()
+    freshness = doctor_check_process_code_freshness()
+    return migrations and freshness
 
 
 def _run_loop_intent_gates() -> bool:
     """The ORM-reading loop/intent checks, grouped to keep ``run_doctor_checks`` lean.
 
-    ``_check_loop_presets`` (#3159, dangling preset/loop/schedule refs),
-    ``_check_loop_classification_drift`` (a ``Loop`` row disagreeing with the shipped
-    ``[loops.<name>]`` table), ``_check_shipped_seed_inertness`` (#3842, a shipped
-    loop/preset/schedule that is missing, disabled or not ticking) and ``_check_marker_jam``
-    (#3275, orphaned issue-markers stranding the intake budget) are surfacing-only WARNs —
-    their return values are deliberately discarded so neither can become a gate by accident.
-    ``_check_starved_intake_candidates`` (#4238, an issue judged admissible every pass and
-    never claimed) joins them: a slow queue is not a fault, an invisible one is. So does
-    ``_check_orphaned_process_groups`` (#4580) explains a surplus ``_check_box_occupancy``
-    can only report: a process group whose leader is gone keeps its members runnable, and
-    runnable is what the load average the governor throttles on counts.
+    Every verdict is GATING. Each names a queue, an authority or a
+    posture that rots while every other surface reads healthy — which is precisely why a
+    WARN nobody is forced to read is the wrong shape for them (A2): eight of these used to
+    print their finding and discard their verdict, so a box could fail all eight and still
+    exit zero.
 
-    ``_check_box_occupancy`` (#4407), which prints the factory's own agent count beside the
-    whole box's load — every other surface here counts only what the factory started, so a
-    box saturated by anything else reads healthy on all of them at once — and
-    ``_check_drain_lane_starved`` (#4374), its downstream twin — the work already admitted
-    is queued and none of it running, the state in which the board stops moving while every
-    other surface reads healthy.
+    Loop and shipped-seed posture: ``_check_loop_presets`` (#3159, dangling
+    preset/loop/schedule refs), ``_check_loop_classification_drift`` (a ``Loop`` row
+    disagreeing with the shipped ``[loops.<name>]`` table), ``_check_shipped_seed_inertness``
+    (#3842, a shipped loop/preset/schedule missing, disabled or not ticking),
+    ``_check_aged_sweep_skips`` and ``_check_marker_jam`` (#3275, orphaned issue-markers
+    stranding the intake budget).
 
-    The three metered-lane readings (#4816) join them, each naming an unknown the governor
-    cannot resolve for itself rather than being silently wrong about it:
-    ``check_metered_lane_ceiling`` (the box rides the metered lane with no ceiling, so that
-    dimension is inert and the lane is unbounded), ``check_metered_usage_unknown`` (attempts
-    in the window recorded UNKNOWN usage, so the measured spend is a FLOOR), and
-    ``check_overlay_harness_agreement`` (overlays disagree on their harness, so the ONE
-    whole-box probe describes only the lane the global provider pin names).
+    Queue and capacity posture: ``_check_starved_intake_candidates`` (#4238, an issue judged
+    admissible every pass and never claimed), ``_check_box_occupancy`` (#4407, the factory's
+    own agent count beside the WHOLE box's load — every other surface here counts only what
+    the factory started, so a box saturated by anything else reads healthy on all of them at
+    once) and ``_check_drain_lane_starved`` (#4374, its downstream twin: the work already
+    admitted is queued and none of it running).
 
-    SIX verdicts ARE returned, each a queue or authority that rots while every other
-    surface reads healthy; all five are evaluated before the ``and`` so none can mask
-    another. ``_check_intent_freshness``: a consumable intent queue is non-empty while
-    its consumer is not live (the directive-loop silent-freeze, zero signal).
-    ``_check_intake_budget_deadlock`` (#3978): a full in-flight budget held entirely by
-    claims going nowhere admits no work. ``_check_intake_pass_incomplete`` (#4466) is its
-    upstream twin — the budget is free, but the scan never reaches the frontier where the
-    claimable issues are, so nothing filed is admitted and only a worker-log WARN says so.
-    ``_check_loop_schedule_liveness`` (#4140): a
-    loop whose chain was dropped keeps a recent anchor, so it reads healthy while nothing
-    will ever fire it again. ``_check_t3_master_unheld_while_loops_tick`` (#4253) inverts
-    that — the chains fire, but the ``t3-master`` lease no reactive cycle runs without is
-    unheld, and nothing else reads it. ``_check_unconsumed_merge_clears`` (#4250) is the
-    merge-side twin: an authorisation to merge a reviewed diff that nothing executed,
-    standing while the age signal, the sweep log and ``MergeAudit`` all read healthy.
-    ``_check_sweep_repos_resolve_a_forge`` (#72) is the sweep-side twin of that shape: a
-    swept repo whose forge no ``owned_repos`` declaration names is refused every tick
-    while the tick report reads clean.
+    Silent-freeze posture: ``_check_intent_freshness`` (a consumable intent queue non-empty
+    while its consumer is not live), ``_check_intake_budget_deadlock`` (#3978, a full
+    in-flight budget held entirely by claims going nowhere), ``_check_intake_pass_incomplete``
+    (#4466, its upstream twin — the budget is free, but the scan never reaches the frontier),
+    ``_check_loop_schedule_liveness`` (#4140, a loop whose chain was dropped keeps a recent
+    anchor, so it reads healthy while nothing will ever fire it again),
+    ``_check_t3_master_unheld_while_loops_tick`` (#4253, the inverse — the chains fire, but
+    the ``t3-master`` lease no reactive cycle runs without is unheld),
+    ``_check_unconsumed_merge_clears`` (#4250, an authorisation to merge a reviewed diff that
+    nothing executed) and ``_check_sweep_repos_resolve_a_forge`` (#72, a swept repo whose
+    forge no ``owned_repos`` declaration names, refused every tick while the report reads
+    clean).
+
+    Four readings stay surfacing-only, their verdicts discarded, because each names an
+    unknown rather than a fault: ``_check_orphaned_process_groups`` (#4580, a process group
+    whose leader is gone keeps its members runnable, the surplus ``_check_box_occupancy`` can
+    only report) and the three metered-lane readings (#4816) — ``check_metered_lane_ceiling``
+    (the metered lane has no ceiling, so that dimension is inert), ``check_metered_usage_unknown``
+    (attempts in the window recorded UNKNOWN usage, so the measured spend is a FLOOR) and
+    ``check_overlay_harness_agreement`` (overlays disagree on their harness, so the ONE whole-box
+    probe describes only the lane the global provider pin names).
+
+    Collected into a list before the ``all``, so every check runs and no early failure can
+    mask a later one's finding.
     """
-    _check_loop_presets()
-    _check_loop_classification_drift()
-    _check_shipped_seed_inertness()
-    _check_aged_sweep_skips()
-    _check_marker_jam()
-    _check_box_occupancy()
     _check_orphaned_process_groups()
-    _check_starved_intake_candidates()
-    _check_drain_lane_starved()
     check_metered_lane_ceiling()
     check_metered_usage_unknown()
     check_overlay_harness_agreement()
-    intake_ok = _check_intake_budget_deadlock()
-    pass_ok = _check_intake_pass_incomplete()
-    scheduled_ok = _check_loop_schedule_liveness()
-    master_ok = _check_t3_master_unheld_while_loops_tick()
-    clears_ok = _check_unconsumed_merge_clears()
-    routable_ok = _check_sweep_repos_resolve_a_forge()
-    return (
-        _check_intent_freshness() and intake_ok and pass_ok and scheduled_ok and master_ok and clears_ok and routable_ok
-    )
+    verdicts = [
+        _check_loop_presets(),
+        _check_loop_classification_drift(),
+        _check_shipped_seed_inertness(),
+        _check_aged_sweep_skips(),
+        _check_marker_jam(),
+        _check_box_occupancy(),
+        _check_starved_intake_candidates(),
+        _check_drain_lane_starved(),
+        _check_merge_brake(),
+        _check_queue_stall(),
+        check_ci_oauth_pool(),
+        _check_intent_freshness(),
+        _check_intake_budget_deadlock(),
+        _check_intake_pass_incomplete(),
+        _check_loop_schedule_liveness(),
+        _check_t3_master_unheld_while_loops_tick(),
+        _check_unconsumed_merge_clears(),
+        _check_sweep_repos_resolve_a_forge(),
+    ]
+    return all(verdicts)
 
 
 def _check_claude_session_posture() -> bool:
@@ -327,7 +365,7 @@ def _run_daily_advisories() -> None:
 def _run_config_posture_advisories() -> None:
     """Post-ensure_django advisories over teatree's OWN configuration rows — never gate.
 
-    Two readings of the same question, "is the box configured the way anyone thinks it is":
+    Four readings of the same question, "is the box configured the way anyone thinks it is":
 
     *   #3274 — a no-expiry mode override that has sat past the staleness threshold,
         silently masking whichever loops it forces off the whole time.
@@ -335,8 +373,10 @@ def _run_config_posture_advisories() -> None:
         default, i.e. a row still shadowing a default that has since moved underneath it.
     *   #4189 — every gated feature that is off in every scope and whose declared evidence
         observable is empty, i.e. a gate merged, reviewed, tested and never once fired.
+    *   a repo two overlays both claim while configuring its guard rails differently, so
+        which overlay's rails apply is decided by whichever answers first.
 
-    All three read the ORM, so this runs after ``ensure_django``; all three are
+    All four read the ORM, so this runs after ``ensure_django``; all four are
     surfacing-only, so their return values are deliberately discarded and none can redden
     the exit code. Grouped for the same reason :func:`_run_daily_advisories` is — to keep
     :func:`run_doctor_checks` inside its statement budget rather than growing a flat list.
@@ -386,24 +426,6 @@ def _run_mcp_checks(*, repair: bool = False) -> bool:
     return _check_teatree_mcp_liveness(repair=repair) and ok
 
 
-def _check_schema_freshness() -> bool:
-    """The self-DB's applied schema, and whether a long-running role is behind it.
-
-    Called only after ``ensure_django()``: unconfigured, the schema guard WARNs on
-    ``ImproperlyConfigured`` and masks a stale runtime self-DB that locks out the merge
-    path (#126). The MIRROR reading (#4387/#4390) rides alongside — this process cannot
-    answer freshness about ANOTHER one, since a fresh interpreter's own snapshot is always
-    current, so that check reads what the long-running roles publish. The tuple calls both
-    before ``all`` short-circuits, so neither finding masks the other.
-    """
-    from teatree.core.gates.schema_guard import (  # noqa: PLC0415 — lazy CLI import
-        doctor_check_process_code_freshness,
-        doctor_check_self_db_migrations,
-    )
-
-    return all((doctor_check_self_db_migrations(), doctor_check_process_code_freshness()))
-
-
 def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) -> bool:
     """Run every doctor check; return ``False`` if any hard-FAILs.
 
@@ -437,7 +459,6 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # Detect a relocated/same-name-hijacked editable install: the active t3 shim's
     # uv receipt editable source no longer matches the expected checkout ($T3_REPO).
     # Unlike the dangling check, this catches a target that EXISTS but is wrong.
-    # `--repair` re-points it via
     # `--repair` re-points it via `uv tool install --editable <checkout> --overrides ... --force`.
     ok = _check_t3_shim_receipt(repair=repair) and ok
     # ``check`` is a plain Typer command in the Django-free CLI group, so Django is
@@ -509,13 +530,18 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
         )
         and ok
     )
-    ok = _check_single_db() and ok
-    ok = _check_control_db_agreement() and ok
-    # Every venv-hygiene probe runs through `all` so none short-circuits another: a
-    # wrong-toolchain venv, a foreign-host interpreter and a venue-unresolvable one are
-    # different faults with different remedies, and reporting one must not hide the rest.
-    ok = all([_check_stale_uv_venv(), _check_venv_interpreter_is_this_host(), _check_interpreter_plane(), ok])
+    ok = all([_check_single_db(), _check_control_db_agreement()]) and ok
+    ok = all(
+        [
+            _check_stale_uv_venv(),
+            _check_venv_interpreter_is_this_host(),
+            _check_project_venv_editable_pths(),
+            _check_interpreter_plane(),
+            ok,
+        ]
+    )
     ok = all([_check_stale_path_t3(), _check_t3_launcher_managed(), _check_control_db_reachable()]) and ok
+    ok = check_deployed_gnupg_home() and ok
     ok = _check_agent_session_pins() and ok
     # #3499: the hooks read settings through a DIFFERENT interpreter than the CLI, so a
     # store the CLI reads fine can be unreadable to every cold-hook gate. Runs after
@@ -545,7 +571,9 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # the ensure_django() above.
     ok = all((check_statusline(), check_statusline_freshness())) and ok
 
-    ok = _check_schema_freshness() and ok
+    # The two schema-freshness gates, grouped so run_doctor_checks stays lean — the same
+    # shape as the worker and loop-intent groups above.
+    ok = _run_schema_freshness_gates() and ok
 
     # Worker-role gates: flock liveness (advisory) + the CRITICAL skills-present
     # and memory-adequate HARD FAILs (role-aware no-ops off the worker). See

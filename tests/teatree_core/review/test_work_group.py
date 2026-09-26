@@ -2,6 +2,7 @@
 
 import pytest
 
+from teatree.core.review import work_group
 from teatree.core.review.work_group import GroupSignal, SignalKind, group_members, signals_for
 
 GENERIC_SCOPES = frozenset({"chore", "ci", "docs"})
@@ -136,6 +137,11 @@ class TestGrouping:
             ("mr/3", "chore(ci): unrelated pipeline tidy"),
         ]
         assert _partition(items) == {frozenset({"mr/1", "mr/2"}), frozenset({"mr/3"})}
+
+    def test_the_shipped_scopes_keep_two_housekeeping_changes_apart(self) -> None:
+        items = [("mr/1", "chore(deps): bump a"), ("mr/2", "chore(deps): bump b")]
+        groups = group_members(items, generic_scopes=work_group.GENERIC_SCOPES)
+        assert set(groups.values()) == {frozenset({"mr/1"}), frozenset({"mr/2"})}
 
     def test_an_empty_generic_scope_set_lets_every_scope_group(self) -> None:
         items = [("mr/1", "feat(ci): a"), ("mr/2", "fix(ci): b")]

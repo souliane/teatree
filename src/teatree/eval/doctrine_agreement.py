@@ -32,7 +32,7 @@ from pathlib import Path
 
 from teatree.eval.discovery import DEFAULT_SKILLS_DIR, SCENARIOS_DIR
 from teatree.eval.loader import load_eval_yaml
-from teatree.eval.models import AnyOf, EvalSpec, Matcher
+from teatree.eval.models import AnyOf, EvalSpec, Matcher, SuccessfulToolCallMatcher
 
 #: The marker a shipped skill puts on a command line it forbids.
 FORBIDDEN_MARKER = "FORBIDDEN"
@@ -175,18 +175,18 @@ def shipped_specs(scenarios_dir: Path = SCENARIOS_DIR) -> tuple[EvalSpec, ...]:
     return tuple(spec for path in sorted(scenarios_dir.glob("*.yaml")) for spec in load_eval_yaml(path))
 
 
-def _positive_command_matchers(spec: EvalSpec) -> tuple[Matcher, ...]:
+def _positive_command_matchers(spec: EvalSpec) -> tuple[Matcher | SuccessfulToolCallMatcher, ...]:
     """The matchers that require the agent to RUN a shell command."""
-    positives: list[Matcher] = []
+    positives: list[Matcher | SuccessfulToolCallMatcher] = []
     for item in spec.matchers:
         if isinstance(item, AnyOf):
             positives.extend(item.alternatives)
-        elif isinstance(item, Matcher) and item.kind == "positive":
+        elif (isinstance(item, Matcher) and item.kind == "positive") or isinstance(item, SuccessfulToolCallMatcher):
             positives.append(item)
     return tuple(m for m in positives if m.tool == "Bash" and "command" in m.arg_path)
 
 
-def _matches(matcher: Matcher, command: str) -> bool:
+def _matches(matcher: Matcher | SuccessfulToolCallMatcher, command: str) -> bool:
     if matcher.operator == "~":
         return re.search(matcher.value, command) is not None
     return matcher.value in command
@@ -224,7 +224,7 @@ def unpinned_mandates(
     migrations: tuple[SeamMigration, ...],
 ) -> tuple[UnpinnedMandate, ...]:
     """Mandated commands no scenario graded against the same doctrine pins."""
-    matchers_by_skill: dict[str, list[Matcher]] = {}
+    matchers_by_skill: dict[str, list[Matcher | SuccessfulToolCallMatcher]] = {}
     for spec in specs:
         matchers_by_skill.setdefault(spec.agent_path, []).extend(_positive_command_matchers(spec))
     return tuple(

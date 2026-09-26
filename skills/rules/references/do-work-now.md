@@ -67,14 +67,14 @@ This rule reinforces "Do Work Now" — the bundling decision is part of doing th
 
 ## Contribute Mode: Promote Findings to Skills, Not Personal Memory (Non-Negotiable)
 
-When `contribute` is `true` (a DB-home setting — `t3 <overlay> config_setting set contribute true`), retro findings and cross-cutting rules **must land in teatree skill files**, not in the agent's personal memory/config. Personal memory is the fallback for user-specific facts — paths, credentials, editor preferences, one-machine workflow choices. For anything that would help another user of these skills, write to the skill.
+When `contribute` is `true` (a DB-home setting — `t3 <overlay> config_setting set contribute true`), retro findings and cross-cutting rules **must land in teatree skill files**. An agent never creates a memory file: `/t3:retro` emits its findings through `t3 <overlay> retro finding`, and a user preference with a documented knob goes to `config_setting set`. Personal memory names what may already live in the corpus — user-specific facts like paths, credentials, editor preferences, one-machine workflow choices — never a destination anything writes to.
 
-**Before writing a feedback/guardrail to personal memory, check:**
+**Deciding where a feedback/guardrail belongs:**
 
 1. `contribute` set to `true` (`config_setting set contribute true`)? → yes almost always makes this a skill edit.
 2. Does the rule encode a guardrail, pattern, or "do this not that"? → skill.
 3. Would another user benefit? → skill.
-4. Is it a user preference (tone, formatting) or environment fact (path, credential)? → personal memory is legitimate.
+4. Is it a user preference (tone, formatting) or environment fact (path, credential)? → not a skill edit — `config_setting set` owns it where a knob exists.
 
 **Promote means edit an existing skill.** Pick the best-fit existing skill (`/t3:rules`, `/t3:next`, `/t3:ship`, etc.) and insert the rule there. Do not invent a new skill for a single rule — that fragments the skill graph.
 

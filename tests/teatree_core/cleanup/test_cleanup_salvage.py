@@ -6,13 +6,13 @@ leaves the source intact — salvage never destroys the only copy on its own
 failure.
 """
 
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from teatree.core.cleanup.cleanup_salvage import SalvageHooks, SalvageRequest, default_salvage_hooks, salvage_item
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 
@@ -196,26 +196,24 @@ def test_scan_can_be_bypassed_when_banned_clean_not_required(tmp_path: Path) -> 
 def test_default_push_hook_supplies_the_forge_credential(tmp_path: Path) -> None:
     """#4103: salvage deletes the source once the branch lands, so its push must carry the credential.
 
-    A raw ``git push`` inherits only what git can already see, and only ``GH_TOKEN``
-    reaches git's credential helper — so a venue holding the token under teatree's
-    own name pushes iff the hook resolves the credential itself. Asserted on the
-    KEY's presence in the env git received — never on a value.
+    The owner-routed DB token must reach git under the explicit ``GH_TOKEN`` key.
     """
-    only_teatree_named = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
-    only_teatree_named["TEATREE_GH_TOKEN"] = "sentinel-not-a-credential"
     work = _repo_with_feature(tmp_path)
     push_envs: list[dict[str, str]] = []
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
 
-    def spy(cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def spy(cmd: list[str], *, env: dict[str, str] | None = None, **kwargs: Any) -> subprocess.Popen[str]:
         if "push" in cmd:
             push_envs.append(dict(env or {}))
-        return real_run(cmd, env=env, **kwargs)
+        return real_popen(cmd, env=env, **kwargs)
 
     hooks = default_salvage_hooks(source_branch="feature", delete=lambda: True)
     with (
-        patch.dict(os.environ, only_teatree_named, clear=True),
-        patch("teatree.utils.run.subprocess.run", side_effect=spy),
+        patch(
+            "teatree.core.forge_push.resolve_repo_token",
+            return_value=ForgeTokenResolution("github_token", "test", ForgeTokenState.TOKEN, token="routed-token"),
+        ),
+        patch("teatree.utils.run.subprocess.Popen", side_effect=spy),
     ):
         assert hooks.push(str(work), "feature") is True
 

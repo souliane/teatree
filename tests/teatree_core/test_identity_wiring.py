@@ -12,6 +12,7 @@ from teatree.core.identity_wiring import (
     classify_authoring_identity,
     derivable_owner_identities,
     owner_identity_fault,
+    unapprovable_open_mr_fault,
 )
 from teatree.core.overlay import OverlayConfig
 
@@ -125,3 +126,54 @@ class TestDerivableOwnerIdentities:
     def test_blanks_and_duplicates_collapse(self) -> None:
         derived = derivable_owner_identities(forge_logins=["a", "", "  ", "a"], self_identities=[])
         assert derived == ("a",)
+
+
+class TestUnapprovableOpenMrFault:
+    """MRs already open under the approver's own identity are named before somebody needs them."""
+
+    _REMOTE = "git@forge.example:org/group/widget.git"
+
+    def test_an_open_mr_authored_by_the_approver_is_reported_with_its_reference(self) -> None:
+        fault = unapprovable_open_mr_fault(
+            remote=self._REMOTE,
+            authors_by_ref={"https://forge.example/org/group/widget/-/merge_requests/7": "the-owner"},
+            approvers=["the-owner"],
+        )
+
+        assert fault is not None
+        assert "merge_requests/7" in fault.summary
+        assert "pr create" in fault.remedy
+
+    def test_every_unapprovable_mr_is_named_not_just_the_first(self) -> None:
+        fault = unapprovable_open_mr_fault(
+            remote=self._REMOTE,
+            authors_by_ref={"!7": "the-owner", "!9": "the-bot", "!11": "the-owner"},
+            approvers=["the-owner"],
+        )
+
+        assert fault is not None
+        assert "!7" in fault.summary
+        assert "!11" in fault.summary
+        assert "!9" not in fault.summary
+
+    def test_mrs_authored_by_the_declared_bot_are_not_a_fault(self) -> None:
+        fault = unapprovable_open_mr_fault(
+            remote=self._REMOTE, authors_by_ref={"!7": "the-bot"}, approvers=["the-owner"]
+        )
+
+        assert fault is None
+
+    def test_no_open_mrs_at_all_is_not_a_fault(self) -> None:
+        assert unapprovable_open_mr_fault(remote=self._REMOTE, authors_by_ref={}, approvers=["the-owner"]) is None
+
+    def test_a_blank_only_approver_list_never_reads_as_a_wildcard(self) -> None:
+        fault = unapprovable_open_mr_fault(remote=self._REMOTE, authors_by_ref={"!7": ""}, approvers=["", "   "])
+
+        assert fault is None
+
+    def test_the_author_match_ignores_case_and_padding(self) -> None:
+        fault = unapprovable_open_mr_fault(
+            remote=self._REMOTE, authors_by_ref={"!7": " The-Owner "}, approvers=["the-owner"]
+        )
+
+        assert fault is not None

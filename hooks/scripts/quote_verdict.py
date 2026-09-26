@@ -49,12 +49,16 @@ class QuoteVerdict:
 
     ``warning`` is the stderr line to print when the match DOWNGRADES to a warn
     (``deny`` is then ``False``); when ``deny`` is ``True`` the caller emits the
-    quote-scanner block message. ``decision`` is the ledger label.
+    quote-scanner block message. ``decision`` is the ledger label. ``hint`` is the
+    read-only scope diagnostic appended to that message — it rides the verdict
+    because the verdict resolver is the one place that already holds both the
+    command and its cwd, so the message renderer needs no extra parameters.
     """
 
     deny: bool
     warning: str | None
     decision: str
+    hint: str = ""
 
 
 def resolve_high_verdict(command: str, cwd: Path | None) -> QuoteVerdict:
@@ -86,10 +90,14 @@ def resolve_high_verdict(command: str, cwd: Path | None) -> QuoteVerdict:
     default env/home one (the live gate passes no explicit config; tests pin it
     via the ``config_path`` argument).
     """
-    from teatree.hooks import public_visibility, publish_surface  # noqa: PLC0415 — deferred: cold-hook import
+    from teatree.hooks import (  # noqa: PLC0415 — deferred: cold-hook import
+        public_visibility,
+        publish_surface,
+        scan_scope_hint,
+    )
 
     if public_visibility.gate_skips_for_visibility(command, cwd):
         return QuoteVerdict(deny=False, warning=_NON_PUBLIC_SKIP, decision="allow-nonpublic-destination")
     if publish_surface.command_targets_private_only(command, cwd):
         return QuoteVerdict(deny=False, warning=_PRIVATE_REPO_WARNING, decision="warn-private-repo")
-    return QuoteVerdict(deny=True, warning=None, decision="deny")
+    return QuoteVerdict(deny=True, warning=None, decision="deny", hint=scan_scope_hint.scan_scope_hint(command, cwd))

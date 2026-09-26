@@ -32,6 +32,7 @@ import httpx
 
 from teatree.backends.http_retry import BoundedRetryTransport, SleepFn, env_float
 from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.overlays.overlay_credentials import overlay_pass_key
 from teatree.llm.credentials import Credential, CredentialError, CredentialSpec
 
 logger = logging.getLogger(__name__)
@@ -71,17 +72,13 @@ class GitLabTokenCredential(Credential):
     :class:`~teatree.llm.credentials.Credential` machinery (env wins, then the
     ``pass`` store) instead of an ad-hoc ``os.environ.get`` + ``read_pass`` pair,
     so the lookup is testable with injected sources and a rotated ``GITLAB_TOKEN``
-    env value always overrides a stale ``pass`` entry. Unlike the metered Claude
-    credentials this keeps its documented ``pass`` default (``gitlab/pat``) so
-    existing local setups keep working; the fail-loud-on-empty guarantee is
-    enforced at the transport boundary via :meth:`GitLabHTTPClient._require_token`.
+    env value always overrides a stale ``pass`` entry. There is no default entry:
+    the ``pass`` fallback reads what the ``gitlab_token_pass_key`` setting routes to,
+    and the fail-loud-on-empty guarantee is enforced at the transport boundary via
+    :meth:`GitLabHTTPClient._require_token`.
     """
 
-    spec = CredentialSpec(
-        env_var="GITLAB_TOKEN",
-        conflicting_vars=(),
-        pass_path="gitlab/pat",  # noqa: S106 — pass entry path, not a secret value
-    )
+    spec = CredentialSpec(env_var="GITLAB_TOKEN", conflicting_vars=(), routing_setting="gitlab_token_pass_key")
 
 
 def _resolve_token() -> str:
@@ -93,7 +90,7 @@ def _resolve_token() -> str:
     check ``.token`` presence before issuing any request.
     """
     try:
-        return GitLabTokenCredential().resolve()
+        return GitLabTokenCredential(pass_path_override=overlay_pass_key("gitlab_token") or None).resolve()
     except CredentialError:
         return ""
 
@@ -157,9 +154,18 @@ class GitLabHTTPClient(BoundedRetryTransport):
         ``None`` / ``[]`` / ``0`` fed a merge/notify decision as if it were data.
         """
         if not self.token:
+            pass_key = overlay_pass_key("gitlab_token")
+            if pass_key:
+                remedy = f"store the token with `pass insert {pass_key}`"
+            else:
+                remedy = (
+                    "route `gitlab_token_pass_key` with "
+                    "`t3 <overlay> config_setting set gitlab_token_pass_key '\"<entry>\"' --overlay <overlay>`, "
+                    "then store the token with `pass insert <entry>`"
+                )
             msg = (
-                "GitLab request attempted with no resolved credential. Set GITLAB_TOKEN "
-                "in the environment or store one with `pass insert gitlab/pat`."
+                "GitLab request attempted with no resolved credential. "
+                f"Set GITLAB_TOKEN in the environment or {remedy}."
             )
             raise BackendResolutionError(msg)
 

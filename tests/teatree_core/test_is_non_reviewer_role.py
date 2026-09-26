@@ -18,6 +18,7 @@ from teatree.core.models import MergeClear, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest
 from teatree.core.models.reviewer_identity import is_non_reviewer_role
 from tests._forge_stub import changed_files_stdout
+from tests.factories import waive_rubric
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -157,6 +158,7 @@ class TestMergeTimeMergeLoopBlockedIntegration(TestCase):
 
     def test_merge_with_merge_loop_reviewer_raises(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=1601,
@@ -182,6 +184,7 @@ class TestLegitimateReviewerIdentityPositiveControl(TestCase):
 
     def test_cold_review_identity_issues_and_merges(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
         clear = MergeClear.issue(
             ClearRequest(
                 pr_id=1602,

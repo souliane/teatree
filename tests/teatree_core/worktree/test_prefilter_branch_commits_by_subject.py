@@ -8,6 +8,7 @@ happy-path mock target moved from the lenient ``git.run`` to the strict runner);
 no bucketing behavior change.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +19,28 @@ from teatree.core.worktree.branch_classification import (
     SubjectPrefilterResult,
     prefilter_branch_commits_by_subject,
 )
+from tests._git_repo import make_git_repo, run_git
+
+
+def _clone_with_deleted_branch(tmp_path: Path) -> tuple[Path, str]:
+    origin = make_git_repo(tmp_path / "origin.git", bare=True)
+    clone = tmp_path / "clone"
+    run_git(tmp_path, "clone", "-q", str(origin), str(clone))
+    run_git(clone, "commit", "-q", "--allow-empty", "-m", "initial")
+    run_git(clone, "push", "-q", "origin", "main")
+    branch = "deleted-feature"
+    run_git(clone, "branch", branch)
+    run_git(clone, "branch", "-D", branch)
+    return clone, branch
+
+
+class TestPrefilterMissingBranch:
+    def test_deleted_branch_returns_branch_missing_outcome(self, tmp_path: Path) -> None:
+        clone, branch = _clone_with_deleted_branch(tmp_path)
+
+        result = prefilter_branch_commits_by_subject(str(clone), branch)
+
+        assert result.branch_missing is True
 
 
 class TestPrefilterBranchCommitsBySubject(TestCase):

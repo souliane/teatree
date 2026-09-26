@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.config import Mode, OnBehalfPostMode, get_effective_settings, load_config
+from teatree.config import Mode, get_effective_settings, load_config
 from teatree.config.setting_parsers import _parse_overridable_positive_int
 from teatree.config.settings import UserSettings
 from teatree.core.models import ConfigSetting
@@ -43,12 +43,10 @@ class TestDbTierDefaults(TestCase):
         for env in (
             "T3_OVERLAY_NAME",
             "T3_MODE",
-            "T3_ON_BEHALF_POST_MODE",
             "T3_AUTOLOAD",
-            "T3_ISSUE_IMPLEMENTER_ENABLED",
+            "T3_HOOK_FETCH_TITLES",
             "T3_ORCHESTRATE_CLAIM_ENABLED",
             "T3_NOTIFY_ON_POST_ON_BEHALF",
-            "T3_LOOP_AUTO_UPDATE",
         ):
             monkeypatch.delenv(env, raising=False)
 
@@ -60,7 +58,6 @@ class TestDbTierDefaults(TestCase):
         settings = get_effective_settings()
         assert settings.mode is Mode.AUTO
         assert settings.require_human_approval_to_answer is False
-        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
         assert settings.require_human_approval_to_merge is True
         assert settings.notify_on_post_on_behalf is True
         assert settings.agent_signature is False
@@ -85,17 +82,15 @@ class TestDbTierDefaults(TestCase):
 
     def test_issue_implementer_defaults(self) -> None:
         settings = get_effective_settings()
-        assert settings.issue_implementer_enabled is True
+        assert settings.hook_fetch_titles is True
         assert settings.issue_implementer_label == ""
         assert settings.issue_implementer_max_concurrent == 3
 
     def test_e2e_confidence_threshold_default(self) -> None:
         assert get_effective_settings().e2e_confidence_threshold == 90
 
-    def test_auto_update_defaults(self) -> None:
-        settings = get_effective_settings()
-        assert settings.auto_update_require_green_main is True
-        assert settings.auto_update_reinstall is False
+    def test_auto_update_requires_a_green_default_branch(self) -> None:
+        assert get_effective_settings().auto_update_require_green_main is True
 
 
 def test_handover_mirror_path_defaults_under_xdg_data(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -111,7 +106,7 @@ class TestDbTierGlobalResolution(TestCase):
 
     @pytest.fixture(autouse=True)
     def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        for env in ("T3_OVERLAY_NAME", "T3_MODE", "T3_ON_BEHALF_POST_MODE"):
+        for env in ("T3_OVERLAY_NAME", "T3_MODE"):
             monkeypatch.delenv(env, raising=False)
 
     def test_agent_signature_db_opt_in(self) -> None:
@@ -129,14 +124,6 @@ class TestDbTierGlobalResolution(TestCase):
     def test_notify_on_post_on_behalf_db_false(self) -> None:
         ConfigSetting.objects.set_value("notify_on_post_on_behalf", value=False)
         assert get_effective_settings().notify_on_post_on_behalf is False
-
-    def test_on_behalf_post_mode_db_immediate(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
-        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
-
-    def test_on_behalf_post_mode_db_ask(self) -> None:
-        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
-        assert get_effective_settings().on_behalf_post_mode is OnBehalfPostMode.ASK
 
     def test_user_identity_aliases_db(self) -> None:
         ConfigSetting.objects.set_value("user_identity_aliases", ["adrien.work", "souliane", "adrien.cossa"])
@@ -175,16 +162,12 @@ class TestEnvOverrides(TestCase):
         assert get_effective_settings().autoload is True
 
     def test_issue_implementer_env_enables(self) -> None:
-        self.monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "true")
-        assert get_effective_settings().issue_implementer_enabled is True
+        self.monkeypatch.setenv("T3_HOOK_FETCH_TITLES", "true")
+        assert get_effective_settings().hook_fetch_titles is True
 
     def test_orchestrate_claim_env_enables(self) -> None:
         self.monkeypatch.setenv("T3_ORCHESTRATE_CLAIM_ENABLED", "true")
         assert get_effective_settings().orchestrate_claim_enabled is True
-
-    def test_auto_update_reinstall_env_enables(self) -> None:
-        self.monkeypatch.setenv("T3_LOOP_AUTO_UPDATE", "true")
-        assert get_effective_settings().auto_update_reinstall is True
 
     def test_notify_on_post_on_behalf_has_no_env_layer(self) -> None:
         # Anti-vacuity guard: ``notify_on_post_on_behalf`` is intentionally NOT in

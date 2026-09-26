@@ -136,18 +136,22 @@ class GitLabAPI(GitLabHTTPClient):
         *,
         per_page: int = 100,
         updated_after: str | None = None,
+        project_slugs: tuple[str, ...] = (),
     ) -> list[RawMR]:
-        """Fetch all open issues (and work items) assigned to *assignee* across accessible projects."""
-        query: dict[str, str | int] = {
+        """Fetch open issues assigned to *assignee*, optionally scoped by project."""
+        base: dict[str, str | int] = {
             "state": "opened",
             "assignee_username": assignee,
-            "scope": "all",
             "per_page": per_page,
         }
         if updated_after:
-            query["updated_after"] = updated_after
-        params = urlencode(query)
-        return self.get_json_paginated(f"issues?{params}")
+            base["updated_after"] = updated_after
+        if not project_slugs:
+            return self.get_json_paginated(f"issues?{urlencode({**base, 'scope': 'all'})}")
+        issues: list[RawMR] = []
+        for slug in project_slugs:
+            issues.extend(self.get_json_paginated(f"projects/{slug.replace('/', '%2F')}/issues?{urlencode(base)}"))
+        return issues
 
     def list_open_issues_for_author(
         self,

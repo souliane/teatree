@@ -19,7 +19,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents import runner
-from teatree.core.models import Task, TaskAttempt, Worktree
+from teatree.core.models import LeaseLostError, Task, TaskAttempt, Worktree
 from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
 from tests.factories import SessionFactory, TicketFactory, WorktreeFactory
 
@@ -128,7 +128,7 @@ class HeartbeatRenewalTests(_DispatchCase):
     def test_a_checkout_taken_by_a_rival_aborts_the_run(self) -> None:
         acquire(self.worktree, holder="task:999", holder_session="operator-lane")
 
-        with pytest.raises(runner.LeaseLostError, match="already occupied by task:999"):
+        with pytest.raises(LeaseLostError, match="already occupied by task:999"):
             runner._renew_lease_closing_connection(self.task)
 
     def test_an_unprovisioned_ticket_renews_no_claim(self) -> None:

@@ -16,11 +16,12 @@ from django.test import TestCase
 
 from teatree.backends.types import Service
 from teatree.core.factory.factory_score import FactoryScoreDict
+from teatree.core.factory.factory_signals import SIGNALS, VISIBILITY_SIGNALS
 from teatree.core.models import Task
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
 from teatree.mcp import build_server
 from teatree.mcp.search import factory_score
-from teatree.mcp.server import _required_services
+from teatree.mcp.server import _required_services, declared_write_tool_seams
 from tests.factories import TaskFactory, TicketFactory
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
@@ -56,10 +57,18 @@ _WRITE_TOOLS = {
     "worktree_teardown",
     "review_post_draft_note",
     "review_post_comment",
+    "review_post_comments",
     "review_request_post",
 }
 
 _EXPECTED_TOOLS = _READ_TOOLS | _WRITE_TOOLS
+_MAILBOX_TOOLS = {
+    "agent_mailbox_self",
+    "agent_mailbox_peers",
+    "agent_mailbox_send",
+    "agent_mailbox_inbox",
+    "agent_mailbox_wait",
+}
 
 
 class TestToolRegistration(TestCase):
@@ -72,6 +81,15 @@ class TestToolRegistration(TestCase):
         assert set(by_name) == _EXPECTED_TOOLS
         assert all(by_name[name].annotations and by_name[name].annotations.read_only_hint for name in _READ_TOOLS)
         assert all(not by_name[name].annotations.read_only_hint for name in _WRITE_TOOLS)
+
+    def test_mailbox_tools_exist_only_for_a_runner_bound_mcp_child(self) -> None:
+        env = {"T3_AGENT_MAILBOX_SOCKET": "/tmp/missing.sock", "T3_AGENT_MAILBOX_TOKEN": "test-token"}
+        with patch.dict("os.environ", env), patch("teatree.mcp.server.get_all_overlays", return_value={}):
+            bound = build_server()
+            names = {tool.name for tool in asyncio.run(bound.list_tools())}
+            assert "agent_mailbox_send" in declared_write_tool_seams(frozenset())
+        assert names & _MAILBOX_TOOLS == _MAILBOX_TOOLS
+        assert "agent_mailbox_send" in (bound.instructions or "")
 
     def test_ticket_search_advertises_its_filter_parameters(self) -> None:
         tools = {tool.name: tool for tool in asyncio.run(build_server().list_tools())}
@@ -112,13 +130,13 @@ class TestCallToolThroughServer(TestCase):
         stats = _payloads(result)[0]
         assert stats["tasks"]["pending"] >= 1
 
-    def test_factory_signals_returns_five_signals(self) -> None:
+    def test_factory_signals_returns_every_registered_signal(self) -> None:
         server = build_server()
 
         result = async_to_sync(server.call_tool)("factory_signals", {})
 
         report = _payloads(result)[0]
-        assert len(report["signals"]) == 5
+        assert len(report["signals"]) == len(SIGNALS) + len(VISIBILITY_SIGNALS)
         assert report["verdict"] in {"ok", "regressing", "red"}
 
     def test_unknown_ticket_reference_returns_empty(self) -> None:

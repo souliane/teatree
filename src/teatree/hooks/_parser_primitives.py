@@ -28,8 +28,8 @@ _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*
 
 # Transparent argv wrappers whose first non-flag operand IS the real executed
 # program (``xargs gh``, ``env GH_PAGER= gh``, ``command gh``, ``nohup gh``,
-# ``time gh``, ``exec gh``). Mirrors ``raw_merge_detect._WRAPPER_PROGRAMS``. The
-# frozenset is defined LOCALLY so this stays a leaf: after the wrapper is stripped
+# ``time gh``, ``exec gh``). Mirrors the keys of ``forge_subcommand._WRAPPER_VALUE_OPTIONS``.
+# The frozenset is defined LOCALLY so this stays a leaf: after the wrapper is stripped
 # the leader canonicalises to the real forge tool.
 _WRAPPER_PROGRAMS: Final[frozenset[str]] = frozenset({"command", "time", "nohup", "exec", "xargs", "env"})
 
@@ -149,6 +149,45 @@ def attached_value(token: str, prefix: str) -> str | None:
     return None
 
 
+# THE catalogue of body-bearing names, in the snake_case spelling a ``gh``/``glab
+# api`` field assignment uses. A name belongs here when the forge renders its
+# value back to readers as free prose the author typed: GitHub spells an
+# issue/PR/comment body ``body``, GitLab spells an issue/MR body ``description``
+# and a commit comment ``note``, and both spell a merge's own prose with the
+# ``*commit_message``/``commit_title`` family.
+#
+# Enum, id and coordinate fields (``state``, ``assignee_id``, ``branch``,
+# ``path``) hold no prose. ``name`` is endpoint-sensitive: release APIs render it
+# as their public title, while most other endpoints use it as an identifier. The
+# API walker narrows that field to release routes so ordinary ``$VAR`` plumbing
+# does not inherit an unnecessary fail-closed surface.
+BODY_FIELD_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "body",
+        "commit_message",
+        "commit_title",
+        "content",
+        "description",
+        "merge_commit_message",
+        "message",
+        "name",
+        "note",
+        "squash_commit_message",
+        "tag_message",
+        "title",
+    },
+)
+
+# The subset that also names a body-bearing CLI long option. Stated rather than
+# derived by subtraction, because the two grammars have different reach: the
+# field walker only runs under a ``gh``/``glab`` leader, where every call is a
+# forge API call, while the long-option walker runs on EVERY command segment —
+# so ``--content``/``--note`` there would start eating the next token of whatever
+# unrelated tool spells an option that way. The spellings differ too: the API's
+# ``commit_message`` is a CLI's ``--commit-message``, so no derivation is even
+# correct once a multi-word field exists.
+BODY_LONG_OPTION_FIELDS: Final[frozenset[str]] = frozenset({"body", "description", "message", "title"})
+
 # Attached spellings of the ``gh``/``glab api`` field flags. pflag accepts
 # ``--field=body=x`` / ``-fbody=x`` exactly as it accepts the spaced form, so the
 # publish-DETECTION method resolver and the body/secret EXTRACTORS all read them
@@ -176,7 +215,7 @@ def canonical_leader(word: str) -> str:
     A path-qualified or relative program word names the SAME executable as its
     bare basename, so the leak/publish detectors compare on the basename to close
     the ``/usr/bin/gh`` / ``./gh`` path-form bypass. Mirrors
-    :func:`raw_merge_detect._basename`.
+    :func:`forge_subcommand.basename`.
     """
     return PurePosixPath(word).name
 
@@ -184,7 +223,7 @@ def canonical_leader(word: str) -> str:
 def strip_wrapper_prefix(words: list[str]) -> list[str]:
     """Strip leading env-assignments, ``cd``/``pushd`` nav, structural words, and ONE wrapper.
 
-    Mirrors :func:`raw_merge_detect._program_words`: consumes a leading
+    Mirrors :func:`forge_subcommand.program_words`: consumes a leading
     ``NAME=val`` env run (case-insensitive per :data:`_ENV_ASSIGNMENT_RE`, so a
     lowercase ``foo=1 gh`` is stripped too), a ``cd``/``pushd`` navigation pair,
     the compound-command reserved words and brace-group opener that lead a

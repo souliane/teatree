@@ -1,5 +1,6 @@
 """Build agent prompts from ticket and task context."""
 
+from pathlib import Path
 from typing import cast
 
 from teatree.agents.coding_prompt import _VERIFY_GATES_COMMAND, _coding_phase_directive, _stack_overlay_load_names
@@ -8,11 +9,17 @@ from teatree.agents.dispatch_preflight import declared_seams_brief_lines, head_s
 from teatree.agents.envelope_contract import envelope_contract_lines, final_output_reminder_line
 from teatree.agents.phase_blocks import embedded_intake_survey_json, phase_specific_lines
 from teatree.agents.result_schema import required_evidence_for_phase
-from teatree.agents.skill_injection import _explicit_load_name, _read_skill_contents, _read_skill_contents_scoped
+from teatree.agents.skill_injection import (
+    _ALWAYS_FULL_SKILLS,
+    _explicit_load_name,
+    _read_skill_contents,
+    _read_skill_contents_scoped,
+)
 from teatree.agents.stage_skill_prompt import stage_precedence_line, stage_skills_present
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Task, Ticket
 from teatree.core.models.review_target import assigned_reviewer_identity_for
+from teatree.core.models.task_handoff import dispatch_reason
 
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
@@ -30,6 +37,7 @@ _MAX_PARENT_SUMMARY_LEN = 2000
 _SURVEY_POINTER = "the intake landscape survey (re-derive with `t3 <overlay> workspace landscape`)"
 _SKILLS_POINTER = "that skill's own skills/<skill>/SKILL.md — open it with the Read tool; this lane has no Skill tool"
 _PARENT_POINTER = "the parent task's recorded result"
+_HANDOFF_POINTER = "Complete predecessor result (source of truth): "
 
 
 def _parent_result_summary(task: Task) -> str:
@@ -63,8 +71,8 @@ def _task_header_lines(task: Task, extra: dict) -> list[str]:
         lines.append(f"Labels: {', '.join(labels)}")
     if task.phase:
         lines.append(f"Current phase: {task.phase}")
-    if task.execution_reason:
-        lines.append(f"Reason: {task.execution_reason}")
+    if reason := dispatch_reason(task):
+        lines.append(f"Reason: {reason}")
     return lines
 
 
@@ -143,6 +151,35 @@ def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
     return primary, explicit
 
 
+def required_skill_delivery(
+    phase: str,
+    skills: list[str],
+    *,
+    lifecycle_skill: str,
+    stage_skills: list[str],
+) -> tuple[set[str], set[str]]:
+    """Return only the skills this phase's prompt actually promises to deliver.
+
+    The generic companion summary is optional. A full body or a forced Skill-tool
+    directive is not: either missing one makes the dispatch contract false.
+    """
+    if not lifecycle_skill:
+        # build_system_context takes its all-inline path without a lifecycle
+        # skill, including reactive phases with no _PHASE_TO_SKILL mapping.
+        return set(skills) | set(stage_skills), set()
+    full = ({lifecycle_skill} if lifecycle_skill else set()) | set(stage_skills)
+    full |= {name for name in skills if _explicit_load_name(name) in _ALWAYS_FULL_SKILLS}
+    explicit: set[str] = set()
+    normalized = normalize_phase(phase)
+    if normalized == "coding":
+        full |= set(_CODING_PHASE_ALWAYS_FULL)
+        explicit = {"architecture-design", "code", *_stack_overlay_load_names(skills, exclude=frozenset(stage_skills))}
+    elif normalized == "reviewing":
+        review_full, explicit = _review_phase_scoping(skills)
+        full |= {name for name in review_full if name in skills}
+    return full, explicit
+
+
 def _assigned_reviewer_identity(task: Task) -> str:
     """The identity *task*'s envelope example must show, or ``""`` for every other phase.
 
@@ -155,7 +192,12 @@ def _assigned_reviewer_identity(task: Task) -> str:
 
 
 def build_system_context(
-    task: Task, *, skills: list[str], lifecycle_skill: str = "", stage_skills: list[str] | None = None
+    task: Task,
+    *,
+    skills: list[str],
+    lifecycle_skill: str = "",
+    stage_skills: list[str] | None = None,
+    handoff: Path | None = None,
 ) -> str:
     """Build the system context for headless (SDK) execution.
 
@@ -166,7 +208,8 @@ def build_system_context(
     overlay review companion skills get a verbatim "load before reviewing"
     instruction, so a reviewer reviews WITH the overlay's conventions.
     *stage_skills* threads the dispatch's single overlay stage-skill resolution
-    (#3206) so this builder reuses it rather than re-resolving.
+    (#3206) so this builder reuses it rather than re-resolving. *handoff* is the predecessor
+    handoff file this dispatch delivered; its pointer is appended once the budget is applied.
 
     Assembled STABLE-FIRST — the fixed framing and the ~96 KB skill block lead,
     the per-task identity and prior-task result trail. Prompt caching on this lane
@@ -219,15 +262,12 @@ def build_system_context(
         (
             "",
             "# Context Budget",
-            "- Truncate file reads to the relevant section — avoid reading entire large files.",
+            "- Truncate file reads to relevant sections; skip full large files.",
             "- Limit git diff output to 200 lines; use --stat for overview first.",
-            "- Summarize test output instead of pasting full logs.",
+            "- Summarize tests; omit full logs.",
             "",
             "# Authored Output — Be Concise (directive #4)",
-            (
-                "- Everything you write — commit/PR body, review comments, code comments, Slack —"
-                " is bullets, straight to the point, no prose."
-            ),
+            ("- Use concise bullets, no prose, for commits, PRs, reviews, code comments, and Slack."),
             "- Comment only the non-obvious *why*; never narrate the *what* the code already shows.",
             "- Be RIGHT but concise: trim words, never a load-bearing fact, decision, or caveat.",
             "",
@@ -239,7 +279,7 @@ def build_system_context(
             "IMPORTANT: If you cannot proceed without human input (design decision, access, clarification),",
             "STOP immediately. Do not guess or work around it. Emit the envelope with:",
             '  {"summary": "...", "needs_user_input": true, "user_input_reason": "Why you need input"}',
-            "The pipeline will automatically create an interactive session for a human to continue your work.",
+            "The pipeline will open a human interactive session.",
         ),
     )
 
@@ -247,16 +287,22 @@ def build_system_context(
 
     lines.extend(("", f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
 
-    # Context bridge: include parent task result so follow-up tasks
-    # don't need full session resume to understand prior work.
     parent_summary = _parent_result_summary(task)
     if parent_summary:
         lines.extend(("", "# Prior Task Result", "", parent_summary))
+    pointer = "" if handoff is None else f"\n\n{_HANDOFF_POINTER}{handoff}"
+    # Appended after bounding, so the backstop's tail cut of an unregistered overflow can never drop it.
+    bounded = _enforce_context_budget(
+        "\n".join(lines),
+        task,
+        parent_summary=parent_summary,
+        skill_content=skill_content,
+        max_bytes=MAX_APPEND_BYTES - len(pointer.encode()),
+    )
+    return bounded + pointer
 
-    return _enforce_context_budget("\n".join(lines), task, parent_summary=parent_summary, skill_content=skill_content)
 
-
-def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill_content: str) -> str:
+def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill_content: str, max_bytes: int) -> str:
     """Bound the assembled append under the context byte budget.
 
     The append reaches the child as a file rather than an argv element (#4301), so this
@@ -272,14 +318,14 @@ def _enforce_context_budget(text: str, task: Task, *, parent_summary: str, skill
     substring replace, so a survey the phase does not embed is a phantom the pass
     cannot find and cannot reclaim a byte from.
     """
-    if len(text.encode()) <= MAX_APPEND_BYTES:
+    if len(text.encode()) <= max_bytes:
         return text
     blocks = (
         (embedded_intake_survey_json(task), _SURVEY_POINTER),
         (skill_content, _SKILLS_POINTER),
         (parent_summary, _PARENT_POINTER),
     )
-    return enforce_budget(text, blocks)
+    return enforce_budget(text, blocks, max_bytes=max_bytes)
 
 
 type _TicketExtra = dict[str, object]

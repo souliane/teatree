@@ -33,6 +33,7 @@ from pathlib import Path
 
 from teatree.core.cleanup.checkout_registry import candidate_clones
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
+from teatree.core.cleanup.cleanup_liveness import editable_pth_liveness
 from teatree.core.cleanup.orphan_checkouts import (
     db_tracked_worktree_paths,
     orphan_checkouts_for_clone,
@@ -59,6 +60,17 @@ def _remove_orphan(repo: str, wt_path: str, branch: str) -> bool:
     return True
 
 
+def _keep_reason(repo: str, wt_path: str, branch: str) -> str | None:
+    """Why removing this orphan would lose something, or ``None`` when it loses nothing."""
+    if orphan_is_dirty(wt_path):
+        return "uncommitted changes — never reaped"
+    if (pth := editable_pth_liveness(Path(wt_path))).active or pth.unverifiable:
+        return pth.reason
+    if orphan_has_unique_work(repo, branch, wt_path):
+        return "unpushed work not on any remote — push it to salvage, never reaped"
+    return None
+
+
 def _reap_one_orphan(repo: str, wt_path: str, branch: str, *, dry_run: bool = False) -> str:
     """Dispose of one orphaned raw worktree under the keep-unproven-work policy.
 
@@ -73,10 +85,8 @@ def _reap_one_orphan(repo: str, wt_path: str, branch: str, *, dry_run: bool = Fa
         capture_unshipped_work(Path(wt_path), branch=branch)
     if is_clean_ignored(branch):
         return f"SKIPPED orphan '{label}': matches clean_ignore — keeping"
-    if orphan_is_dirty(wt_path):
-        return f"KEPT orphan '{label}': uncommitted changes — never reaped"
-    if orphan_has_unique_work(repo, branch, wt_path):
-        return f"KEPT orphan '{label}': unpushed work not on any remote — push it to salvage, never reaped"
+    if (reason := _keep_reason(repo, wt_path, branch)) is not None:
+        return f"KEPT orphan '{label}': {reason}"
     if dry_run:
         return preview_line(f"Reap orphan worktree (work already on remote): {label}", dry_run=True)
     if _remove_orphan(repo, wt_path, branch):

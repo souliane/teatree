@@ -163,6 +163,45 @@ def run_t3(
     )
 
 
+#: The shell's own codes for "the command could not be executed AT ALL" — 126 found but
+#: not executable, 127 not found. A structural fact with a POSIX contract behind it, not
+#: a substring of somebody's error text, which is what makes it safe for a security gate
+#: to fail OPEN on: widening a content matcher narrows what the gate still covers, while
+#: this names a process that never started and therefore never scanned anything.
+_COULD_NOT_EXEC_CODES = frozenset({126, 127})
+
+
+#: Tracebacks a ``t3`` whose CLI import chain loads Django models before setup emits
+#: BEFORE the requested command runs — the hook env carries no ``DJANGO_SETTINGS_MODULE``.
+#: A traceback has no exit code of its own, so this half is unavoidably textual; it is
+#: deliberately NOT widened, because a gate treating more error TEXT as "never ran" is a
+#: gate covering less.
+_BOOTSTRAP_CRASH_MARKERS = (
+    "AppRegistryNotReady",
+    "ImproperlyConfigured",
+    "ModuleNotFoundError",
+    "Apps aren't loaded yet",
+)
+
+
+def t3_never_started(result: subprocess.CompletedProcess[str]) -> bool:
+    """Whether the ``t3`` invocation never STARTED, so it produced no verdict at all.
+
+    The case this exists for is a broken ``t3`` on ``PATH``: the managed launcher is a
+    bash script that ``exec``s a checkout's ``deploy/t3``, so a launcher naming a path
+    this venue cannot reach runs, fails to exec, and exits 126 — with no output from the
+    command anyone asked for. A gate reading only "nonzero" calls that a scanner error
+    and refuses every commit on the box.
+
+    ``FileNotFoundError`` covers the argv-not-found case before a process exists at all;
+    this covers the shell layer between that and the real command, plus the bootstrap
+    crash that reaches the interpreter and dies before the command.
+    """
+    if result.returncode in _COULD_NOT_EXEC_CODES:
+        return True
+    return any(marker in (result.stderr or "") for marker in _BOOTSTRAP_CRASH_MARKERS)
+
+
 def spawn_t3_detached(argv: list[str]) -> None:
     """Fire *argv* and forget it — a detached, best-effort ``t3`` call.
 

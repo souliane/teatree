@@ -34,6 +34,7 @@ symlinked dirs; the depth cap reports rather than truncates.
 
 from dataclasses import dataclass
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG
 
 from teatree.config import clone_root
 from teatree.core.worktree.clone_paths import known_clone_paths
@@ -158,13 +159,17 @@ def _child_directories(directory: Path) -> tuple[list[Path], list[str]]:
 
 
 def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
-    """Every directory under *roots* carrying a ``.git`` entry, plus what went unread.
+    """Every directory under *roots* carrying checkout metadata, plus what went unread.
 
-    A checkout is any directory with a ``.git`` entry — a dir for a clone, a file
-    for a linked worktree. The walk descends INTO checkouts, because teatree's
-    agent worktrees nest inside their own clone (``<clone>/.claude/worktrees/…``),
-    and THROUGH symlinked directories, because a symlinked dir is an ordinary way
-    to reach a checkout — the host reaches its own teatree clone that way.
+    A checkout carries a ``.git`` directory or a classified ``.git`` file. Linked
+    worktrees carry ``commondir``; Git distinguishes standalone ``--separate-git-dir``
+    checkouts from submodules when that metadata is absent. A submodule is a gap because
+    its parent process placement and nested artifact links need one shared guard. The walk
+    descends INTO checkouts, because
+    teatree's agent worktrees nest inside their own clone
+    (``<clone>/.claude/worktrees/…``), and THROUGH symlinked directories, because a
+    symlinked dir is an ordinary way to reach a checkout — the host reaches its own
+    teatree clone that way.
 
     **Every path the walk does not cover is a gap (#3872).** A skip that records
     nothing is worse than an unreadable one: it drops an unknown number of live
@@ -192,13 +197,11 @@ def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
         except OSError as exc:
             gaps.append(f"could not resolve {directory} ({exc})")
             continue
-        try:
-            carries_git = (directory / ".git").exists()
-        except OSError as exc:
-            # ``Path.exists`` re-raises EACCES rather than answering False.
-            gaps.append(f"could not probe {directory} for a checkout ({exc})")
+        carries_checkout, marker_gap = _carries_checkout(directory)
+        if marker_gap:
+            gaps.append(marker_gap)
             continue
-        if carries_git:
+        if carries_checkout:
             found.add(str(directory))
             found.add(real)
         if real in walked:
@@ -211,6 +214,52 @@ def scan_checkout_paths(roots: tuple[Path, ...]) -> CheckoutRegistry:
         gaps.extend(child_gaps)
         stack.extend((child, depth + 1) for child in children)
     return CheckoutRegistry(frozenset(found), tuple(gaps), roots)
+
+
+def _carries_checkout(directory: Path) -> tuple[bool, str]:
+    marker = directory / ".git"
+    try:
+        try:
+            marker_mode = marker.stat().st_mode
+        except FileNotFoundError:
+            return False, ""
+        if S_ISDIR(marker_mode):
+            carries_checkout = True
+        elif S_ISREG(marker_mode):
+            return _classify_git_file_checkout(directory, marker)
+        else:
+            return False, f"could not classify {directory}'s .git entry"
+    except (OSError, UnicodeDecodeError) as exc:
+        # A marker holding non-UTF-8 bytes raises a ValueError, not an OSError, so it
+        # escaped the scan into worktree_gc and the stamp passes as a traceback.
+        return False, f"could not classify {directory}'s .git entry ({exc})"
+    return carries_checkout, ""
+
+
+def _classify_git_file_checkout(directory: Path, marker: Path) -> tuple[bool, str]:
+    prefix = "gitdir: "
+    value = marker.read_text(encoding="utf-8").strip()
+    if not value.startswith(prefix):
+        return False, f"could not classify {directory}'s .git file"
+    administrative = (directory / value.removeprefix(prefix)).resolve(strict=True)
+    commondir = administrative / "commondir"
+    try:
+        common_value = commondir.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        try:
+            superproject = git.run_strict(
+                repo=str(directory),
+                args=["rev-parse", "--show-superproject-working-tree"],
+            )
+        except CommandFailedError as exc:
+            return False, f"could not classify {directory}'s .git file ({exc})"
+        if superproject:
+            return False, f"submodule checkout {directory} is nested under {superproject}"
+        return True, ""
+    common = (administrative / common_value).resolve(strict=True)
+    if not S_ISDIR(common.stat().st_mode):
+        return False, f"could not classify {directory}'s linked-worktree metadata"
+    return True, ""
 
 
 def live_checkout_paths(workspace: Path) -> CheckoutRegistry:
@@ -273,10 +322,11 @@ def linked_worktree_paths(workspace: Path) -> CheckoutRegistry:
     it happens to sit under.
 
     Two sources, unioned. The filesystem scan is primary (#3852): a checkout
-    whose ``.git`` is a FILE is a linked worktree by construction, so it needs no
-    registry to be found. Each scanned CLONE (``.git`` a directory) is then asked
-    for its own registry, which reaches a worktree living outside every scanned
-    root. A registry that will not answer is a gap, never an empty answer.
+    whose ``.git`` file resolves through linked-worktree ``commondir`` metadata
+    needs no registry to be found. A submodule's superficially similar file is
+    excluded. Each scanned CLONE (``.git`` a directory) is then asked for its own
+    registry, which reaches a worktree living outside every scanned root. A
+    registry that will not answer is a gap, never an empty answer.
     """
     scan = scan_checkout_paths(checkout_scan_roots(workspace))
     found: set[str] = set()

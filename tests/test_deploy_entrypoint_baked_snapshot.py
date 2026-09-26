@@ -12,8 +12,7 @@ volume, so ``deploy/entrypoint.sh`` must choose its boot mode at runtime:
 shell functions (extracted verbatim from the entrypoint) in a bash subprocess
 against a REAL local git origin under ``tmp_path`` — nothing about the shell logic
 is reimplemented, and no network is touched. This mirrors the sibling
-entrypoint tests (``test_deploy_entrypoint_disable_loops.py``,
-``test_deploy_entrypoint_token_preflight.py``).
+entrypoint test ``test_deploy_entrypoint_token_preflight.py``.
 """
 
 import shutil

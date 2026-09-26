@@ -5,13 +5,28 @@ from pathlib import Path
 import pytest
 
 from teatree.skill_support.agent_declarations import (
+    AgentSkillDeclarations,
     agent_declared_skills,
+    agent_skill_declarations,
     declared_skills_for_agent,
     default_agents_dir,
 )
 
 
 class TestAgentDeclaredSkills:
+    def test_reads_required_and_companion_skills_through_one_declaration(self, tmp_path: Path) -> None:
+        agent = tmp_path / "coder.md"
+        agent.write_text(
+            "---\nskills:\n  - rules\n  - code\ncompanion_skills:\n  - ac-python\n---\n",
+            encoding="utf-8",
+        )
+
+        assert agent_skill_declarations(agent) == AgentSkillDeclarations(
+            skills=("rules", "code"),
+            companion_skills=("ac-python",),
+        )
+        assert agent_declared_skills(agent) == ["rules", "code"]
+
     def test_reads_the_frontmatter_skills_list(self, tmp_path: Path) -> None:
         agent = tmp_path / "coder.md"
         agent.write_text(
@@ -35,6 +50,11 @@ class TestAgentDeclaredSkills:
         agent = tmp_path / "a.md"
         agent.write_text("# No frontmatter\nskills:\n  - rules\n", encoding="utf-8")
         assert agent_declared_skills(agent) == []
+
+    def test_empty_unclosed_declaration_declares_nothing(self, tmp_path: Path) -> None:
+        agent = tmp_path / "a.md"
+        agent.write_text('---\nskills:\n  - ""\n', encoding="utf-8")
+        assert agent_skill_declarations(agent) == AgentSkillDeclarations()
 
     def test_resolves_an_agent_by_name(self, tmp_path: Path) -> None:
         (tmp_path / "tester.md").write_text("---\nskills:\n  - test\n---\n", encoding="utf-8")

@@ -48,12 +48,12 @@ SEED_ROW_FIELDS: dict[str, dict[str, tuple[str, type]]] = {
         "delay_seconds": ("delay_seconds", int),
         "daily_at": ("daily_at", dt.time),
         "colleague_facing": ("colleague_facing", bool),
-        "default_enabled": ("enabled", bool),
         "description": ("description", str),
     },
     "modes": {
         "description": ("description", str),
         "entries": ("entries", dict),
+        "egress": ("egress", str),
     },
     "schedules": {
         "description": ("description", str),
@@ -62,7 +62,13 @@ SEED_ROW_FIELDS: dict[str, dict[str, tuple[str, type]]] = {
 }
 
 #: Seed fields the shipped file carries that the row interchange deliberately excludes.
-SHIPPED_ONLY_FIELDS: dict[str, tuple[str, ...]] = {"loops": ("prompt_body",), "schedules": ("slots",)}
+#: ``default_enabled`` is one because it no longer round-trips: the shipped posture is a
+#: PRESET opinion, and ``Loop.enabled`` is the manual override — an incident state a box
+#: should never carry into another box's config.
+SHIPPED_ONLY_FIELDS: dict[str, tuple[str, ...]] = {
+    "loops": ("prompt_body", "default_enabled"),
+    "schedules": ("slots",),
+}
 
 _lock = threading.Lock()
 _cache: dict[tuple[Path, int], dict[str, Any]] = {}

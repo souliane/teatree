@@ -634,6 +634,16 @@ class TestAppsConfig:
         assert T3TeatreeConfig.name == "teatree.contrib.t3_teatree"
 
 
+class TestE2eConfig:
+    def test_the_dash_pack_is_the_project_suite(self) -> None:
+        assert TeatreeOverlay().metadata.get_e2e_config() == {
+            "runner": "project",
+            "test_dir": "e2e/dash",
+            "settings_module": "e2e.dash.settings",
+            "pytest_args": "-n0 -p no:randomly -p no:cacheprovider",
+        }
+
+
 class TestOverlayDefaults(TestCase):
     """Verify optional hooks that the teatree overlay doesn't override return defaults."""
 
@@ -655,6 +665,5 @@ class TestOverlayDefaults(TestCase):
             "feat(ship): add the gate (#1540)\n\n## What\nx\n\n## Why\ny",
         ) == {"errors": [], "warnings": []}
         assert overlay.metadata.get_ci_project_path() == ""
-        assert overlay.metadata.get_e2e_config() == {}
         assert overlay.metadata.detect_variant() == ""
         assert overlay.metadata.get_tool_commands() == []

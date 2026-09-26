@@ -104,11 +104,10 @@ def task_holder_id(task: "Task") -> str:
     return f"task:{task.pk}"
 
 
-def _default_lease_seconds() -> int:
-    """The occupancy TTL, from the DB-home ``worktree_occupancy_lease_seconds`` setting."""
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps this leaf import-light
-
-    return int(get_effective_settings().worktree_occupancy_lease_seconds)
+#: The claim TTL. 30 minutes is 30x the 60s run heartbeat that renews it, so no live
+#: agent can lose a claim it is still holding; short enough that a crashed operator lane
+#: does not hold a checkout for a working day.
+_OCCUPANCY_LEASE_SECONDS = 30 * 60
 
 
 def _gate_enabled() -> bool:
@@ -159,7 +158,7 @@ def acquire(
     no "or nobody" fallback for a row it has this instant proven it holds.
     """
     now = timezone.now()
-    ttl = _default_lease_seconds() if lease_seconds is None else lease_seconds
+    ttl = _OCCUPANCY_LEASE_SECONDS if lease_seconds is None else lease_seconds
     expires = now + timedelta(seconds=ttl)
     grantable = (
         Q(occupied_by="")

@@ -20,9 +20,11 @@ import sys
 
 import typer
 
+from teatree.cli.codex_auth import codex_auth_app
 from teatree.utils.django_bootstrap import ensure_django
 
 codex_app = typer.Typer(no_args_is_help=True, help="Auto-dispatch /codex:review surfaces.")
+codex_app.add_typer(codex_auth_app, name="auth")
 
 
 # Matches both ``https://github.com/owner/repo/pull/123`` and the

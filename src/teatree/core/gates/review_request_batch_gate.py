@@ -22,7 +22,7 @@ forge made the owner's hold mechanism inert at exactly the moment it was needed,
 silently. A gate whose failure mode is "broadcast anyway" is not a gate.
 
 The one axis that does NOT hold silently is an oversize group. Past
-``work_group_max_members`` the shared signal is likelier to be a coincidence
+``WORK_GROUP_MAX_MEMBERS`` the shared signal is likelier to be a coincidence
 than one unit of work, so the merge request is surfaced to the owner as a
 question (:func:`~teatree.core.review.mr_state_question.ask_mr_state`) rather
 than disappearing into a hold nobody can see.
@@ -51,8 +51,7 @@ from teatree.core.review.mr_state_question import ask_mr_state
 from teatree.core.review.mr_triage import CiState
 from teatree.core.review.repo_exemption import mr_url_is_review_exempt
 from teatree.core.review.review_pause import PauseState, read_pause_state
-from teatree.core.review.work_group import group_members
-from teatree.core.review.work_group_settings import generic_scopes_from_settings
+from teatree.core.review.work_group import GENERIC_SCOPES, group_members
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -72,6 +71,10 @@ _CI_BLOCKERS = {CiState.PENDING: "ci_pending", CiState.FAILED: "ci_failed", CiSt
 _PAUSE_BLOCKERS = {PauseState.PAUSED: "paused", PauseState.UNKNOWN: "pause_unknown"}
 
 _OVERSIZE_OPTIONS = ("Broadcast this merge request on its own", "Keep holding the whole group")
+
+#: Members above which a work group is surfaced to the owner as a question rather than
+#: held silently: past a dozen the grouping key is likelier wrong than the batch real.
+WORK_GROUP_MAX_MEMBERS = 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +111,7 @@ def work_group_ready(*, mr_url: str, overlay_name: str = "") -> BatchVerdict:
         return BatchVerdict(ready=False, reason=listing, group_key=canonical, blockers=())
     verdict = listing.verdict_for(canonical)
     if verdict.reason == GROUP_TOO_LARGE:
-        ask_mr_state(mr_url=canonical, reason=_oversize_reason(verdict, overlay_name), options=_OVERSIZE_OPTIONS)
+        ask_mr_state(mr_url=canonical, reason=_oversize_reason(verdict), options=_OVERSIZE_OPTIONS)
     return verdict
 
 
@@ -184,7 +187,7 @@ class _OpenMergeRequests:
         return cls(
             overlay_name=overlay_name,
             payload_by_url=payload_by_url,
-            groups=group_members(titles, generic_scopes=generic_scopes_from_settings(overlay_name)),
+            groups=group_members(titles, generic_scopes=GENERIC_SCOPES),
         )
 
     def verdict_for(self, mr_url: str) -> BatchVerdict:
@@ -201,7 +204,7 @@ class _OpenMergeRequests:
     def _verdict(self, group: frozenset[str]) -> BatchVerdict:
         settings = get_effective_settings(self.overlay_name or None)
         group_key = min(group)
-        if len(group) > settings.work_group_max_members:
+        if len(group) > WORK_GROUP_MAX_MEMBERS:
             return BatchVerdict(ready=False, reason=GROUP_TOO_LARGE, group_key=group_key, blockers=())
         members = tuple(self._member_readiness(url) for url in sorted(group))
         gating = (
@@ -252,10 +255,9 @@ def _canonical_url_of(payload: RawAPIDict) -> str:
     return ""
 
 
-def _oversize_reason(verdict: BatchVerdict, overlay_name: str) -> str:
-    cap = get_effective_settings(overlay_name or None).work_group_max_members
+def _oversize_reason(verdict: BatchVerdict) -> str:
     return (
-        f"its work group holds more than {cap} open merge requests (work_group_max_members), "
+        f"its work group holds more than {WORK_GROUP_MAX_MEMBERS} open merge requests, "
         f"so the shared signal is likelier to be a coincidence than one unit of work — "
         f"group key {verdict.group_key}."
     )

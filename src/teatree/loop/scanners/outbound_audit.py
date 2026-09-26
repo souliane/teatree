@@ -355,32 +355,6 @@ def _gitlab_note_verifier() -> Verifier | None:
     return _gitlab_note_verifier_for_overlay("")
 
 
-def _resolve_github_token() -> str:
-    """Resolve a GitHub PAT from env, falling back to the ``pass`` store.
-
-    Mirrors :func:`teatree.backends.gitlab.api._resolve_token` so the
-    GitHub-note verifier has the same credential pipeline the GitLab
-    verifier already relies on. An empty result means the verifier
-    factory will return ``None`` (no production verifier) and the
-    scanner skips ``github_note`` rows silently — never spam drift on a
-    credential gap (which on private repos would otherwise surface as a
-    404 indistinguishable from a missing comment).
-    """
-    import os  # noqa: PLC0415 — deferred: loaded only on this code path
-
-    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
-    if token:
-        return token
-    try:
-        from teatree.utils.secrets import read_pass  # noqa: PLC0415 — deferred: loaded at tick time, not import
-    except Exception:  # noqa: BLE001 — credential resolution is best-effort; degrade to no token
-        return ""
-    try:
-        return read_pass("github/token") or read_pass("github/pat") or ""
-    except Exception:  # noqa: BLE001 — credential resolution is best-effort; degrade to no token
-        return ""
-
-
 def _github_note_verifier() -> Verifier | None:
     """Legacy single-overlay GitHub-note verifier — delegates to the overlay-aware sibling.
 

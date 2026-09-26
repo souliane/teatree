@@ -30,11 +30,21 @@ from teatree.backends.slack.self_identity import OwnSlackIdentity, identity_from
 if TYPE_CHECKING:
     from teatree.types import RawAPIDict
 
+from teatree.utils.uv_constraints import uv_tool_install_hint
+
 logger = logging.getLogger(__name__)
 
 _QUEUE_FILENAME = "slack-events.jsonl"
 _REACTIONS_QUEUE_FILENAME = "slack-reactions.jsonl"
+_HEARTBEAT_FILENAME = "slack-listener-heartbeat.json"
+#: How often a connected WebSocket loop restamps the heartbeat. Far coarser than the
+#: loop's own 1s wake so N overlay threads do not thrash the shared data mount, and
+#: still four restamps inside the doctor's 120s staleness floor.
+_HEARTBEAT_INTERVAL_SECONDS = 15
 _HANDLED_EVENT_TYPES = frozenset({"app_mention", "message", "reaction_added"})
+
+#: Called with ``(overlay_name, event)`` right after an event is durably queued.
+type OnEvent = Callable[[str, dict], None]
 
 
 def _data_dir() -> Path:
@@ -49,6 +59,26 @@ def default_queue_path() -> Path:
 
 def default_reactions_queue_path() -> Path:
     return _data_dir() / _REACTIONS_QUEUE_FILENAME
+
+
+def default_heartbeat_path() -> Path:
+    return _data_dir() / _HEARTBEAT_FILENAME
+
+
+def write_heartbeat(path: Path | None = None) -> None:
+    """Stamp the liveness file ``t3 doctor`` reads from another container.
+
+    Written from inside a CONNECTED overlay's wait loop, so it attests to the one
+    thing that matters — a live WebSocket receiving events — rather than to a
+    sidecar process that could keep polling an inbound path already dead.
+    """
+    path = path or default_heartbeat_path()
+    payload = {"updated_at": int(time.time()), "interval_seconds": _HEARTBEAT_INTERVAL_SECONDS}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    except OSError:
+        logger.warning("Could not stamp the slack-listener heartbeat at %s", path, exc_info=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +203,23 @@ def commit_reactions_drain(path: Path | None = None, *, retain: list[dict] | Non
     commit_drain(path or default_reactions_queue_path(), retain=retain)
 
 
+def _serve_until_stopped(
+    *, stop_event: threading.Event, heartbeat_path: Path | None, is_connected: Callable[[], bool]
+) -> None:
+    """Idle until shutdown, restamping the liveness heartbeat on its cadence.
+
+    Reached only past ``client.connect()``, which is what lets the stamp attest to a
+    live socket rather than to a process that is merely still running.
+    """
+    next_beat = 0.0
+    while True:
+        if time.monotonic() >= next_beat and is_connected():
+            write_heartbeat(heartbeat_path)
+            next_beat = time.monotonic() + _HEARTBEAT_INTERVAL_SECONDS
+        if stop_event.wait(timeout=1.0):
+            return
+
+
 class _AuthTestClient(Protocol):
     """The one ``WebClient`` method the wake self-filter needs."""
 
@@ -208,7 +255,8 @@ def _run_single_overlay(
     overlay: tuple[str, str, str],
     queues: QueuePaths,
     stop_event: threading.Event,
-    on_event: Callable[[], None] | None = None,
+    on_event: OnEvent | None = None,
+    heartbeat_path: Path | None = None,
 ) -> None:
     overlay_name, app_token, bot_token = overlay
     try:
@@ -218,10 +266,8 @@ def _run_single_overlay(
         from slack_sdk.socket_mode.response import SocketModeResponse  # noqa: PLC0415 — deferred: heavy/optional dep
         from slack_sdk.web import WebClient  # noqa: PLC0415 — deferred: heavy/optional dep at call site
     except ImportError:
-        logger.warning(
-            "slack_sdk not installed — reinstall with: "
-            "uv tool install --editable '.[slack]' --overrides uv-overrides.txt"
-        )
+        repair_command = uv_tool_install_hint("uv tool install --editable '.[slack]' --overrides uv-overrides.txt")
+        logger.warning("slack_sdk not installed — reinstall with: %s", repair_command)
         return
 
     web_client = WebClient(token=bot_token)
@@ -247,11 +293,12 @@ def _run_single_overlay(
         if is_self_originated(event, identity):
             logger.debug("[%s] no wake: self-originated event (ts=%s)", overlay_name, event.get("ts", "?"))
             return
-        # Best-effort event-driven wake so the answer cycle runs now instead of
-        # at the next cadence tick. The JSONL write above is the durable buffer,
-        # so a failed signal only costs latency — never an event.
+        # Best-effort event-driven record-then-wake so the answer cycle finds the
+        # row it reads instead of waking on an empty queue. The JSONL write above
+        # is the durable buffer, so a raising callback only costs latency — the
+        # inbox sweep still recovers the event.
         try:
-            on_event()
+            on_event(overlay_name, event)
         except Exception:
             logger.warning("[%s] slack-answer wake signal failed", overlay_name, exc_info=True)
 
@@ -259,8 +306,11 @@ def _run_single_overlay(
     client.connect()
     logger.info("[%s] Socket Mode connected", overlay_name)
 
-    while not stop_event.is_set():
-        stop_event.wait(timeout=1.0)
+    _serve_until_stopped(
+        stop_event=stop_event,
+        heartbeat_path=heartbeat_path,
+        is_connected=client.is_connected,
+    )
 
     client.close()
     logger.info("[%s] Socket Mode disconnected", overlay_name)
@@ -271,7 +321,8 @@ def run_listener(
     *,
     queue_path: Path | None = None,
     reactions_queue_path: Path | None = None,
-    on_event: Callable[[], None] | None = None,
+    on_event: OnEvent | None = None,
+    heartbeat_path: Path | None = None,
 ) -> None:
     queues = QueuePaths(
         events=queue_path or default_queue_path(),
@@ -296,6 +347,7 @@ def run_listener(
                 "queues": queues,
                 "stop_event": stop,
                 "on_event": on_event,
+                "heartbeat_path": heartbeat_path,
             },
             daemon=True,
             name=f"slack-{overlay[0]}",

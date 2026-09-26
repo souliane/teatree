@@ -71,6 +71,11 @@ _SYNTH_PROMPT_TEMPLATE = (
     "  - positive tool_call — a `tool_call` key plus EXACTLY ONE `args.<path>` key "
     "(no more, no fewer):\n"
     '      {{"tool_call": "Bash", "args.command": "contains \\"git worktree add\\""}}\n'
+    "  - tool_call_succeeded — require a completed, successful tool call with "
+    "a matching result before a forbidden call:\n"
+    '      {{"tool_call_succeeded": "Bash", "args.command": "~ \\"pytest\\"", '
+    '"result": "contains \\"passed\\"", '
+    '"before_first": "Bash.command ~ \\"git push\\""}}\n'
     "  - no_tool_call_matching — a single inner mapping holding EXACTLY ONE "
     "`<tool>.<arg>` key (the key MUST contain a dot):\n"
     '      {{"no_tool_call_matching": {{"Bash.command": "~ \\"rm -rf\\""}}}}\n'
@@ -80,6 +85,9 @@ _SYNTH_PROMPT_TEMPLATE = (
     '{{"tool_call": "Agent", "args.prompt": "~ \\"fix\\""}}]}}\n'
     "  - final_state — one operator expression over the agent's FINAL message:\n"
     '      {{"final_state": "~ \\"opened PR\\""}}\n'
+    "  - assistant_text — the same, but satisfied by ANY of the agent's messages, which is "
+    "what a rule about what the response SAYS needs:\n"
+    '      {{"assistant_text": "~ \\"per-ticket plan\\""}}\n'
     "An expect entry whose top-level key is none of " + _MATCHER_KINDS_CLAUSE + ", a positive "
     "`tool_call` with zero or several `args.<path>` keys, or a `no_tool_call_matching` with "
     "zero or several inner entries is REJECTED and the whole scenario is dropped.\n\n"
@@ -144,10 +152,12 @@ def _synth_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOptions"
     system prompt (not the ``claude_code`` preset) keeps the turn model-agnostic, and
     the model is :func:`resolve_tier`-driven on the ``cheap`` tier (``agent_tier_models``
     DB-overridable) rather than a hardcoded id. *env*, when set, pins the
-    ``agent_harness_provider`` credential onto the spawned ``claude``; ``None`` leaves
-    the SDK default empty env so the child inherits the ambient auth state unchanged.
+    ``agent_harness_provider`` credential onto the spawned ``claude``; ``None`` pins no
+    credential, so the child inherits the ambient auth state. Either way compaction is switched off.
     """
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
+
+    from teatree.agents.compaction_guard import with_compaction_off  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
     options = ClaudeAgentOptions(
         system_prompt=_SYNTH_SYSTEM_PROMPT,
@@ -158,7 +168,7 @@ def _synth_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOptions"
     )
     if env is not None:
         options.env = env
-    return options
+    return with_compaction_off(options)
 
 
 async def _collect_synth_turn(prompt: str, *, env: dict[str, str] | None = None) -> str:

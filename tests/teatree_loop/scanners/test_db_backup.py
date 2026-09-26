@@ -1,4 +1,4 @@
-"""DB-backup scanner: emits ``db_backup.due`` on the cadence, silent when fresh (directive #2)."""
+"""DB-backup scanner: the row decides WHEN, the scanner names WHY (directive #2)."""
 
 from datetime import timedelta
 from pathlib import Path
@@ -19,24 +19,19 @@ def _touch_backup(backup_dir: Path, *, age_hours: float) -> None:
 
 class TestDbBackupScanner:
     def test_bootstrap_emits_when_no_backup_exists(self, tmp_path: Path) -> None:
-        signals = DbBackupScanner(retention_days=7, cadence_hours=24, backup_dir=tmp_path).scan()
+        signals = DbBackupScanner(retention_days=7, backup_dir=tmp_path).scan()
         assert len(signals) == 1
         assert signals[0].kind == "db_backup.due"
         assert signals[0].payload["trigger"] == "bootstrap"
 
-    def test_fresh_backup_within_cadence_is_silent(self, tmp_path: Path) -> None:
-        _touch_backup(tmp_path, age_hours=1)
-        signals = DbBackupScanner(retention_days=7, cadence_hours=24, backup_dir=tmp_path).scan()
-        assert signals == []
-
-    def test_stale_backup_past_cadence_emits_cadence_trigger(self, tmp_path: Path) -> None:
+    def test_an_existing_backup_reads_as_the_ordinary_cadence_trigger(self, tmp_path: Path) -> None:
         _touch_backup(tmp_path, age_hours=48)
-        signals = DbBackupScanner(retention_days=7, cadence_hours=24, backup_dir=tmp_path).scan()
+        signals = DbBackupScanner(retention_days=7, backup_dir=tmp_path).scan()
         assert len(signals) == 1
         assert signals[0].payload["trigger"] == "cadence"
 
     def test_signal_carries_retention_and_backup_dir(self, tmp_path: Path) -> None:
-        signals = DbBackupScanner(retention_days=14, cadence_hours=24, backup_dir=tmp_path).scan()
+        signals = DbBackupScanner(retention_days=14, backup_dir=tmp_path).scan()
         payload = signals[0].payload
         assert payload["retention_days"] == 14
         assert payload["backup_dir"] == str(tmp_path)
@@ -56,6 +51,6 @@ class TestDbBackupScanner:
             ),
             pytest.raises(ScannerError) as exc_info,
         ):
-            DbBackupScanner(retention_days=7, cadence_hours=24, backup_dir=tmp_path).scan()
+            DbBackupScanner(retention_days=7, backup_dir=tmp_path).scan()
         assert exc_info.value.scanner == "db_backup"
         assert exc_info.value.error_class is ScannerErrorClass.UNKNOWN

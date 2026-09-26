@@ -43,6 +43,7 @@ _STILL_BLOCKED = [
     pytest.param("xargs gh pr merge", id="wrapper-xargs"),
     pytest.param("env gh pr merge 5", id="wrapper-env"),
     pytest.param("env FOO=bar gh pr merge 5", id="wrapper-env-with-assignment"),
+    pytest.param('env -S "gh pr merge 5"', id="wrapper-env-split-string"),
     pytest.param("/usr/bin/gh pr merge 5", id="path-qualified-basename"),
     pytest.param("echo $(gh pr merge 5)", id="command-substitution-dollar"),
     pytest.param("echo $(echo $(gh pr merge 5))", id="command-substitution-nested"),

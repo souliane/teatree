@@ -57,6 +57,19 @@ def _paths(text: str) -> list[str]:
     return [f.path for f in report_diff(text)]
 
 
+def _mixed_diff(path: str, *lines: str) -> str:
+    """A hunk whose lines already carry their own ``+``/``-``/`` `` diff prefix."""
+    body = "".join(f"{line}\n" for line in lines)
+    return (
+        f"diff --git a/{path} b/{path}\n"
+        f"index 0000000..1111111 100644\n"
+        f"--- a/{path}\n"
+        f"+++ b/{path}\n"
+        f"@@ -1,6 +1,7 @@\n"
+        f"{body}"
+    )
+
+
 class TestDetectorUnit:
     """Direct coverage of the pure diff-parsing detector via report_diff."""
 
@@ -499,3 +512,32 @@ class TestDetectorFailsOpen:
 
 def test_module_no_longer_exports_scan_diff() -> None:
     assert not hasattr(privacy_diff_comment_density, "scan_diff")
+
+
+class TestDocstringStateSurvivesContextLines:
+    """A docstring the diff only half-touches must still CLOSE on its context line.
+
+    The state is the FILE's, not the hunk's: rewrite a docstring body and git keeps
+    the closing ``\"\"\"`` as context, so a scanner that only toggles on added lines
+    stays "inside the docstring" for the rest of the file and reads every following
+    code line as prose. Measured on a real rewrite, ``if not idempotency_key.strip():``
+    was counted as a comment restating the ``--idempotency-key must not be empty``
+    line below it — a plain-code false positive on an advisory anyone reads as a finding.
+    """
+
+    def test_code_after_a_context_closed_docstring_is_not_prose(self) -> None:
+        diff = _mixed_diff(
+            "src/teatree/x.py",
+            "     def send(self, idempotency_key):",
+            '-        """Old summary.',
+            "-",
+            "-        Old body.",
+            '+        """New summary.',
+            "+",
+            "+        A genuinely non-obvious why worth writing down right here.",
+            '         """',
+            "+        if not idempotency_key.strip():",
+            '             self.stderr.write("--idempotency-key must not be empty")',
+        )
+
+        assert _paths(diff) == []

@@ -53,7 +53,9 @@ class Expect:
     holds the positive alternatives and ``pass_call`` satisfies one of them.
 
     ``unless`` renders a negative's ``unless: '<arg> op "value"'`` exemption — a
-    predicate on another argument of the SAME call that excuses it.
+    predicate on another argument of the SAME call that excuses it. ``before_first``
+    renders ``before_first: '<tool>.<arg> op "value"'``, scoping the negative to the
+    calls made before the first call that matches it.
     """
 
     kind: str
@@ -65,6 +67,7 @@ class Expect:
     pass_call: Call | None = None
     fail_call: Call | None = None
     unless: Branch | None = None
+    before_first: Branch | None = None
 
     @property
     def is_positive(self) -> bool:
@@ -88,7 +91,9 @@ def positive(target: Branch, *, pass_call: Call, fail_call: Call) -> Expect:
     )
 
 
-def negative(target: Branch, *, fail_call: Call, unless: Branch | None = None) -> Expect:
+def negative(
+    target: Branch, *, fail_call: Call, unless: Branch | None = None, before_first: Branch | None = None
+) -> Expect:
     return Expect(
         kind=NEGATIVE,
         tool=target.tool,
@@ -97,6 +102,7 @@ def negative(target: Branch, *, fail_call: Call, unless: Branch | None = None) -
         value=target.value,
         fail_call=fail_call,
         unless=unless,
+        before_first=before_first,
     )
 
 
@@ -204,14 +210,18 @@ def _matcher_yaml(expect: Expect, indent: str) -> list[str]:
         f"{indent}    {expect.tool}.{expect.arg}: {_op_expr(expect.op, expect.value)}",
     ]
     if expect.unless is not None:
-        lines.append(f"{indent}  unless: {_unless_expr(expect.unless)}")
+        unless = expect.unless
+        lines.append(f"{indent}  unless: {_predicate_expr(unless.arg, unless.op, unless.value)}")
+    if expect.before_first is not None:
+        first = expect.before_first
+        lines.append(f"{indent}  before_first: {_predicate_expr(f'{first.tool}.{first.arg}', first.op, first.value)}")
     return lines
 
 
-def _unless_expr(unless: Branch) -> str:
-    """YAML-safe ``'<arg> op "value"'`` scalar for a negative matcher's exemption."""
-    escaped = unless.value.replace("'", "''")
-    return f"'{unless.arg} {unless.op} \"{escaped}\"'"
+def _predicate_expr(subject: str, op: str, value: str) -> str:
+    """YAML-safe ``'<subject> op "value"'`` scalar for a negative matcher's scoping predicate."""
+    escaped = value.replace("'", "''")
+    return f"'{subject} {op} \"{escaped}\"'"
 
 
 def infer_tier_or_phase(agent_path: str) -> str:

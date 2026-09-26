@@ -9,10 +9,14 @@ re-exports :class:`ClaimOrder` and :func:`_claimable_now_q`, so existing
 """
 
 import logging
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 
-from django.db.models import Q
+from django.apps import apps
+from django.db import transaction
+from django.db.models import F, Q
 from django.db.models.expressions import BaseExpression
 
 from teatree.config import worker_is_quiescing
@@ -83,12 +87,33 @@ def code_behind_schema() -> bool:
     return bool(reason)
 
 
+@dataclass
+class _FleetAdmissionSeam:
+    refusal: Callable[[], str] | None = None
+
+
+#: Set at app-ready: importing ``teatree.loops.enable_verdict`` here would cycle through the models.
+_FLEET_ADMISSION = _FleetAdmissionSeam()
+
+
+def register_fleet_admission_refusal(refusal: Callable[[], str]) -> None:
+    _FLEET_ADMISSION.refusal = refusal
+
+
+def _fleet_admission_refusal() -> str:
+    if _FLEET_ADMISSION.refusal is None:
+        msg = "no fleet admission verdict registered — teatree.core.apps.CoreConfig.ready() must run before a claim"
+        raise RuntimeError(msg)
+    return _FLEET_ADMISSION.refusal()
+
+
 def claim_admission_block_reason() -> str:
     """Why NO task may be claimed right now, or ``""`` to admit — the ONE admission composition.
 
-    Both claim paths (``claimable`` and ``claim_next_pending``) call this rather than
-    restating the boolean, so a third admission direction can never be added to one site
-    and forgotten at the other — which is exactly how #4387's skew went unguarded.
+    Every path that starts work — both claim paths, ``execute_task``, the enqueue verdict and
+    the tick's re-dispatch sweeps — calls this rather than restating the boolean, so a third
+    admission direction can never be added to one site and forgotten at the other — which is
+    exactly how #4387's skew went unguarded.
     """
     if worker_is_quiescing():
         return "this worker is quiescing for a rolling deploy"
@@ -96,4 +121,59 @@ def claim_admission_block_reason() -> str:
         return "the control DB is behind this code"
     if code_behind_schema():
         return "this process is behind the applied schema"
+    return _fleet_admission_refusal()
+
+
+#: A default-DB generation ``set_worker_quiescing`` advances, because the setting itself may live on the config DB.
+QUIESCE_FENCE = "fence:worker-quiescing"
+QUIESCE_SETTING_KEY = "worker_quiescing"
+
+
+def quiesce_fence_generation(*, lock: bool = False) -> int:
+    rows = apps.get_model("core", "LoopLease").objects.filter(name=QUIESCE_FENCE)
+    if lock:
+        rows = rows.select_for_update()  # select-for-update: caller-atomic
+    return rows.values_list("generation", flat=True).first() or 0
+
+
+def advance_quiesce_fence() -> None:
+    lease_model = apps.get_model("core", "LoopLease")
+    with transaction.atomic():
+        lease_model.objects.get_or_create(name=QUIESCE_FENCE)
+        lease_model.objects.filter(name=QUIESCE_FENCE).update(generation=F("generation") + 1)
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimWindow:
+    refusal: str
+    fence_generation: int
+
+    def quiesce_landed(self) -> bool:
+        return quiesce_fence_generation() != self.fence_generation
+
+
+@contextmanager
+def claim_window() -> Iterator[ClaimWindow]:
+    """The admission re-read and the claim in one transaction, fenced against a quiesce that commits in between."""
+    with transaction.atomic():
+        generation = quiesce_fence_generation(lock=True)
+        yield ClaimWindow(refusal=claim_admission_block_reason(), fence_generation=generation)
+
+
+@contextmanager
+def redispatch_window() -> Iterator[str]:
+    """A re-dispatch's write transaction, yielding the claim refusal read inside it so a stop committed first wins."""
+    with transaction.atomic():
+        yield claim_admission_block_reason()
+
+
+def claim_when_admitted(claim: Callable[[], object]) -> str:
+    """Run *claim* in the fenced claim window; return why it was not admitted, or ``""`` once it holds."""
+    with claim_window() as window:
+        if window.refusal:
+            return window.refusal
+        claim()
+        if window.quiesce_landed():
+            transaction.set_rollback(True)
+            return "the worker began quiescing during the claim"
     return ""

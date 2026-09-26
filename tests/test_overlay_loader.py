@@ -14,7 +14,7 @@ from django.core.exceptions import ImproperlyConfigured
 import teatree.config as config_mod
 from teatree.config import TeaTreeConfig
 from teatree.config.settings import OverlayEntry
-from teatree.core.models import Ticket
+from teatree.core.models import ConfigSetting, Ticket
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import (
     OverlayConfigResolver,
@@ -71,6 +71,19 @@ class TestDiscoverTomlOverlaysSuccess:
             result = _discover_toml_overlays(OverlayBase, set())
         assert "my-overlay" in result
         assert isinstance(result["my-overlay"], _StubOverlay)
+
+    def test_binds_registry_overlay_name_before_resolving_scoped_pass_keys(self, db) -> None:
+        ConfigSetting.objects.set_value("gitlab_token_pass_key", "venue/gitlab", scope="my-overlay")
+        config = _make_config(
+            {"my-overlay": {"class": "tests.test_overlay_loader:_StubOverlay"}},
+        )
+
+        with patch.object(config_mod, "load_config", return_value=config):
+            result = _discover_toml_overlays(OverlayBase, set())
+
+        resolution = result["my-overlay"].config.resolve_pass_key("gitlab_token")
+        assert resolution.value == "venue/gitlab"
+        assert resolution.source.value == "db, overlay scope"
 
 
 class TestDiscoverTomlOverlaysNotSubclass:

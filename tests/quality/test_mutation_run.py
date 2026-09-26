@@ -8,7 +8,9 @@ parser, the ratchet/verdict, and the diff-resolution wiring.
 
 import dataclasses
 import inspect
+import os
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 
@@ -57,13 +59,96 @@ class TestBuildMutmutConfig:
         assert "paths_to_mutate" in cfg
         assert "src/teatree/on_behalf_gate.py" in cfg
 
-    def test_forces_serial_debug_mode(self) -> None:
+    def test_emits_debug_mode(self) -> None:
         cfg = build_mutmut_config(("src/teatree/x.py",), tests_dir=("tests/",))
         assert "debug = true" in cfg
 
     def test_includes_tests_dir(self) -> None:
         cfg = build_mutmut_config(("src/teatree/x.py",), tests_dir=("tests/teatree_core/",))
         assert "tests/teatree_core/" in cfg
+
+
+class TestUsableCpuCount:
+    def test_affinity_caps_cgroup_v2_quota(self) -> None:
+        assert (
+            mutation_run._usable_cpu_count(cpu_max="400000 100000", affinity_count=2, cpu_count=16, override=None) == 2
+        )
+
+    def test_cgroup_v1_quota_sets_usable_cpu_count(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        cpu_dir = tmp_path / "cpu"
+        cpu_dir.mkdir()
+        (cpu_dir / "cpu.cfs_quota_us").write_text("200000\n", encoding="utf-8")
+        (cpu_dir / "cpu.cfs_period_us").write_text("100000\n", encoding="utf-8")
+        monkeypatch.setattr(mutation_run, "_CGROUP_CPU_MAX", tmp_path / "cpu.max")
+        monkeypatch.setattr(mutation_run, "_CGROUP_CPU_V1_DIRS", (cpu_dir,))
+
+        assert (
+            mutation_run._usable_cpu_count(
+                cpu_max=mutation_run._read_cgroup_cpu_max(), affinity_count=8, cpu_count=16, override=None
+            )
+            == 2
+        )
+
+    @pytest.mark.parametrize("cpu_max", ["max 100000", "-1 100000"])
+    def test_unlimited_cgroup_falls_back_to_affinity(self, cpu_max: str) -> None:
+        assert mutation_run._usable_cpu_count(cpu_max=cpu_max, affinity_count=4, cpu_count=16, override=None) == 4
+
+    def test_missing_cgroup_file_falls_back_to_affinity(self) -> None:
+        assert mutation_run._usable_cpu_count(cpu_max=None, affinity_count=3, cpu_count=16, override=None) == 3
+
+    def test_environment_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MUTMUT_MAX_CHILDREN", "7")
+        assert (
+            mutation_run._usable_cpu_count(
+                cpu_max="100000 100000",
+                affinity_count=2,
+                cpu_count=4,
+                override=os.environ.get("MUTMUT_MAX_CHILDREN"),
+            )
+            == 7
+        )
+
+    def test_affinity_is_capped_at_host_cpu_count(self) -> None:
+        assert mutation_run._usable_cpu_count(cpu_max="max 100000", affinity_count=8, cpu_count=4, override=None) == 4
+
+    def test_cpu_count_is_the_final_fallback(self) -> None:
+        assert mutation_run._usable_cpu_count(cpu_max=None, affinity_count=None, cpu_count=6, override=None) == 6
+
+    def test_fractional_cgroup_quota_has_a_minimum_of_one(self) -> None:
+        assert (
+            mutation_run._usable_cpu_count(cpu_max="50000 100000", affinity_count=8, cpu_count=16, override=None) == 1
+        )
+
+    @pytest.mark.parametrize("override", ["0", "invalid"])
+    def test_invalid_environment_override_is_rejected(self, override: str) -> None:
+        with pytest.raises(ValueError, match="MUTMUT_MAX_CHILDREN"):
+            mutation_run._usable_cpu_count(
+                cpu_max="100000 100000",
+                affinity_count=2,
+                cpu_count=4,
+                override=override,
+            )
+
+
+class TestMutmutArgv:
+    def test_run_passes_max_children(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kwargs: object) -> CompletedProcess[str]:
+            calls.append(cmd)
+            return CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setenv("MUTMUT_MAX_CHILDREN", "3")
+        monkeypatch.setattr(mutation_run, "run_allowed_to_fail", fake_run)
+
+        mutation_run._run_mutmut(
+            ("src/teatree/a.py",),
+            tests_dir=("tests/",),
+            repo=str(tmp_path),
+            timeout=540,
+        )
+
+        assert calls[0] == [*mutation_run._MUTMUT_CMD, "run", "--max-children", "3"]
 
 
 class TestParseResults:

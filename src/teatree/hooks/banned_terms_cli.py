@@ -36,9 +36,6 @@ when the store could not be READ at all (``BannedTermsUnreadableError``): a
 locked or corrupt DB says nothing about what the operator configured, and reading
 that silence as "unset" is what let a busy DB open the gate (#4008).
 
-The email carve-out lives in ``term_match`` so it, too, is shared rather than
-duplicated.
-
 ``--diff-only`` scopes the scan to the staged DIFF's ADDED lines per file (the
 pre-commit hook entry passes it). Without it, the whole file is scanned — the
 mode the posting gate (``banned_terms_scanner`` writes the body to a temp file
@@ -59,7 +56,7 @@ from pathlib import Path
 from teatree.config import cold_reader
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.hooks.term_match import file_matches as _file_matches
-from teatree.hooks.term_match import line_matches, matched_term, strip_emails
+from teatree.hooks.term_match import line_matches, matched_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 # How long to wait for ``git diff`` before treating the staged diff as
@@ -325,13 +322,12 @@ def _line_is_own_repo_url_only(
     """
     from teatree.hooks.own_repo_url_carve_out import term_only_inside_own_repo_urls  # noqa: PLC0415 — import cycle
 
-    candidate = strip_emails(line)
     matched_any = False
     for term in terms:
-        if matched_term(candidate, (term,), allowlist) is None:
+        if matched_term(line, (term,), allowlist) is None:
             continue
         matched_any = True
-        if not term_only_inside_own_repo_urls(candidate, term, config_path=config_path):
+        if not term_only_inside_own_repo_urls(line, term, config_path=config_path):
             return False
     return matched_any
 
@@ -354,8 +350,8 @@ def _diff_only_report(
 
     When the staged diff cannot be resolved for a file (``staged_added_lines``
     returns ``None``), fall back to that file's FULL-file scan — failing closed,
-    never open. The added-line scan applies the same per-line email carve-out,
-    the company-identifier *allowlist* carve-out, the own-private-repo-URL
+    never open. The added-line scan applies the same company-identifier *allowlist*
+    carve-out, the own-private-repo-URL
     carve-out (:func:`_line_is_own_repo_url_only`, #3251), and whole-token matcher
     (:mod:`teatree.hooks.term_match`) the full scan uses, so the two paths agree
     on every line they both see.
@@ -378,7 +374,7 @@ def _diff_only_report(
         flagged = [
             line
             for line in added
-            if line_matches(strip_emails(line), terms, allowlist)
+            if line_matches(line, terms, allowlist)
             and not _line_is_own_repo_url_only(line, terms, allowlist, config_path)
         ]
         if not flagged:

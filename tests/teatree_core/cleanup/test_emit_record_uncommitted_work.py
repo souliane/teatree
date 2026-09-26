@@ -19,7 +19,7 @@ from teatree.core.cleanup.cleanup import _EffectiveTarget
 from teatree.core.cleanup.cleanup_emit import EMIT_SCHEMA_VERSION, CleanupEmitRecord
 from teatree.core.cleanup.working_tree_dirt import WorkingTreeDirt, working_tree_dirt
 from teatree.core.models import Worktree
-from teatree.core.worktree import worktree_done as worktree_done_mod
+from teatree.core.worktree import worktree_emit as worktree_emit_mod
 from tests.teatree_core.cleanup._shared import _run_git
 
 
@@ -92,10 +92,10 @@ class TestBuilderWiresTheDirtProbeIntoTheRecord:
         worktree = Worktree(repo_path="teatree", branch="feat", extra={"worktree_path": "/ws/feat"})
         dirt = WorkingTreeDirt(reasons=("1 uncommitted change(s): gate.py",), proven=True, paths=("gate.py",))
         with (
-            patch.object(worktree_done_mod, "working_tree_dirt", return_value=dirt),
-            patch.object(worktree_done_mod.git, "run", return_value=""),
-            patch.object(worktree_done_mod.git, "run_strict", return_value=""),
+            patch.object(worktree_emit_mod, "working_tree_dirt", return_value=dirt),
+            patch.object(worktree_emit_mod.git, "run", return_value=""),
+            patch.object(worktree_emit_mod.git, "run_strict", return_value=""),
         ):
-            record = worktree_done_mod._build_emit_record(worktree, workspace=Path("/ws"), liveness="")
+            record = worktree_emit_mod._build_emit_record(worktree, workspace=Path("/ws"), liveness="")
         assert record.uncommitted_paths == ["gate.py"]
         assert cast("dict", record.to_dict())["content_verified"] is False

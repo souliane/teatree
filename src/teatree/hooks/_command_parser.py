@@ -46,6 +46,8 @@ from teatree.hooks._body_file_resolution import (
 from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args
 from teatree.hooks._inline_body_resolution import resolve_inline_body_value
 from teatree.hooks._parser_primitives import (
+    BODY_FIELD_NAMES,
+    BODY_LONG_OPTION_FIELDS,
     FAIL_CLOSED_SENTINEL,
     UNAVAILABLE_BODY_SOURCE_SENTINEL,
     attached_api_field,
@@ -105,6 +107,7 @@ __all__ = [
 # precedes the verb.
 _T3_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
     "notify send",
+    "notify dm",
     "review post-comment",
     "review post-draft-note",
     "ticket create-issue",
@@ -177,12 +180,11 @@ def is_publish_command(command: str) -> bool:
 
 # Per-command argument-walker dispatch tables --------------------------
 
-# Body-bearing long options (value follows the flag as next token or
-# attached via ``=``). The catalogue is shared by all publishing
-# commands — gh, glab, git, curl all use the same long-option grammar.
-_BODY_FLAG_NAMES: Final[frozenset[str]] = frozenset(
-    {"--body", "--description", "--message", "--title"},
-)
+# Body-bearing long options (value follows the flag as next token or attached via
+# ``=``), spelled from :data:`BODY_LONG_OPTION_FIELDS` — the deliberately narrower
+# half of the body catalogue, because this walker runs on EVERY segment rather
+# than under a forge leader.
+_BODY_FLAG_NAMES: Final[frozenset[str]] = frozenset(f"--{name}" for name in BODY_LONG_OPTION_FIELDS)
 
 # Short body-bearing flags used by ``gh`` / ``glab`` / ``git commit``.
 _BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
@@ -288,7 +290,7 @@ def _handle_api_input(arg: str, payloads: list[str]) -> None:
 
 
 def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], base: "Path | None") -> None:
-    """Extract ``-f``/``-F``/``--field``/``--raw-field`` ``body=`` assignments.
+    """Extract ``-f``/``-F``/``--field``/``--raw-field`` body-field assignments.
 
     Both the spaced (``-f body=x``) and attached (``--field=body=x``,
     ``-fbody=x``) spellings are read, via
@@ -297,18 +299,23 @@ def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], bas
     body-based leak gate scanned an empty string.
 
     Also handles ``--input <file>`` / ``--input -`` (stdin → fail closed)
-    and ``--input <missing>`` (fail closed). Field assignments other than
-    ``body=`` are ignored. ``raws`` (parallel to ``words``) carries each token's
-    verbatim source span so a single-quoted INERT ``$(...)`` in a ``body=``
-    field is scanned rather than fail-closed.
+    and ``--input <missing>`` (fail closed). Field names outside
+    :data:`BODY_FIELD_NAMES` are ignored. ``raws`` (parallel to ``words``)
+    carries each token's verbatim source span so a single-quoted INERT
+    ``$(...)`` in a body field is scanned rather than fail-closed.
     """
     field_flags = _API_FIELD_SHORT_FLAGS | _API_FIELD_LONG_FLAGS
+    prose_name = _api_route_has_prose_name(words)
     i = 0
     n = len(words)
     while i < n:
         word = words[i]
         if word in field_flags and i + 1 < n:
-            _handle_field_assignment(words[i + 1], payloads, base, raws[i + 1])
+            assignment = words[i + 1]
+            if prose_name or not assignment.startswith("name="):
+                _handle_field_assignment(
+                    assignment, payloads, base, raws[i + 1], reads_file=_field_flag_reads_file(word)
+                )
             i += 2
             continue
         if word == "--input" and i + 1 < n:
@@ -319,29 +326,82 @@ def _walk_api_fields(words: list[str], raws: list[str], payloads: list[str], bas
         if attached is not None:
             _handle_api_input(attached, payloads)
         attached_field = attached_api_field(word)
-        if attached_field is not None:
-            _handle_field_assignment(attached_field, payloads, base, raws[i])
+        if attached_field is not None and (prose_name or not attached_field.startswith("name=")):
+            _handle_field_assignment(attached_field, payloads, base, raws[i], reads_file=_field_flag_reads_file(word))
         i += 1
 
 
-def _handle_field_assignment(arg: str, payloads: list[str], base: "Path | None", raw: str = "") -> None:
-    """Parse a ``-F body=value`` style argument and append the resolved value.
+def _api_route_has_prose_name(words: list[str]) -> bool:
+    """Return True when an API route renders ``name`` as a release title.
 
-    The ``body=`` prefix is required — other field names (``title=``,
-    etc.) are not body-bearing and are ignored. The value is resolved through
-    :func:`_body_file_resolution.resolve_inline_body_value` — the SAME path the
-    ``--body``/``-m``/positional-NOTE handling uses — so a ``-f body=$(cat
-    <path>)`` / ``-f body=$VAR`` field is scanned against the resolved file/var
-    content rather than the literal ``$(cat …)`` / ``$VAR`` token (a leak inside
-    the referenced file would otherwise slip onto a public repo). ``raw`` is the
-    field token's verbatim source span so a single-quoted INERT ``$(...)`` is
-    scanned; a LIVE unresolvable indirection yields the fail-closed sentinel.
+    GitHub and GitLab reuse ``name`` for many structured identifiers. Only their
+    release resource routes publish it as reader-facing prose; deeper routes such
+    as release asset links keep their identifier semantics.
+    """
+    for word in words:
+        parts = word.split("?", 1)[0].strip("/").split("/")
+        if len(parts) in {4, 5} and parts[0] == "repos" and parts[3] == "releases":
+            return True
+        if len(parts) in {3, 4} and parts[0] == "projects" and parts[2] == "releases":
+            return True
+    return False
+
+
+def _field_flag_reads_file(flag_token: str) -> bool:
+    """Return True iff this api field flag gives a leading ``@`` its file-read meaning.
+
+    Both CLIs document ``-F``/``--field`` as the TYPED flag whose value is read
+    from a file when it opens with ``@`` (``@-`` reads stdin), while
+    ``-f``/``--raw-field`` sends the value verbatim. So an ``@mention`` opening a
+    raw-field body is prose, and resolving it as a path would fail the gate
+    closed on a comment that publishes nothing the gate cannot read.
+    """
+    return flag_token.startswith(("--field", "-F"))
+
+
+def _handle_field_assignment(
+    arg: str, payloads: list[str], base: "Path | None", raw: str = "", *, reads_file: bool = False
+) -> None:
+    """Parse a ``-F <name>=value`` style argument and append the resolved value.
+
+    The name must be one of :data:`BODY_FIELD_NAMES` — GitLab's own field for an
+    issue/MR body is ``description``, so keying on ``body`` alone extracted an
+    EMPTY payload from ``-f description=<leak>`` and every body-based leak gate
+    scanned nothing while detection still called the command a publish.
+
+    A ``@<path>`` value on a typed flag (``reads_file``) is read through
+    :func:`_handle_api_input`, so the file the forge would upload is scanned and
+    an unreadable one — or a ``@-`` stdin body — fails closed. Everything else
+    resolves through :func:`_inline_body_resolution.resolve_inline_body_value` —
+    the SAME path the ``--body``/``-m``/positional-NOTE handling uses — so a
+    ``-f description=$(cat <path>)`` field is scanned against the file content
+    rather than the literal ``$(cat …)`` token.
+
+    ``raw`` is the whole field TOKEN's verbatim source span — ``name=`` included
+    — and is handed on WHOLE, with the offset at which the value starts. The
+    resolver's two liveness checks need different halves of it and one slice can
+    serve neither: the ``$VAR`` patterns are anchored, so against the full span a
+    live ``description="$VAR"`` matches nothing, reads as inert prose, and the
+    gate scans the unexpanded token while bash publishes the variable's real
+    value; the ``$(...)`` walk carries quote state, so against a value-only span
+    the opening ``'`` of ``'body=… $(date) …'`` is missing and an INERT
+    substitution bash passes verbatim reads as live, hard-blocking an ordinary
+    comment. A span the name cannot be located in yields "", which the resolver
+    already reads as live.
     """
     if "=" not in arg:
         return
     name, _, value = arg.partition("=")
-    if name == "body":
-        payloads.append(resolve_inline_body_value(value, base, raw))
+    if name not in BODY_FIELD_NAMES:
+        return
+    if reads_file and value.startswith("@"):
+        _handle_api_input(value[1:], payloads)
+        return
+    name_at = raw.find(f"{name}=")
+    if name_at < 0:
+        payloads.append(resolve_inline_body_value(value, base))
+        return
+    payloads.append(resolve_inline_body_value(value, base, raw, name_at + len(name) + 1))
 
 
 # ── Command-segment walking ─────────────────────────────────────────

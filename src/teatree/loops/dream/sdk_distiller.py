@@ -173,10 +173,12 @@ def _distill_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOption
 
     *env*, when set, pins the ``agent_harness_provider`` credential onto the spawned
     ``claude`` (the caller resolves it via :func:`~teatree.agents._runner_env.system_child_env`);
-    ``None`` leaves the SDK default empty env so the child inherits the ambient auth
-    state unchanged — the same "no pin → ambient" contract the agent runner keeps.
+    ``None`` pins no credential, so the child inherits the ambient auth state — the same
+    "no pin → ambient" contract the agent runner keeps. Either way compaction is switched off.
     """
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
+
+    from teatree.agents.compaction_guard import with_compaction_off  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
     options = ClaudeAgentOptions(
         system_prompt=_DISTILL_SYSTEM_PROMPT,
@@ -187,7 +189,7 @@ def _distill_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOption
     )
     if env is not None:
         options.env = env
-    return options
+    return with_compaction_off(options)
 
 
 async def _collect_turn(prompt: str, *, env: dict[str, str] | None = None) -> str:

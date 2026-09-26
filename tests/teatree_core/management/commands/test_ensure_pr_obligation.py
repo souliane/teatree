@@ -22,6 +22,7 @@ from django.test import TestCase
 
 from teatree.cli.doctor.checks_pending_pr import check_pending_pull_requests
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
+from teatree.core.management.commands import pr as pr_command
 from teatree.core.models import PendingPullRequest
 from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
@@ -73,6 +74,20 @@ class EnsurePrDeferralIsAnObligationTestCase(TestCase):
         owed = PendingPullRequest.objects.get(branch=branch)
         assert owed.repo_path == str(repo)
         assert owed.drain_attempts == 0
+
+    def test_missing_branch_is_reported_without_creating_a_pr(self) -> None:
+        repo, branch = _first_push_repo(self._tmp_path)
+        _run_git("checkout", "main", cwd=repo)
+        _run_git("branch", "-D", branch, cwd=repo)
+        with patch.object(pr_command, "create_or_defer_pr", return_value={"url": "unexpected"}) as create_pr:
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "ensure-pr", repo=str(repo), branch=branch),
+            )
+
+        create_pr.assert_not_called()
+        assert result["branch"] == branch
+        assert branch in str(result["skipped"])
 
     def test_re_deferring_the_same_branch_owes_once(self) -> None:
         repo, branch = _first_push_repo(self._tmp_path)

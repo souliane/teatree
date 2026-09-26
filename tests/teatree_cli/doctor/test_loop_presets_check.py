@@ -18,7 +18,7 @@ class TestLoopPresetsDoctorCheck(django.test.TestCase):
         assert _check_loop_presets() is True
 
     def test_override_naming_deleted_preset_warns(self) -> None:
-        ModeOverride.objects.set_override("ghost")
+        ModeOverride.objects.set_override("ghost", reason="test override")
         assert _check_loop_presets() is False
 
     def test_slot_naming_deleted_preset_warns(self) -> None:
@@ -33,7 +33,7 @@ class TestLoopPresetsDoctorCheck(django.test.TestCase):
     def test_known_references_pass(self) -> None:
         Loop.objects.create(name="kr-review", delay_seconds=60, script="src/teatree/loops/kr-review/loop.py")
         Mode.objects.create(name="maintenance", entries={"kr-review": False})
-        ModeOverride.objects.set_override("maintenance")
+        ModeOverride.objects.set_override("maintenance", reason="test override")
         assert _check_loop_presets() is True
 
     def test_active_schedule_naming_unknown_warns(self) -> None:

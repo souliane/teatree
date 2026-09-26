@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree import paths
 from teatree.core.review.author_trust import classify_author
 from teatree.hooks import _repo_visibility
 from teatree.utils.run import TimeoutExpired
@@ -150,3 +151,29 @@ class TestClassifyAuthorSurvivesProbeTimeout:
         # unknown author is untrusted — the caller keeps dispatching rather than crashing.
         assert result.internal_repo is False
         assert result.untrusted is True
+
+
+class TestVisibilityCacheIsHostWideNotPerWorktree:
+    """A remote's visibility is a fact about the FORGE, so its cache is host-wide.
+
+    ``paths.DATA_DIR`` is auto-isolated per worktree, and the visibility cache
+    used to follow it. Isolation buys nothing here — the cached fact belongs to
+    the remote, not to the checkout asking — and it cost determinism: each
+    worktree froze its own answer, so one URL resolved PRIVATE in one worktree
+    and UNKNOWN in the next.
+    """
+
+    def test_cache_root_ignores_a_worktree_isolated_data_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T3_DATA_DIR", raising=False)
+        before = _repo_visibility._cache_root()
+        monkeypatch.setattr(paths, "DATA_DIR", tmp_path / "teatree-worktrees" / "0ff8d4f5c527")
+
+        assert _repo_visibility._cache_root() == before
+
+    def test_explicit_data_dir_override_still_wins(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Anti-vacuity: the cache root is not hardcoded — a test/sandbox override still redirects it."""
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "sandbox"))
+
+        assert _repo_visibility._cache_root() == tmp_path / "sandbox"

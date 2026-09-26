@@ -17,7 +17,7 @@ resume child never double-queues.
 import pytest
 from django.core.management import call_command
 
-from teatree.agents._runner_options import _get_resume_session_id
+from teatree.agents.session_lineage import resume_session_id
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 
@@ -60,7 +60,7 @@ class TestAnswerResumesParkedTask:
         resume = parked.child_tasks.get()
         assert resume.parent_task_id == parked.pk
         assert "use postgres-1" in resume.execution_reason
-        assert _get_resume_session_id(resume) == _RESUME_UUID
+        assert resume_session_id(resume) == _RESUME_UUID
 
     def test_answer_without_parked_task_queues_no_resume(self) -> None:
         question = DeferredQuestion.record("Chat-only question?")

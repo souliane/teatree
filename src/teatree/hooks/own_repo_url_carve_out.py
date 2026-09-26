@@ -1,7 +1,7 @@
 r"""Own-repo-URL carve-out for the banned-terms posting gate (#1415).
 
-Sibling of the email carve-out (``term_match.strip_emails``) and the own-slug
-commit downgrade (``_commit_carve_out.own_slug_term_downgrades``). It closes a
+Sibling of the own-slug commit downgrade
+(``_commit_carve_out.own_slug_term_downgrades``). It closes a
 distinct false positive: a publish to a PUBLIC surface (a public teatree
 issue/PR/comment) whose body legitimately cites the *address of a customer
 repo* — a forge work-item URL like
@@ -59,10 +59,10 @@ def _url_is_own_repo(url: str, allowlist: list[str]) -> bool:
 def _blank_own_repo_urls(text: str, allowlist: list[str]) -> str:
     """Replace every own-repo forge URL in ``text`` with a single space.
 
-    Mirrors :func:`term_match.strip_emails`: an own-repo URL is the address of
-    the overlay's own customer repo, so blanking it before matching removes the
-    namespace token an own-repo URL legitimately carries while leaving every
-    other occurrence (a bare term, a foreign URL) intact for the matcher.
+    An own-repo URL is the address of the overlay's own customer repo, so blanking
+    it before matching removes the namespace token an own-repo URL legitimately
+    carries while leaving every other occurrence (a bare term, a foreign URL)
+    intact for the matcher.
     """
     return _URL_RE.sub(lambda m: " " if _url_is_own_repo(m.group(0), allowlist) else m.group(0), text)
 

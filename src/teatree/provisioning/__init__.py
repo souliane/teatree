@@ -13,14 +13,11 @@ from teatree.provisioning.declared import (
     declared_dependencies,
 )
 from teatree.provisioning.probes import unprovisioned
-from teatree.provisioning.skill_source import InstallOutcome, MandatedSkillInstaller
 
 __all__ = [
     "DeclarationUnreadableError",
     "DeclaredDependency",
     "DependencyKind",
-    "InstallOutcome",
-    "MandatedSkillInstaller",
     "declared_dependencies",
     "unprovisioned",
 ]

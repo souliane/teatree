@@ -26,6 +26,7 @@ takes.
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 #: How long a PER-LOOP lease whose owner cannot be verified stays live.
 #:
@@ -43,6 +44,27 @@ UNVERIFIABLE_OWNER_GRACE = timedelta(seconds=180)
 #: silently omit one and hand the predicates a blank field that reads as an absent
 #: fact. Every claim-reading queryset selects exactly this tuple.
 CLAIM_COLUMNS = ("session_id", "owner_pid", "owner_pid_namespace", "lease_expires_at", "acquired_at")
+
+
+class OwnershipStatus(NamedTuple):
+    """Read-only snapshot of a session-scoped t3-master claim (#1073/#1604).
+
+    ``is_live`` is the predicate callers branch on. It is pid-anchored
+    (matching ``claim_ownership``'s liveness): ``True`` iff a non-empty
+    session holds a claim that is either unexpired OR whose ``owner_pid``
+    is still alive, keyed on ``session_id`` rather than ``owner``.
+
+    ``generation`` is the current fencing / lease-generation token
+    (autonomous-lane redesign §5) — the value a merge-worker dispatched now
+    would stamp and later re-check at its git write. A missing row reports
+    generation ``0``.
+    """
+
+    owner_session: str
+    expires_at: datetime | None
+    is_live: bool
+    generation: int = 0
+    driver: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,10 +4,10 @@ The named root cause of the 26-bug integration campaign was thin-spec-as-plan: a
 ``PlanArtifact`` satisfied the plan gate on ``plan_text.strip()`` alone, so a
 scope+acceptance spec passed as a plan and a coder was dispatched with nothing
 naming the seams the change touched. These pure functions are the structural
-substitute — the four-section manifest each real plan must carry.
+substitute — the five-section manifest each real plan must carry.
 
 A leaf module (no DB, no gate imports) so both the model (``plan_artifact``,
-which enforces the manifest at ``record`` time under the flag) and the gate
+which enforces the manifest at ``record`` time) and the gate
 (``plan_currency_gate``, which re-checks it and reads the declared seams) import
 DOWN to it — never a model→gate up-edge. Mirrors ``anti_vacuity_gate.is_complete``:
 each section is substantive OR an explicit reasoned negative, and silence never
@@ -23,13 +23,23 @@ from teatree.core.models.types import AdequacySection, PlanAdequacy
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-# The four sections every real plan must speak to. Missing any one is a thin spec.
-REQUIRED_ADEQUACY_SECTIONS: tuple[str, ...] = ("design", "integration_seams", "edge_cases", "test_strategy")
+# The five sections every real plan must speak to. Missing any one is a thin spec.
+REQUIRED_ADEQUACY_SECTIONS: tuple[str, ...] = (
+    "design",
+    "integration_seams",
+    "edge_cases",
+    "test_strategy",
+    "acceptance_criteria",
+)
 
-# The fifth section a DIRECTIVE-linked ticket's plan must also declare (north-star
+#: The section that is also a PRODUCER: its content becomes the ticket's ``core.Rubric``
+#: criteria, so the plan is the single home for the acceptance-criteria list.
+ACCEPTANCE_CRITERIA_SECTION: str = "acceptance_criteria"
+
+# The extra section a DIRECTIVE-linked ticket's plan must also declare (north-star
 # PR-5): the generic-shape decision, structured so ``mechanism_conforms`` checks it
-# against the ratified sketch deterministically (its own presence check is the 5th-
-# section enforcement — the base four still go through ``is_adequate``).
+# against the ratified sketch deterministically (its own presence check is that
+# enforcement — the five required sections still go through ``is_adequate``).
 MECHANISM_PLACEMENT_SECTION: str = "mechanism_placement"
 
 _SHA_LEN = 40
@@ -43,6 +53,22 @@ def is_valid_base_sha(base_sha: object) -> bool:
     return len(cleaned) == _SHA_LEN and all(c in string.hexdigits for c in cleaned)
 
 
+def _section_content(section: "Mapping[str, object]") -> tuple[str, ...]:
+    """One section's ``content`` as non-blank strings — the single answer to "does it speak?"."""
+    content = section.get("content")
+    if isinstance(content, list):
+        return tuple(str(item).strip() for item in content if str(item).strip())
+    if isinstance(content, str) and content.strip():
+        return (content.strip(),)
+    return ()
+
+
+def _stated_reason(section: "Mapping[str, object]") -> bool:
+    """Whether the section carries a non-blank ``none_reason``."""
+    reason = section.get("none_reason")
+    return isinstance(reason, str) and bool(reason.strip())
+
+
 def section_complete(section: object) -> bool:
     """Whether one adequacy *section* is substantive OR carries an explicit reasoned negative.
 
@@ -53,17 +79,11 @@ def section_complete(section: object) -> bool:
     if not isinstance(section, dict):
         return False
     fields = cast("Mapping[str, object]", section)
-    content = fields.get("content")
-    if isinstance(content, str) and content.strip():
-        return True
-    if isinstance(content, list) and any(str(item).strip() for item in content):
-        return True
-    none_reason = fields.get("none_reason")
-    return isinstance(none_reason, str) and bool(none_reason.strip())
+    return bool(_section_content(fields)) or _stated_reason(fields)
 
 
 def is_adequate(adequacy: object) -> bool:
-    """Whether *adequacy* is a complete four-section manifest.
+    """Whether *adequacy* is a complete five-section manifest.
 
     Every required section must be present and complete (:func:`section_complete`).
     A scope+acceptance-only thin spec — no seams/edge-cases/test-strategy claims —
@@ -75,26 +95,30 @@ def is_adequate(adequacy: object) -> bool:
     return all(section_complete(fields.get(name)) for name in REQUIRED_ADEQUACY_SECTIONS)
 
 
+def _declared_content(adequacy: object, section_name: str) -> tuple[str, ...]:
+    """One section's ``content`` as non-blank strings; ``()`` for a negative or malformed one."""
+    if not isinstance(adequacy, dict):
+        return ()
+    section = cast("Mapping[str, object]", adequacy).get(section_name)
+    if not isinstance(section, dict):
+        return ()
+    return _section_content(cast("Mapping[str, object]", section))
+
+
 def declared_seam_paths(adequacy: object) -> tuple[str, ...]:
     """The registries/contracts/paths the plan declares it touches (its integration seams).
 
-    Read from the ``integration_seams`` section's ``content``. An explicit
-    ``no_seams`` negative (``none_reason`` set, no content) yields ``()`` — the
+    An explicit ``no_seams`` negative (``none_reason`` set, no content) yields ``()`` — the
     plan claims no seams, so the currency gate finds nothing to guard (a diff that
     later touches a known seam is the DEFERRED post-diff seam-parity checker's job,
     not this one's). Empty on a missing/malformed manifest.
     """
-    if not isinstance(adequacy, dict):
-        return ()
-    section = cast("Mapping[str, object]", adequacy).get("integration_seams")
-    if not isinstance(section, dict):
-        return ()
-    content = cast("Mapping[str, object]", section).get("content")
-    if isinstance(content, list):
-        return tuple(str(path).strip() for path in content if str(path).strip())
-    if isinstance(content, str) and content.strip():
-        return (content.strip(),)
-    return ()
+    return _declared_content(adequacy, "integration_seams")
+
+
+def declared_acceptance_criteria(adequacy: object) -> tuple[str, ...]:
+    """The acceptance criteria the plan declares — the texts its ``core.Rubric`` is built from."""
+    return _declared_content(adequacy, ACCEPTANCE_CRITERIA_SECTION)
 
 
 def negated_section(reason: str) -> AdequacySection:
@@ -105,21 +129,23 @@ def negated_section(reason: str) -> AdequacySection:
 def all_negated_adequacy(reason: str) -> PlanAdequacy:
     """A minimal-but-VALID manifest, every section an explicit reasoned negative.
 
-    The shape an audited bypass / plan-reaffirm with genuinely nothing to declare
-    records: it passes :func:`is_adequate` (no section is silent) while asserting
-    the change touches no seams, has no edge cases, and adds no tests — all with
-    the same stated *reason*.
+    The shape ONLY ``PlanArtifact.record_bypass`` writes: it passes :func:`is_adequate`
+    (no section is silent) while asserting the change touches no seams, has no edge
+    cases, adds no tests, and declares no acceptance criteria — all with the same
+    stated *reason*. ``record`` refuses it, so a plan of this shape always carries a
+    recorded human authorization.
     """
     return PlanAdequacy(
         design=AdequacySection(content=reason),
         integration_seams=negated_section(reason),
         edge_cases=negated_section(reason),
         test_strategy=negated_section(reason),
+        acceptance_criteria=negated_section(reason),
     )
 
 
 # --------------------------------------------------------------------------- #
-# mechanism_placement (north-star PR-5) — the directive-scoped 5th section: the
+# mechanism_placement (north-star PR-5) — the directive-scoped extra section: the
 # plan's recorded generic-shape decision, checked against the ratified sketch.
 # --------------------------------------------------------------------------- #
 def _mechanism_placement_declaration(adequacy: object) -> "Mapping[str, object]":
@@ -140,16 +166,19 @@ def _declared_str_list(value: object) -> tuple[str, ...]:
 
 
 def _is_reasoned_negative(section: "Mapping[str, object]") -> bool:
-    reason = section.get("none_reason")
-    return isinstance(reason, str) and bool(reason.strip())
+    """A stated reason AND no content — a section that declares something is not a negative."""
+    return _stated_reason(section) and not _section_content(section)
 
 
-def _is_plan_bypass_shaped(adequacy: object) -> bool:
+def is_plan_bypass_shaped(adequacy: object) -> bool:
     """Whether *adequacy* is an all-reasoned-negative bypass manifest (:func:`all_negated_adequacy`).
 
-    Every seam/edge/test section is a reasoned negative with no content — the shape
-    ``PlanArtifact.record_bypass`` writes. ``mechanism_conforms`` waives such a plan so
-    the audited plan-bypass escape works on a directive ticket too (never-lockout).
+    Every seam/edge/test section is a reasoned negative with no content — the shape only
+    ``PlanArtifact.record_bypass`` writes, so this predicate IS "a human authorized this
+    plan-bypass". It is the single waiver signal: ``mechanism_conforms`` waives such a
+    plan (never-lockout on a directive ticket) and the rubric gate waives it too.
+    The no-content half is load-bearing: the schema admits both keys, so a substantive
+    manifest a planner also annotated with reasons would otherwise read as the waiver.
     """
     if not isinstance(adequacy, dict):
         return False
@@ -172,10 +201,9 @@ def mechanism_conforms(adequacy: object, sketch: MechanismSketch) -> str | None:
     dispatch block. This is only reached WITH a ratified sketch, so a section-level
     ``none_reason`` waiver is contradictory (a mechanism WAS ratified) and does NOT waive —
     the never-lockout escape is the audited all-reasoned-negative plan-bypass manifest.
-    (Directive tickets are checked unconditionally per H3, so ``require_plan_adequacy`` no
-    longer gates these teeth in ``plan_currency_gate``.)
+    (Directive tickets are checked unconditionally per H3.)
     """
-    if _is_plan_bypass_shaped(adequacy):
+    if is_plan_bypass_shaped(adequacy):
         return None
     section = _mechanism_placement_declaration(adequacy)
     if not section:

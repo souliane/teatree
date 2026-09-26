@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"fixt-plan-semantic-paths-pass","model":"claude-sonnet-4-6"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Per-ticket plan before any change:\n\n1. In `/tmp/wt-4521/src/myapp/forms.py`, remove the default-costs literal gate and run the focused form tests.\n2. Separately, in `/tmp/wt-4242/src/myapp/views.py`, add the cross-user visibility filter and run the focused view tests.\n\nNo edits, commits, or pushes until this plan is visible."}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1}

@@ -21,10 +21,8 @@ Two hard invariants (mirroring the disposition scanner's conservative doctrine):
 The dedup / last-run / bootstrap-cadence machinery is shared with the other
 periodic task-queuing scanners via
 :class:`teatree.loop.scanners.phase_cadence.PhaseCadence`; the survivors filter (a
-genuine variant — no other scanner reads the forge) stays local. The whole
-scanner is gated default-OFF one layer up
-(:func:`teatree.loop.scanner_factories._triage_assessor_scanner_for`): with
-``triage_assessor_enabled = false`` no scanner is built, so this never runs.
+genuine variant — no other scanner reads the forge) stays local. Whether the loop
+runs at all is the active preset's opinion, read one layer up.
 """
 
 import logging
@@ -53,27 +51,25 @@ TRIAGE_ASSESSOR_PHASE = "triage_assessing"
 class TriageAssessorScanner:
     """Queue a periodic ``triage_assessing`` task for OPEN ``needs-triage`` issues.
 
-    Configuration is passed explicitly (rather than read from a global at scan
-    time) so test setup is deterministic and the wiring layer
-    (:func:`teatree.loop.scanner_factories._triage_assessor_scanner_for`) is the
-    single place that resolves settings to kwargs. The on/off decision lives at
-    the wiring layer (``triage_assessor_enabled``); the scanner itself always
-    scans when invoked, but emits nothing when there are no survivors or the
-    cadence/in-flight lock holds.
+    The host and identities are passed explicitly (rather than read from a global at
+    scan time) so test setup is deterministic. The scanner itself always scans when
+    invoked, but emits nothing when there are no survivors or the cadence/in-flight
+    lock holds.
     """
 
     host: CodeHostBackend
     overlay_name: str = ""
     identities: tuple[str, ...] = field(default_factory=tuple)
-    cadence_hours: int = 24
+    repo_slugs: tuple[str, ...] | None = None
+    #: Keeps the batch bounded and the DM that reports it reviewable.
     max_issues_per_tick: int = 10
     name: str = "triage_assessor"
 
     def scan(self) -> list[ScanSignal]:
         assignees = self._resolve_identities()
-        if not assignees:
+        if not assignees or self.repo_slugs == ():
             return []
-        cadence = PhaseCadence(self.overlay_name, phase=TRIAGE_ASSESSOR_PHASE, cadence_hours=self.cadence_hours)
+        cadence = PhaseCadence(self.overlay_name, phase=TRIAGE_ASSESSOR_PHASE)
         if cadence.in_flight_exists():
             return []
 
@@ -124,7 +120,7 @@ class TriageAssessorScanner:
         """
         recommendation_model = _recommendation_model()
         survivors: list[RawAPIDict] = []
-        for issue in needs_triage_issues(self.host, assignees):
+        for issue in needs_triage_issues(self.host, assignees, repo_slugs=self.repo_slugs or ()):
             url = _issue_url(issue)
             if not url:
                 continue

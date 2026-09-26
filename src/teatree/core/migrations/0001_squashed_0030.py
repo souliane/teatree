@@ -113,7 +113,7 @@ _DEFAULT_LOOPS = (
         300,
         None,
         None,
-        "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. Always runs (not colleague-facing); self-review keeps going unattended.",
+        "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. Ships DISABLED; once enabled the away-gate never skips it (colleague_facing = false), so self-review keeps going while the owner is unreachable.",
         False,
         False,
     ),
@@ -131,7 +131,7 @@ _DEFAULT_LOOPS = (
         300,
         None,
         None,
-        "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m; default-off behind auto_disposition_enabled, bounded per tick.",
+        "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m, only for t3-teatree owned repos; bounded per tick.",
         False,
         False,
     ),
@@ -158,24 +158,16 @@ _DEFAULT_LOOPS = (
         1800,
         None,
         None,
-        (
-            "Discovers and claims admitted backlog issues to auto-implement, kicking off the maker "
-            "pipeline; every 30m. issue_implementer_enabled ships ON (#3895), so this Loop row is the "
-            "remaining switch."
-        ),
+        "Discovers and claims admitted backlog issues to auto-implement, kicking off the maker pipeline; every 30m. The active preset decides whether it runs.",
         False,
         False,
     ),
     (
         "triage_assessor",
-        3600,
+        86400,
         None,
         None,
-        (
-            "Assesses OPEN needs-triage issues hourly and queues keep/close/needs-info recommendations "
-            "behind an ask-gate; triage_assessor_enabled ships ON (#3895), so this Loop row is the "
-            "remaining switch, and it never acts without per-item approval."
-        ),
+        "Assesses OPEN needs-triage issues daily and queues keep/close/needs-info recommendations behind an ask-gate; this row IS the cadence, the active preset decides whether it runs, and it never acts without per-item approval.",
         False,
         False,
     ),
@@ -184,12 +176,7 @@ _DEFAULT_LOOPS = (
         3600,
         None,
         None,
-        (
-            "Sweeps the owner's DM threads hourly and resolves the ones that no longer need "
-            "them (owner already replied, subject merged/closed, duplicate of an open thread); "
-            "leaves anything older than a day for the resurfacing side, and says nothing when "
-            "it resolved nothing."
-        ),
+        "Sweeps the owner's DM threads hourly and resolves the ones that no longer need them (owner already replied, subject merged/closed, duplicate of an open thread); leaves anything older than a day for the resurfacing side, and says nothing when it resolved nothing.",
         False,
         False,
     ),
@@ -204,10 +191,10 @@ _DEFAULT_LOOPS = (
     ),
     (
         "arch_review",
-        10800,
-        None,
+        86400,
+        datetime.time(4, 0),
         _ARCH_REVIEW_PROMPT_BODY,
-        "Dispatches a sub-agent every 3h to run a holistic, codebase-wide architectural review via the ac-reviewing-codebase skill.",
+        "Dispatches a sub-agent at 04:00 to run a holistic, codebase-wide architectural review via the ac-reviewing-codebase skill; the scanner enforces architectural_review_cadence_hours (168) and the merge-count backstop, so this row is only how often that gate is CHECKED — and, because a failed review leaves that clock untouched, how soon a failed one retries.",
         False,
         False,
     ),
@@ -222,19 +209,19 @@ _DEFAULT_LOOPS = (
     ),
     (
         "eval_local",
-        86400,
+        604800,
         None,
         None,
-        "Runs the local behavioral eval suite; the scanner enforces its own weekly cadence (checked daily).",
+        "Runs the local behavioral eval suite weekly; this row IS the cadence.",
         False,
         False,
     ),
     (
         "db_backup",
         86400,
+        datetime.time(2, 0),
         None,
-        None,
-        "Backs up teatree's own control DB daily and prunes past the keep-last-N-days retention (directive #2); the scanner enforces db_backup_cadence_hours, gated by db_backup_disabled.",
+        "Backs up teatree's own control DB at 02:00 and prunes past the keep-last-N-days retention; this row IS the cadence.",
         False,
         True,
     ),
@@ -243,7 +230,7 @@ _DEFAULT_LOOPS = (
         86400,
         None,
         None,
-        "Groups the backlog daily — bundles related issues into an existing host and closes nothing for real; this row is the switch (backlog_sweep_disabled ships open), gated by ask_before_backlog_sweep_closes.",
+        "Groups the backlog daily — bundles related issues into an existing host and closes nothing for real; this row plus the active preset are the switch, gated by ask_before_backlog_sweep_closes.",
         False,
         False,
     ),
@@ -279,14 +266,7 @@ _DEFAULT_LOOPS = (
         3600,
         None,
         None,
-        (
-            "Hourly, off the live tick: interprets captured owner directives up to "
-            "directive_intake_per_tick per pass and stops at the human ratify gate, then advances "
-            "one ratified directive one step (implement, configure, verify, keep-only-if-verified, "
-            "else human-asked revert); directive_loop_enabled ships ON (#3895), so this Loop row is "
-            "the remaining switch, and the execution arc additionally needs the factory-score and "
-            "critic-live guards."
-        ),
+        "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); directive_loop_enabled ships ON, so this Loop row is the remaining switch, and the execution arc additionally needs the factory-score and critic-live guards.",
         False,
         False,
     ),
@@ -304,7 +284,7 @@ _DEFAULT_LOOPS = (
         1800,
         None,
         None,
-        "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair (#4451). Observe-only: it writes nothing and opens nothing. Default-OFF.",
+        "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair. Observe-only: it writes nothing and opens nothing. Default-OFF.",
         False,
         False,
     ),
@@ -313,7 +293,7 @@ _DEFAULT_LOOPS = (
         604800,
         None,
         None,
-        "Skims the Claude memories weekly (directive 32) and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF.",
+        "Skims the Claude memories weekly and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF.",
         False,
         False,
     ),

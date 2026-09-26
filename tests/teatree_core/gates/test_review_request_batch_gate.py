@@ -25,6 +25,7 @@ from django.utils import timezone
 
 from teatree.core.backend_protocols import DraftState
 from teatree.core.gates.review_request_batch_gate import (
+    WORK_GROUP_MAX_MEMBERS,
     post_command_lines,
     work_group_batch_refusal,
     work_group_ready,
@@ -249,33 +250,24 @@ class TestPauseStateFailsClosed(TestCase):
 class TestOversizeGroupFailsClosed(TestCase):
     """Past the bound the shared signal is likelier a coincidence than one unit of work."""
 
-    def _three_member_group(self) -> _Host:
-        return _Host(
-            mrs=[
-                _mr(1, f"feat(billing): add the sweep ({_TICKET})"),
-                _mr(2, f"feat(billing): wire the sweep ({_TICKET})"),
-                _mr(3, f"feat(billing): document the sweep ({_TICKET})"),
-            ]
-        )
+    def _group(self, members: int) -> _Host:
+        return _Host(mrs=[_mr(n, f"feat(billing): sweep step {n} ({_TICKET})") for n in range(1, members + 1)])
 
     def test_group_above_the_bound_holds_and_asks_the_owner(self) -> None:
-        ConfigSetting.objects.set_value("work_group_max_members", 2)
-        with _forge(self._three_member_group()):
+        with _forge(self._group(WORK_GROUP_MAX_MEMBERS + 1)):
             verdict = work_group_ready(mr_url=_url(1))
         assert not verdict.ready
         assert verdict.reason == "work_group_too_large"
         assert DeferredQuestion.objects.filter(dedupe_marker=f"mr-state:{_url(1)}").count() == 1
 
     def test_control_group_within_the_bound_releases_and_asks_nothing(self) -> None:
-        ConfigSetting.objects.set_value("work_group_max_members", 3)
-        with _forge(self._three_member_group()):
+        with _forge(self._group(WORK_GROUP_MAX_MEMBERS)):
             verdict = work_group_ready(mr_url=_url(1))
         assert verdict.ready, verdict
         assert DeferredQuestion.objects.count() == 0
 
     def test_the_read_only_survey_holds_the_oversize_group_without_asking(self) -> None:
-        ConfigSetting.objects.set_value("work_group_max_members", 2)
-        with _forge(self._three_member_group()):
+        with _forge(self._group(WORK_GROUP_MAX_MEMBERS + 1)):
             surveyed = work_groups()
         assert [verdict.reason for verdict in surveyed] == ["work_group_too_large"]
         assert DeferredQuestion.objects.count() == 0
@@ -464,6 +456,7 @@ class TestPostChokepoint(_ChokepointCase):
             stack.enter_context(
                 patch(f"{_POST_CMD}.should_post_review_request", return_value=GuardDecision(action="post"))
             )
+            stack.enter_context(patch(f"{_POST_CMD}._owner_authorship", return_value=True))
             stack.enter_context(patch(f"{_POST_CMD}.messaging_from_overlay", return_value=backend))
             yield
 
@@ -534,6 +527,7 @@ class TestCheckChokepoint(_ChokepointCase):
     def test_control_inert_by_default_reaches_the_ordinary_decision(self) -> None:
         with (
             _forge(_pair_sharing_a_ticket(drafts={2: DraftState.DRAFT})),
+            patch(f"{_CHECK_CMD}._owner_authorship", return_value=True),
             patch(f"{_CHECK_CMD}.resolve_guard_target", return_value=_TARGET),
             patch(f"{_CHECK_CMD}.peek_should_post_review_request", return_value=GuardDecision(action="post")),
         ):

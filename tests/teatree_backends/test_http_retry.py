@@ -205,7 +205,11 @@ class TestBackendsNowRetry:
         # caller's raise_for_status then surfaces it.
         fake = _fake_client([_status(503)])
 
-        with patch.object(client, "_client", return_value=fake), pytest.raises(httpx.HTTPStatusError):
+        with (
+            patch.object(client, "_client", return_value=fake),
+            patch.object(client._write_guard, "check"),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
             client.update_page_status("pg", property_name="Status", value="Done")
 
         assert fake.patch.call_count == 1

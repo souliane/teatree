@@ -1,3 +1,7 @@
+# test-path: cross-cutting
+# Drives scripts/hooks/refuse-push-to-foreign-mr.sh end to end — a bash hook with no
+# src/teatree mirror — and reads the probe budget the guard's own resolver enforces,
+# so it spans packages. Same shape as test_hook_router_foreign_branch_push_gate.py.
 """Integration tests for the foreign-MR pre-push guard (#2211).
 
 The gate refuses ``git push`` when the branch being pushed backs an
@@ -21,11 +25,14 @@ invocation. Only ``gh`` (the unstoppable forge network) is faked.
 
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from teatree.hooks._repo_visibility import _PROBE_TIMEOUT_S
 
 HOOK = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "refuse-push-to-foreign-mr.sh"
 
@@ -33,9 +40,37 @@ _OUR_LOGIN = "souliane"
 _NOREPLY_EMAIL = "21343492+souliane@users.noreply.github.com"
 _NOREPLY_NAME = "souliane"
 
+# One second past `_repo_visibility._PROBE_TIMEOUT_S`, so the shim's identity
+# answer is real but arrives too late — the timeout is the ONLY variable.
+_OVER_PROBE_BUDGET_S = _PROBE_TIMEOUT_S + 1
+
 
 def _hermetic_env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    """The process env minus ``GIT_*``, with the cold config store pinned ABSENT.
+
+    ``declared_self_identities`` is a cold read of the canonical ``ConfigSetting``
+    DB, which the hook subprocess would otherwise resolve to the HOST's — so a
+    box that declares one of these fixtures' logins would decide the verdict.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["T3_CONFIG_DB"] = str(Path(os.sep, "nonexistent", "teatree-config.sqlite3"))
+    return env
+
+
+def _config_db_declaring(path: Path, host: str, login: str) -> str:
+    """Seed a ``teatree_config_setting`` DB declaring *login* as ours on *host*."""
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+        ("self_forge_identities", json.dumps({host: [login]})),
+    )
+    conn.commit()
+    conn.close()
+    return str(path)
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -240,6 +275,71 @@ def _foreign_open_pr(branch: str = "feature-x", author: str = "teammate") -> lis
             "state": "OPEN",
         }
     ]
+
+
+def _gh_shim_without_an_identity(bin_dir: Path, pr_payload: list[dict[str, object]]) -> None:
+    """A ``gh`` that lists the open PR but 401s on ``api user`` — the container venue.
+
+    The measured shape behind #83: the MR query answers while the identity probe
+    does not, so OWN-vs-FOREIGN has no ground to be decided on.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    payload_json = json.dumps(pr_payload)
+    shim = bin_dir / "gh"
+    shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"payload = json.loads({payload_json!r})\n"
+        "args = sys.argv[1:]\n"
+        'if "api" in args and "user" in args:\n'
+        '    sys.stderr.write("HTTP 401: Unauthorized\\n")\n'
+        "    sys.exit(1)\n"
+        'if "pr" in args and "list" in args:\n'
+        '    head = args[args.index("--head") + 1] if "--head" in args else None\n'
+        "    rows = [pr for pr in payload if head is None or pr.get('headRefName') == head]\n"
+        "    for pr in rows:\n"
+        "        print(f\"{pr['number']}\\t{pr['author']['login']}\")\n"
+        "    sys.exit(0)\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _gh_shim_whose_identity_probe_hangs(bin_dir: Path, pr_payload: list[dict[str, object]], sleep_s: int) -> None:
+    """A ``gh`` that lists the open PR instantly but takes *sleep_s* to answer ``api user``.
+
+    It DOES answer, and with our own login — so the only reason the verdict is
+    unresolved is the probe budget, not the credential.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    payload_json = json.dumps(pr_payload)
+    shim = bin_dir / "gh"
+    shim.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys, time\n"
+        f"payload = json.loads({payload_json!r})\n"
+        "args = sys.argv[1:]\n"
+        'if "api" in args and "user" in args:\n'
+        f"    time.sleep({sleep_s})\n"
+        f"    print({_OUR_LOGIN!r})\n"
+        "    sys.exit(0)\n"
+        'if "pr" in args and "list" in args:\n'
+        '    head = args[args.index("--head") + 1] if "--head" in args else None\n'
+        "    rows = [pr for pr in payload if head is None or pr.get('headRefName') == head]\n"
+        "    for pr in rows:\n"
+        "        print(f\"{pr['number']}\\t{pr['author']['login']}\")\n"
+        "    sys.exit(0)\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _setup_without_an_identity(tmp_path: Path, branch: str = "feature-x") -> tuple[Path, dict[str, str]]:
+    work, env = _setup(tmp_path, branch=branch, pr_payload=_foreign_open_pr(branch=branch))
+    _gh_shim_without_an_identity(tmp_path / "bin", _foreign_open_pr(branch=branch))
+    return work, env
 
 
 class TestRefusePushToForeignOpenMr:
@@ -586,3 +686,121 @@ class TestGitLabRemotesAreGatedToo:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+class TestAnUnresolvableIdentityRefusesRatherThanEvaporating:
+    """#83: `if not our_login: return NONE` made the guard venue-dependent.
+
+    The same push was refused on the host and permitted inside the worker
+    container, and the container route needed no override token — so the bypass
+    left none of the audit trail the token exists to create. An unresolvable
+    identity is not evidence the push is harmless.
+    """
+
+    def test_an_unresolvable_identity_blocks_the_push(self, tmp_path: Path) -> None:
+        work, env = _setup_without_an_identity(tmp_path)
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = _run_hook(work, env, "feature-x")
+
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_the_refusal_names_the_venue_and_the_probe(self, tmp_path: Path) -> None:
+        work, env = _setup_without_an_identity(tmp_path)
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = _run_hook(work, env, "feature-x")
+
+        combined = result.stdout + result.stderr
+        assert "this venue" in combined, combined
+        assert "'gh api user'" in combined, combined
+
+    def test_the_refusal_names_the_author_it_could_not_attribute(self, tmp_path: Path) -> None:
+        """``open_mr.author`` is in hand — withholding it hides WHOSE MR is at stake."""
+        work, env = _setup_without_an_identity(tmp_path)
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        combined = _run_hook(work, env, "feature-x").stdout
+
+        assert "authored by 'teammate'" in combined, combined
+        assert "#42" in combined, combined
+
+    def test_the_refusal_is_distinguishable_from_a_confirmed_foreign_verdict(self, tmp_path: Path) -> None:
+        unresolved_work, unresolved_env = _setup_without_an_identity(tmp_path / "unresolved")
+        _commit(unresolved_work, "feature.txt", "a clean feature line\n")
+        foreign_work, foreign_env = _setup(tmp_path / "foreign", pr_payload=_foreign_open_pr())
+        _commit(foreign_work, "feature.txt", "a clean feature line\n")
+
+        unresolved = _run_hook(unresolved_work, unresolved_env, "feature-x").stdout
+        foreign = _run_hook(foreign_work, foreign_env, "feature-x").stdout
+
+        assert "cannot tell whether that is you" in unresolved, unresolved
+        assert "Pushing would silently modify" in foreign, foreign
+        assert "Pushing would silently modify" not in unresolved, unresolved
+        assert "cannot tell whether that is you" not in foreign, foreign
+
+    def test_the_override_token_still_releases_an_unresolvable_identity(self, tmp_path: Path) -> None:
+        """Paired: the SAME setup must refuse without the token, or "released" proves nothing."""
+        gated_work, gated_env = _setup_without_an_identity(tmp_path / "gated")
+        _commit(gated_work, "feature.txt", "a clean feature line\n")
+        released_work, released_env = _setup_without_an_identity(tmp_path / "released")
+        _commit(
+            released_work,
+            "feature.txt",
+            "a clean feature line\n",
+            message="add feature\n\n[push-to-foreign-mr-ok: co-authoring with the MR owner]",
+        )
+
+        gated = _run_hook(gated_work, gated_env, "feature-x")
+        released = _run_hook(released_work, released_env, "feature-x")
+
+        assert gated.returncode == 1, gated.stdout + gated.stderr
+        assert released.returncode == 0, released.stdout + released.stderr
+
+    def test_a_declared_self_identity_is_own_even_when_the_probe_cannot_answer(self, tmp_path: Path) -> None:
+        """#282/B1: the declaration is a cold config read — it needs no forge call.
+
+        Consulting it only AFTER the probe made the guard refuse a push to an MR
+        the operator had already told it was ours, which is the shape every
+        factory MR has (a bot authors them so the owner stays approval-eligible).
+        """
+        work, env = _setup(tmp_path, pr_payload=_foreign_open_pr(author="our-factory-bot"))
+        _gh_shim_without_an_identity(tmp_path / "bin", _foreign_open_pr(author="our-factory-bot"))
+        env["T3_CONFIG_DB"] = _config_db_declaring(tmp_path / "config.sqlite3", "github.com", "our-factory-bot")
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = _run_hook(work, env, "feature-x")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_an_undeclared_author_still_refuses_with_the_same_config_db(self, tmp_path: Path) -> None:
+        """The control for the test above: the declaration must not blanket-allow."""
+        work, env = _setup_without_an_identity(tmp_path)
+        env["T3_CONFIG_DB"] = _config_db_declaring(tmp_path / "config.sqlite3", "github.com", "our-factory-bot")
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = _run_hook(work, env, "feature-x")
+
+        assert result.returncode == 1, result.stdout + result.stderr
+
+    def test_a_timed_out_probe_is_named_a_timeout_not_an_unauthenticated_cli(self, tmp_path: Path) -> None:
+        """#282/B2: the CLI answers — just past the budget — so `auth status` is the wrong path."""
+        work, env = _setup(tmp_path, pr_payload=_foreign_open_pr())
+        _gh_shim_whose_identity_probe_hangs(tmp_path / "bin", _foreign_open_pr(), sleep_s=_OVER_PROBE_BUDGET_S)
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        combined = _run_hook(work, env, "feature-x").stdout
+
+        assert "TIMED OUT" in combined, combined
+        assert "not evidence the CLI is unauthenticated" in combined, combined
+        assert "exited non-zero" not in combined, combined
+
+    def test_a_branch_with_no_open_mr_is_still_allowed_without_an_identity(self, tmp_path: Path) -> None:
+        """The common case must not brick: no MR means no ownership question to answer."""
+        work, env = _setup(tmp_path, pr_payload=[])
+        _gh_shim_without_an_identity(tmp_path / "bin", [])
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = _run_hook(work, env, "feature-x")
+
+        assert result.returncode == 0, result.stdout + result.stderr

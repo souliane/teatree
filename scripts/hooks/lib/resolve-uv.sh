@@ -35,8 +35,10 @@
 # deliberately NOT memoised — see `uv_project_run_prefix`.
 
 # The environment a hook falls back to when uv would otherwise reconcile one that
-# is not ours. Relative, so uv resolves it against the same workspace root.
-_UV_HOOK_ENV_NAME=".venv-hook"
+# is not ours. Relative, so uv resolves it against the same workspace root; scoped
+# per platform because a bind-mounted clone is one directory the host and the
+# container both reach, and a shared one is rebuilt by each in turn.
+_UV_HOOK_ENV_NAME=".venv-hook-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 
 # How far up from the project a `.venv` still counts as "at or above" it, and how
 # far up a `pyproject.toml` is still an ancestor of this project.

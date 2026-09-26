@@ -196,7 +196,10 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
     the queue; a newly queued gap is stamped when :func:`promote_batch` mints its ticket.
     """
     from teatree.loops.dream.batch_promote import covering_ticket, is_reconciled  # noqa: PLC0415 — tick-time import
-    from teatree.loops.dream.umbrella_ledger import GapSpec  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.loops.dream.umbrella_ledger import (  # noqa: PLC0415 — deferred: loaded at tick time, not import
+        GapSpec,
+        gap_title,
+    )
 
     verdict = classify_destination(row.durable_destination)
     if not verdict.groundable:
@@ -214,7 +217,11 @@ def _promote_one_gap(row: ConsolidatedMemory, *, umbrella_url: str, batch: "Prom
         )
 
     outcome = batch.consider(
-        gap=GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key)
+        gap=GapSpec(
+            gap_key=row.cluster_key,
+            title=gap_title("Workflow gap (dreaming Pass 2)", row.rule),
+            cluster_key=row.cluster_key,
+        )
     )
     ticket = covering_ticket(row.cluster_key) if outcome.already_covered and not outcome.withheld else None
     if ticket is not None and not is_reconciled(ticket):
@@ -311,11 +318,6 @@ def _find_existing_marker_issue(host: CodeHostBackend, *, repo: str, marker: str
         if marker in body:
             return _issue_url(raw)
     return ""
-
-
-def _ticket_title(row: ConsolidatedMemory) -> str:
-    snippet = neutralize_bare_references(row.rule.strip().split(". ")[0][:60].rstrip())
-    return f"Workflow gap (dreaming Pass 2): {snippet}"
 
 
 def retire_resolved_memories(

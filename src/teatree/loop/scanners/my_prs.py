@@ -5,8 +5,17 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.models import RedMrFixAttempt
+from teatree.core.models.review_verdict import HeadVerdictState
 from teatree.core.review.mr_ci_state import GREEN_STATUSES, carries_pipeline_field, pipeline_status
+from teatree.core.review.review_candidate import author_username
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
+from teatree.loop.scanners.pr_findings import (
+    FindingDisposition,
+    ReviewVerdictReader,
+    disposition_for_author,
+    unaddressed_review_findings,
+)
 from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.types import RawAPIDict
@@ -75,9 +84,16 @@ class MyPrsScanner:
     """Lists open PRs authored by the active user.
 
     Returns a ``my_pr.failed`` signal when the head pipeline is in a
-    failed state, ``my_pr.draft_notes`` when there are pending review
-    comments to address, and ``my_pr.open`` for every other open PR so
+    failed state, one of two review-findings signals when the head still owes
+    work for a finding, and ``my_pr.open`` for every other open PR so
     the dispatcher can render an "in flight" summary.
+
+    The two findings signals ARE the owner's fix-vs-post rule, keyed on the MR
+    author: ``my_pr.findings_to_fix`` on our own (or our declared bot's) MR, which
+    the routing table dispatches to the fix agent; ``my_pr.draft_notes`` on anyone
+    else's — and on an author that could not be resolved — which only surfaces, so
+    a colleague's branch is never written to. See
+    :mod:`teatree.loop.scanners.pr_findings`.
 
     ``identities`` opts the scanner into a multi-alias union query — used
     when the user has more than one identity on the same forge (a personal
@@ -107,6 +123,12 @@ class MyPrsScanner:
     keeps the payload-only behaviour. It is consulted only for PRs that survive
     ``allowed_url_prefixes``, so a forge call is never spent on a sibling
     overlay's MR.
+
+    ``verdict_reader`` supplies the recorded cold-review verdict at the live head.
+    It is what makes a findings signal fire for a HOLD the headless reviewer
+    RETURNED (a HOLD often posts nothing on the forge, so the note count alone
+    misses it) and stay silent for a head a reviewer already vouched for. ``None``
+    degrades to the forge note count.
     """
 
     host: CodeHostBackend
@@ -114,6 +136,7 @@ class MyPrsScanner:
     allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     competing_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     ci_enricher: CiEnricher | None = None
+    verdict_reader: ReviewVerdictReader | None = None
     name: str = "my_prs"
 
     def scan(self) -> list[ScanSignal]:
@@ -158,15 +181,11 @@ class MyPrsScanner:
                     )
                 )
                 continue
-            draft_count = _int_field(pr, "user_notes_count", "review_comments")
-            if draft_count > 0 and status != "success":
-                signals.append(
-                    ScanSignal(
-                        kind="my_pr.draft_notes",
-                        summary=f"PR #{iid} has {draft_count} unresolved notes: {title}",
-                        payload={**base_payload, "draft_count": draft_count},
-                    )
-                )
+            findings_signal = self._findings_signal(
+                pr, base_payload=base_payload, title=title, iid=iid, identities=authors
+            )
+            if findings_signal is not None:
+                signals.append(findings_signal)
                 continue
             signals.append(
                 ScanSignal(
@@ -185,6 +204,47 @@ class MyPrsScanner:
                 unenriched,
             )
         return signals
+
+    def _findings_signal(
+        self, pr: RawAPIDict, *, base_payload: SignalPayload, title: str, iid: int, identities: tuple[str, ...]
+    ) -> ScanSignal | None:
+        """The signal for a PR carrying review findings nobody has acted on, or ``None``.
+
+        Which KIND it is IS the owner's rule, and the routing table reads it
+        directly: ``my_pr.findings_to_fix`` is dispatched to the fix agent (our own
+        or our bot's MR), ``my_pr.draft_notes`` only surfaces (anyone else's MR, or
+        an author we could not resolve). Nothing downstream re-derives the
+        disposition, so there is exactly one place it can be got wrong.
+        """
+        notes_count = _int_field(pr, "user_notes_count", "review_comments")
+        url = str(base_payload.get("url") or "")
+        sha = str(base_payload.get("head_sha") or "")
+        if not unaddressed_review_findings(
+            verdict_state=self._verdict_state(url=url, head_sha=sha), notes_count=notes_count
+        ):
+            return None
+        author = author_username(pr)
+        payload: SignalPayload = {**base_payload, "draft_count": notes_count, "author": author}
+        if disposition_for_author(author, self_identities=identities) is FindingDisposition.POST:
+            return ScanSignal(
+                kind="my_pr.draft_notes",
+                summary=f"PR #{iid} has {notes_count} unresolved notes: {title}",
+                payload=payload,
+            )
+        # ``fix_kind`` picks the RedMrFixAttempt ledger slot AND the remedy the
+        # debugging task is scheduled for — without it the dispatch would claim
+        # (and be deduped against) the CI-red slot.
+        payload["fix_kind"] = RedMrFixAttempt.Kind.REVIEW_FINDINGS.value
+        return ScanSignal(
+            kind="my_pr.findings_to_fix",
+            summary=f"PR #{iid} has {notes_count} unresolved review findings to fix: {title}",
+            payload=payload,
+        )
+
+    def _verdict_state(self, *, url: str, head_sha: str) -> HeadVerdictState | None:
+        if self.verdict_reader is None:
+            return None
+        return self.verdict_reader.state_for(url=url, head_sha=head_sha)
 
     def _enriched_status(self, *, url: str, head_sha: str) -> str:
         if self.ci_enricher is None:

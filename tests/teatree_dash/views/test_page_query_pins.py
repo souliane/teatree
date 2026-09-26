@@ -19,13 +19,14 @@ from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 
-from teatree.core.models import Loop, Mode
+from teatree.core.models import Loop, Mode, Task
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.session import Session
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
-from tests.factories import TaskFactory, TicketFactory
+from tests.factories import TicketFactory
+from tests.teatree_dash._overlay_venue import core_overlay_only
 
 State = Ticket.State
 
@@ -46,28 +47,39 @@ _LOOPBACK = {"REMOTE_ADDR": "127.0.0.1"}
 #: shed the duplicate preset read they used to pay. ``live`` resolved no mode at all, so
 #: it now pays the L0 default lookup its membership read needs. Still flat, still one
 #: bounded read per datum.
-#: #4202 collapsed the mode to a pure loop table. The presence upgrade no longer keys on a
-#: posture boolean already on the resolved row, so it reads the ``presence_upgrade_mode``
-#: setting once per resolve — +1 on every page that resolves a mode. The loops header also
-#: offers the LIVE set of mode names instead of three hard-coded posture tokens, which is
-#: one bounded ``Mode`` name read. Both are O(1) in the population.
+#: #4202 collapsed the mode to a pure loop table. The loops header offers the LIVE set of mode
+#: names instead of three hard-coded posture tokens, which is one bounded ``Mode`` name read,
+#: O(1) in the population.
+#: The tri-state manual layer nets the presence-upgrade read AWAY — nothing reads
+#: ``presence_upgrade_mode`` any more — and replaces it with the manual-override map plus the
+#: override-reason read the deciding-layer column renders: +1 on the two health pages, +2 on
+#: the loop pages, each ONE bounded read of the whole fleet rather than one per row. ``presets``
+#: pays one FEWER: totality removed the base-tier lookup a preset with no opinion used to need.
+#: Every one of these is flat across both populations — which is the only thing that makes a
+#: re-pin honest here, and it was measured before the numbers were touched.
 #: #4340's transfer page reads no work at all — its scope statement is code — so its two
 #: queries are the nav's instance label alone, and flat by construction.
 #: #4085 put "Review now" / "Ship now" on every card. Their enabled state is ONE bounded
 #: read of the whole board's unstarted tasks, not one per card — which is precisely what
 #: the two-population assertion below proves, on the page where an N+1 would be
 #: multiplied by the 4s poll.
+#: The health bands now name which routing scopes are PINNED to each account, which is ONE
+#: bounded read of the whole pointer table built before the per-account comprehension — not
+#: one per account. +1 on the two health pages, flat across both populations.
+#: The health chip also dates its verdict, so ``read_health`` pays ONE ``MAX(last_seen)`` over
+#: the whole registry — a second, independent +1 on the same two pages, O(1) in the population
+#: and flat at both. The two land together: 21 -> 23, not 22.
 PAGE_QUERY_PINS: dict[str, int] = {
     "dash:board": 12,
     "dash:board_columns": 10,
     "dash:cycle_time": 10,
-    "dash:health": 20,
-    "dash:health_bands": 20,
+    "dash:health": 23,
+    "dash:health_bands": 23,
     "dash:live": 20,
     "dash:live_body": 18,
-    "dash:loops": 17,
-    "dash:loops_table": 17,
-    "dash:presets": 15,
+    "dash:loops": 19,
+    "dash:loops_table": 19,
+    "dash:presets": 14,
     "dash:sessions": 3,
     "dash:settings": 7,
     "dash:interchange": 2,
@@ -80,18 +92,22 @@ TICKET_DRAWER_QUERIES = 12
 TRANSCRIPT_QUERIES = 2
 
 
+def _seed_task_without_dispatch(ticket: Ticket) -> Task:
+    session = Session.objects.create(ticket=ticket, overlay="t3-teatree")
+    return Task.objects.bulk_create([Task(ticket=ticket, session=session, phase="coding")])[0]
+
+
 def _populate(scale: int) -> Ticket:
     """A dashboard's worth of rows across every model the pages read."""
     ticket = Ticket.objects.create(state=State.STARTED)
     for index in range(scale):
         each = TicketFactory(state=State.STARTED)
-        task = TaskFactory(ticket=each, phase="coding")
+        task = _seed_task_without_dispatch(each)
         TaskAttempt.objects.create(
             task=task,
             model="claude-opus-4-8",
             agent_session_id=f"sess-{each.pk}",
         )
-        Session.objects.create(ticket=each, overlay="t3-teatree")
         PullRequest.objects.create(ticket=each, url=f"https://example.test/{each.pk}", repo="r", iid=str(each.pk))
         TicketTransition.objects.create(
             ticket=each, from_state=State.SCOPED, to_state=State.STARTED, triggered_by="start"
@@ -113,6 +129,9 @@ class DashboardPageQueryPlansTestCase(TestCase):
         # Every measurement here is the COLD plan — the one an operator pays.
         cache.clear()
         self.addCleanup(cache.clear)
+        # A settings surface renders one column per registered overlay, so an exact pin
+        # would otherwise measure the venue's installed packages rather than the plan.
+        self.enterContext(core_overlay_only())
 
     def _assert_pinned(self, url: str, expected: int) -> None:
         for scale in (3, 15):
@@ -129,7 +148,7 @@ class DashboardPageQueryPlansTestCase(TestCase):
     def test_the_ticket_drawer_holds_its_plan_however_much_history_the_ticket_has(self) -> None:
         ticket = _populate(3)
         for scale in (4, 40):
-            task = TaskFactory(ticket=ticket, phase="coding")
+            task = _seed_task_without_dispatch(ticket)
             TaskAttempt.objects.bulk_create(TaskAttempt(task=task) for _ in range(scale))
             TicketTransition.objects.bulk_create(
                 TicketTransition(ticket=ticket, from_state=State.SCOPED, to_state=State.STARTED, triggered_by="start")

@@ -17,8 +17,8 @@ _NON_LOOPBACK = "203.0.113.7"
 class DashboardAccessGateTestCase(TestCase):
     def test_off_loopback_anonymous_mutation_is_refused(self) -> None:
         response = self.client.post(
-            reverse("dash:loop_action"),
-            {"name": "review", "action": "pause"},
+            reverse("dash:mode-switch"),
+            {"mode": "afk"},
             REMOTE_ADDR=_NON_LOOPBACK,
         )
         assert response.status_code == 403
@@ -33,9 +33,9 @@ class DashboardAccessGateTestCase(TestCase):
 
     def test_loopback_anonymous_request_passes_the_gate(self) -> None:
         # 127.0.0.1 is the default test-client REMOTE_ADDR — the loopback bind the
-        # deploy relies on. The gate lets it through (an unknown loop then 400s,
+        # deploy relies on. The gate lets it through (an unknown preset then 400s,
         # proving we reached the view, not the 403 gate).
-        response = self.client.post(reverse("dash:loop_action"), {"name": "nope", "action": "pause"})
+        response = self.client.post(reverse("dash:mode-switch"), {"mode": "not-a-preset"})
         assert response.status_code == 400
 
     def test_off_loopback_staff_user_passes_the_gate(self) -> None:

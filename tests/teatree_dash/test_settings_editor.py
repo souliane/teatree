@@ -18,6 +18,7 @@ from teatree.config.setting_help import setting_help
 from teatree.core.config_display import MASKED, NO_SHIPPED_DEFAULT, render_value
 from teatree.core.models import ConfigSetting
 from teatree.dash.settings_editor import (
+    DriftVerdict,
     build_setting_row,
     build_settings_editor,
     build_settings_group,
@@ -126,10 +127,10 @@ class TestMaskingAndOverrideState(TestCase):
     def test_a_non_secret_override_shows_its_value(self) -> None:
         ConfigSetting.objects.set_value("mode", "interactive")
         assert _cell("mode").value == "interactive"
-        assert _cell("mode").matches_default is False
+        assert _cell("mode").verdict is DriftVerdict.DRIFTED
 
     def test_an_unset_key_reads_as_its_default(self) -> None:
-        assert _cell("mode").matches_default is True
+        assert _cell("mode").verdict is DriftVerdict.AT_DEFAULT
 
     def test_safety_posture_keys_are_flagged(self) -> None:
         assert _row("enforce_regulated_path").is_safety_posture is True
@@ -145,7 +146,7 @@ class TestValueProvenance(TestCase):
     """
 
     def test_an_unset_key_comes_from_the_shipped_file(self) -> None:
-        assert _cell("mode").source == ValueSource.SHIPPED_FILE.value
+        assert _cell("mode").source == ValueSource.CODE_DEFAULT.value
 
     def test_a_global_row_says_so(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
@@ -167,7 +168,33 @@ class TestValueProvenance(TestCase):
         # One resolution, so a row cannot show a DB value while naming the shipped file.
         ConfigSetting.objects.set_value("merge_wip", 7)
         cell = _cell("merge_wip")
-        assert (cell.value, cell.source, cell.matches_default) == ("7", ValueSource.DB_GLOBAL.value, False)
+        assert (cell.value, cell.source, cell.drifts) == ("7", ValueSource.DB_GLOBAL.value, True)
+
+
+class TestARefusedEnvValueIsReported(TestCase):
+    """The page exists to surface exactly this misconfiguration, and used to die on it (#4585).
+
+    A `T3_*` value the setting's parser refuses made `env_setting_overrides` raise, which
+    the pane caught as an unnamed read failure — so the whole section rendered zero rows
+    and named neither the var nor the value.
+    """
+
+    def test_the_pane_still_renders_its_rows(self) -> None:
+        with patch.dict("os.environ", {"T3_MODE": "1"}):
+            view = build_settings_group(_section_of("mode"))
+        assert view.error == ""
+        assert view.settings
+
+    def test_the_row_shows_the_refused_value_and_says_the_parser_refused_it(self) -> None:
+        with patch.dict("os.environ", {"T3_MODE": "1"}):
+            cell = _cell("mode")
+        assert cell.value == "1"
+        assert cell.source == ValueSource.INVALID_ENV.value
+
+    def test_the_cell_stays_unwritable_because_the_var_still_pins(self) -> None:
+        with patch.dict("os.environ", {"T3_MODE": "1"}):
+            cell = _cell("mode")
+        assert "T3_MODE" in cell.unwritable_reason
 
 
 class TestBuildSettingRow(TestCase):
@@ -186,8 +213,8 @@ class TestBuildSettingRow(TestCase):
     def test_it_reads_every_scope_so_the_swapped_row_is_never_half_stale(self) -> None:
         ConfigSetting.objects.set_value("mode", "interactive", scope="proj")
         cells = {cell.scope: cell for cell in build_setting_row("mode").cells}
-        assert cells["proj"].matches_default is False
-        assert cells[""].matches_default is True
+        assert cells["proj"].verdict is DriftVerdict.DRIFTED
+        assert cells[""].verdict is DriftVerdict.AT_DEFAULT
 
 
 class TestReadFailureDegrades(TestCase):
@@ -213,19 +240,19 @@ class TestShippedDefaultComparison(TestCase):
         assert row.shipped_default == render_value(shipped_defaults_table()["mode"])
 
     def test_an_unset_key_reads_as_matching_its_shipped_default(self) -> None:
-        assert _cell("mode").source == ValueSource.SHIPPED_FILE.value
-        assert _cell("mode").matches_default is True
+        assert _cell("mode").source == ValueSource.CODE_DEFAULT.value
+        assert _cell("mode").verdict is DriftVerdict.AT_DEFAULT
         assert _row("mode").drifts is False
 
     def test_an_override_equal_to_the_shipped_default_still_reads_as_matching(self) -> None:
         ConfigSetting.objects.set_value("mode", shipped_defaults_table()["mode"])
         assert _cell("mode").source == ValueSource.DB_GLOBAL.value
-        assert _cell("mode").matches_default is True
+        assert _cell("mode").verdict is DriftVerdict.AT_DEFAULT
         assert _row("mode").drifts is False
 
     def test_an_override_away_from_the_shipped_default_reads_as_differing(self) -> None:
         ConfigSetting.objects.set_value("provision_ram_ceiling_percent", 42)
-        assert _cell("provision_ram_ceiling_percent").matches_default is False
+        assert _cell("provision_ram_ceiling_percent").verdict is DriftVerdict.DRIFTED
         assert _row("provision_ram_ceiling_percent").drifts is True
 
     def test_a_setting_drifts_once_however_many_scopes_override_it(self) -> None:
@@ -236,7 +263,7 @@ class TestShippedDefaultComparison(TestCase):
         ConfigSetting.objects.set_value("merge_wip", 9, scope="beta")
         row = _row("merge_wip")
         assert row.drifts is True
-        assert sum(1 for cell in row.cells if not cell.matches_default) >= 3
+        assert sum(1 for cell in row.cells if cell.drifts) >= 3
 
     def test_a_key_with_no_toml_default_offers_no_comparison(self) -> None:
         # Personal/Secret keys are absent from the shipped file by construction, so there is

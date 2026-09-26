@@ -15,11 +15,14 @@ Every other verdict stays exit 0 because it decides only THIS attempt.
 """
 
 import json
+import logging
 from typing import Annotated, NoReturn
 
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.config import get_effective_settings
+from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.gates.review_request_batch_gate import refusal_payload, work_group_batch_refusal
 from teatree.core.gates.review_request_draft_gate import draft_refusal_reason
 from teatree.core.gates.review_request_guard import (
@@ -28,7 +31,21 @@ from teatree.core.gates.review_request_guard import (
     resolve_guard_target,
 )
 from teatree.core.review.repo_exemption import mr_url_is_review_exempt
+from teatree.core.review.review_candidate import _is_self_authored
 from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
+
+
+def _owner_authorship(mr_url: str, overlay_name: str) -> bool | None:
+    """Resolve fresh forge authorship against the configured owner aliases."""
+    try:
+        host = code_host_from_overlay(overlay_name or None)
+        identities = tuple(get_effective_settings(overlay_name or None).user_identity_aliases)
+    except Exception:
+        logger.exception("review_request_check: could not resolve owner identity dependencies for %s", mr_url)
+        return None
+    return _is_self_authored(mr_url, host, identities)
 
 
 class Command(TyperCommand):
@@ -60,6 +77,14 @@ class Command(TyperCommand):
         if batch_refusal is not None:
             return refusal_payload(batch_refusal, mr_url=mr_url)
 
+        authorship = _owner_authorship(mr_url, overlay_name)
+        if authorship is not True:
+            return {
+                "action": "refused",
+                "reason": "foreign_author" if authorship is False else "authorship_unreadable",
+                "mr_url": mr_url,
+            }
+
         target = resolve_guard_target(overlay_name=overlay_name)
         if target is None:
             return {
@@ -68,7 +93,7 @@ class Command(TyperCommand):
                 "mr_url": mr_url,
             }
 
-        decision = peek_should_post_review_request(mr_url=mr_url, target=target)
+        decision = peek_should_post_review_request(mr_url=mr_url, target=target, overlay=overlay_name)
         return {
             "action": decision.action,
             "reason": decision.reason,

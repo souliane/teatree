@@ -51,15 +51,18 @@ def open_reconnect_targets(reconnect_urls: list[str], *, opener: Callable[[str],
 def serve() -> None:
     """Run the structured-search MCP server over stdio (blocks until stdin closes).
 
-    This server writes, so it first hands itself to whichever domain owns the control
+    Orphaned predecessors are reaped FIRST, because the handoff below is an ``execv``
+    that replaces this image: a reap sequenced after it never runs on a delegating
+    install, and the host is the only venue whose PID 1 proves a client is gone.
+
+    This server writes, so it then hands itself to whichever domain owns the control
     database — a no-op on every install the containerized stack has not claimed (see
-    :mod:`teatree.cli.mcp_owning_domain`). It then reaps orphaned predecessors (servers
-    reparented to PID 1 — their client is gone, they can never serve again) and arms
-    the parent-death watchdog so THIS server exits even when a leaked fd keeps its
-    stdin from ever reaching EOF. See :mod:`teatree.mcp.serve_lifecycle`.
+    :mod:`teatree.cli.mcp_owning_domain`) — and arms the parent-death watchdog so THIS
+    server exits even when a leaked fd keeps its stdin from ever reaching EOF. See
+    :mod:`teatree.mcp.serve_lifecycle`.
     """
-    delegate_to_owning_domain()
     reap_orphaned_servers()
+    delegate_to_owning_domain()
     start_parent_death_watch()
     ensure_django()
 

@@ -39,7 +39,9 @@
   tools: [Bash]
   prompt: >-
     You ran the E2E suite on the local stack for ticket 42 and Playwright
-    captured screenshots and a video for each workflow. Run the ONE Bash
+    captured screenshots and a video for each workflow. The ticket's FINAL BDD
+    scenario set is certified: PRD page https://notion.so/example-prd, BDD
+    revision 2026-09-22, final scenario ID BDD-42-001. Run the ONE Bash
     command you would issue to record the test plan on the ticket — remember a
     ticket carries ONE test-plan note (a side-by-side Dev | Local test plan)
     that you feed via a manifest, never a hand-posted issue comment. One
@@ -204,7 +206,9 @@
     E2E test for issue #4242 on the local environment. Artifacts are on disk in
     the per-env directory: a recording at artifacts/4242/local/run.webm and a
     screenshot at artifacts/4242/local/step1.png. The workflow under test: open
-    the app, click the Login button, expect the dashboard. Post this as the test
+    the app, click the Login button, expect the dashboard. The ticket's FINAL
+    BDD scenario set is certified: PRD page https://notion.so/example-prd, BDD
+    revision 2026-09-22, final scenario ID BDD-4242-001. Post this as the test
     plan on the ticket via the canonical CLI, including the written steps (the
     step-by-step click-through) so a human can reproduce it manually. Plan the
     bash command(s) by invoking the Bash tool. Do NOT re-run the E2E suite.
@@ -215,6 +219,71 @@
       args.command: contains "steps"
     - no_tool_call_matching:
         bash.command: '~ "(glab|gh)\s+api\b.*uploads"'
+
+- name: e2e_test_plan_manifest_declares_final_bdd_source
+  agent_path: skills/e2e/SKILL.md
+  scenario: >-
+    the test-plan manifest declares the ticket's FINAL BDD scenario source
+    (`scenario_source` with status `final`), because `write-test-plan` refuses
+    a plan without one
+  tier: balanced
+  max_turns: 4
+  fixture: e2e_artifacts
+  cli_stubs: [t3]
+  tools: [Bash]
+  prompt: >-
+    You are in a ticket worktree for the `acme` overlay and have already run the
+    E2E test for issue #4242 on the local environment. Artifacts are on disk: a
+    recording at artifacts/4242/local/run.webm and a screenshot at
+    artifacts/4242/local/step1.png. The workflow under test: open the app, click
+    the Login button, expect the dashboard. The ticket's FINAL BDD scenario set
+    is certified: PRD page https://notion.so/example-prd, BDD revision
+    2026-09-22, final scenario ID BDD-4242-001. Record the customer test plan on
+    the ticket via the canonical CLI. Plan the bash command(s) by invoking the
+    Bash tool. Do NOT re-run the E2E suite.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*e2e write-test-plan .*--manifest"'
+    - tool_call: Bash
+      args.command: '~ ""scenario_source":\s*\{[^}]*"status":\s*"final""'
+
+# FINAL-BDD gate, author side (the counterpart of e2e-review HARD GATE H0).
+#
+# A draft BDD section stops customer E2E work before a spec or plan exists: the
+# author asks the owner whether to finalise it, instead of building against a
+# scenario set nobody agreed to. The prompt states the fact (DRAFT, no final set)
+# and never names the gate or the answer.
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the author that writes the
+# Playwright spec anyway is the regression — the _fail fixture does exactly that
+# and must go RED. The positive any_of (the question, interactive or headless)
+# makes the _noop transcript fail too.
+
+- name: e2e_stops_and_asks_when_bdd_is_draft
+  scenario: >-
+    before a customer E2E spec or plan is written, a DRAFT BDD section with no
+    final scenario set stops the work and the author asks the owner whether to
+    finalise it, instead of writing the spec or the plan
+  agent_path: skills/e2e/SKILL.md
+  tier: balanced
+  max_turns: 3
+  cli_stubs: [t3]
+  tools: [Bash, Write, AskUserQuestion]
+  prompt: >-
+    You are in a ticket worktree for the `acme` overlay, about to write the
+    customer Playwright spec and test plan for issue #4242. The ticket's PRD
+    has a BDD section, but it is marked DRAFT and lists no final scenario set.
+    Take the ONE action you would take next. One action only, no narration.
+  expect:
+    - any_of:
+        - tool_call: AskUserQuestion
+          args.questions: '~ "(?i)(bdd|scenario|draft|final)"'
+        - tool_call: Bash
+          args.command: '~ "t3 .*questions record"'
+    - no_tool_call_matching:
+        Write.file_path: '~ "\.spec\.ts$"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(e2e (write-test-plan|run)|playwright|\.spec\.ts)"'
 
 - name: e2e_built_against_ticket_spec_not_mr_diff
   scenario: >-
@@ -240,3 +309,69 @@
       args.command: '~ "(glab issue view|gh issue view|gh api .*issues/|glab api .*issues|notion|t3 .*ticket)"'
     - no_tool_call_matching:
         Bash.command: '~ "(glab mr (diff|approve)|gh pr (diff|review .*--approve)|git diff)"'
+
+# Test-plan concision, author side (the counterpart of e2e-review HARD GATE H7).
+#
+# The recurrence: a test plan is authored long by default and only cut back
+# afterwards, under deadline pressure, reaching the same content in roughly
+# three-quarters of the pages — which is the proof the pages were an authoring
+# default rather than required content. The skill's four moves make the short
+# document the first draft: a sentence that enumerates is a list, a convention
+# is stated once and relied on, nothing narrates the document, and one term
+# serves one concept.
+#
+# This scenario grades the two of those a transcript can see mechanically. The
+# positive matcher requires list or table lines in the authored body; the two
+# negatives catch the convention restated per scenario and the section that
+# narrates the document instead of reporting the run.
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the author that writes the
+# same four results as paragraphs, repeats the rounding convention in each one
+# and opens with a passage about what the document contains is the regression —
+# the _fail fixture does exactly that and must go RED. The positive matcher
+# (list or table lines) makes the _noop transcript fail too.
+
+- name: e2e_test_plan_section_is_bullets_and_states_a_convention_once
+  agent_path: skills/e2e/SKILL.md
+  scenario: >-
+    an authored test-plan scenario section carries its steps, conditions and
+    results as list or table lines rather than paragraphs, states a shared
+    rounding convention once instead of restating it per scenario, and never
+    narrates the document itself
+  tier: balanced
+  max_turns: 3
+  tools: [Write]
+  prompt: >-
+    You are writing the test plan for ticket 4711 on the `acme` overlay. Four
+    scenarios ran against the deployed environment and all four passed. Every
+    rate the plan reports is given to six decimal places, the same rule in all
+    four. Write the plan's scenario section to test-plan-section.md exactly as
+    you would issue it to the reader. This is a sandboxed exercise — do NOT
+    inspect the filesystem or verify anything first; author the section and
+    write the file in a single action, no narration.
+  expect:
+    - tool_call: Write
+      args.content: '~ "(?m)^\s*(\||\d+\.|[-*]) "'
+    - no_tool_call_matching:
+        Write.content: '~ "(?is)six decimal places.*six decimal places"'
+    - no_tool_call_matching:
+        Write.content: '~ "(?i)(this (document|section|test plan|report) (describes|covers|presents|contains|provides|summarises|summarizes)|in this (document|section)|the following (section|table|list) (shows|describes|presents|contains)|as (you can see|shown below)|below you will find|the (testing|verification) (process|approach) (was|is) )"'
+
+- name: e2e_test_plan_records_own_result_without_reader_slot
+  agent_path: skills/e2e/SKILL.md
+  scenario: >-
+    an outward test plan records the team's own verdict and does not give a
+    customer, bank, or other reader a result slot or an offered intervention
+  tier: balanced
+  max_turns: 3
+  tools: [Write]
+  prompt: >-
+    Write one completed outward test-plan scenario to test-plan-section.md. The
+    team opened the offer list and observed the offer as Sent. Record the team's
+    own result; do not ask, assign work to, or reserve a result for the reader.
+    This is a sandboxed exercise — write the file in one action, no narration.
+  expect:
+    - tool_call: Write
+      args.content: '~ "[✅⚠❌]"'
+    - no_tool_call_matching:
+        Write.content: '~ "(?i)(\*\*[^*]*(?:bank|customer|reader)(?:\s+result|-ergebnis)?:\*\*|☐|(?:we|the team)\s+can\b)"'

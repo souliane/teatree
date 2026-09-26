@@ -23,8 +23,15 @@ from typing import TYPE_CHECKING, Final, Union, get_args, get_origin
 
 from teatree.config.schema import TeatreeSettingsSchema, setting_choices
 from teatree.config.setting_help import setting_help
-from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
-from teatree.core.config_display import MASKED, NO_SHIPPED_DEFAULT, is_secret, masked_display, render_value
+from teatree.config.setting_taxonomy import SettingClass, taxonomy
+from teatree.core.config_display import (
+    MASKED,
+    NO_SHIPPED_DEFAULT,
+    is_secret,
+    masked_display,
+    render_value,
+    withholds_value,
+)
 
 if TYPE_CHECKING:
     from teatree.core.models.config_setting import ConfigValue
@@ -129,8 +136,26 @@ class SettingControl:
         return is_secret(self.key)
 
     @property
+    def governance(self) -> tuple[str, ...]:
+        """Every governance class this key holds, plus a flag's lifecycle stage (B12).
+
+        A surface that KNOWS what a key is should say so, from the one classifier rather than
+        a hand-read of whichever registry the surface happened to import — the row announced
+        ``safety-posture`` alone, so a gate, a feature flag and a registry row all rendered as
+        ordinary settings and an operator saw nothing that said what they were flipping.
+        """
+        taxon = taxonomy().get(self.key)
+        if taxon is None or taxon.classes == {SettingClass.PLAIN}:
+            return ()
+        labels = [kind.value for kind in SettingClass if kind in taxon.classes]
+        if taxon.flag is not None:
+            labels.append(f"stage={taxon.flag.stage.value}")
+        return tuple(labels)
+
+    @property
     def is_safety_posture(self) -> bool:
-        return self.key in SAFETY_POSTURE_KEYS
+        """Derived from the same answer the labels come from, never a second registry read."""
+        return SettingClass.SAFETY_POSTURE.value in self.governance
 
     @property
     def has_shipped_default(self) -> bool:
@@ -183,7 +208,7 @@ class SettingControl:
         A control holding the real value would put a secret in the page the moment a template
         read it, so the mask covers both renderings of one stored value.
         """
-        return MASKED if self.is_secret else wire(value)
+        return MASKED if withholds_value(self.key, value) else wire(value)
 
 
 __all__ = [

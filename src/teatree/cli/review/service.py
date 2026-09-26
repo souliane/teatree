@@ -1,18 +1,17 @@
 """Review CLI commands — GitLab draft note operations.
 
-The ``on_behalf_post_mode`` pre-gate (#960/#1013) covers colleague-
+The posture pre-gate covers colleague-
 **VISIBLE** posts only. Every colleague-visible publishing method
 (``post_comment --live`` / ``reply_*`` / ``resolve_*`` / ``publish_*`` /
 ``update_*`` / ``approve`` / ``unapprove`` / ``delete_discussion``)
-routes through the same tri-state gate the reply transport uses.
+routes through the same posture gate the reply transport uses.
 
 The colleague-INVISIBLE draft path is the ungated safe-by-default:
 ``post_draft_note`` (and the default ``live=False`` path of
 ``post_comment``, which routes through it) bypasses the gate under EVERY
-mode — a draft is never visible to colleagues, so it needs no approval.
-Under ASK / DRAFT_OR_ASK the draft still publishes autonomously and the
-agent DMs the user the publish/delete commands; under IMMEDIATE it
-publishes with no DM. Read-only methods (``list_draft_notes``,
+posture — a draft is never visible to colleagues, so it needs no approval.
+The draft publishes autonomously and the agent DMs the user the
+publish/delete commands. Read-only methods (``list_draft_notes``,
 ``delete_draft_note``) bypass the gate too.
 
 ``reply_to_discussion`` carries the author-side carve-out: on an MR the
@@ -59,7 +58,10 @@ from teatree.cli.review.send_routing import route_forge_send
 from teatree.cli.review.shape_gate import check_review_shape
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from teatree.backends.gitlab.api import GitLabAPI
+    from teatree.cli.review.batch_post import InlineNote
     from teatree.cli.review.guarded_read import ReadOutcome
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
@@ -151,10 +153,9 @@ class ReviewService:
         deleted and surfaced as an error so they cannot be published silently.
 
         A draft is colleague-INVISIBLE (only the user can submit it), so it
-        is EXEMPT from the ``on_behalf_post_mode`` gate under every mode —
-        it never needs approval. Under ASK / DRAFT_OR_ASK the gate resolves
-        to AUTO_DRAFT (publish + DM the user the publish/delete commands);
-        under IMMEDIATE it publishes with no DM. The remaining pre-publish
+        is EXEMPT from the gate under every posture — it never needs approval:
+        the gate resolves to AUTO_DRAFT (publish + DM the user the
+        publish/delete commands). The remaining pre-publish
         gates in :meth:`_run_pre_publish_gates` still apply (shape, bloat,
         general-note, TODO-anchor, evidence); the ``allow_*`` / ``force_*``
         kwargs are the #126 per-call escapes documented there.
@@ -244,10 +245,13 @@ class ReviewService:
 
         The default (``live=False``) path routes through
         :meth:`post_draft_note`, so it inherits the colleague-INVISIBLE
-        draft exemption — it bypasses the ``on_behalf_post_mode`` gate
-        under EVERY mode (a draft needs no approval). ``--live`` is the
-        colleague-VISIBLE branch and stays gated: it requires both a
-        ``post_comment`` on-behalf approval and a LivePostApproval.
+        draft exemption — it bypasses the posture gate
+        under EVERY posture (a draft needs no approval). ``--live`` is the
+        colleague-VISIBLE branch and stays gated: under a forbidding posture it
+        requires both a ``post_comment`` on-behalf approval and a
+        LivePostApproval. Under a permitting posture one resolution
+        (:class:`~teatree.cli.review.authorize.LiveAuthorization`) waives both,
+        so the two gates can never disagree about the same post.
 
         Also gated by the structured-evidence pre-publish gate (#1280):
         when ``note`` matches an "X is missing/wrong/broken" pattern, the
@@ -290,9 +294,9 @@ class ReviewService:
         # is the satisfier. Surface the unified refusal naming that one
         # command before the per-token chokepoints below would emit the old
         # two-command messages.
-        live_refusal = resolve_live_authorization(scope=f"{repo}!{mr}", action="post_comment")
-        if live_refusal:
-            return live_refusal, 1
+        authorization = resolve_live_authorization(scope=f"{repo}!{mr}", action="post_comment")
+        if authorization.refusal:
+            return authorization.refusal, 1
         refusal = self._run_pre_publish_gates(
             repo=repo,
             mr=mr,
@@ -315,7 +319,25 @@ class ReviewService:
         def post() -> tuple[str, int]:
             return self._post_comment_impl(repo, mr, note, file=file, line=line)
 
-        return publish_or_blocked(repo, mr, "post_comment", lambda: publish_live_post(repo=repo, mr=mr, publish=post))
+        return publish_or_blocked(
+            repo,
+            mr,
+            "post_comment",
+            lambda: publish_live_post(repo=repo, mr=mr, publish=post, token_required=authorization.token_required),
+        )
+
+    def post_comments(
+        self, repo: str, mr: int, notes: "Sequence[InlineNote]", *, live: bool = False
+    ) -> tuple[str, int]:
+        """Post a whole review's findings in ONE publish envelope (delegates to :mod:`batch_post`).
+
+        Every body still runs the full pre-publish gate chain on its own; what the
+        batch shares is the authorization ceremony, which is per-REVIEW rather than
+        per-finding.
+        """
+        from teatree.cli.review.batch_post import post_comments  # noqa: PLC0415 — deferred: lazy CLI import
+
+        return post_comments(self, repo, mr, notes, live=live)
 
     def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
         """Delete a draft note. Returns (message, exit_code)."""
@@ -329,7 +351,7 @@ class ReviewService:
     def publish_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
         """Bulk-publish every draft note on an MR.
 
-        Gated by ``on_behalf_post_mode`` (#960, BLOCK under `ask` / `draft_or_ask`): the bulk publish is
+        Gated by the active posture (BLOCK under a forbidding one): the bulk publish is
         the moment drafts become visible to colleagues, so it routes
         through the same recorded-approval gate every other on-behalf
         post uses.
@@ -347,7 +369,7 @@ class ReviewService:
     def reply_to_discussion(self, repo: str, mr: int, discussion_id: str, body: str) -> tuple[str, int]:
         """Reply to an existing discussion thread on an MR. Returns (message, exit_code).
 
-        Gated by ``on_behalf_post_mode`` (#960, BLOCK under `ask` / `draft_or_ask`): the reply is refused
+        Gated by the active posture (BLOCK under a forbidding one): the reply is refused
         without any GitLab side effect when the gate is on and no recorded
         :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "reply_to_discussion")``.
 
@@ -384,7 +406,7 @@ class ReviewService:
     def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
         """Mark a discussion thread resolved or unresolved. Returns (message, exit_code).
 
-        Gated by ``on_behalf_post_mode`` (#960, BLOCK under `ask` / `draft_or_ask`): a resolve flip is
+        Gated by the active posture (BLOCK under a forbidding one): a resolve flip is
         visible to colleagues (it closes the discussion under the user's
         identity), so it routes through the same recorded-approval gate.
         """
@@ -406,7 +428,7 @@ class ReviewService:
 
         Tries draft-notes first; falls back to published-notes on 404.
 
-        Gated by ``on_behalf_post_mode`` (#960, BLOCK under `ask` / `draft_or_ask`): an update to a
+        Gated by the active posture (BLOCK under a forbidding one): an update to a
         *published* note is a colleague-visible edit; the gate covers
         both fallback paths uniformly so a published-note edit cannot
         slip through while a comment-create would be blocked.
@@ -437,7 +459,7 @@ class ReviewService:
         own unpublished draft — that is not a colleague-visible mutation
         and stays ungated; this one is.
 
-        Gated by ``on_behalf_post_mode`` (#960): the call is refused
+        Gated by the active posture: the call is refused
         without any GitLab side effect when the gate is on and no recorded
         :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "delete_discussion")``.
         """
@@ -509,7 +531,7 @@ class ReviewService:
         the approve-on-review doctrine: an approval cannot be recorded
         without a prior reviewing footprint from the same identity.
 
-        Gated by ``on_behalf_post_mode`` (#960/#1013): an approval is
+        Gated by the active posture: an approval is
         an outward post on the user's identity, so it routes through the
         same recorded-approval gate every other on-behalf method uses. Gate
         ON + no recorded :class:`OnBehalfApproval` matching
@@ -540,7 +562,7 @@ class ReviewService:
         No review-first precondition — removing an approval is the safe
         direction and must always be reachable.
 
-        Gated by ``on_behalf_post_mode`` (#960/#1013): an unapproval
+        Gated by the active posture: an unapproval
         is still a colleague-visible post on the user's identity, so it
         routes through the same recorded-approval gate as ``approve`` (and
         every other on-behalf method). The recorded row scopes to

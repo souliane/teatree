@@ -58,6 +58,17 @@ def activation_conforms(activation: Activation, sketch: MechanismSketch) -> bool
     )
 
 
+def ratifier(directive: Directive) -> str:
+    """The answered ratify question this activation rests on — the recorded human decision.
+
+    A governed key is refused an unattended write unless somebody authorized it, and here
+    that somebody is whoever answered the ratify question ``admit`` already required. The
+    question's own reference is what makes the row auditable back to that answer.
+    """
+    question = directive.ratify_question
+    return f"ratify:{question.pk}" if question is not None else ""
+
+
 def apply_activation(directive: Directive, *, activation: Activation | None = None) -> ConfigureResult:
     """Apply the ratified overlay ``ConfigSetting`` — only if byte-identical to the sketch.
 
@@ -77,7 +88,12 @@ def apply_activation(directive: Directive, *, activation: Activation | None = No
         # interpret gate blesses an empty scope as a valid global mechanism), so the
         # directive advances to VERIFYING rather than parking.
         return ConfigureResult(applied=True, reason="global mechanism — no per-overlay activation needed")
-    ConfigSetting.objects.set_value(resolved.setting_key, cast("ConfigValue", resolved.value), scope=resolved.scope)
+    ConfigSetting.objects.set_value(
+        resolved.setting_key,
+        cast("ConfigValue", resolved.value),
+        scope=resolved.scope,
+        authorized_by=ratifier(directive),
+    )
     effective = getattr(get_effective_settings(resolved.scope), resolved.setting_key, _MISSING)
     if effective != resolved.value:
         ConfigSetting.objects.clear(resolved.setting_key, scope=resolved.scope)

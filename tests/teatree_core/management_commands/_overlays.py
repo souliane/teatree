@@ -23,6 +23,7 @@ from teatree.core.overlay import (
     OverlayProvisioning,
     OverlayRuntime,
     ProvisionStep,
+    RunCommand,
     RunCommands,
     ServiceSpec,
     ToolCommand,
@@ -447,6 +448,31 @@ class EnvCaptureOverlay(FullOverlay):
         self.seen = self.provisioning.seen
 
 
+class _EnvPrecedenceProvisioning(FullProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"CLIENT_NAME": "from-env-extra", "ONLY_EXTRA": "x"}
+
+
+class _EnvPrecedenceRuntime(OverlayRuntime):
+    # Not a ``FullRuntime``: that double narrows the extension point's
+    # ``list[str] | RunCommand`` return to ``list[str]``, so a ``RunCommand``
+    # override off it is an LSP violation.
+    def test_command(self, worktree: Worktree) -> RunCommand:
+        return RunCommand(args=["echo", "tests"], env={"CLIENT_NAME": "from-command"})
+
+
+class EnvPrecedenceOverlay(FullOverlay):
+    """Overlay whose ``test_command`` env names a key its ``env_extra`` also names.
+
+    The collision is the point: a command that must run under a fixed value has
+    no way to hold it if the worktree's own variant, or the ambient process
+    env, can outrank what the command itself declared.
+    """
+
+    provisioning = _EnvPrecedenceProvisioning()
+    runtime = _EnvPrecedenceRuntime()
+
+
 class _PreRunRuntime(FullRuntime):
     def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
         def _log_step() -> None:
@@ -527,6 +553,9 @@ REMOTE_PATH_RECORDING_OVERLAY = "tests.teatree_core.management_commands._overlay
 ENV_CAPTURE_OVERLAY = "tests.teatree_core.management_commands._overlays.EnvCaptureOverlay"
 
 
+ENV_PRECEDENCE_OVERLAY = "tests.teatree_core.management_commands._overlays.EnvPrecedenceOverlay"
+
+
 SETTINGS: dict[str, object] = {}
 
 
@@ -539,7 +568,13 @@ SETTINGS: dict[str, object] = {}
 
 class _ExternalRunnerMetadata(FullMetadata):
     def get_e2e_config(self) -> dict[str, str]:
-        return {"runner": "external", "project_path": "test/e2e-project", "ref": "main"}
+        return {
+            "runner": "external",
+            "project_path": "test/e2e-project",
+            "ref": "main",
+            "stack_frontend_port": "4200",
+            "stack_start_command": "t3 test tool stack up",
+        }
 
 
 class _ProjectRunnerMetadata(FullMetadata):
@@ -643,3 +678,21 @@ class _OverlayRepoOverlay(FullOverlay):
 
 
 _OVERLAY_REPO_OVERLAY = "tests.teatree_core.management_commands._overlays._OverlayRepoOverlay"
+
+
+class _DerivedBaseUrlE2E(FullE2E):
+    """Derives the deployed URL for a remote target, the way a tenant-aware overlay does."""
+
+    def env_extras(self, env_cache: dict[str, str], **kwargs: object) -> dict[str, str]:
+        context = kwargs["context"]
+        extras = super().env_extras(env_cache)
+        if getattr(context, "target", "") in {"dev", "qa"}:
+            extras["BASE_URL"] = "https://derived.example"
+        return extras
+
+
+class _DerivedBaseUrlOverlay(FullOverlay):
+    e2e = _DerivedBaseUrlE2E()
+
+
+_DERIVED_BASE_URL_OVERLAY = "tests.teatree_core.management_commands._overlays._DerivedBaseUrlOverlay"

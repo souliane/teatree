@@ -3,11 +3,19 @@
 ``uv run`` removes and recreates a ``.venv`` it cannot use, so a repo carrying an
 environment built for the other side of a container boundary must not be driven
 through :func:`runner_prefix`. Real ``pyvenv.cfg`` files under ``tmp_path``; no mocks.
+
+ABSENCE of the recorded interpreter is no longer the whole test. Once the two
+venues share ONE interpreter root at ONE address, the other side's interpreter is
+PRESENT here — so the uv platform tag is the only thing left that can tell a
+foreign environment from a local one.
 """
 
+import sys
+import venv
 from pathlib import Path
 
 from teatree.utils.django_db import project_env_is_drivable
+from teatree.utils.django_db.runner import project_env_import_error
 
 
 def _write_pyvenv_cfg(repo: Path, home: Path | str) -> None:
@@ -48,3 +56,34 @@ def test_pyvenv_cfg_without_a_home_key_is_drivable(tmp_path: Path) -> None:
     (repo / ".venv" / "pyvenv.cfg").write_text("implementation = CPython\n", encoding="utf-8")
 
     assert project_env_is_drivable(repo) is True
+
+
+def test_venv_on_a_shared_root_naming_another_platform_is_not_drivable(tmp_path: Path) -> None:
+    """The case the shared interpreter root CREATES, where existence proves nothing."""
+    foreign_os = "linux" if sys.platform != "linux" else "macos"
+    interpreter_home = tmp_path / "uv" / "python" / f"cpython-3.13.12-{foreign_os}-aarch64-none" / "bin"
+    interpreter_home.mkdir(parents=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_pyvenv_cfg(repo, interpreter_home)
+
+    # The control: without this the test would pass for the OLD reason (absence),
+    # proving nothing about the platform tag.
+    assert interpreter_home.is_dir()
+    assert project_env_is_drivable(repo) is False
+
+
+class TestProjectEnvImportError:
+    def test_a_venv_without_django_names_the_import_failure(self, tmp_path: Path) -> None:
+        venv.create(tmp_path / ".venv", with_pip=False)
+        assert project_env_import_error(tmp_path) == "ModuleNotFoundError: No module named 'django'"
+
+    def test_a_venv_that_imports_django_has_nothing_to_report(self, tmp_path: Path) -> None:
+        interpreter = tmp_path / ".venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        interpreter.chmod(0o755)
+        assert project_env_import_error(tmp_path) is None
+
+    def test_a_repo_without_a_venv_has_nothing_to_report(self, tmp_path: Path) -> None:
+        assert project_env_import_error(tmp_path) is None

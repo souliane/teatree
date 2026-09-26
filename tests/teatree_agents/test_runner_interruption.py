@@ -21,7 +21,8 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import AttemptUsage
 from teatree.agents.runner import HarnessOutcome, _outcome_failure
-from teatree.agents.runner_interruption import _record_stuck_outcome
+from teatree.agents.runner_interruption import CeilingSalvage, _record_stuck_outcome
+from teatree.agents.runner_usage import DispatchProvenance
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
@@ -62,6 +63,19 @@ class TestAnInterruptedRunKeepsWhatItProduced(TestCase):
         assert attempt is not None
         assert attempt.result["review_verdict"] == _VERDICT_ENVELOPE["review_verdict"]
 
+    def test_interruption_does_not_persist_raw_skill_application_text(self) -> None:
+        task = self._completed_reviewing_task()
+        envelope = {
+            **_VERDICT_ENVELOPE,
+            "skill_application": [{"skill": "review", "evidence": "private/secret-path"}],
+        }
+
+        attempt = _outcome_failure(task, _interrupted(json.dumps(envelope)), phase="reviewing")
+
+        assert attempt is not None
+        assert "skill_application" not in attempt.result
+        assert "secret-path" not in str(attempt.result)
+
     def test_the_interruption_is_named_alongside_the_runs_own_summary(self) -> None:
         task = self._completed_reviewing_task()
 
@@ -101,6 +115,20 @@ class TestAnInterruptedRunKeepsWhatItProduced(TestCase):
         assert attempt.exit_code == 0
         assert attempt.error == ""
         assert task.status == Task.Status.COMPLETED
+
+
+class TestACutShortRunKeepsNothingOverACompletedRow(TestCase):
+    def test_a_row_a_rival_completed_is_left_to_the_interruption_recorder(self) -> None:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+        envelope = {"summary": "implemented", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        outcome = HarnessOutcome(agent_text=json.dumps(envelope), result_message=None, stuck_reason="runtime ceiling")
+
+        kept = CeilingSalvage(phase="coding", lane="", provenance=DispatchProvenance()).kept(task, outcome)
+
+        assert kept is None
+        assert not TaskAttempt.objects.filter(task=task).exists()
 
 
 class TestALeaseLossAfterAnOperatorCancel(TestCase):

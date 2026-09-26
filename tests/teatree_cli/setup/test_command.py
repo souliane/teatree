@@ -16,15 +16,19 @@ invocation starts from (the technique of
 """
 
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import typer
 
 from teatree.cli.setup import command as setup_command
 from teatree.cli.setup.statusline_installer import StatuslineInstall
+from teatree.provisioning.skill_clone_install import CloneInstall
+from teatree.provisioning.skills_cli import SkillsCliCommandError
 
 _RUN_SETUP_PROBE = """
 from pathlib import Path
@@ -32,6 +36,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from teatree.cli.setup import command as setup_module
+from teatree.config import UserSettings
 
 repo = Path.home() / "teatree-repo"
 (repo / ".git").mkdir(parents=True)
@@ -47,15 +52,28 @@ def probe_provision(*, echo):
     return []
 
 
+def probe_notion_routing():
+    from teatree.core.models import ConfigSetting
+
+    ran.append(f"NotionRoute:{ConfigSetting.__name__}")
+    return 1
+
+
+def probe_notion(echo):
+    from teatree.core.models import Ticket
+
+    ran.append(Ticket.__name__)
+    return True
+
+
 config = MagicMock()
-config.user.excluded_skills = []
+config.user = UserSettings()
 
 with (
     patch.object(setup_module, "find_main_clone", return_value=repo),
     patch.object(setup_module, "validate_repo", return_value=repo),
     patch.object(setup_module, "_repair_dep_drift"),
     patch.object(setup_module, "ToolInstaller"),
-    patch.object(setup_module, "ApmInstaller"),
     patch.object(setup_module, "strip_apm_hooks", return_value=0),
     patch.object(
         setup_module,
@@ -65,14 +83,16 @@ with (
     patch.object(setup_module, "agent_skill_dirs", return_value=[]),
     patch.object(setup_module, "ensure_self_db_migrated", return_value=False),
     patch.object(setup_module, "seed_default_loops"),
+    patch.object(setup_module, "provision_declared_notion_routing", probe_notion_routing),
     patch.object(setup_module, "provision_all_overlay_dm_channels", probe_provision),
+    patch.object(setup_module, "report_notion_connections", probe_notion),
     patch("teatree.config.load_config", return_value=config),
     patch("teatree.config.clone_root", return_value=Path.home() / "workspace"),
     patch("teatree.cli.recommended_authorizations.report_missing_authorizations"),
 ):
     setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
-assert ran == ["ConfigSetting"], f"provisioning step never ran: {ran}"
+assert ran == ["NotionRoute:ConfigSetting", "ConfigSetting", "Ticket"], f"a DB-reading setup step never ran: {ran}"
 print("setup-bootstrap-ok")
 """
 
@@ -102,6 +122,138 @@ class TestReportStatuslineInstallUnwritable:
         out = capsys.readouterr().out
         assert "WARN" in out
         assert "settings.json" in out
+
+
+class TestRefreshSkillInventory:
+    def test_refreshes_the_explicit_receipt_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        receipt = tmp_path / "inventory.json"
+        cli = object()
+        seen: list[tuple[Path, object]] = []
+        monkeypatch.setattr(
+            setup_command,
+            "refresh_inventory_receipt",
+            lambda path, *, cli: seen.append((path, cli)),
+        )
+
+        assert setup_command._refresh_skill_inventory(receipt, cli=cli, echo=lambda _line: None)
+        assert seen == [(receipt, cli)]
+
+    def test_refresh_failure_warns_and_returns_false(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def fail(_path: Path, *, cli: object) -> None:
+            raise SkillsCliCommandError(("skills", "list"), 1, "offline")
+
+        monkeypatch.setattr(setup_command, "refresh_inventory_receipt", fail)
+        lines: list[str] = []
+
+        assert not setup_command._refresh_skill_inventory(tmp_path / "inventory.json", cli=object(), echo=lines.append)
+        assert any(line.startswith("WARN") and "offline" in line for line in lines)
+
+
+class TestStrictAgentSkillsSetup:
+    def test_unavailable_source_is_unverified_but_installed_demands_are_ready(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        for name in ("required-skill", "cold-review"):
+            (skills / name).mkdir(parents=True)
+            (skills / name / "SKILL.md").write_text("# installed\n", encoding="utf-8")
+        receipt = tmp_path / "data" / "skills" / "setup-outcome"
+
+        ready = setup_command._assess_dispatched_skills(
+            ("required-skill", "cold-review"),
+            [CloneInstall(label="private", unavailable="clone inaccessible")],
+            receipt=receipt,
+            search_dirs=[skills],
+        )
+
+        assert ready
+        assert receipt.read_text(encoding="utf-8") == "status=ready\nprovenance=unverified\nmissing=\n"
+        setup_command._complete_strict_skills_setup(receipt.parent / "ready", strict=True, ready=ready)
+        assert (receipt.parent / "ready").read_text(encoding="utf-8") == "v1\n"
+
+    def test_missing_dispatched_skill_refuses_strict_readiness(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        (skills / "required-skill").mkdir(parents=True)
+        (skills / "required-skill" / "SKILL.md").write_text("# installed\n", encoding="utf-8")
+        receipt = tmp_path / "data" / "skills" / "setup-outcome"
+
+        ready = setup_command._assess_dispatched_skills(
+            ("required-skill", "cold-review"),
+            [CloneInstall(label="private", unavailable="clone inaccessible")],
+            receipt=receipt,
+            search_dirs=[skills],
+        )
+
+        assert not ready
+        assert (
+            receipt.read_text(encoding="utf-8") == "status=missing-skills\nprovenance=unverified\nmissing=cold-review\n"
+        )
+        with pytest.raises(typer.Exit):
+            setup_command._complete_strict_skills_setup(receipt.parent / "ready", strict=True, ready=ready)
+        assert not (receipt.parent / "ready").exists()
+
+    def test_invalid_utf8_skill_body_is_not_claimed_loadable(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        (skills / "required-skill").mkdir(parents=True)
+        (skills / "required-skill" / "SKILL.md").write_bytes(b"\xff")
+        receipt = tmp_path / "data" / "skills" / "setup-outcome"
+
+        ready = setup_command._assess_dispatched_skills(("required-skill",), [], receipt=receipt, search_dirs=[skills])
+
+        assert not ready
+        assert "missing=required-skill" in receipt.read_text(encoding="utf-8")
+
+    def test_first_runtime_match_is_invalid_even_when_later_copy_is_healthy(self, tmp_path: Path) -> None:
+        first, later = tmp_path / "first", tmp_path / "later"
+        for root in (first, later):
+            (root / "required-skill").mkdir(parents=True)
+        (first / "required-skill" / "SKILL.md").write_bytes(b"\xff")
+        (later / "required-skill" / "SKILL.md").write_text("# healthy\n", encoding="utf-8")
+        receipt = tmp_path / "setup-outcome"
+
+        assert not setup_command._assess_dispatched_skills(
+            ("required-skill",), [], receipt=receipt, search_dirs=[first, later]
+        )
+        assert "missing=required-skill" in receipt.read_text(encoding="utf-8")
+
+    def test_default_runtime_roots_include_codex_skills(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        codex = tmp_path / ".codex" / "skills"
+        (codex / "required-skill").mkdir(parents=True)
+        (codex / "required-skill" / "SKILL.md").write_text("# installed\n", encoding="utf-8")
+        monkeypatch.setattr(setup_command, "harness_skills_dirs", lambda: [tmp_path / "empty", codex])
+
+        assert setup_command._assess_dispatched_skills(("required-skill",), [], receipt=tmp_path / "setup-outcome")
+
+    def test_path_qualified_runtime_skill_is_accepted(self, tmp_path: Path) -> None:
+        skills = tmp_path / "skills"
+        (skills / "rules").mkdir(parents=True)
+        (skills / "rules" / "SKILL.md").write_text("# rules\n", encoding="utf-8")
+
+        assert setup_command._assess_dispatched_skills(
+            ("skills/rules/SKILL.md",), [], receipt=tmp_path / "setup-outcome", search_dirs=[skills]
+        )
+
+    def test_failure_removes_stale_ready_marker_and_exits_nonzero(self, tmp_path: Path) -> None:
+        marker = tmp_path / "skills" / "ready"
+        marker.parent.mkdir()
+        marker.write_text("v1\n", encoding="utf-8")
+
+        setup_command._reset_strict_skills_marker(marker, strict=True)
+        with pytest.raises(typer.Exit) as raised:
+            setup_command._complete_strict_skills_setup(marker, strict=True, ready=False)
+
+        assert raised.value.exit_code == 1
+        assert not marker.exists()
+
+    def test_success_writes_a_private_ready_marker(self, tmp_path: Path) -> None:
+        marker = tmp_path / "skills" / "ready"
+
+        setup_command._complete_strict_skills_setup(marker, strict=True, ready=True)
+
+        assert marker.read_text(encoding="utf-8") == "v1\n"
+        assert stat.S_IMODE(marker.stat().st_mode) == 0o600
 
 
 class TestSetupBootstrapsDjangoBeforeDmProvisioning:

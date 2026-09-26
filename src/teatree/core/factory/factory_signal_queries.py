@@ -119,10 +119,18 @@ class S5Evidence(TypedDict):
     failed_fraction: float
 
 
+class LocEvidence(TypedDict):
+    """Net-hand-written-LoC evidence: the two halves behind the net, and the window's commits."""
+
+    added: int
+    deleted: int
+    commits: int
+
+
 # The evidence payload of a :class:`Computation` — one fixed shape per signal,
-# discriminated by which ``compute_s*`` produced it. Replaces the former
+# discriminated by which compute function produced it. Replaces the former
 # ``dict[str, Any]`` so each signal's evidence keys are declared, not free-form.
-SignalEvidence = S1Evidence | S2Evidence | S3Evidence | S4Evidence | S5Evidence
+SignalEvidence = S1Evidence | S2Evidence | S3Evidence | S4Evidence | S5Evidence | LocEvidence
 
 
 @dataclass(frozen=True, slots=True)

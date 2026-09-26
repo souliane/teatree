@@ -34,6 +34,24 @@ def test_gh_runner_passes_token_via_env_and_returns_tuple() -> None:
     assert (rc, out, err) == (3, "out", "err")
 
 
+def test_an_empty_token_refuses_and_never_runs_gh() -> None:
+    """An ambient ``gh`` login is the owner's identity; a merge must never fall back to it."""
+    with patch.object(rpc, "run_allowed_to_fail") as mock_run:
+        rc, _out, err = gh_runner("")(["pr", "merge", "9"])
+    mock_run.assert_not_called()
+    assert rc != 0
+    assert "no token" in err
+
+
+def test_the_routed_token_is_the_only_credential_gh_sees(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "ambient-token")
+    with patch.object(rpc, "run_allowed_to_fail", return_value=_completed()) as mock_run:
+        gh_runner("routed-token")(["pr", "view", "1"])
+    env = mock_run.call_args.kwargs["env"]
+    assert env["GH_TOKEN"] == "routed-token"
+    assert "GITHUB_TOKEN" not in env
+
+
 def test_merge_timeout_is_positive_and_finite() -> None:
     assert _FORGE_MERGE_TIMEOUT_SECONDS > 0
 

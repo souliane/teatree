@@ -21,9 +21,9 @@ neither wedge a scarce ``loops`` executor thread nor outlive their ceiling.
 It applies NO admission gate of its own: every tick command already gates on the single
 enable verdict AND its own ``Loop.is_due`` ledger behind an in-flight ``LoopLease``, so a
 masked or not-yet-due loop is a cheap SKIP and an at-least-once redelivery is a no-op — a
-second gate here would be a drift-prone duplicate of theirs. The ``loop_runner_enabled``
-kill-switch IS honoured, exactly as :func:`teatree.loops.timer_chains.loop_timer` honours
-it, because this chain drives real work.
+second gate here would be a drift-prone duplicate of theirs. The FLEET verdict IS
+honoured, exactly as :func:`teatree.loops.timer_chains.loop_timer` honours it, because
+this chain drives real work.
 
 The wiring invariant is alarmed rather than merely documented:
 :func:`teatree.loops.loop_staleness.driverless_loops` names any ``off_live_tick`` loop
@@ -38,7 +38,8 @@ from django.tasks import task
 from django.utils import timezone
 
 from teatree.loops.deadlined_tick import run_deadlined_argv
-from teatree.loops.timer_chains import DAILY_TICK_DEADLINE_SECONDS, LOOPS_QUEUE, loop_runner_enabled
+from teatree.loops.enable_verdict import fleet_admits_work
+from teatree.loops.timer_chains import DAILY_TICK_DEADLINE_SECONDS, LOOPS_QUEUE
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,8 @@ def _pending_drive() -> bool:
 def drive_off_live_tick_loops() -> dict[str, int]:
     """Re-schedule at its cadence, THEN run each off-live-tick loop's own tick command.
 
-    Step 0 is the kill-switch: a fire while the loop runner is OFF terminates the chain
-    at its source rather than re-arming it, mirroring
+    Step 0 is the fleet verdict: a fire while the active preset admits nothing terminates
+    the chain at its source rather than re-arming it, mirroring
     :func:`teatree.loops.timer_chains.loop_timer`. Then self-dedup (another pending fire
     already carries the chain), then successor-FIRST (F6) so a body fault cannot orphan
     it. A single command's failure is recorded and stepped over rather than aborting the
@@ -104,7 +105,7 @@ def drive_off_live_tick_loops() -> dict[str, int]:
     lands in ``failed`` rather than passing as a healthy drive. These counts are the only
     record an off-live-tick pass leaves, so an uncounted failure is an invisible one.
     """
-    if not loop_runner_enabled():
+    if not fleet_admits_work():
         return {"halted": 1}
     if _pending_drive():
         return {"deduped": 1}

@@ -10,6 +10,7 @@ at the same moment found three resolved-but-open issues (#4135).
 """
 
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from itertools import combinations
 
+from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
 from teatree.utils.run import run_allowed_to_fail
 
 
@@ -24,13 +26,27 @@ class ForgeEnumerationError(RuntimeError):
     """A forge read a verdict depends on did not run — the answer is UNKNOWN, not empty."""
 
 
-def _gh_json(args: list[str], *, what: str) -> list[dict]:
+def _github_env(repo: str) -> dict[str, str]:
+    resolution = resolve_slug_token(repo, forge="github", credential="github_token")
+    if resolution.state is not ForgeTokenState.TOKEN:
+        msg = (
+            f"{resolution.setting} for {repo} is {resolution.state.value}: {resolution.detail}; "
+            "refusing ambient gh authentication"
+        )
+        raise ForgeEnumerationError(msg)
+    env = dict(os.environ)
+    env.pop("GITHUB_TOKEN", None)
+    env["GH_TOKEN"] = resolution.token
+    return env
+
+
+def _gh_json(args: list[str], *, repo: str, what: str) -> list[dict]:
     """Run a ``gh`` list command and parse its JSON, or raise.
 
     The single chokepoint every enumeration here goes through, so no caller can
     reintroduce the silent-empty by hand.
     """
-    result = run_allowed_to_fail(["gh", *args], expected_codes=None)
+    result = run_allowed_to_fail(["gh", *args], expected_codes=None, env=_github_env(repo))
     if result.returncode != 0:
         msg = f"{what} failed: {result.stderr.strip()}"
         raise ForgeEnumerationError(msg)
@@ -45,6 +61,7 @@ def _open_issues(repo: str) -> list[dict]:
     """Every open issue in *repo*, or raise :class:`ForgeEnumerationError`."""
     return _gh_json(
         ["issue", "list", "--repo", repo, "--state", "open", "--limit", "200", "--json", _OPEN_ISSUE_FIELDS],
+        repo=repo,
         what="gh issue list",
     )
 
@@ -96,6 +113,7 @@ class LabelSuggester:
     def apply(self, suggestions: list[LabelSuggestion]) -> list[int]:
         """Label each suggested issue; return the numbers ``gh issue edit`` refused."""
         failed: list[int] = []
+        env = _github_env(self.repo)
         for suggestion in suggestions:
             result = run_allowed_to_fail(
                 [
@@ -108,6 +126,7 @@ class LabelSuggester:
                     *[arg for label in suggestion.labels for arg in ("--add-label", label)],
                 ],
                 expected_codes=None,
+                env=env,
             )
             if result.returncode != 0:
                 sys.stderr.write(f"gh issue edit #{suggestion.number} failed: {result.stderr.strip()}\n")
@@ -224,6 +243,7 @@ class TriageScanner:
                 "--json",
                 "number,title,mergedAt",
             ],
+            repo=self.repo,
             what="gh pr list",
         )
 
@@ -260,6 +280,7 @@ class TriageScanner:
         never closed by this destructive path.
         """
         failed: list[int] = []
+        env = _github_env(self.repo)
         for r in resolved:
             if r.confidence != HIGH_CONFIDENCE:
                 continue
@@ -275,6 +296,7 @@ class TriageScanner:
                     f"Auto-closed: resolved by #{r.pr_number} ({r.pr_title}).",
                 ],
                 expected_codes=None,
+                env=env,
             )
             if result.returncode != 0:
                 sys.stderr.write(f"gh issue close #{r.issue_number} failed: {result.stderr.strip()}\n")

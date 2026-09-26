@@ -40,9 +40,27 @@ from teatree.core.handover_orchestration import SubagentPush, drive_subagents_to
 from teatree.core.handover_wrapup import SubagentRecord, merge_subagent_records, record_barrier_returns, subagent_record
 from teatree.core.machine_output import emit
 from teatree.core.models import SessionHandover
-from teatree.core.session_identity import is_loop_runner_session
-from teatree.loop.session_identity import current_session_id
+from teatree.core.session_identity import SESSION_ID_ENV_VARS, is_loop_runner_session, session_id_from_env
 from teatree.utils.git import run
+
+
+def authoring_session_id() -> str:
+    """This session's OWN id, or ``""`` when nothing names it — never another session's (#4479).
+
+    Deliberately NOT :func:`~teatree.core.session_identity.current_session_id`, whose
+    last resort is the loop registry's ``t3-loop-tick-owner`` record. That fallback is
+    right for the question it was built for — which principal holds the t3-master lease
+    — and cannot answer this one, because "whoever currently owns the loop tick" is
+    never who wrote a hand-off. Claude Code delivers the session id only in the hook
+    JSON payload, so every session running ``create`` from a Bash-tool subprocess fell
+    through to it: three sessions' state absorbed into the tick owner's single unclaimed
+    row, and ``claim-on-start`` drained an inbox addressed to somebody else.
+
+    :data:`~teatree.core.session_identity.SESSION_ID_ENV_VARS` is per-process and set by
+    whoever launched this process, so it names this session or nothing — and nothing is
+    refused rather than substituted.
+    """
+    return session_id_from_env() or ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,10 +139,12 @@ class Command(TyperCommand):
         A resolve that finds NOTHING writes nothing: no row, no mirror, and no
         mutation of this author's existing unclaimed row.
         """
-        from_session = current_session_id()
+        from_session = authoring_session_id()
         if not from_session:
             self._refuse(
-                "no Claude session id — run inside a Claude Code session to hand off its state",
+                f"no session id in this process's environment ({', '.join(SESSION_ID_ENV_VARS)}) — a hand-off is "
+                f"attributed to its AUTHOR, and the loop-tick owner is not it. Run where the harness exports the "
+                f"id, or set T3_LOOP_SESSION_ID to this session's own id",
                 json_output=json_output,
                 code=2,
             )
@@ -162,17 +182,9 @@ class Command(TyperCommand):
         # report OK, and the re-read happens BEFORE the line is written.
         dangling = dangling_backlog_claims(str(handover.payload))
         ok = source.is_vetted and not failures
-        status = "ERROR" if failures else ("OK   " if source.is_vetted else "WARN ")
-        human_lines = [
-            (
-                f"{status} hand-off #{handover.pk} handed off to {recipient} ({source.value}); "
-                f"mirror written to {recorded.mirror}."
-            )
-        ]
-        if created.updated_existing:
-            human_lines.append(self._absorb_note(created))
-        human_lines += [f"      sub-agent {push.branch}: {self._push_summary(push)}" for push in pushes]
-        human_lines += [f"ERROR completeness: {failure}" for failure in failures]
+        human_lines = self._report_lines(
+            created, recipient=recipient, recorded=recorded, pushes=pushes, failures=failures
+        )
         emit(
             {
                 "ok": ok,
@@ -226,6 +238,30 @@ class Command(TyperCommand):
                 f"`--from-file <path>` (or `--body`) to hand over what this session actually knows."
             )
             raise SystemExit(3)
+
+    def _report_lines(
+        self,
+        created: CreatedHandover,
+        *,
+        recipient: str,
+        recorded: _RecordedBarrier,
+        pushes: list[SubagentPush],
+        failures: list[str],
+    ) -> list[str]:
+        """The operator-facing block: the verdict line, the absorb note, then one line each."""
+        handover, source = created.handover, created.source
+        status = "ERROR" if failures else ("OK   " if source.is_vetted else "WARN ")
+        lines = [
+            (
+                f"{status} hand-off #{handover.pk} handed off to {recipient} ({source.value}); "
+                f"mirror written to {recorded.mirror}."
+            )
+        ]
+        if created.updated_existing:
+            lines.append(self._absorb_note(created))
+        lines += [f"      sub-agent {push.branch}: {self._push_summary(push)}" for push in pushes]
+        lines += [f"ERROR completeness: {failure}" for failure in failures]
+        return lines
 
     @staticmethod
     def _absorb_note(created: CreatedHandover) -> str:
@@ -459,7 +495,7 @@ class Command(TyperCommand):
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Print this Claude session's own id (the hand-off ``--to`` target)."""
-        session_id = current_session_id()
+        session_id = authoring_session_id()
         emit(
             {"session_id": session_id},
             json_output=json_output,
@@ -482,7 +518,7 @@ class Command(TyperCommand):
         "next session", marks it claimed so it injects exactly once, and
         prints the payload. Empty payload when nothing is claimable.
         """
-        payload, origin = claim_handovers(session or current_session_id())
+        payload, origin = claim_handovers(session or authoring_session_id())
         emit(
             {"claimed": bool(payload), "from_session": origin, "payload": payload},
             json_output=json_output,

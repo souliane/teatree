@@ -131,11 +131,15 @@ _GOLDEN_RULE_TEXT = (
 )
 
 _TODO_CONSOLIDATE_TEXT = (
-    "Consolidate the todo list: confirm every user request from this session is captured as a "
-    "task and none has been dropped. Reconcile from durable state FIRST (the task list, "
-    "`t3 <overlay> questions list`, filed issues, the session snapshots); rescan the transcript "
-    "ONLY if a request cannot be accounted for from durable state. Then implement all "
-    "outstanding user requests, oldest first."
+    "Consolidate the todo list — it must DRAIN across a session, not only grow. CAPTURE: "
+    "confirm every user request from this session is captured as a task, none dropped. DRAIN: "
+    "for every OPEN task: a durable record already satisfies it — a filed issue, a merged PR, "
+    "a posted handoff, a request already executed — CLOSE it, naming the record. An open task "
+    "with the work already done elsewhere is a FALSE OPEN; re-working or re-asking it wastes "
+    "effort. Reconcile from durable state FIRST (the task list, `t3 <overlay> questions list`, "
+    "filed issues, the forge, the session snapshots); rescan the transcript ONLY if something "
+    "cannot be accounted for from durable state. Then implement the outstanding user requests, "
+    "oldest first. Net growth across the session means DRAIN was skipped."
 )
 
 _PR_BOARD_TEXT = (
@@ -277,14 +281,10 @@ def _mode_read_unlogged() -> Iterator[None]:
 def _self_pump_paused() -> bool:
     """Whether the active mode masks the self-pump's loop OFF — a self-waking directive IS one.
 
-    Reads the MERGED mode (#4196), never the L3/L2 preset layer: that layer stops
-    at ``None`` when neither an override nor a schedule slot governs, so it cannot
-    see the L0 default mode and — the case that matters here — cannot see the
-    live-presence upgrade. Braking a self-waking directive on it would suppress
-    the rule at a scheduled away slot the owner is demonstrably typing into.
+    Reads the MERGED mode (#4196), never the override/schedule layer: that layer stops
+    at ``None`` when neither governs, so it cannot see the configured default mode.
 
-    Fails OPEN to delivering: only an explicit force-OFF brakes, so a mode holding no
-    opinion (tri-state ``None``) and an unresolvable one both still deliver.
+    Fails OPEN to delivering: an unresolvable mode still delivers.
     """
     try:
         with _mode_read_unlogged():

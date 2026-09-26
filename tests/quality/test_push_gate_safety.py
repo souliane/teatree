@@ -16,6 +16,7 @@ module is the only doctest target and no import graph is needed.
 
 import os
 import shlex
+import signal
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -272,6 +273,30 @@ class TestResolvePlanAndDoctestRunner:
         # not a doctest failure (teatree is near-zero-comments), so the gate passes.
         with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=_swept(5)):
             assert _run_doctests((Path("src/teatree/x.py"),), Path.cwd()).ok is True
+
+    @pytest.mark.integration
+    def test_killed_doctest_process_survives_as_a_signal_exit_in_the_gate_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        probe = tmp_path / "killed_doctest.py"
+        probe.write_text(
+            '"""\n>>> import os, signal\n>>> os.kill(os.getpid(), signal.SIGKILL)\n"""\n',
+            encoding="utf-8",
+        )
+        repo_root = _repo_root()
+        ini = shlex.quote(str(repo_root / "pyproject.toml"))
+        monkeypatch.setenv("PYTEST_ADDOPTS", f"-c {ini} -p no:randomly -n0")
+        plan = PushGatePlan(
+            is_full=False,
+            reason="signal propagation probe",
+            doctest_targets=(probe,),
+            astgrep_scope=(),
+            enabled=True,
+        )
+
+        result = run_push_gate(plan, repo_root=repo_root, astgrep_scanner=lambda *_a, **_k: [])
+
+        assert result.exit_code == 128 + signal.SIGKILL
 
 
 class TestDoctestSweepIsDiagnosableAndUnpoisoned:

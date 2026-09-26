@@ -17,6 +17,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -29,6 +30,10 @@ from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import LoopLease, MergeClear, SelfImproveFiring, Ticket
 from teatree.core.models.merge_clear import ClearRequest
 from teatree.core.models.pull_request import PullRequest
+from teatree.loop.self_improve import schedule as schedule_mod
+from teatree.loop.self_improve.actions import ActionResult
+from teatree.loop.self_improve.budget import BudgetVerdict
+from teatree.loop.self_improve.schedule import TierResult
 from tests._loop_principal_env import pinned_loop_principal
 from tests._t3_master_env import worker_owns_t3_master
 
@@ -58,6 +63,9 @@ class LoopSelfImproveCommandTests(TestCase):
         )
         self._ram_patch.start()
         self.addCleanup(self._ram_patch.stop)
+        self._disk_patch = patch("teatree.loop.self_improve.budget.read_disk_used_percent", return_value=10.0)
+        self._disk_patch.start()
+        self.addCleanup(self._disk_patch.stop)
         # Stand in for the worker: the cycle runs only under a live t3-master owner (#3968).
         self.enterContext(worker_owns_t3_master())
 
@@ -82,8 +90,26 @@ class LoopSelfImproveCommandTests(TestCase):
 
         # The forgotten_merge detector must have written a firing.
         assert SelfImproveFiring.objects.filter(detector="forgotten_merge").count() == 1
-        # And the human summary mentions the cycle ran.
-        assert "OK" in out.getvalue() or "SKIP" in out.getvalue()
+        # The cycle ran; missing unrelated local evidence is reported as degraded.
+        assert any(status in out.getvalue() for status in ("OK", "SKIP", "DEGRADED"))
+
+    def test_red_budget_with_safe_action_is_not_reported_as_a_total_skip(self) -> None:
+        result = TierResult(
+            tier="cheap",
+            budget=BudgetVerdict.skip("low_ram"),
+            actions=[
+                ActionResult(
+                    rung="ticket",
+                    firing=SimpleNamespace(pk=1, detector="pressure_incident", dedup_key="pressure_incident::memory"),
+                )
+            ],
+        )
+        out = io.StringIO()
+        with patch("teatree.loop.self_improve.schedule.run_tier", return_value=result):
+            call_command("loop_self_improve", tier="cheap", stdout=out, stderr=out)
+
+        assert "DEGRADED" in out.getvalue()
+        assert "actions=1" in out.getvalue()
 
     def test_command_json_output_includes_reports(self) -> None:
         clear = MergeClear.issue(
@@ -109,6 +135,24 @@ class LoopSelfImproveCommandTests(TestCase):
         # outcomes have the contract keys.
         assert "report_count" in payload
         assert "action_count" in payload
+
+    def test_unknown_scan_is_visible_in_json_and_human_output(self) -> None:
+        result = TierResult(
+            tier="cheap",
+            budget=BudgetVerdict.allow(),
+            degraded_scans=[("lifecycle_incident", "otel_missing")],
+        )
+        json_out = io.StringIO()
+        human_err = io.StringIO()
+        with patch.object(schedule_mod, "run_tier", return_value=result):
+            call_command("loop_self_improve", tier="cheap", json_output=True, stdout=json_out)
+            call_command("loop_self_improve", tier="cheap", stdout=io.StringIO(), stderr=human_err)
+
+        assert json.loads(json_out.getvalue())["degraded_scans"] == [
+            {"detector": "lifecycle_incident", "reason": "otel_missing"}
+        ]
+        assert "DEGRADED" in human_err.getvalue()
+        assert "lifecycle_incident:otel_missing" in human_err.getvalue()
 
     def test_unbuilt_tier_exits_nonzero_instead_of_reporting_a_clean_cycle(self) -> None:
         for tier in ("medium", "expensive", "phase-99-future"):

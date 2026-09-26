@@ -16,6 +16,7 @@ unit-testable.
 """
 
 import json
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -50,6 +51,9 @@ def merge_summary_payloads(
     scenarios: list[ScenarioRecord] = []
     totals = dict.fromkeys(_TOTALS_KEYS, 0)
     for payload in payloads:
+        if payload.get("head_sha") != head_sha:
+            msg = f"summary shard SHA {payload.get('head_sha')!r} differs from expected {head_sha!r}"
+            raise ValueError(msg)
         shard_scenarios = payload.get("scenarios")
         if isinstance(shard_scenarios, list):
             scenarios.extend(shard_scenarios)
@@ -58,11 +62,15 @@ def merge_summary_payloads(
             for key in _TOTALS_KEYS:
                 totals[key] += int(shard_totals.get(key, 0))
     models = sorted({str(payload.get("model", "")) for payload in payloads} - {"", "unknown"})
+    outcomes = Counter(str(row.get("outcome", "")) for row in scenarios if isinstance(row, Mapping))
     return {
         "generated_at": generated_at,
         "model": ",".join(models) if models else "unknown",
         "head_sha": head_sha,
         "totals": totals,
+        "outcome_counts": {
+            name: outcomes[name] for name in ("PASS", "FLAKY", "BEHAVIOR_FAIL", "INFRA_BLOCKED", "UNVERIFIED")
+        },
         "scenarios": scenarios,
     }
 

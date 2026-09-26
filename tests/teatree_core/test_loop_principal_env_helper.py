@@ -59,20 +59,20 @@ class TestPinOverridesTheAmbientEnvironment:
 
 class TestPinLeavesNoResidue:
     def test_a_first_import_under_the_pin_is_not_stamped(self) -> None:
-        """The #3810 CI red, through the door the delegating entry point leaves open.
+        """The #3810 CI red, through the door a by-value import leaves open.
 
-        ``handover`` binds ``current_session_id`` off the loop entry point with a
-        module-level ``from ... import``, and Django imports commands lazily. Under
-        ``mock.patch`` of that attribute this assertion is RED — the command keeps
-        answering ``sess-pinned`` long after the block exits.
+        ``handover`` binds ``session_id_from_env`` with a module-level ``from ...
+        import``, and Django imports commands lazily. Under ``mock.patch`` of that
+        attribute this assertion is RED — the command keeps answering ``sess-pinned``
+        long after the block exits.
         """
         original = importlib.import_module(_HANDOVER)
         try:
             del sys.modules[_HANDOVER]
             with pinned_loop_principal("sess-pinned"):
                 command = importlib.import_module(_HANDOVER)
-                assert command.current_session_id() == "sess-pinned"
-            assert command.current_session_id() != "sess-pinned"
+                assert command.authoring_session_id() == "sess-pinned"
+            assert command.authoring_session_id() != "sess-pinned"
         finally:
             sys.modules[_HANDOVER] = original
 

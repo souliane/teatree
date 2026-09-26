@@ -22,6 +22,8 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.models import ScannedBroadcast, Session, Task, Ticket
+from teatree.core.review.review_taken import ReviewTaken
+from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.slack_broadcast_mr_classifier import GlabGhMrStateClassifier
 from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
@@ -42,6 +44,17 @@ def _repo_public_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: False)
 
 
+@pytest.fixture(autouse=True)
+def _routed_forge_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _resolve(_url: str, *, credential: str) -> ForgeTokenResolution:
+        return ForgeTokenResolution(credential, "owner", ForgeTokenState.TOKEN, token=f"routed-{credential}")
+
+    monkeypatch.setattr(
+        "teatree.loop.scanners.slack_broadcast_mr_classifier.resolve_url_token",
+        _resolve,
+    )
+
+
 CHANNEL = "C0DEMOCHAN1"
 TS_A = "1779201478.501469"
 TS_B = "1779201499.123456"
@@ -56,6 +69,7 @@ class FakeMessaging:
     """Minimal MessagingBackend stub recording react calls."""
 
     user_id: str = "U0DEMOUSER1"
+    bot_user_id: str = ""
     react_calls: list[tuple[str, str, str]] = field(default_factory=list)
     react_raises: BaseException | None = None
 
@@ -104,7 +118,7 @@ class FakeMessaging:
         return ""
 
     def auth_test(self) -> RawAPIDict:
-        return {"ok": True}
+        return {"ok": True, "user_id": self.bot_user_id} if self.bot_user_id else {"ok": True}
 
 
 def _fetcher(messages_by_channel: dict[str, list[RawAPIDict]]):
@@ -373,7 +387,8 @@ class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
         # No discovery-time claim reaction (#113/#86).
         assert scanner.backend.react_calls == []
 
-    def test_non_eyes_colleague_reaction_still_dispatches(self) -> None:
+    def test_any_colleague_reaction_stops_dispatch(self) -> None:
+        # #159: a colleague reacting with ANY emoji is a sign they took the review.
         message = _message_with_reactions(
             f"please review {MR_OPEN}",
             TS_A,
@@ -383,7 +398,7 @@ class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
 
         signals = scanner.scan()
 
-        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+        assert signals == []
         assert scanner.backend.react_calls == []
 
     def test_no_user_id_configured_cannot_be_overridden_by_mention(self) -> None:
@@ -580,7 +595,7 @@ class TestGlabGhMrStateClassifierUsesRepoFlag:
         monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
         monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/glab")
 
-        classifier = GlabGhMrStateClassifier(glab_token="glpat-fake")
+        classifier = GlabGhMrStateClassifier()
         states = classifier([url])
 
         assert len(states) == 1
@@ -621,7 +636,7 @@ class TestClassifierReadsAuthorUsername:
         monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
         monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/glab")
 
-        states = GlabGhMrStateClassifier(glab_token="glpat-fake")([url])
+        states = GlabGhMrStateClassifier()([url])
 
         assert states[0].author_username == "me"
         assert states[0].merged is False
@@ -640,7 +655,7 @@ class TestClassifierReadsAuthorUsername:
         monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
         monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/glab")
 
-        states = GlabGhMrStateClassifier(glab_token="glpat-fake")([url])
+        states = GlabGhMrStateClassifier()([url])
 
         assert states[0].author_username == ""
 
@@ -660,7 +675,7 @@ class TestClassifierReadsAuthorUsername:
         monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
         monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/gh")
 
-        states = GlabGhMrStateClassifier(github_token="ghp-fake")([url])
+        states = GlabGhMrStateClassifier()([url])
 
         assert states[0].author_username == "me"
         # The author field must be in the requested json columns.
@@ -700,3 +715,88 @@ class TestScannerSkipsOnMissingMigration(TestCase):
         # fails before any side effect lands).
         assert signals == []
         assert backend.react_calls == []
+
+
+BOT_SLACK_ID = "UB0TSELF"
+
+
+class TestColleagueClaimsStopDispatch(TestCase):
+    """A colleague's reaction, thread reply, forge note or approval stops the dispatch (#159).
+
+    Both directions: the owner's and the bot's OWN reactions and replies never count,
+    and a forge probe that cannot answer defers the dispatch rather than duplicating.
+    """
+
+    def _scan(
+        self,
+        message: RawAPIDict,
+        *,
+        bot_user_id: str = "",
+        review_taken=None,
+        mention: bool = False,
+    ) -> tuple[list, SlackBroadcastsScanner]:
+        scanner = SlackBroadcastsScanner(
+            backend=FakeMessaging(user_id=USER_SLACK_ID, bot_user_id=bot_user_id),
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher({CHANNEL: [message]}),
+            classify_mrs=_classifier({MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}),
+            review_taken=review_taken,
+            user_slack_id=USER_SLACK_ID if mention else "",
+            reviewer_username="me" if mention else "",
+        )
+        return scanner.scan(), scanner
+
+    def test_owner_reaction_does_not_stop_dispatch(self) -> None:
+        reactions = [{"name": "thumbsup", "users": [USER_SLACK_ID]}]
+        message = _message_with_reactions(f"please review {MR_OPEN}", TS_A, reactions)
+        signals, _ = self._scan(message)
+        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+
+    def test_bot_own_reaction_does_not_stop_dispatch(self) -> None:
+        # The factory's own review-DONE reactions land under the bot in an internal channel.
+        reactions = [{"name": "eyes", "users": [BOT_SLACK_ID]}]
+        message = _message_with_reactions(f"please review {MR_OPEN}", TS_A, reactions)
+        signals, _ = self._scan(message, bot_user_id=BOT_SLACK_ID)
+        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+
+    def test_colleague_thread_reply_stops_dispatch(self) -> None:
+        message = _message(f"please review {MR_OPEN}", TS_A)
+        message["reply_count"] = 1
+        message["reply_users"] = [COLLEAGUE_SLACK_ID]
+        signals, scanner = self._scan(message)
+        assert signals == []
+        assert scanner.backend.react_calls == []
+
+    def test_own_thread_reply_does_not_stop_dispatch(self) -> None:
+        message = _message(f"please review {MR_OPEN}", TS_A)
+        message["reply_count"] = 2
+        message["reply_users"] = [USER_SLACK_ID, BOT_SLACK_ID]
+        signals, _ = self._scan(message, bot_user_id=BOT_SLACK_ID)
+        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+
+    def test_forge_taken_marks_row_taken_and_skips_dispatch(self) -> None:
+        message = _message(f"please review {MR_OPEN}", TS_A)
+        signals, _ = self._scan(message, review_taken=lambda _url: ReviewTaken.TAKEN)
+        assert signals == []
+        row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
+        assert row.classification == ScannedBroadcast.Classification.TAKEN
+        assert row.manually_classified is True
+        assert row.awaiting_reviewer_dispatch is False
+
+    def test_forge_unknown_skips_dispatch_and_keeps_row_awaiting(self) -> None:
+        message = _message(f"please review {MR_OPEN}", TS_A)
+        signals, _ = self._scan(message, review_taken=lambda _url: ReviewTaken.UNKNOWN)
+        assert signals == []
+        row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
+        assert row.classification == ScannedBroadcast.Classification.PENDING
+        assert row.awaiting_reviewer_dispatch is True
+
+    def test_forge_free_dispatches(self) -> None:
+        message = _message(f"please review {MR_OPEN}", TS_A)
+        signals, _ = self._scan(message, review_taken=lambda _url: ReviewTaken.FREE)
+        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+
+    def test_owner_mention_overrides_forge_taken(self) -> None:
+        message = _message(f"<@{USER_SLACK_ID}> please review {MR_OPEN}", TS_A)
+        signals, _ = self._scan(message, review_taken=lambda _url: ReviewTaken.TAKEN, mention=True)
+        assert MR_OPEN in {s.payload["mr_url"] for s in signals if s.kind == "slack.review_intent"}

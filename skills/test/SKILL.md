@@ -111,9 +111,37 @@ How it selects (#3672): the **tach pytest plugin** is the impact engine — `--t
 
 Degrades to a whole-tree FULL run with the plugin OFF (deterministically — over-run, never under-run) on any of: a changed `conftest.py` / `factories.py`; test settings (`tests/django_settings*`, `tests/config/**`); a migration (adds `--create-db`); a non-`.py` data file under `src/`/`tests/`; any file outside the modelled roots (`scripts/`, `hooks/`, `e2e/`, docs/skills `.md`); any deletion/rename; or a dirty merge-base. When the report says FULL, run the whole suite.
 
-**Not a gate.** This is fast feedback only; a subset run cannot prove the 93% whole-tree coverage floor. Before pushing, run `bash dev/ci-parity-fast.sh` — the necessary-and-sufficient local check (scoped prek, `makemigrations --check`, this lane, the incremental push gate, no coverage floor). `bash dev/ci-parity.sh` is the opt-in deep lane for a red CI or a coverage-sensitive PR; the whole-tree floor is owned by it and by CI's sharded `test (3.13)` lane, never by a push hook.
+**Not a gate — and not a licence to skip local verification.** The pre-push local run is MANDATORY, and it is diff-scoped: `bash dev/ci-parity-fast.sh` (scoped prek, `makemigrations --check`, this lane, the incremental push gate, no coverage floor), or `bash dev/test-affected.sh` for the lane on its own. Diff-scoped is not the weaker choice — the selector escalates to the whole tree itself on anything it cannot prove local. What the local run must never be is a WHOLE-SUITE run: a subset cannot prove the 93% whole-tree floor, and proving that floor is CI's job, not yours.
+
+### The whole suite runs in CI — `git push` is the command that runs it (do X, never Y)
+
+So when what you want executed is the whole suite, the one command is the push, and CI's required sharded `test (3.13)` lane runs it on the pushed commit:
+
+```bash
+git push        # do X — the whole suite runs in CI, on the pushed commit
+```
+
+Never Y: reaching for a local whole-tree run to get that result — `bash dev/ci-parity.sh` chains `dev/test-cov.sh`, and a bare `uv run pytest` over everything is the same thing spelled shorter. <!-- local-verification: cited-not-prescribed -->
+
+`dev/ci-parity.sh` is a debugger for a job CI has ALREADY reported red, on a machine where you can attach to it. It is never the route to a first whole-suite result, and never a pre-push step.
 
 **A hand-picked directory list is not a substitute.** `pytest tests/teatree_core tests/teatree_loop …` skips the always-run floor above, so a `tests/conformance` break — a new `ScanSignal` kind with no dispatch/statusline route — survives it. That reached CI twice ([#3787](https://github.com/souliane/teatree/pull/3787), [#3788](https://github.com/souliane/teatree/pull/3788)). Use `bash dev/test-affected.sh`, which force-keeps the floor; `tests/conformance` also runs unconditionally in `dev/push-gate.sh`, so it cannot be pushed red either way.
+
+### Recording an Executed Reproduction
+
+A regression test is only evidence once it has been SEEN to fail on the pre-fix code
+(`/t3:code` § TDD Discipline). `require_executed_repro` reads the recorded pair, so record both
+halves on the live worktree — both need git, because the ancestry proof is what makes the pair
+mean "this test failed BEFORE the fix and passes after":
+
+```bash
+t3 <overlay> repro record-red <ticket-id> ...      # observed failing on the pre-fix tree
+t3 <overlay> repro record-green <ticket-id> ...    # observed passing with the fix
+```
+
+A reproduction that genuinely cannot be executed takes a human-approved
+`t3 <overlay> repro waive` rather than a skipped record — the waiver is auditable, an absent
+record is not.
 
 ### Order-Dependence (Shuffle) Lane
 
@@ -146,6 +174,9 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 - `t3 ci fetch-failed-tests` — extract failed test node IDs from CI.
 - `t3 ci fetch-errors` — extract error logs from CI.
 - Run failed tests locally to reproduce before fixing.
+- `t3 eval ci-heal open` — open a healing session against a red PR branch. It is what writes the
+  row `ci_eval_heal_autofix_enabled` reads, so a red branch nobody opens a session for leaves
+  that gate with nothing to observe and no way to be armed.
 
 ### CI Pipeline Monitoring
 
@@ -164,9 +195,9 @@ t3 ci fetch-failed-tests
 
 That extracts the failing node IDs so you can reproduce locally; pair it with `t3 ci fetch-errors` for the logs. Then reproduce (`t3 <overlay> run tests --failed-first -- <node_id>`), fix the root cause, push, and re-monitor until every job is `success`. Never run a command that asserts the pipeline is green (e.g. `echo "CI passing"`) while any job is non-green.
 
-### Docker Coverage — the opt-in deep lane, not a pre-push mandate
+### Docker Coverage — reproducing a red CI job, never a way to run the suite
 
-The 93% floor is a whole-tree property, so proving it locally is **not** what you do before every push — `bash dev/ci-parity-fast.sh` is (above), and CI's required sharded `test (3.13)` lane owns the floor. Reach for the deep lane when a PR is coverage-sensitive (deleting tests, adding a low-coverage module) or when reproducing a red CI:
+The 93% floor is a whole-tree property and CI's required sharded `test (3.13)` lane owns it. This lane is not how the suite gets run — pushing is (above). Reach for it only to reproduce a job CI has already reported red, or on a coverage-sensitive PR (deleting tests, adding a low-coverage module) where you need the number before CI answers:
 
 ```bash
 bash dev/ci-parity.sh     # the exact blocking CI predicate, incl. dev/test-cov.sh + t3 ci coverage

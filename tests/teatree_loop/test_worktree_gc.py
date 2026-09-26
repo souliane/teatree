@@ -72,6 +72,7 @@ class _GcFixture(TestCase):
     def _process_working_in(self, directory: Path, *, pid: str) -> None:
         (self.host_proc / pid).mkdir(parents=True)
         (self.host_proc / pid / "cwd").symlink_to(directory)
+        (self.host_proc / pid / "exe").symlink_to(directory / "bin" / "process")
 
     def _seed_origin(self) -> None:
         seed = self.tmp / "_seed"
@@ -102,7 +103,6 @@ class _GcFixture(TestCase):
             "disk_cache_allowlist": [],
             "allow_destructive_disk": True,
             "worktree_stale_days": 30,
-            "max_worktree_gc_per_tick": 5,
         }
 
 
@@ -130,7 +130,7 @@ class WorktreeGcSafetyTests(_GcFixture):
         with patch.object(worktree_gc, "worktree_root", return_value=self.main_clone):
             free_resources(self._payload())
         plan = ResourcePressureMarker.load().last_plan
-        assert f"keep {wt}: it has uncommitted changes, or git would not say" in plan
+        assert f"keep {wt.resolve()}: it has uncommitted changes, or git would not say" in plan
         assert wt.exists(), "a dirty worktree must never be removed"
 
     def test_ahead_of_upstream_worktree_is_skipped(self) -> None:
@@ -236,7 +236,7 @@ class WorktreeGcReportingTests(_GcFixture):
         ):
             free_resources(self._payload())
         assert wt.exists(), "the agent that arrived mid-pass keeps its worktree"
-        assert f"SKIP {wt}: a live process is working inside it since the survey" in (
+        assert f"SKIP {wt.resolve()}: a live process is working inside it since the survey" in (
             ResourcePressureMarker.load().last_plan
         )
 
@@ -306,8 +306,9 @@ class GcJudgementTests(TestCase):
             patch.object(worktree_gc, "linked_worktree_paths", return_value=enumeration),
             patch.object(worktree_gc, "safe_cwd", return_value=None),
             patch.object(worktree_gc, "keep_reason", return_value=""),
+            patch.object(worktree_gc, "_MAX_GC_PER_TICK", 2),
         ):
-            survey = worktree_gc.survey_worktrees({"worktree_stale_days": 30, "max_worktree_gc_per_tick": 2})
+            survey = worktree_gc.survey_worktrees({"worktree_stale_days": 30})
         assert len(survey.candidates) == 2
         assert survey.considered == 5
         assert len(survey.kept) == 3, "the ones the cap deferred are reported, never silently dropped"

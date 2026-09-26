@@ -3,16 +3,21 @@
 The project-wide ``timeout`` in ``pyproject.toml`` is sized for an ordinary unit
 test: a fixed amount of work whose cost does not move when the repo grows. Every
 item in this package is the other kind — its INPUT is the whole tree, which is
-why ``dev/push-gate.sh`` keeps the lane on the push path at all (a diff-scoped
-selector cannot decide a whole-tree assertion is unaffected). Parsing
+why ``dev/push-gate.sh`` keeps the lane's totality core on the push path at all (a
+diff-scoped selector cannot decide a whole-tree assertion is unaffected). Parsing
 ``src/teatree`` alone measured 14.2s at 1694 modules, and the slowest item here
 measured 60.02s of call time on a host running other lanes — so the unit-test
 ceiling kills a lane that is working correctly, and it does so on a different
 item each run, which reads as flakiness rather than as the ceiling being wrong.
 
 The ceiling is raised for this package and BOUNDED: a genuine hang still fails
-the push rather than wedging it forever. Same idiom, same value, as the other
-whole-tree scans that already carry their own marker
+outright wherever this ceiling is the outermost bound (CI's whole-tree run, a
+local ``pytest tests/conformance`` invocation) rather than wedging forever. On
+the push path specifically, ``dev/push-gate.sh``'s own two-minute ``timeout``
+wrapper is tighter than this ceiling and fires first, so a push-time hang
+DEFERS to CI (#172) instead of failing the push -- this per-item ceiling stays
+the backstop everywhere else. Same idiom, same value, as the other whole-tree
+scans that already carry their own marker
 (``tests/teatree_cli/test_cli_reference_drift_gate.py``,
 ``tests/test_loop_ownership_transfer.py``).
 """

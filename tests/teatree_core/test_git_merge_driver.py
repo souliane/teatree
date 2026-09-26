@@ -347,7 +347,7 @@ class TestDriverCommandIsCheckoutRelative:
     """
 
     def _fake_source_root(self, monkeypatch, root: Path) -> Path:
-        (root / "scripts" / "hooks").mkdir(parents=True)
+        (root / "scripts" / "hooks").mkdir(parents=True, exist_ok=True)
         (root / "scripts" / "hooks" / "git_merge_generated.py").touch()
         monkeypatch.setattr(merge_driver, "teatree_source_root", lambda: root)
         return root
@@ -374,6 +374,27 @@ class TestDriverCommandIsCheckoutRelative:
         script = Path(merge_driver.driver_command(tmp_path / "repo").split()[3])
 
         assert script.is_absolute(), f"a script outside the checkout has no relative form, got {script}"
+
+    def test_a_worktree_registers_the_same_command_as_its_main_clone(self, tmp_path, monkeypatch):
+        """`.git/config` is per-CLONE, and teatree's own workflow registers from a WORKTREE.
+
+        Deriving the path from the installed teatree made the relative form unreachable
+        in exactly that case — the worktree's vendored core is not under the clone being
+        registered — so the absolute fallback wrote one venue's path into a config the
+        main clone, every sibling worktree and the bind-mounted container all read.
+        """
+        clone = tmp_path / "clone"
+        worktree = tmp_path / "worktrees" / "a-ticket"
+        for checkout in (clone, worktree):
+            (checkout / "vendor" / "teatree" / "scripts" / "hooks").mkdir(parents=True)
+            (checkout / "vendor" / "teatree" / "scripts" / "hooks" / "git_merge_generated.py").touch()
+        # The INSTALLED teatree is the worktree's, which is where `t3` runs from.
+        monkeypatch.setattr(merge_driver, "teatree_source_root", lambda: worktree / "vendor" / "teatree")
+
+        assert merge_driver.driver_command(clone) == merge_driver.driver_command(worktree)
+        assert merge_driver.driver_command(clone) == (
+            "uv run python vendor/teatree/scripts/hooks/git_merge_generated.py %O %A %B %P"
+        )
 
     def test_the_two_checkouts_of_one_bind_mount_agree(self, tmp_path, monkeypatch):
         """The host path and the container path of the same tree yield ONE command."""
@@ -416,6 +437,19 @@ class TestGitMergeDriverInstaller:
         assert all(line.startswith("OK") for line in echoed)
         for repo in repos:
             assert run_git(repo, "config", "--get", "merge.generated.driver") == _EXPECTED_DRIVER_COMMAND
+
+    def test_linked_checkout_unavailable_in_this_venue_is_not_called_broken(self, tmp_path):
+        foreign = tmp_path / "linked-checkout"
+        foreign.mkdir()
+        (foreign / ".git").write_text("gitdir: /another/venue/repo/.git/worktrees/linked-checkout\n")
+        echoed: list[str] = []
+
+        GitMergeDriverInstaller(foreign, checkouts=[foreign]).install(echo=echoed.append)
+
+        assert len(echoed) == 1
+        assert echoed[0].startswith("INFO")
+        assert "unavailable in this venue" in echoed[0]
+        assert (foreign / ".git").read_text() == "gitdir: /another/venue/repo/.git/worktrees/linked-checkout\n"
 
 
 class TestRepoGitattributes:

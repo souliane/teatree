@@ -25,7 +25,7 @@ on-disk file, so the transcript lane runs no model end to end.
 
 import json
 
-from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.models import COST_SOURCE_NOT_METERED, EvalRun, EvalSpec
 from teatree.eval.transcript import StreamJsonEvent, extract_text_blocks, extract_tool_calls
 
 _DIRTY_STOP_REASONS = frozenset({"max_tokens", "refusal", "error", "aborted"})
@@ -135,4 +135,5 @@ def subagent_run(spec: EvalSpec, raw: str) -> EvalRun:
         is_error=is_error,
         raw_stdout=raw,
         raw_stderr="",
+        cost_source=COST_SOURCE_NOT_METERED,
     )

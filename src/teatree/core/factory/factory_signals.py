@@ -31,7 +31,9 @@ from typing import TypedDict
 from django.utils import timezone
 
 from teatree.core.factory.factory_signal_queries import (
+    MIN_SAMPLE,
     Computation,
+    LocEvidence,
     SignalEvidence,
     SignalReading,
     SignalStatus,
@@ -44,6 +46,9 @@ from teatree.core.factory.factory_signal_queries import (
     compute_s5,
     current_window,
 )
+from teatree.project import find_project_root
+from teatree.quality.hand_written_loc import window_loc
+from teatree.utils.run import CommandFailedError
 
 
 class SignalRowDict(TypedDict):
@@ -77,6 +82,8 @@ class FactorySignalsReportDict(TypedDict):
 # Re-exported so the signal surface is importable from one module.
 __all__ = [
     "DEFAULT_WINDOW_DAYS",
+    "SIGNALS",
+    "VISIBILITY_SIGNALS",
     "Direction",
     "FactorySignalsReport",
     "SignalReading",
@@ -87,6 +94,7 @@ __all__ = [
     "defect_escape_rate",
     "first_try_green_rate",
     "merge_latency",
+    "net_hand_written_loc",
     "repair_iteration_burn",
     "review_catch_rate",
 ]
@@ -257,6 +265,33 @@ SIGNALS: tuple[SignalSpec, ...] = (
 )
 
 
+def compute_net_hand_written_loc(window: Window, overlay: str, now: datetime) -> Computation:  # noqa: ARG001 — uniform compute signature
+    """Net hand-written LoC landed in *window* — the direction the factory is moving.
+
+    Not overlay-scoped: git records one tree, not one overlay's slice of it.
+    """
+    root = find_project_root()
+    blind: LocEvidence = {"added": 0, "deleted": 0, "commits": 0}
+    if root is None:
+        return Computation(SignalReading(0.0, 0, window.days, SignalStatus.INSTRUMENTATION_GAP), blind)
+    try:
+        delta = window_loc(since=window.start, until=window.end, repo=root)
+    except (OSError, CommandFailedError):
+        return Computation(SignalReading(0.0, 0, window.days, SignalStatus.INSTRUMENTATION_GAP), blind)
+    evidence: LocEvidence = {"added": delta.added, "deleted": delta.deleted, "commits": delta.commits}
+    status = SignalStatus.OK if delta.commits >= MIN_SAMPLE else SignalStatus.INSUFFICIENT_DATA
+    return Computation(SignalReading(float(delta.net), delta.commits, window.days, status), evidence)
+
+
+#: Reported for direction, never graded: excluded from the recipe registry (so the
+#: weighted score cannot move) and from the report verdict (so a git read cannot
+#: redden the operator's alarm). The owner ruled the LoC leg advisory; a signal that
+#: could trip the verdict would be that gate under another name.
+VISIBILITY_SIGNALS: tuple[SignalSpec, ...] = (
+    SignalSpec("net_hand_written_loc", "quant", Direction.LOWER_IS_BETTER, compute_net_hand_written_loc, None, 0.0),
+)
+
+
 def _provider(
     compute: Callable[[Window, str, datetime], Computation],
     window_days: int,
@@ -312,6 +347,15 @@ def repair_iteration_burn(
     return _provider(compute_s5, window_days, overlay, now)
 
 
+def net_hand_written_loc(
+    *,
+    window_days: int = DEFAULT_WINDOW_DAYS,
+    overlay: str = "",
+    now: datetime | None = None,
+) -> SignalReading:
+    return _provider(compute_net_hand_written_loc, window_days, overlay, now)
+
+
 def _floor_tripped(value: float, spec: SignalSpec) -> bool:
     if spec.red_when is None:
         return False
@@ -363,7 +407,7 @@ def _build_row(spec: SignalSpec, comp: Computation, baseline_value: float | None
 
 
 def _aggregate_verdict(rows: list[SignalRow]) -> SignalVerdict:
-    """RED if any signal is RED or its recorder is silent, else REGRESSING, else OK.
+    """RED if any GRADED signal is RED or its recorder is silent, else REGRESSING, else OK.
 
     Starving a signal can only lower the verdict — an ``instrumentation_gap`` is
     RED, never a free pass.
@@ -381,25 +425,27 @@ def compute_factory_signals(
     overlay: str = "",
     now: datetime | None = None,
 ) -> FactorySignalsReport:
-    """Compose the five signals over the trailing window vs its preceding baseline.
+    """Compose the graded signals over the trailing window vs its preceding baseline.
 
     Pure read path: aggregates the merge/review/CI/repair ledgers, never
     mutating a row. The baseline is the immediately-preceding window of the same
     width; a baseline whose own reading is not ``ok`` contributes no delta.
+    :data:`VISIBILITY_SIGNALS` rows ride along in ``signals`` but not in the verdict.
     """
     resolved = now or timezone.now()
     current = current_window(resolved, window_days)
     baseline = baseline_window(resolved, window_days)
-    rows: list[SignalRow] = []
-    for spec in SIGNALS:
-        comp = spec.compute(current, overlay, resolved)
+
+    def row(spec: SignalSpec) -> SignalRow:
         base = spec.compute(baseline, overlay, resolved)
         baseline_value = base.reading.value if base.reading.status == SignalStatus.OK else None
-        rows.append(_build_row(spec, comp, baseline_value))
+        return _build_row(spec, spec.compute(current, overlay, resolved), baseline_value)
+
+    graded = [row(spec) for spec in SIGNALS]
     return FactorySignalsReport(
         window_days=window_days,
         generated_at=resolved,
-        signals=rows,
-        verdict=_aggregate_verdict(rows),
+        signals=[*graded, *(row(spec) for spec in VISIBILITY_SIGNALS)],
+        verdict=_aggregate_verdict(graded),
         overlay=overlay,
     )

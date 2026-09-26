@@ -55,7 +55,8 @@ from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.loop.dispatch import dispatch
-from teatree.loop.persistence import _already_reviewed_at_head, persist_agent_actions
+from teatree.loop.persistence import persist_agent_actions
+from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.scanners.reviewed_pr_head import ReviewedPrHeadScanner
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
@@ -288,7 +289,7 @@ class TestGap3ReReviewCompletesOnADeliveredTicket(TestCase):
         ticket.refresh_from_db()
 
         assert ticket.state == Ticket.State.REVIEW_POSTED
-        assert (ticket.extra or {}).get("last_review_state") == ReviewState.APPROVED.value
+        assert (ticket.extra or {}).get("discharged_sha") == NEW_SHA
         assert _already_reviewed_at_head(ticket, NEW_SHA) is True
 
     def test_no_second_task_while_the_head_is_unchanged(self) -> None:

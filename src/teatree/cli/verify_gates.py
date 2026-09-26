@@ -11,11 +11,11 @@ skipped -- yet CI re-runs them on the PR-vs-base diff. So a builder reporting
 "local prek is green" can be honest about the commit-stage hooks while blind
 to the exact push-stage gate CI fails on.
 
-This command runs BOTH stages -- ``prek run --all-files`` and
-``prek run --all-files --hook-stage pre-push`` -- against the working tree and
-returns the combined exit code as the single green-proof, making "local green"
-== "CI green" by construction. Skills and the headless builder dispatch prompt
-point at this one command instead of the bare ``prek run --all-files``.
+This command runs BOTH stages against the changed files where filename-aware
+hooks allow it. ``always_run`` hooks still examine the whole tree. A config
+change or an unresolvable diff falls back to ``--all-files``. Each stage has a
+hard wall-clock deadline and a resource preflight, so refusal is visible rather
+than a host-level OOM.
 
 Note the stage name: prek's ``--hook-stage`` accepts the canonical
 ``pre-push`` value (the config's ``stages: [push]`` is the legacy alias prek
@@ -36,9 +36,13 @@ from pathlib import Path
 
 import typer
 
+from teatree.quality.changed_set import ChangedSetError, changed_paths
+from teatree.quality.gate_receipt import write_gate_receipt
 from teatree.utils.git_branch import current_branch, head_sha
 from teatree.utils.git_remote_ops import config_value
 from teatree.utils.git_run import run, run_strict
+from teatree.utils.install_headroom import free_bytes
+from teatree.utils.ram_scope import read_ram_headroom
 from teatree.utils.run import CommandFailedError, run_streamed
 
 # The same key ``refuse-main-clone-commit.sh`` reads, so one declaration serves both.
@@ -47,6 +51,25 @@ _TARGET_BRANCH_CONFIG_KEY = "teatree.targetBranch"
 # prek's ``--hook-stage`` flag expects the canonical stage name. The config's
 # ``stages: [push]`` alias resolves to this; passing ``push`` verbatim errors.
 _PUSH_STAGE = "pre-push"
+_MIN_DISK_MIB = 4096
+_MIN_MEMORY_MIB = 2048
+_BYTES_PER_MIB = 1024 * 1024
+_STAGE_DEADLINE_SECONDS = 600
+_MAX_SCOPED_FILES = 500
+_CONFIG_NAMES = frozenset({"pyproject.toml", "uv.lock", ".pre-commit-config.yaml", "tach.toml"})
+
+
+def _resource_refusal() -> str:
+    """Return the measured shortfall before a potentially expensive local gate run."""
+    disk_free = free_bytes(Path.cwd())
+    if disk_free is not None and disk_free // _BYTES_PER_MIB < _MIN_DISK_MIB:
+        free_mib = disk_free // _BYTES_PER_MIB
+        return f"disk: {free_mib} MiB free below {_MIN_DISK_MIB} MiB floor"
+    memory_free = read_ram_headroom().available_mib
+    if memory_free is not None and memory_free < _MIN_MEMORY_MIB:
+        return f"memory: {memory_free} MiB available below {_MIN_MEMORY_MIB} MiB floor"
+    return ""
+
 
 _EXPECT_SHA_ENV = "T3_VERIFY_GATES_EXPECT_SHA"
 
@@ -153,6 +176,60 @@ def _prek_available() -> bool:
     return shutil.which("prek") is not None
 
 
+def _timeout_available() -> bool:
+    return shutil.which("timeout") is not None
+
+
+def _scope_args() -> tuple[list[str], str]:
+    """Use the branch/working-tree diff for filename hooks; uncertainty means FULL."""
+    try:
+        changed = changed_paths()
+    except ChangedSetError as exc:
+        return ["--all-files"], f"diff unavailable ({exc}); full tree"
+    paths = sorted(
+        {
+            entry.path
+            for entry in changed.entries
+            if entry.status not in {"D", "R", "C", "T"} and Path(entry.path).is_file()
+        }
+    )
+    if not paths or len(paths) > _MAX_SCOPED_FILES:
+        return ["--all-files"], "empty/oversize diff; full tree"
+    if any(Path(path).name in _CONFIG_NAMES or path.endswith((".toml", ".lock", ".cfg", ".ini")) for path in paths):
+        return ["--all-files"], "toolchain/config changed; full tree"
+    if any(entry.status in {"D", "R", "C", "T"} for entry in changed.entries):
+        return ["--all-files"], "delete/rename/type-change; full tree"
+    return ["--files", *paths], f"{len(paths)} changed file(s); always-run hooks remain whole-tree"
+
+
+def _record(state: str, reason: str) -> None:
+    try:
+        write_gate_receipt(Path.cwd(), state=state, reason=reason)
+    except OSError:
+        # No receipt is itself an INCOMPLETE PR verdict. Keep the gate result
+        # visible even on a read-only or malformed git admin directory.
+        typer.echo("verify-gates: could not write the local gate receipt; PR will show INCOMPLETE.", err=True)
+
+
+def _run_stages(scope_args: list[str]) -> tuple[list[str], list[str]]:
+    deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
+    stages = (
+        ("commit + manual", [*deadline, "prek", "run", *scope_args]),
+        ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
+    )
+    failed: list[str] = []
+    incomplete: list[str] = []
+    for label, cmd in stages:
+        typer.echo(f"== verify-gates: {label} ==", err=True)
+        # ``check=False`` inherits stdio and lets us collect both stage results.
+        result = run_streamed(cmd, check=False)
+        if result in {124, 137}:
+            incomplete.append(label)
+        elif result != 0:
+            failed.append(label)
+    return failed, incomplete
+
+
 def verify_gates(
     expect_sha: str = typer.Option(
         "",
@@ -169,8 +246,8 @@ def verify_gates(
 ) -> None:
     """Run the FULL CI-equivalent local gate set (commit AND push stages).
 
-    Runs ``prek run --all-files`` then ``prek run --all-files --hook-stage
-    pre-push`` and exits non-zero if EITHER stage fails. The push-stage run is
+    Runs both prek stages under a 600-second deadline apiece and exits non-zero
+    if EITHER stage fails. The push-stage run is
     what catches the gates CI fails on but a bare ``prek run --all-files``
     cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
     gate). The full test suite is NOT a push gate -- push -> CI runs it.
@@ -180,7 +257,19 @@ def verify_gates(
     without grading anything when the tree is not a git checkout, is not the
     ``--expect-sha`` target, or is a clean main clone on its default branch.
     """
+    tree = read_measured_tree()
+    if tree is None:
+        typer.echo(f"verify-gates: {Path.cwd()} is not a git tree — nothing measured.", err=True)
+        raise typer.Exit(code=_WRONG_TREE_EXIT)
+    refusal = wrong_tree_refusal(tree, expected=expect_sha.strip(), allow_main_clone=allow_main_clone)
+    if refusal:
+        typer.echo(refusal, err=True)
+        raise typer.Exit(code=_WRONG_TREE_EXIT)
+
+    typer.echo(f"verify-gates: measuring {tree.describe()}", err=True)
+    _record("incomplete", "run started but did not finish")
     if not _prek_available():
+        _record("incomplete", "prek unavailable")
         typer.echo(
             "verify-gates: prek not found on PATH. Install prek (the pre-commit "
             "runner) so the local gate set matches CI.",
@@ -188,43 +277,45 @@ def verify_gates(
         )
         raise typer.Exit(code=1)
 
-    tree = read_measured_tree()
-    if tree is None:
-        typer.echo(f"verify-gates: {Path.cwd()} is not a git tree — nothing measured.", err=True)
-        raise typer.Exit(code=_WRONG_TREE_EXIT)
+    if not _timeout_available():
+        _record("incomplete", "GNU timeout unavailable")
+        typer.echo("verify-gates: INCOMPLETE — GNU `timeout` is required for a bounded run.", err=True)
+        raise typer.Exit(code=1)
 
-    refusal = wrong_tree_refusal(tree, expected=expect_sha.strip(), allow_main_clone=allow_main_clone)
+    refusal = _resource_refusal()
     if refusal:
-        typer.echo(refusal, err=True)
-        raise typer.Exit(code=_WRONG_TREE_EXIT)
+        _record("incomplete", refusal)
+        typer.echo(f"verify-gates: INCOMPLETE — refusing to start: {refusal}. Reclaim resources and retry.", err=True)
+        raise typer.Exit(code=1)
 
-    typer.echo(f"verify-gates: measuring {tree.describe()}", err=True)
+    scope_args, scope_reason = _scope_args()
+    typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
+    failed, incomplete = _run_stages(scope_args)
 
-    stages = (
-        ("commit + manual", ["prek", "run", "--all-files"]),
-        ("pre-push (CI-parity gates)", ["prek", "run", "--all-files", "--hook-stage", _PUSH_STAGE]),
-    )
-    failed: list[str] = []
-    for label, cmd in stages:
-        typer.echo(f"== verify-gates: {label} ==", err=True)
-        # ``check=False`` inherits stdio (live per-hook output) and lets us
-        # collect every failing stage in one pass instead of stopping at the first.
-        if run_streamed(cmd, check=False) != 0:
-            failed.append(label)
-
-    if failed:
+    finished_tree = read_measured_tree()
+    if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):
+        _record("incomplete", "checkout changed during verification")
         typer.echo(
-            f"verify-gates: FAILED stage(s): {', '.join(failed)} — measured {tree.head_sha}.",
+            f"verify-gates: INCOMPLETE — checkout changed while grading {tree.head_sha}; rerun on the final tree.",
             err=True,
         )
+        raise typer.Exit(code=_WRONG_TREE_EXIT)
+
+    if failed or incomplete:
+        _record("incomplete", f"failed={','.join(failed)}; timed_out={','.join(incomplete)}")
+        if incomplete:
+            typer.echo(f"verify-gates: INCOMPLETE — timed out stage(s): {', '.join(incomplete)}", err=True)
+        if failed:
+            typer.echo(f"verify-gates: FAILED stage(s): {', '.join(failed)} — measured {tree.head_sha}.", err=True)
         raise typer.Exit(code=1)
+    _record("green", "both gate stages passed")
     typer.echo(
         f"verify-gates: all gate stages green (commit + push) — measured {tree.head_sha}.",
         err=True,
     )
     typer.echo(
         f"verify-gates: NOT covered by any local hook: {', '.join(UNCOVERED_CI_JOBS)} — CI at the "
-        "pushed SHA is the authority (`gh pr checks <n>`).",
+        "pushed SHA is the authority.",
         err=True,
     )
 

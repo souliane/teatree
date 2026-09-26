@@ -8,7 +8,7 @@ auto-merge path is reachable. Two gates sit deliberately OUTSIDE that set,
 because surrendering either is a decision distinct from how far the agent
 carries work, and a tier that made it for the operator would remove a control
 with no signal: ``require_human_approval_to_merge`` for review before merge
-(#3630), and ``on_behalf_post_mode`` for speaking to a colleague under the
+(#3630), and ``Mode.egress`` for speaking to a colleague under the
 owner's own identity (#3895). Each is its own named opt-in, read unchanged by
 every tier. The tier DOES drive review-request blocking (#2579): ``notify``
 resolves ``review_request_post_disabled = True`` (a collaborative/customer

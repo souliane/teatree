@@ -2,6 +2,8 @@
   <div class="banner-red">danger_gate_fail_open is ON — every over-deny gate is relaxed. A fail-open factory is never healthy.</div>
 {% endif %}
 
+{% include "dash/partials/_telemetry.html" %}
+
 <section class="band">
   {% if health.verdict.error %}<div class="banner-red">{{ health.verdict.error }}</div>{% endif %}
   <div class="verdict-lead">
@@ -46,7 +48,7 @@
       {% for loop in health.loops.report.mini_loops %}
         <tr>
           <td>{{ loop.name }}</td>
-          <td>{{ loop.enabled|yesno:"yes,no" }}</td>
+          <td>{{ loop.enabled|yesno:"forced on,forced off,—" }}</td>
           <td class="{% if loop.held %}held{% endif %}">{{ loop.held|yesno:"held,–" }}</td>
           <td class="num">{{ loop.cadence_seconds }}</td>
           <td>{{ loop.next_fire_at|default:"–" }}</td>
@@ -79,14 +81,15 @@
     {% if cap.accounts %}
       <h3>Account utilization</h3>
       <table class="dash">
-        <thead><tr><th>account</th><th class="num">5h</th><th class="num">7d</th><th>exhausted</th><th>reset</th></tr></thead>
+        <thead><tr><th>account</th><th class="num">5h</th><th class="num">7d</th><th>exhausted</th><th>routed for</th><th>reset</th></tr></thead>
         <tbody>
           {% for acct in cap.accounts %}
             <tr class="{% if acct.is_exhausted %}stalled{% endif %}">
               <td>{{ acct.pass_path }}</td>
-              <td class="num">{{ acct.utilization_5h }}</td>
-              <td class="num">{{ acct.utilization_7d }}</td>
+              <td class="num">{{ acct.utilization_5h|default_if_none:"—" }}</td>
+              <td class="num">{{ acct.utilization_7d|default_if_none:"—" }}</td>
               <td>{{ acct.is_exhausted|yesno:"yes,no" }}</td>
+              <td>{{ acct.pinned_scopes|join:", "|default:"—" }}</td>
               <td>{{ acct.earliest_reset|default:"—" }}</td>
             </tr>
           {% endfor %}

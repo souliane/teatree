@@ -105,7 +105,7 @@ class TestCeilingNotReservationIsDocumented:
 
 class TestContainerLogRetention:
     def test_every_service_rotates_json_logs(self) -> None:
-        expected = {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}}
+        expected = {"driver": "json-file", "options": {"max-size": "50m", "max-file": "5"}}
 
         for service, config in _services().items():
             assert config.get("logging") == expected, service

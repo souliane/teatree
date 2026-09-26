@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
+from teatree.agents import permission_modes
 from teatree.eval.api_runner import CleanRoomConfig, build_sdk_options, classify_terminal_error, is_success_result_error
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
@@ -212,6 +213,10 @@ def _judge_options(*, model: str, cwd: str, env: dict[str, str]) -> ClaudeAgentO
         )
     )
     options.max_budget_usd = resolve_judge_budget_usd()
+    # A judge has no tools to run. Default-deny avoids the CLI's root-user ban on
+    # bypassPermissions in CI, while --tools "" makes the restriction explicit.
+    options.tools = []
+    options.permission_mode = permission_modes.READER_DEFAULT_DENY
     options.output_format = {"type": "json_schema", "schema": _VERDICT_SCHEMA}
     return options
 

@@ -16,12 +16,11 @@ the cgroup arm now does the same, from one reader both consumers share.
 """
 
 import os
+import platform
 from dataclasses import dataclass
-from pathlib import Path
 
-from teatree.utils.ram_probe import cgroup_v2_memory_mib, host_available_ram_mib
+from teatree.utils.ram_probe import cgroup_file, cgroup_v1_memory_mib, cgroup_v2_memory_mib, host_available_ram_mib
 
-_CGROUP_ROOT = Path("/sys/fs/cgroup")
 _MIB_PER_GIB = 1024
 _BYTES_PER_MIB = 1024 * 1024
 
@@ -60,7 +59,7 @@ def cgroup_v2_reclaimable_mib() -> int:
     nobody measured — under-reporting headroom is the safe direction.
     """
     try:
-        raw = (_CGROUP_ROOT / "memory.stat").read_text(encoding="utf-8")
+        raw = cgroup_file("memory.stat").read_text(encoding="utf-8")
     except OSError:
         return 0
     total = 0
@@ -70,6 +69,20 @@ def cgroup_v2_reclaimable_mib() -> int:
         if key in _RECLAIMABLE_STAT_KEYS and stripped.isdigit():
             total += int(stripped)
     return total // _BYTES_PER_MIB
+
+
+def cgroup_v2_oom_kills() -> int | None:
+    """The cgroup-v2 ``oom_kill`` counter, or ``None`` when it cannot be read."""
+    try:
+        raw = cgroup_file("memory.events").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in raw.splitlines():
+        key, _, value = line.partition(" ")
+        stripped = value.strip()
+        if key == "oom_kill" and stripped.isdigit():
+            return int(stripped)
+    return None
 
 
 def cgroup_headroom_mib() -> int | None:
@@ -83,6 +96,39 @@ def cgroup_headroom_mib() -> int | None:
     return _cgroup_cap_and_headroom_mib()[1]
 
 
+def cgroup_memory_probe_inert() -> bool:
+    """Whether Linux silently lost a cgroup RAM floor while host RAM still reads.
+
+    An explicit ``max`` or v1 unlimited sentinel is an uncapped cgroup, not a
+    broken probe. A numeric cap with unreadable usage is broken: the host's
+    ``MemAvailable`` may still succeed, masking a worker OOM ceiling.
+    """
+    if platform.system() != "Linux":
+        return False
+    for version, controller, limit_name, current_name in (
+        (2, "", "memory.max", "memory.current"),
+        (1, "memory", "memory.limit_in_bytes", "memory.usage_in_bytes"),
+    ):
+        try:
+            limit = cgroup_file(limit_name, version=version, controller=controller).read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        return _cgroup_memory_cap_invalid(version, controller, limit, current_name)
+    return True
+
+
+def _cgroup_memory_cap_invalid(version: int, controller: str, limit: str, current_name: str) -> bool:
+    if limit == "max" or (version == 1 and limit.isdecimal() and int(limit) >= 1 << 60):
+        return False
+    if not limit.isdecimal():
+        return True
+    try:
+        current = cgroup_file(current_name, version=version, controller=controller).read_text(encoding="utf-8").strip()
+    except OSError:
+        return True
+    return not current.isdecimal()
+
+
 def _cgroup_cap_and_headroom_mib() -> tuple[int | None, int | None]:
     """This cgroup's ``memory.max`` and its remaining headroom, both in whole MiB.
 
@@ -91,6 +137,11 @@ def _cgroup_cap_and_headroom_mib() -> tuple[int | None, int | None]:
     """
     limit_mib = cgroup_v2_memory_mib("memory.max")
     current_mib = cgroup_v2_memory_mib("memory.current")
+    if limit_mib is None:
+        v1_limit = cgroup_v1_memory_mib("memory.limit_in_bytes")
+        if v1_limit is not None:
+            v1_current = cgroup_v1_memory_mib("memory.usage_in_bytes")
+            return v1_limit, max(0, v1_limit - v1_current) if v1_current is not None else None
     if limit_mib is None or current_mib is None:
         return limit_mib, None
     return limit_mib, max(0, limit_mib - max(0, current_mib - cgroup_v2_reclaimable_mib()))
@@ -112,6 +163,19 @@ class RamHeadroom:
     host_available_mib: int | None
 
     @property
+    def cgroup_is_box_scoped(self) -> bool:
+        """Whether this cgroup is large enough that its own arithmetic describes the BOX.
+
+        The single home of the scope test, so a consumer asking WHICH scope answered cannot
+        drift from :attr:`box_watermark_mib`, which asks the same question (#4125). An
+        uncapped cgroup has no scope to judge and answers ``False``.
+        """
+        if self.cgroup_limit_mib is None:
+            return False
+        floor_mib = agent_workload_floor_gib(os.environ.get(AGENT_WORKLOAD_FLOOR_ENV)) * _MIB_PER_GIB
+        return self.cgroup_limit_mib >= floor_mib
+
+    @property
     def box_watermark_mib(self) -> int | None:
         """The reading box-wide watermarks may judge; ``None`` is UNKNOWN, which never brakes.
 
@@ -120,10 +184,21 @@ class RamHeadroom:
         survives only when nothing box-scoped was readable — never as the verdict on a scope,
         which is the permanent brake a fixed cap could never release (#4217).
         """
-        floor_mib = agent_workload_floor_gib(os.environ.get(AGENT_WORKLOAD_FLOOR_ENV)) * _MIB_PER_GIB
-        if self.cgroup_limit_mib is not None and self.cgroup_limit_mib < floor_mib:
+        if self.cgroup_limit_mib is not None and not self.cgroup_is_box_scoped:
             return self.host_available_mib
         return self.available_mib
+
+    @property
+    def box_watermark_cap_gb(self) -> float | None:
+        """The cgroup ceiling :attr:`box_watermark_mib` is bounded by, in GiB, or ``None``.
+
+        ``None`` for an uncapped cgroup AND for an out-of-scope one: the watermark then came
+        from the host, so that cap bounds nothing the box-wide floors judge and naming it
+        would diagnose the wrong container.
+        """
+        if not self.cgroup_is_box_scoped or self.cgroup_limit_mib is None:
+            return None
+        return self.cgroup_limit_mib / _MIB_PER_GIB
 
 
 def read_ram_headroom() -> RamHeadroom:
@@ -154,6 +229,8 @@ __all__ = [
     "RamHeadroom",
     "agent_workload_floor_gib",
     "cgroup_headroom_mib",
+    "cgroup_memory_probe_inert",
+    "cgroup_v2_oom_kills",
     "cgroup_v2_reclaimable_mib",
     "read_ram_headroom",
 ]

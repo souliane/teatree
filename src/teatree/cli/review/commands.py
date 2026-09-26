@@ -2,7 +2,7 @@
 
 Extracted from :mod:`teatree.cli.review` to keep that file under the
 module-health LOC budget after the merge with main reintroduced the
-``on_behalf_post_mode`` doctrine prose. The commands themselves are
+posture doctrine prose. The commands themselves are
 thin shims around :class:`teatree.cli.review.ReviewService`; the
 service class owns the gating + ledger logic.
 """
@@ -23,9 +23,8 @@ def _require_token(repo: str) -> ReviewService:
 
     The token is resolved from the overlay that owns *repo* (souliane/teatree#3793), so
     the service is bound to the target the command named. A FAILED read and an ABSENT
-    token get different messages: only the second is a login problem, and reporting the
-    first as one sends the operator to a re-login that changes nothing
-    (souliane/teatree#3794).
+    token get different messages. Neither may silently inherit the local ``glab``
+    login: writes require an explicit env override or the owning overlay's route.
     """
     # Bootstrap Django (idempotent) before the on-behalf pre-gate (#960)
     # touches the ORM. CLI module stays Django-free at import time so
@@ -38,7 +37,10 @@ def _require_token(repo: str) -> ReviewService:
         typer.echo(f"Could not resolve the review target for {repo}: {outcome.error}")
         raise typer.Exit(code=1)
     if not outcome.value:
-        typer.echo("No GitLab token found. Run: glab auth login")
+        typer.echo(
+            "No GitLab token found for review. Configure gitlab_token_pass_key for the owning overlay "
+            "or explicitly export GITLAB_TOKEN."
+        )
         raise typer.Exit(code=1)
     return ReviewService(outcome.value, repo=repo)
 
@@ -315,11 +317,11 @@ def approve(
 
     Precondition: a review note/discussion authored by your identity must
     already exist on the MR (review before approve). Gated by
-    `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
+    the active posture (BLOCK under a forbidding one,
     souliane/teatree#960/#1013) — record an approval via
     ``t3 review approve-on-behalf <repo>!<mr> approve --approver
-    <user-id>`` to satisfy the gate without switching mode to
-    `immediate`.
+    <user-id>`` to satisfy the gate without selecting a permitting
+    posture.
     """
     service = _require_token(repo)
     msg, code = service.approve(repo, mr)
@@ -336,11 +338,11 @@ def unapprove(
     """Revoke your approval on a GitLab MR.
 
     No review precondition (revoking is the safe direction). Gated by
-    `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
+    the active posture (BLOCK under a forbidding one,
     souliane/teatree#960/#1013) — record an approval via
     ``t3 review approve-on-behalf <repo>!<mr> unapprove --approver
-    <user-id>`` to satisfy the gate without switching mode to
-    `immediate`.
+    <user-id>`` to satisfy the gate without selecting a permitting
+    posture.
     """
     service = _require_token(repo)
     msg, code = service.unapprove(repo, mr)

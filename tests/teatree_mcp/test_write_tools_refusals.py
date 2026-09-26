@@ -55,7 +55,6 @@ _DELEGATION_ATTACK_KEYS = (
     "substrate_self_signoff",
     "trusted_issue_authors",
     "send_proxy_allowlist",
-    "on_behalf_post_mode",
     "independent_reviewer_identities",
     "autonomy",
 )

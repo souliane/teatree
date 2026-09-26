@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
+from teatree.core.overlays.repo_ownership import owning_overlay_for_repo
 from teatree.hooks import term_match
 from teatree.utils.throttled_log import warn_throttled
 
@@ -167,7 +168,7 @@ def _target_is_public(target_repo: str, forge: str) -> bool:
         return True
 
 
-def _registered_overlay_rules_union() -> tuple[list[str], list[str]]:
+def _registered_overlay_rules_union() -> tuple[list[str], list[str]] | None:
     """Every registered overlay's privacy rules, unioned — the AMBIGUITY fail-safe.
 
     When more than one overlay is installed and nothing disambiguates them,
@@ -177,17 +178,22 @@ def _registered_overlay_rules_union() -> tuple[list[str], list[str]]:
     is also installed. Unioning can only refuse MORE, never leak more, which is
     the only safe direction for a confidentiality boundary.
 
-    An EMPTY registry genuinely has no rules to lose, and a registry that cannot
-    be enumerated has none to offer, so both yield ``([], [])`` — the built-in
-    quote anchors stay the floor and the gate never goes inert.
+    An EMPTY registry genuinely has no rules to lose, so it yields ``([], [])``. A
+    registry or overlay config that cannot be READ may be hiding exactly the term
+    that matters, so it yields ``None`` and the public scan fails CLOSED.
     """
     try:
         configs = [overlay.config for overlay in get_all_overlays().values()]
         redact = [term for config in configs for term in config.privacy_redact_terms]
         block = [pattern for config in configs for pattern in config.privacy_block_patterns]
-    except Exception as exc:  # noqa: BLE001 — an unenumerable registry offers no rules; the built-ins stay the floor.
-        logger.debug("publication privacy gate: overlay registry not enumerable (%s) — built-in detectors only", exc)
-        return [], []
+    except Exception as exc:  # noqa: BLE001 — an unreadable registry fails CLOSED, never scans with the built-ins only.
+        warn_throttled(
+            logger,
+            "privacy_gate:overlay-union-unreadable",
+            "publication privacy gate: overlay registry rules unreadable (%s) — failing CLOSED",
+            exc,
+        )
+        return None
     return list(dict.fromkeys(redact)), list(dict.fromkeys(block))
 
 
@@ -297,13 +303,26 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     CLOSED (scanned). *forge* (``"github"``/``"gitlab"``) routes a bare-slug
     visibility probe to the right tool.
 
-    On a PUBLIC target the scan vocabulary is the overlay's ``privacy_redact_terms``
-    UNIONED with the DB-home ``banned_terms`` list (:func:`_db_banned_terms`) — the
-    latter is where the customer codenames actually live, so scanning only the
-    overlay terms let a banned codename leak to a public forge. Both feed the same
-    whole-token :mod:`teatree.hooks.term_match` matcher via :func:`scan_for_publication`.
+    The overlay whose rules attribute the scan is the one that OWNS *target_repo*
+    (:func:`~teatree.core.overlays.repo_ownership.owning_overlay_for_repo`), not
+    whichever is ambient: on a multi-overlay install a bare resolution RAISES on every
+    send, and the #1295 union that caught it also swallowed a genuine per-overlay read
+    failure into ``([], [])`` — scanning a public target with the built-in detectors
+    only. Naming the owner restores the fail-CLOSED read for the overlay that actually
+    governs the target.
 
-    Two fail-CLOSED refusals guard a public target: when the overlay's privacy
+    On a PUBLIC target the scan vocabulary is that overlay's ``privacy_redact_terms``
+    UNIONED with every registered overlay's (:func:`_registered_overlay_rules_union`)
+    and with the DB-home ``banned_terms`` list (:func:`_db_banned_terms`). The
+    registry union is deliberate and unchanged by the attribution above: a term one
+    overlay marks private does not stop being private because a sibling overlay owns
+    the destination, and unioning can only refuse MORE, never leak more (#1295). The
+    banned-terms list is where the customer codenames actually live, so scanning only
+    overlay terms let a banned codename leak to a public forge. All three feed the
+    same whole-token :mod:`teatree.hooks.term_match` matcher via
+    :func:`scan_for_publication`.
+
+    Two fail-CLOSED refusals guard a public target: when the owning overlay's privacy
     rules cannot be resolved (:func:`overlay_privacy_rules` returns ``None``) the
     gate REFUSES with a synthetic ``overlay-rules-unresolvable`` match, and when the
     banned-terms source is unreadable (:func:`_db_banned_terms` returns ``None``) it
@@ -313,7 +332,7 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
     """
     if not _target_is_public(target_repo, forge):
         return PrivacyGateResult(target_repo=target_repo, is_public=False)
-    rules = overlay_privacy_rules()
+    rules = overlay_privacy_rules(owning_overlay_for_repo(target_repo, forge=forge))
     if rules is None:
         warn_throttled(
             logger,
@@ -341,13 +360,21 @@ def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> Priva
             is_public=True,
             matches=(PrivacyMatch(pattern_name="banned-terms-unresolvable", matched_text="", position=0),),
         )
+    union = _registered_overlay_rules_union()
+    if union is None:
+        return PrivacyGateResult(
+            target_repo=target_repo,
+            is_public=True,
+            matches=(PrivacyMatch(pattern_name="overlay-rules-unresolvable", matched_text="", position=0),),
+        )
     redact_terms, block_patterns = rules
+    union_redact, union_block = union
     return scan_for_publication(
         text=text,
         target_repo=target_repo,
         public_repos=[target_repo],
-        redact_terms=list(dict.fromkeys([*redact_terms, *banned])),
-        block_patterns=block_patterns,
+        redact_terms=list(dict.fromkeys([*redact_terms, *union_redact, *banned])),
+        block_patterns=list(dict.fromkeys([*block_patterns, *union_block])),
     )
 
 

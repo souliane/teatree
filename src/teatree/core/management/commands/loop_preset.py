@@ -12,13 +12,13 @@ import re
 from typing import IO, Annotated, Any, NoReturn, cast
 
 import typer
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django_typer.management import TyperCommand, command
 
 from teatree.core.machine_output import emit
 from teatree.core.mode_resolution import clear_mode_override, resolve_active_mode, set_mode_override
 from teatree.core.models import Loop, Mode
-from teatree.loop.preset_resolution import next_boundary
 from teatree.loops.enable_verdict import effective_verdicts
 from teatree.loops.preset_admin import delete_preset
 from teatree.loops.preset_editing import PresetEditError, apply_entry_edits
@@ -46,6 +46,12 @@ def _parse_expiry(raw: str) -> dt.datetime | None:
         return timezone.now() + _parse_duration(raw)
     except ValueError:
         return _parse_iso(raw)
+
+
+def _refusal_text(exc: Exception) -> str:
+    """A ``ValidationError``'s message without Django's list-of-one wrapping."""
+    messages = getattr(exc, "messages", None)
+    return " ".join(messages) if messages else str(exc)
 
 
 def _resolved_line() -> str:
@@ -76,8 +82,7 @@ class Command(TyperCommand):
             lines = ["presets:"]
             for preset in presets:
                 marker = " *ACTIVE*" if preset.name == active_name else ""
-                scope = f" scope={','.join(preset.overlay_scope_names)}" if preset.overlay_scope_names else ""
-                lines.append(f"  {preset.name:<16} {preset.entry_count} entries{scope}{marker}")
+                lines.append(f"  {preset.name:<16} {preset.entry_count} entries{marker}")
                 if preset.description:
                     lines.append(f"      {preset.description}")
             human = "\n".join(lines)
@@ -101,31 +106,43 @@ class Command(TyperCommand):
         self,
         name: Annotated[str, typer.Argument(help="Preset to activate as a manual override.")],
         *,
-        expiry: Annotated[str, typer.Option("--for", "--until", help="TTL (2h/30m/1d) or ISO-8601 instant.")] = "",
-        hold: Annotated[bool, typer.Option("--hold", help="Sticky: hold until explicitly cleared.")] = False,
-        reason: Annotated[str, typer.Option("--reason", help="Audit note on the active-preset WHY line.")] = "",
+        lift_by: Annotated[
+            str, typer.Option("--lift-by", help="When you expect to lift it (2h/30m/1d or ISO-8601) — advisory.")
+        ] = "",
+        reason: Annotated[str, typer.Option("--reason", help="Why this posture is in force. Required.")] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Activate *name* as the L3 manual override (default: until the next scheduled boundary).
+        """Activate *name* as the manual override — it holds until someone clears it.
 
         Routes through :func:`set_mode_override`, the ONE override write chokepoint the
-        dash switch also uses.
+        dash switch also uses. Nothing expires it: ``--lift-by`` is what the override
+        watcher reminds against, never a TTL (A5/A7).
         """
         if Mode.objects.by_name(name) is None:
             self._refuse(f"no preset named {name!r} — run `t3 loop preset list`", json_output=json_output)
-        until_dt = self._resolve_until(expiry=expiry, hold=hold, json_output=json_output)
-        set_mode_override(name, until=until_dt, reason=reason)
-        window = "held until cleared" if until_dt is None else f"until {until_dt.isoformat()}"
+        expected_lift_at = self._resolve_lift_by(lift_by, json_output=json_output)
+        try:
+            set_mode_override(name, reason=reason, expected_lift_at=expected_lift_at)
+        except (ValueError, ValidationError) as exc:
+            self._refuse(_refusal_text(exc), json_output=json_output)
+        lift = "" if expected_lift_at is None else f", lift by {expected_lift_at.isoformat()}"
         self._emit(
-            {"preset": name, "until": until_dt.isoformat() if until_dt else None, "reason": reason},
-            f"loop preset {name!r} active ({window}). {_resolved_line()}",
+            {
+                "preset": name,
+                "expected_lift_at": expected_lift_at.isoformat() if expected_lift_at else None,
+                "reason": reason,
+            },
+            f"loop preset {name!r} active ({reason}{lift}). {_resolved_line()}",
             json_output=json_output,
         )
 
     @command(name="auto")
     def auto(self, *, json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False) -> None:
         """Clear the manual override so the active schedule / default mode decides again."""
-        cleared = clear_mode_override()
+        try:
+            cleared = clear_mode_override()
+        except ValidationError as exc:
+            self._refuse(_refusal_text(exc), json_output=json_output)
         message = (
             "cleared the manual override — the schedule decides again." if cleared else "no manual override was set."
         )
@@ -138,16 +155,14 @@ class Command(TyperCommand):
         *,
         set_: Annotated[list[str], typer.Option("--set", help="Entry edit <loop>=on|off (repeatable).")] = [],  # noqa: B006 — typer Option default — idiomatic mutable default for a repeatable flag
         description: Annotated[str, typer.Option("--description", help="Human description.")] = "",
-        scope: Annotated[str, typer.Option("--scope", help="Comma-separated overlay allowlist.")] = "",
     ) -> None:
-        """Create a new preset from ``--set`` entries and an optional overlay scope."""
+        """Create a new preset from its ``--set`` entries."""
         if Mode.objects.by_name(name) is not None:
             self._refuse(f"preset {name!r} already exists — use `edit`", json_output=False)
         preset = Mode.objects.create(
             name=name,
             entries=self._entries_from_edits({}, set_, preset_name=name, json_output=False),
             description=description,
-            overlay_scope=_scope_list(scope),
         )
         self._emit_preset_saved(preset, json_output=False)
 
@@ -158,17 +173,14 @@ class Command(TyperCommand):
         *,
         set_: Annotated[list[str], typer.Option("--set", help="Entry edit <loop>=on|off|inherit (repeatable).")] = [],  # noqa: B006 — typer Option default — idiomatic mutable default for a repeatable flag
         description: Annotated[str, typer.Option("--description", help="Replace the description.")] = "",
-        scope: Annotated[str, typer.Option("--scope", help="Replace the overlay allowlist.")] = "",
     ) -> None:
-        """Edit a preset's entries / description / scope in place."""
+        """Edit a preset's entries and description in place."""
         preset = Mode.objects.by_name(name)
         if preset is None:
             self._refuse(f"no preset named {name!r}", json_output=False)
         preset.entries = self._entries_from_edits(preset.entries, set_, preset_name=preset.name, json_output=False)
         if description:
             preset.description = description
-        if scope:
-            preset.overlay_scope = _scope_list(scope)
         preset.save()
         self._emit_preset_saved(preset, json_output=False)
 
@@ -233,16 +245,13 @@ class Command(TyperCommand):
             json_output=json_output,
         )
 
-    def _resolve_until(self, *, expiry: str, hold: bool, json_output: bool) -> dt.datetime | None:
-        if hold:
+    def _resolve_lift_by(self, lift_by: str, *, json_output: bool) -> dt.datetime | None:
+        if not lift_by:
             return None
-        if expiry:
-            parsed = _parse_expiry(expiry)
-            if parsed is None:
-                msg = f"invalid --for/--until {expiry!r}; use a TTL (2h/30m/1d) or ISO-8601"
-                self._refuse(msg, json_output=json_output)
-            return parsed
-        return next_boundary()
+        parsed = _parse_expiry(lift_by)
+        if parsed is None:
+            self._refuse(f"invalid --lift-by {lift_by!r}; use a TTL (2h/30m/1d) or ISO-8601", json_output=json_output)
+        return parsed
 
     def _entries_from_edits(
         self, entries: object, edits: list[str], *, preset_name: str, json_output: bool
@@ -283,7 +292,6 @@ def _preset_row(preset: Mode, active_name: str) -> dict[str, Any]:
     return {
         "name": preset.name,
         "description": preset.description,
-        "scope": preset.overlay_scope_names,
         "entry_count": preset.entry_count,
         "active": preset.name == active_name,
     }
@@ -294,7 +302,6 @@ def _preset_detail(preset: Mode, unknown: list[str]) -> dict[str, Any]:
         "name": preset.name,
         "description": preset.description,
         "entries": preset.entries,
-        "overlay_scope": preset.overlay_scope_names,
         "unknown_loops": unknown,
     }
 
@@ -308,10 +315,6 @@ def _summary_payload(summary: object) -> dict[str, Any] | None:
         "reason": summary.reason,  # ty: ignore[unresolved-attribute]
         "until": summary.until.isoformat() if summary.until else None,  # ty: ignore[unresolved-attribute]
     }
-
-
-def _scope_list(scope: str) -> list[str]:
-    return [part.strip() for part in scope.split(",") if part.strip()]
 
 
 def _parse_iso(raw: str) -> dt.datetime | None:

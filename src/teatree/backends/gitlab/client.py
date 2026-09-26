@@ -165,7 +165,10 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     ) -> list[RawAPIDict]:
         return self._client.list_open_mrs_as_reviewer(reviewer, updated_after=updated_after)
 
-    def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
+    def list_assigned_issues(self, *, assignee: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
+        """Open issues assigned to *assignee*, scoped to *repo_slugs* when supplied."""
+        if repo_slugs:
+            return self._client.list_open_issues_for_assignee(assignee, project_slugs=repo_slugs)
         return self._client.list_open_issues_for_assignee(assignee)
 
     def list_authored_issues(self, *, author: str, repo_slugs: tuple[str, ...] = ()) -> list[RawAPIDict]:
@@ -571,6 +574,10 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
             return DraftState.DRAFT
         return DraftState.NOT_DRAFT
 
+    def fetch_open_pr_url_for_branch(self, *, repo: str, branch: str) -> str | None:
+        """The OPEN MR sourced from *branch*: the url, ``""`` for none, ``None`` for unknown."""
+        return _pr_reads.open_mr_url_for_branch(self._client, self._resolve_project, repo=repo, branch=branch)
+
     def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
         return self._merge_rpc().fetch_pr_author(slug=slug, pr_id=pr_id)
 
@@ -586,5 +593,9 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
-        return self._merge_rpc().merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
+    def merge_pr_squash_bound(
+        self, *, slug: str, pr_id: int, expected_head_oid: str, squash: bool = True
+    ) -> ForgeMergeResult:
+        return self._merge_rpc().merge_pr_squash_bound(
+            slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid, squash=squash
+        )

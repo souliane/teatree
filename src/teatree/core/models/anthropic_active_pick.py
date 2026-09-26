@@ -25,6 +25,16 @@ class AnthropicActivePickManager(models.Manager["AnthropicActivePick"]):
         row = self.filter(kind=kind, scope=scope).first()
         return row.pass_path if row is not None else None
 
+    def unpin_account(self, pass_path: str) -> int:
+        """Drop every scope's pin on *pass_path*, returning how many were removed.
+
+        A spent account is wrong for EVERY scope at once, so the sweep DELETES rather than
+        re-picks: each scope then re-selects from its own configured list on its own next
+        call, instead of having a pick fabricated here for one that may never dispatch again.
+        """
+        removed, _ = self.filter(pass_path=pass_path).delete()
+        return removed
+
     def set_pick(self, kind: str, scope: str, pass_path: str) -> "AnthropicActivePick":
         """Pin *pass_path* as the sticky pick for *kind* in *scope* (idempotent upsert)."""
         row, _ = self.update_or_create(

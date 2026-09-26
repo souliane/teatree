@@ -60,7 +60,7 @@ def test_noop_fixture_cannot_satisfy(tmp_path: Path) -> None:
 
 
 def test_removing_matchers_turns_fail_green(tmp_path: Path) -> None:
-    toothless = dataclasses.replace(_spec(), matchers=())
+    toothless = dataclasses.replace(_spec(), matchers=(), judge=None)
     assert _grade(toothless, "fail", tmp_path) is True, (
         f"with the matchers removed {_NAME}'s _fail fixture must go GREEN — else it fails for a "
         "reason unrelated to the matchers and the teeth proof is moot"

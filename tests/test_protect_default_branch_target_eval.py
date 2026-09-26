@@ -125,6 +125,22 @@ class TestProtectedBranchManagedScoping:
         assert out["permissionDecision"] == "deny"
         assert "protected branch" in out["permissionDecisionReason"]
 
+    def test_a_read_of_managed_source_on_main_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Reading the deploy clone's skills and BLUEPRINT on main is how agents work at all."""
+        repo = _repo_on_branch(tmp_path, "main", remote=_MANAGED_REMOTE)
+        read = {"tool_name": "Read", "tool_input": {"file_path": str(repo / "tracked.py")}}
+        assert handle_protect_default_branch(read) is False
+        assert capsys.readouterr().out == ""
+
+    def test_the_manifest_never_routes_read_to_pretooluse(self) -> None:
+        manifest = json.loads(
+            (Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        routed = {tool for entry in manifest["hooks"]["PreToolUse"] for tool in entry.get("matcher", "").split("|")}
+        assert "Read" not in routed
+
     def test_managed_repo_new_source_file_on_main_is_blocked(self, tmp_path: Path) -> None:
         repo = _repo_on_branch(tmp_path, "main", remote=_MANAGED_REMOTE)
         assert handle_protect_default_branch(_write(str(repo / "newfile.py"))) is True

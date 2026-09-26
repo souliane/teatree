@@ -82,7 +82,7 @@ def drain_stack_queue_item(payload: ActionPayload) -> None:
 
     On a free slot: fire ``Worktree.start_services`` and mark the queue item
     READY. On a still-full cap: reschedule the next Fibonacci attempt (or mark
-    DEAD once ``local_stack_queue_max_attempts`` is exhausted). It only ever
+    DEAD once ``MAX_QUEUE_ATTEMPTS`` is exhausted). It only ever
     advances the queued worktree's OWN FSM — never another ticket's stack.
     """
     item_id = payload.get("queue_item_id")
@@ -96,7 +96,6 @@ def drain_stack_queue_item(payload: ActionPayload) -> None:
         if item.status in _TERMINAL_QUEUE_STATES:
             return
         worktree = item.worktree
-        max_attempts = int(get_effective_settings().local_stack_queue_max_attempts)
         limit = resolve_max_concurrent_local_stacks()
         # #2949: resource-aware admission — on a capped overlay, hold the drain
         # while host RAM is over the ceiling even if a count slot is free, so
@@ -105,7 +104,7 @@ def drain_stack_queue_item(payload: ActionPayload) -> None:
         if limit > 0:
             verdict = check_provision_admission()
             if not verdict.ok:
-                item.schedule_next_attempt(error=f"ram_pressure: {verdict.reason}"[:500], max_attempts=max_attempts)
+                item.schedule_next_attempt(error=f"ram_pressure: {verdict.reason}"[:500])
                 logger.info(
                     "drain_stack_queue_item: RAM over ceiling — backoff for item %s (attempt %s)",
                     item_id,
@@ -115,7 +114,7 @@ def drain_stack_queue_item(payload: ActionPayload) -> None:
         try:
             check_local_stack_limit(worktree, limit=limit)
         except LocalStackLimitExceededError as exc:
-            item.schedule_next_attempt(error=str(exc)[:500], max_attempts=max_attempts)
+            item.schedule_next_attempt(error=str(exc)[:500])
             logger.info(
                 "drain_stack_queue_item: still full — backoff for item %s (attempt %s)",
                 item_id,

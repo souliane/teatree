@@ -2,8 +2,8 @@
 
 The self-update scanner fast-forwards an editable clone but never
 re-anchors the running interpreter on the new code — a ``git pull`` alone
-leaves the live process importing the old modules. When
-``auto_update_reinstall`` is enabled the scanner records a
+leaves the live process importing the old modules. When a pull actually
+updates the clone, the scanner records a
 :class:`teatree.core.models.pending_reinstall.PendingReinstall` row; this
 module applies it.
 

@@ -63,10 +63,55 @@ class TestGitEnvStrippedAtDispatch(TestCase):
         assert task.status == Task.Status.COMPLETED
 
 
+class TestVirtualEnvStrippedAtDispatch(TestCase):
+    """A dispatched agent never inherits the dispatcher's ``VIRTUAL_ENV``.
+
+    ``uv pip`` installs into ``VIRTUAL_ENV`` ahead of the project venv, so an agent spawned
+    from a ``uv run`` parent that editable-installs its own checkout writes a ``.pth`` into
+    the parent's SHARED venv — which dangles, and breaks every import through it, the moment
+    that checkout is reaped.
+    """
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = planned_ticket()
+
+    def test_child_inherits_no_virtual_env_and_it_is_restored(self) -> None:
+        captured: dict[str, object] = {}
+
+        def _make_client(*, options: object = None, **_: object) -> FakeHarnessSession:
+            captured["os_env"] = os.environ.get("VIRTUAL_ENV")
+            captured["options_env"] = (getattr(options, "env", None) or {}).get("VIRTUAL_ENV")
+            return FakeHarnessSession(
+                success_stream({"summary": "ok", "files_modified": [{"path": "src/x.py", "action": "modified"}]})
+            )
+
+        snapshot = runner_mod.TaskUsage(turns=0, cost_usd=0.0)
+        with (
+            patch.dict(os.environ, {"VIRTUAL_ENV": "/shared/.venv"}, clear=False),
+            patch.object(runner_mod.shutil, "which", return_value="/usr/bin/claude"),
+            patch.object(harness_mod, "ClaudeSDKClient", _make_client),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
+        ):
+            session = Session.objects.create(ticket=self.ticket, agent_id="venv-1")
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            run_agent(task, phase="coding", overlay_skill_metadata={})
+
+            assert captured == {"os_env": None, "options_env": None}
+            assert os.environ["VIRTUAL_ENV"] == "/shared/.venv"
+
+    def test_credential_child_env_carries_no_virtual_env(self) -> None:
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "key-y", "VIRTUAL_ENV": "/shared/.venv"}, clear=False):
+            env = _provider_child_env(AgentHarnessProvider.API_KEY).env
+
+        assert env is not None
+        assert "VIRTUAL_ENV" not in env
+
+
 class TestCredentialChildEnvStripsGitOverrides(TestCase):
     def test_api_key_child_env_carries_the_token_but_no_git_overrides(self) -> None:
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "key-y", "GIT_DIR": "/outer/.git"}, clear=False):
-            env = _provider_child_env(AgentHarnessProvider.API_KEY)
+            env = _provider_child_env(AgentHarnessProvider.API_KEY).env
 
         assert env is not None
         assert env["ANTHROPIC_API_KEY"] == "key-y"

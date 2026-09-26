@@ -29,10 +29,10 @@ from teatree.eval.backends import API_BACKEND
 from teatree.eval.green_proof import evaluate_green_proof
 from teatree.eval.harness_failure import HOOKS_NOT_REGISTERED_REASON, measured_nothing
 from teatree.eval.ladder import LadderPolicy, run_escalation_ladder
-from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, EvalRun, EvalSpec
+from teatree.eval.models import HEADLESS_SURFACE, INTERACTIVE_SURFACE, EvalRun, EvalSpec, Matcher
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate
-from teatree.eval.summary_json import render_summary_json
+from teatree.eval.summary_json import render_summary_json, scenario_version
 
 _GATES = SingleTrialGates(persist=False, baseline=False, gate_regressions=False, gate_cost_regression=False)
 
@@ -47,7 +47,7 @@ def _spec(name: str, *, surface: str = INTERACTIVE_SURFACE) -> EvalSpec:
         scenario=f"scenario {name}",
         agent_path="skills/rules/SKILL.md",
         prompt="do the thing",
-        matchers=(),
+        matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="required"),),
         source_path=Path("/tmp/spec.yaml"),
         surface=surface,
         production_hooks=True,
@@ -60,7 +60,7 @@ def _run(name: str, *, reason: str) -> EvalRun:
         tool_calls=(),
         text_blocks=(),
         terminal_reason=reason,
-        is_error=True,
+        is_error=reason != "success",
         raw_stdout="",
         raw_stderr="",
         # Non-zero so the unmetered-$0 guard never fires ahead of the one under test.
@@ -257,10 +257,16 @@ class TestTheSerializedAdvisoryFlag:
     # thing under test — at 0 or >1 the coverage arm reds both cases and the second
     # assertion would pass for a reason that has nothing to do with #3922.
     def test_the_green_proof_reds_on_a_harness_failure(self) -> None:
-        assert not evaluate_green_proof(_payload([_result("chip")]), expected_total=1).is_green
+        assert not evaluate_green_proof(
+            _payload([_result("chip")]), expected={"chip": scenario_version(_spec("chip"))}, expected_sha="deadbeef"
+        ).is_green
 
     def test_the_green_proof_still_exempts_an_ordinary_interactive_red(self) -> None:
-        assert evaluate_green_proof(_payload([_result("chip", reason="success")]), expected_total=1).is_green
+        assert evaluate_green_proof(
+            _payload([_result("chip", reason="success")]),
+            expected={"chip": scenario_version(_spec("chip"))},
+            expected_sha="deadbeef",
+        ).is_green
 
 
 class TestTheEscalationVerdict:

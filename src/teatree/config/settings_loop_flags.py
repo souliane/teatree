@@ -19,11 +19,6 @@ class _LoopFlagAndCredentialSettings:
 
     GROUP_PATH: ClassVar[tuple[str, ...]] = ("Loops", "Kill switches & credentials")
 
-    # #1548 The master gate for the always-on issue-implementer loop. Flipped ON by
-    # #3895 (owner-authorised autonomous-by-default posture): the factory intakes
-    # admitted issues without an operator opt-in. Flip OFF to make the loop a hard
-    # NO-OP. The per-issue admission decision table still applies.
-    issue_implementer_enabled: bool = True
     # #3634 The owner-applied ADMISSION label — the admit-label rule of the intake decision
     # table, and the label-scoped discovery query. It is the ONLY route by which an
     # UNTRUSTED author's issue reaches the factory; a trusted author needs no label
@@ -49,11 +44,6 @@ class _LoopFlagAndCredentialSettings:
     # resolve_intake_concurrency, which otherwise derives the live limit from
     # observed headroom and may exceed this number.
     issue_implementer_max_concurrent: int = 3
-    # The intake scanner's OWN deadline for its candidate walk. Below the scan phase's
-    # 60s pool deadline on purpose: past that one the thread is abandoned rather than
-    # stopped, so it keeps mutating rows after the tick ended and records no resume
-    # point for the next pass (#4466).
-    issue_intake_pass_budget_seconds: float = 45.0
     # Marker labels for an UMBRELLA/epic parent intake never claims (#4105) — data, not a
     # constant, because which marker a deployment uses is its own policy. Emptying it
     # turns the LABEL half off; the structural half still declines an unlabelled epic.
@@ -82,9 +72,8 @@ class _LoopFlagAndCredentialSettings:
     # with ``claim=True`` so the lead does the thin per-unit claim+spawn the
     # manifest already computes (the #786-N4 claim-is-the-spawn boundary). When
     # off (the default) the dormant ``claim=False`` path is kept EXACTLY, so the
-    # loop's behaviour is unchanged. Mirrors ``issue_implementer_enabled``;
-    # per-overlay overridable and ``T3_ORCHESTRATE_CLAIM_ENABLED`` env wins over
-    # both.
+    # loop's behaviour is unchanged. Per-overlay overridable, and
+    # ``T3_ORCHESTRATE_CLAIM_ENABLED`` env wins over both.
     orchestrate_claim_enabled: bool = False
     # T4-PR-1 — the OFF switch the autoresearch outer-loop runtime ships behind,
     # and the canonical first entry of the ``FEATURE_FLAGS`` lifecycle registry
@@ -105,26 +94,6 @@ class _LoopFlagAndCredentialSettings:
     # self-modifies at default resolution. DB-home (#1775), per-overlay overridable —
     # flip OFF to disable directive intake entirely.
     directive_loop_enabled: bool = True
-    # North-star PR-7 — the directive-loop VERIFYING horizon in days: after the ratified
-    # activation is applied, the five evidence classes (activation live, acceptance green,
-    # behavior probe clean, no collateral regression, zero open critic findings) are
-    # judged once this many days elapse. DB-home, per-overlay overridable. Inert while
-    # ``directive_loop_enabled`` is off (nothing reaches VERIFYING).
-    directive_verify_days: int = 7
-    # #3649 — how many directives one tick may advance through the INERT pre-admission
-    # arc (interpret → clarify → ratify-ask → admit). Execution stays one directive per
-    # tick regardless: this bounds only the arc that writes nothing and terminates at the
-    # human ratify gate, so a backlog reaches the owner in a bounded number of ticks
-    # instead of one directive per tick. DB-home, per-overlay overridable.
-    directive_intake_per_tick: int = 25
-    # T4-PR-3 — the autoresearch outer-loop runtime bounds (guard chain G4). Inert
-    # while the flag is off: the measurement horizon after an experiment merges,
-    # the max experiments admitted per rolling 7-day window, and the convergence
-    # brake — after this many consecutive non-KEPT decisions the loop parks itself
-    # (a DeferredQuestion) instead of proposing a fourth. Per-overlay overridable.
-    outer_loop_measure_days: int = 7
-    outer_loop_max_per_week: int = 1
-    outer_loop_stop_after_consecutive_failures: int = 3
     # T4-PR-2 — the SIG-PR-2 recipe/score seam OFF switch (a DARK ``FEATURE_FLAGS``
     # entry). Ships OFF: ``t3 <overlay> recipe score`` still COMPUTES read-only (for
     # calibrating recipe weights against real ledger data pre-enable), but ``--record``
@@ -132,6 +101,8 @@ class _LoopFlagAndCredentialSettings:
     # is queued, and ``build_server()`` does not register the MCP ``factory_score`` tool
     # — the outer loop physically has no metric surface. DB-home, per-overlay overridable.
     factory_score_enabled: bool = False
+    # Opt-in colleague nagging, read by more than one loop; ships off until its owner decides.
+    review_nag_enabled: bool = False
     # T4-PR-2 — the human-approved recipe sha (``config/factory_recipe.recipe_sha``).
     # A scored read stamps ``recipe_approved`` by comparing the committed recipe's sha
     # to this; unset (the default) means no recipe is approved, so every payload is
@@ -145,62 +116,13 @@ class _LoopFlagAndCredentialSettings:
     # per-overlay overridable, ``T3_BOOST_CONCURRENCY`` env wins; set via
     # ``t3 <overlay> wip boost N``.
     boost_concurrency: int = 0
-    # #2122 Opt-in, default-OFF gate for the issue-disposition triage scanner.
-    # When False (the default) no scanner is built, so the loop emits nothing
-    # and never auto-closes an issue. The scanner only CLOSES high-confidence
-    # dead noise (already-shipped / exact-duplicate / obsolete) — it is
-    # physically unable to enqueue work, so flipping it on cannot grow the
-    # backlog queue.
-    auto_disposition_enabled: bool = False
-    # Upper bound on close-candidate signals emitted per tick — keeps an
-    # auto-close pass bounded and reviewable.
-    auto_disposition_max_closes_per_tick: int = 5
-    # Master gate for the needs-triage assessor loop. Default ON: the scanner
-    # discovers OPEN needs-triage issues and queues ONE shell-denied assessment
-    # task behind an ask-gate — it performs ZERO host writes and NOTHING acts
-    # autonomously (per-item approval via t3:triaging-issues). Flip OFF to make the
-    # loop emit nothing.
-    triage_assessor_enabled: bool = True
-    # Opt-in, default-OFF gate for the MR-triage surveyor. When False (the default)
-    # no scanner is built, so the loop emits nothing. When on, the scanner walks the
-    # operator's own open MRs, runs each through the pure triage ladder, and SURFACES
-    # the verdict -- it posts nothing and dispatches nothing, so turning it on cannot
-    # produce a colleague-visible action.
-    mr_triage_enabled: bool = False
-    # Upper bound on verdicts surfaced per tick -- keeps one pass reviewable.
-    mr_triage_max_mrs_per_tick: int = 20
-    # Min interval between assessment passes (the scanner self-gates on this).
-    triage_assessor_cadence_hours: int = 24
-    # Upper bound on issues serialized into one queued assessment task — keeps the
-    # batch bounded and the DM reviewable.
-    triage_assessor_max_issues_per_tick: int = 10
-    # Directive #2 — the periodic DB-backup scanner's config surface (the knobs
-    # ship ahead of the Unit-18 scanner that reads them, so a later PR wires the
-    # loop behind a governed, tested config seam rather than adding knobs and
-    # behaviour in one risky change). ``db_backup_disabled`` is the escape-hatch
-    # kill-switch (default OFF = the scanner runs once wired); ``db_backup_cadence_hours``
-    # is the min interval between backup passes; ``db_backup_retention_days`` is how
-    # long a backup artifact is kept before the pass prunes it. A non-positive
-    # cadence / retention FAILS SAFE to the default at read time (see the registry
-    # parsers) so the "keep at least a week of backups" bound cannot be mistyped
-    # away to 0 (which would prune every backup immediately). All three are
-    # DB-home, per-overlay overridable.
-    db_backup_disabled: bool = False
-    db_backup_cadence_hours: int = 24
+    # Directive #2 — the periodic DB-backup scanner's config surface.
+    # ``db_backup_retention_days`` is how long a backup artifact is kept before the pass
+    # prunes it. A non-positive retention FAILS SAFE to the default at read time (see the
+    # registry parsers) so the "keep at least a week of backups" bound cannot be mistyped
+    # away to 0 (which would prune every backup immediately). The cadence is the Loop
+    # row's ``daily_at`` anchor, not a second setting. DB-home, per-overlay overridable.
     db_backup_retention_days: int = 7
-    # Directive #3 — idle usage-window auto-recovery, a SETTLING ``FEATURE_FLAGS``
-    # entry (graduated DARK->SETTLING by #3691, default ON). When ON (the default) a
-    # Claude usage-window limit (~5h session / 7-day weekly) PARKS the task (returns it
-    # to the queue with a ``not_before`` at the window's re-arm instant) instead of
-    # failing, an admission guard quietly parks further LLM dispatches on the exhausted
-    # lane, and the self-rescheduling ``usage_window_recovery`` loop-timer chain clears
-    # the window + releases the parked tasks + pumps the loop at reset — unattended, no
-    # OS cron. So a fresh deploy self-recovers from an exhausted usage window rather than
-    # idling until a human intervenes. OFF restores the pre-graduation behaviour: a limit
-    # is recorded as a terminal FAILED attempt — no park, no admission guard, no recovery
-    # chain. Survives as a per-overlay escape hatch during the soak. DB-home (#1775),
-    # per-overlay overridable.
-    limit_autorecovery_enabled: bool = True
     # #3201 PR-3b — the OFF switch the CI-eval self-heal AUTONOMOUS FIXER ships
     # behind, and a DARK ``FEATURE_FLAGS`` entry. Ships behaviorally inert: the
     # ``ci_eval_heal`` loop stays OBSERVE-ONLY (dispatch a behavioral eval, poll,
@@ -239,17 +161,9 @@ class _LoopFlagAndCredentialSettings:
     # from the ``ConfigSetting`` store + its ``T3_*`` env layer where one is
     # registered in ``ENV_SETTING_OVERRIDES``, never from a bespoke
     # ``os.environ.get`` read. Set via ``t3 <overlay> config_setting set <key>``.
-    #
-    # GitLab-approval poll scanner (formerly ``TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED``).
-    # Default off — poll-driven and overlapping with the webhook path.
-    gitlab_approval_scanner_enabled: bool = False
     # Pass ``--plugin-dir`` to the launched Claude Code agent so retro may edit
     # core plugin files (formerly ``T3_CONTRIBUTE``). ``T3_CONTRIBUTE`` env wins.
     contribute_plugin_dir: bool = False
-    # Enable the dream command's eval-proposal phase on the manual ``run`` path
-    # (formerly ``T3_DREAM_PROPOSE_EVALS``). The cadence-driven ``tick`` path has
-    # its own seam and does not route through this field.
-    dream_propose_evals: bool = False
     # Fetch PR/issue titles to enrich a prompt before trigger matching (formerly
     # ``T3_HOOK_FETCH_TITLES``). Default on. ``T3_HOOK_FETCH_TITLES`` env wins;
     # the UserPromptSubmit hook runs pre-Django, so there the DB tier is skipped

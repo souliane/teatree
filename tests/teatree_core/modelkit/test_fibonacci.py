@@ -6,7 +6,12 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.modelkit.fibonacci import BACKOFF_BASE_MINUTES, fibonacci_minutes, fibonacci_step
+from teatree.core.modelkit.fibonacci import (
+    BACKOFF_BASE_MINUTES,
+    fibonacci_bump_index,
+    fibonacci_minutes,
+    fibonacci_step,
+)
 from teatree.core.models import LocalStackQueueItem, Ticket, Worktree
 
 
@@ -106,3 +111,29 @@ class TestLocalStackQueueScheduleIsUnchanged(TestCase):
             item.schedule_next_attempt(error="full", now=now, max_attempts=len(self._MINUTES_BY_ATTEMPT))
             item.refresh_from_db()
             assert item.next_attempt_at == now + timedelta(minutes=expected)
+
+
+class TestTheGapsGrowRatherThanRepeat:
+    """A re-ask schedule where every gap is the same length nags a stale question forever.
+
+    The bump index is derived from elapsed time alone — no stored counter — so a caller
+    computes which bump is due from the row it already has, and the gaps widen without a
+    cap: 1, 1, 2, 3, 5 … base units between bumps.
+    """
+
+    def test_no_gap_has_elapsed_before_the_first_one_completes(self) -> None:
+        assert fibonacci_bump_index(0) == 0
+        assert fibonacci_bump_index(0.9) == 0
+
+    def test_each_completed_gap_advances_the_index_by_one(self) -> None:
+        assert [fibonacci_bump_index(elapsed) for elapsed in (1, 2, 4, 7, 12, 20)] == [1, 2, 3, 4, 5, 6]
+
+    def test_a_gap_is_held_until_it_fully_elapses(self) -> None:
+        # The third gap is 2 units wide, so index 3 is not due at 3 units — only at 4.
+        assert fibonacci_bump_index(3) == 2
+
+    def test_the_schedule_is_uncapped(self) -> None:
+        assert fibonacci_bump_index(1_000) > fibonacci_bump_index(100)
+
+    def test_a_negative_elapsed_is_the_first_gap_rather_than_a_busy_loop(self) -> None:
+        assert fibonacci_bump_index(-5) == 0

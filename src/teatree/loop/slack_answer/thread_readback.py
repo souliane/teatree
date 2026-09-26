@@ -13,11 +13,20 @@ re-derived per call site.
 """
 
 import logging
+import re
+from decimal import Decimal
 
 from teatree.backends.slack.self_identity import is_self_authored, resolve_own_identity
 from teatree.core.backend_protocols import MessagingBackend
 
 logger = logging.getLogger(__name__)
+_SLACK_TS = re.compile(r"^[0-9]{1,15}\.[0-9]{1,9}$")
+
+
+def _timestamp(value: object) -> Decimal | None:
+    if not isinstance(value, str) or _SLACK_TS.fullmatch(value) is None:
+        return None
+    return Decimal(value)
 
 
 def resolve_thread_root(backend: MessagingBackend, *, channel: str, ts: str) -> str:
@@ -41,16 +50,27 @@ def resolve_thread_root(backend: MessagingBackend, *, channel: str, ts: str) -> 
     return ts
 
 
-def bot_reply_present_in_thread(backend: MessagingBackend, *, channel: str, thread_root: str) -> bool:
-    """True iff the bot already has a reply under *thread_root*.
+def bot_reply_present_in_thread(
+    backend: MessagingBackend,
+    *,
+    channel: str,
+    thread_root: str,
+    after_ts: str | None = None,
+    expected_ts: str | None = None,
+) -> bool:
+    """True iff a relevant bot reply is visible under *thread_root*.
 
     Reads the thread root's replies and tests each against the bot's own
-    identity. Used for both pre-post dedup (skip when a reply is already
-    there) and post-delivery verification (confirm the just-posted reply
-    landed). Conservative on every uncertainty — an unresolved bot identity,
-    an empty read, or a read raise all report ``False`` (absent), so the
-    verification caller retries rather than stamping an unconfirmed post.
+    ``after_ts`` binds dedup to the current inbound turn; ``expected_ts``
+    binds post-delivery verification to the exact reply Slack accepted. An
+    older answer in the same thread must never acknowledge a new question.
+    Conservative on uncertainty — invalid timestamps, unresolved identity,
+    empty reads, and read failures all report ``False``.
     """
+    floor = _timestamp(after_ts) if after_ts is not None else None
+    expected = _timestamp(expected_ts) if expected_ts is not None else None
+    if (after_ts is not None and floor is None) or (expected_ts is not None and expected is None):
+        return False
     identity = resolve_own_identity(backend)
     if identity is None:
         logger.warning("Bot identity unresolved; cannot confirm reply under %s/%s", channel, thread_root)
@@ -60,7 +80,17 @@ def bot_reply_present_in_thread(backend: MessagingBackend, *, channel: str, thre
     except Exception as exc:  # noqa: BLE001 — a read raise must never break the cycle
         logger.warning("Thread read-back raised for %s/%s: %s", channel, thread_root, exc)
         return False
-    return any(is_self_authored(reply, identity) for reply in replies)
+    for reply in replies:
+        if not is_self_authored(reply, identity):
+            continue
+        if floor is None and expected is None:
+            return True
+        reply_time = _timestamp(reply.get("ts"))
+        if reply_time is None or (floor is not None and reply_time <= floor):
+            continue
+        if expected is None or reply_time == expected:
+            return True
+    return False
 
 
 __all__ = ["bot_reply_present_in_thread", "resolve_thread_root"]

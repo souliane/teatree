@@ -18,6 +18,7 @@ handed — docker being the one unstoppable external.
 """
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -110,9 +111,9 @@ class TestHostOnlyCheckoutIsRefused:
     def test_the_refusal_names_no_root_a_cwd_cannot_be_translated_from(self, tmp_path: Path, home: Path) -> None:
         """Mounted is not usable-as-a-cwd: an advertised root that still refuses misleads.
 
-        The credential and session planes are bind mounts, so a file under them is
-        readable inside — but the wrapper translates only the workspace, worktree and
-        source roots, so a checkout under the others is refused exactly like this one.
+        Some state roots are readable inside the container, but the wrapper translates
+        only workspace, worktree, and source roots. Agent homes are private volumes and
+        credential/data binds are not valid checkout roots, so none is advertised.
         """
         fork = _build_fork(tmp_path)
         home.mkdir(parents=True, exist_ok=True)
@@ -202,3 +203,103 @@ class TestNonCheckoutCwdIsUnchanged:
 
         assert proc.returncode == 0
         assert f"{DISPATCHED} TEATREE_INVOCATION_CWD={CONTAINER_SOURCE_DIR}" in proc.stdout
+
+
+class TestTheHostIdentityWorkspaceMountIsTranslatable:
+    """The wrapper's visibility model must cover the identity mount the wrapper itself adds.
+
+    ``deploy/t3`` appends ``-f docker-compose.host-identity.yml`` whenever the host home
+    differs from the container's, and that file binds ``${TEATREE_HOST_HOME}/workspace``
+    at PATH IDENTITY into ``teatree-worker`` and ``teatree-admin``. So on any such host
+    every checkout under the workspace root is readable inside the container under the
+    SAME absolute path — measured on a Docker Desktop box as
+    ``/host_mnt/<home>/workspace -> <home>/workspace``.
+
+    ``MOUNT_PAIRS`` listed only the ``t3-workspaces`` subtree, the worktree root and the
+    source mount, so a sibling checkout under the workspace root was refused as "not
+    visible inside the container" while being visible at its own path. The refusal named
+    two remedies and neither was usable, which is what drove agents to a host ``git
+    push`` and produced human-authored MRs the owner can never approve.
+    """
+
+    def test_a_sibling_checkout_under_the_workspace_root_dispatches_at_path_identity(
+        self, tmp_path: Path, home: Path
+    ) -> None:
+        fork = _build_fork(tmp_path)
+        checkout = home / "workspace" / "some-org" / "some-repo"
+        (checkout / ".git").mkdir(parents=True)
+
+        proc = _run(fork, home, checkout)
+
+        assert proc.returncode == 0, proc.stderr
+        assert f"{DISPATCHED} TEATREE_INVOCATION_CWD={checkout}" in proc.stdout
+
+    def test_a_nested_directory_of_such_a_checkout_translates_too(self, tmp_path: Path, home: Path) -> None:
+        fork = _build_fork(tmp_path)
+        nested = home / "workspace" / "some-org" / "some-repo" / "src" / "pkg"
+        (home / "workspace" / "some-org" / "some-repo" / ".git").mkdir(parents=True)
+        nested.mkdir(parents=True)
+
+        proc = _run(fork, home, nested)
+
+        assert proc.returncode == 0, proc.stderr
+        assert f"{DISPATCHED} TEATREE_INVOCATION_CWD={nested}" in proc.stdout
+
+    def test_the_more_specific_worktree_root_still_wins_over_the_identity_root(
+        self, tmp_path: Path, home: Path
+    ) -> None:
+        """``t3-workspaces`` nests INSIDE the workspace root and has its own canonical target.
+
+        Every ``Worktree`` row records the canonical ``/home/teatree/workspace/t3-workspaces``
+        path, so the identity pair must never shadow it — it is appended last for that reason.
+        """
+        fork = _build_fork(tmp_path)
+        worktree = home / "workspace" / "t3-workspaces" / "1234-ticket" / "teatree"
+        (worktree / ".git").mkdir(parents=True)
+
+        proc = _run(fork, home, worktree)
+
+        assert proc.returncode == 0, proc.stderr
+        assert f"{DISPATCHED} TEATREE_INVOCATION_CWD={CONTAINER_WORKTREE_ROOT}/1234-ticket/teatree" in proc.stdout
+
+    def test_the_identity_pair_and_the_identity_compose_file_move_together(self) -> None:
+        """The translation may only claim the root the wrapper actually bound.
+
+        On the box the two homes coincide, the overlay file is NOT added, and the base
+        compose binds only the ``t3-workspaces`` subtree — so translating the whole
+        workspace root there would claim a mount the container does not have, and
+        ``/home/teatree/workspace`` is the clones VOLUME, a different tree from the
+        host's. That branch cannot be exercised behaviourally off-box (a test cannot
+        create ``/home/teatree``), so the invariant is asserted where it lives: ONE
+        flag, set in the same conditional that appends the overlay file, is the only
+        thing that admits the pair.
+        """
+        wrapper = WRAPPER.read_text(encoding="utf-8")
+
+        guard = re.search(
+            r'if \[ "\$TEATREE_HOST_HOME" != "\$CONTAINER_HOME" \]; then\n(?P<body>(?:[ \t]+\S[^\n]*\n)+)',
+            wrapper,
+        )
+        assert guard is not None, "deploy/t3 no longer guards the host-identity compose overlay"
+        assert "HOST_IDENTITY_FILE" in guard.group("body")
+        assert "HOST_IDENTITY_MOUNT=1" in guard.group("body"), (
+            "the identity MOUNT PAIR must be admitted by the same conditional that adds the "
+            "identity compose file — otherwise the translation claims a root the container "
+            "does not carry (on the box) or refuses one it does (off-box)"
+        )
+        assert wrapper.count("HOST_IDENTITY_MOUNT=1") == 1, (
+            "a second setter would let the pair be admitted without the compose overlay"
+        )
+
+    def test_the_refusal_still_names_the_identity_root_it_now_translates(self, tmp_path: Path, home: Path) -> None:
+        """A checkout outside every root is still refused, and the advertised set is complete."""
+        fork = _build_fork(tmp_path)
+        home.mkdir(parents=True, exist_ok=True)
+        checkout = tmp_path / "host-only-clone"
+        (checkout / ".git").mkdir(parents=True)
+
+        proc = _run(fork, home, checkout)
+
+        assert proc.returncode != 0
+        listed = {line.strip() for line in proc.stderr.splitlines()}
+        assert str(home / "workspace") in listed

@@ -31,6 +31,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._hook_env import HOOK_ENV_NAME
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _LIB = _REPO_ROOT / "scripts" / "hooks" / "lib" / "resolve-uv.sh"
 
@@ -220,6 +222,41 @@ class TestOperatorOverride:
         assert not harness.cache_file.exists()
 
 
+# Answers only the two flags `resolve-uv.sh` asks, so a platform can be named
+# without a container per architecture.
+_UNAME_SHIM = """#!/bin/sh
+case "${{1:-}}" in
+    -m) echo "{machine}" ;;
+    *) echo "{system}" ;;
+esac
+"""
+
+
+class TestHookEnvironmentIsPlatformScoped:
+    """A bind-mounted clone is ONE directory two platforms reach.
+
+    An unscoped hook environment makes the host and the container reconcile the
+    same venv, so each rebuild strands the other's as a husk beside it — measured
+    at two ~650 MB directories parked in one fork root.
+    """
+
+    def _hook_env_for(self, harness: _Harness, *, system: str, machine: str) -> str:
+        _executable(harness.pathdir / "uname", _UNAME_SHIM.format(system=system, machine=machine))
+        script = f'set -u; . "{_LIB}"; printf "%s\\n" "$_UV_HOOK_ENV_NAME"'
+        return subprocess.run(
+            [_BASH, "-c", script], capture_output=True, text=True, env=harness.env, check=True
+        ).stdout.strip()
+
+    def test_two_platforms_never_share_one_hook_environment(self, harness: _Harness) -> None:
+        darwin = self._hook_env_for(harness, system="Darwin", machine="arm64")
+        linux = self._hook_env_for(harness, system="Linux", machine="aarch64")
+
+        assert darwin != linux, f"both platforms resolved to {darwin}"
+
+    def test_the_name_carries_this_platform(self, harness: _Harness) -> None:
+        assert self._hook_env_for(harness, system="Darwin", machine="arm64") == ".venv-hook-darwin-arm64"
+
+
 class TestForeignProjectEnvGuardSurvives:
     """The cache answers "which BINARY" only — the ``.venv`` guard stays per-invocation.
 
@@ -246,7 +283,7 @@ class TestForeignProjectEnvGuardSurvives:
         (project / ".venv").mkdir(parents=True)
         (project / ".venv" / "pyvenv.cfg").write_text("home = /nonexistent/other/side/bin\n", encoding="utf-8")
 
-        assert "UV_PROJECT_ENVIRONMENT=.venv-hook" in self._prefix(harness, project)
+        assert f"UV_PROJECT_ENVIRONMENT={HOOK_ENV_NAME}" in self._prefix(harness, project)
 
     def test_a_local_venv_keeps_uv_managing_the_project(self, harness: _Harness, tmp_path: Path) -> None:
         project = tmp_path / "project"

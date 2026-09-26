@@ -33,12 +33,13 @@ _RESTATED_DESCRIPTIONS = {
 
 
 def _admit_load_bearing_loops(apps, schema_editor) -> None:
-    config_setting = apps.get_model("core", "ConfigSetting")
-    mode = apps.get_model("core", "Mode")
-    pinned = config_setting.objects.filter(scope="", key=_LOW_POWER_SETTING).first()
+    db = schema_editor.connection.alias
+    config_setting = apps.get_model("core", "ConfigSetting").objects.using(db)
+    mode = apps.get_model("core", "Mode").objects.using(db)
+    pinned = config_setting.filter(scope="", key=_LOW_POWER_SETTING).first()
     raw = pinned.value if pinned is not None else None
     escape = raw.strip() if isinstance(raw, str) and raw.strip() else _DEFAULT_LOW_POWER
-    for preset in mode.objects.exclude(name=escape):
+    for preset in mode.exclude(name=escape):
         entries = preset.entries if isinstance(preset.entries, dict) else {}
         quieted = [loop for loop in _LOAD_BEARING if entries.get(loop) is False]
         shipped, restated = _RESTATED_DESCRIPTIONS.get(preset.name, ("", ""))

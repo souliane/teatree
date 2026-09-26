@@ -14,8 +14,8 @@ page, unchanged.
 
 For the harness/provider pair the candidate set is the harnesses under which the
 operator's EXPLICIT provider pin is valid. Correcting the *provider* instead is
-deliberately NOT attempted: every harness admits two providers, so picking one
-would be inventing a credential decision the operator never made. Correcting the
+deliberately NOT attempted: every harness admits more than one provider, so picking
+one would be inventing a credential decision the operator never made. Correcting the
 harness honours the most-specific pin they did make. A future harness that shares
 a provider makes the set ambiguous, and the condition pages again — by
 construction, not by a second rule.

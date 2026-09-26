@@ -16,6 +16,7 @@ from django.test import TestCase
 from teatree.config import UserSettings
 from teatree.core.gates.fix_dod_gate import FixRecordDodError
 from teatree.core.models import Ticket
+from tests.factories import waive_rubric
 
 
 def _tickets(n: int) -> list[Ticket]:
@@ -126,6 +127,7 @@ class TicketFixRecordOverrideTest(TestCase):
     def test_the_override_unblocks_delivery(self) -> None:
         """The whole point: the gate passes on a fix-ticket carrying no FixRecord."""
         ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX, state=Ticket.State.RETROSPECTED)
+        waive_rubric(ticket)
         with pytest.raises(FixRecordDodError):
             ticket.mark_delivered()
         call_command("ticket", "fix-record-override", str(ticket.pk), "--reason", "mis-classified: pure docs change")

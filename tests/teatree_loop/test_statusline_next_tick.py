@@ -400,24 +400,11 @@ class TestOverdueMiniLoopNames:
         now = datetime.now(UTC)
         assert overdue_mini_loop_names([MiniLoopSchedule("dispatch", now + timedelta(seconds=60), 600)]) == []
 
-    def test_a_disabled_loop_is_never_overdue(self) -> None:
-        # #4066: a DISABLED loop has no next-fire instant because nothing scheduled one, not
-        # because it is late. Reading the absence as lateness made `snapshot_warmer` and
-        # `triage_assessor` overdue permanently — an alarm with no state that clears it, which
-        # spends the banner that a genuinely-late loop needs.
-        assert overdue_mini_loop_names([MiniLoopSchedule("snapshot_warmer", None, 86400, enabled=False)]) == []
-
-    def test_an_enabled_never_fired_loop_is_still_overdue(self) -> None:
-        # The other half, and the reason this is a gate rather than a blanket drop of every
-        # `None`: a loop the operator turned ON that has never fired IS late, and is exactly
-        # what the section exists to surface.
-        assert overdue_mini_loop_names([MiniLoopSchedule("inbox", None, 60, enabled=True)]) == ["inbox"]
-
-    def test_a_disabled_loop_that_is_genuinely_past_due_is_still_not_overdue(self) -> None:
-        # A disabled loop can carry a stale next-fire instant from before it was turned off.
-        # That instant is in the past, but nothing intends to fire it, so it is not late either.
-        past = datetime.now(UTC) - timedelta(seconds=5)
-        assert overdue_mini_loop_names([MiniLoopSchedule("triage_assessor", past, 3600, enabled=False)]) == []
+    def test_an_admitted_never_fired_loop_is_overdue(self) -> None:
+        # #4066's surviving half: only ADMITTED loops reach this list, and a preset that
+        # admits a loop IS someone asking for it — so a never-fired one is late, and that
+        # is exactly what the section exists to surface.
+        assert overdue_mini_loop_names([MiniLoopSchedule("inbox", None, 60)]) == ["inbox"]
 
 
 class TestPresetLineReaderInjection:

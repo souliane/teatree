@@ -68,7 +68,12 @@ def _issue_is_open(issue: RawAPIDict) -> bool:
     return not (isinstance(state, str) and state.lower() == "closed")
 
 
-def needs_triage_issues(host: "CodeHostBackend", assignees: tuple[str, ...]) -> list[RawAPIDict]:
+def needs_triage_issues(
+    host: "CodeHostBackend",
+    assignees: tuple[str, ...],
+    *,
+    repo_slugs: tuple[str, ...] = (),
+) -> list[RawAPIDict]:
     """Every OPEN ``needs-triage`` issue assigned to one of *assignees*, deduped by URL.
 
     The single fan-out both the disposition and the assessor scanner consume: it
@@ -80,7 +85,11 @@ def needs_triage_issues(host: "CodeHostBackend", assignees: tuple[str, ...]) -> 
     issues: list[RawAPIDict] = []
     for assignee in assignees:
         try:
-            fetched = host.list_assigned_issues(assignee=assignee)
+            fetched = (
+                host.list_assigned_issues(assignee=assignee, repo_slugs=repo_slugs)
+                if repo_slugs
+                else host.list_assigned_issues(assignee=assignee)
+            )
         except Exception:
             logger.warning("list_assigned_issues failed for %s — skipping", assignee, exc_info=True)
             continue

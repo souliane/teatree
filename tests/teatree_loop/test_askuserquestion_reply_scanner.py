@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.agents._runner_options import _get_resume_session_id
+from teatree.agents.session_lineage import resume_session_id
 from teatree.core.models import DmContext, PendingChatInjection, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
@@ -245,7 +245,7 @@ class TestParkedTaskHeadlessResume:
         resume = parked.child_tasks.get()
         assert resume.parent_task_id == parked.pk
         assert "use postgres-1" in resume.execution_reason
-        assert _get_resume_session_id(resume) == _RESUME_UUID
+        assert resume_session_id(resume) == _RESUME_UUID
 
     def test_resume_is_not_double_queued_on_re_scan(self) -> None:
         parked = self._parked_task()

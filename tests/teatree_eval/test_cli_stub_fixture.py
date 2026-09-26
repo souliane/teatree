@@ -11,6 +11,7 @@ without touching any matcher. These tests exercise the plumbing deterministicall
 ``_resolve_eval_target`` prepends the stub dir to the env it hands the SDK.
 """
 
+import json
 import os
 import re
 import subprocess
@@ -20,12 +21,7 @@ import pytest
 
 from teatree.core.on_behalf_gate_recorded import format_on_behalf_block_message
 from teatree.eval.api_runner import ApiInProcessRunner, ApiRunnerParams
-from teatree.eval.cli_stub_fixture import (
-    KNOWN_CLI_STUBS,
-    ON_BEHALF_ASK_BLOCK_TEXT,
-    prepend_to_path,
-    provision_cli_stubs,
-)
+from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS, ON_BEHALF_BLOCK_TEXT, prepend_to_path, provision_cli_stubs
 from teatree.eval.loader import EvalSpecError, load_eval_yaml
 from teatree.eval.models import EvalSpec, Matcher
 
@@ -83,6 +79,81 @@ class TestStubExecutables:
             result = _run_stub(bindir, argv)
         assert result.returncode == 0
         assert needle in result.stdout
+
+    def test_gh_repo_view_answers_the_visibility_probe_for_the_repo_it_was_asked_about(self, tmp_path: Path) -> None:
+        # A neutral "ok", or a reply naming some other repo, both read to a diligent agent
+        # as "I could not confirm this repo" — it stops instead of issuing the graded call.
+        with provision_cli_stubs(["gh"]) as bindir:
+            result = _run_stub(bindir, ["gh", "repo", "view", "acme/widget", "--json", "visibility,nameWithOwner"])
+        assert result.returncode == 0
+        assert '"nameWithOwner":"acme/widget"' in result.stdout
+        assert '"visibility":"PRIVATE"' in result.stdout
+
+    @pytest.mark.parametrize(
+        ("argv", "needles"),
+        [
+            (["gh", "auth", "status"], ["github.com", "Logged in"]),
+            (
+                ["gh", "issue", "view", "207", "--repo", "acme/widget", "--json", "title,url,state"],
+                ['"number":207', "acme/widget/issues/207"],
+            ),
+            (["gh", "issue", "view", "207", "--repo", "acme/widget"], ["#207", "acme/widget/issues/207"]),
+            (["gh", "api", "repos/acme/widget"], ['"full_name":"acme/widget"', '"private":true']),
+            (["gh", "api", "repos/acme/widget/issues/207"], ['"number":207', "acme/widget/issues/207"]),
+        ],
+    )
+    def test_gh_answers_every_pre_post_verification_probe(
+        self, tmp_path: Path, argv: list[str], needles: list[str]
+    ) -> None:
+        # Same reason as `repo view` above: a neutral "ok" to "am I authenticated" or
+        # "does issue 207 exist" reads as "I could not confirm that", so the agent stops
+        # short of the graded post. Measured on `skill_leak_gate_public_only_allows_private`.
+        with provision_cli_stubs(["gh"]) as bindir:
+            result = _run_stub(bindir, argv)
+        assert result.returncode == 0
+        for needle in needles:
+            assert needle in result.stdout, f"{argv} answered {result.stdout!r}"
+
+    @pytest.mark.parametrize(
+        "path",
+        ["repos/acme/widget", "repos/acme/widget/issues/207", "repos/acme/widget/issues/207/comments"],
+    )
+    def test_gh_api_json_answers_parse(self, path: str) -> None:
+        # A malformed body is worse than "ok": the agent reads a broken CLI, not an answer.
+        with provision_cli_stubs(["gh"]) as bindir:
+            result = _run_stub(bindir, ["gh", "api", path])
+        assert json.loads(result.stdout)
+
+    def test_gh_api_unmodelled_route_stays_neutral(self) -> None:
+        with provision_cli_stubs(["gh"]) as bindir:
+            result = _run_stub(bindir, ["gh", "api", "user"])
+        assert result.returncode == 0
+        assert result.stdout.strip() == "ok"
+
+    def test_gh_issue_comment_succeeds(self, tmp_path: Path) -> None:
+        with provision_cli_stubs(["gh"]) as bindir:
+            result = _run_stub(bindir, ["gh", "issue", "comment", "207", "--body", "hello"])
+        assert result.returncode == 0
+        assert "issuecomment" in result.stdout
+
+    @pytest.mark.parametrize(
+        ("endpoint", "expected"),
+        [
+            (
+                "projects/example%2Frepo/work_items/421",
+                "Acceptance criteria from the linked work item",
+            ),
+            (
+                "projects/example%2Frepo/uploads/0123456789abcdef0123456789abcdef/reference-spec.pdf",
+                "Reference specification fixture",
+            ),
+        ],
+    )
+    def test_glab_linked_sources_profile_returns_readable_source_content(self, endpoint: str, expected: str) -> None:
+        with provision_cli_stubs(["glab@linked_sources"]) as bindir:
+            result = _run_stub(bindir, ["glab", "api", endpoint])
+        assert result.returncode == 0
+        assert expected in result.stdout
 
     @pytest.mark.parametrize(
         ("argv", "expected"),
@@ -184,6 +255,40 @@ class TestLoaderParsesCliStubs:
         loaded = load_eval_yaml(spec)
         assert loaded[0].cli_stubs == ("t3", "gh")
 
+    def test_overlay_local_profile_parses_and_provisions_its_owned_body(self, tmp_path: Path) -> None:
+        stubs = tmp_path / "cli_stubs"
+        stubs.mkdir()
+        (stubs / "gh@private_repo.sh").write_text(
+            "#!/bin/sh\necho local-private-repo\n",
+            encoding="utf-8",
+        )
+        spec = self._write(
+            tmp_path,
+            "- name: s\n  scenario: x\n  agent_path: a.md\n  cli_stubs: [gh@private_repo]\n"
+            '  expect:\n    - tool_call: Bash\n      args.command: contains "gh"\n',
+        )
+        (tmp_path / "a.md").write_text("# a\n\nbody\n", encoding="utf-8")
+
+        loaded = load_eval_yaml(spec)
+
+        assert loaded[0].cli_stubs == ("gh@private_repo",)
+        with provision_cli_stubs(loaded[0].cli_stubs, source_path=loaded[0].source_path) as bindir:
+            result = _run_stub(bindir, ["gh", "repo", "view", "example/private"])
+        assert result.returncode == 0
+        assert result.stdout.strip() == "local-private-repo"
+
+    def test_overlay_local_profile_cannot_escape_its_cli_stubs_directory(self, tmp_path: Path) -> None:
+        outside = tmp_path / "outside.sh"
+        outside.write_text("#!/bin/sh\necho escaped\n", encoding="utf-8")
+        spec = self._write(
+            tmp_path,
+            "- name: s\n  scenario: x\n  agent_path: a.md\n  cli_stubs: [../outside]\n"
+            '  expect:\n    - tool_call: Bash\n      args.command: contains "gh"\n',
+        )
+
+        with pytest.raises(EvalSpecError, match="unknown cli_stubs"):
+            load_eval_yaml(spec)
+
     def test_unknown_name_is_a_spec_error(self, tmp_path: Path) -> None:
         spec = self._write(
             tmp_path,
@@ -247,18 +352,18 @@ class TestResolveEvalTargetWiresPath:
 
 
 class TestGateAwareOnBehalfStub:
-    """The `t3@on_behalf_ask` profile mirrors production's DETERMINISTIC colleague refusal."""
+    """The `t3@on_behalf_forbidden` profile mirrors production's DETERMINISTIC colleague refusal."""
 
     def test_stub_block_text_is_parity_with_the_production_message(self) -> None:
         # Vendored-by-derivation: the stub's refusal is built from the production
         # message builder, so a drift in production reds this parity assertion.
-        assert format_on_behalf_block_message("C_REVIEW_CHANNEL", "react") == ON_BEHALF_ASK_BLOCK_TEXT
-        assert ON_BEHALF_ASK_BLOCK_TEXT in KNOWN_CLI_STUBS["t3@on_behalf_ask"]
+        assert format_on_behalf_block_message("C_REVIEW_CHANNEL", "react") == ON_BEHALF_BLOCK_TEXT
+        assert ON_BEHALF_BLOCK_TEXT in KNOWN_CLI_STUBS["t3@on_behalf_forbidden"]
 
     def test_profile_provisions_under_the_t3_binary_name(self, tmp_path: Path) -> None:
-        with provision_cli_stubs(["t3@on_behalf_ask"]) as bindir:
+        with provision_cli_stubs(["t3@on_behalf_forbidden"]) as bindir:
             assert (bindir / "t3").is_file()
-            assert not (bindir / "t3@on_behalf_ask").exists()
+            assert not (bindir / "t3@on_behalf_forbidden").exists()
 
     @pytest.mark.parametrize(
         "argv",
@@ -271,10 +376,10 @@ class TestGateAwareOnBehalfStub:
         ],
     )
     def test_colleague_surface_verbs_print_the_block_and_exit_one(self, argv: list[str]) -> None:
-        with provision_cli_stubs(["t3@on_behalf_ask"]) as bindir:
+        with provision_cli_stubs(["t3@on_behalf_forbidden"]) as bindir:
             result = _run_stub(bindir, argv)
         assert result.returncode == 1
-        assert "on-behalf post blocked by on_behalf_post_mode" in result.stderr
+        assert "on-behalf post blocked by the active posture" in result.stderr
         assert "approve-on-behalf" in result.stderr
 
     @pytest.mark.parametrize(
@@ -285,7 +390,7 @@ class TestGateAwareOnBehalfStub:
         ],
     )
     def test_self_dm_notify_still_succeeds(self, argv: list[str]) -> None:
-        with provision_cli_stubs(["t3@on_behalf_ask"]) as bindir:
+        with provision_cli_stubs(["t3@on_behalf_forbidden"]) as bindir:
             result = _run_stub(bindir, argv)
         assert result.returncode == 0
         assert "DM queued" in result.stdout

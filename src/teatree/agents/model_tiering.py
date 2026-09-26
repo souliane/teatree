@@ -6,8 +6,9 @@ place: the :data:`TIER_MODELS` constant below (the ``claude_sdk`` catalog; the
 catalog — see the harness-scoped note below). Production phase dispatch and the
 eval scenarios reference an abstract TIER (``frontier`` / ``balanced`` /
 ``cheap``), never a concrete model id, so adopting a new model for a live spawn
-is one edit to :data:`TIER_MODELS` (or one ``agent_tier_models`` DB row), with
-zero scenario or dispatch edits. The eval LANE follows the same catalog rather
+is one edit to :data:`TIER_MODELS` plus its CLI floor entry when one is known (or
+one ``agent_tier_models`` DB row), with zero scenario or dispatch edits. The eval
+LANE follows the same catalog rather
 than keeping its own pins: its family aliases come from
 :func:`teatree.agents.model_aliases.family_alias_models`, and its judge / capacity-fallback defaults
 (``eval/loader.py``, ``eval/models.py``, ``eval/api_runner.py``) index
@@ -82,6 +83,11 @@ TIER_MODELS: dict[str, str] = {
     "frontier": "claude-opus-5",
     "balanced": "claude-sonnet-5",
     "cheap": "claude-haiku-4-5",
+}
+
+# Oldest CLI known to serve each default model that has a compatibility floor.
+MODEL_MINIMUM_CLI_VERSIONS: dict[str, str] = {
+    "claude-opus-5": "2.1.251",
 }
 
 # The ``pydantic_ai`` parallel of :data:`TIER_MODELS`. The ``claude_sdk`` harness
@@ -452,7 +458,7 @@ def resolve_spawn_model(
     winner = resolve_phase_model(phase)
     for skill in skills:
         floor = config.skill_models.get(skill)
-        if floor is not None and tier_rank(floor) > tier_rank(winner):
+        if isinstance(floor, str) and tier_rank(floor) > tier_rank(winner):
             winner = resolve_tier(floor)
     if (
         _is_verification_phase(phase)

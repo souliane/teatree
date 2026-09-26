@@ -7,8 +7,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models.self_improve_firing import SelfImproveFiring
+from teatree.loop.self_improve import budget as budget_module
 from teatree.loop.self_improve.budget import (
-    DEFAULT_DENIAL_LIMIT,
     DEFAULT_SPAWN_CAP,
     DEFAULT_TOKEN_BUDGET_ENV,
     BudgetVerdict,
@@ -18,12 +18,13 @@ from teatree.loop.self_improve.budget import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _healthy_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(budget_module, "read_disk_used_percent", lambda: 20.0)
+
+
 def test_allow_when_all_under_limits() -> None:
-    verdict = precheck_budget(
-        ram_used_percent=50,
-        recent_self_improve_spawns=0,
-        recent_classifier_denials=0,
-    )
+    verdict = precheck_budget(ram_used_percent=50, recent_self_improve_spawns=0)
     assert verdict.ok is True
     assert verdict.reason == ""
 
@@ -34,20 +35,27 @@ def test_low_ram_short_circuits() -> None:
     assert "low_ram" in verdict.reason
 
 
-def test_spawn_cap_blocks() -> None:
-    verdict = precheck_budget(ram_used_percent=10, recent_self_improve_spawns=DEFAULT_SPAWN_CAP + 1)
+def test_low_disk_skips_a_self_improve_cycle() -> None:
+    verdict = precheck_budget(ram_used_percent=20, disk_used_percent=96)
+    assert verdict.ok is False
+    assert "low_disk" in verdict.reason
+
+
+def test_unmeasurable_disk_does_not_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(budget_module, "read_disk_used_percent", lambda: None)
+    assert precheck_budget(ram_used_percent=20).ok
+
+
+def test_spawn_cap_blocks_at_the_cap() -> None:
+    # A cap of N admits N spawns, so the N-th sample is already spent.
+    verdict = precheck_budget(ram_used_percent=10, recent_self_improve_spawns=DEFAULT_SPAWN_CAP)
     assert verdict.ok is False
     assert "spawn_cap" in verdict.reason
 
 
-def test_denial_cooldown_blocks() -> None:
-    verdict = precheck_budget(
-        ram_used_percent=10,
-        recent_self_improve_spawns=0,
-        recent_classifier_denials=DEFAULT_DENIAL_LIMIT,
-    )
-    assert verdict.ok is False
-    assert "classifier_denial_cooldown" in verdict.reason
+def test_one_spawn_below_the_cap_still_allows() -> None:
+    verdict = precheck_budget(ram_used_percent=10, recent_self_improve_spawns=DEFAULT_SPAWN_CAP - 1)
+    assert verdict.ok is True
 
 
 def test_token_budget_exhausted_blocks() -> None:

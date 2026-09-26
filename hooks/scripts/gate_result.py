@@ -27,8 +27,8 @@ indistinguishable from outside the hook — a gate that goes quiet on the pass p
 gets blamed for whatever silence follows it.
 
 The seam also owns the time ALLOWANCE every such gate gives its validator
-(:func:`validator_timeout_seconds`) and the warn a breach emits
-(:func:`warn_validator_timed_out`), so the allowance is one knob shared by every
+(:func:`validator_timeout_seconds`) and the announcement every non-verdict outcome
+emits (:func:`announce_cannot_evaluate`), so the allowance is one knob shared by every
 ``t3 tool …`` shell-out rather than a magic number per call site.
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
@@ -61,7 +61,7 @@ def validator_timeout_seconds() -> int:
     )
 
 
-def warn_validator_timed_out(gate: str, allowance_seconds: int) -> None:
+def _warn_validator_timed_out(gate: str, allowance_seconds: int) -> None:
     """Emit the one loud line that keeps a timeout distinguishable from a rejection."""
     sys.stderr.write(
         f"NOTE: the {gate} validator did not finish within its {allowance_seconds}s "
@@ -121,6 +121,23 @@ def warn_gate_skipped(gate: str, reason: str) -> None:
         "later silence or failure is the command's, not this gate's. The remote "
         "CI job remains the backstop.\n"
     )
+
+
+def announce_cannot_evaluate(gate: str, marker: "ValidatorTimedOut | GateSkipped") -> bool:
+    """Announce a non-verdict outcome and answer the caller's block decision: never block.
+
+    The one seam every CANNOT_EVALUATE shape passes through, which is what keeps the two
+    halves of the posture inseparable at the call site. Split apart they fail in opposite
+    directions: an unannounced marker is a mute skip, indistinguishable from outside the
+    hook from a gate that swallowed the call, and a marker read as a verdict is the #1528
+    lockout — a broken validator hard-blocking on a reason that says nothing about the
+    content. Returning the decision means a caller cannot take one half without the other.
+    """
+    if isinstance(marker, ValidatorTimedOut):
+        _warn_validator_timed_out(gate, marker.allowance_seconds)
+    else:
+        warn_gate_skipped(gate, marker.reason)
+    return False
 
 
 class CompletedRun(Protocol):

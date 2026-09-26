@@ -1209,7 +1209,7 @@ jobs:
     # (cross-directory polluter→victim adjacency): ``config``, ``teatree_config``,
     # ``teatree_utils``, ``utils``, ``teatree_quality``, ``messaging``, ``cli_doctor``,
     # ``conformance``, ``teatree_hooks`` (high-value — hooks mutate process-global
-    # env/cwd most often). ~6k tests, ~5-7 min serial per seed, under the 20-min cap.
+    # env/cwd most often). ~15-22 min serial per seed, under the 30-min cap.
     #
     # STILL SCOPED-OUT (measured, not silent): ``teatree_core``, ``teatree_cli``,
     # ``teatree_loops``, ``teatree_backends``, ``teatree_agents``, ``eval_replay``,
@@ -1226,7 +1226,7 @@ jobs:
       always() &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
-    timeout-minutes: 20
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1252,7 +1252,7 @@ jobs:
       # grouping and remaps every seed, so re-record all four when that pin lifts.
       # ``-n0`` is serial so a single in-process collection order runs end to end
       # (xdist would isolate the polluter from the victim across workers). The four
-      # seeds are MATRIXED so each runs as its own ~5-7-min parallel job over the
+      # seeds are MATRIXED so each runs as its own ~15-22-min parallel job over the
       # curated set (#3160).
       # ``leak_sentinel_plugin`` runs WARN-ONLY: a process-global env/cwd polluter is
       # NAMED (not just its downstream victim) without failing the lane.

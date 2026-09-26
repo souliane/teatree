@@ -12,8 +12,8 @@ colleague-invisible until published, so it must yield ONLY the
 ``on_behalf_post:`` one.
 
 The GitLab API boundary is stubbed; ``notify_user`` + the BotPing ledger
-run for real. The on-behalf pre-gate is set to ``immediate`` via the
-test config so these tests isolate the after-receipt behaviour.
+run for real. The active posture is staged to PERMIT so these tests
+isolate the after-receipt behaviour.
 """
 
 import json
@@ -26,8 +26,8 @@ import httpx
 import pytest
 
 from teatree.cli.review import ReviewService
-from teatree.core.models import BotPing, ConfigSetting
-from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO
+from teatree.core.models import BotPing
+from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -52,12 +52,11 @@ def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_
         conn.close()
 
 
-def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: str) -> None:
+def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forbidding: bool) -> None:
     # ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it in a
-    # config-store sqlite the reader resolves via ``T3_CONFIG_DB``. ``on_behalf_post_mode``
     # is ORM-resolved, staged in the ``ConfigSetting`` store.
     _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
-    ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
+    seed_forbidding_posture() if forbidding else seed_permitting_posture()
 
 
 def _http_404() -> httpx.HTTPStatusError:
@@ -128,7 +127,7 @@ def _service(monkeypatch: pytest.MonkeyPatch) -> ReviewService:
 class TestReviewServiceAfterReceiptDm:
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_cfg(tmp_path, monkeypatch, mode="immediate")
+        _write_cfg(tmp_path, monkeypatch, forbidding=False)
         _wire_notify_backend(monkeypatch)
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
@@ -176,11 +175,11 @@ class TestReviewServiceAfterReceiptDm:
     def test_post_draft_note_yields_only_autodraft_never_after_receipt(self) -> None:
         """Scope guard: drafts are colleague-invisible — no on_behalf_post: DM.
 
-        Under DRAFT_OR_ASK the pre-gate DMs an ``on_behalf_autodraft:``
+        Under a forbidding posture the pre-gate DMs an ``on_behalf_autodraft:``
         ping; the after-receipt helper must NOT also fire an
         ``on_behalf_post:`` one (the draft is not colleague-visible).
         """
-        _write_cfg(self.tmp_path, self.monkeypatch, mode="draft_or_ask")
+        _write_cfg(self.tmp_path, self.monkeypatch, forbidding=True)
 
         _, code = self.svc.post_draft_note(OWNED_REPO, 7, "nit")
 

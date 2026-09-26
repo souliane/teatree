@@ -25,6 +25,7 @@ class FakeMessaging:
 
     dms: list[RawAPIDict] = field(default_factory=list)
     fetch_dms_calls: list[str] = field(default_factory=list)
+    identity_resolves: bool = True
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -63,6 +64,8 @@ class FakeMessaging:
         # bot's own user / bot ids. Returning a fully-resolved identity
         # keeps these legacy tests focused on persistence and
         # idempotency behaviour rather than the self-filter path.
+        if not self.identity_resolves:
+            return {"ok": False}
         return {"ok": True, "user_id": "U_BOT_SELF", "bot_id": "B_BOT_SELF"}
 
 
@@ -212,3 +215,87 @@ class TestThreadTsIsRecorded:
         SlackDmInboundScanner(backend=backend).scan()
 
         assert PendingChatInjection.objects.get().thread_ts == ""
+
+
+class TestRecordEventsIsTheSharedSeam:
+    """``record_events`` is the write path the Socket Mode listener shares.
+
+    The listener records each inbound DM the moment it arrives, so the row the
+    answer cycle reads exists before the wake fires. It must apply exactly the
+    filters this scanner applies on the inbox tick — sharing the method is what
+    makes that structural rather than a second implementation to keep in sync.
+    """
+
+    def test_records_a_row_without_polling_the_backend(self) -> None:
+        backend = FakeMessaging()
+        scanner = SlackDmInboundScanner(backend=backend, overlay="demo")
+
+        signals = scanner.record_events([{"ts": "1.0", "user": "U1", "channel": "D1", "text": "hi"}])
+
+        assert [s.kind for s in signals] == ["slack.user_reply"]
+        assert PendingChatInjection.objects.get().text == "hi"
+        assert backend.fetch_dms_calls == []
+
+    def test_drops_the_bots_own_message(self) -> None:
+        backend = FakeMessaging()
+        scanner = SlackDmInboundScanner(backend=backend, overlay="demo")
+
+        signals = scanner.record_events([{"ts": "1.0", "user": "U_BOT_SELF", "channel": "D1", "text": "mine"}])
+
+        assert signals == []
+        assert PendingChatInjection.objects.count() == 0
+
+    def test_drops_an_on_behalf_post(self) -> None:
+        backend = FakeMessaging()
+        scanner = SlackDmInboundScanner(backend=backend, overlay="demo")
+
+        signals = scanner.record_events(
+            [{"ts": "1.0", "user": "U_HUMAN", "channel": "D1", "text": "posted for me", "api_app_id": "A123"}]
+        )
+
+        assert signals == []
+        assert PendingChatInjection.objects.count() == 0
+
+    def test_unresolvable_identity_records_nothing(self) -> None:
+        scanner = SlackDmInboundScanner(backend=FakeMessaging(identity_resolves=False), overlay="demo")
+
+        signals = scanner.record_events([{"ts": "1.0", "user": "U1", "channel": "D1", "text": "hi"}])
+
+        assert signals == []
+        assert PendingChatInjection.objects.count() == 0
+
+
+class TestSweepIsBoundedByTheLastRecordedTs:
+    """The catch-up window: an unbounded poll reads only Slack's newest page.
+
+    ``read_user_dms`` walks every page of a ``since``-bounded window but reads a
+    single 20-message page when unbounded — so an outage longer than 20 DMs lost
+    the oldest permanently. The sweep resumes from the newest ts already recorded.
+    """
+
+    def test_first_sweep_with_no_rows_polls_unbounded(self) -> None:
+        backend = FakeMessaging()
+        SlackDmInboundScanner(backend=backend, overlay="demo").scan()
+
+        assert backend.fetch_dms_calls == [""]
+
+    def test_sweep_resumes_from_the_newest_recorded_ts(self) -> None:
+        backend = FakeMessaging(
+            dms=[
+                {"ts": "1700000000.0001", "user": "U1", "channel": "D1", "text": "first"},
+                {"ts": "1700000009.0001", "user": "U1", "channel": "D1", "text": "second"},
+            ]
+        )
+        scanner = SlackDmInboundScanner(backend=backend, overlay="demo")
+        scanner.scan()
+        backend.dms = []
+        scanner.scan()
+
+        assert backend.fetch_dms_calls == ["", "1700000009.0001"]
+
+    def test_another_overlays_rows_do_not_move_this_overlays_cursor(self) -> None:
+        PendingChatInjection.record(channel="D9", slack_ts="1700009999.0001", text="theirs", overlay="other")
+        backend = FakeMessaging()
+        SlackDmInboundScanner(backend=backend, overlay="demo").scan()
+
+        assert backend.fetch_dms_calls == [""]

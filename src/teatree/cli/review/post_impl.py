@@ -29,6 +29,7 @@ from teatree.cli.review.audit import (
     verify_note_landed,
     verify_unapproval_landed,
 )
+from teatree.cli.review.shape_gate import fetch_mr_author
 
 _HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
@@ -43,6 +44,7 @@ def _resolve_inline_position(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202 �
 resolve_inline_position = _resolve_inline_position
 
 if TYPE_CHECKING:
+    from teatree.backends.gitlab.api import GitLabAPI
     from teatree.cli.review.service import ReviewService
 
 
@@ -381,7 +383,34 @@ def approve_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str) 
     # approved_by → no-op success.
     if identity_in_approved_by(api, encoded, mr):
         return f"Already approved by {api.current_username()} (!{mr})", 0
-    return f"Failed: HTTP {status}", 1
+    return f"Failed: HTTP {status}{_self_approval_hint(api, encoded, mr, status)}", 1
+
+
+def _self_approval_hint(api: "GitLabAPI", encoded: str, mr: int, status: int) -> str:
+    """The self-approval cause behind an approve refusal, or ``""`` when that is not it.
+
+    A forge bars an MR's author from approving it and answers that refusal with **401, not
+    403** — indistinguishable at the call site from a dead credential, so a bare ``HTTP 401``
+    sends the reader to the secret store while the real fault is that the MR was opened under
+    the approver's own identity. Reading the author back costs one GET and names it instead.
+
+    Only 401 is read: another status has its own cause, and a naming that fires on all of them
+    would be a guess. A failed author read yields ``""`` (:func:`fetch_mr_author` degrades to
+    an empty username), leaving the blunt-but-true bare status.
+    """
+    if status != HTTPStatus.UNAUTHORIZED:
+        return ""
+    author = fetch_mr_author(api, encoded, mr)
+    if not author or author != api.current_username():
+        return ""
+    return (
+        f" — !{mr} is AUTHORED by {author!r}, the identity this credential authenticates as, and a "
+        f"forge refuses an approval from an MR's own author (it answers 401, not 403). The credential "
+        f"is not the fault. Close the MR and re-open it through `t3 <overlay> pr create <ticket-id>` "
+        f"(or `t3 <overlay> pr ensure-pr --repo <abs-path> --branch <branch>`), which resolves the "
+        f"repo's declared non-owner authoring credential; `t3 doctor check` reports whether that "
+        f"credential resolves in this venue."
+    )
 
 
 def unapprove_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str) -> tuple[str, int]:

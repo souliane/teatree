@@ -11,6 +11,7 @@ classifier and a fake code host, so Pass 2 is fully testable without an LLM and
 without a live forge.
 """
 
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -32,6 +33,7 @@ from teatree.loops.dream.promote_memory import (
     retire_resolved_memories,
     triage_disposition,
 )
+from teatree.loops.dream.retro_finding import promote_finding, record_finding
 
 
 def _row(
@@ -460,6 +462,41 @@ class RetireResolvedMemoriesTestCase(TestCase):
         host.get_issue.side_effect = AssertionError("the injected predicate must not round-trip the forge")
         retired = retire_resolved_memories(host, is_resolved=lambda _row: True)
         assert len(retired) == 1
+        row.refresh_from_db()
+        assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+
+
+@patch.dict(os.environ, {"T3_DREAM_MEMORY_PROMOTE": "1"})
+class RetroFindingSharesTheRetirementPathTestCase(TestCase):
+    """A retro-recorded finding retires through the SAME drain, not a forked one.
+
+    Retro no longer persists a lesson as a memory file: it records the finding in
+    this ledger and promotes it onto the umbrella. The proof that this is reuse
+    rather than a parallel mechanism is the end of the line — the row retires
+    through ``retire_resolved_memories`` when its fix Ticket reaches MERGED,
+    driven by the umbrella reconciler, with no retro-specific code in the path.
+    """
+
+    def test_a_retro_finding_retires_when_its_fix_merges(self) -> None:
+        rule = "Run the tree-wide health gate before any push."
+        row = record_finding(
+            rule=rule, citation="pushed without running the gate, CI went red", destination="skills/ship/SKILL.md"
+        )
+        promote_finding(_fake_host(), rule=rule, umbrella_url=UMBRELLA)
+
+        ticket = Ticket.objects.get(extra__dream_gap_batch__0__cluster_key=row.cluster_key)
+        ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": [row.cluster_key]})
+        ticket.pull_requests.create(
+            url="https://github.com/souliane/teatree/pull/9100", repo="souliane/teatree", iid="9100", state="merged"
+        )
+        ticket.state = Ticket.State.MERGED
+        ticket.save()
+
+        body = f"## Open gaps\n- [ ] Workflow gap <!-- dream-gap {row.cluster_key} -->\n"
+        host = _fake_host(body=body)
+        host.get_issue.return_value = {"body": body, "state": "merged"}
+
+        assert len(bp_module.reconcile_batches(host, umbrella_url=UMBRELLA)) == 1
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
 

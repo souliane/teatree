@@ -81,7 +81,7 @@ def normalized_spelling(path: str) -> str:
     return str(Path(os.path.realpath(candidate.parent)) / candidate.name)
 
 
-def held_paths(proc_root: Path) -> ProcessTableView:
+def held_paths(proc_root: Path, *, exclude_pid: str | None = None) -> ProcessTableView:
     """Every path a live process holds open under *proc_root*, plus the read's own coverage.
 
     Four distinct liveness forms, every one of them read PER PID and folded into
@@ -118,13 +118,20 @@ def held_paths(proc_root: Path) -> ProcessTableView:
     unknowable pid may hold ANY candidate path, so a sibling that answers buys no
     partial knowledge of what the blind one holds. The per-pid detail is carried
     only as the reported REASON.
+
+    *exclude_pid* drops one pid from the fold, for the caller that is asking whether
+    anyone ELSE is inside a directory: a reaper holds an open descriptor on the very
+    tree it is about to delete, so its own entry makes every candidate read as held.
+    The pid is still counted for the emptiness check below, because a table
+    carrying only this process is a table that has told us nothing.
     """
     try:
-        pids = [entry for entry in proc_root.iterdir() if entry.name.isdigit()]
+        numeric = [entry for entry in proc_root.iterdir() if entry.name.isdigit()]
     except OSError as error:
         return _unsighted(f"process table at {proc_root} is not listable ({error.strerror or error})")
-    if not pids:
+    if not numeric:
         return _unsighted(f"process table at {proc_root} carries no numeric pid — not a process table")
+    pids = [entry for entry in numeric if entry.name != exclude_pid]
     held: set[str] = set()
     answered = 0
     unknowable: list[tuple[str, str]] = []

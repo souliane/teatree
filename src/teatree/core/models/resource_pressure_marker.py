@@ -1,9 +1,9 @@
 """Singleton cadence/rate-limit/hysteresis ledger for the resource-pressure scanner.
 
 The :class:`ResourcePressureScanner` runs every loop tick but only
-*measures* once per ``resource_pressure_cadence_minutes`` and only runs a
-freeing pass once per ``resource_pressure_min_free_interval_minutes`` —
-both gates are carried across tick boundaries by this durable row. Without
+*measures* once per its own ``cadence_minutes`` and only runs a freeing
+pass once per its own ``min_free_interval_minutes`` — both gates are
+carried across tick boundaries by this durable row. Without
 it a sub-minute tick cadence would re-shell ``df``/``vm_stat`` (and worse,
 re-run cache purges) on every tick.
 
@@ -26,12 +26,14 @@ class ResourcePressureMarker(models.Model):
     """One singleton row carrying the cadence/rate-limit/hysteresis state.
 
     ``last_run_at`` gates the measurement cadence; ``last_freed_at`` gates
-    the freeing-pass rate-limit (anti-thrash). ``consecutive_critical``
+    the freeing-pass rate-limit (anti-thrash) and ``last_artifact_sweep_at``
+    the artifact sweep's own, independent cadence. ``consecutive_critical``
     counts back-to-back CRITICAL-RAM ticks so the flag-gated process-kill
     escalation only fires after a sustained episode. ``last_warn_dm_at``
     dedups the WARN-band advisory DM to once per day. ``last_plan`` is the
     human-readable dry-run plan + reclaimed bytes of the most recent
-    freeing pass.
+    freeing pass, and ``last_artifact_plan`` the same for the artifact sweep,
+    which runs on its own cadence and would otherwise overwrite it.
     """
 
     singleton = models.BooleanField(default=True, unique=True)
@@ -39,9 +41,19 @@ class ResourcePressureMarker(models.Model):
     last_disk_free_gb = models.FloatField(null=True, blank=True)
     last_ram_avail_gb = models.FloatField(null=True, blank=True)
     last_freed_at = models.DateTimeField(null=True, blank=True)
+    # Separate from last_freed_at so a loss-free artifact sweep never trips the
+    # destructive ladder's anti-thrash gate — being rate-limited there silently
+    # downgrades a CRITICAL band to a WARN that frees nothing (#4244).
+    last_artifact_sweep_at = models.DateTimeField(null=True, blank=True)
     consecutive_critical = models.IntegerField(default=0)
     last_warn_dm_at = models.DateTimeField(null=True, blank=True)
     last_plan = models.TextField(blank=True, default="")
+    # Separate from last_plan for the same reason last_artifact_sweep_at is separate
+    # from last_freed_at: two passes run on this one mini-loop, and a single shared
+    # field means whichever wrote last is the only account that survives — the other
+    # pass's record of what it deleted, and what its guard stopped, is simply gone
+    # (#4244).
+    last_artifact_plan = models.TextField(blank=True, default="")
     # #3992 The resource loop's OUTPUT, not another input: the intake concurrency it
     # last derived from observed headroom. NULL means never computed, which the reader
     # resolves to the operator's static setting — as does a value older than the

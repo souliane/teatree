@@ -42,6 +42,7 @@ import sys
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Annotated
 
 import typer
@@ -55,7 +56,7 @@ from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, NotifyOptions, notify_user_outcome
 from teatree.core.notify_types import NotifyReason
-from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.on_behalf_egress import NO_TOKEN_FOR_DESTINATION, OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.table_output import print_table
 from teatree.types import RawAPIDict
 
@@ -68,6 +69,24 @@ _WITHHELD_BY_DESIGN: frozenset[NotifyReason] = frozenset({NotifyReason.INTERNAL_
 
 #: Column budget for the digest's "most recent" cell — the rest is on the row itself.
 _DIGEST_EXCERPT_CHARS = 90
+
+
+@dataclass(frozen=True, slots=True)
+class _DmRequest:
+    """One bot->user notification, as the two CLI surfaces hand it to the egress.
+
+    ``requested_push`` is the only field the surfaces disagree on, and it is why
+    they are two commands: a boolean flag on one command is a boolean an alarm
+    script can set, and the deny-by-default interruption policy is worth more than
+    the saved subcommand.
+    """
+
+    body: str
+    idempotency_key: str
+    user_id: str
+    kind: str
+    overlay: str
+    requested_push: bool
 
 
 def _first_line(text: str) -> str:
@@ -102,6 +121,15 @@ class Command(TyperCommand):
         if backend is None:
             self.stderr.write("no messaging backend configured for this overlay")
             raise SystemExit(1)
+        # Read off the TYPE, as ``configured_messaging_from_overlay`` does: a stub's instance attributes are truthy.
+        if getattr(type(backend), "is_noop", False):
+            name = overlay or os.environ.get("T3_OVERLAY_NAME") or "<ambient>"
+            self.stderr.write(
+                f"overlay {name!r} carries no Slack messaging transport (its messaging_backend is noop, or its "
+                f"bot token resolved empty), so nothing can leave the box from it. Run the command through the "
+                f"overlay that holds the Slack credentials: t3 <overlay> notify ...",
+            )
+            raise SystemExit(1)
         return backend
 
     def _require_ok(self, response: RawAPIDict, *, action: str) -> None:
@@ -114,6 +142,11 @@ class Command(TyperCommand):
                 f"{action} failed: missing_scope. The user-OAuth (xoxp) token needs the {needed!r} "
                 f"scope. Add it to the user-OAuth app's scopes and re-auth the token, "
                 f"then retry.",
+            )
+        elif error == NO_TOKEN_FOR_DESTINATION["error"]:
+            self.stderr.write(
+                f"{action} failed: {error}. The request never reached Slack — a colleague/channel destination "
+                f"goes out under the overlay's user-OAuth (xoxp) token, and none resolved for this overlay.",
             )
         else:
             self.stderr.write(f"{action} failed: {error}")
@@ -143,29 +176,82 @@ class Command(TyperCommand):
             typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay bot routing)."),
         ] = "",
     ) -> str:
-        """Send a bot→user Slack DM (exit 0 on delivery, 1 otherwise)."""
-        if not idempotency_key.strip():
+        """Raise a STATUS SIGNAL for the owner (exit 0 on delivery, 1 otherwise).
+
+        The interruption policy decides where it lands: a signal registered in
+        :data:`~teatree.core.modelkit.dm_channel_policy.PUSH_SIGNALS` is DM'd, and an
+        unregistered one is RECORDED on the pulled surface. That default is why one
+        recurring box condition stopped producing a third of a week's DMs.
+
+        This is the surface an ALARM uses — ``deploy/watchdog.sh`` and its peers. A DM
+        somebody ASKED for is ``notify dm``, whose key no registry could hold.
+        """
+        return self._deliver(_DmRequest(body, idempotency_key, user_id, kind, overlay, requested_push=False))
+
+    @command()
+    def dm(
+        self,
+        body: Annotated[
+            str,
+            typer.Argument(help="Slack mrkdwn body. Use ``-`` to read the body from stdin."),
+        ],
+        idempotency_key: Annotated[
+            str,
+            typer.Option("--idempotency-key", help="Required dedupe key (the helper enforces it)."),
+        ] = "",
+        user_id: Annotated[
+            str,
+            typer.Option("--user-id", help="Slack user id to DM (defaults to the configured user)."),
+        ] = "",
+        kind: Annotated[
+            str,
+            typer.Option("--kind", help="Notification kind: info | answer | question."),
+        ] = NotifyKind.INFO.value,
+        overlay: Annotated[
+            str,
+            typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay bot routing)."),
+        ] = "",
+    ) -> str:
+        """DM the owner something that was ASKED FOR (exit 0 on delivery, 1 otherwise).
+
+        Same audited egress as ``send`` — one difference, and it is the whole reason
+        the two are separate commands: this one is not subject to the push/pull
+        registry. That registry answers whether a RECURRING signal earns an
+        interruption, so a one-off note carries a key nobody could have registered in
+        advance; read as an unregistered alarm, two progress notes about one merge
+        request were recorded and never delivered, at exit 0.
+
+        Being a command rather than a flag is what keeps the default safe: an alarm
+        script reaches ``send`` and cannot opt itself out by forgetting a flag.
+        """
+        return self._deliver(_DmRequest(body, idempotency_key, user_id, kind, overlay, requested_push=True))
+
+    def _deliver(self, request: "_DmRequest") -> str:
+        """The shared bot→user egress body for ``send`` and ``dm``."""
+        if not request.idempotency_key.strip():
             self.stderr.write("--idempotency-key must not be empty")
             raise SystemExit(2)
         try:
-            kind_value = NotifyKind(kind)
+            kind_value = NotifyKind(request.kind)
         except ValueError as exc:
-            self.stderr.write(f"unknown --kind {kind!r}; expected one of: {', '.join(k.value for k in NotifyKind)}")
+            self.stderr.write(
+                f"unknown --kind {request.kind!r}; expected one of: {', '.join(k.value for k in NotifyKind)}"
+            )
             raise SystemExit(2) from exc
 
-        text = sys.stdin.read() if body == "-" else body
+        text = sys.stdin.read() if request.body == "-" else request.body
         if not text.strip():
             self.stderr.write("notify body must not be empty")
             raise SystemExit(2)
 
         audience = NotifyAudience.OWNER_QUESTION if kind_value == NotifyKind.QUESTION else NotifyAudience.OWNER_DELIVERY
-        with _overlay_env(overlay):
+        with _overlay_env(request.overlay):
             outcome = notify_user_outcome(
                 text,
                 kind=kind_value,
-                idempotency_key=idempotency_key,
+                idempotency_key=request.idempotency_key,
                 audience=audience,
-                options=NotifyOptions(user_id=user_id or None),
+                options=NotifyOptions(user_id=request.user_id or None, requested_push=request.requested_push),
             )
 
         if outcome.reason in _WITHHELD_BY_DESIGN:
@@ -173,18 +259,24 @@ class Command(TyperCommand):
             # here reads as a transport failure to every shell caller — ``deploy/watchdog.sh``
             # parks such a page and re-sends it every pass — so a withheld status signal
             # would retry forever against a decision that will never change.
-            self.stderr.write(f"withheld from the DM channel for key={idempotency_key}: {outcome.detail}")
-            return f"recorded, not DM'd ({idempotency_key})."
+            # The sibling command is named here because this line is where a caller
+            # expecting a DM first learns there was a policy — exit 0 is what hid it.
+            self.stderr.write(
+                f"withheld from the DM channel for key={request.idempotency_key}: {outcome.detail} "
+                "If this DM was asked for rather than raised by an alarm, re-send it with `notify dm`.",
+            )
+            return f"recorded, not DM'd ({request.idempotency_key})."
         if not outcome.sent:
             # Surface *why* delivery failed instead of a bare rc=1 (#1181). The
             # egress names its own reason, so the branches that leave no audit row
             # (a disabled feature, a lost delivery claim) are diagnosable too — the
             # #1173 silent-rc=1 class — and a wrapper can decide whether to fall back.
             self.stderr.write(
-                f"notify_user did not deliver for key={idempotency_key}: {outcome.reason.value}: {outcome.detail}",
+                f"notify_user did not deliver for key={request.idempotency_key}: "
+                f"{outcome.reason.value}: {outcome.detail}",
             )
             raise SystemExit(1)
-        return f"sent ({idempotency_key})."
+        return f"sent ({request.idempotency_key})."
 
     @command()
     def digest(

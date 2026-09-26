@@ -10,7 +10,15 @@ tool-call input, or a judge rationale. The transcript stays in the PRIVATE
 ``--transcript-html`` artifact; this summary is publish-safe.
 """
 
-from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher, TokenUsage
+from teatree.eval.models import (
+    COST_SOURCE_REPORTED,
+    COST_SOURCE_UNKNOWN,
+    EvalRun,
+    EvalSpec,
+    EvalToolCall,
+    Matcher,
+    TokenUsage,
+)
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult
 from teatree.eval.summary_markdown import _lane_of, _model_of, render_summary_markdown
@@ -32,7 +40,13 @@ def _spec(name: str, *, lane: str = "clean_room", model: str = "claude-sonnet-4-
     )
 
 
-def _run(name: str, *, with_sentinel: bool = False, cost_usd: float = 0.0) -> EvalRun:
+def _run(
+    name: str,
+    *,
+    with_sentinel: bool = False,
+    cost_usd: float = 0.0,
+    cost_source: str = COST_SOURCE_UNKNOWN,
+) -> EvalRun:
     return EvalRun(
         spec_name=name,
         tool_calls=(EvalToolCall(name="Bash", input={"command": SENTINEL}, turn=1),) if with_sentinel else (),
@@ -42,7 +56,17 @@ def _run(name: str, *, with_sentinel: bool = False, cost_usd: float = 0.0) -> Ev
         raw_stdout="",
         raw_stderr="",
         cost_usd=cost_usd,
+        cost_source=cost_source,
         usage=TokenUsage(),
+    )
+
+
+def _trial(name: str, *, cost_usd: float, cost_source: str) -> ScenarioResult:
+    return ScenarioResult(
+        spec=_spec(name),
+        run=_run(name, cost_usd=cost_usd, cost_source=cost_source),
+        matcher_results=(),
+        skipped=False,
     )
 
 
@@ -95,11 +119,13 @@ class TestSingleTrialSummary:
 
 
 class TestMultiTrialSummary:
+    TRIAL_COST = 0.5
+
     def _pass_at_k(self, name: str, *, passes: int, trials: int, lane: str) -> PassAtKResult:
         trial_runs = tuple(
             ScenarioResult(
                 spec=_spec(name, lane=lane),
-                run=_run(name, with_sentinel=True),
+                run=_run(name, with_sentinel=True, cost_usd=self.TRIAL_COST, cost_source=COST_SOURCE_REPORTED),
                 matcher_results=(),
                 skipped=False,
             )
@@ -111,7 +137,7 @@ class TestMultiTrialSummary:
             passes=passes,
             require="any",
             skipped=False,
-            cost_usd=0.5,
+            cost_usd=self.TRIAL_COST * trials,
             trial_results=trial_runs,
         )
 
@@ -188,3 +214,63 @@ class TestLaneOf:
     def test_unknown_when_lane_absent_and_spec_missing(self, monkeypatch) -> None:
         monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", lambda _name: None)
         assert _lane_of("ghost", None) == "unknown"
+
+
+class TestPassAtKCostIsCountedTrialByTrial:
+    """A pass@k row is N executed runs, so the header's honesty qualifier must see them."""
+
+    def test_all_unknown_trials_qualify_the_header_and_render_unknown_cell(self, monkeypatch) -> None:
+        monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", _spec)
+        result = PassAtKResult(
+            spec_name="zeta",
+            trials=3,
+            passes=3,
+            require="any",
+            skipped=False,
+            cost_usd=0.0,
+            trial_results=tuple(_trial("zeta", cost_usd=0.0, cost_source=COST_SOURCE_UNKNOWN) for _ in range(3)),
+        )
+
+        md = render_summary_markdown([result])
+
+        assert "(+3 run(s) cost unknown)" in md
+        assert "| unknown |" in md
+
+    def test_mixed_trials_count_only_the_unknown_ones(self, monkeypatch) -> None:
+        monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", _spec)
+        result = PassAtKResult(
+            spec_name="eta",
+            trials=3,
+            passes=3,
+            require="any",
+            skipped=False,
+            cost_usd=0.2,
+            trial_results=(
+                _trial("eta", cost_usd=0.1, cost_source=COST_SOURCE_REPORTED),
+                _trial("eta", cost_usd=0.1, cost_source=COST_SOURCE_REPORTED),
+                _trial("eta", cost_usd=0.0, cost_source=COST_SOURCE_UNKNOWN),
+            ),
+        )
+
+        md = render_summary_markdown([result])
+
+        assert "(+1 run(s) cost unknown)" in md
+        assert "| $0.2000 |" in md
+
+    def test_unskipped_result_with_no_trials_renders_unknown_cost(self, monkeypatch) -> None:
+        """Nothing was measured, so the $0.0000 fall-through would assert a free run."""
+        monkeypatch.setattr("teatree.eval.summary_markdown.find_spec", _spec)
+        result = PassAtKResult(
+            spec_name="theta",
+            trials=0,
+            passes=0,
+            require="any",
+            skipped=False,
+            cost_usd=0.0,
+            trial_results=(),
+        )
+
+        md = render_summary_markdown([result])
+
+        assert "| unknown |" in md
+        assert "$0.0000 |" not in md

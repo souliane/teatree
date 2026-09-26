@@ -7,6 +7,8 @@ from django_fsm.signals import post_transition
 from teatree.core.admission.dispatch_mask import headless_admission_block_reason
 from teatree.core.issue_title import fetch_issue_title
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
+from teatree.core.models.loop import Loop
+from teatree.core.models.loop_preset import Mode
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -254,6 +256,22 @@ def _fetch_and_stamp_issue_title(ticket_pk: int) -> None:
         ticket.stamp_issue_title(title)
 
 
+def _quiet_new_loop_in_every_preset(
+    sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
+    instance: Loop,
+    *,
+    created: bool,
+    **_kwargs: object,
+) -> None:
+    """A loop born after the presets were written starts OFF in all of them (B1).
+
+    Every creation path lands here — the install seed, the CLI, the Django admin — so no
+    surface can introduce a loop that runs somewhere nobody chose.
+    """
+    if created:
+        Mode.objects.backfill_loop(instance.name)
+
+
 def _auto_enqueue_task(
     sender: type,  # noqa: ARG001 — Django signal receiver signature requires sender even when unused
     instance: Task,
@@ -298,10 +316,10 @@ def _auto_enqueue_task(
     # The task stays PENDING; the (also-gated) drain re-admits it once the governor clears.
     if not admission.admit(int(instance.pk), instance.phase, at="auto-enqueue"):
         return
-    from teatree.core.tasks import execute_task  # noqa: PLC0415 — deferred: call-time import, kept lazy
+    from teatree.core.task_dispatch import enqueue_execution  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     try:
-        execute_task.enqueue(int(instance.pk), instance.phase)
+        enqueue_execution(int(instance.pk), instance.phase)
         logger.info("Auto-enqueued task %s (phase=%s)", instance.pk, instance.phase)
     except Exception:
         logger.exception("Failed to auto-enqueue task %s", instance.pk)
@@ -479,3 +497,4 @@ def register_signals() -> None:
     post_save.connect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
     post_save.connect(_close_session_on_terminal_task, sender=Task, dispatch_uid="close_session_on_terminal_task")
     post_save.connect(_stamp_issue_title_on_create, sender=Ticket, dispatch_uid="ticket_stamp_issue_title")
+    post_save.connect(_quiet_new_loop_in_every_preset, sender=Loop, dispatch_uid="loop_backfill_presets")

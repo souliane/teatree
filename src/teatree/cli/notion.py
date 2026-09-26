@@ -171,8 +171,16 @@ def append(
     overlay: str = typer.Option("", "--overlay", help="Overlay whose token routing to use."),
     body_file: Path = typer.Option(None, "--body-file", help="Markdown body to append."),
     blocks_file: Path = typer.Option(None, "--blocks-file", help="Raw Notion block JSON to append."),
+    after_heading: str | None = typer.Option(
+        None, "--after-heading", help="Insert immediately after this heading's section instead of at the end."
+    ),
 ) -> None:
-    """Append content at the end of a page, then re-fetch to confirm it landed."""
+    """Append content to a page, then re-fetch to confirm it landed.
+
+    Lands at the end unless ``--after-heading`` names a section to follow, which
+    exits 15 when the page carries no such heading rather than falling back to
+    the end. The re-fetch verification is position-independent either way.
+    """
     from teatree.backends.notion.blocks import build_blocks  # noqa: PLC0415 — deferred: lazy CLI import
     from teatree.backends.notion.errors import NotionError, NotionWriteNotLandedError  # noqa: PLC0415 — lazy CLI import
     from teatree.backends.notion.markdown import BlockMarkdownRenderer  # noqa: PLC0415 — deferred: lazy CLI import
@@ -183,7 +191,7 @@ def append(
         page_id = live_page(client, page).page_id
         payload = raw_blocks if raw_blocks is not None else build_blocks(markdown)
         before = len(client.list_block_children(page_id))
-        client.append_block_children(page_id, payload)
+        client.append_block_children(page_id, payload, after=_anchor(client, page_id, after_heading))
         children = client.list_block_children(page_id)
         probe = _append_probe(markdown)
         if probe:
@@ -347,6 +355,34 @@ def _render_comments(found: "list[RawAPIDict]", *, as_json: bool) -> str:
         stamp = f"{author_id} @ {comment.get('created_time', '?')}"
         lines.append(f"- [{comment.get('discussion_id', '?')}] {stamp}: {body}")
     return "\n".join(lines)
+
+
+def _anchor(client: "NotionClient", page_id: str, after_heading: str | None) -> str:
+    """The sibling block a positioned append chains onto; omitted appends at the end, a supplied blank is refused.
+
+    A toggle heading owns its body as children, so anchoring on the heading block
+    itself puts the new content after the whole collapsed section; a plain
+    heading's section ends at its last body sibling.
+    """
+    from teatree.backends.notion.errors import NotionSectionNotFoundError  # noqa: PLC0415 — deferred: lazy CLI import
+
+    if after_heading is None:
+        return ""
+    if not after_heading.strip():
+        msg = (
+            "--after-heading must name a heading; an empty value has no position to insert after. Nothing was written."
+        )
+        raise NotionSectionNotFoundError(msg)
+    section = _locator(client, heading=after_heading, legacy=None).resolve(page_id)
+    if section is None:
+        msg = (
+            f"page {page_id} carries no heading matching {after_heading!r}, so there is no position to "
+            "insert after. Nothing was written."
+        )
+        raise NotionSectionNotFoundError(msg)
+    if section.toggle:
+        return section.heading_id
+    return section.body_block_ids[-1] if section.body_block_ids else section.heading_id
 
 
 def _append_probe(markdown: str) -> str:

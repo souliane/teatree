@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -20,9 +21,10 @@ from django.test import TestCase
 from teatree.cli import recover as cli_recover
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands.recover import RecoverPayload
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import ModeOverride, Session, Task, TaskAttempt, Ticket
 from teatree.core.worktree.recover import RecoverReport, RecoverReportDict, gather_recover_report, requeue_failed_tasks
 from teatree.core.worktree.recovery_sweeps import BootSweepCounts
+from teatree.loop.drain import set_worker_quiescing
 
 
 @contextmanager
@@ -193,10 +195,10 @@ class TestRequeueFailedTasks(TestCase):
         with _mocked_probes():
             report = gather_recover_report()
 
-        reopened = requeue_failed_tasks(report)
+        outcome = requeue_failed_tasks(report)
 
         task.refresh_from_db()
-        assert reopened == [task.pk]
+        assert outcome.reopened == [task.pk]
         assert task.status == Task.Status.PENDING
 
     def test_skips_task_completed_by_concurrent_actor(self) -> None:
@@ -207,11 +209,54 @@ class TestRequeueFailedTasks(TestCase):
         task.claim(claimed_by="other")
         task.complete()
 
-        reopened = requeue_failed_tasks(report)
+        outcome = requeue_failed_tasks(report)
 
         task.refresh_from_db()
-        assert reopened == []
+        assert (outcome.reopened, outcome.held) == ([], [])
         assert task.status == Task.Status.COMPLETED
+
+
+def _requeue(err: StringIO | None = None) -> RecoverPayload:
+    with _mocked_probes():
+        return cast("RecoverPayload", call_command("recover", "--requeue", stdout=StringIO(), stderr=err or StringIO()))
+
+
+class TestRecoverRequeueWaitsForAnAdmittingFleet(TestCase):
+    def test_a_stopped_fleet_leaves_the_candidates_failed_and_reports_why(self) -> None:
+        task = _failed_outage_task(url="https://x/i/20")
+        ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
+        err = StringIO()
+
+        payload = _requeue(err)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert (payload["reopened_task_pks"], payload["held_task_pks"]) == ([], [task.pk])
+        assert "admits no loop" in payload["held_reason"]
+        assert "Held back 1 task(s)" in err.getvalue()
+
+    def test_a_quiescing_worker_leaves_the_candidates_failed(self) -> None:
+        task = _failed_outage_task(url="https://x/i/21")
+        set_worker_quiescing(value=True)
+
+        payload = _requeue()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert payload["held_task_pks"] == [task.pk]
+        assert "quiescing" in payload["held_reason"]
+
+    def test_lifting_the_stop_requeues_each_held_candidate_exactly_once(self) -> None:
+        task = _failed_outage_task(url="https://x/i/22")
+        ModeOverride.objects.set_override("off", reason="test: the operator stopped the fleet")
+        _requeue()
+        ModeOverride.objects.all().delete()
+
+        lifted, again = _requeue(), _requeue()
+
+        task.refresh_from_db()
+        assert (lifted["reopened_task_pks"], again["reopened_task_pks"]) == ([task.pk], [])
+        assert task.status == Task.Status.PENDING
 
 
 class TestRecoverCommand(TestCase):

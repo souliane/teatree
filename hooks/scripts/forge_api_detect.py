@@ -9,10 +9,13 @@ their original names, and the raw-review-post sibling back-imports them lazily.
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` / Django is importable, so the module top imports only
-stdlib ``re``.
+stdlib ``re`` plus the equally stdlib-only ``managed_repo`` sibling.
 """
 
 import re
+from typing import Final
+
+from hooks.scripts.managed_repo import teatree_src_on_path
 
 # REST-API create-endpoint: .../pulls or .../merge_requests WITHOUT /N/merge.
 # Distinguishes a PR/MR create from a list read (GET) or the merge endpoint
@@ -98,10 +101,23 @@ def _is_api_create_endpoint_write(command: str) -> bool:
 # (``/pulls/3887/commits``) so only the PR object itself matches.
 _API_NUMBERED_PR_ENDPOINT_RE = re.compile(r"/(?:pulls|merge_requests)/\d+(?![/\d])")
 
+#: What separates a field flag from its value. Whitespace covers the TAB and the newline
+#: both CLIs tokenise exactly as they do a space; ``=`` covers ``--field=key=value``.
+API_FIELD_SEPARATOR: Final[str] = r"[\s=]"
+#: This module's flags, a SUPERSET of the metadata matcher's (it reads any key, so ``-d``
+#: counts). Long ones ALWAYS need a separator — ``--fieldkey=value`` is a spelling neither
+#: pflag nor cobra accepts — while both CLIs take a short one GLUED to its value. That
+#: glued form was missing here while the sibling accepted it, so a ``-Fstate_event=close``
+#: was invisible to this matcher and the write that changes a PR's STATE read as a
+#: title-only edit, skipping the gate that governs it.
+_LONG_FIELD_FLAGS: Final[str] = r"--field|--raw-field|--data"
+_SHORT_FIELD_FLAGS: Final[str] = r"-[fFd]"
+
 # The ``key`` of a ``-f key=value`` / ``--field`` / ``-F`` / ``--raw-field`` /
 # ``-d`` / ``--data`` argument.
 _API_FIELD_KEY_RE = re.compile(
-    r"(?:^|\s)(?:-f|--field|-F|--raw-field|-d|--data)[\s=]+['\"]?([A-Za-z_][A-Za-z0-9_]*)=",
+    rf"(?:^|\s)(?:(?:{_LONG_FIELD_FLAGS}){API_FIELD_SEPARATOR}+|{_SHORT_FIELD_FLAGS}{API_FIELD_SEPARATOR}*)"
+    r"['\"]?([A-Za-z_][A-Za-z0-9_]*)=",
 )
 
 # Fields carrying only a PR/MR's DESCRIPTIVE metadata. Editing these changes no
@@ -136,3 +152,42 @@ def _is_existing_pr_metadata_only_edit(command: str) -> bool:
         return False
     keys = {m.group(1) for m in _API_FIELD_KEY_RE.finditer(command)}
     return bool(keys) and keys <= _PR_METADATA_FIELDS
+
+
+def is_raw_merge_api_write(command: str) -> bool:
+    """Whether *command* is a raw forge REST WRITE to a merge endpoint.
+
+    Delegates to :func:`teatree.hooks.raw_merge_detect.is_raw_merge_api_write` —
+    the SAME leaf the shared hard-deny registry (Lane B) uses, so the two lanes
+    classify the merge API write identically. Fails CLOSED (treats the command as
+    a possible merge write) on any import error so a broken environment cannot
+    weaken the gate; the cwd-managed check then blocks on uncertainty.
+    """
+    return _raw_merge_probe("is_raw_merge_api_write", command)
+
+
+def invokes_raw_merge_subcommand(command: str) -> bool:
+    """Whether ``command`` INVOKES ``gh pr merge`` / ``glab mr merge`` as an executed program.
+
+    Delegates to the action-aware :mod:`teatree.hooks.raw_merge_detect`, which
+    fires only when the merge subcommand sits at a command position — never when
+    the phrase appears inside a heredoc body, a quoted argument, an
+    ``echo``/``printf`` string, or a ``#`` comment (#2387).
+    """
+    return _raw_merge_probe("invokes_raw_merge_subcommand", command)
+
+
+def _raw_merge_probe(classifier: str, command: str) -> bool:
+    """Run the named :mod:`teatree.hooks.raw_merge_detect` classifier, failing CLOSED.
+
+    The leaf lives under ``src/``, which a cold PreToolUse subprocess reaches only through
+    the bootstrap; an unimportable leaf answers True so a broken environment can never
+    weaken the merge gate — the cwd-managed check then blocks on that uncertainty.
+    """
+    try:
+        with teatree_src_on_path():
+            from teatree.hooks import raw_merge_detect  # noqa: PLC0415 — deferred: cold-hook import
+
+            return bool(getattr(raw_merge_detect, classifier)(command))
+    except Exception:  # noqa: BLE001 — fail-closed: a broken import must not weaken the merge gate
+        return True

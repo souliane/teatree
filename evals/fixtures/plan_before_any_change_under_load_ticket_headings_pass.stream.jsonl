@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"fixt-plan-ticket-headings-pass","model":"claude-sonnet-4-6"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Plan — PROJ-4521\n- Read `src/myapp/forms.py`, write the regression test, remove the literal gate, run focused tests, then commit separately.\n\nPlan — PROJ-4242\n- Read `src/myapp/views.py`, write the two-user regression test, add the visibility filter, run focused tests, then commit separately.\n\nNo edit, commit, or push has happened yet."}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1}

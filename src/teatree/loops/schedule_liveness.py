@@ -20,16 +20,16 @@ which already excludes ``off_live_tick`` loops (``directive_loop``, ``dream``,
 firing their own tick command, never by a worker timer, so having no timer row is
 their correct steady state — exposing them here would be a permanent false alarm.
 
-The ``loop_runner_enabled`` kill-switch is this reading's PRECONDITION, gated the way
-:func:`teatree.cli.doctor.checks_runtime._check_worker_running` and
+A fleet the active preset admits nothing from is this reading's PRECONDITION, gated the
+way :func:`teatree.cli.doctor.checks_runtime._check_worker_running` and
 :class:`teatree.cli.doctor.self_heal._Probe` gate theirs. Step 0 of
 :func:`~teatree.loops.timer_chains.loop_timer` halts WITHOUT enqueueing a successor
-precisely to terminate every chain at its source, and ``Loop.enabled`` is untouched —
-so an OFF switch drains the whole fleet into the state this module reads as stopped.
-Naming those loops would red-line an operator's own decision and hand them remediation
-for a fault they did not have. The OFF state itself is reported once, by the surface
-that owns it (:func:`teatree.cli.doctor.checks_slack_roundtrip._probe_answer_pipeline`),
-never once per enabled loop.
+precisely to terminate every chain at its source, so a stopping posture drains the whole
+fleet into the state this module reads as stopped. Naming those loops would red-line an
+operator's own decision and hand them remediation for a fault they did not have. The
+stopped posture itself is reported once, by the surface that owns it
+(:func:`teatree.cli.doctor.checks_slack_roundtrip._probe_answer_pipeline`), never once
+per loop.
 
 **Disclosed limit.** The corpse predicate keys on a RUNNING row outliving
 ``compute_tick_deadline + STUCK_GRACE_SECONDS``, so a chain dropped mid-window is named
@@ -42,7 +42,8 @@ import datetime as dt
 from dataclasses import dataclass
 
 from teatree.loops.chain_membership import loop_timers_by_name, timer_chain_loop_names
-from teatree.loops.timer_chains import compute_tick_deadline, loop_runner_enabled
+from teatree.loops.enable_verdict import fleet_admits_work
+from teatree.loops.timer_chains import compute_tick_deadline
 from teatree.loops.timer_reconciler import STUCK_GRACE_SECONDS
 
 
@@ -79,14 +80,14 @@ def unscheduled_loops(now: dt.datetime) -> tuple[UnscheduledLoop, ...]:
     A loop named here has silently stopped: nothing will fire it again until the
     reconciler re-heads its chain, and every cadence surface still reads healthy.
 
-    Empty while the ``loop_runner_enabled`` kill-switch is OFF — a drained fleet is
-    then the operator's own decision, not a stopped chain (see the module docstring).
+    Empty while the active preset admits nothing — a drained fleet is then the operator's
+    own decision, not a stopped chain (see the module docstring).
     """
     from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
 
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
-    if not loop_runner_enabled():
+    if not fleet_admits_work():
         return ()
     chain_names = timer_chain_loop_names()
     if not chain_names:

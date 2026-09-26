@@ -368,7 +368,9 @@ class ReconcileBatchesTestCase(TestCase):
         ticket = self._merged_batch_ticket(keys=["gap-a", "gap-b"])
         ticket.merge_extra(set_keys={"dream_gap_claimed_delivered": ["gap-a", "gap-b"]})
         host = _host_with_gap_a_and_b()
-        with patch("teatree.loops.dream.umbrella_ledger._scrubbed_update", return_value=False):
+        # The reconcile checks boxes through umbrella_ledger._ensure_gap_checked, which reads it there.
+        scrubbed_update = "teatree.loops.dream.umbrella_ledger._scrubbed_update"
+        with patch(scrubbed_update, return_value=False):  # patch-binding: defining-module
             assert bp.reconcile_batches(host, umbrella_url=UMBRELLA) == []
         ticket.refresh_from_db()
         assert not ticket.extra.get("dream_gap_reconciled_at")

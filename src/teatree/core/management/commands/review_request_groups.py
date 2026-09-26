@@ -38,7 +38,7 @@ _REASON_HELP = {
     HOST_UNAVAILABLE: "no code host is configured for this overlay, so no group can be resolved.",
     HOST_UNREADABLE: "the open merge request listing could not be read, so every group is held.",
     GROUP_UNRESOLVED: "this merge request is not in the operator's open listing.",
-    GROUP_TOO_LARGE: "the group is above work_group_max_members — the owner has been asked about it.",
+    GROUP_TOO_LARGE: "the group holds more than a dozen merge requests — the owner has been asked about it.",
 }
 
 

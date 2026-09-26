@@ -48,7 +48,7 @@ from django.utils import timezone
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend, PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.core.review.review_candidate import author_is_self
+from teatree.core.review.review_candidate import _is_self_authored
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -63,56 +63,6 @@ _REACTION_PRESENT_ERRORS = frozenset({"already_reacted"})
 def _claim_post(post: ReviewRequestPost) -> bool:
     updated = ReviewRequestPost.objects.filter(pk=post.pk, done_at__isnull=True).update(done_at=timezone.now())
     return updated == 1
-
-
-def _resolve_self_identities(host: CodeHostBackend | None, identities: Iterable[str]) -> set[str]:
-    """Union of configured identity aliases and the host's current user.
-
-    Configured ``identities`` come from ``user_identity_aliases``; the
-    host's ``current_user`` is folded in so the self-author skip still
-    works when no aliases are configured (legacy single-identity setups).
-    A failed ``current_user`` lookup is non-fatal — the configured aliases
-    still apply.
-    """
-    resolved = {name for name in identities if name}
-    if host is not None:
-        try:
-            current = host.current_user()
-        except Exception as exc:  # noqa: BLE001 — a current-user lookup must never crash a tick.
-            logger.warning("review_request_merge_react: current_user lookup failed: %s", exc)
-            current = ""
-        if current:
-            resolved.add(current)
-    return resolved
-
-
-def _is_self_authored(post: ReviewRequestPost, host: CodeHostBackend | None, identities: Iterable[str]) -> bool | None:
-    """Classify authorship of the MR for *post* as self / colleague / unresolved.
-
-    Returns:
-    * ``True`` — the author RESOLVED to one of the user's identities. The
-        reaction is skipped and the row is closed (self-authored).
-    * ``False`` — the author resolved to someone else (or there is no
-        self-identity to protect). The colleague path proceeds and the row
-        may be reacted on.
-    * ``None`` — the author lookup FAILED (the backend raised, or returned
-        ``""`` for a transient failure / unparsable URL). This is a *transient*
-        outcome, not a verdict: the caller skips this tick WITHOUT stamping
-        ``done_at`` so a later tick retries (F5.2). Permanently closing the row
-        here would abandon a colleague's merged review-request on one bad forge
-        read.
-    """
-    self_identities = _resolve_self_identities(host, identities)
-    if not self_identities or host is None:
-        return False
-    try:
-        author = host.get_pr_author(pr_url=post.mr_url)
-    except Exception as exc:  # noqa: BLE001 — author lookup must never crash a tick.
-        logger.warning("review_request_merge_react: author lookup failed for %s: %s", post.mr_url, exc)
-        return None
-    if not author:
-        return None
-    return author_is_self(author, current_user="", self_identities=self_identities)
 
 
 def _release_post(post: ReviewRequestPost) -> None:
@@ -174,7 +124,8 @@ def react_merge_on_post(
     the claim is lost.
 
     Self-authored skip (#1838): when the MR was authored by the user
-    themselves (matched against ``identities`` plus ``host.current_user()``),
+    themselves (matched against owner aliases plus the configured bot identities
+    for the MR's forge host),
     the row is closed and a ``self_authored`` signal returned WITHOUT
     reacting — the bot must never react on the user's own review-request.
 
@@ -185,7 +136,7 @@ def react_merge_on_post(
     """
     if not post.slack_thread_ts:
         return None
-    self_authored = _is_self_authored(post, host, identities)
+    self_authored = _is_self_authored(post.mr_url, host, identities)
     if self_authored is None:
         logger.debug(
             "review_request_merge_react: author lookup unresolved for %s — skipping tick without stamping",
@@ -255,6 +206,7 @@ class ReviewRequestMergeReactScanner:
     messaging: MessagingBackend | None
     host: CodeHostBackend | None = None
     identities: tuple[str, ...] = field(default_factory=tuple)
+    overlay_name: str = ""
     name: str = "review_request_merge_react"
 
     def scan(self) -> list[ScanSignal]:
@@ -263,7 +215,8 @@ class ReviewRequestMergeReactScanner:
         if messaging is None or host is None:
             return []
         signals: list[ScanSignal] = []
-        for post in ReviewRequestPost.objects.filter(done_at__isnull=True).order_by("created_at"):
+        rows = ReviewRequestPost.objects.filter(done_at__isnull=True, overlay=self.overlay_name)
+        for post in rows.order_by("created_at"):
             signal = self._process_one(post, messaging, host)
             if signal is not None:
                 signals.append(signal)

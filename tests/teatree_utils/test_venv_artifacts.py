@@ -103,6 +103,11 @@ class TestForeignVenvInterpreter:
         home.mkdir(parents=True)
         assert foreign_venv_interpreter(_venv_with_home(tmp_path, home), platform="darwin") is None
 
+    def test_platform_text_in_a_parent_directory_does_not_override_the_interpreter_tag(self, tmp_path: Path) -> None:
+        home = tmp_path / "cache-linux-host" / "cpython-3.13-macos-aarch64-none" / "bin"
+        home.mkdir(parents=True)
+        assert foreign_venv_interpreter(_venv_with_home(tmp_path, home), platform="darwin") is None
+
     def test_untagged_system_interpreter_is_not_judged(self, tmp_path: Path) -> None:
         """A system interpreter carries no uv platform tag — absence of proof, not a repoint."""
         home = tmp_path / "usr" / "bin"

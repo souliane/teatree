@@ -720,15 +720,16 @@ like `--gate-cost-regression`/`--baseline` — it is rejected at the `--docker`
 boundary (the ephemeral container is `--no-persist`) and with explicit
 `--no-persist`.
 
-It also needs a backend that RECORDS cost, and only `--backend api` does: both
-backends in `UNMETERED_FRESH_BACKENDS` (`anthropic_api`, `pydantic_ai`) drive the
-model through `PydanticAiRunner`, whose `total_cost_usd` is `None` for a provider
-surfacing no cost key — always the case for Anthropic — so a run that executed
-perfectly records $0 and every pinned ceiling reads `COST MISSING`. That pairing is
-an operator error rather than a cost regression, so `t3 eval run` refuses it
-(exit 2, `require_metering_backend_for_cost_bounds`) instead of emitting violations
-indistinguishable from real ones. Run the gate on the host against the accumulated
-ledger with `t3 eval run --backend api --local --gate-cost-bounds`.
+It also needs a backend whose TRANSPORT reports its own bill, and only `--backend api`
+does: both backends in `UNMETERED_FRESH_BACKENDS` (`anthropic_api`, `pydantic_ai`) drive
+the model through `PydanticAiRunner`, whose `total_cost_usd` is `None` for a provider
+surfacing no cost key — always the case for Anthropic. Their `cost_usd` is instead
+DERIVED from the run's own token usage at the billed model's list rate
+(`teatree.eval.cost_observation`), a different quantity from the billed figure these
+ceilings are calibrated against. `t3 eval run` refuses that pairing (exit 2,
+`require_metering_backend_for_cost_bounds`) rather than report a verdict neither number
+supports. Run the gate on the host against the accumulated ledger with
+`t3 eval run --backend api --local --gate-cost-bounds`.
 
 ### Model matrix
 
@@ -1485,7 +1486,7 @@ Supported matcher operators:
 - `no_tool_call_matching: { <tool>.<arg>: ~ "<regex>" }` (regex) or
   `no_tool_call_matching: { <tool>.<arg>: contains "<substring>" }` (substring) —
   no matching tool call may exist. A negative matcher MUST be paired with a positive
-  anchor (a `tool_call` / `any_of` / `final_state` matcher) in the same
+  anchor (a `tool_call` / `any_of` / `final_state` / `assistant_text` matcher) in the same
   `expect` list — a negative-only scenario is satisfied by a no-op agent and
   guards nothing. `tests/eval_replay/test_scenarios_anti_vacuous.py`
   (`test_no_scenario_has_a_negative_matcher_without_a_positive_anchor`,
@@ -1508,6 +1509,14 @@ Supported matcher operators:
   matcher is non-vacuous against a no-op transcript on its own. Quote the whole
   value (`final_state: '~ "PR #\d+"'`) when the pattern contains a `#`, so YAML
   does not treat it as a comment.
+- `assistant_text: contains "<substring>"` / `assistant_text: ~ "<regex>"` — the same
+  subject widened from the terminal message to the WHOLE response: every assistant text
+  block, joined in order. Use it whenever the graded rule is about what the response
+  SAYS ("present a per-ticket plan in your response"), and keep `final_state` for a rule
+  about how the answer ENDS. Grading such a rule with `final_state` reds a compliant
+  agent that states the thing and then closes on a handoff sentence — the rule was
+  satisfied and the matcher was reading the wrong block. A run that emits no assistant
+  text fails it, so it is a non-vacuous positive anchor exactly like `final_state`.
 
 A scalar arg value that is not a string (a boolean / number such as Bash's
 `run_in_background: true`) is compared against the operator as its `str()`
@@ -1531,10 +1540,11 @@ while keeping a payload only ever reds loudly:
 
 | construct | in the span |
 |---|---|
-| a quoted region attached to an unquoted word fragment (`-m'…'`, `--body='…'`) | elided — an option's own value |
+| a quoted value of a command-specific payload option (`git commit -m'…'`, `gh pr review --body='…'`) | elided — the known option's value |
 | a standalone quoted operand of 4+ words | elided as prose (`'I have not marked the task complete'`) |
 | a shorter standalone quoted operand | kept, quotes removed as the shell removes them — `t3 widget 'ticket clear' 42` is an act, not a report |
-| `$( … )` / backtick bodies inside an elided double-quoted region | kept verbatim (a substitution IS executed), bounded quote-aware so a `)` inside quotes closes nothing |
+| `$( … )` / backtick bodies | recursively reduced to their own executed spans (a substitution IS executed), normalised as `$(…)`, and bounded quote-aware so a `)` inside quotes closes nothing; quoted reports produced inside the substitution stay data |
+| a quoted operand of `echo` / `printf` | elided as a report unless a later pipeline stage is not a known stdin reader; when it may execute the output (`printf '…' \| bash`), the payload stays at a synthetic command boundary so an act remains matchable |
 | the quoted operand of `-c` / a clustered `-lc`, `-ec` / `eval` | kept — a script, not payload. The token is read as bash resolves it, so `'eval'`, `\eval`, `"-c"` and `-c \`+newline all count, and an unresolvable one (`bash $x '…'`) keeps |
 | `<<EOF` heredoc body (unquoted delimiter) | kept |
 | `<<'EOF'` heredoc body (quoted delimiter), `<<<'…'` here-string operand | **redirected text**: elided only where every stage of the command segment provably just READS its stdin (`cat`, `grep`, `wc`, `tee`, `t3`, …). Anything else keeps it whole, however long — `bash`, `ba'sh'`, `\bash`, `$SHELL`, `/bin/b?sh`, `. /dev/stdin`, `cat <<'EOF' \| bash`, an unknown program. The window is every program the text can REACH — bounded by bash's own control operators, so an `&` inside `2>&1`, a `;`/`}`/`)` inside an enclosing group, and a `;`/newline inside `if…fi`, `while`/`until`/`for…done` or `case…esac` all stop hiding a later `\| bash`. The bound is **fail-closed**: it is returned only where every token from the segment start to it was positively recognised, so a construct the scanner does not model — `((…))`, `[[…]]`, `select`, `\|&`, a closer matching no open compound — leaves the window running to end of text and the redirected text KEPT. A process substitution (`> >(bash)`) blocks the proof outright, and so does a redirection inside a function body, whose stdout flows to the call site instead. The whole `<<<` operand is one word, so its quoted regions share one verdict and one prose-floor count. Every decision above reads ONE spliced view of the command, so a `\`+newline continuation cannot bound anything — bash removes the pair before it recognises a token, and so does the scanner |
@@ -1543,10 +1553,10 @@ while keeping a payload only ever reds loudly:
 The redirection rule is stated as a READER proof, not an interpreter list, because the
 complement has no end: `. /dev/stdin`, `source /dev/stdin` and `while read -r l; do eval
 "$l"; done` all execute the redirected text while naming no interpreter. Widen
-`_STDIN_READERS` only by name, with the case that forced it. It still leaves a residue
-`origin/main` also drops, so merging costs no teeth: a payload reaching an interpreter
-through a PIPE (`echo '…' \| bash`) or a variable (`x='…'; eval "$x"`) is a different
-class, pinned in `TestBashGroundTruth` as executed-but-elided rather than assumed away.
+`_STDIN_READERS` only by name, with the case that forced it. A reporting payload reaching
+an interpreter through a pipe is retained; assigning text to a variable and expanding it
+later (`x='…'; eval "$x"`) remains a separate data-flow class pinned in
+`TestBashGroundTruth` as executed-but-elided rather than assumed away.
 
 The reachability window's default is the same asymmetry one level down, and it is the
 module's load-bearing invariant. `teatree.eval.command_window.Recogniser` walks the text
@@ -1595,7 +1605,7 @@ there deletes exactly the evidence: switching every command-negative onto the sp
 was measured to stop 22 of 149 live command-negatives firing and to flip 4
 scenarios RED → GREEN. That is why the view is opt-in and plain `Bash.command`
 is unchanged. `tests/eval_replay/test_command_span.py`
-(`test_exactly_one_negative_grades_the_executed_span`) pins the adopter set, so a
+(`test_only_the_explicit_adopter_set_grades_the_executed_span`) pins the adopter set, so a
 silent mass-conversion shows up as a diff.
 
 ### The shipped catalog never opts into the `frontier` tier

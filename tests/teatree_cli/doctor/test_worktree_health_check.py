@@ -18,6 +18,7 @@ from teatree.cli.doctor.checks_worktree_health import (
     _check_occupied_checkouts,
     _check_one_worktree_root,
     _check_registered_worktrees_are_checkouts,
+    _check_registered_worktrees_have_a_checkout,
     check_worktree_health,
 )
 from teatree.core.models import Ticket, Worktree
@@ -50,7 +51,9 @@ class _TmpTestCase(TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.tmp = Path(tmp.name)
+        # Git and the mount-point probe report physical paths on macOS, where
+        # the lexical ``/var`` temp root resolves through ``/private/var``.
+        self.tmp = Path(tmp.name).resolve()
 
     def _register(self, path: Path, *, branch: str) -> Worktree:
         ticket = Ticket.objects.create(issue_url=f"https://example.invalid/org/repo/issues/{branch}")
@@ -90,6 +93,7 @@ class RegisteredCheckoutCheckTest(_TmpTestCase):
         assert "does not exist in this execution context" in out
         assert "release-dead-rows" not in out
         assert "clean-all" not in out
+        assert "workspace salvage" not in out
 
     def test_a_probe_git_declined_to_answer_warns_instead_of_failing(self) -> None:
         # FAILing here would print a remedy for a state no reaper is allowed to act
@@ -276,4 +280,102 @@ class WorktreeHealthAggregateTest(_TmpTestCase):
         ok, out = _echoes(check_worktree_health)
 
         assert ok is True
+        assert "UNVERIFIED" in out
+
+
+class VanishedCheckoutCheckTest(_TmpTestCase):
+    """A row whose directory is GONE was reported by no doctor surface at all.
+
+    The two checks above filter to rows whose dir EXISTS, which is right for the
+    verdicts they render — absence proves nothing one venue may act on. It also
+    left the biggest population of the registry invisible: measured on a live box,
+    114 of 137 registered rows pointed at a directory that was not there, and the
+    doctor said nothing about any of them. An inventory that is 83% stale silently
+    is worse than one that is loud about it.
+
+    So this reports, and reports only. The one remedy it names is the read-only
+    `release-dead-rows` disposition report, which keeps every such row. What it
+    adds is the count, and the split between a checkout this venue could have seen
+    and one whose whole neighbourhood is unmounted here — the distinction that
+    made a container-only checkout read as lost work.
+    """
+
+    def _vanished(self, name: str) -> Path:
+        """A path under a readable parent that does not exist — genuinely absent HERE."""
+        parent = self.tmp / "roots"
+        parent.mkdir(parents=True, exist_ok=True)
+        return parent / name
+
+    def _pin_canonical(self, root: Path) -> None:
+        self.enterContext(
+            mock.patch(
+                "teatree.core.worktree.worktree_roots.canonical_worktree_root",
+                return_value=root,
+            )
+        )
+
+    def test_a_row_whose_directory_is_gone_is_reported(self) -> None:
+        self._register(self._vanished("gone-wt"), branch="gone-wt")
+
+        ok, out = _echoes(_check_registered_worktrees_have_a_checkout)
+
+        assert ok, "absence proves nothing, so this reports without failing the run"
+        assert "gone-wt" in out
+        assert "WARN" in out
+
+    def test_a_live_checkout_is_not_reported(self) -> None:
+        live = make_git_repo(self.tmp / "live-wt")
+        run_git(live, "checkout", "-b", "live-wt")
+        self._register(live, branch="live-wt")
+
+        ok, out = _echoes(_check_registered_worktrees_have_a_checkout)
+
+        assert ok
+        assert out.strip() == "", f"a live checkout is not drift: {out}"
+
+    def test_each_row_is_named_only_in_its_own_venue_verdict(self) -> None:
+        canonical = self.tmp / "canonical"
+        canonical.mkdir()
+        self._register(canonical / "deleted-ticket" / "repo", branch="gone-wt")
+        self._register(self.tmp / "unmounted-root" / "other-context" / "wt", branch="elsewhere-wt")
+        self._pin_canonical(canonical)
+
+        _ok, out = _echoes(_check_registered_worktrees_have_a_checkout)
+
+        absent_line = next(line for line in out.splitlines() if "READ as absent" in line)
+        unknown_line = next(line for line in out.splitlines() if "UNKNOWN here" in line)
+        assert "gone-wt" in absent_line
+        assert "elsewhere-wt" not in absent_line
+        assert "elsewhere-wt" in unknown_line
+        assert "gone-wt" not in unknown_line
+
+    def test_a_path_that_exists_as_a_file_is_not_reported_as_absent(self) -> None:
+        wrong_kind = self.tmp / "not-a-directory"
+        wrong_kind.write_text("contents", encoding="utf-8")
+        self._register(wrong_kind, branch="wrong-kind")
+
+        _ok, out = _echoes(_check_registered_worktrees_have_a_checkout)
+
+        invalid_line = next(line for line in out.splitlines() if "is not a directory" in line)
+        assert "wrong-kind" in invalid_line
+        assert "READ as absent" not in out
+        assert "UNKNOWN here" not in out
+
+    def test_it_names_only_the_read_only_disposition_command(self) -> None:
+        self._register(self._vanished("gone-wt"), branch="gone-wt")
+
+        _ok, out = _echoes(_check_registered_worktrees_have_a_checkout)
+
+        assert "release-dead-rows" in out
+        assert "salvage" not in out
+        assert "--apply" not in out, "no remedy here may delete: absence is not proof of deadness"
+
+    def test_an_unreadable_registry_does_not_crash_the_run(self) -> None:
+        with mock.patch(
+            "teatree.core.models.Worktree.objects.all",
+            side_effect=RuntimeError("registry unreadable"),
+        ):
+            ok, out = _echoes(check_worktree_health)
+
+        assert ok
         assert "UNVERIFIED" in out

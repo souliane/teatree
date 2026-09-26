@@ -5,11 +5,15 @@ detector and asserts ``auto_fix`` is ``True`` only for the
 ``StaleStatuslineEntryDetector`` per BLUEPRINT § 5.7.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
+from django.utils import timezone
 
-from teatree.core.models import SelfImproveFiring
+from teatree.core import notify as notify_module
+from teatree.core.management.commands.loop_self_improve import _deliver_owner_alert
+from teatree.core.models import BotPing, SelfImproveFiring, Ticket
+from teatree.core.notify_types import DELIVERED, NotifyReason, blocked
 from teatree.loop.self_improve import (
     SLACK_RATE_CAP_SECONDS,
     ActionRung,
@@ -21,7 +25,11 @@ from teatree.loop.self_improve.detectors import (
     ALL_PHASE_1_DETECTORS,
     DispatchGapDetector,
     ForgottenMergeDetector,
+    LifecycleIncidentDetector,
+    PressureIncidentDetector,
+    SkillAssuranceGapDetector,
     StaleStatuslineEntryDetector,
+    TelemetryActionGapDetector,
 )
 
 
@@ -34,6 +42,7 @@ def _report(  # noqa: PLR0913  # test helper: each kwarg maps 1:1 to a DetectorR
     severity: str = "warn",
     max_rung: str = ActionRung.TICKET,
     auto_fix: bool = False,
+    requested_rung: str = ActionRung.STATUSLINE,
 ) -> DetectorReport:
     return DetectorReport(
         detector=detector,
@@ -44,6 +53,7 @@ def _report(  # noqa: PLR0913  # test helper: each kwarg maps 1:1 to a DetectorR
         summary="test report",
         payload={"slack_channel": "C123"},
         auto_fix=auto_fix,
+        requested_rung=requested_rung,
     )
 
 
@@ -58,7 +68,11 @@ class ActionLadderStructuralTests(TestCase):
         assert observed == {
             DispatchGapDetector.__name__: False,
             ForgottenMergeDetector.__name__: False,
+            LifecycleIncidentDetector.__name__: False,
+            PressureIncidentDetector.__name__: False,
+            SkillAssuranceGapDetector.__name__: False,
             StaleStatuslineEntryDetector.__name__: True,
+            TelemetryActionGapDetector.__name__: False,
         }
 
     def test_ladder_constants_match_model_choices(self) -> None:
@@ -93,6 +107,7 @@ class ActionLadderBehaviourTests(TestCase):
         run_action_ladder(first)
         second = _report(state_hash_value="h2")
         messaging = MagicMock()
+        messaging.post_message.return_value = {"ok": True, "ts": "100.1"}
         result = run_action_ladder(second, messaging=messaging)
         assert result is not None
         # statusline → slack is the escalation when ceiling allows it.
@@ -144,6 +159,47 @@ class ActionLadderBehaviourTests(TestCase):
         assert result.auto_fix_executed is False
         callable_.assert_not_called()
 
+    def test_ticket_rung_creates_one_internal_followup_without_posting(self) -> None:
+        first = _report(detector="pressure_incident", dedup_key="pressure_incident::load", state_hash_value="h1")
+        record_firing(first, action=ActionRung.SLACK)
+
+        result = run_action_ladder(
+            _report(detector="pressure_incident", dedup_key="pressure_incident::load", state_hash_value="h2")
+        )
+
+        assert result is not None
+        assert result.rung == ActionRung.TICKET
+        assert result.firing.ticket_id is not None
+        ticket = Ticket.objects.get(pk=result.firing.ticket_id)
+        assert ticket.issue_url == ""
+        assert ticket.overlay == "t3-teatree"
+        assert ticket._extra().get("source") == "self_improve"
+        assert "pressure_incident::load" in ticket.context
+        assert ticket.tasks.filter(phase="planning", status="pending").count() == 1
+        assert Ticket.objects.count() == 1
+
+        # A changed observation updates the same firing, never creates a second ticket.
+        again = run_action_ladder(
+            _report(detector="pressure_incident", dedup_key="pressure_incident::load", state_hash_value="h3")
+        )
+        assert again is not None
+        assert again.firing.ticket_id == ticket.pk
+        assert Ticket.objects.count() == 1
+        assert ticket.tasks.count() == 1
+
+    def test_severe_pressure_can_open_internal_ticket_on_first_detection(self) -> None:
+        result = run_action_ladder(
+            _report(
+                detector="pressure_incident",
+                dedup_key="pressure_incident::memory",
+                requested_rung=ActionRung.TICKET,
+            )
+        )
+        assert result is not None
+        assert result.rung == ActionRung.TICKET
+        assert result.firing.ticket_id is not None
+        assert Ticket.objects.count() == 1
+
     def test_auto_fix_report_jumps_straight_to_auto_fix_on_first_firing(self) -> None:
         """An idempotent self-heal must fire on FIRST observation — no graduated climb.
 
@@ -180,3 +236,75 @@ class ActionLadderBehaviourTests(TestCase):
     def test_slack_cap_constant_is_thirty_minutes(self) -> None:
         """Lock the cap so a refactor cannot loosen the non-negotiable guard."""
         assert SLACK_RATE_CAP_SECONDS == 30 * 60
+
+    def test_unattended_alert_pages_once_per_inert_transition(self) -> None:
+        report = DetectorReport(
+            detector="pressure_incident",
+            dedup_key="pressure_incident::cgroup-probe-inert",
+            state_hash="inert",
+            severity="critical",
+            max_rung=ActionRung.SLACK,
+            requested_rung=ActionRung.SLACK,
+            summary="cgroup RAM floor is unreadable",
+            payload={"kind": "cgroup_probe_inert", "requires_delivery": True},
+        )
+        with patch("teatree.core.notify.notify_user_outcome", return_value=DELIVERED) as send:
+            first = run_action_ladder(report, owner_alert=_deliver_owner_alert)
+            duplicate = run_action_ladder(report, owner_alert=_deliver_owner_alert)
+            SelfImproveFiring.objects.update(resolved_at=timezone.now())
+            recurrence = run_action_ladder(report, owner_alert=_deliver_owner_alert)
+
+        assert first is not None
+        assert first.rung == ActionRung.SLACK
+        assert duplicate is None
+        assert recurrence is not None
+        assert recurrence.rung == ActionRung.SLACK
+        assert send.call_count == 2
+        assert send.call_args_list[0].kwargs["idempotency_key"] != send.call_args_list[1].kwargs["idempotency_key"]
+
+    def test_failed_unattended_alert_does_not_claim_slack_delivery(self) -> None:
+        report = DetectorReport(
+            detector="pressure_incident",
+            dedup_key="pressure_incident::cgroup-probe-inert",
+            state_hash="inert",
+            severity="critical",
+            max_rung=ActionRung.SLACK,
+            requested_rung=ActionRung.SLACK,
+            summary="cgroup RAM floor is unreadable",
+            payload={"kind": "cgroup_probe_inert", "requires_delivery": True},
+        )
+        with patch(
+            "teatree.core.notify.notify_user_outcome",
+            return_value=blocked(NotifyReason.DELIVERY_FAILED),
+        ) as send:
+            assert run_action_ladder(report, owner_alert=_deliver_owner_alert) is None
+            assert run_action_ladder(report, owner_alert=_deliver_owner_alert) is None
+        assert send.call_count == 2
+        assert SelfImproveFiring.objects.count() == 0
+
+    def test_critical_alerts_reach_owner_through_real_push_policy(self) -> None:
+        backend = MagicMock()
+        backend.open_dm.return_value = "D-OWNER"
+        backend.post_message.return_value = {"ok": True, "ts": "1700000000.000001"}
+        backend.get_permalink.return_value = "https://example.slack.com/archives/D-OWNER/p1700000000000001"
+        with (
+            patch.object(notify_module, "resolve_owner_dm_backend", return_value=(backend, NotifyReason.NONE)),
+            patch.object(notify_module, "resolve_user_id", return_value="U-OWNER"),
+        ):
+            for kind in ("ram_probe_inert", "disk_probe_inert", "outbound_unposted"):
+                with self.subTest(kind=kind):
+                    report = DetectorReport(
+                        detector="lifecycle_incident" if kind == "outbound_unposted" else "pressure_incident",
+                        dedup_key=f"probe::{kind}",
+                        state_hash="inert",
+                        severity="critical",
+                        max_rung=ActionRung.SLACK,
+                        requested_rung=ActionRung.SLACK,
+                        summary="The factory requires attention",
+                        payload={"kind": kind, "requires_delivery": True},
+                    )
+                    assert _deliver_owner_alert(report, None) is True
+                    assert _deliver_owner_alert(report, None) is True
+
+        assert backend.post_message.call_count == 3
+        assert BotPing.objects.filter(status=BotPing.Status.SENT).count() == 3

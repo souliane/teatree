@@ -36,6 +36,7 @@ from dataclasses import dataclass
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock
 
+from teatree.agents.compaction_guard import with_compaction_off
 from teatree.agents.harness import Harness, resolve_harness
 from teatree.agents.model_tiering import resolve_tier
 from teatree.llm.credentials import CredentialError, reject_ambient_base_url_redirect
@@ -71,7 +72,8 @@ def _clean_room_options(spec: OneShotSpec) -> ClaudeAgentOptions:
     ``model`` is the tier resolved to a concrete id, so an ``agent_tier_models``
     DB row reaches the turn. ``setting_sources=[]`` + ``settings`` (empty hooks) +
     ``strict_mcp_config`` keep the run virgin; an empty ``tools`` allowlist and a
-    single ``max_turns`` bound it to one context-free answer.
+    single ``max_turns`` bound it to one context-free answer. Its one SDK hook is the
+    compaction tripwire every factory-headless run carries.
 
     This turn pins no credential, so the spawned child inherits the ambient auth
     state AND an ambient ``ANTHROPIC_BASE_URL``. The redirect guard runs HERE rather
@@ -80,14 +82,16 @@ def _clean_room_options(spec: OneShotSpec) -> ClaudeAgentOptions:
     third-party endpoint is the one failure this helper must NOT degrade quietly into ``None``.
     """
     reject_ambient_base_url_redirect()
-    return ClaudeAgentOptions(
-        model=resolve_tier(spec.tier),
-        system_prompt=spec.system_prompt,
-        setting_sources=[],
-        settings=_EMPTY_HOOKS,
-        strict_mcp_config=True,
-        tools=[],
-        max_turns=spec.max_turns,
+    return with_compaction_off(
+        ClaudeAgentOptions(
+            model=resolve_tier(spec.tier),
+            system_prompt=spec.system_prompt,
+            setting_sources=[],
+            settings=_EMPTY_HOOKS,
+            strict_mcp_config=True,
+            tools=[],
+            max_turns=spec.max_turns,
+        )
     )
 
 

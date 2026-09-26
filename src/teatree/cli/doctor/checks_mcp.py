@@ -10,6 +10,8 @@ from pathlib import Path
 
 import typer
 
+from teatree.utils.uv_constraints import uv_tool_install_hint
+
 _CHROME_DEVTOOLS_MCP_NAME = "chrome-devtools"
 
 
@@ -204,9 +206,10 @@ def _check_version_skew(*, repair: bool) -> bool:
         # exact breakage it exists to catch can take it out first — and, uncaught, it took
         # the WHOLE doctor run with it. A check that cannot run is an absent answer, not a
         # clean one: WARN naming the module so the next run's DM carries the cause.
+        repair_command = uv_tool_install_hint("uv tool install --editable . --overrides uv-overrides.txt --reinstall")
         typer.echo(
             f"WARN  the declared-versus-installed skew check could not run: {exc.__class__.__name__}: {exc}. "
-            "Reinstall the running env (`uv tool install --editable . --overrides uv-overrides.txt --reinstall`) "
+            f"Reinstall the running env (`{repair_command}`) "
             "to restore it."
         )
         return True

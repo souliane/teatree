@@ -2,7 +2,7 @@ import os
 import shlex
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
@@ -11,6 +11,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.intake.resolve import resolve_worktree
+from teatree.core.management.commands.e2e import Command as E2eCommand
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.overlay_name_resolution import overlay_name_of
 from teatree.core.runners.service_launch import ServiceLauncher
@@ -132,9 +133,9 @@ class Command(TyperCommand):
     @command(name="build-frontend")
     def build_frontend(
         self,
-        path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         *,
-        prod: bool = typer.Option(default=False, help="Run the overlay's CI production build."),
+        path: Annotated[str, typer.Option(help="Worktree path (auto-detects from PWD if empty).")] = "",
+        prod: Annotated[bool, typer.Option("--prod", help="Run the overlay's CI production build.")] = False,
     ) -> str:
         """Build the frontend app for production/testing.
 
@@ -181,6 +182,23 @@ class Command(TyperCommand):
             extra_args=ctx.args,
             label="Tests",
             missing_message="No test command configured in the overlay.",
+        )
+
+    @command()
+    def e2e(
+        self,
+        test_path: Annotated[str, typer.Argument(help="Targeted E2E spec path.")],
+    ) -> str:
+        """Run one targeted E2E spec through the overlay's configured runner."""
+        return E2eCommand().run(
+            work_item="",
+            test_path=test_path,
+            at="",
+            target="",
+            update_snapshots=False,
+            docker=True,
+            linked_to=0,
+            branch="",
         )
 
     @command(context_settings=_TASK_CONTEXT_SETTINGS)

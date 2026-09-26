@@ -9,9 +9,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
+import teatree.core.management.commands._e2e_runners as e2e_runners_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.utils.run as utils_run_mod
@@ -20,6 +21,8 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.utils.singleton import singleton
 from tests.teatree_core.management_commands._overlays import (
+    _EXTERNAL_RUNNER_OVERLAY,
+    ENV_PRECEDENCE_OVERLAY,
     FULL_OVERLAY,
     MINIMAL_OVERLAY,
     PRE_RUN_OVERLAY,
@@ -245,6 +248,40 @@ class TestRunTests(TestCase):
             assert (worktree.extra or {}).get("pre_run_log") == ["tests"]
             assert "completed" in result.lower()
 
+    @_patch_overlays(ENV_PRECEDENCE_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_run_command_env_wins_over_env_extra_and_process_env(self) -> None:
+        """``RunCommand.env`` is the last word on a key all three layers name.
+
+        An overlay pins a value on the command precisely when the run is only
+        correct under it; a worktree variant exporting the same key through
+        ``env_extra``, or an ambient value inherited from the caller, must not
+        be able to redirect that run.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            mock_run = _popen_mock()
+            with (
+                patch.object(utils_run_mod, "Popen", mock_run),
+                patch.dict(os.environ, {"CLIENT_NAME": "from-process"}),
+            ):
+                call_command("run", "tests", path=str(wt_dir))
+
+            forwarded = mock_run.call_args.kwargs["env"]
+            assert forwarded["CLIENT_NAME"] == "from-command"
+            assert forwarded["ONLY_EXTRA"] == "x"
+
     @_patch_overlays(MINIMAL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_no_command_raises_system_exit(self) -> None:
@@ -301,6 +338,26 @@ class TestRunTestsFailureExitCode(TestCase):
                 call_command("run", "tests", path=str(wt_dir))
 
             assert exc_info.value.code == 1
+
+
+class TestRunE2e(SimpleTestCase):
+    @_patch_overlays(_EXTERNAL_RUNNER_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_external_runner_receives_resolved_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "specs"
+            specs_dir.mkdir()
+            mock_run = _popen_mock()
+            with (
+                patch.dict(os.environ, {"BASE_URL": "https://dev.example"}),
+                patch.object(e2e_runners_mod, "resolve_external_specs_path", return_value=specs_dir) as resolve_specs,
+                patch.object(utils_run_mod, "Popen", mock_run),
+            ):
+                result = cast("str", call_command("run", "e2e", "e2e/offer-summary.spec.ts"))
+
+            assert "passed" in result.lower()
+            assert resolve_specs.call_args.args[1] == ""
+            assert mock_run.call_args.args[0][:3] == ["npx", "playwright", "test"]
 
 
 class TestRunLint(TestCase):

@@ -14,14 +14,17 @@ local hook covers.
 """
 
 import re
+from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.verify_gates import UNCOVERED_CI_JOBS
+from teatree.cli.verify_gates import UNCOVERED_CI_JOBS, _resource_refusal
+from teatree.quality.changed_set import ChangedSet, ChangeEntry
 from tests._git_repo import make_git_repo, run_git
 
 runner = CliRunner()
@@ -29,8 +32,37 @@ runner = CliRunner()
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def _no_real_gate_receipt():
+    with patch("teatree.cli.verify_gates.write_gate_receipt"):
+        yield
+
+
+def test_resource_preflight_measures_disk_and_memory() -> None:
+    with (
+        patch("teatree.cli.verify_gates.free_bytes", return_value=1024**3),
+        patch("teatree.cli.verify_gates.read_ram_headroom") as memory,
+    ):
+        assert "disk" in _resource_refusal()
+        memory.assert_not_called()
+    with (
+        patch("teatree.cli.verify_gates.free_bytes", return_value=8 * 1024**3),
+        patch("teatree.cli.verify_gates.read_ram_headroom", return_value=SimpleNamespace(available_mib=900)),
+    ):
+        assert "memory" in _resource_refusal()
+    with (
+        patch("teatree.cli.verify_gates.free_bytes", return_value=8 * 1024**3),
+        patch("teatree.cli.verify_gates.read_ram_headroom", return_value=SimpleNamespace(available_mib=8192)),
+    ):
+        assert _resource_refusal() == ""
+
+
 def _calls(mock) -> list[list[str]]:
     return [list(call.args[0]) for call in mock.call_args_list]
+
+
+def _changed(*paths: str) -> ChangedSet:
+    return ChangedSet(tuple(ChangeEntry("M", path) for path in paths), "origin/main")
 
 
 def _text(result) -> str:
@@ -55,6 +87,9 @@ def worktree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     clone = make_git_repo(tmp_path / "clone")
     checkout = tmp_path / "wt"
     run_git(clone, "worktree", "add", "-b", "feature", str(checkout))
+    (checkout / "README.md").write_text("test checkout\n", encoding="utf-8")
+    run_git(checkout, "add", "README.md")
+    run_git(checkout, "commit", "-q", "-m", "add README")
     monkeypatch.chdir(checkout)
     return checkout
 
@@ -63,23 +98,96 @@ def _head_sha(repo: Path) -> str:
     return run_git(repo, "rev-parse", "HEAD")
 
 
+@pytest.fixture
+def _healthy_resource_preflight() -> Iterator[None]:
+    with patch("teatree.cli.verify_gates._resource_refusal", return_value=""):
+        yield
+
+
 class TestVerifyGatesRunsBothStages:
-    def test_invokes_push_stage_hooks_not_just_commit(self, worktree: Path) -> None:
+    @pytest.fixture(autouse=True)
+    def _healthy_gate_host(self, worktree: Path) -> Iterator[None]:
+        with (
+            patch("teatree.cli.verify_gates._timeout_available", return_value=True),
+            patch("teatree.cli.verify_gates._resource_refusal", return_value=""),
+        ):
+            yield
+
+    def test_refuses_low_disk_before_launching_prek(self) -> None:
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates._resource_refusal", return_value="disk: 1 GiB free below 4 GiB floor"),
+            patch("teatree.cli.verify_gates.run_streamed") as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 1
+        assert "disk: 1 GiB free below 4 GiB floor" in result.output
+        run.assert_not_called()
+
+    def test_refuses_low_memory_before_launching_prek(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch(
+                "teatree.cli.verify_gates._resource_refusal",
+                return_value="memory: 900 MiB available below 2048 MiB floor",
+            ),
+            patch("teatree.cli.verify_gates.run_streamed") as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 1
+        assert "memory: 900 MiB available below 2048 MiB floor" in result.output
+        run.assert_not_called()
+
+    def test_invokes_push_stage_hooks_not_just_commit(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates._timeout_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
             patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0
         calls = _calls(run)
-        # One bare commit/manual-stage run.
-        assert ["prek", "run", "--all-files"] in calls
+        assert all(c[:4] == ["timeout", "--signal=TERM", "--kill-after=15s", "600s"] for c in calls)
+        assert any(c[4:] == ["prek", "run", "--files", "README.md"] for c in calls)
         # One push-stage run — the gate CI re-runs that the bare run skips.
         push = [c for c in calls if "--hook-stage" in c]
         assert push, "verify-gates must invoke the push stage"
         assert push[0][-2:] == ["--hook-stage", "pre-push"]
 
-    def test_uses_canonical_pre_push_stage_value(self, worktree: Path) -> None:
+    def test_config_change_falls_back_to_all_files(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates._timeout_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("pyproject.toml")),
+            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 0
+        assert all("--all-files" in c for c in _calls(run))
+
+    def test_timeout_is_incomplete_not_green(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates._timeout_available", return_value=True),
+            patch("teatree.cli.verify_gates.changed_paths", return_value=_changed("README.md")),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=[124, 0]),
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 1
+        assert "INCOMPLETE" in result.output
+
+    def test_missing_timeout_fails_closed(self) -> None:
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates._timeout_available", return_value=False),
+            patch("teatree.cli.verify_gates.run_streamed") as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 1
+        run.assert_not_called()
+
+    def test_uses_canonical_pre_push_stage_value(self) -> None:
         """Prek rejects the literal ``push``; the canonical value is ``pre-push``."""
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
@@ -116,9 +224,12 @@ class TestVerifyGatesRunsBothStages:
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.run_streamed", return_value=0),
+            patch("teatree.cli.verify_gates.write_gate_receipt") as receipt,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 0
+        assert receipt.call_args_list[0].kwargs["state"] == "incomplete"
+        assert receipt.call_args_list[-1].kwargs["state"] == "green"
 
     def test_missing_prek_fails_closed(self, worktree: Path) -> None:
         with patch("teatree.cli.verify_gates._prek_available", return_value=False):
@@ -126,7 +237,28 @@ class TestVerifyGatesRunsBothStages:
         assert result.exit_code == 1
 
 
+@pytest.mark.usefixtures("_healthy_resource_preflight")
 class TestVerifyGatesDisclosesTheTree:
+    def test_new_head_committed_during_gates_cannot_get_green_receipt(self, worktree: Path) -> None:
+        starting_head = _head_sha(worktree)
+
+        def _run(cmd: list[str], **_kwargs: object) -> int:
+            if "--hook-stage" not in cmd:
+                run_git(worktree, "commit", "-q", "--allow-empty", "-m", "concurrent commit")
+            return 0
+
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.run_streamed", side_effect=_run),
+            patch("teatree.cli.verify_gates.write_gate_receipt") as receipt,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+
+        assert _head_sha(worktree) != starting_head
+        assert result.exit_code == 2
+        assert "checkout changed" in _text(result)
+        assert receipt.call_args_list[-1].kwargs["state"] == "incomplete"
+
     def test_green_summary_names_the_measured_head_sha(self, worktree: Path) -> None:
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
@@ -173,15 +305,18 @@ class TestVerifyGatesDisclosesTheTree:
         assert set(UNCOVERED_CI_JOBS) <= jobs, f"not CI jobs: {set(UNCOVERED_CI_JOBS) - jobs}"
 
 
+@pytest.mark.usefixtures("_healthy_resource_preflight")
 class TestVerifyGatesRefusesTheWrongTree:
     def test_clean_main_clone_on_default_branch_is_refused(self, main_clone: Path) -> None:
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+            patch("teatree.cli.verify_gates.write_gate_receipt") as receipt,
         ):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 2
         assert not _calls(run), "a refused tree must not be graded"
+        receipt.assert_not_called()
         assert "--allow-main-clone" in _text(result)
 
     def test_allow_main_clone_grades_it_anyway(self, main_clone: Path) -> None:
@@ -255,6 +390,7 @@ class TestVerifyGatesRefusesTheWrongTree:
         assert not _calls(run)
 
 
+@pytest.mark.usefixtures("_healthy_resource_preflight")
 class TestVerifyGatesExpectSha:
     def test_mismatched_target_is_refused_before_any_hook(self, worktree: Path) -> None:
         with (

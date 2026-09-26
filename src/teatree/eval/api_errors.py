@@ -18,6 +18,13 @@ from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, class
 
 BUDGET_EXCEEDED_REASON = "budget_exceeded"
 MAX_TURNS_REASON = "max_turns"
+#: The API refused before the model saw anything, so the scenario did not run — it did not fail.
+USAGE_LIMIT_REACHED_REASON = "usage_limit_reached"
+
+
+class UsageLimitReachedError(RuntimeError):
+    """The Messages API refused with HTTP 400: the organisation reached the usage limit set in its console."""
+
 
 #: The ``terminal_reason`` prefix a throttle that outlasted its bounded retry
 #: budget carries (built in :func:`teatree.eval.throttle_retry.throttle_reason`).
@@ -170,10 +177,14 @@ _PROVISION_TRANSIENT_MARKERS: tuple[str, ...] = ("cannot provision an isolated e
 _RESULT_EVENT_WRAPPER = "returned an error result:"
 
 #: Limit causes that are NEVER a retriable throttle: a $0 metered key has no
-#: time-based recovery (fail loud), and a 7-day weekly cap is never worth waiting
-#: out inside a single run (surface loud). The remaining causes ARE retriable —
-#: RATE_LIMIT as TRANSIENT, SUBSCRIPTION_SESSION as a bounded SUSTAINED window wait.
-_NEVER_RETRY_CAUSES: frozenset[LimitCause] = frozenset({LimitCause.API_CREDIT, LimitCause.SUBSCRIPTION_WEEKLY})
+#: time-based recovery (fail loud), a 7-day weekly cap is never worth waiting
+#: out inside a single run (surface loud), a provider spend stop only lifts on a
+#: budget reset or an operator action, and a leak block re-blocks the same context. The
+#: remaining causes ARE retriable — RATE_LIMIT as TRANSIENT, SUBSCRIPTION_SESSION as a
+#: bounded SUSTAINED window wait.
+_NEVER_RETRY_CAUSES: frozenset[LimitCause] = frozenset(
+    {LimitCause.API_CREDIT, LimitCause.SUBSCRIPTION_WEEKLY, LimitCause.PROVIDER_BUDGET, LimitCause.LEAK_BLOCKED}
+)
 
 #: Exception types no retry loop may ever ride out, on ANY lane — the typed
 #: counterpart to :data:`_NEVER_RETRY_CAUSES`. A dead metered key is terminal for the
@@ -183,7 +194,7 @@ _NEVER_RETRY_CAUSES: frozenset[LimitCause] = frozenset({LimitCause.API_CREDIT, L
 #: first: every such retry loop (:mod:`teatree.eval.throttle_retry`,
 #: :mod:`teatree.eval.ladder`, :mod:`teatree.cli.eval.multi_trial`) keys on this single
 #: tuple rather than a per-site copy.
-NEVER_RETRY_ERRORS: tuple[type[Exception], ...] = (CreditExhaustedError,)
+NEVER_RETRY_ERRORS: tuple[type[Exception], ...] = (CreditExhaustedError, UsageLimitReachedError)
 
 
 def _throttle_from_limit(cause: LimitCause) -> ThrottleSignal | None:

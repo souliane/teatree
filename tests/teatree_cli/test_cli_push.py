@@ -9,7 +9,8 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.push import push
-from teatree.core.forge_push import PUSH_EXIT_CODES, CredentialSource, PushFailure, PushOutcome
+from teatree.core.forge_push import PushOutcome
+from teatree.core.forge_push_verdict import PUSH_EXIT_CODES, CredentialSource, PushFailure
 from tests._git_repo import make_git_repo, run_git
 
 runner = CliRunner()
@@ -96,7 +97,7 @@ class TestPushCommand:
         clone = make_git_repo(tmp_path / "clone", default_branch="feature")
         run_git(clone, "remote", "add", "origin", str(remote))
 
-        with patch("teatree.core.forge_push.run_allowed_to_fail", _exits_zero_without_pushing):
+        with patch("teatree.core.forge_push.run_bounded_group", _exits_zero_without_pushing):
             result = runner.invoke(_app, ["--repo", str(clone)])
 
         assert not run_git(clone, "ls-remote", "--heads", "origin")

@@ -8,8 +8,8 @@ The guard runs in the SAME turn as the post and is the single authority
 on whether a review-request message may go out.
 
 Live read, not just the DB. It reads the target channel's recent
-``conversations.history`` bounded to ``review_request_dedup_window_days``
-(default 30, config-driven — no more hard-coded 24h) with the *same*
+``conversations.history`` bounded to a fixed 30-day window (no more
+hard-coded 24h) with the *same*
 token the post will use — read-token == post-token, so a Slack-Connect
 channel the bot token cannot read is read with the user's ``xoxp``
 exactly when the post would use it. ANY in-window message containing the
@@ -56,6 +56,7 @@ import logging
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import httpx
@@ -72,12 +73,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_READ_TIMEOUT = 8.0
-# Static fallback page cap; the live default is config-driven — see
-# :func:`_default_options` (``review_request_dedup_max_pages``, default 5).
+# How many times the live read pages ``conversations.history``. Five reaches back over
+# the recency window on the busiest channel measured, so an old MANUAL user post is
+# still seen and the request is not duplicated.
 _MAX_PAGES = 5
-# Static fallback only; the live default window is config-driven — see
-# :func:`_default_options` (``review_request_dedup_window_days``, default 30).
-_FALLBACK_RECENCY_WINDOW = dt.timedelta(days=30)
+# How far back the live channel read looks when deciding POST vs SUPPRESS: a posted
+# ``ReviewRequestPost`` row is not trusted on its own beyond it, so live Slack rather
+# than the row's age decides.
+_RECENCY_WINDOW = dt.timedelta(days=30)
 
 # A durable claim is the concurrent check→post race backstop only. An
 # unposted claim older than this window is a stale orphan (e.g. the
@@ -124,20 +127,35 @@ class GuardDecision:
         return self.action == "post"
 
 
-def _reconcile(mr_url: str, permalink: str) -> None:
+class ReconcileStatus(StrEnum):
+    UNREADABLE = "unreadable"
+    ABSENT = "absent"
+    RECONCILED = "reconciled"
+
+
+@dataclass(frozen=True, slots=True)
+class ReconcileResult:
+    status: ReconcileStatus
+    permalink: str = ""
+
+
+def _reconcile(mr_url: str, permalink: str, overlay: str, *, match_ts: str) -> None:
     """Mark the obligation satisfied without touching the loop Task lifecycle.
 
     Sets ``ReviewRequestPost.done_at`` (so ``ReviewNagScanner`` —
     ``done_at__isnull=True`` filter — stops nagging) and transitions any
     matching ``PullRequest`` OPEN → REVIEW_REQUESTED. Idempotent: a row
     already done / a PR already past OPEN is left as-is.
+
+    A match on the row's OWN tracked root proves the request exists, not that its
+    follow-up is done, so ``done_at`` is left for the nag, resume and merge-react.
     """
     with transaction.atomic():
         post, _ = ReviewRequestPost.objects.get_or_create(
             mr_url=mr_url,
-            defaults={"slack_channel_id": "", "slack_thread_ts": ""},
+            defaults={"slack_channel_id": "", "slack_thread_ts": "", "overlay": overlay},
         )
-        if post.done_at is None:
+        if post.done_at is None and post.slack_thread_ts != match_ts:
             post.done_at = timezone.now()
             post.save(update_fields=["done_at"])
         for pr in PullRequest.objects.filter(url=mr_url, state=PullRequest.State.OPEN):
@@ -147,28 +165,10 @@ def _reconcile(mr_url: str, permalink: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class GuardOptions:
-    recency_window: dt.timedelta = _FALLBACK_RECENCY_WINDOW
+    recency_window: dt.timedelta = _RECENCY_WINDOW
     read_timeout: float = _DEFAULT_READ_TIMEOUT
     now: dt.datetime | None = None
     max_pages: int = _MAX_PAGES
-
-
-def _default_options() -> GuardOptions:
-    """Build guard options with the config-driven live-Slack dedup window (#1084 follow-up).
-
-    ``review_request_dedup_window_days`` (default 30) replaces the old
-    hard-coded 24h — so live Slack, not the DB row's age, decides.
-    ``review_request_dedup_max_pages`` (default 5) makes the channel-scan page
-    cap configurable so a ~30-day window is actually reachable on a busy
-    channel (#3292 part 4).
-    """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: Django settings at call time
-
-    settings = get_effective_settings()
-    return GuardOptions(
-        recency_window=dt.timedelta(days=settings.review_request_dedup_window_days),
-        max_pages=settings.review_request_dedup_max_pages,
-    )
 
 
 def _read_matches(
@@ -220,6 +220,7 @@ def _live_decision(
     canonical: str,
     target: GuardTarget,
     opts: GuardOptions,
+    overlay: str,
 ) -> GuardDecision | None:
     """The live-scan terminal decision shared by check and post (#1103).
 
@@ -236,7 +237,7 @@ def _live_decision(
         return GuardDecision(action="suppress", reason="read_failed_failsafe")
     if in_window:
         match = in_window[0]
-        _reconcile(canonical, match.permalink)
+        _reconcile(canonical, match.permalink, overlay, match_ts=match.ts)
         return GuardDecision(
             action="suppress",
             permalink=match.permalink,
@@ -272,6 +273,7 @@ def _posted_row_terminal(
     canonical: str,
     target: GuardTarget,
     opts: GuardOptions,
+    overlay: str,
     *,
     mutate: bool,
 ) -> GuardDecision | None:
@@ -280,7 +282,8 @@ def _posted_row_terminal(
     Kills the "24h DB-decides" behaviour: a row with a ``slack_thread_ts``
     is NOT trusted on its own. The exact thread is live-read with the
     routed post-token — still there ⇒ SUPPRESS (and, when ``mutate``,
-    refresh via :func:`_reconcile` so the nag stops); gone ⇒ POST (and,
+    refresh the PR via :func:`_reconcile`, which leaves the row's own follow-up
+    running because the live thread IS its root); gone ⇒ POST (and,
     when ``mutate``, atomically reclaim the row so a concurrent caller
     can't double-post). Fail-safe: ANY read failure ⇒ SUPPRESS. Returns
     ``None`` when there is no posted row — the caller's claim/POST path
@@ -295,7 +298,7 @@ def _posted_row_terminal(
         return GuardDecision(action="suppress", reason="read_failed_failsafe")
     if read.exists:
         if mutate:
-            _reconcile(canonical, "")
+            _reconcile(canonical, "", overlay, match_ts=post.slack_thread_ts)
         return GuardDecision(action="suppress", reason="already_claimed")
     if not mutate:
         return GuardDecision(action="post", reason="thread_gone")
@@ -322,7 +325,13 @@ def _reclaim_posted_row(canonical: str, observed_ts: str, channel_id: str) -> bo
     return updated == 1
 
 
-def _claim_or_reclaim(canonical: str, target: GuardTarget, *, using: str | None = None) -> GuardDecision:
+def _claim_or_reclaim(
+    canonical: str,
+    target: GuardTarget,
+    overlay: str,
+    *,
+    using: str | None = None,
+) -> GuardDecision:
     """Take the durable race-backstop claim, reclaiming a stale unposted orphan.
 
     Reached only after the live channel scan found nothing AND no posted
@@ -339,7 +348,7 @@ def _claim_or_reclaim(canonical: str, target: GuardTarget, *, using: str | None 
     with transaction.atomic(using=using):
         post, created = manager.select_for_update().get_or_create(
             mr_url=canonical,
-            defaults={"slack_channel_id": target.channel_id, "slack_thread_ts": ""},
+            defaults={"slack_channel_id": target.channel_id, "slack_thread_ts": "", "overlay": overlay},
         )
         if created:
             return GuardDecision(action="post")
@@ -356,6 +365,7 @@ def should_post_review_request(
     *,
     mr_url: str,
     target: GuardTarget,
+    overlay: str,
     options: GuardOptions | None = None,
 ) -> GuardDecision:
     """Decide whether a review-request message for *mr_url* may be posted.
@@ -367,21 +377,22 @@ def should_post_review_request(
     NOT post (the decision-only ``review_request_check``) must use
     :func:`peek_should_post_review_request` instead (#1103).
     """
-    opts = options or _default_options()
+    opts = options or GuardOptions()
     canonical = _canonical(mr_url)
-    terminal = _live_decision(canonical, target, opts)
+    terminal = _live_decision(canonical, target, opts, overlay)
     if terminal is not None:
         return terminal
-    posted = _posted_row_terminal(canonical, target, opts, mutate=True)
+    posted = _posted_row_terminal(canonical, target, opts, overlay, mutate=True)
     if posted is not None:
         return posted
-    return _claim_or_reclaim(canonical, target)
+    return _claim_or_reclaim(canonical, target, overlay)
 
 
 def peek_should_post_review_request(
     *,
     mr_url: str,
     target: GuardTarget,
+    overlay: str,
     options: GuardOptions | None = None,
 ) -> GuardDecision:
     """Decision-only variant: same live-scan dedup, NO durable claim (#1103).
@@ -394,12 +405,12 @@ def peek_should_post_review_request(
     :func:`should_post_review_request` (terminal live-scan decision, or
     ``post`` when the channel is clean) without touching the DB.
     """
-    opts = options or _default_options()
+    opts = options or GuardOptions()
     canonical = _canonical(mr_url)
-    terminal = _live_decision(canonical, target, opts)
+    terminal = _live_decision(canonical, target, opts, overlay)
     if terminal is not None:
         return terminal
-    posted = _posted_row_terminal(canonical, target, opts, mutate=False)
+    posted = _posted_row_terminal(canonical, target, opts, overlay, mutate=False)
     return posted if posted is not None else GuardDecision(action="post")
 
 
@@ -407,23 +418,33 @@ def reconcile_out_of_band(
     *,
     mr_url: str,
     target: GuardTarget,
+    overlay: str,
     options: GuardOptions | None = None,
-) -> str:
+    ignore_ts: str = "",
+) -> ReconcileResult:
     """Live-read-only reconciliation (no DB claim) for the nag path (#1084).
 
-    Returns the discovered permalink when an in-window message for
-    *mr_url* exists (and reconciles ``done_at`` + the PR transition so the
-    nag train stops), else ``""``. A failed/timed-out read returns ``""``
-    — the nag still fires; it must never wedge on a slow Slack read.
+    Distinguishes a confirmed absence from an unreadable channel so only the
+    former can authorize a colleague-visible nag.
+
+    *ignore_ts* drops one message from the read — the caller's OWN tracked root.
+    The nag supplies it, because counting the review request it is nagging about
+    as an out-of-band one reconciles the row on its first due tick and stops the
+    train it exists to run. The default keeps the tracked root counted, which is
+    what ``followup discover-mrs`` asks of the same function: whether the channel
+    carries ANY request for this merge request, where the root IS the answer.
     """
-    opts = options or _default_options()
+    opts = options or GuardOptions()
     canonical = _canonical(mr_url)
-    ok, in_window = _live_matches(canonical, target, opts)
-    if not ok or not in_window:
-        return ""
+    ok, matches = _live_matches(canonical, target, opts)
+    if not ok:
+        return ReconcileResult(ReconcileStatus.UNREADABLE)
+    in_window = [m for m in matches if m.ts != ignore_ts] if ignore_ts else matches
+    if not in_window:
+        return ReconcileResult(ReconcileStatus.ABSENT)
     match = in_window[0]
-    _reconcile(canonical, match.permalink)
-    return match.permalink
+    _reconcile(canonical, match.permalink, overlay, match_ts=match.ts)
+    return ReconcileResult(ReconcileStatus.RECONCILED, match.permalink)
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,7 +474,7 @@ def read_live_asks(
     A failed read is never an empty one: collapsing the two turns an
     unreachable Slack into a confident "nobody was asked".
     """
-    opts = options or _default_options()
+    opts = options or GuardOptions()
     ok, in_window = _read_matches(frozenset(_canonical(url) for url in mr_urls), target, opts)
     if not ok:
         return None
@@ -469,20 +490,37 @@ def _ts_epoch(ts: str) -> float:
 
 
 def overlay_for_mr_url(mr_url: str) -> str:
-    """The overlay owning *mr_url*, or ``""`` to defer to the ambient default.
+    """The overlay owning *mr_url*: the ``T3_OVERLAY_NAME`` pin, the URL's repo owner, else the resolved one.
 
-    The single precedence rule every review-request surface shares (#1310): an
-    explicit ``T3_OVERLAY_NAME`` — what the ``t3 <overlay>`` CLI bridge sets —
-    wins and is consumed by :func:`get_overlay`; otherwise the URL's owning
-    overlay is inferred from repo ownership. Without it the in-process MCP
-    surface (which sets no env var and registers EVERY overlay) resolves no
-    overlay at all, and the guard's swallowed ``Multiple overlays found``
-    becomes a bogus ``no_review_channel_or_token`` on a perfectly postable
-    channel.
+    The single precedence rule every review-request surface shares. The
+    ``t3 <overlay>`` CLI bridge sets the pin; the in-process MCP surface sets none
+    and registers EVERY overlay, so it must infer from repo ownership or the guard's
+    swallowed ``Multiple overlays found`` becomes a bogus
+    ``no_review_channel_or_token`` on a perfectly postable channel. The name is
+    returned concretely rather than deferred to the ambient default because callers
+    also record it on the ``ReviewRequestPost`` row the scheduled scanners select by
+    overlay name, and resolving by name finds the same overlay the pin would.
+
+    A URL no registered overlay claims falls back to the RESOLVED overlay's own
+    name, which a single-overlay process answers and an ambiguous one refuses. That
+    process posts under that overlay either way — leaving the name empty only makes
+    the recorded row unselectable by the scanners that would have followed it up.
     """
-    if os.environ.get("T3_OVERLAY_NAME"):
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
+
+    from teatree.core.overlay_loader import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
+        get_overlay,
+        overlay_name_of,
+    )
+
+    pinned_or_inferred = os.environ.get("T3_OVERLAY_NAME") or infer_overlay_for_url(mr_url)
+    if pinned_or_inferred:
+        return pinned_or_inferred
+    try:
+        return overlay_name_of(get_overlay())
+    except ImproperlyConfigured:
+        logger.warning("review_request_guard: no overlay owns %s and none resolves ambiently", mr_url)
         return ""
-    return infer_overlay_for_url(mr_url)
 
 
 def resolve_guard_target(channel_id: str = "", channel_name: str = "", overlay_name: str = "") -> GuardTarget | None:
@@ -513,8 +551,11 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "", overlay_n
         overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
         return None
-    if not channel_id or not channel_name:
+    if not channel_id:
         channel_name, channel_id = overlay.config.get_review_channel()
+    elif not channel_name:
+        default_name, default_id = overlay.config.get_review_channel()
+        channel_name = default_name if default_id == channel_id else ""
     if not channel_id:
         return None
 

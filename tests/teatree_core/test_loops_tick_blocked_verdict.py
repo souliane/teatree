@@ -2,9 +2,9 @@
 
 #3810 made a tick that ran state its outcome out loud, but only the *lease*
 refusals reached ``_emit_skip``. A loop the loop-table itself declined to
-dispatch — force-OFF, held, disabled, not due, colleague-facing under an away
-mode — still produced an empty job list, and the command rendered that as
-``ran loop 'review' — 0 signal(s), 0 action(s)``.
+dispatch — held, forced OFF by a manual override, masked off by the active
+preset, not due — still produced an empty job list, and the command rendered
+that as ``ran loop 'review' — 0 signal(s), 0 action(s)``.
 
 That is exactly how the ``review`` loop sat force-OFF for hours while every tick
 reported success: the console could not tell "the control plane refused this
@@ -26,7 +26,7 @@ from unittest.mock import patch
 import django.test
 from django.core.management import call_command
 
-from teatree.core.models import Loop, LoopState
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride
 from teatree.loops.base import MiniLoop
 
 _LOOP = "review"
@@ -68,7 +68,7 @@ class TestBlockedLoopVerdict(django.test.TestCase):
         )
 
     def test_a_force_off_loop_is_reported_as_skipped_not_run(self) -> None:
-        LoopState.objects.override(_LOOP, on=False, reason="held until the repo variable is corrected")
+        Loop.objects.set_manual_override(_LOOP, runs=False, reason="held until the repo variable is corrected")
 
         output = _run()
 
@@ -78,7 +78,7 @@ class TestBlockedLoopVerdict(django.test.TestCase):
 
     def test_the_skip_names_the_command_that_lifts_it(self) -> None:
         """A reason the operator cannot act on is only half an answer."""
-        LoopState.objects.override(_LOOP, on=False, reason="emergency")
+        Loop.objects.set_manual_override(_LOOP, runs=False, reason="emergency")
 
         assert "t3 loop override review clear" in _run()
 
@@ -90,13 +90,15 @@ class TestBlockedLoopVerdict(django.test.TestCase):
         assert "SKIP" in output, output
         assert "held" in output.lower(), output
 
-    def test_a_disabled_loop_is_reported_as_skipped_not_run(self) -> None:
-        Loop.objects.filter(name=_LOOP).update(enabled=False)
+    def test_a_preset_masked_loop_is_reported_as_skipped_not_run(self) -> None:
+        Loop.objects.set_manual_override(_LOOP, runs=None)
+        Mode.objects.create(name="masking", entries={_LOOP: False})
+        ModeOverride.objects.set_override("masking", reason="test override")
 
         output = _run()
 
         assert "SKIP" in output, output
-        assert "disabled" in output.lower(), output
+        assert "masked off by the active preset" in output, output
 
     def test_a_dispatched_loop_still_reports_that_it_ran(self) -> None:
         output = _run()
@@ -107,7 +109,7 @@ class TestBlockedLoopVerdict(django.test.TestCase):
     def test_the_two_verdicts_are_distinguishable(self) -> None:
         """The regression this pins: both used to print the identical ``ran`` line."""
         ran = _run()
-        LoopState.objects.override(_LOOP, on=False, reason="emergency")
+        Loop.objects.set_manual_override(_LOOP, runs=False, reason="emergency")
         blocked = _run()
 
         assert ran != blocked
@@ -116,7 +118,7 @@ class TestBlockedLoopVerdict(django.test.TestCase):
 
     def test_the_structured_report_marks_the_refusal_as_skipped(self) -> None:
         """A JSON consumer reads the same distinction the console does."""
-        LoopState.objects.override(_LOOP, on=False, reason="emergency")
+        Loop.objects.set_manual_override(_LOOP, runs=False, reason="emergency")
 
         payload = json.loads(_run(json_output=True))
 

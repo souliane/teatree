@@ -2,10 +2,9 @@
 
 A ``general-purpose`` sub-agent starts with ZERO context — no skills, no repo
 guidelines, no runbook, no memory — so for work in a repo this harness manages it
-rediscovers the stack from scratch and operates outside the workflow. The rule
-existed as an advisory ``additionalContext`` injection, which read as a
-suggestion: it fired about a dozen times in one session and was overridden every
-time. A rule that has failed again needs a gate, not another reminder.
+rediscovers the stack from scratch and operates outside the workflow. The
+refusal names the context-carrying agents, so the caller can re-dispatch
+immediately.
 
 Which repos count is OVERLAY knowledge, so it is read from the overlay registry
 (``managed_repo.overlays_registry`` — the DB-home ``overlays`` row) rather than
