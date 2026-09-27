@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from django.db import transaction
+
 from teatree.eval.regression_corpus_fixtures import (
     StubBackend,
     seed_repo_behind_but_clean,
@@ -32,8 +34,6 @@ from teatree.eval.regression_corpus_fixtures import (
 from teatree.eval.regression_corpus_fixtures import git as _git
 
 if TYPE_CHECKING:
-    from django.db.models import Model
-
     from teatree.core.backend_protocols import MessagingBackend
 
 _SHA_A = "a" * 40
@@ -41,12 +41,31 @@ _SHA_B = "b" * 40
 
 
 @contextmanager
-def _ephemeral_row(row: "Model") -> Iterator[None]:
-    """Delete *row* on exit — the corpus runs against the LIVE control DB, not a test DB."""
-    try:
-        yield
-    finally:
-        row.delete()
+def _ephemeral_row() -> Iterator[None]:
+    """Run the wrapped write against the LIVE control DB in a transaction that NEVER commits.
+
+    A prior shape created the row in autocommit, then relied on ``finally:
+    row.delete()`` to remove it — correct on every ordinary exit, but a hard
+    kill (OOM, a timeout wrapper, a crashed eval run) between the two skips the
+    ``finally`` entirely, and the row is already durable by then. Measured
+    impact: 258 orphaned ``MergeClear`` rows carrying this module's own fixture
+    ``pr_id``/``reviewed_sha`` pairs (``4242``/``_SHA_A``, ``4343``/``_SHA_B``)
+    accumulated in the live control DB over a month and false-tripped the S4
+    ``merge_latency`` factory signal RED, because sqlite has no way to know a
+    committed row was only ever meant to be a throwaway probe.
+
+    Wrapping the write in an uncommitted transaction removes the failure mode
+    instead of racing it: nothing this block writes is ever committed (the
+    ``finally`` forces a rollback on every ordinary exit, success or
+    exception), and a hard kill mid-block leaves an in-flight transaction that
+    sqlite itself discards on the next connection — so a crash and a clean
+    return leave the DB in the identical, untouched state.
+    """
+    with transaction.atomic():
+        try:
+            yield
+        finally:
+            transaction.set_rollback(True)
 
 
 def _seed_config_db(db: Path, key: str, value: object) -> None:
@@ -165,20 +184,23 @@ def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human
 
     slug, pr_id, reviewer, executor = "souliane/teatree", 4242, "cold-reviewer", "loop-session"
     overlay_name = infer_overlay_for_url(slug) or "t3-teatree"
-    clear = MergeClear.issue(
-        ClearRequest(
-            pr_id=pr_id,
-            slug=slug,
-            reviewed_sha=_SHA_A,
-            reviewer_identity=reviewer,
-            gh_verify_result="green",
-            blast_class="substrate",
-            human_authorizer="the-user",
-            executing_loop_identity=executor,
-        )
-    )
+    # A real, committed pre-clean (outside the ephemeral block below) — defense in
+    # depth against a leftover row from before this predicate was made crash-safe.
+    MergeClear.objects.filter(slug=slug, pr_id=pr_id, reviewed_sha=_SHA_A).delete()
 
-    with _ephemeral_row(clear), _staged_overlay_autonomy(overlay_name, autonomy):
+    with _ephemeral_row(), _staged_overlay_autonomy(overlay_name, autonomy):
+        clear = MergeClear.issue(
+            ClearRequest(
+                pr_id=pr_id,
+                slug=slug,
+                reviewed_sha=_SHA_A,
+                reviewer_identity=reviewer,
+                gh_verify_result="green",
+                blast_class="substrate",
+                human_authorizer="the-user",
+                executing_loop_identity=executor,
+            )
+        )
         try:
             _assert_clear_authorized(
                 clear=clear,
@@ -205,15 +227,18 @@ def _check_merge_precondition_maker_is_not_checker() -> bool:
     from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
     slug, pr_id, identity = "souliane/teatree", 4343, "loop-session"
-    clear = MergeClear.objects.create(
-        pr_id=pr_id,
-        slug=slug,
-        reviewed_sha=_SHA_B,
-        reviewer_identity=identity,
-        gh_verify_result=MergeClear.VerifyResult.GREEN,
-        blast_class=MergeClear.BlastClass.LOGIC,
-    )
-    with _ephemeral_row(clear):
+    # A real, committed pre-clean (outside the ephemeral block below) — defense in
+    # depth against a leftover row from before this predicate was made crash-safe.
+    MergeClear.objects.filter(slug=slug, pr_id=pr_id, reviewed_sha=_SHA_B).delete()
+    with _ephemeral_row():
+        clear = MergeClear.objects.create(
+            pr_id=pr_id,
+            slug=slug,
+            reviewed_sha=_SHA_B,
+            reviewer_identity=identity,
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
         try:
             _assert_clear_authorized(
                 clear=clear,
@@ -248,24 +273,28 @@ def _check_loop_owner_lease_pid_anchored() -> bool:
 
     name = "regression-lease"
     foreign_alive_pid = os.getppid()
+    # A real, committed pre-clean (outside the ephemeral block below) — defense in
+    # depth against a leftover row from before this predicate was made crash-safe.
     LoopLease.objects.filter(name=name).delete()
-    LoopLease.objects.claim_ownership(name, session_id="owner-session", owner_pid=foreign_alive_pid, ttl_seconds=1800)
-    # Force the TTL to have lapsed; only the alive foreign pid now protects the lease.
-    LoopLease.objects.filter(name=name).update(lease_expires_at=timezone.now() - timedelta(seconds=10))
-    won_against_alive, _ = LoopLease.objects.claim_ownership(
-        name, session_id="thief-session", owner_pid=os.getpid(), ttl_seconds=1800
-    )
+    with _ephemeral_row():
+        LoopLease.objects.claim_ownership(
+            name, session_id="owner-session", owner_pid=foreign_alive_pid, ttl_seconds=1800
+        )
+        # Force the TTL to have lapsed; only the alive foreign pid now protects the lease.
+        LoopLease.objects.filter(name=name).update(lease_expires_at=timezone.now() - timedelta(seconds=10))
+        won_against_alive, _ = LoopLease.objects.claim_ownership(
+            name, session_id="thief-session", owner_pid=os.getpid(), ttl_seconds=1800
+        )
 
-    dead_pid = unused_pid()
-    LoopLease.objects.filter(name=name).update(
-        session_id="dead-owner",
-        owner_pid=dead_pid,
-        lease_expires_at=timezone.now() - timedelta(seconds=10),
-    )
-    won_against_dead, _ = LoopLease.objects.claim_ownership(
-        name, session_id="successor-session", owner_pid=os.getpid(), ttl_seconds=1800
-    )
-    LoopLease.objects.filter(name=name).delete()
+        dead_pid = unused_pid()
+        LoopLease.objects.filter(name=name).update(
+            session_id="dead-owner",
+            owner_pid=dead_pid,
+            lease_expires_at=timezone.now() - timedelta(seconds=10),
+        )
+        won_against_dead, _ = LoopLease.objects.claim_ownership(
+            name, session_id="successor-session", owner_pid=os.getpid(), ttl_seconds=1800
+        )
     return won_against_alive is False and won_against_dead is True
 
 
@@ -414,10 +443,12 @@ def _check_ship_branch_reconcile_renamed() -> bool:
     from teatree.core.runners.ship import resolve_and_reconcile_branch  # noqa: PLC0415 — deferred: loaded per eval run
 
     issue_url = "https://github.com/souliane/teatree/issues/999999042"
+    # A real, committed pre-clean (outside the ephemeral block below) — defense in
+    # depth against a leftover row from before this predicate was made crash-safe.
     Ticket.objects.filter(issue_url=issue_url).delete()
-    ticket = Ticket.objects.create(overlay="regression-corpus", issue_url=issue_url)
-    prefix = f"{ticket.ticket_number}-"
-    try:
+    with _ephemeral_row():
+        ticket = Ticket.objects.create(overlay="regression-corpus", issue_url=issue_url)
+        prefix = f"{ticket.ticket_number}-"
         with tempfile.TemporaryDirectory() as raw:
             work = Path(raw)
             repo = seed_repo_on_branch(work, f"{prefix}ticket")
@@ -439,8 +470,6 @@ def _check_ship_branch_reconcile_renamed() -> bool:
             worktree.save(update_fields=["branch"])
             with without_git_overrides():
                 fell_back = resolve_and_reconcile_branch(ticket, worktree, str(repo))
-    finally:
-        ticket.delete()
 
     return adopted == f"{prefix}fix-foo" and reconciled_on_row == f"{prefix}fix-foo" and fell_back == f"{prefix}fix-foo"
 
