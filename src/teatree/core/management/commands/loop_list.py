@@ -212,7 +212,8 @@ def _payload(report: LoopStatusReport, *, show_all: bool) -> dict[str, Any]:
 class Command(MachineOutputCommand):
     help = "Print LIVE loop status computed from the DB (read-only; #1744)."
 
-    def handle(
+    # TyperCommand doesn't override BaseCommand.handle; the typed return is MachineOutputCommand's contract.
+    def handle(  # ty: ignore[invalid-method-override]
         self,
         *,
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,

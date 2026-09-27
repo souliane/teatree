@@ -89,4 +89,4 @@ class TestADifferentQuantitySurvives:
     def test_the_weekly_architectural_review_gate_is_not_folded_into_its_daily_row(self) -> None:
         """The control: a fold that took this too would be deleting a real second quantity."""
         assert _row("arch_review")["daily_at"]
-        assert ALL_KNOWN_CONFIG_SETTINGS["architectural_review_cadence_hours"]
+        assert "architectural_review_cadence_hours" in ALL_KNOWN_CONFIG_SETTINGS

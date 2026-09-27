@@ -37,7 +37,8 @@ def _budget_line(budget: dict[str, int]) -> str:
 class Command(MachineOutputCommand):
     help = "Print the standing directives with their resolved cadence, scope, cost and text (#4166)."
 
-    def handle(
+    # TyperCommand doesn't override BaseCommand.handle; the typed return is MachineOutputCommand's contract.
+    def handle(  # ty: ignore[invalid-method-override]
         self,
         *,
         json_output: Annotated[bool, typer.Option("--json", help="Emit the directives as JSON.")] = False,
