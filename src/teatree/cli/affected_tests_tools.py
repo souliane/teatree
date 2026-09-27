@@ -18,6 +18,7 @@ from typing import Any
 
 import typer
 
+from teatree.core.invocation_cwd import invocation_cwd
 from teatree.quality.affected_tests import Selection, build_selection
 
 
@@ -41,6 +42,7 @@ def _selection_as_dict(selection: Selection) -> dict[str, Any]:
 def affected_tests_command(
     base: str = typer.Option("origin/main", "--base", help="Merge-base ref for the changed set."),
     *,
+    repo: Path = typer.Option(invocation_cwd, "--repo", help="Repo root (default: where t3 was invoked)"),
     output_json: bool = typer.Option(False, "--json", help="Emit the machine-readable selection."),
     pytest_args: bool = typer.Option(
         False, "--pytest-args", help="Emit the pytest positional args (for `uv run pytest`)."
@@ -56,8 +58,13 @@ def affected_tests_command(
     classifier cannot prove local (conftest/settings/migrations/data files/deletions/
     files outside the modelled roots) degrades to a whole-tree FULL run with the plugin
     off.
+
+    ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`, not
+    ``Path.cwd()`` — under the containerized ``deploy/t3`` wrapper the process cwd is
+    the image WORKDIR, not the invoking worktree, so selecting against ``Path.cwd()``
+    built a selection for the wrong checkout entirely.
     """
-    selection = build_selection(Path.cwd(), base_ref=base)
+    selection = build_selection(repo, base_ref=base)
 
     if output_json:
         typer.echo(json.dumps(_selection_as_dict(selection), indent=2))
