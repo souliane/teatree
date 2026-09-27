@@ -165,7 +165,8 @@ def coerce_state(raw: object) -> PlanState:
     scenario_source = coerce_bdd_source(raw_dict.get("scenario_source"))
     if scenario_source is not None:
         state["scenario_source"] = scenario_source
-    state.update(coerce_scenario_section(raw_dict))
+    # ScenarioSection is PlanState's own base; ty's TypedDict.update() can't express a compatible partial arg.
+    state.update(coerce_scenario_section(raw_dict))  # ty: ignore[invalid-argument-type]
     return state
 
 
