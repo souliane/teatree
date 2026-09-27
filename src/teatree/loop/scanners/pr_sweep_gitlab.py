@@ -30,7 +30,7 @@ from teatree.core.backend_registry import get_backend_provider
 from teatree.core.merge import MergePreconditionError, execute_bound_merge
 from teatree.core.merge.host_kind import forge_for_repo_slug
 from teatree.loop.scanners.pr_sweep_ports import PrApiClient
-from teatree.loop.scanners.pr_sweep_types import PrSummary
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult, PrSummary
 from teatree.types import RawAPIDict, ScannerError, ScannerErrorClass
 from teatree.utils.pr_ref import PrRef
 
@@ -111,16 +111,20 @@ class GlabPrApiClient:
         del slug, check_name
         return False
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
-        """SHA-bound squash merge on the GitLab transport (#1985's §17.4.3 bind)."""
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
+        """SHA-bound squash merge on the GitLab transport (#1985's §17.4.3 bind).
+
+        A refused precondition carries ``str(exc)`` in ``BoundMergeResult.refusal``
+        (#4856) rather than discarding it.
+        """
         try:
             merged_sha = execute_bound_merge(
                 ref=PrRef(slug=slug, pr_id=pr_id, host_kind="gitlab"),
                 expected_head_oid=expected_head_oid,
             )
-        except MergePreconditionError:
-            return False, ""
-        return True, merged_sha
+        except MergePreconditionError as exc:
+            return BoundMergeResult(merged=False, refusal=str(exc))
+        return BoundMergeResult(merged=True, merged_sha=merged_sha)
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:  # noqa: PLR6301 — PrApiClient port; GitLab exposes no SHA-bound update-branch.
         """Always ``False`` — GitLab's rebase endpoint takes no expected-head bind.
@@ -216,7 +220,7 @@ class ForgePrApiClient:
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
         return self._arm(slug).main_check_failed(slug=slug, check_name=check_name)
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         return self._arm(slug).merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:

@@ -29,6 +29,7 @@ from teatree.loop.scanners.pr_sweep_types import CLEAR_PRESENT_UNUSABLE_REASON a
 from teatree.loop.scanners.pr_sweep_types import CONTESTED_HOLD_REASON as _CONTESTED_HOLD_REASON
 from teatree.loop.scanners.pr_sweep_types import HOLD_AT_HEAD_REASON as _HOLD_AT_HEAD_REASON
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.utils.pr_ref import PrRef
 from teatree.utils.run import run_allowed_to_fail
 
@@ -274,7 +275,7 @@ class GhPrApiClient:
         conclusion = str(match.get("conclusion") or "").strip().lower()
         return conclusion not in {"success", "neutral", "skipped", ""}
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
         """SHA-bound squash merge (#1985) — delegates to the keystone primitive.
 
         Replaces the former unbound ``gh pr merge --squash``: ``execute_bound_merge``
@@ -282,15 +283,16 @@ class GhPrApiClient:
         window is rejected (the §17.4.3 SHA-bind), runs the transient-retry +
         head-moved classification, and never merges an unreviewed head. A merge
         precondition failure (head moved, policy refusal, transient exhaustion)
-        returns ``(False, "")`` to preserve the caller's ``(ok, sha)`` contract.
+        carries ``str(exc)`` in the returned :class:`BoundMergeResult.refusal`
+        (#4856) instead of discarding it.
         """
         from teatree.core.merge import MergePreconditionError, execute_bound_merge  # noqa: PLC0415 — tick-time import
 
         try:
             merged_sha = execute_bound_merge(ref=PrRef(slug=slug, pr_id=pr_id), expected_head_oid=expected_head_oid)
-        except MergePreconditionError:
-            return False, ""
-        return True, merged_sha
+        except MergePreconditionError as exc:
+            return BoundMergeResult(merged=False, refusal=str(exc))
+        return BoundMergeResult(merged=True, merged_sha=merged_sha)
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
         """Merge the base into the PR branch, bound to *expected_head_oid* (#4063).

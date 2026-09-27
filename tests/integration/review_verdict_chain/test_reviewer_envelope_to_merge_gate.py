@@ -31,6 +31,7 @@ from teatree.core.models.types import AdequacySection, PlanAdequacy
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import has_independent_cold_review
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
@@ -85,9 +86,9 @@ class _FakePrApi:
     def list_open_prs(self, *, slug: str) -> list[PrSummary]:
         return [self.pr] if slug == _SLUG else []
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_calls.append((slug, pr_id, expected_head_oid))
-        return True, expected_head_oid
+        return BoundMergeResult(merged=True, merged_sha=expected_head_oid)
 
     def main_check_conclusion(self, *, slug: str, check_name: str) -> str:
         return "SUCCESS"
