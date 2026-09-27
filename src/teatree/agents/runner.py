@@ -50,7 +50,7 @@ from teatree.agents.reader_profile import is_reader_phase, reader_child_env, rea
 from teatree.agents.runner_budget import TicketBudget
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat, renew_lease_closing_connection
-from teatree.agents.runner_interruption import CeilingSalvage, _record_failure
+from teatree.agents.runner_interruption import CeilingSalvage, _record_failure, _record_occupancy_deferred
 from teatree.agents.runner_outcomes import UNROUTED as _UNROUTED  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_outcomes import Transport as _Transport
 from teatree.agents.runner_outcomes import outcome_failure as _outcome_failure  # noqa: F401 — compatibility re-export
@@ -89,7 +89,12 @@ from teatree.config import AgentHarnessProvider
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.task_claim import drive_claim
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
+from teatree.core.worktree.occupancy import (
+    WorktreeOccupiedError,
+    occupy_ticket_checkout,
+    task_holder_id,
+    terminal_task_pk,
+)
 from teatree.credential_config import AllTokensExhaustedError
 from teatree.llm.credentials import CredentialError
 from teatree.types import SkillMetadata
@@ -296,6 +301,11 @@ def run_agent(
             return _run_agent(task, phase=phase, overlay_skill_metadata=overlay_skill_metadata, handoff=handoff)
     except WorktreeOccupiedError as exc:
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+        if exc.holder is not None and terminal_task_pk(exc.holder.holder) is not None:
+            # The self-heal in occupy_ticket_checkout already handles the common
+            # case; this is the residual TOCTOU race against a genuine new holder
+            # that won between that release and this dispatch's own acquire (#4867).
+            return _record_occupancy_deferred(task, error=str(exc))
         return _record_failure(task, error=str(exc))  # no-usage: refused before the harness opened — no turn billed
 
 

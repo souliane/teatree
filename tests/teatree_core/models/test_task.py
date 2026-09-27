@@ -3,12 +3,17 @@
 Lifecycle, child-task spawning, and ``build_task_detail``.
 """
 
+import tempfile
+from pathlib import Path
+from unittest import mock
+
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import DeferredQuestion, InvalidTransitionError, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import DeferredQuestion, InvalidTransitionError, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.task_attempt import TaskAttemptQuerySet
+from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
 
 _FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
@@ -334,3 +339,73 @@ class TestBuildTaskDetail(TestCase):
         from teatree.core.selectors import build_task_detail  # noqa: PLC0415
 
         assert build_task_detail(999999) is None
+
+
+class TaskOccupancyReleaseTests(TestCase):
+    """``complete()``/``fail()`` release their own occupancy claim (souliane/teatree#4867).
+
+    Before #4867 the ONLY release path was ``occupy_ticket_checkout``'s ``finally``
+    in ``run_agent`` — an in-process context-manager unwind a process kill between
+    the status write and that unwind skips entirely, stranding the claim for the
+    rest of its TTL and refusing the ticket's own next-phase task.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        checkout = tempfile.mkdtemp()
+        self.addCleanup(lambda: Path(checkout).exists() and Path(checkout).rmdir())
+        self.worktree = Worktree.objects.create(
+            ticket=self.ticket,
+            overlay="t3-teatree",
+            repo_path="souliane/teatree",
+            branch="feat/4867",
+            state=Worktree.State.PROVISIONED,
+            extra={"worktree_path": checkout},
+        )
+
+    def fresh_worktree(self) -> Worktree:
+        return Worktree.objects.get(pk=self.worktree.pk)
+
+    def test_complete_releases_the_occupancy_claim_it_holds(self) -> None:
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        task.complete(result_artifact_path="/tmp/result.json")
+
+        assert occupancy_holder(self.fresh_worktree()) is None
+
+    def test_fail_releases_the_occupancy_claim_it_holds(self) -> None:
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        task.fail(reason="test: deliberate failure")
+
+        assert occupancy_holder(self.fresh_worktree()) is None
+
+    def test_the_release_rolls_back_with_a_failed_fsm_advance(self) -> None:
+        """Forcing ``_advance_ticket`` to raise inside ``complete()``'s atomic block.
+
+        Must leave the occupancy claim STILL held — proving the release is
+        genuinely coupled to the SAME transaction as the status write, not a
+        fire-and-forget side effect that already committed by the time the
+        FSM advance fails.
+        """
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        with (
+            mock.patch.object(Task, "_advance_ticket", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            task.complete(result_artifact_path="/tmp/result.json")
+
+        held = occupancy_holder(self.fresh_worktree())
+        assert held is not None
+        assert held.holder == task_holder_id(task)
+        task.refresh_from_db()
+        assert task.status != Task.Status.COMPLETED

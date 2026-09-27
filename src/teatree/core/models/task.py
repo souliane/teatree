@@ -478,18 +478,26 @@ class Task(models.Model):
         if not reason.strip():
             msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
             raise ValueError(msg)
-        self.status = self.Status.FAILED
-        self.failure_reason = reason.strip()
-        self.failure_kind = classify_failure(self.failure_reason)
-        self._clear_claim()
-        self.save(
-            update_fields=[
-                "status",
-                "failure_reason",
-                "failure_kind",
-                *CLAIM_FIELDS,
-            ],
+        from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
+            release_task_occupancy,
         )
+
+        with transaction.atomic():
+            # Release BEFORE _clear_claim() blanks claimed_by_session — the CAS
+            # in release_task_occupancy matches on that exact session value (#4867).
+            release_task_occupancy(self)
+            self.status = self.Status.FAILED
+            self.failure_reason = reason.strip()
+            self.failure_kind = classify_failure(self.failure_reason)
+            self._clear_claim()
+            self.save(
+                update_fields=[
+                    "status",
+                    "failure_reason",
+                    "failure_kind",
+                    *CLAIM_FIELDS,
+                ],
+            )
         self.observe_transition("task.failed", cause=self.failure_kind)
 
     def fail_claimed(self, *, reason: str) -> None:

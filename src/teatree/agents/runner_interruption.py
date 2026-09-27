@@ -9,6 +9,7 @@ judgements can fall through to; the runner imports it back for its own pre-turn 
 
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from django.utils import timezone
@@ -27,6 +28,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
+
+#: Marks a park recorded by :func:`_record_occupancy_deferred` (#4867) — never a failure taxonomy
+#: member, so a deferred dispatch is excluded from the repair-loop budget the same way `limit_parked:`
+#: is (see `teatree.core.modelkit.task_failure_taxonomy`).
+OCCUPANCY_DEFERRED_PREFIX = "occupancy_deferred: "
+
+#: How long a deferred dispatch waits before its next claim attempt. By then the occupancy
+#: self-heal (``occupancy._release_if_finished_task``) that this task's OWN retry runs has
+#: already cleared what is, by construction, a stale claim — one retry is enough, no
+#: back-off or recursion needed (#4867).
+_OCCUPANCY_DEFER_SECONDS = 30
 
 #: Stamped into a no-op recovery attempt's ``result['summary']`` (#4834 periodic review).
 #: Public so a consumer can tell "the claim CAS held — a rival's row was already done"
@@ -206,6 +218,22 @@ def _record_interrupted_attempt(
         result=with_transport_records(result, usage),
         **usage_fields(usage),
     )
+
+
+def _record_occupancy_deferred(task: Task, *, error: str) -> TaskAttempt:
+    """Record a residual occupancy-refusal race as a PARK, never a terminal FAILED (#4867).
+
+    ``occupy_ticket_checkout``'s self-heal already releases a claim named by a Task
+    that has already finished, right before it acquires; this covers the narrow
+    TOCTOU window where a genuine new holder wins that race between the self-heal's
+    release and this requester's own acquire. The task returns to PENDING rather
+    than FAILED — it never enters the ``FailureKind``/repair-loop taxonomy for a
+    race that is not its own work failing — and its own retry, at ``not_before``,
+    runs the self-heal again against what is by then a stale claim.
+    """
+    attempt = _record_interrupted_attempt(task, summary=f"{OCCUPANCY_DEFERRED_PREFIX}{error}")
+    task.park(not_before=timezone.now() + timedelta(seconds=_OCCUPANCY_DEFER_SECONDS))
+    return attempt
 
 
 def _record_failure(
