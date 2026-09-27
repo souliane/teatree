@@ -3610,9 +3610,19 @@ Usage: t3 tool affected-tests [OPTIONS]
  plugin
  off.
 
+ ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`,
+ not
+ ``Path.cwd()`` — under the containerized ``deploy/t3`` wrapper the process cwd
+ is
+ the image WORKDIR, not the invoking worktree, so selecting against
+ ``Path.cwd()``
+ built a selection for the wrong checkout entirely.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --base               TEXT  Merge-base ref for the changed set.               │
 │                            [default: origin/main]                            │
+│ --repo               PATH  Repo root (default: where t3 was invoked)         │
+│                            [default: (dynamic)]                              │
 │ --json                     Emit the machine-readable selection.              │
 │ --pytest-args              Emit the pytest positional args (for `uv run      │
 │                            pytest`).                                         │
@@ -4083,6 +4093,15 @@ Usage: t3 tool verify-gates [OPTIONS]
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
  gate). The full test suite is NOT a push gate -- push -> CI runs it.
 
+ ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`,
+ not
+ ``Path.cwd()``: run through the containerized ``deploy/t3`` wrapper, the
+ process
+ cwd is the image WORKDIR, not the worktree the operator stood in, so measuring
+ ``Path.cwd()`` graded whatever checkout happened to be mounted at WORKDIR
+ instead
+ of refusing or measuring the invoking worktree.
+
  Report the measured SHA it prints TOGETHER WITH its exit code as the
  green-proof — an exit code alone does not say which tree earned it. Exits 2
  without grading anything when the tree is not a git checkout, is not the
@@ -4092,6 +4111,8 @@ Usage: t3 tool verify-gates [OPTIONS]
 │ --expect-sha              TEXT  Full or abbreviated SHA this tree must be    │
 │                                 at; any other tree is refused.               │
 │                                 [env var: T3_VERIFY_GATES_EXPECT_SHA]        │
+│ --repo                    PATH  Repo root (default: where t3 was invoked)    │
+│                                 [default: (dynamic)]                         │
 │ --allow-main-clone              Grade a clean main clone on its default      │
 │                                 branch (refused by default).                 │
 │ --help                          Show this message and exit.                  │
