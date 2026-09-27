@@ -147,7 +147,8 @@ class InstructionComplianceRecord(models.Model):
         null=True,
         blank=True,
     )
-    rule_source = models.CharField(max_length=16, choices=RuleSource)
+    # RuleSource is a TextChoices; ty's overload resolution misses the type[TextChoices] branch without a default=.
+    rule_source = models.CharField(max_length=16, choices=RuleSource)  # ty: ignore[invalid-argument-type]
     rule_identity = models.CharField(max_length=512)
     evidence = models.TextField(blank=True, default="")
     is_recurrence = models.BooleanField(default=False)

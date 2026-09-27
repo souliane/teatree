@@ -54,7 +54,8 @@ _SCOPE_HELP = "Routing scope to select for; defaults to the active overlay (T3_O
 
 
 class Command(MachineOutputCommand):
-    def handle(
+    # TyperCommand doesn't override BaseCommand.handle; the typed return is MachineOutputCommand's contract.
+    def handle(  # ty: ignore[invalid-method-override]
         self,
         *,
         json_output: Annotated[
