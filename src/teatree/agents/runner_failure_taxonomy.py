@@ -13,12 +13,18 @@ message, which is what keeps the ``claude_sdk`` and ``pydantic_ai`` failure
 vocabularies from drifting apart.
 """
 
+from collections.abc import Iterable, Mapping
 from http import HTTPStatus
+from typing import TypeGuard
 
 from claude_agent_sdk import ResultMessage
 from claude_agent_sdk.types import RateLimitInfo
 
-from teatree.core.modelkit.task_failure_taxonomy import CONTEXT_EXHAUSTED_MARKER, RESULT_ERROR_MARKER
+from teatree.core.modelkit.task_failure_taxonomy import (
+    CLI_TOO_OLD_PREFIX,
+    CONTEXT_EXHAUSTED_MARKER,
+    RESULT_ERROR_MARKER,
+)
 from teatree.llm.anthropic_limits import (
     LimitCause,
     LimitMatch,
@@ -49,6 +55,12 @@ CONTEXT_EXHAUSTION_PHRASES = (
     "input is too long for requested model",
     "input length and `max_tokens` exceed context limit",
 )
+
+#: The ``SystemMessage`` subtype the CLI streams when ``fallback_model`` took over a refused request.
+MODEL_FALLBACK_SUBTYPE = "model_fallback"
+
+#: The API's error code for a CLI build older than the requested model supports (#4874).
+CLI_TOO_OLD_ERROR_CODE = "claude_code_version_too_old"
 
 #: The HTTP statuses on which a provider has REFUSED the credential outright — a router key
 #: at its cycle spend limit, a revoked or wrong key. Unlike a 429 these never clear on their
@@ -97,6 +109,32 @@ def context_exhaustion_reason(message: ResultMessage | None) -> str:
     """The recorded reason for a full context window: a retried kind, so the run re-dispatches fresh."""
     detail = (error_result_reason(message) or "").removeprefix(RESULT_ERROR_PREFIX)
     return f"{RESULT_ERROR_PREFIX}{CONTEXT_EXHAUSTED_MARKER} — {detail}"
+
+
+def is_refused_resume(message: ResultMessage | None) -> TypeGuard[ResultMessage]:
+    """Whether a run ended cleanly without taking a single turn — how the CLI declines a resume it cannot fit."""
+    return message is not None and not message.is_error and not message.num_turns
+
+
+def refused_resume_reason(message: ResultMessage) -> str:
+    """The recorded reason for a declined resume: an exhausted conversation, so the retry starts fresh."""
+    return (
+        f"{RESULT_ERROR_PREFIX}{CONTEXT_EXHAUSTED_MARKER} — subtype={message.subtype} — "
+        "the resumed conversation ended without taking a turn"
+    )
+
+
+def cli_too_old_fallback(fallbacks: Iterable[Mapping[str, object]]) -> Mapping[str, object] | None:
+    """The ``model_fallback`` the CLI took because its build cannot serve the requested model, else ``None``."""
+    return next((event for event in fallbacks if CLI_TOO_OLD_ERROR_CODE in str(event.get("content") or "")), None)
+
+
+def cli_too_old_reason(fallback: Mapping[str, object]) -> str:
+    """The recorded reason: the model that refused, the one that served instead, and the CLI's own words."""
+    return (
+        f"{CLI_TOO_OLD_PREFIX}{fallback.get('original_model')} refused this Claude Code build; "
+        f"{fallback.get('fallback_model')} served the run — {fallback.get('content')}"
+    )
 
 
 def limit_match(
@@ -164,12 +202,18 @@ def _metered_status_match(status: int | None, text: str, matched: LimitMatch | N
 
 
 __all__ = [
+    "CLI_TOO_OLD_ERROR_CODE",
     "CONTEXT_EXHAUSTION_PHRASES",
     "HARD_REFUSAL_STATUSES",
+    "MODEL_FALLBACK_SUBTYPE",
     "RESULT_ERROR_PREFIX",
     "TURN_CEILING_SUBTYPE",
+    "cli_too_old_fallback",
+    "cli_too_old_reason",
     "context_exhaustion_reason",
     "error_result_reason",
     "is_context_exhaustion",
+    "is_refused_resume",
     "limit_match",
+    "refused_resume_reason",
 ]

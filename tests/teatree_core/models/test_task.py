@@ -436,3 +436,35 @@ class TaskOccupancyReleaseTests(TestCase):
         assert held.holder == task_holder_id(task)
         task.refresh_from_db()
         assert task.status != Task.Status.COMPLETED
+
+
+class TestAParkedConversationTheRetryCannotContinueStartsFresh(TestCase):
+    """souliane/teatree#4874: tasks 4973/4975 grew on Sonnet 5, then resumed as Opus 5.5 into a wall."""
+
+    def setUp(self) -> None:
+        ticket = Ticket.objects.create()
+        self.task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
+
+    def _parked(self, **attempt: object) -> str:
+        TaskAttempt.objects.create(
+            task=self.task,
+            agent_session_id=_FAKE_UUID,
+            exit_code=1,
+            **{"num_turns": 162, "model": "claude-opus-5-5", "selected_model": "claude-opus-5-5", **attempt},
+        )
+        return self.task.continuation_on_requeue()
+
+    def test_a_conversation_the_cli_fallback_served_is_not_resumed(self) -> None:
+        assert self._parked(model="claude-sonnet-5", model_fell_back=True) == Task.SessionContinuation.FRESH
+
+    def test_a_conversation_with_no_room_left_for_another_prompt_is_not_resumed(self) -> None:
+        assert self._parked(context_tokens=313_014, context_window_tokens=350_000) == Task.SessionContinuation.FRESH
+
+    def test_a_conversation_on_its_own_model_with_room_left_is_resumed(self) -> None:
+        assert self._parked(context_tokens=313_014, context_window_tokens=1_000_000) == Task.SessionContinuation.SELF
+
+    def test_a_router_resolving_its_handle_to_a_concrete_model_is_not_a_fallback(self) -> None:
+        """The metered lane records the router's pick as the model; that is no reason to drop its thread."""
+        routed = self._parked(model="qwen/qwen3-coder", selected_model="orcarouter/teatree-factory")
+
+        assert routed == Task.SessionContinuation.SELF
