@@ -11,7 +11,7 @@ from typing import ClassVar
 from django.db.models import Q
 from django.utils import timezone
 
-from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS, FailureKind
 from teatree.core.models import DeferredQuestion, PendingChatInjection, SelfImproveFiring, Task, Ticket
 from teatree.core.telemetry.admission import checked_lifecycle_observations
 from teatree.loop.scanners.base import ScanSignal
@@ -24,7 +24,9 @@ _CLAIM_WAIT = timedelta(minutes=10)
 _RECURRING_FAILURE = 3
 _OWNER_ALERT_WAIT = timedelta(minutes=30)
 _REPAIR_WAIT = timedelta(hours=2)
-_RECOVERED_KINDS = {FailureKind.CANCELLED, FailureKind.SUPERSEDED}
+# Shared with the repair-burn factory signal (factory_signal_queries.compute_s5) so the
+# two agree on what counts as a real repair-loop failure vs. an administrative end.
+_RECOVERED_KINDS = NON_REPAIR_KINDS
 _SUBSTANTIVE_REPLIES = {
     PendingChatInjection.AnswerKind.SIMPLE,
     PendingChatInjection.AnswerKind.QUESTION_REPLY,

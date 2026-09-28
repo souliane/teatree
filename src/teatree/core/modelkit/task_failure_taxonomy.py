@@ -229,6 +229,14 @@ RECOVERY: Mapping[str, Recovery] = {
 #: them (a factory dispatching and crashing is a factory completing nothing).
 _HARNESS_FAULT: frozenset[str] = frozenset({FailureKind.HARNESS_CRASH, FailureKind.HARNESS_CONTROL_TIMEOUT})
 
+#: Kinds that end a task WITHOUT the repair loop having failed on its own merits — an
+#: operator cancellation or a supersede by rework. Public (not the environmental axis:
+#: both are ``environmental=False`` above) because two independent readers need the
+#: SAME answer to "was this a real repair failure?": the incident detector (which of
+#: these to page on) and the repair-burn factory signal (which to count toward its
+#: failure fraction). One shared set keeps them from silently disagreeing.
+NON_REPAIR_KINDS: frozenset[str] = frozenset({FailureKind.CANCELLED, FailureKind.SUPERSEDED})
+
 #: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT
 #: fingerprint collision — ``no_result_envelope``'s constant reason self-collides,
 #: ``runtime_ceiling``'s interpolated one does not. See the module docstring: dropped from
@@ -429,6 +437,7 @@ __all__ = [
     "AGENT_ABANDONED_PREFIX",
     "CANCELLED_PREFIX",
     "LEASE_EXPIRED_PREFIX",
+    "NON_REPAIR_KINDS",
     "RECOVERY",
     "REVIEW_UNRECORDABLE_PREFIX",
     "SUPERSEDED_PREFIX",
