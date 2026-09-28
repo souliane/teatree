@@ -34,6 +34,7 @@ from teatree.core.factory.factory_signals import (
 )
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import resolve_pr_repo_slug
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
@@ -656,6 +657,27 @@ class S5RepairBurnTests(FactorySignalsTestBase):
             self._attempt(days_ago=5, iteration=1)
         for _ in range(10):
             self._attempt(days_ago=5, iteration=0, exit_code=1, error=f"{LIMIT_PARKED_PREFIX}session window active")
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "repair_burn")
+        assert row.evidence["attempts"] == 5
+        assert row.evidence["failed_fraction"] == pytest.approx(0.0)
+        assert row.tripped is False
+        assert row.verdict == SignalVerdict.OK
+
+    def test_cancelled_rows_do_not_inflate_failure_fraction(self) -> None:
+        # An operator cancellation ends a task without the repair loop having failed on
+        # its own merits — lifecycle_incident.py's NON_REPAIR_KINDS already treats it as
+        # recovered, not an incident. 5 clean successes + 10 cancellations must read the
+        # same as 5 clean successes alone, exactly like the limit-park case above.
+        for _ in range(5):
+            self._attempt(days_ago=5, iteration=1)
+        for _ in range(10):
+            self._attempt(
+                days_ago=5,
+                iteration=1,
+                exit_code=1,
+                error=f"{CANCELLED_PREFIX}cancelled by an operator with no reason given",
+            )
         report = compute_factory_signals(now=self.now)
         row = _row(report, "repair_burn")
         assert row.evidence["attempts"] == 5
