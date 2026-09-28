@@ -46,6 +46,17 @@ class TerminalTaskPkTests(TestCase):
         with mock.patch.object(singleton_mod, "pid_alive", return_value=True):
             assert terminal_task_pk(task_holder_id(task)) is None
 
+    def test_a_task_its_live_holder_completed_resolves_to_its_pk(self) -> None:
+        ticket = TicketFactory()
+        task = Task.objects.create(ticket=ticket, session=SessionFactory(ticket=ticket), phase="coding")
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+
+        task.complete()
+
+        assert Task.objects.get(pk=task.pk).owner_pid is None
+        with mock.patch.object(singleton_mod, "pid_alive", return_value=True):
+            assert terminal_task_pk(task_holder_id(task)) == task.pk
+
     def test_a_live_tasks_holder_id_resolves_to_none(self) -> None:
         task = TaskFactory(status=Task.Status.CLAIMED)
         assert terminal_task_pk(task_holder_id(task)) is None

@@ -31,18 +31,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_COMPLETION_FIELDS = (
-    "status",
-    "result_artifact_path",
-    "claimed_at",
-    "claimed_by",
-    "claimed_by_session",
-    "lease_expires_at",
-    "heartbeat_at",
-    "owner_pid",
-    "owner_pid_namespace",
-    "owner_driving_since",
-)
+_COMPLETION_FIELDS = ("status", "result_artifact_path", *RELEASED_CLAIM)
 
 #: The lease every HEARTBEAT-RENEWED claim takes, in place of :func:`claim`'s 300s default.
 #: The renewal is an asyncio task on the same event loop the agent drives, so a starved box
@@ -265,21 +254,19 @@ def _generation_holds(task: "Task") -> bool:
     would be compared against itself. An out-of-process caller therefore proves its
     generation with :func:`claim_generation` at its own boundary before recording.
 
-    The ``status=CLAIMED`` filter closes #4872: a third-party ``fail(by_holder=False)``
-    leaves the claim fields intact but flips status to FAILED, and without this filter
-    the holder's own terminalization would still match those fields and complete over it.
+    A holder instance (in-memory CLAIMED) also needs the live row still CLAIMED: a
+    live-owner ``fail(by_holder=False)`` keeps the claim fields, so the generation alone
+    cannot tell the holder from a fresh-reading operator or sweep on that row (#4872).
     """
-    return (
-        type(task)
-        .objects.filter(
-            pk=task.pk,
-            status=task.Status.CLAIMED,
-            claimed_by=task.claimed_by,
-            claimed_by_session=task.claimed_by_session,
-            claimed_at=task.claimed_at,
-        )
-        .exists()
+    live = type(task).objects.filter(
+        pk=task.pk,
+        claimed_by=task.claimed_by,
+        claimed_by_session=task.claimed_by_session,
+        claimed_at=task.claimed_at,
     )
+    if task.status == task.Status.CLAIMED:
+        live = live.filter(status=task.Status.CLAIMED)
+    return live.exists()
 
 
 def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
@@ -301,16 +288,9 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
         release_task_occupancy(task)
         task.status = task.Status.COMPLETED
         task.result_artifact_path = result_artifact_path
-        task.claimed_at = None
-        task.claimed_by = ""
-        task.claimed_by_session = ""
-        task.lease_expires_at = None
-        task.heartbeat_at = None
-        # Blank owner_pid too (#4872) — terminal_task_pk's self-heal needs it null
-        # to trust a COMPLETED row while the worker still lives.
-        task.owner_pid = None
-        task.owner_pid_namespace = ""
-        task.owner_driving_since = None
+        # owner_pid included (#4872): terminal_task_pk trusts a COMPLETED row only once it is null.
+        for field, released_value in RELEASED_CLAIM.items():
+            setattr(task, field, released_value)
         task.save(update_fields=list(_COMPLETION_FIELDS))
 
 
