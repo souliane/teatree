@@ -22,7 +22,8 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from teatree.core.claim_liveness import current_owner, driving
+from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
+from teatree.core.modelkit.task_failure_taxonomy import classify_failure
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 
 if TYPE_CHECKING:
@@ -300,19 +301,74 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
         task.save(update_fields=list(_COMPLETION_FIELDS))
 
 
+def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
+    """Land *task* FAILED with a NAMED cause (#3957), releasing occupancy per *by_holder* (#4872).
+
+    *reason* is a REQUIRED keyword, and that is the whole point: a task listing and a
+    kanban card that render an error with no cause attached cannot tell a genuine
+    review defect from a lost lease, a bad harness pin, or an exhausted credential.
+    Making the reason un-omittable is what stops a NEW failure path from recording
+    nothing — a caller that forgets it fails at the call site, not silently in the DB.
+    The reason is classified once, here, into a
+    :class:`~teatree.core.modelkit.task_failure_taxonomy.FailureKind`, so every reader shares
+    one vocabulary instead of re-deriving a cause from free text.
+
+    *by_holder* is likewise required, no default (mirroring *reason*'s own precedent) — a
+    silent default would let a future third-party caller silently reintroduce the bug this
+    kwarg exists to close. ``True`` is a SELF-report: the claim holder's own process reporting
+    its own terminal result, which releases the occupancy claim unconditionally, byte-identical
+    to the behavior before #4872. ``False`` is a THIRD-PARTY fail — an operator cancel,
+    ``ticket.rework()`` — which releases the claim ONLY once
+    :func:`~teatree.core.claim_liveness.holder_confirmed_dead` positively proves the recorded
+    owner is gone; otherwise the FAILED row's full claim record (``claimed_by``,
+    ``claimed_by_session``, ``owner_pid``, ``owner_pid_namespace``, ``owner_driving_since``) is
+    left INTACT rather than blanked, so a later evidence-reader (the liveness-aware
+    :func:`~teatree.core.models.worktree_occupancy.terminal_task_pk` self-heal, a manual
+    ``release-occupancy``) can still act on it once the owner genuinely dies, and a later CAS
+    release can still session-match. Without this a live third-party holder's checkout was
+    silently handed to a rival the instant the operator cancelled — the #4872 bug.
+    """
+    if not reason.strip():
+        msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
+        raise ValueError(msg)
+    from teatree.core.models.worktree_occupancy import release_task_occupancy  # noqa: PLC0415 — deferred: import cycle
+
+    release_now = by_holder or holder_confirmed_dead(ClaimOwner.of(task))
+    update_fields = ["status", "failure_reason", "failure_kind"]
+    with transaction.atomic():
+        if release_now:
+            # Release BEFORE blanking claimed_by_session below — release_task_occupancy's
+            # CAS matches on that exact session value (#4867).
+            release_task_occupancy(task)
+            for field, released_value in RELEASED_CLAIM.items():
+                setattr(task, field, released_value)
+            update_fields.extend(RELEASED_CLAIM)
+        task.status = task.Status.FAILED
+        task.failure_reason = reason.strip()
+        task.failure_kind = classify_failure(task.failure_reason)
+        task.save(update_fields=update_fields)
+    task.observe_transition("task.failed", cause=task.failure_kind)
+
+
 def fail_claimed(task: "Task", *, reason: str) -> None:
     """Terminalize *task* FAILED — refused once its claim generation moved on.
 
     The failure twin of :func:`complete_claimed`, and the half that was missing: a
     lapsed worker landing a verdict on a unit a rival now owns burns the rival's
-    repair-loop budget and terminalizes work that is still running. ``Task.fail``
-    itself stays unguarded because its other callers hold no claim — an operator
-    cancel, a superseded phase, the stale-claim reaper — and are deliberate
-    outside terminalizations rather than a worker reporting its own run.
+    repair-loop budget and terminalizes work that is still running. Always a
+    SELF-report (``by_holder=True``): the only caller is a worker terminalizing the
+    claim IT holds, guarded by the same claim-generation check ``complete_claimed``
+    uses. A third-party fail (an operator cancel, ``ticket.rework()``) calls
+    ``Task.fail(by_holder=False)`` directly instead — it has no claim generation of
+    its own to guard, and #4872 is precisely that it must NOT release a claim it
+    does not hold evidence is dead. ``reap_stale_claims`` (the lease-expiry sweep)
+    never calls ``fail()`` at all — its own CAS writes ``FAILED`` directly onto the
+    ``Task`` row, relying on this same liveness-aware self-heal to release the row's
+    occupancy claim later, if any.
     """
     if not _generation_holds(task):
         raise LeaseLostError(describe_lease_loss(task))
-    task.fail(reason=reason)
+    task.fail(reason=reason, by_holder=True)
 
 
 def describe_lease_loss(task: "Task") -> str:

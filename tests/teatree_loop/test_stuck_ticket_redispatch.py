@@ -903,7 +903,7 @@ class TestOperatorCancelledTickets(TestCase):
     def _cancel(ticket: Ticket) -> None:
         """What `t3 <overlay> tasks cancel` leaves behind: a failed attempt plus a named task."""
         task = _finished_task(ticket, phase="testing", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}not now")
-        task.fail(reason=f"{CANCELLED_PREFIX}not now")
+        task.fail(reason=f"{CANCELLED_PREFIX}not now", by_holder=False)
 
     def test_a_cancelled_phase_is_not_redispatched(self) -> None:
         ticket = self._cancelled_ticket()
@@ -949,7 +949,7 @@ class TestOperatorCancelledTickets(TestCase):
         """The guard is asked for EVERY live ticket, reviewer role included — not just author's."""
         ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url="https://ex.com/org/app/pull/9")
         task = _finished_task(ticket, phase="reviewing", status=Task.Status.FAILED, error=f"{CANCELLED_PREFIX}not now")
-        task.fail(reason=f"{CANCELLED_PREFIX}not now")
+        task.fail(reason=f"{CANCELLED_PREFIX}not now", by_holder=False)
 
         assert redispatch_stuck_tickets() == 0
         assert ticket.tasks.filter(status=Task.Status.PENDING).count() == 0

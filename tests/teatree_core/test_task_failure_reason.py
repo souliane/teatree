@@ -367,7 +367,7 @@ class TestNoFailurePathRecordsNothing(TestCase):
 
     def test_fail_requires_a_reason_and_records_it(self) -> None:
         task = _task(status=Task.Status.CLAIMED)
-        task.fail(reason="mcp task_fail: agent abandoned the task")
+        task.fail(reason="mcp task_fail: agent abandoned the task", by_holder=True)
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert task.failure_reason == "mcp task_fail: agent abandoned the task"

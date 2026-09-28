@@ -18,6 +18,7 @@ from teatree.core.claim_liveness import (
     current_owner,
     driving,
     executing_owner_reason,
+    holder_confirmed_dead,
     owner_is_executing,
     reset_driving_registry,
 )
@@ -237,3 +238,39 @@ class TestDriveMarkerGrace:
 
     def test_within_drive_grace_is_false_without_a_marker(self) -> None:
         assert not ClaimOwner(_OTHER_PID, _READER_NS).within_drive_grace(_NOW)
+
+
+class TestHolderConfirmedDead:
+    """#4872: the third-party-fail / occupancy-self-heal predicate — proof required, never a guess.
+
+    The opposite bias from ``owner_is_executing`` above: every indeterminate case here
+    resolves to "not confirmed dead" (keep the claim), not "not executing" (safe to reap).
+    """
+
+    def test_a_provably_alive_owner_in_a_proven_namespace_is_not_confirmed_dead(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(singleton_mod, "pid_alive", lambda _pid: True)
+        assert not holder_confirmed_dead(another_process())
+
+    def test_a_provably_dead_owner_in_a_proven_namespace_is_confirmed_dead(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(singleton_mod, "pid_alive", lambda _pid: False)
+        assert holder_confirmed_dead(another_process())
+
+    def test_an_unproven_namespace_is_never_confirmed_dead_even_with_a_dead_pid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#4253: a pid recorded in a foreign namespace is no evidence — never a false "dead"."""
+        monkeypatch.setattr(singleton_mod, "pid_alive", lambda _pid: False)
+        assert not holder_confirmed_dead(another_process(owner_pid_namespace=_OTHER_NS))
+
+    def test_no_recorded_pid_is_never_confirmed_dead(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(singleton_mod, "pid_alive", lambda _pid: False)
+        assert not holder_confirmed_dead(another_process(owner_pid=None))
+
+    def test_an_unavailable_probe_degrades_to_not_confirmed_dead(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No procfs / no probe importable: indeterminate must never widen a THIRD-PARTY release."""
+        monkeypatch.delattr(singleton_mod, "pid_alive")
+        assert not holder_confirmed_dead(another_process())

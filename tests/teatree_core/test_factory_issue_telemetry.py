@@ -167,7 +167,7 @@ class FactoryIssueTelemetryTests(TestCase):
                 self.captureOnCommitCallbacks(execute=True),
             ):
                 task = TaskFactory()
-                task.fail(reason="ProcessError: private worker detail")
+                task.fail(reason="ProcessError: private worker detail", by_holder=True)
                 inbound = PendingChatInjection.record(channel="D1", slack_ts="100.4", text="My private question?")
                 assert inbound is not None
                 PendingChatInjection.agent_answered_question(inbound.slack_ts)

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 from django.utils import timezone
 
+from teatree.core.claim_liveness import OWNER_COLUMNS, ClaimOwner, holder_confirmed_dead
 from teatree.core.models.task import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.models.worktree import Worktree
@@ -83,7 +84,7 @@ def task_holder_id(task: Task) -> str:
 
 
 def terminal_task_pk(holder: str) -> int | None:
-    """The exact inverse of :func:`task_holder_id`, iff that ``Task`` already finished.
+    """The exact inverse of :func:`task_holder_id`, iff that ``Task`` already finished AND is safe to self-heal.
 
     ``None`` for a non-``task:`` holder (an operator's ``workspace ticket`` claim
     carries a free-form id), a malformed suffix, or a holder naming a Task that is
@@ -93,13 +94,37 @@ def terminal_task_pk(holder: str) -> int | None:
     different ways. Reads the Task's status fresh from the DB rather than
     inferring it, preserving the occupancy module's 'advisory, only advisory'
     invariant.
+
+    A TERMINAL task alone is not enough to self-heal (#4872): a third-party
+    ``Task.fail()`` deliberately leaves its claim's owner fields INTACT when it
+    cannot prove the recorded owner dead, precisely so this status-only read does
+    not then release that withheld claim out from under a still-live holder on the
+    very next dispatch. So the row is only returned when its recorded owner is
+    CONFIRMED gone — no ``owner_pid`` is recorded (a legacy pre-#4164 row, or
+    ``reap_stale_claims``' own direct CAS write, which blanks the Task row's claim
+    fields but never calls ``release_task_occupancy``, relying on THIS self-heal to
+    free the Worktree side later) or
+    :func:`~teatree.core.claim_liveness.holder_confirmed_dead` positively proves
+    the owner process is dead. Otherwise the terminal status is withheld as
+    evidence, the same "can only ever WITHHOLD, never widen" bias
+    ``owner_is_executing`` already carries.
     """
     prefix = "task:"
     suffix = holder.removeprefix(prefix)
     if suffix == holder or not suffix.isdigit():
         return None
     pk = int(suffix)
-    return pk if Task.objects.filter(pk=pk, status__in=Task.Status.terminal()).exists() else None
+    row = Task.objects.filter(pk=pk, status__in=Task.Status.terminal()).values("pk", *OWNER_COLUMNS).first()
+    if row is None:
+        return None
+    if row["owner_pid"] is None:
+        return pk
+    owner = ClaimOwner(
+        owner_pid=row["owner_pid"],
+        owner_pid_namespace=row["owner_pid_namespace"] or "",
+        owner_driving_since=row["owner_driving_since"],
+    )
+    return pk if holder_confirmed_dead(owner) else None
 
 
 #: The claim TTL. 30 minutes is 30x the 60s run heartbeat that renews it, so no live

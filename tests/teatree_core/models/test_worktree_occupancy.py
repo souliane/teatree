@@ -10,11 +10,15 @@ in ``tests/teatree_core/models/test_task.py``; here it is a direct unit test of 
 function's own contract).
 """
 
+import os
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 from django.test import TestCase
 
+import teatree.utils.singleton as singleton_mod
+from teatree.core.loop_lease_liveness import reader_pid_namespace
 from teatree.core.models import Task, Worktree
 from teatree.core.models.worktree_occupancy import release_task_occupancy, terminal_task_pk
 from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
@@ -29,6 +33,18 @@ class TerminalTaskPkTests(TestCase):
     def test_a_failed_tasks_holder_id_resolves_to_its_pk(self) -> None:
         task = TaskFactory(status=Task.Status.FAILED)
         assert terminal_task_pk(task_holder_id(task)) == task.pk
+
+    def test_a_terminal_task_with_a_confirmed_dead_owner_resolves_to_its_pk(self) -> None:
+        """#4872: a third-party fail's withheld claim is still safe to self-heal once proven dead."""
+        task = TaskFactory(status=Task.Status.FAILED, owner_pid=os.getpid(), owner_pid_namespace=reader_pid_namespace())
+        with mock.patch.object(singleton_mod, "pid_alive", return_value=False):
+            assert terminal_task_pk(task_holder_id(task)) == task.pk
+
+    def test_a_terminal_task_with_a_live_owner_withholds_the_self_heal(self) -> None:
+        """#4872: the self-heal must not widen a third-party fail's deliberately-kept claim."""
+        task = TaskFactory(status=Task.Status.FAILED, owner_pid=os.getpid(), owner_pid_namespace=reader_pid_namespace())
+        with mock.patch.object(singleton_mod, "pid_alive", return_value=True):
+            assert terminal_task_pk(task_holder_id(task)) is None
 
     def test_a_live_tasks_holder_id_resolves_to_none(self) -> None:
         task = TaskFactory(status=Task.Status.CLAIMED)

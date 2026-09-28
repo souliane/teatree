@@ -262,5 +262,5 @@ def _record_failure(
         result=with_transport_records(result, usage),
         **usage_fields(usage),
     )
-    task.fail(reason=error)
+    task.fail(reason=error, by_holder=True)
     return attempt

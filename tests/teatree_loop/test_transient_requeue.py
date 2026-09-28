@@ -393,7 +393,7 @@ class TestTransientRequeue(TestCase):
             iid="1",
             state=PullRequest.State.OPEN,
         )
-        task.fail(reason="result_error: the push gate refused the branch")
+        task.fail(reason="result_error: the push gate refused the branch", by_holder=True)
 
         requeue_transient_failed()
 
@@ -413,7 +413,7 @@ class TestTransientRequeue(TestCase):
             iid="2",
             state=PullRequest.State.OPEN,
         )
-        task.fail(reason="stuck_loop: lease lost for task 1: re-claimed in-process")
+        task.fail(reason="stuck_loop: lease lost for task 1: re-claimed in-process", by_holder=True)
 
         requeue_transient_failed()
 
@@ -860,7 +860,7 @@ class TestLandedReviewRetired(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
         AutoReviewDispatch.objects.create(slug="souliane/teatree", pr_id=4242, head_sha=self._HEAD, task=task)
-        task.fail(reason=self._LEASE_LOST)
+        task.fail(reason=self._LEASE_LOST, by_holder=True)
         return task
 
     def test_a_verdict_at_the_dispatch_head_retires_the_lease_lost_review(self) -> None:
@@ -978,7 +978,7 @@ class TestDisposalReleasesTheWholeClaim(TestCase):
         )
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
-        task.fail(reason=failed_with)
+        task.fail(reason=failed_with, by_holder=True)
         return task
 
     @staticmethod
@@ -1253,7 +1253,7 @@ class TestSupersededHeadReviewIsParkedNotPaged(TestCase):
         AutoReviewDispatch.objects.create(
             slug="souliane/teatree", pr_id=4716, head_sha=self._HEAD, task=task, state=claim_state
         )
-        task.fail(reason=reason)
+        task.fail(reason=reason, by_holder=True)
         _add_failed_attempt(task, error=reason)
         return task
 
@@ -1322,7 +1322,7 @@ class TestTheTicketPathParksAMovedHeadToo(TestCase):
         )
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
-        task.fail(reason=reason)
+        task.fail(reason=reason, by_holder=True)
         _add_failed_attempt(task, error=reason)
         return task
 

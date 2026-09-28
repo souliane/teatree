@@ -272,7 +272,10 @@ async def _task_fail(task_id: int, reason: str = "") -> dict[str, Any]:
         task = Task.objects.get(pk=task_id)
         # An agent that names nothing still leaves a cause behind (#3957) — the board
         # must never show a FAILED task whose reason is blank.
-        task.fail(reason=reason.strip() or f"{AGENT_ABANDONED_PREFIX}agent failed the task without giving a reason")
+        task.fail(
+            reason=reason.strip() or f"{AGENT_ABANDONED_PREFIX}agent failed the task without giving a reason",
+            by_holder=True,
+        )
         return {"ok": True, "task_id": task_id, "status": task.status, "failure_kind": task.failure_kind}
 
     return await sync_to_async(_fail, thread_sensitive=True)()

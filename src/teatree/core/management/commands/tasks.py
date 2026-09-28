@@ -152,7 +152,7 @@ class Command(TyperCommand):
                 error=cancel_reason,
                 result={"cancel_reason": cancel_reason},
             )
-            task.fail(reason=cancel_reason)
+            task.fail(reason=cancel_reason, by_holder=False)
         self.stdout.write(f"Task {task_id} cancelled.")
 
     @command()
