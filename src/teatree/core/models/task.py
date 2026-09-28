@@ -548,10 +548,13 @@ class Task(models.Model):
 
         A conversation the last run EXHAUSTED carries nothing either, and FRESH rather than the
         stored discriminator: a needs-input run that filled the window filled the parent's own
-        conversation, which is the very history it was continuing.
+        conversation, which is the very history it was continuing. So does one the retry cannot
+        continue: served by the CLI's fallback model, or with no room left for another prompt (#4874).
         """
         last_attempt = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
-        if last_attempt is not None and exhausted_the_conversation(last_attempt.error):
+        if last_attempt is not None and (
+            exhausted_the_conversation(last_attempt.error) or last_attempt.cannot_continue_its_conversation()
+        ):
             # Answering FRESH is not enough on its own: the exhausted run's thread stays under this
             # pk, where the NEXT sweep's ``_holds_a_conversation`` reads it back and stamps SELF.
             self.ticket.pop_task_thread(int(self.pk))

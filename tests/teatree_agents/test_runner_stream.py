@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage, ToolResultBlock, ToolUseBlock
+from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, TextBlock, ToolResultBlock, ToolUseBlock
 
 from teatree.agents.codex_app_server_messages import tool_blocks
 from teatree.agents.runner_stream import HarnessOutcome, StreamCapture
@@ -45,6 +45,40 @@ class TestStreamCapture:
         result = capture.outcome().result_message
         assert result is not None
         assert result.session_id == "s1"
+
+    def test_a_model_fallback_is_kept_and_other_system_events_are_not(self) -> None:
+        fallback = {
+            "subtype": "model_fallback",
+            "original_model": "claude-opus-5-5",
+            "fallback_model": "claude-sonnet-5",
+        }
+        capture = StreamCapture()
+
+        capture.observe(SystemMessage(subtype="init", data={"subtype": "init"}))
+        capture.observe(SystemMessage(subtype="model_fallback", data=fallback))
+
+        assert capture.outcome().model_fallbacks == (fallback,)
+        assert capture.outcome().model_fell_back
+        assert not StreamCapture().outcome().model_fell_back
+
+    def test_the_conversation_size_is_the_last_main_thread_request(self) -> None:
+        capture = StreamCapture()
+        for message in (
+            _usage_message((5, 100_000, 2_000, 500)),
+            _usage_message((3, 150_000, 1_000, 200)),
+            _usage_message((9, 900_000, 9, 9), parent_tool_use_id="sub"),
+            _usage_message((0, 0, 0, 0), model="<synthetic>"),
+        ):
+            capture.observe(message)
+
+        assert capture.outcome().context_tokens == 3 + 150_000 + 1_000 + 200
+
+    def test_a_run_that_reported_no_usage_has_no_measured_size(self) -> None:
+        capture = StreamCapture()
+
+        capture.observe(AssistantMessage(content=[TextBlock(text="hi")], model="claude-opus-5-5"))
+
+        assert capture.outcome().context_tokens is None
 
     def test_skill_tool_receipt_captures_only_the_requested_name(self) -> None:
         capture = StreamCapture()
@@ -194,3 +228,20 @@ def test_a_ceiling_a_full_window_or_a_blocked_compaction_cuts_a_run_short(outcom
 )
 def test_a_clean_run_an_ordinary_error_or_a_lost_lease_is_not_cut_short(outcome: HarnessOutcome) -> None:
     assert not outcome.cut_short
+
+
+def _usage_message(
+    context: tuple[int, int, int, int], *, model: str = "claude-opus-5-5", parent_tool_use_id: str | None = None
+) -> AssistantMessage:
+    input_tokens, cache_read, cache_write, output = context
+    return AssistantMessage(
+        content=[TextBlock(text="step")],
+        model=model,
+        parent_tool_use_id=parent_tool_use_id,
+        usage={
+            "input_tokens": input_tokens,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_write,
+            "output_tokens": output,
+        },
+    )
