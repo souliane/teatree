@@ -39,6 +39,9 @@ _COMPLETION_FIELDS = (
     "claimed_by_session",
     "lease_expires_at",
     "heartbeat_at",
+    "owner_pid",
+    "owner_pid_namespace",
+    "owner_driving_since",
 )
 
 #: The lease every HEARTBEAT-RENEWED claim takes, in place of :func:`claim`'s 300s default.
@@ -261,11 +264,16 @@ def _generation_holds(task: "Task") -> bool:
     is compared against a generation that genuinely moved, while a freshly re-read row
     would be compared against itself. An out-of-process caller therefore proves its
     generation with :func:`claim_generation` at its own boundary before recording.
+
+    The ``status=CLAIMED`` filter closes #4872: a third-party ``fail(by_holder=False)``
+    leaves the claim fields intact but flips status to FAILED, and without this filter
+    the holder's own terminalization would still match those fields and complete over it.
     """
     return (
         type(task)
         .objects.filter(
             pk=task.pk,
+            status=task.Status.CLAIMED,
             claimed_by=task.claimed_by,
             claimed_by_session=task.claimed_by_session,
             claimed_at=task.claimed_at,
@@ -298,6 +306,11 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
         task.claimed_by_session = ""
         task.lease_expires_at = None
         task.heartbeat_at = None
+        # Blank owner_pid too (#4872) — terminal_task_pk's self-heal needs it null
+        # to trust a COMPLETED row while the worker still lives.
+        task.owner_pid = None
+        task.owner_pid_namespace = ""
+        task.owner_driving_since = None
         task.save(update_fields=list(_COMPLETION_FIELDS))
 
 
@@ -313,20 +326,19 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
     :class:`~teatree.core.modelkit.task_failure_taxonomy.FailureKind`, so every reader shares
     one vocabulary instead of re-deriving a cause from free text.
 
-    *by_holder* is likewise required, no default (mirroring *reason*'s own precedent) — a
-    silent default would let a future third-party caller silently reintroduce the bug this
-    kwarg exists to close. ``True`` is a SELF-report: the claim holder's own process reporting
-    its own terminal result, which releases the occupancy claim unconditionally, byte-identical
-    to the behavior before #4872. ``False`` is a THIRD-PARTY fail — an operator cancel,
-    ``ticket.rework()`` — which releases the claim ONLY once
+    *by_holder* is likewise required, no default — a silent default would let a future
+    third-party caller silently release a claim it has no evidence is dead. ``True`` is a
+    SELF-report: the claim holder's own process reporting its own terminal result, which
+    releases the occupancy claim unconditionally. ``False`` is a THIRD-PARTY fail — an
+    operator cancel, ``ticket.rework()`` — which releases the claim ONLY once
     :func:`~teatree.core.claim_liveness.holder_confirmed_dead` positively proves the recorded
     owner is gone; otherwise the FAILED row's full claim record (``claimed_by``,
     ``claimed_by_session``, ``owner_pid``, ``owner_pid_namespace``, ``owner_driving_since``) is
     left INTACT rather than blanked, so a later evidence-reader (the liveness-aware
     :func:`~teatree.core.models.worktree_occupancy.terminal_task_pk` self-heal, a manual
     ``release-occupancy``) can still act on it once the owner genuinely dies, and a later CAS
-    release can still session-match. Without this a live third-party holder's checkout was
-    silently handed to a rival the instant the operator cancelled — the #4872 bug.
+    release can still session-match. Without this a live third-party holder's checkout is
+    silently handed to a rival the instant the operator cancels.
     """
     if not reason.strip():
         msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
