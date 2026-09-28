@@ -17,10 +17,17 @@ from unittest import mock
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.agents import runner
 from teatree.core.models import LeaseLostError, Task, TaskAttempt, Worktree
-from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
+from teatree.core.worktree.occupancy import (
+    OccupancyHolder,
+    WorktreeOccupiedError,
+    acquire,
+    occupancy_holder,
+    task_holder_id,
+)
 from tests.factories import SessionFactory, TicketFactory, WorktreeFactory
 
 
@@ -106,6 +113,58 @@ class HeldForTheRunTests(_DispatchCase):
             self.dispatch(driver=driver)
 
         assert occupancy_holder(self.fresh()) is None
+
+
+class DeferredOccupancyRaceTests(_DispatchCase):
+    """The residual TOCTOU race the self-heal cannot close: park, never fail (#4867).
+
+    ``occupy_ticket_checkout``'s self-heal already handles the common case (a stale
+    claim named by a finished Task); this is the narrow window where a genuine new
+    holder wins the acquire between that release and this requester's own —
+    exercised directly at ``run_agent``'s except handler rather than by racing two
+    real threads, since the window itself is inherently timing-dependent.
+    """
+
+    def _refusal(self, *, holder_task: Task) -> mock.MagicMock:
+        holder = OccupancyHolder(
+            holder=task_holder_id(holder_task),
+            holder_session="rival-session",
+            since=None,
+            expires_at=timezone.now(),
+        )
+        cm = mock.MagicMock()
+        cm.__enter__.side_effect = WorktreeOccupiedError("occupied", holder=holder)
+        return cm
+
+    def test_a_refusal_naming_a_finished_holder_is_parked_not_failed(self) -> None:
+        rival_ticket = TicketFactory()
+        finished = Task.objects.create(
+            ticket=rival_ticket, session=SessionFactory(ticket=rival_ticket), status=Task.Status.COMPLETED
+        )
+        driver = mock.Mock()
+
+        with mock.patch.object(runner, "occupy_ticket_checkout", return_value=self._refusal(holder_task=finished)):
+            self.dispatch(driver=driver)
+
+        driver.assert_not_called()
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.not_before is not None
+        attempt = TaskAttempt.objects.filter(task=self.task).latest("pk")
+        assert attempt.exit_code == 0
+        assert "occupancy_deferred:" in str(attempt.result.get("summary", ""))
+
+    def test_a_refusal_naming_a_live_holder_still_fails(self) -> None:
+        rival_ticket = TicketFactory()
+        live = Task.objects.create(
+            ticket=rival_ticket, session=SessionFactory(ticket=rival_ticket), status=Task.Status.PENDING
+        )
+
+        with mock.patch.object(runner, "occupy_ticket_checkout", return_value=self._refusal(holder_task=live)):
+            self.dispatch()
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.FAILED
 
 
 class HeartbeatRenewalTests(_DispatchCase):

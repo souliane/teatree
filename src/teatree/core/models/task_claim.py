@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -283,14 +284,20 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
     """
     if not _generation_holds(task):
         raise LeaseLostError(describe_lease_loss(task))
-    task.status = task.Status.COMPLETED
-    task.result_artifact_path = result_artifact_path
-    task.claimed_at = None
-    task.claimed_by = ""
-    task.claimed_by_session = ""
-    task.lease_expires_at = None
-    task.heartbeat_at = None
-    task.save(update_fields=list(_COMPLETION_FIELDS))
+    from teatree.core.models.worktree_occupancy import release_task_occupancy  # noqa: PLC0415 — deferred: import cycle
+
+    with transaction.atomic():
+        # Release BEFORE blanking claimed_by_session below — release_task_occupancy's
+        # CAS matches on that exact session value (#4867).
+        release_task_occupancy(task)
+        task.status = task.Status.COMPLETED
+        task.result_artifact_path = result_artifact_path
+        task.claimed_at = None
+        task.claimed_by = ""
+        task.claimed_by_session = ""
+        task.lease_expires_at = None
+        task.heartbeat_at = None
+        task.save(update_fields=list(_COMPLETION_FIELDS))
 
 
 def fail_claimed(task: "Task", *, reason: str) -> None:
