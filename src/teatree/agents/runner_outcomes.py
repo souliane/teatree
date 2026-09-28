@@ -2,12 +2,20 @@
 
 import logging
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from teatree.agents.compaction_guard import COMPACTION_BLOCKED_REASON
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
 from teatree.agents.harness import Harness
 from teatree.agents.result_schema import AgentResultBlob, ProseSummaryPolicy
-from teatree.agents.runner_failure_taxonomy import context_exhaustion_reason, is_context_exhaustion
+from teatree.agents.runner_failure_taxonomy import (
+    cli_too_old_fallback,
+    cli_too_old_reason,
+    context_exhaustion_reason,
+    is_context_exhaustion,
+    is_refused_resume,
+    refused_resume_reason,
+)
 from teatree.agents.runner_failure_taxonomy import error_result_reason as _error_result_reason
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match
 from teatree.agents.runner_interruption import CeilingSalvage, _record_failure, _record_stuck_outcome
@@ -26,6 +34,9 @@ from teatree.config import AgentHarnessProvider
 from teatree.core.admission.dispatch_lane import dispatch_lane
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.telemetry.admission import record_skill_assurance
+
+if TYPE_CHECKING:
+    from teatree.agents.attempt_recorder import AttemptUsage
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +64,7 @@ def outcome_failure(
     transport: Transport = UNROUTED,
 ) -> TaskAttempt | None:
     """Fold a non-success drive outcome into a recorded failure or park."""
-    usage = _attempt_usage(
-        outcome.result_message,
-        UsageObservation(
-            lane=lane,
-            tool_calls=outcome.tool_calls,
-            provenance=transport.provenance or DispatchProvenance(),
-        ),
-    )
+    usage = _failure_usage(outcome, lane=lane, transport=transport)
     if outcome.stuck_reason is not None:
         return _record_stuck_outcome(task, outcome, stuck_reason=outcome.stuck_reason, usage=usage)
     limit = _limit_match(outcome.result_message, outcome.rate_limit_info, metered_transport=transport.metered)
@@ -87,11 +91,34 @@ def outcome_failure(
     return None
 
 
+def cli_too_old_failure(task: Task, outcome: HarnessOutcome, *, lane: str, transport: Transport) -> TaskAttempt | None:
+    """Fail a run the CLI served on a fallback because its build cannot serve the requested model (#4874)."""
+    fallback = cli_too_old_fallback(outcome.model_fallbacks)
+    if fallback is None:
+        return None
+    reason = cli_too_old_reason(fallback)
+    logger.error("Task %s ran on a fallback model the CLI forced: %s", task.pk, reason)
+    return _record_failure(task, error=reason, usage=_failure_usage(outcome, lane=lane, transport=transport))
+
+
+def _failure_usage(outcome: HarnessOutcome, *, lane: str, transport: Transport) -> "AttemptUsage":
+    observation = UsageObservation(
+        lane=lane,
+        tool_calls=outcome.tool_calls,
+        provenance=transport.provenance or DispatchProvenance(),
+        context_tokens=outcome.context_tokens,
+        model_fell_back=outcome.model_fell_back,
+    )
+    return _attempt_usage(outcome.result_message, observation)
+
+
 def failure_reason(outcome: HarnessOutcome) -> str | None:
     if outcome.compaction_stopped:
         return COMPACTION_BLOCKED_REASON
     if is_context_exhaustion(outcome.result_message):
         return context_exhaustion_reason(outcome.result_message)
+    if outcome.resumed and is_refused_resume(outcome.result_message):
+        return refused_resume_reason(outcome.result_message)
     return _error_result_reason(outcome.result_message)
 
 
@@ -115,6 +142,7 @@ def record_outcome(
             lane=salvage.lane,
             transport=routed_transport,
         )
+        or cli_too_old_failure(task, outcome, lane=salvage.lane, transport=routed_transport)
         or record_success(task, outcome, phase=salvage.phase, lane=salvage.lane, provenance=salvage.provenance)
     )
     record_skill_assurance_attempt(task, attempt)
@@ -165,6 +193,8 @@ def record_success(
             skills_loaded=provenance.skills_loaded,
             tool_calls=outcome.tool_calls,
             provenance=provenance,
+            context_tokens=outcome.context_tokens,
+            model_fell_back=outcome.model_fell_back,
         ),
     )
     parsed = parse_result(outcome.agent_text)

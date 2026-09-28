@@ -413,7 +413,11 @@ def _run_agent(
     # bundle, so the recorded attempt carries exactly what this dispatch ran with.
     attempt = _record_outcome(
         task,
-        replace(outcome, compaction_stopped=prepared.compaction_guard.stopped_run),
+        replace(
+            outcome,
+            compaction_stopped=prepared.compaction_guard.stopped_run,
+            resumed=bool(prepared.options.resume),
+        ),
         harness,
         CeilingSalvage(
             phase=phase,

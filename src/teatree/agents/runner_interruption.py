@@ -83,6 +83,8 @@ class CeilingSalvage:
                 skills_loaded=self.provenance.skills_loaded,
                 tool_calls=outcome.tool_calls,
                 provenance=self.provenance,
+                context_tokens=outcome.context_tokens,
+                model_fell_back=outcome.model_fell_back,
             ),
         )
         return record_result_envelope(task, produced, phase=self.phase, usage=usage)

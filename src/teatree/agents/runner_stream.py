@@ -6,16 +6,26 @@ hands over every text block it had already written.
 """
 
 import shlex
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    RateLimitEvent,
+    ResultMessage,
+    SystemMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from claude_agent_sdk.types import RateLimitInfo
 
 from teatree.agents.harness import HarnessSession, pydantic_ai_thread
 from teatree.agents.result_schema import AgentResultBlob
-from teatree.agents.runner_failure_taxonomy import TURN_CEILING_SUBTYPE, is_context_exhaustion
+from teatree.agents.runner_failure_taxonomy import MODEL_FALLBACK_SUBTYPE, TURN_CEILING_SUBTYPE, is_context_exhaustion
+from teatree.agents.runner_usage import context_size
 from teatree.agents.skill_injection import _bare_skill_name, _resolve_skill_md, harness_skills_dirs
 
 if TYPE_CHECKING:
@@ -51,6 +61,17 @@ class HarnessOutcome:
     observed_skill_loads: tuple[str, ...] = ()
     #: Whether the ``PreCompact`` guard ended the run on an automatic compaction attempt.
     compaction_stopped: bool = False
+    #: The ``model_fallback`` events the CLI streamed — a run served by a model it did not ask for.
+    model_fallbacks: tuple[Mapping[str, object], ...] = ()
+    #: The conversation's size at its last main-thread turn; ``None`` when no turn reported usage.
+    context_tokens: int | None = None
+    #: Whether the run resumed an earlier conversation rather than opening a new one.
+    resumed: bool = False
+
+    @property
+    def model_fell_back(self) -> bool:
+        """Whether the CLI's ``fallback_model`` served any of this run instead of the requested model."""
+        return bool(self.model_fallbacks)
 
     @property
     def cut_short(self) -> bool:
@@ -82,11 +103,16 @@ class StreamCapture:
     tool_calls: int = 0
     observed_skill_loads: list[str] = field(default_factory=list)
     pending_skill_loads: dict[str, tuple[str, Path | None]] = field(default_factory=dict)
+    model_fallbacks: list[Mapping[str, object]] = field(default_factory=list)
+    context_tokens: int | None = None
 
     def observe(self, message: object) -> None:
         if isinstance(message, AssistantMessage):
             self.text_parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
             self.tool_calls += sum(1 for block in message.content if isinstance(block, ToolUseBlock))
+            # A sub-agent's turn is its own conversation; a synthetic error turn reports zero usage.
+            if message.parent_tool_use_id is None and (size := context_size(message.usage)):
+                self.context_tokens = size
         # The SDK can return tool results in either an assistant or user message;
         # the pydantic seam emits both as assistant messages. A request alone is
         # never evidence that the skill was successfully loaded.
@@ -98,6 +124,8 @@ class StreamCapture:
             self.result_message = message
         elif isinstance(message, RateLimitEvent) and message.rate_limit_info.status == "rejected":
             self.rate_limit_info = message.rate_limit_info
+        elif isinstance(message, SystemMessage) and message.subtype == MODEL_FALLBACK_SUBTYPE:
+            self.model_fallbacks.append(message.data)
 
     def _observe_tool_block(self, block: object) -> None:
         if isinstance(block, ToolResultBlock):
@@ -131,6 +159,8 @@ class StreamCapture:
             thread=thread,
             tool_calls=self.tool_calls,
             observed_skill_loads=tuple(dict.fromkeys(self.observed_skill_loads)),
+            model_fallbacks=tuple(self.model_fallbacks),
+            context_tokens=self.context_tokens,
         )
 
 

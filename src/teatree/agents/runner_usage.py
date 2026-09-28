@@ -57,6 +57,8 @@ class UsageObservation:
     skills_loaded: tuple[str, ...] = ()
     tool_calls: int | None = None
     provenance: DispatchProvenance = field(default_factory=DispatchProvenance)
+    context_tokens: int | None = None
+    model_fell_back: bool = False
 
 
 def _safe_int(value: object) -> int | None:
@@ -82,7 +84,7 @@ def _attempt_usage(message: ResultMessage | None, observation: UsageObservation 
 
     Token counts come from the nested ``usage`` dict (``input_tokens`` /
     ``output_tokens`` / ``cache_creation_input_tokens`` /
-    ``cache_read_input_tokens``), the billed model from the single key of
+    ``cache_read_input_tokens``), the billed model from the dominant key of
     ``model_usage`` (a dated id, optionally ``[1m]``-suffixed), the cost from
     ``total_cost_usd`` (else the price-table estimate). The dispatch observation
     carries lane, reasoning effort, skills and tool calls measured by the driver
@@ -106,6 +108,8 @@ def _attempt_usage(message: ResultMessage | None, observation: UsageObservation 
             skills_loaded=skills,
             skill_assurance=provenance.skill_assurance,
             tool_calls=observation.tool_calls,
+            context_tokens=observation.context_tokens,
+            model_fell_back=observation.model_fell_back,
             selected_harness=provenance.selected_harness,
             selected_provider=provenance.selected_provider,
             selected_model=provenance.selected_model,
@@ -116,6 +120,7 @@ def _attempt_usage(message: ResultMessage | None, observation: UsageObservation 
         )
     usage = message.usage if isinstance(message.usage, dict) else {}
     model = _billed_model(message.model_usage)
+    served = message.model_usage.get(model) if isinstance(message.model_usage, dict) else None
     cost_usd, estimated = _resolve_cost_usd(message, usage=usage, model=model)
     return AttemptUsage(
         agent_session_id=message.session_id or "",
@@ -126,6 +131,9 @@ def _attempt_usage(message: ResultMessage | None, observation: UsageObservation 
         cache_write_tokens=_safe_int(usage.get("cache_creation_input_tokens")),
         cost_usd=cost_usd,
         num_turns=message.num_turns,
+        context_tokens=observation.context_tokens,
+        context_window_tokens=_safe_int(served.get("contextWindow")) if isinstance(served, dict) else None,
+        model_fell_back=observation.model_fell_back,
         lane=observation.lane,
         cost_is_estimated=estimated,
         usage_unknown=_spend_is_unknown(message, usage=usage),
@@ -166,13 +174,29 @@ def _spend_is_unknown(message: ResultMessage, *, usage: dict[str, Any]) -> bool:
     return (message.num_turns or 0) > 0 and all(usage.get(key) is None for key in _TOKEN_KEYS)
 
 
-def _billed_model(model_usage: dict[str, Any] | None) -> str:
-    """Return the billed model id from ``model_usage`` (single-model run), or ``""``.
+#: A ``model_usage`` entry's token counts, in the CLI's camelCase rather than ``usage``'s snake_case.
+_MODEL_TOKEN_KEYS = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
 
-    ``model_usage`` is the SDK's untyped ``ResultMessage.model_usage`` dict.
+
+def _token_sum(counts: object, keys: tuple[str, ...]) -> int:
+    if not isinstance(counts, dict):
+        return 0
+    return sum(value for key in keys if isinstance(value := counts.get(key), int))
+
+
+def context_size(usage: object) -> int:
+    """One request's whole context — what it sent, read from cache, cached and wrote — from its ``usage``."""
+    return _token_sum(usage, _TOKEN_KEYS)
+
+
+def _billed_model(model_usage: dict[str, Any] | None) -> str:
+    """The model that served the run — the ``model_usage`` key with the most tokens — or ``""``.
+
+    Claude Code bills a small Haiku auxiliary call beside every run, so the first key is a coin flip.
     """
     if isinstance(model_usage, dict) and model_usage:
-        return str(next(iter(model_usage)))
+        served, _ = max(model_usage.items(), key=lambda entry: _token_sum(entry[1], _MODEL_TOKEN_KEYS))
+        return str(served)
     return ""
 
 
