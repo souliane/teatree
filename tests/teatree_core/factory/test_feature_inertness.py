@@ -14,7 +14,13 @@ from io import StringIO
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.config.gate_evidence import GATE_EVIDENCE, ActivationIntent, GateEvidence, ObservableKind
+from teatree.config.gate_evidence import (
+    GATE_EVIDENCE,
+    STAGED_STALE_AFTER_DAYS,
+    ActivationIntent,
+    GateEvidence,
+    ObservableKind,
+)
 from teatree.core.factory.feature_inertness import (
     DECISION_TRAILER,
     FAULT_BANNER,
@@ -108,6 +114,35 @@ class TestTheNoteVersusFaultSplit(TestCase):
         (finding,) = feature_inertness(registry, now=TODAY)
         assert finding.is_fault is False
         assert "deliberately staged" in finding.detail
+
+    def test_a_staged_gate_with_a_stale_dated_citation_is_a_fault(self) -> None:
+        """#4189's own recurrence: a citation shielded the gate for 55+ days past its date."""
+        stale_date = TODAY - dt.timedelta(days=STAGED_STALE_AFTER_DAYS + 1)
+        entry = replace(
+            _entry("require_executed_repro", intent=ActivationIntent.STAGED),
+            rationale=f"souliane/teatree#4189 — decided {stale_date.isoformat()}",
+        )
+        (finding,) = feature_inertness({entry.setting: entry}, now=TODAY)
+        assert finding.is_fault is True
+        assert "stale" in finding.detail
+
+    def test_a_staged_gate_with_a_fresh_dated_citation_stays_a_note(self) -> None:
+        fresh_date = TODAY - dt.timedelta(days=STAGED_STALE_AFTER_DAYS - 1)
+        entry = replace(
+            _entry("require_executed_repro", intent=ActivationIntent.STAGED),
+            rationale=f"souliane/teatree#4189 — decided {fresh_date.isoformat()}",
+        )
+        (finding,) = feature_inertness({entry.setting: entry}, now=TODAY)
+        assert finding.is_fault is False
+        assert "deliberately staged" in finding.detail
+
+    def test_a_staged_gate_citing_only_an_issue_number_is_never_judged_stale(self) -> None:
+        entry = replace(
+            _entry("require_executed_repro", intent=ActivationIntent.STAGED),
+            rationale="souliane/teatree#117 — ships warn until a soak",
+        )
+        (finding,) = feature_inertness({entry.setting: entry}, now=TODAY)
+        assert finding.is_fault is False
 
 
 class TestEvidenceClearsAStagedGateEvenWhileOff(TestCase):

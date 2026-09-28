@@ -133,12 +133,7 @@ from hooks.scripts.loop_registry_liveness import prune_dead_owner as _prune_dead
 from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
 from hooks.scripts.managed_repo import cwd_teatree_managed_state as _cwd_is_teatree_managed
-from hooks.scripts.managed_repo import file_is_inside_worktree as _file_is_inside_worktree
-from hooks.scripts.managed_repo import is_agent_state_path as _is_agent_state_path
-from hooks.scripts.managed_repo import load_protected_branches as _load_protected_branches
 from hooks.scripts.managed_repo import overlay_managed_repo_signals as _overlay_managed_repo_signals
-from hooks.scripts.managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
-from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branch_and_root
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write, is_slack_mcp_tool
 from hooks.scripts.memory_recall import handle_recall_cold_memory
@@ -165,6 +160,7 @@ from hooks.scripts.plan_edit_gate import (  # noqa: F401 re-export
     handle_block_edit_before_planned,
     skip_plan_gate_token,
 )
+from hooks.scripts.protect_default_branch_guard import handle_protect_default_branch
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
@@ -186,6 +182,7 @@ from hooks.scripts.raw_review_post_guard import handle_block_raw_review_post
 from hooks.scripts.raw_review_post_guard import (
     is_raw_review_write as _is_raw_review_write,  # noqa: F401 re-export for test access
 )
+from hooks.scripts.raw_ticket_ignore_loop_gate import handle_block_raw_ticket_ignore_loop
 from hooks.scripts.resume_admission import handle_subagent_stop_track_agent, resume_admission_advisory
 from hooks.scripts.secret_file_print_guard import handle_block_secret_file_print
 from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
@@ -250,7 +247,6 @@ def _current_hook_context() -> tuple[str, dict]:
     return _CURRENT_EVENT, _CURRENT_DATA
 
 
-_FILE_PATH_TOOLS = {"Edit", "Write"}
 _MR_TOOLS = {"mcp__glab__glab_mr_create", "mcp__glab__glab_mr_update"}
 
 # Patterns that indicate workspace/infrastructure operations where the agent
@@ -1211,55 +1207,6 @@ def _plan_edit_gate_enabled() -> bool:
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
     return _teatree_bool_setting("plan_edit_gate_enabled", default=True)
-
-
-# ── PreToolUse: protect-default-branch ─────────────────────────────
-
-
-def handle_protect_default_branch(data: dict) -> bool:
-    """Block Edit/Write on a source file in a teatree-MANAGED protected-branch repo.
-
-    Scoped to the TARGET FILE's own repo, never to the cwd's branch and
-    never to "any git repo" (#126). The block fires only when ALL hold:
-
-    1. the tool is ``Edit``/``Write`` with a ``file_path``;
-    2. the path is NOT agent-harness state (memory / todos / per-project
-        state) — those are git-tracked scratch state, never protected
-        source, so they are exempt even on ``main``;
-    3. the file's enclosing git repo is on a protected branch;
-    4. the file genuinely lives inside that repo's working tree;
-    5. that repo is teatree-MANAGED (core + the active overlay's
-        registered repos) — an unmanaged repo on ``main`` (a dotfiles
-        clone, an unrelated project) is NOT this gate's concern.
-
-    Any condition unmet → allow (fail open). A git error, an
-    unresolvable repo, or an unclassifiable slug all allow — the
-    gate-over-deny class this change closes means uncertainty errs toward
-    letting the write through, not blocking it.
-    """
-    tool_name = data.get("tool_name", "")
-    file_path = data.get("tool_input", {}).get("file_path", "")
-    # Agent-harness state is never repo source — allow it even on `main`.
-    if tool_name not in _FILE_PATH_TOOLS or not file_path or _is_agent_state_path(file_path):
-        return False
-
-    resolved = _resolve_branch_and_root(str(Path(file_path).parent))
-    if resolved is None:
-        return False
-    branch, repo_root = resolved
-
-    if (
-        branch not in _load_protected_branches()
-        or not _file_is_inside_worktree(repo_root, file_path)
-        or not _repo_root_is_teatree_managed(repo_root)
-    ):
-        return False
-
-    return _fail_open_or_deny(
-        data,
-        f"BLOCKED: file is on protected branch '{branch}' in a teatree-managed repo. "
-        "Create a worktree first with `t3 teatree workspace ticket`.",
-    )
 
 
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
@@ -5057,6 +5004,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_direct_commands,
         handle_block_git_add_all,
         handle_block_raw_pid_kill,
+        handle_block_raw_ticket_ignore_loop,
         handle_block_unbounded_wait,
         handle_block_secret_file_print,
         handle_block_out_of_band_merge,

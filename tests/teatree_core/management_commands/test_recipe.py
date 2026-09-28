@@ -1,10 +1,11 @@
 """``t3 <overlay> recipe score|approve`` command tests (SIG-PR-2).
 
-Pins the flag-gated OFF contract: with ``factory_score_enabled`` off (the shipped
-state) ``score`` still COMPUTES read-only, but ``--record`` refuses and writes
-NOTHING — zero snapshot rows, zero deferred questions. Flag on, a scored read
-persists exactly one snapshot and queues exactly one deduped approval question per
-unapproved sha; ``approve`` pins the sha so ``recipe_approved`` flips true.
+Pins the flag-gated OFF contract: with ``factory_score_enabled`` off (an operator
+holding it off — the flag ships ON by default since #4189) ``score`` still COMPUTES
+read-only, but ``--record`` refuses and writes NOTHING — zero snapshot rows, zero
+deferred questions. Flag on (the shipped default), a scored read persists exactly one
+snapshot and queues exactly one deduped approval question per unapproved sha;
+``approve`` pins the sha so ``recipe_approved`` flips true.
 """
 
 import json
@@ -35,6 +36,9 @@ def _score_json(*args: str) -> str:
 
 
 class TestFlagOff(TestCase):
+    def setUp(self) -> None:
+        call_command("config_setting", "set", "factory_score_enabled", "false")
+
     def test_record_refuses_and_writes_nothing(self) -> None:
         with pytest.raises(SystemExit):
             _score("--record")

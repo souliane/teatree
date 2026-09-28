@@ -23,7 +23,9 @@ orphan-branch ``create_or_defer_pr``) so the warn cannot drift between them.
 import logging
 import re
 
-from teatree.quality.architecture_precheck import precheck_findings
+from teatree.quality.architecture_precheck import inverted_test_findings, precheck_findings
+from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,32 @@ def warn_if_precheck_incomplete(body: str) -> str | None:
         f"PR body carries an 'Architecture pre-check' section but leaves "
         f"{len(findings)} required check(s) unanswered: {'; '.join(findings)}. "
         f"{ARCHITECTURE_PRECHECK_HINT} — see skills/architecture-design § 'The ten checks'."
+    )
+    logger.warning(message)
+    return message
+
+
+def warn_if_diff_inverts_tests(repo_path: str) -> str | None:
+    """Warn when the ship diff inverts an existing must-block regression test's polarity.
+
+    Diffs merge-base..HEAD in *repo_path* (mirrors ``evaluate_debt_delta``'s diff
+    source) and scans it with :func:`~teatree.quality.architecture_precheck.inverted_test_findings`.
+    Unverifiable (no real repo / git error) is silent — a diff-shaped check that
+    cannot read the diff must never manufacture a warning from nothing. Warn-only,
+    like the presence check above: whether the inversion is a genuine weakening or
+    a legitimate polarity fix is not reliable enough to block on.
+    """
+    try:
+        diff = git.branch_diff(repo=repo_path)
+    except (CommandFailedError, RuntimeError, ValueError):
+        return None
+    findings = inverted_test_findings(diff)
+    if not findings:
+        return None
+    message = (
+        f"PR diff inverts {len(findings)} must-block regression test assertion(s): "
+        f"{'; '.join(findings)}. Preserve-or-STOP per architecture-design check #9 — "
+        f"a weakened matcher needs explicit sign-off, not a silently flipped assertion."
     )
     logger.warning(message)
     return message

@@ -151,3 +151,49 @@ class PendingArticleSuggestionTests(TestCase):
         rendered = str(row)
         assert "pending" in rendered
         assert "An agent eval harness" in rendered
+
+    def test_record_candidate_defaults_to_news_article_kind(self) -> None:
+        row = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
+        assert row is not None
+        assert row.kind == PendingArticleSuggestion.Kind.NEWS_ARTICLE
+
+
+class RecordReconciliationCandidateTests(TestCase):
+    """The dream loop's conflicting-BINDING-memory-pair candidate (#2663 dream-batch dea750a552f8f2d2).
+
+    Reuses this ask-gate rather than auto-filing an issue.
+    """
+
+    def test_records_a_pending_reconciliation_row(self) -> None:
+        row = PendingArticleSuggestion.record_reconciliation_candidate(
+            key="feedback_bind_one+feedback_bind_two",
+            title="Conflicting BINDING memories need reconciliation",
+            summary="please decide which rule is canonical",
+        )
+
+        assert row is not None
+        assert row.status == PendingArticleSuggestion.Status.PENDING
+        assert row.kind == PendingArticleSuggestion.Kind.MEMORY_RECONCILIATION
+        assert row.url == ""
+        assert row.title == "Conflicting BINDING memories need reconciliation"
+
+    def test_is_idempotent_by_key(self) -> None:
+        key = "feedback_bind_one+feedback_bind_two"
+        first = PendingArticleSuggestion.record_reconciliation_candidate(key=key, title="t", summary="s")
+        assert first is not None
+
+        second = PendingArticleSuggestion.record_reconciliation_candidate(key=key, title="t", summary="s")
+
+        assert second is None
+        assert PendingArticleSuggestion.objects.count() == 1
+
+    def test_a_reconciliation_key_and_a_news_url_never_collide(self) -> None:
+        """Two independent dedup namespaces sharing one hash column."""
+        PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
+        PendingArticleSuggestion.record_reconciliation_candidate(key=_URL, title="t", summary="s")
+
+        assert PendingArticleSuggestion.objects.count() == 2
+
+    def test_blank_key_is_a_no_op(self) -> None:
+        assert PendingArticleSuggestion.record_reconciliation_candidate(key="   ", title="t", summary="s") is None
+        assert PendingArticleSuggestion.objects.count() == 0

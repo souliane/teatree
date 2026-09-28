@@ -37,10 +37,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.models import ConsolidatedMemory
-from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
+from teatree.core.models import ConsolidatedMemory, PendingArticleSuggestion
 from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
-from teatree.core.send_proxy import OutboundBlockedError, route_forge_write
 from teatree.hooks import banned_terms_scanner
 from teatree.loops.dream.destination import classify_destination
 from teatree.types import RawAPIDict
@@ -57,11 +55,6 @@ logger = logging.getLogger(__name__)
 #: checkbox ledger — reused daily, never closed (#2663). A core gap rides this
 #: umbrella + a scheduled coding task instead of a fresh ``needs-triage`` issue.
 UMBRELLA_ISSUE_URL = "https://github.com/souliane/teatree/issues/2663"
-
-#: The dedup marker the binding-reconciliation filer embeds (and searches for) so a
-#: re-run never refiles a conflict that already has an open tracking issue — mirrors
-#: the review-findings fingerprint marker.
-_GAP_MARKER = "dream-memory-gap"
 
 
 class MemoryDisposition(Enum):
@@ -294,17 +287,15 @@ def _file_one_reconciliation(host: CodeHostBackend, conflict: "BindingConflict",
     if reason:
         return TicketOutcome(cluster_key=key, filed=False, withheld=True, reason=reason)
 
-    # Route through the shared forge-write seam (public-repo leak gate + #117
-    # send-proxy audit), the same path the MCP tools use — so this dream-loop
-    # write is no longer unscrubbed. A leak/blocked verdict withholds the issue.
-    try:
-        title = route_forge_write(forge="", repo=repo, text=title, action="dream_reconcile", target=repo)
-        body = route_forge_write(forge="", repo=repo, text=body, action="dream_reconcile", target=repo)
-    except OutboundBlockedError as exc:
-        return TicketOutcome(cluster_key=key, filed=False, withheld=True, reason=str(exc))
-
-    raw = host.create_issue(repo=repo, title=title, body=body, labels=[_GAP_MARKER, NEEDS_TRIAGE_LABEL])
-    return TicketOutcome(cluster_key=key, filed=True, ticket_url=_issue_url(raw), reason="filed new issue")
+    # Never auto-create an issue from this batch-scanning operation (#2663 dream-batch
+    # dea750a552f8f2d2): collect the pair as a PendingArticleSuggestion candidate and
+    # let that ask-gate's approval/surfacing path present it to the owner — an issue
+    # is filed only once approved, mirroring the scanning-news candidate flow rather
+    # than building a parallel approval surface. The forge-write seam (leak gate +
+    # #117 send-proxy audit) moves with the eventual filing, since nothing is
+    # written to the forge here.
+    PendingArticleSuggestion.record_reconciliation_candidate(key=key, title=title, summary=body)
+    return TicketOutcome(cluster_key=key, filed=False, reason="queued for owner approval (PendingArticleSuggestion)")
 
 
 def _find_existing_marker_issue(host: CodeHostBackend, *, repo: str, marker: str) -> str:

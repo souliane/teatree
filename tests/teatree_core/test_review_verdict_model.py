@@ -153,6 +153,43 @@ class TestRecordContract(TestCase):
                 gh_verify_result="exploded",
             )
 
+    def test_merge_safe_with_no_findings_and_unqueried_gh_verify_result_is_refused(self) -> None:
+        """#2663 dream-batch dea750a552f8f2d2: an unqueried CI state is not evidence."""
+        with pytest.raises(ReviewVerdictError, match="needs a populated gh_verify_result"):
+            ReviewVerdict.record(
+                pr_id=1,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict="merge_safe",
+                reviewer_identity="cold-reviewer",
+                findings=[],
+                gh_verify_result=None,
+            )
+
+    def test_merge_safe_with_no_findings_and_populated_gh_verify_result_succeeds(self) -> None:
+        verdict = ReviewVerdict.record(
+            pr_id=1,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+            findings=[],
+            gh_verify_result="green",
+        )
+        assert verdict.is_merge_safe()
+
+    def test_unqueried_gh_verify_result_is_refused_even_off_the_merge_safe_empty_findings_case(self) -> None:
+        """The field is never nullable in storage — None is refused unconditionally."""
+        with pytest.raises(ReviewVerdictError, match="gh_verify_result is required"):
+            ReviewVerdict.record(
+                pr_id=1,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict="hold",
+                reviewer_identity="cold-reviewer",
+                gh_verify_result=None,
+            )
+
     def test_sha_and_slug_are_normalised(self) -> None:
         verdict = ReviewVerdict.record(
             pr_id=1,

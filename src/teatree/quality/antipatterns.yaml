@@ -702,3 +702,28 @@
   refs: ["comments-as-code", "keep-blueprint-tight"]
   linter: null
   eval_invariant: null
+
+# ── Tech debt ──────────────────────────────────────────────────────────────
+- id: suppression-as-fix
+  name: Suppressing a signal instead of fixing what it flags
+  severity: high
+  detection: greppable
+  anti_pattern: >-
+    Reaching for a `# noqa`, `# type: ignore`, `# pragma: no cover`, a
+    `pytest.mark.skip`/`skipif`/`xfail` with no tracking reference, a new
+    ruff `per-file-ignores` entry, or a lowered coverage floor to make a
+    red check go green, instead of fixing the root cause the check flags.
+    CLAUDE.md's "no tech debt without explicit approval" states the rule;
+    without a mechanized check it is enforceable only by a reviewer noticing.
+  preferred_pattern: >-
+    Fix the cause. When a suppression is genuinely the right call (a
+    third-party bug, a documented false positive), record it as an audited
+    `approved_debt` waiver (pattern + reason) on the ticket's plan manifest
+    rather than a silent inline marker — `debt_delta_gate` refuses an
+    unwaived net-new introduction on the ship diff (DARK behind
+    `require_debt_delta`; the owner has not yet decided the default).
+  grep_hint: '#\s*noqa\b|#\s*type:\s*ignore\b|#\s*pragma:\s*no\s+cover\b|pytest\.mark\.(?:skip|skipif|xfail)\b'
+  consumers: [architecture-design, ac-reviewing-codebase, linter]
+  refs: ["north-star-pr-3", "claude-md-no-tech-debt"]
+  linter: debt_delta_gate
+  eval_invariant: null

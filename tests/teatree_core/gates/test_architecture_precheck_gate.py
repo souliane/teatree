@@ -21,6 +21,7 @@ from django.test import TestCase
 from teatree.core.gates.architecture_precheck_gate import (
     ARCHITECTURE_PRECHECK_HINT,
     has_precheck_section,
+    warn_if_diff_inverts_tests,
     warn_if_precheck_incomplete,
 )
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
@@ -28,6 +29,7 @@ from teatree.core.management.commands._ensure_pr import create_or_defer_pr
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners.ship import ShipExecutor
+from teatree.utils.run import CommandFailedError
 from tests.teatree_core.conftest import CommandOverlay
 
 _GATE_LOGGER = "teatree.core.gates.architecture_precheck_gate"
@@ -117,6 +119,47 @@ class TestWarnIfPrecheckIncomplete:
             message = warn_if_precheck_incomplete("feat: tweak\n\nOne-line string change.")
         assert message is None
         assert caplog.records == []
+
+
+_INVERTING_DIFF = (
+    "diff --git a/tests/test_gate.py b/tests/test_gate.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/tests/test_gate.py\n"
+    "+++ b/tests/test_gate.py\n"
+    "@@ -10,7 +10,7 @@ def test_gate_blocks_bad_input():\n"
+    "     result = run_gate(bad_input)\n"
+    "-    assert result.returncode == 1\n"
+    "+    assert result.returncode == 0\n"
+)
+
+
+class TestWarnIfDiffInvertsTests:
+    def test_warns_and_names_the_inversion(self, caplog: pytest.LogCaptureFixture) -> None:
+        with (
+            patch("teatree.core.gates.architecture_precheck_gate.git.branch_diff", return_value=_INVERTING_DIFF),
+            caplog.at_level(logging.WARNING, logger=_GATE_LOGGER),
+        ):
+            message = warn_if_diff_inverts_tests("/tmp/wt")
+        assert message is not None
+        assert "tests/test_gate.py" in message
+        assert any("must-block regression test" in record.message for record in caplog.records)
+
+    def test_silent_on_a_clean_diff(self, caplog: pytest.LogCaptureFixture) -> None:
+        clean_diff = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,1 @@\n-a = 1\n+a = 2\n"
+        with (
+            patch("teatree.core.gates.architecture_precheck_gate.git.branch_diff", return_value=clean_diff),
+            caplog.at_level(logging.WARNING, logger=_GATE_LOGGER),
+        ):
+            message = warn_if_diff_inverts_tests("/tmp/wt")
+        assert message is None
+        assert caplog.records == []
+
+    def test_silent_when_the_diff_is_unreadable(self) -> None:
+        with patch(
+            "teatree.core.gates.architecture_precheck_gate.git.branch_diff",
+            side_effect=CommandFailedError(["git", "diff"], 128, "", "not a git repo"),
+        ):
+            assert warn_if_diff_inverts_tests("/not/a/repo") is None
 
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}

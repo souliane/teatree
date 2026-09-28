@@ -9,7 +9,7 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**36 entries** — 5 greppable, 31 judgement.
+**37 entries** — 6 greppable, 31 judgement.
 
 ## Index
 
@@ -35,6 +35,7 @@ holistic (`ac-reviewing-codebase`).
 - [Feature merged but not in force](#shipped-inert) — high, judgement
 - [Work can stall indefinitely with nothing raising an alarm](#silent-freeze) — high, judgement
 - [Command reports success on a failure it printed](#silent-success-on-failure) — high, judgement
+- [Suppressing a signal instead of fixing what it flags](#suppression-as-fix) — high, greppable
 - [Test mocks the behaviour it is supposed to exercise](#test-mocks-the-unit-under-test) — high, judgement
 - [Absent, unreadable or stale signal reported as a definite verdict](#unknown-reported-as-verdict) — high, judgement
 - [Guard green only where the defect cannot appear](#vacuous-guard) — high, judgement
@@ -599,3 +600,19 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A doc or BLUEPRINT section that walks through what a function does line by line, or that describes a mechanism the code has since renamed, moved or removed. It is a second copy of the code's behaviour, so it drifts the moment the code moves, and then confidently asserts the old design to the next reader. Tests do not catch it — 100% coverage says nothing about stale prose.
 
 **Preferred.** Architectural docs answer why the system is shaped this way; what a function does is the code's own job. A section describing a mechanism the change touched is updated or deleted in the same change, and depth past architectural overview moves to a linked appendix.
+
+## Suppressing a signal instead of fixing what it flags
+
+<a id="suppression-as-fix"></a>
+
+- **id:** `suppression-as-fix`
+- **severity:** high
+- **detection:** greppable
+- **grep hint:** `#\s*noqa\b|#\s*type:\s*ignore\b|#\s*pragma:\s*no\s+cover\b|pytest\.mark\.(?:skip|skipif|xfail)\b`
+- **linter:** `debt_delta_gate`
+- **consumers:** architecture-design, ac-reviewing-codebase, linter
+- **refs:** north-star-pr-3, claude-md-no-tech-debt
+
+**Anti-pattern.** Reaching for a `# noqa`, `# type: ignore`, `# pragma: no cover`, a `pytest.mark.skip`/`skipif`/`xfail` with no tracking reference, a new ruff `per-file-ignores` entry, or a lowered coverage floor to make a red check go green, instead of fixing the root cause the check flags. CLAUDE.md's "no tech debt without explicit approval" states the rule; without a mechanized check it is enforceable only by a reviewer noticing.
+
+**Preferred.** Fix the cause. When a suppression is genuinely the right call (a third-party bug, a documented false positive), record it as an audited `approved_debt` waiver (pattern + reason) on the ticket's plan manifest rather than a silent inline marker — `debt_delta_gate` refuses an unwaived net-new introduction on the ship diff (DARK behind `require_debt_delta`; the owner has not yet decided the default).

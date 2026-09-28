@@ -95,9 +95,14 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
     ),
     "factory_score_enabled": FeatureFlag(
         field="factory_score_enabled",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — autoresearch outer-loop (T4)",
-        summary="The SIG-PR-2 recipe/score seam; ships dark until the outer loop consumes the metric.",
+        stage=FlagStage.SETTLING,
+        tracking_issue="souliane/teatree#4189 — T4-PR-2 recipe/score seam",
+        summary=(
+            "The SIG-PR-2 recipe/score seam. Graduated DARK->SETTLING (owner decision "
+            "2026-08-04): the metric computes and records by default. The outer loop's own "
+            "flag and the directive execution arc's critic-liveness/signal-trust guards are "
+            "the surfaces that still bound self-modification."
+        ),
     ),
     "critic_gate_mode": FeatureFlag(
         field="critic_gate_mode",
@@ -118,8 +123,8 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
             "Master gate for the directive self-modification front-end (intake+interpret+ratify). Default ON "
             "(graduated DARK->SETTLING by #3895 under the owner-authorised autonomous-by-default posture), so a "
             "captured directive is interpreted without an operator opt-in. The EXECUTION arc past the human ratify "
-            "gate still needs factory_score_enabled (default OFF) and a live critic; survives as a per-overlay "
-            "escape hatch during the soak. OFF restores the pre-graduation total no-op."
+            "gate still needs a live critic (factory_score_enabled also graduated default-ON, #4189); survives as "
+            "a per-overlay escape hatch during the soak. OFF restores the pre-graduation total no-op."
         ),
     ),
     "send_proxy_mode": FeatureFlag(

@@ -53,8 +53,16 @@ class PendingArticleSuggestion(models.Model):
         APPROVED = "approved", "Approved"
         REJECTED = "rejected", "Rejected"
 
+    class Kind(models.TextChoices):
+        NEWS_ARTICLE = "news_article", "News article"
+        #: Dream-loop conflicting-BINDING-memory-pair reconciliation candidate (#2663
+        #: dream-batch dea750a552f8f2d2) — reuses this ask-gate rather than a parallel
+        #: one; ``url`` stays empty for this kind, ``url_hash`` dedupes on the pair's key.
+        MEMORY_RECONCILIATION = "memory_reconciliation", "Memory reconciliation"
+
     overlay = models.CharField(max_length=64, blank=True, default="")
-    url = models.URLField(max_length=1024)
+    kind = models.CharField(max_length=32, choices=Kind.choices, default=Kind.NEWS_ARTICLE)
+    url = models.URLField(max_length=1024, blank=True, default="")
     url_hash = models.CharField(max_length=64, unique=True)
     title = models.CharField(max_length=512, blank=True, default="")
     summary = models.TextField(blank=True, default="")
@@ -119,6 +127,42 @@ class PendingArticleSuggestion(models.Model):
                 url_hash=digest,
                 defaults={
                     "url": clean_url,
+                    "title": title.strip(),
+                    "summary": summary.strip(),
+                    "overlay": overlay.strip(),
+                },
+            )
+        return row if created else None
+
+    @classmethod
+    def record_reconciliation_candidate(
+        cls,
+        *,
+        key: str,
+        title: str = "",
+        summary: str = "",
+        overlay: str = "",
+    ) -> "PendingArticleSuggestion | None":
+        """Idempotently enqueue one PENDING reconciliation candidate; return it or ``None``.
+
+        Reuses this ask-gate for the dream loop's conflicting-BINDING-memory-pair
+        reconciliation (rather than auto-filing an issue) — see
+        :data:`Kind.MEMORY_RECONCILIATION`. *key* is the pair's own dedup key (already
+        unique per conflict); a kind-prefixed digest keeps it in its own namespace
+        within the shared ``url_hash`` column, so it can never collide with an
+        unrelated news-article URL hashed the plain way. No live-URL check applies —
+        there is no URL to check. ``None`` means a candidate for this exact *key*
+        already exists (any status).
+        """
+        clean_key = key.strip()
+        if not clean_key:
+            return None
+        digest = cls.hash_url(f"{cls.Kind.MEMORY_RECONCILIATION}:{clean_key}")
+        with transaction.atomic():
+            row, created = cls.objects.get_or_create(
+                url_hash=digest,
+                defaults={
+                    "kind": cls.Kind.MEMORY_RECONCILIATION,
                     "title": title.strip(),
                     "summary": summary.strip(),
                     "overlay": overlay.strip(),

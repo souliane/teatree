@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from teatree.core.authoring_credential import unapprovable_author_refusal, unresolvable_author_refusal
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend, PullRequestSpec
-from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
+from teatree.core.gates.architecture_precheck_gate import warn_if_diff_inverts_tests, warn_if_precheck_incomplete
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
@@ -334,6 +334,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     warn_if_open_questions_missing(description)
     warn_if_owner_ratification_unbacked(description)
     warn_if_precheck_incomplete(description)
+    warn_if_diff_inverts_tests(repo_path)
 
     remote = git.remote_url(repo=repo_path)
     repo_slug = git_remote.slug_from_remote(remote)

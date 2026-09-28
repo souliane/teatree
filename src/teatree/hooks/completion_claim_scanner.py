@@ -179,6 +179,27 @@ _CRUCIAL_SURFACE_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# The bare gate-evidence proxy this fifth leg closes (#2663 dream-batch
+# dea750a552f8f2d2): `prek run --all-files` runs only the COMMIT-stage hooks —
+# CI's push-stage gates (comment-density, doc-update, ensure-pr, the
+# public-repo leak gate) never fire on it — so a claim citing it as gate
+# evidence and nothing more is the same artifact-existence-proxy class
+# `_ARTIFACT_EXISTS_RE` already rejects for deliverables, applied to gate
+# evidence. `t3 tool verify-gates` is the CI-parity oracle, and its own
+# contract pairs a SHA with an exit code (`t3:code` § VERIFY); citing neither
+# alongside the bare prek run means the claim never ran it at all.
+_BARE_PREK_ALL_FILES_RE: Final[re.Pattern[str]] = re.compile(r"\bprek run (?:--all-files|-a)\b", re.IGNORECASE)
+_VERIFY_GATES_SHA_EXIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bverify-gates\b[^.\n]{0,80}\b[0-9a-f]{7,40}\b[^.\n]{0,40}\bexit\b|"
+    r"\b[0-9a-f]{7,40}\b[^.\n]{0,80}\bverify-gates\b[^.\n]{0,40}\bexit\b",
+    re.IGNORECASE,
+)
+_GATES_GREEN_CLAIM_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:gates?|checks?|hooks?)\s+(?:are\s+|is\s+)?(?:all\s+)?green\b|"
+    r"\ball\s+green\b|\bgates?\s+pass(?:ed|ing)?\b",
+    re.IGNORECASE,
+)
+
 # An ARCHITECTURE / PLANNING / RECOMMENDATION frame: the turn is laying out
 # options, patterns, or decisions to choose among — NOT claiming delivered work
 # is done. The gate targets "all the deliverables are done" on a real
@@ -373,6 +394,21 @@ def _line_has_on_target_evidence(body: str) -> bool:
     return bool(_ON_TARGET_EVIDENCE_RE.search(body))
 
 
+def _bare_prek_gate_evidence_only(text: str) -> bool:
+    """True when a "gates green" claim cites only a bare ``prek run --all-files``.
+
+    Additive fifth leg (#2663 dream-batch dea750a552f8f2d2): fires only when the
+    turn BOTH claims gates/checks are green AND names the bare prek invocation
+    AND never pairs ``verify-gates`` with a sha+exit-code — a turn that never
+    mentions gate status at all, or that cites the real oracle, is untouched.
+    """
+    return bool(
+        _GATES_GREEN_CLAIM_RE.search(text)
+        and _BARE_PREK_ALL_FILES_RE.search(text)
+        and not _VERIFY_GATES_SHA_EXIT_RE.search(text)
+    )
+
+
 def _no_claim_to_evaluate(text: str) -> bool:
     """True when there is no completeness claim to evaluate before line parsing.
 
@@ -406,7 +442,9 @@ def find_completion_block(text: str) -> CompletionVerdict | None:
     scope — a single-deliverable claim never fires); and the
     deliverable->evidence map is INCOMPLETE — some enumerated deliverable
     lacks on-target evidence, OR the authoritative spec was not read, OR the
-    crucial deliverable was not explicitly verified on its correct surface.
+    crucial deliverable was not explicitly verified on its correct surface,
+    OR a "gates green" claim is backed only by a bare ``prek run --all-files``
+    with no ``verify-gates`` sha+exit-code citation.
 
     Returns ``None`` (allow) when there is no claim, when it is an honest
     refusal, when the turn is architecture/planning/recommendation prose
@@ -436,6 +474,11 @@ def find_completion_block(text: str) -> CompletionVerdict | None:
         missing.append("the authoritative spec (incl. its comments) was not confirmed read")
     if not _CRUCIAL_SURFACE_RE.search(text):
         missing.append("the crucial deliverable was not explicitly verified on its correct surface")
+    if _bare_prek_gate_evidence_only(text):
+        missing.append(
+            "gates-green is backed only by a bare `prek run --all-files` "
+            "(commit-stage only) — run `t3 tool verify-gates` and cite its SHA + exit code"
+        )
     if not missing:
         return None
     return CompletionVerdict(deliverable_count=len(bodies), missing=missing)

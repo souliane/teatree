@@ -19,7 +19,7 @@ from teatree.config import get_effective_settings
 from teatree.core.intake.event_router import RoutedAction, route_event
 from teatree.core.models import ConfigSetting, DirectiveDispatch, IncomingEvent, IntentClassification, Loop
 from teatree.core.models.directive import Directive
-from teatree.loops.directive_loop.guards import SCORE_OFF, evaluate_execution_guards
+from teatree.loops.directive_loop.guards import CRITIC_NOT_LIVE, evaluate_execution_guards
 from teatree.loops.directive_loop.loop import DIRECTIVE_LOOP_NAME
 from teatree.loops.seed import seed_default_loops_and_prompts
 from tests.integration.directive_dogfood.exemplar import PROOF_CASE_TEXT, SCOPE, tick
@@ -39,12 +39,13 @@ class TestDefaultResolutionInertness(TestCase):
         assert ConfigSetting.objects.count() == 0
         assert Directive.objects.get(pk=directive.pk).state == Directive.State.CAPTURED
 
-    def test_the_execution_arc_still_refuses_at_the_score_guard(self) -> None:
-        # The arc that CHANGES config did not graduate with the intake flag:
-        # ``factory_score_enabled`` stays DARK and off, so the post-admission chain
-        # refuses at G1b and no snapshot row is ever written.
+    def test_the_execution_arc_still_refuses_at_the_critic_guard(self) -> None:
+        # ``factory_score_enabled`` graduated default-ON alongside the intake flag
+        # (#4189, owner decision 2026-08-04) — G1b no longer holds this line. The fresh
+        # critic table does: G2 refuses with no live CriticVerdict sample, so the arc
+        # that CHANGES config still refuses at default resolution, one gate later.
         assert not ConfigSetting.objects.filter(key="factory_score_enabled").exists()
-        assert evaluate_execution_guards(settings=get_effective_settings()).reason == SCORE_OFF
+        assert evaluate_execution_guards(settings=get_effective_settings()).reason == CRITIC_NOT_LIVE
 
     def test_the_seeded_loop_row_forges_no_manual_override(self) -> None:
         # What keeps the row from ticking is the preset's opinion, not a value the seed

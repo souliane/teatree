@@ -529,11 +529,12 @@ def build_server() -> MCPServer:
     """
     declared = _required_services()
     overlay_groups = overlay_tool_groups(declared)
-    # T4-PR-2 — the recipe-weighted score is a DARK feature-flagged surface: both
-    # its tool registration and its instruction line are appended ONLY when
-    # factory_score_enabled is on (the same fail-closed contract the per-service
-    # groups honour — the instructions never advertise an unregistered tool), so
-    # the outer loop has no MCP metric-to-beat until enablement is a deliberate act.
+    # T4-PR-2 — the recipe-weighted score is a feature-flagged surface: both its
+    # tool registration and its instruction line are appended ONLY when
+    # factory_score_enabled is on — the shipped default (#4189) — (the same
+    # fail-closed contract the per-service groups honour — the instructions never
+    # advertise an unregistered tool), so an operator who deliberately holds the
+    # flag off during a soak also loses the MCP metric-to-beat surface.
     score_on = get_effective_settings().factory_score_enabled
     read_tools = (*_READ_TOOLS, _FACTORY_SCORE_TOOL) if score_on else _READ_TOOLS
 

@@ -90,17 +90,20 @@ class _LoopFlagAndCredentialSettings:
     # front-end (intake + interpret + ratify), graduated DARK -> SETTLING by #3895.
     # Default ON: a captured directive IS interpreted, and the intake arc terminates at
     # the structural human ratify gate. The EXECUTION arc past that gate additionally
-    # needs ``factory_score_enabled`` (default OFF) and a live critic, so nothing
-    # self-modifies at default resolution. DB-home (#1775), per-overlay overridable —
-    # flip OFF to disable directive intake entirely.
+    # needs a live critic (``factory_score_enabled`` also graduated default-ON, #4189),
+    # so nothing self-modifies at default resolution. DB-home (#1775), per-overlay
+    # overridable — flip OFF to disable directive intake entirely.
     directive_loop_enabled: bool = True
-    # T4-PR-2 — the SIG-PR-2 recipe/score seam OFF switch (a DARK ``FEATURE_FLAGS``
-    # entry). Ships OFF: ``t3 <overlay> recipe score`` still COMPUTES read-only (for
-    # calibrating recipe weights against real ledger data pre-enable), but ``--record``
-    # refuses, NO ``FactoryScoreSnapshot`` row is ever written, NO ``DeferredQuestion``
-    # is queued, and ``build_server()`` does not register the MCP ``factory_score`` tool
-    # — the outer loop physically has no metric surface. DB-home, per-overlay overridable.
-    factory_score_enabled: bool = False
+    # T4-PR-2 — the SIG-PR-2 recipe/score seam. Graduated DARK->SETTLING (owner
+    # decision souliane/teatree#4189, 2026-08-04 — the shipped default had silently
+    # stayed OFF for 55+ days past that decision until this graduation shipped it).
+    # Default ON: ``t3 <overlay> recipe score --record`` persists a
+    # ``FactoryScoreSnapshot`` and ``build_server()`` registers the MCP
+    # ``factory_score`` tool. The outer loop (``outer_loop_enabled``, still DARK)
+    # and the directive execution arc's critic-liveness/signal-trust guards are the
+    # surfaces that still bound self-modification — this flag alone no longer does.
+    # DB-home, per-overlay overridable — flip OFF to hold the metric off during a soak.
+    factory_score_enabled: bool = True
     # Opt-in colleague nagging, read by more than one loop; ships off until its owner decides.
     review_nag_enabled: bool = False
     # T4-PR-2 — the human-approved recipe sha (``config/factory_recipe.recipe_sha``).

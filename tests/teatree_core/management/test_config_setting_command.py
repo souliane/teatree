@@ -431,10 +431,12 @@ class TestConfigSettingFlagsAudit(TestCase):
         out = StringIO()
         call_command("config_setting", "flags", stdout=out)
         rendered = out.getvalue()
-        # The live registry is all-DARK, so its rows render stage=dark.
         for key in ("outer_loop_enabled", "factory_score_enabled"):
             assert key in rendered
+        # outer_loop_enabled is still DARK; factory_score_enabled graduated to
+        # SETTLING (#4189) — both stages must render.
         assert "stage=dark" in rendered
+        assert "stage=settling" in rendered
 
     def test_flags_is_read_only_creates_no_rows(self) -> None:
         call_command("config_setting", "flags", stdout=StringIO())

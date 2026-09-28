@@ -209,7 +209,6 @@ class TestSafetyAndDarkFlagsPinned:
         "bulk_close_threshold": 5,
         # DARK feature-flags — each pinned to its off value.
         "outer_loop_enabled": False,
-        "factory_score_enabled": False,
         "critic_gate_mode": "off",
         "send_proxy_mode": "warn",
         "require_debt_delta": False,

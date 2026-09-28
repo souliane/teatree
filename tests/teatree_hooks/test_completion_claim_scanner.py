@@ -82,6 +82,32 @@ class TestFiresOnMultiDeliverableClaimWithoutMap:
         assert any("crucial deliverable" in reason for reason in verdict.missing)
 
 
+class TestBareEvidenceGateClaimFires:
+    """The fifth leg (#2663 dream-batch dea750a552f8f2d2).
+
+    A "gates green" claim backed only by a bare `prek run --all-files` is insufficient evidence.
+    """
+
+    def test_bare_prek_run_evidence_fires_on_an_otherwise_complete_map(self) -> None:
+        text = _COMPLETE_MAP + "Ran prek run --all-files, all green.\n"
+        verdict = scanner.find_completion_block(text)
+        assert verdict is not None
+        assert any("prek run --all-files" in reason for reason in verdict.missing)
+
+    def test_verify_gates_sha_and_exit_clears_it(self) -> None:
+        text = _COMPLETE_MAP + "Ran prek run --all-files, then verify-gates measured a1b2c3d4, exit 0. All green.\n"
+        assert scanner.find_completion_block(text) is None
+
+    def test_no_gates_claim_at_all_does_not_fire_this_leg(self) -> None:
+        assert scanner.find_completion_block(_COMPLETE_MAP) is None
+
+    def test_bare_prek_dash_a_flag_also_fires(self) -> None:
+        text = _COMPLETE_MAP + "Ran prek run -a, all green.\n"
+        verdict = scanner.find_completion_block(text)
+        assert verdict is not None
+        assert any("prek run --all-files" in reason for reason in verdict.missing)
+
+
 class TestDoesNotFire:
     """The load-bearing no-fire guards — a false block wedges a real 'done'."""
 

@@ -16,6 +16,8 @@ the removability finding is the one this PR introduces.
 import re
 from dataclasses import dataclass
 
+from teatree.quality.gate_relaxation import parse_diff
+
 # A section STARTS at a numbered heading (``## 1. …``) and ENDS at the next
 # heading of any level — so a trailing ``## Workflow`` never bleeds into a
 # section's body and makes a bare-placeholder answer look filled in.
@@ -113,3 +115,51 @@ def removability_answered(text: str) -> bool:
     """True iff the removability / harness-vs-data check (PR-11) is answered."""
     body = parse_sections(text).get(REMOVABILITY_CHECK.number)
     return body is not None and is_answered(body)
+
+
+# check #9 (behavior preservation) names this exact anti-pattern: inverting an
+# existing must-block regression test's failure assertion (`returncode == 1` ->
+# `== 0`) is how a weakened matcher's coverage loss hides. Narrow and
+# greppable by design (the antipatterns.yaml `detection: greppable` tier) —
+# it fires only on the ONE well-known shape, never on a heuristic guess.
+_EXIT_ASSERTION_RE = re.compile(r"(==)\s*([01])\b")
+
+
+def _assertion_key(line: str) -> str:
+    """*line* with its ``== 0``/``== 1`` literal blanked.
+
+    Two lines sharing a key differ ONLY in that literal — the shape an
+    inversion takes when the surrounding assertion is otherwise untouched.
+    Callers only call this once a match on *line* is already confirmed.
+    """
+    return _EXIT_ASSERTION_RE.sub("==\x00", line)
+
+
+def inverted_test_findings(diff_text: str) -> list[str]:
+    """Every added line that inverts a removed must-block (``== 1``) assertion to ``== 0``.
+
+    Scoped to ``.py`` files. A removed ``== 1`` line and an added ``== 0`` line in
+    the SAME file are an inversion only when they are otherwise IDENTICAL (same
+    ``_assertion_key``) — a brand-new test asserting ``== 0`` with no matching
+    prior ``== 1`` line never fires, which is what keeps this from flagging
+    ordinary new coverage. Vacuous on a clean or empty diff.
+    """
+    findings: list[str] = []
+    for file_diff in parse_diff(diff_text):
+        if not file_diff.path.endswith(".py"):
+            continue
+        removed_by_key: dict[str, list[str]] = {}
+        for line in file_diff.removed:
+            match = _EXIT_ASSERTION_RE.search(line)
+            if match is None or match.group(2) != "1":
+                continue
+            removed_by_key.setdefault(_assertion_key(line), []).append(line.strip())
+        for line in file_diff.added:
+            match = _EXIT_ASSERTION_RE.search(line)
+            if match is None or match.group(2) != "0":
+                continue
+            prior = removed_by_key.get(_assertion_key(line))
+            if not prior:
+                continue
+            findings.append(f"{file_diff.path}: was `{prior[0]}`, now `{line.strip()}`")
+    return findings

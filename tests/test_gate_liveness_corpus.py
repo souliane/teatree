@@ -1100,6 +1100,26 @@ def _raw_pid_kill_allow(_ctx: GateContext) -> dict:
     return _bash("kill -0 4242")
 
 
+# block-raw-ticket-ignore-loop (PreToolUse Bash): the 3rd raw
+# `ticket transition <id> ignore` call in a session denies; a 1st call allows.
+
+
+def _raw_ticket_ignore_arrange_pre_tripped(ctx: GateContext) -> None:
+    """Pre-seed 2 prior matching calls so the row's own call is the 3rd."""
+    state = ctx.state_dir / f"{ctx.session_id}.ticket-ignore-count"
+    state.write_text("1\n1\n", encoding="utf-8")
+
+
+def _raw_ticket_ignore_deny(_ctx: GateContext) -> dict:
+    return _bash("t3 teatree ticket transition 42 ignore")
+
+
+def _raw_ticket_ignore_allow(_ctx: GateContext) -> dict:
+    # The sanctioned alternative is never blocked, even with a tripped counter
+    # (the same ``arrange`` pre-seeds both this and the deny scenario).
+    return _bash("t3 teatree ticket bulk-close 1 2 3")
+
+
 # block-unbounded-wait (PreToolUse Bash): an `until`/`while … sleep` with no
 # deadline denies; the same wait under a `timeout` wrapper allows.
 
@@ -1473,6 +1493,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_raw_pid_kill_deny,
         allow_input=_raw_pid_kill_allow,
+    ),
+    GateRow(
+        gate_id="block-raw-ticket-ignore-loop",
+        handler=router.handle_block_raw_ticket_ignore_loop,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_raw_ticket_ignore_deny,
+        allow_input=_raw_ticket_ignore_allow,
+        arrange=_raw_ticket_ignore_arrange_pre_tripped,
     ),
     GateRow(
         gate_id="block-unbounded-wait",

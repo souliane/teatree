@@ -1,13 +1,13 @@
 """``t3 <overlay> recipe score|approve`` — the read seam over the factory score (SIG-PR-2).
 
 ``score`` computes the recipe-weighted aggregate over the trailing window and
-prints it. It COMPUTES read-only unconditionally (calibrating the recipe against
-real ledger data is exactly why the flag ships OFF), but ``--record`` — the only
-path that writes a :class:`~teatree.core.models.factory_score_snapshot.FactoryScoreSnapshot`
+prints it. It COMPUTES read-only unconditionally (safe for calibrating the recipe
+against real ledger data whichever way the flag is set), but ``--record`` — the
+only path that writes a :class:`~teatree.core.models.factory_score_snapshot.FactoryScoreSnapshot`
 row or queues a :class:`~teatree.core.models.deferred_question.DeferredQuestion` —
-refuses unless ``factory_score_enabled`` is on. So with the shipped defaults the
-DB stays empty and no human is pinged: the flag-gated OFF footprint is just the
-migrated (empty) table.
+refuses unless ``factory_score_enabled`` is on. The flag ships ON by default
+(#4189); an operator who deliberately holds it off during a soak keeps the DB
+empty and pings no human — the OFF footprint is just the migrated (empty) table.
 
 ``approve`` is the human EVOLVE gate: it pins the committed recipe's ``recipe_sha``
 into the ``approved_recipe_sha`` setting so subsequent scored reads stamp
@@ -115,7 +115,7 @@ class Command(MachineOutputCommand):
         if record:
             if not settings.factory_score_enabled:
                 self.stderr.write(
-                    "  refusing --record: factory_score_enabled is off (the shipped OFF state). "
+                    "  refusing --record: factory_score_enabled is off. "
                     "The score computes read-only; recording is a deliberate later act."
                 )
                 raise SystemExit(2)

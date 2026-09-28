@@ -20,7 +20,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.models import ConsolidatedMemory
+from teatree.core.models import ConsolidatedMemory, PendingArticleSuggestion
 from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import batch_promote as bp_module
 from teatree.loops.dream.batch_promote import PromotionBatch
@@ -322,18 +322,32 @@ def _conflict(survivor: str = "feedback_bind_one", absorbed: str = "feedback_bin
 
 
 class FileBindingReconciliationTicketsTestCase(TestCase):
-    """Two conflicting BINDING memories get a deduped reconciliation ticket (#2723)."""
+    """Two conflicting BINDING memories get a queued reconciliation candidate (#2723).
 
-    def test_conflict_files_a_reconciliation_ticket(self) -> None:
+    Never auto-files an issue for this batch-scanning operation (#2663 dream-batch
+    dea750a552f8f2d2) — it records a PendingArticleSuggestion instead and leaves the
+    owner's approval to file it, mirroring the scanning-news candidate flow.
+    """
+
+    def test_conflict_queues_a_reconciliation_candidate_and_files_no_issue(self) -> None:
         host = _fake_host()
         outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
         assert len(outcomes) == 1
-        assert outcomes[0].filed is True
-        _, kwargs = host.create_issue.call_args
-        assert "reconcil" in kwargs["body"].lower()
-        assert "feedback_bind_one.md" in kwargs["body"]
-        assert "feedback_bind_two.md" in kwargs["body"]
-        assert "needs-triage" in kwargs["labels"]
+        assert outcomes[0].filed is False
+        assert outcomes[0].withheld is False
+        host.create_issue.assert_not_called()
+
+        (row,) = PendingArticleSuggestion.objects.filter(kind=PendingArticleSuggestion.Kind.MEMORY_RECONCILIATION)
+        assert row.status == PendingArticleSuggestion.Status.PENDING
+        assert "reconcil" in row.summary.lower()
+        assert "feedback_bind_one.md" in row.summary
+        assert "feedback_bind_two.md" in row.summary
+
+    def test_a_second_scan_of_the_same_conflict_does_not_requeue(self) -> None:
+        host = _fake_host()
+        file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
+        assert PendingArticleSuggestion.objects.count() == 1
 
     def test_existing_open_reconciliation_issue_is_reused(self) -> None:
         host = MagicMock(spec=CodeHostBackend)
@@ -392,15 +406,15 @@ class FileBindingReconciliationTicketsTestCase(TestCase):
         assert outcomes == []
         host.create_issue.assert_not_called()
 
-    def test_search_hiccup_does_not_block_filing(self) -> None:
-        # A search error must not block filing — the issue is filed anyway (refile-once
-        # self-corrects on the next pass).
+    def test_search_hiccup_does_not_block_queuing(self) -> None:
+        # A search error must not block queuing the candidate (refile-once self-corrects
+        # on the next pass's open-issue search).
         host = MagicMock(spec=CodeHostBackend)
         host.search_open_issues.side_effect = RuntimeError("forge search down")
-        host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/9001"}
         outcomes = file_binding_reconciliation_tickets(host, repo="souliane/teatree", conflicts=[_conflict()])
-        assert outcomes[0].filed is True
-        host.create_issue.assert_called_once()
+        assert outcomes[0].filed is False
+        assert PendingArticleSuggestion.objects.count() == 1
+        host.create_issue.assert_not_called()
 
 
 class RetireResolvedMemoriesTestCase(TestCase):

@@ -248,13 +248,37 @@ class TestDirectiveIntakeGraduation:
         assert "directive_loop_enabled" not in dark_flags()
 
     def test_the_execution_arc_guards_did_not_graduate(self) -> None:
-        # The bound on self-modification: the score metric and the critic gate stay DARK
-        # and OFF, so intake being live never reaches a config write or a merge.
+        # The bound on self-modification: the critic gate stays DARK and OFF, so intake
+        # being live never reaches a merge. ``factory_score_enabled`` graduated alongside
+        # it (#4189) — see ``TestFactoryScoreGraduation`` — but the critic-liveness and
+        # signal-trust guards it no longer replaces still refuse every execution-arc tick.
         defaults = UserSettings()
-        for key in ("factory_score_enabled", "critic_gate_mode"):
+        for key in ("critic_gate_mode",):
             flag = FEATURE_FLAGS[key]
             assert flag.stage is FlagStage.DARK, f"{key!r} must stay DARK — it bounds self-modification"
             assert getattr(defaults, key) == flag.off_value
+
+
+class TestFactoryScoreGraduation:
+    """``factory_score_enabled`` graduated DARK -> SETTLING (owner decision, #4189).
+
+    The shipped default silently stayed OFF for 55+ days after the owner's 2026-08-04
+    decision because nothing checked how OLD a STAGED citation was — see
+    ``tests/config/test_gate_evidence.py`` for the staleness guard that now catches the
+    same recurrence class. This pins the graduation itself, mirroring
+    ``TestDirectiveIntakeGraduation`` above.
+    """
+
+    def test_factory_score_graduated_to_settling(self) -> None:
+        flag = FEATURE_FLAGS["factory_score_enabled"]
+        assert flag.stage is FlagStage.SETTLING
+        assert flag.off_value is False
+
+    def test_factory_score_defaults_on_for_a_fresh_deploy(self) -> None:
+        assert UserSettings().factory_score_enabled is True
+
+    def test_the_graduated_flag_left_the_dark_set(self) -> None:
+        assert "factory_score_enabled" not in dark_flags()
 
 
 class TestQueryHelpers:

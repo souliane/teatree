@@ -74,6 +74,9 @@ _MAILBOX_TOOLS = {
 class TestToolRegistration(TestCase):
     def test_registers_the_expected_tool_surface_with_correct_read_write_hints(self) -> None:
         # No service declared ⇒ the base surface is exactly the read + write tools.
+        # factory_score is its own flag-gated extra — held off here so this pins the
+        # base surface, not that gate (see TestFactoryScoreFlagGating).
+        call_command("config_setting", "set", "factory_score_enabled", "false")
         with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay()}):
             tools = asyncio.run(build_server().list_tools())
 
@@ -219,6 +222,7 @@ class TestServiceDeclarationGating(TestCase):
             assert _required_services() == frozenset()
 
     def test_no_declaration_registers_zero_service_tools(self) -> None:
+        call_command("config_setting", "set", "factory_score_enabled", "false")
         with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay()}):
             names = {tool.name for tool in asyncio.run(build_server().list_tools())}
 
@@ -250,7 +254,9 @@ class TestServiceDeclarationGating(TestCase):
 
 class TestFactoryScoreFlagGating(TestCase):
     def test_factory_score_absent_when_flag_off(self) -> None:
-        # The shipped OFF state: the outer loop has no MCP metric-to-beat surface.
+        # An operator-held-off state (the flag ships ON by default since #4189): the
+        # outer loop has no MCP metric-to-beat surface while it is deliberately off.
+        call_command("config_setting", "set", "factory_score_enabled", "false")
         names = {tool.name for tool in asyncio.run(build_server().list_tools())}
         assert "factory_score" not in names
 
@@ -262,6 +268,7 @@ class TestFactoryScoreFlagGating(TestCase):
     def test_instructions_do_not_advertise_factory_score_when_flag_off(self) -> None:
         # The instructions must never name a tool that is not registered — the
         # same fail-closed contract the per-service groups honour.
+        call_command("config_setting", "set", "factory_score_enabled", "false")
         instructions = build_server().instructions or ""
         assert "factory_score" not in instructions
 

@@ -44,8 +44,19 @@ from enum import StrEnum
 #: the month they actually hid for.
 INERT_AFTER_DAYS = 7
 
+#: How long a STAGED citation may go unrefreshed before ITS silence is a finding too —
+#: #4189's own ``factory_score_enabled`` entry cited its 2026-08-04 decision for 55+ days
+#: after the shipped default should have followed it, because ``_cites_a_decision`` only
+#: checks a citation is PRESENT, never how OLD. A citation past this age reports as a
+#: FAULT the same way an UNDECIDED gate does, in :mod:`teatree.core.factory.feature_inertness`.
+STAGED_STALE_AFTER_DAYS = 45
+
 #: An issue reference, or an ISO date pinning when the call was made.
 _DECISION_REFERENCE = re.compile(r"#\d+|\d{4}-\d{2}-\d{2}")
+
+#: The dated subset of :data:`_DECISION_REFERENCE` — an issue number alone has no age this
+#: module can compute without a live forge call, which its pure/declarative design rules out.
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 class ObservableKind(StrEnum):
@@ -237,16 +248,6 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         satisfier="the outer-loop tick proposes an experiment once a FactoryScoreSnapshot baseline exists",
     ),
     GateEvidence(
-        setting="factory_score_enabled",
-        off_value=False,
-        kind=ObservableKind.MODEL,
-        target="core.FactoryScoreSnapshot",
-        shipped=dt.date(2026, 7, 5),
-        intent=ActivationIntent.STAGED,
-        rationale="souliane/teatree#4189 — owner turned it on 2026-08-04; the shipped default still ships off",
-        satisfier="the outer-loop and directive-loop ticks each record a snapshot of the score they read",
-    ),
-    GateEvidence(
         setting="send_proxy_mode",
         off_value="warn",
         kind=ObservableKind.MODEL,
@@ -336,3 +337,26 @@ def _cites_a_decision(rationale: str) -> bool:
     flag's tracking prose: an issue reference, or an ISO date pinning when the call was made.
     """
     return bool(_DECISION_REFERENCE.search(rationale))
+
+
+def staged_decision_age_days(rationale: str, today: dt.date) -> int | None:
+    """Days since the most recent ISO date cited in *rationale*, or ``None`` if it cites none.
+
+    An issue-number-only citation (``#117``) has no computable age here — that needs a live
+    forge call this module's pure/declarative design rules out, so it is left un-aged rather
+    than guessed at.
+    """
+    dates = [dt.date.fromisoformat(match) for match in _ISO_DATE.findall(rationale)]
+    return (today - max(dates)).days if dates else None
+
+
+def staged_citation_is_stale(entry: GateEvidence, today: dt.date) -> bool:
+    """Whether *entry* is STAGED with a dated citation older than :data:`STAGED_STALE_AFTER_DAYS`.
+
+    Exists so a decision cited once does not shield a gate forever — see
+    :data:`STAGED_STALE_AFTER_DAYS` for the recurrence this closes.
+    """
+    if entry.intent is not ActivationIntent.STAGED:
+        return False
+    age = staged_decision_age_days(entry.rationale, today)
+    return age is not None and age > STAGED_STALE_AFTER_DAYS

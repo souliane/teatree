@@ -30,7 +30,7 @@ _WORKTREE_PARTS: Final[int] = 2
 
 
 def _extract_file_path(data: dict) -> str:
-    from hooks.scripts.hook_router import _FILE_PATH_TOOLS  # noqa: PLC0415 — call-time back-import
+    from hooks.scripts.protect_default_branch_guard import _FILE_PATH_TOOLS  # noqa: PLC0415 — call-time back-import
 
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})

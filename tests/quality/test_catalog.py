@@ -21,8 +21,10 @@ _HOOKS_DIR = _REPO_ROOT / "scripts" / "hooks"
 # Mechanizers that are not a scripts/hooks/*.py — a third-party tool, or a test
 # lane that owns the check. Each names its own binding test, so the entry here
 # cannot outlive the mechanizer: gate-liveness → the gate-liveness corpus,
-# select-for-update-audit → tests/conformance/test_select_for_update_is_backed_by_immediate.py.
-_EXTERNAL_LINTERS = frozenset({"tach", "gate-liveness", "select-for-update-audit"})
+# select-for-update-audit → tests/conformance/test_select_for_update_is_backed_by_immediate.py,
+# debt_delta_gate → src/teatree/core/gates/debt_delta_gate.py, bound by
+# tests/teatree_core/gates/test_debt_delta_gate.py (a merge-time DB gate, not a prek hook).
+_EXTERNAL_LINTERS = frozenset({"tach", "gate-liveness", "select-for-update-audit", "debt_delta_gate"})
 
 _KNOWN_INVARIANT_IDS = frozenset(inv.id for inv in INVARIANT_REGISTRY)
 

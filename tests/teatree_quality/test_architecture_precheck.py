@@ -9,6 +9,7 @@ fixture.
 from teatree.quality.architecture_precheck import (
     REMOVABILITY_CHECK,
     REQUIRED_CHECKS,
+    inverted_test_findings,
     is_answered,
     parse_sections,
     precheck_findings,
@@ -112,3 +113,71 @@ class TestRequiredChecksShape:
         assert len(REQUIRED_CHECKS) == 10
         assert REQUIRED_CHECKS[-1] is REMOVABILITY_CHECK
         assert [c.number for c in REQUIRED_CHECKS] == list(range(1, 11))
+
+
+class TestInvertedTestFindings:
+    """Check #9's named anti-pattern (#2663 dream-batch dea750a552f8f2d2).
+
+    `returncode == 1` inverted to `== 0`.
+    """
+
+    def test_an_inverted_must_block_assertion_is_flagged(self) -> None:
+        diff = (
+            "diff --git a/tests/test_gate.py b/tests/test_gate.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/tests/test_gate.py\n"
+            "+++ b/tests/test_gate.py\n"
+            "@@ -10,7 +10,7 @@ def test_gate_blocks_bad_input():\n"
+            "     result = run_gate(bad_input)\n"
+            "-    assert result.returncode == 1\n"
+            "+    assert result.returncode == 0\n"
+        )
+        findings = inverted_test_findings(diff)
+        assert len(findings) == 1
+        assert "tests/test_gate.py" in findings[0]
+        assert "== 1" in findings[0]
+        assert "== 0" in findings[0]
+
+    def test_a_brand_new_test_asserting_zero_is_not_flagged(self) -> None:
+        """No prior `== 1` history — new coverage, not an inversion."""
+        diff = (
+            "diff --git a/tests/test_gate.py b/tests/test_gate.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/tests/test_gate.py\n"
+            "+++ b/tests/test_gate.py\n"
+            "@@ -10,3 +10,6 @@ def test_gate_blocks_bad_input():\n"
+            "     result = run_gate(bad_input)\n"
+            "     assert result.returncode == 1\n"
+            "+def test_gate_allows_good_input():\n"
+            "+    result = run_gate(good_input)\n"
+            "+    assert result.returncode == 0\n"
+        )
+        assert inverted_test_findings(diff) == []
+
+    def test_an_unrelated_line_change_is_not_flagged(self) -> None:
+        diff = (
+            "diff --git a/tests/test_gate.py b/tests/test_gate.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/tests/test_gate.py\n"
+            "+++ b/tests/test_gate.py\n"
+            "@@ -1,3 +1,3 @@\n"
+            "-# old comment\n"
+            "+# new comment\n"
+            "     pass\n"
+        )
+        assert inverted_test_findings(diff) == []
+
+    def test_a_non_python_file_is_not_scanned(self) -> None:
+        diff = (
+            "diff --git a/notes.md b/notes.md\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/notes.md\n"
+            "+++ b/notes.md\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-returncode == 1\n"
+            "+returncode == 0\n"
+        )
+        assert inverted_test_findings(diff) == []
+
+    def test_empty_diff_yields_no_findings(self) -> None:
+        assert inverted_test_findings("") == []

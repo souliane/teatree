@@ -397,7 +397,7 @@ class ReviewVerdict(models.Model):
         reviewer_identity: str,
         findings: list[Finding] | None = None,
         blast_class: str = MergeClear.BlastClass.LOGIC,
-        gh_verify_result: str = MergeClear.VerifyResult.GREEN,
+        gh_verify_result: str | None = MergeClear.VerifyResult.GREEN,
         ticket: Ticket | None = None,
         expedited: bool = False,
         lock_holder: str = "",
@@ -424,6 +424,15 @@ class ReviewVerdict(models.Model):
         sibling record of the human-authorized, SHA-bound expedite waiver
         ``MergeClear.issue`` records).
 
+        ``gh_verify_result=None`` means the caller never actually queried CI — a
+        clean claim is trivially assertable by writing a string, so an unqueried
+        state can never masquerade as evidence (#2663 dream-batch
+        dea750a552f8f2d2). Always refused: the field is never nullable in
+        storage, so passing ``None`` is meaningful ONLY as "I didn't check",
+        never as a value to record. The refusal names the sharper reason when
+        it is the case this closes — ``merge_safe`` with no findings, where an
+        unqueried CI state is the least-effort route to a false "clean" claim.
+
         Supplying ``changed_files`` arms the #4251 diff-scope gate: a blocking
         finding citing a path the PR provably does not touch is refused, because
         a branch-only probe reports what ``main`` did to that file since the
@@ -434,6 +443,15 @@ class ReviewVerdict(models.Model):
         """
         normalized_verdict = _known_choice(verdict, cls.Verdict, field="verdict")
         normalized_blast = _known_choice(blast_class, MergeClear.BlastClass, field="blast_class")
+        if gh_verify_result is None:
+            if normalized_verdict == cls.Verdict.MERGE_SAFE and not (findings or []):
+                msg = (
+                    "a merge_safe verdict with no findings needs a populated gh_verify_result — "
+                    "an unqueried CI state is not proof nothing was found"
+                )
+            else:
+                msg = "gh_verify_result is required — pass the checked CI state, never an unqueried None"
+            raise ReviewVerdictError(msg)
         normalized_verify = _known_choice(gh_verify_result, MergeClear.VerifyResult, field="gh_verify_result")
         if normalized_verdict == cls.Verdict.MERGE_SAFE:
             assert_checks_admit_merge_safe(

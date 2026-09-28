@@ -26,7 +26,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from teatree.config import get_effective_settings
-from teatree.config.gate_evidence import GATE_EVIDENCE, INERT_AFTER_DAYS, ActivationIntent, GateEvidence, ObservableKind
+from teatree.config.gate_evidence import (
+    GATE_EVIDENCE,
+    INERT_AFTER_DAYS,
+    STAGED_STALE_AFTER_DAYS,
+    ActivationIntent,
+    GateEvidence,
+    ObservableKind,
+    staged_citation_is_stale,
+)
 from teatree.core.models import ConfigSetting
 
 KIND_NEVER_FIRED = "never_fired"
@@ -43,10 +51,11 @@ SATISFIER_MARKER = " | satisfy it with: "
 #: staging exit is a source edit, so an operator who is not told about it has only the
 #: arming one — which is how "nobody decided" outlived ten gates for up to 67 days.
 DECISION_TRAILER = (
-    "  Each line above is a decision nobody has made. Arm one with `t3 <overlay> config_setting set "
-    "<setting> <on-value>`, or record it as deliberately off by moving its `teatree.config.gate_evidence` "
-    "entry to intent=STAGED with a rationale citing the issue or date the call was made — a STAGED entry "
-    "citing neither is refused."
+    "  Each line above is a decision nobody has made — or a STAGED citation gone stale past "
+    "STAGED_STALE_AFTER_DAYS. Arm one with `t3 <overlay> config_setting set <setting> <on-value>`, "
+    "or record it as deliberately off by moving its `teatree.config.gate_evidence` entry to "
+    "intent=STAGED with a rationale citing the issue or date the call was made — a STAGED entry "
+    "citing neither is refused, and a stale dated one needs a fresh decision, not a fresh timestamp."
 )
 
 __all__ = [
@@ -107,14 +116,15 @@ def _finding(entry: GateEvidence, today: dt.date) -> InertFeature | None:
     age = (today - entry.shipped).days
     if age < INERT_AFTER_DAYS:
         return None
-    fault = entry.intent is ActivationIntent.UNDECIDED
+    stale = staged_citation_is_stale(entry, today)
+    fault = entry.intent is ActivationIntent.UNDECIDED or stale
     if entry.kind is ObservableKind.NONE:
         return InertFeature(
             setting=entry.setting,
             kind=KIND_UNOBSERVABLE,
             detail=(
                 f"off for {age}d and nothing can ever prove it ran — {entry.rationale} "
-                f"({_intent_clause(entry)}){_satisfier_clause(entry)}"
+                f"({_intent_clause(entry, stale=stale)}){_satisfier_clause(entry)}"
             ),
             is_fault=fault,
         )
@@ -127,7 +137,7 @@ def _finding(entry: GateEvidence, today: dt.date) -> InertFeature | None:
             kind=KIND_OFF_WITH_EVIDENCE,
             detail=(
                 f"off for {age}d with {_rows_clause(rows)} in {_observable_label(entry)} — its producer "
-                f"runs and the gate is still off ({_intent_clause(entry)}){_satisfier_clause(entry)}"
+                f"runs and the gate is still off ({_intent_clause(entry, stale=stale)}){_satisfier_clause(entry)}"
             ),
             is_fault=True,
         )
@@ -136,7 +146,7 @@ def _finding(entry: GateEvidence, today: dt.date) -> InertFeature | None:
         kind=KIND_NEVER_FIRED,
         detail=(
             f"off for {age}d and {_observable_label(entry)} is empty — it has never fired "
-            f"({_intent_clause(entry)}){_satisfier_clause(entry)}"
+            f"({_intent_clause(entry, stale=stale)}){_satisfier_clause(entry)}"
         ),
         is_fault=fault,
     )
@@ -151,8 +161,10 @@ def _satisfier_clause(entry: GateEvidence) -> str:
     return f"{SATISFIER_MARKER}{entry.satisfier}" if entry.satisfier.strip() else ""
 
 
-def _intent_clause(entry: GateEvidence) -> str:
+def _intent_clause(entry: GateEvidence, *, stale: bool = False) -> str:
     if entry.intent is ActivationIntent.STAGED:
+        if stale:
+            return f"staged citation is stale (>{STAGED_STALE_AFTER_DAYS}d): {entry.rationale}"
         return f"deliberately staged: {entry.rationale}"
     return "nobody decided to leave it off"
 
