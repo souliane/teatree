@@ -270,7 +270,9 @@
 "src/teatree/core/factory/drain_starvation.py" = 2
 # 2 (+1, #4867): complete_claimed() defers the same `release_task_occupancy` import as
 # Task.fail() above, for the same module-level circular-import reason.
-"src/teatree/core/models/task_claim.py" = 2 # F5: lazy _claimable_now_q park predicate import
+# 3 (+1, #4872): fail() also defers `release_task_occupancy` now that it releases
+# conditionally on `by_holder` — same import-cycle reason as complete_claimed() above.
+"src/teatree/core/models/task_claim.py" = 3 # F5: lazy _claimable_now_q park predicate import
 # PR #3479 module-health split: the path-only-TOML backend construction moved
 # out of backend_factory.py into toml_backends.py, carrying the same three
 # function-scoped intra-core imports verbatim (two `send_proxy.read_posting_credential`
