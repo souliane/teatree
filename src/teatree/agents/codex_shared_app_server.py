@@ -2,9 +2,11 @@
 
 import asyncio
 import atexit
+import inspect
 import os
 import threading
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from concurrent.futures import Future, InvalidStateError
 from contextlib import AbstractAsyncContextManager, suppress
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
@@ -17,6 +19,8 @@ from teatree.agents.harness_registry import HarnessFallbackError
 
 _T = TypeVar("_T")
 _IDLE_SECONDS = 5.0
+_OWNER_JOIN_SECONDS = 10.0
+_OWNER_STAGE = "shared worker"
 type AppServerPayload = dict[str, Any]
 
 
@@ -58,8 +62,10 @@ class SharedCodexAppServer:
         self._idle_task: asyncio.Task[None] | None = None
         self._opens_in_flight = 0
         self._opens_lock = threading.Lock()
+        self._submissions: dict[Future[Any], Coroutine[Any, Any, Any]] = {}
+        self._submissions_lock = threading.Lock()
 
-    def _ensure_started(self, options: CodexAppServerOptions) -> None:
+    def _ensure_started(self, options: CodexAppServerOptions) -> threading.Thread:
         with self._start_lock:
             if self._thread is None:
                 self._thread = threading.Thread(
@@ -69,6 +75,7 @@ class SharedCodexAppServer:
                     daemon=True,
                 )
                 self._thread.start()
+            owner = self._thread
         if not self._ready.wait(timeout=30):
             msg = "Shared Codex App Server did not start"
             raise CodexAppServerError(msg)
@@ -77,6 +84,7 @@ class SharedCodexAppServer:
                 raise self._startup_error
             msg = "Shared Codex App Server failed to start"
             raise CodexAppServerError(msg) from self._startup_error
+        return owner
 
     def _run(self, options: CodexAppServerOptions) -> None:
         try:
@@ -84,6 +92,8 @@ class SharedCodexAppServer:
         except Exception as exc:  # noqa: BLE001 - propagate worker startup failure
             self._startup_error = exc
             self._ready.set()
+        finally:
+            self._fail_dropped_submissions()
 
     async def _serve(self, options: CodexAppServerOptions) -> None:
         self._loop = asyncio.get_running_loop()
@@ -136,23 +146,45 @@ class SharedCodexAppServer:
         return self._transport
 
     async def _call(self, options: CodexAppServerOptions, operation: Callable[[], Awaitable[_T]]) -> _T:
-        await asyncio.to_thread(self._ensure_started, options)
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            stage = "shared worker"
-            raise transport_error(stage)
+        owner = await asyncio.to_thread(self._ensure_started, options)
 
         async def invoke() -> _T:
             return await operation()
 
-        coroutine = invoke()
+        with self._submissions_lock:
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                raise transport_error(_OWNER_STAGE)
+            coroutine = invoke()
+            try:
+                future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+            except RuntimeError as exc:
+                coroutine.close()
+                raise transport_error(_OWNER_STAGE) from exc
+            self._submissions[future] = coroutine
+        future.add_done_callback(self._forget_submission)
         try:
-            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
-        except RuntimeError as exc:
-            coroutine.close()
-            stage = "shared worker"
-            raise transport_error(stage) from exc
-        return await asyncio.wrap_future(future)
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            if _caller_cancelled():
+                raise
+            # asyncio.run's teardown cancelled it: fail like a closed loop, once the loop really is closed.
+            await asyncio.to_thread(owner.join, _OWNER_JOIN_SECONDS)
+            raise transport_error(_OWNER_STAGE) from None
+
+    def _forget_submission(self, future: Future[Any]) -> None:
+        with self._submissions_lock:
+            self._submissions.pop(future, None)
+
+    def _fail_dropped_submissions(self) -> None:
+        # A closed loop discards callbacks it never ran, which would leave their callers waiting forever.
+        with self._submissions_lock:
+            dropped, self._submissions = self._submissions, {}
+        for future, coroutine in dropped.items():
+            if inspect.getcoroutinestate(coroutine) == inspect.CORO_CREATED:
+                coroutine.close()
+            with suppress(InvalidStateError):
+                future.set_exception(transport_error(_OWNER_STAGE))
 
     async def open_session(self, options: CodexAppServerOptions, resume: str | None) -> tuple[str, str]:
         async def open_on_owner() -> tuple[str, str]:
@@ -203,7 +235,24 @@ class SharedCodexAppServer:
                 raise event.error
             return event
 
-        return await self._call(options, next_on_owner)
+        try:
+            return await self._call(options, next_on_owner)
+        except HarnessFallbackError:
+            event = self._buffered_after_stop(thread_id)
+            if event is None:
+                raise
+            return event
+
+    def _buffered_after_stop(self, thread_id: str) -> AppServerPayload | None:
+        # A closed owner loop no longer touches the queue, so events it already read are safe to hand over.
+        loop = self._loop
+        queue = self._events.get(thread_id)
+        if loop is None or not loop.is_closed() or queue is None or queue.empty():
+            return None
+        event = queue.get_nowait()
+        if isinstance(event, _StreamFailure):
+            raise event.error
+        return event
 
     async def close_session(self, options: CodexAppServerOptions, thread_id: str) -> None:
         if self._loop is None or self._loop.is_closed() or self._thread is None or not self._thread.is_alive():
@@ -326,6 +375,11 @@ class SharedCodexSession(CodexAppServerSession):
         if self.thread_id:
             await self.manager.close_session(self.options, self.thread_id)
         self._closed = True
+
+
+def _caller_cancelled() -> bool:
+    task = asyncio.current_task()
+    return task is None or task.cancelling() > 0
 
 
 _managers: dict[tuple[int, Path], SharedCodexAppServer] = {}
