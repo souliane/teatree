@@ -127,7 +127,7 @@ Never write to a remote or shared database without the user's explicit approval 
 
 ## Verify Repo Visibility Before Filing External Issues (Non-Negotiable)
 
-Check the target repo's visibility before any issue, PR body, comment or commit message; a public one must never carry internal names, URLs, ids or paths, a credential's posture (name, reach, permissions, expiry), or another repo's PR/issue state or backlog health. Ask when the destination is ambiguous. Full text: `skills/rules/references/leak-remediation.md`.
+Check visibility before any issue, PR, comment or commit: public ones never carry internal names, URLs, ids, paths, credential posture or other repos' state. Ask when the destination is ambiguous. Full text: `skills/rules/references/leak-remediation.md`.
 
 ## Self-Apply `needs-triage` on Agent-Filed Issues (Non-Negotiable)
 
