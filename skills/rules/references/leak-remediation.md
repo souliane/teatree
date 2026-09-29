@@ -16,6 +16,8 @@ If the target is **PUBLIC**, the body must not contain internal identifiers: cus
 
 **The authorization to "file a bug" does not authorize posting internal info to a public repo.** User instructions like "file a teatree bug" authorize the _action_ of filing, not the _destination_. A public target always requires a scrubbed body.
 
+The same bar is enforced on every push to a public repo by the pre-push privacy gate. It judges each unpushed commit on its own patch and message, so a later commit that removes or annotates a flagged value does not clear it; the remedy is in `/t3:ship` § 4a.
+
 ## Self-Apply `needs-triage` on Agent-Filed Issues (Non-Negotiable)
 
 `needs-triage` is a maintainer-review gate: the autonomous loop's issue-implementer claim path filters out any open issue carrying it (`IssueImplementerScanner` skips it at selection time, before the claim), so the factory never starts an issue the maintainer has not cleared.

@@ -262,6 +262,8 @@ A bare `git push` is fine only in a venue whose credential helper you have alrea
 
 **A non-zero `t3 push` means NOT pushed — never report a branch as delivered on an exit code you did not read.** Success means the remote itself was read back (`git ls-remote`) and holds the branch at the local tip; an rc=0 `git push` is a claim, not delivery ([#4088](https://github.com/souliane/teatree/issues/4088)). Each failure kind carries its own exit status — `t3 push --help` lists them, `--json` carries `failure` and `exit_code` — so the fix is named rather than guessed: a refusing gate, a missing credential and a stale branch are three different repairs ([#4076](https://github.com/souliane/teatree/issues/4076)).
 
+**A public-repo privacy refusal is judged per commit, never on the tip.** The `refuse-public-push-with-leak` pre-push gate scans every commit the remote does not have yet — each one's own patch and message — so a fix-up commit that deletes or annotates the flagged line does not clear it; the refusal labels such a finding `(earlier than the pushed tip)`. Cut a fresh branch from the remote's tip and re-create the unpushed commits on it with generic placeholders (one combined commit is fine): that fast-forwards the remote, so nothing pushed or reviewed is rewritten. A deliberate fake value (a test-fixture email) carries the inline `privacy-scan:allow <reason>` marker in the commit that introduces it.
+
 ### 4b. Review Gate (Non-Negotiable)
 
 Before creating a PR, the `pr create` command automatically checks the session gate:
