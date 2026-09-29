@@ -207,9 +207,11 @@ class TestCommandDescribeMethod(TestCase):
 
     def test_describe_with_all_missing_calls_backfill(self) -> None:
         cmd = self._command()
-        Ticket.objects.create(
+        ticket = Ticket.objects.create(
             overlay="t3-teatree",
             extra={"issue_title": "backfill candidate"},
         )
         with patch(_SUMMARIZE, return_value="backfilled"):
             cmd.describe(ticket_id=0, all_missing=True)
+        ticket.refresh_from_db()
+        assert ticket.short_description == "backfilled"
