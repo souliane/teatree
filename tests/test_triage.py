@@ -145,6 +145,36 @@ class TestLabelSuggester:
                 LabelSuggester("souliane/teatree").collect_suggestions()
 
 
+def _gh_issue_list_capped_at_limit(open_issues: list[dict]):
+    """``gh issue list`` answering the way the real CLI does: at most ``--limit`` issues."""
+
+    def _run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+        limit = int(argv[argv.index("--limit") + 1])
+        return _fake_list_result(open_issues[:limit])
+
+    return _run
+
+
+class TestOpenIssueEnumerationIsComplete:
+    """Every open-issue verdict is over the whole set, or it is UNKNOWN — never over a silent prefix."""
+
+    def test_an_issue_past_the_first_two_hundred_is_still_read(self) -> None:
+        issues = [{"number": n, "title": "blah blah", "body": "", "labels": []} for n in range(1, 250)]
+        issues.append({"number": 250, "title": "Server crash on DB disconnect", "body": "", "labels": []})
+        with patch("teatree.triage.run_allowed_to_fail", side_effect=_gh_issue_list_capped_at_limit(issues)):
+            suggestions = LabelSuggester("souliane/teatree").collect_suggestions()
+
+        assert [s.number for s in suggestions] == [250]
+
+    def test_more_open_issues_than_the_scan_reads_is_unknown(self) -> None:
+        issues = [{"number": n, "title": "blah blah", "body": "", "labels": []} for n in range(1, 5001)]
+        with (
+            patch("teatree.triage.run_allowed_to_fail", side_effect=_gh_issue_list_capped_at_limit(issues)),
+            pytest.raises(ForgeEnumerationError, match="more than 1000 open issues"),
+        ):
+            DuplicateFinder("souliane/teatree").find()
+
+
 class TestNormalizeTitle:
     def test_lowercases(self) -> None:
         assert normalize_title("Fix BUG case") == normalize_title("fix bug case")
