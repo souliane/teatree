@@ -43,6 +43,7 @@ The main-clone guard blocks every mutation of the shared clone, so **all writing
 - Security or merge gate fails open on exception
 - Liveness path hard-fails a transient and locks the factory out
 - Gate classifies read-vs-write by verb instead of effective mutation
+- Shared predicate tightened for one caller's safety needs
 - Feature merged but not in force
 - New configurable surface that was not earned
 - Gate performs the guarded side effect before concluding refusal

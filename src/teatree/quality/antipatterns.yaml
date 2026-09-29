@@ -128,6 +128,26 @@
   linter: null
   eval_invariant: no_raw_review_post
 
+# ── Shared predicates ──────────────────────────────────────────────────────
+- id: shared-predicate-tightened-for-one-caller
+  name: Shared predicate tightened for one caller's safety needs
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    Adding a liveness/strictness gate, or a new None/False path, to a function
+    several callers share, to suit the one caller being fixed. Every other
+    caller silently inherits the stricter verdict: a park/defer decision that
+    never needed the check a release decision needs now flips on it.
+  preferred_pattern: >-
+    Enumerate every caller tree-wide first and name the decision each makes.
+    When their requirements differ, add a strict variant for the caller that
+    needs it, leave the shared predicate as it was, and pin the untouched caller
+    with a test.
+  consumers: [architecture-design, ac-reviewing-codebase, eval]
+  refs: ["arch-design-check-9", "souliane/teatree#4880"]
+  linter: null
+  eval_invariant: null
+
 # ── Phantom gates ──────────────────────────────────────────────────────────
 - id: phantom-gate
   name: Deny handler keyed on a tool no matcher delivers

@@ -9,7 +9,7 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**36 entries** — 5 greppable, 31 judgement.
+**37 entries** — 5 greppable, 32 judgement.
 
 ## Index
 
@@ -32,6 +32,7 @@ holistic (`ac-reviewing-codebase`).
 - [Canonicalization that is not idempotent](#non-idempotent-canonicalization) — high, judgement
 - [Deny handler keyed on a tool no matcher delivers](#phantom-gate) — high, greppable
 - [Authorization resting on a self-declared identity string](#self-declared-identity-authorization) — high, judgement
+- [Shared predicate tightened for one caller's safety needs](#shared-predicate-tightened-for-one-caller) — high, judgement
 - [Feature merged but not in force](#shipped-inert) — high, judgement
 - [Work can stall indefinitely with nothing raising an alarm](#silent-freeze) — high, judgement
 - [Command reports success on a failure it printed](#silent-success-on-failure) — high, judgement
@@ -141,6 +142,21 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** Deciding whether a forge command is a read or a write by the literal verb/tool-name or the mere presence of a method flag, so a last-wins -X/--method override (gh/glab) bypasses the write gate.
 
 **Preferred.** Classify by EFFECTIVE HTTP method — last -X/--method wins; body/field flags default to POST — mirroring the transcript-conformance effective-method classifier.
+
+## Shared predicate tightened for one caller's safety needs
+
+<a id="shared-predicate-tightened-for-one-caller"></a>
+
+- **id:** `shared-predicate-tightened-for-one-caller`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase, eval
+- **refs:** arch-design-check-9, souliane/teatree#4880
+
+**Anti-pattern.** Adding a liveness/strictness gate, or a new None/False path, to a function several callers share, to suit the one caller being fixed. Every other caller silently inherits the stricter verdict: a park/defer decision that never needed the check a release decision needs now flips on it.
+
+**Preferred.** Enumerate every caller tree-wide first and name the decision each makes. When their requirements differ, add a strict variant for the caller that needs it, leave the shared predicate as it was, and pin the untouched caller with a test.
 
 ## Deny handler keyed on a tool no matcher delivers
 
