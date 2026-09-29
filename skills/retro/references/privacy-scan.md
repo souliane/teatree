@@ -4,13 +4,13 @@ The procedure behind `/t3:retro` § "Privacy Scan". That section carries the sco
 
 ## What to scan
 
-1. **Full branch-vs-base diff, not just the current session's hunks.**
+1. **Every branch commit's own patch, not just the current session's hunks or the net diff.**
 
     ```bash
-    git -C "$T3_REPO" diff @{upstream}..HEAD | t3 tool privacy-scan -
+    git -C "$T3_REPO" log --patch --format= @{upstream}..HEAD | t3 tool privacy-scan -
     ```
 
-    The branch may carry older commits from prior sessions or compacted work that the agent never re-read. `git diff @{upstream}..HEAD` covers every commit between the pushed base and HEAD. `git diff --cached` or `git diff HEAD~..HEAD` is **not enough** — it only shows the most recent work.
+    The branch may carry older commits from prior sessions or compacted work that the agent never re-read. Each commit's patch is scanned on its own, as the pre-push privacy gate does: a value one commit adds and a later commit removes is absent from the net `git diff @{upstream}..HEAD` yet still published. `git diff --cached` or `git diff HEAD~..HEAD` is **not enough** — it only shows the most recent work.
 
 2. **Commit subjects and bodies on the branch.**
 
