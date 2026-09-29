@@ -409,6 +409,20 @@ class TestTriageIssuesCLI:
         assert "No resolved-but-open" in result.output
         assert "No stale" in result.output
 
+    def test_a_full_merged_pr_window_is_named_not_read_as_complete(self) -> None:
+        # An issue resolved by a PR older than the window is not in the scan, so "none found" is bounded.
+        issues = [_issue_with_age(1, "Recent labeled", labels=[{"name": "bug"}], days_ago=1)]
+        prs = [_pr_fixture(1000 + n, f"chore: unrelated {n}") for n in range(200)]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+            ]
+            result = runner.invoke(tool_app, ["triage-issues", "souliane/teatree"])
+        assert result.exit_code == 0
+        assert "newest 200 merged PRs" in result.output
+
     def test_close_resolved_flag(self) -> None:
         issues = [_issue_with_age(42, "feat: add triage tool")]
         prs = [_pr_fixture(100, "feat: add triage tool (#42)")]

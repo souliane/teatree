@@ -136,11 +136,10 @@ The invariant is not kept by remembering it. Four mechanisms enforce it, each ve
 
 When a session-end report names stranded work, run the command it prints for each item. The states are ordered, so an item usually needs its own next step and nothing more — commit, push, `t3 teatree pr ensure-pr --branch <name> --repo <absolute-worktree-path>`, or let the ship loop take the PR (`t3 loops tick --loop ship`).
 
-**Add `--repo` yourself — the printed command omits it, and omitting it fails on EXIT 0.** The `.` default is right only for the pre-push hook, which runs in-process on the host with the repo as its cwd. Invoked by hand, `t3` execs into a container whose cwd is the image's own `WORKDIR` and never the host's, so `.` is not a checkout at all and the classification dies:
+**Keep the `--repo` the printed command carries — typing `ensure-pr` by hand without it fails on EXIT 0.** The `.` default is right only for the pre-push hook, which runs with the repo as its cwd. Invoked by hand, `t3` execs into a container whose cwd is the image's own `WORKDIR` and never the host's, so `.` is not a checkout and the command refuses by name:
 
 ```text
-{'branch': '<name>', 'error': "could not determine sync status of '<name>' in '.': command failed
- (rc=128): git -C . log <name> --not origin/main … fatal: not a git repository"}
+{'error': "the process cwd '<image WORKDIR>' (no --repo given) is not a git checkout on this filesystem. Pass --repo …"}
 ```
 
 That is the whole failure — **no PR created, and the process exits 0**. `ensure-pr` is the sole subcommand exempted from the loud-refusal contract, because it runs inside the pre-push hook where reporting and letting the push through is the designed behaviour (`/t3:internals` § `soft_refusal_commands`, #792) — so by hand the refusal reads as success and nothing downstream catches it. Pass the worktree's ABSOLUTE filesystem path; a forge slug (`owner/repo`) is refused up front (#2937).

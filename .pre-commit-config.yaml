@@ -10,9 +10,10 @@ repos:
         name: Refuse commits on branches whose remote is gone (merged PR)
         language: system
         entry: >-
-          bash -c 'git branch -vv 2>/dev/null | grep -qE "^\*[[:space:]].*\[gone\]" && {
+          bash -c 'b=$(git symbolic-ref -q --short HEAD) || exit 0;
+          [ "$(git for-each-ref --format="%(upstream:track)" "refs/heads/$b")" = "[gone]" ] || exit 0;
           echo "teatree: remote tracking branch is gone (PR merged?). Push to a new branch or use --no-verify.";
-          exit 1; } || exit 0'
+          exit 1'
         pass_filenames: false
         always_run: true
         stages: [commit]

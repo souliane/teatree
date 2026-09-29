@@ -2420,6 +2420,7 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
             patch.object(git_mod, "branch_delete") as mock_del,
             patch.object(ws_cleanup_mod, "worktree_branches", return_value=set()),
             patch.object(ws_cleanup_mod, "worktree_map", return_value={}),
+            patch.object(ws_cleanup_mod, "branch_landed_for_teardown", return_value=True),
         ):
             cleaned = ws_cleanup_mod.prune_branches("/repo")
 
@@ -2592,6 +2593,7 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
             patch.object(git_mod, "branch_delete") as mock_del,
             patch.object(ws_cleanup_mod, "worktree_branches", return_value=set()),
             patch.object(ws_cleanup_mod, "worktree_map", return_value={}),
+            patch.object(ws_cleanup_mod, "branch_landed_for_teardown", return_value=True),
         ):
             cleaned = ws_cleanup_mod.prune_branches("/repo", dry_run=True)
 
