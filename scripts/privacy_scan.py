@@ -300,6 +300,24 @@ def _iter_directory_files(root: Path) -> Iterator[Path]:
         yield path
 
 
+def _read_text_robust(path: Path) -> str:
+    """Decode *path* as text, tolerating non-UTF-8 bytes rather than crashing.
+
+    A git commit message can carry the author's configured
+    ``i18n.commitEncoding``/``i18n.logOutputEncoding`` (e.g. ISO-8859-1), so
+    ``git log --format=%B`` output is not guaranteed UTF-8. A raised
+    ``UnicodeDecodeError`` here would exit non-zero with a code the pre-push
+    gate reads as "scanner crashed" and fails OPEN on (module docstring) —
+    exactly the case a leak needs blocked. Latin-1 never raises (every byte
+    maps to one codepoint), so failing back to it keeps ASCII secrets intact
+    and scannable instead of skipping the scan entirely.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="latin-1")
+
+
 def _scan_directory(
     root: Path,
     terms: tuple[str, ...],
@@ -371,7 +389,7 @@ def main(
         all_findings = _scan_diff(sys.stdin.read(), terms, allowlist)
     else:
         # A file (the push gate's commit messages among them) is raw content, not a diff — scan every line.
-        all_findings = _scan_text(target.read_text(encoding="utf-8"), terms, allowlist)
+        all_findings = _scan_text(_read_text_robust(target), terms, allowlist)
 
     all_findings.sort(key=lambda f: (str(f.get("file", "")), int(f["line"])))
 
