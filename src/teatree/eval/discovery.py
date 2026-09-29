@@ -96,7 +96,7 @@ DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 #: than a loose collapse-detector because #4373's denominator shrank by two, which
 #: any slack at all hides. It floors the core surface alone: an overlay only ever
 #: ADDS, so flooring the total would red an install contributing none.
-CORE_CATALOG_FLOOR = 262
+CORE_CATALOG_FLOOR = 274
 
 
 def discover_core_specs() -> list[EvalSpec]:
