@@ -56,14 +56,32 @@ def _gh_json(args: list[str], *, repo: str, what: str) -> list[dict]:
 #: The fields every open-issue enumeration here reads.
 _OPEN_ISSUE_FIELDS = "number,title,body,labels,updatedAt"
 
+#: The most open issues a scan judges; one more is requested so a larger backlog is detected, not truncated.
+OPEN_ISSUE_CEILING = 1000
+
 
 def _open_issues(repo: str) -> list[dict]:
-    """Every open issue in *repo*, or raise :class:`ForgeEnumerationError`."""
-    return _gh_json(
-        ["issue", "list", "--repo", repo, "--state", "open", "--limit", "200", "--json", _OPEN_ISSUE_FIELDS],
+    """Every open issue in *repo*, or raise :class:`ForgeEnumerationError` — never a silent prefix."""
+    issues = _gh_json(
+        [
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            str(OPEN_ISSUE_CEILING + 1),
+            "--json",
+            _OPEN_ISSUE_FIELDS,
+        ],
         repo=repo,
         what="gh issue list",
     )
+    if len(issues) > OPEN_ISSUE_CEILING:
+        msg = f"{repo} has more than {OPEN_ISSUE_CEILING} open issues; a verdict over part of them would not hold"
+        raise ForgeEnumerationError(msg)
+    return issues
 
 
 LABEL_KEYWORDS: dict[str, tuple[str, ...]] = {

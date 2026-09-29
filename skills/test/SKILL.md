@@ -193,7 +193,7 @@ A job shows `failed` (or any non-`success` state). Do NOT echo "green"/"passing"
 t3 ci fetch-failed-tests
 ```
 
-That extracts the failing node IDs so you can reproduce locally; pair it with `t3 ci fetch-errors` for the logs. Then reproduce (`t3 <overlay> run tests --failed-first -- <node_id>`), fix the root cause, push, and re-monitor until every job is `success`. Never run a command that asserts the pipeline is green (e.g. `echo "CI passing"`) while any job is non-green.
+That extracts the failing node IDs so you can reproduce locally; pair it with `t3 ci fetch-errors` for the logs. An `UNKNOWN` line (exit 1) means the pipeline or its test report could not be read — never that nothing failed. Then reproduce (`t3 <overlay> run tests --failed-first -- <node_id>`), fix the root cause, push, and re-monitor until every job is `success`. Never run a command that asserts the pipeline is green (e.g. `echo "CI passing"`) while any job is non-green.
 
 ### Docker Coverage — reproducing a red CI job, never a way to run the suite
 

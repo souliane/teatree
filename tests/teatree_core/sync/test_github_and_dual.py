@@ -75,6 +75,10 @@ class TestDualSync(TestCase):
             "teatree.backends.github.fetch_project_items",
             lambda *_a, **_kw: [github_item],
         )
+        self._monkeypatch.setattr(
+            "teatree.backends.github.sync.run_allowed_to_fail",
+            lambda *_a, **_kw: subprocess.CompletedProcess([], 0, stdout="[]"),
+        )
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
@@ -689,14 +693,14 @@ class TestSyncGitHubReviewerPrs(TestCase):
 
         assert any("reviewer PR fetch failed" in e for e in result.errors)
 
-    def test_returns_early_on_nonzero_exit(self) -> None:
+    def test_a_failed_search_is_recorded_not_reported_as_zero_reviews(self) -> None:
         import subprocess  # noqa: PLC0415
 
         from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = SyncResult()
         mock_run = MagicMock(
-            return_value=subprocess.CompletedProcess([], 1, stdout=""),
+            return_value=subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 401: Bad credentials"),
         )
         with (
             patch("shutil.which", return_value="/usr/bin/gh"),
@@ -705,6 +709,9 @@ class TestSyncGitHubReviewerPrs(TestCase):
             GitHubSyncBackend._sync_reviewer_prs("gh-token", result)
 
         assert result.reviews_synced == 0
+        assert len(result.errors) == 1
+        assert "reviewer PR fetch failed" in result.errors[0]
+        assert "Bad credentials" in result.errors[0]
 
     def test_handles_invalid_json(self) -> None:
         import subprocess  # noqa: PLC0415

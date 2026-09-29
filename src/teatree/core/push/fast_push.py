@@ -41,7 +41,6 @@ rather than suppressing one the branch genuinely owes.
 
 import json
 import os
-import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -57,6 +56,7 @@ from teatree.hooks.banned_term_registry import allowlist_terms, terms_for_gate
 from teatree.hooks.banned_terms_cli import staged_added_lines
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
+from teatree.hooks.repo_visibility_cli import visibility_for_remote
 from teatree.hooks.term_match import matched_term
 from teatree.utils import git, git_remote
 from teatree.utils.forge import forge_from_remote
@@ -71,6 +71,8 @@ LEAK_GATES: Final[tuple[str, str, str, str]] = (
 
 #: ``pr_action`` for a push whose branch could only open a zero-file pull request (#4551).
 EMPTY_DELTA_PR_SKIP: Final = "skipped-empty-delta"
+
+_NON_PUBLIC_VERDICTS: Final = frozenset({"PRIVATE", "INTERNAL"})
 
 _PRIVACY_FINDINGS_EXIT_CODE = 3
 _MESSAGE_PATH = "<commit-message>"
@@ -195,34 +197,19 @@ def forge_for_repo(repo: Path) -> ForgeClient | None:
     return None
 
 
-def _public_github_slug(repo: Path) -> str | None:
-    """Return the ``owner/repo`` slug when origin is a CONFIRMED-public GitHub remote.
+def _identity_gate_target(repo: Path) -> str | None:
+    """The repo the #730 identity gate protects on this push, or ``None`` when origin is KNOWN non-public.
 
-    Mirrors ``refuse-public-push-with-leak.sh``: the identity gate enforces
-    only on a public GitHub repo, and fails OPEN (``None``) for a non-GitHub
-    remote, an unparsable slug, a missing ``gh``, or any visibility other than
-    ``PUBLIC`` (private/internal/unknown) — a private-repo real email is not a
-    leak, and blocking every push on a ``gh``-less machine is the over-deny the
-    hook deliberately avoids.
+    ``refuse-public-push-with-leak.sh``'s rule through its own resolver: an undetermined visibility is public.
     """
     remote = git.remote_url(repo=str(repo))
-    if "github" not in remote:
+    verdict = visibility_for_remote(remote)
+    if verdict in _NON_PUBLIC_VERDICTS:
         return None
-    slug = git_remote.slug_from_remote(remote)
-    if "/" not in slug or shutil.which("gh") is None:
-        return None
-    env = forge_cli_env(repo)
-    if env is None:
-        return None
-    result = run_allowed_to_fail(
-        ["gh", "repo", "view", slug, "--json", "visibility", "--jq", ".visibility"],
-        expected_codes=None,
-        cwd=repo,
-        env=env,
-    )
-    if result.returncode != 0:
-        return None
-    return slug if result.stdout.strip().upper() == "PUBLIC" else None
+    slug = git_remote.slug_from_remote(remote) or "<remote>"
+    if verdict == "PUBLIC":
+        return f"public repo {slug}"
+    return f"repo {slug} (visibility could not be confirmed — treated as public)"
 
 
 def _push_identities(repo: Path, push_range: PushRange) -> list[str]:
@@ -282,14 +269,14 @@ class LeakGateScan:
         ]
 
     def _author_identity(self) -> list[LeakFinding]:
-        slug = _public_github_slug(self._repo)
-        if slug is None:
+        target = _identity_gate_target(self._repo)
+        if target is None:
             return []
         return [
             LeakFinding(
                 gate="author-identity",
                 path="<commit-identity>",
-                detail=f"non-noreply commit identity '{email}' would leak to public repo {slug}",
+                detail=f"non-noreply commit identity '{email}' would leak to {target}",
             )
             for email in _push_identities(self._repo, self._range)
             if not is_noreply_email(email)
