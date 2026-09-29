@@ -12,7 +12,14 @@ Importing this module has the side effect of registering the commands;
 
 import typer
 
-from teatree.triage import HIGH_CONFIDENCE, DuplicateFinder, ForgeEnumerationError, LabelSuggester, TriageScanner
+from teatree.triage import (
+    HIGH_CONFIDENCE,
+    MERGED_PR_WINDOW,
+    DuplicateFinder,
+    ForgeEnumerationError,
+    LabelSuggester,
+    TriageScanner,
+)
 
 
 def _unknown(exc: ForgeEnumerationError) -> typer.Exit:
@@ -105,6 +112,10 @@ def _report_resolved(scanner: TriageScanner, *, close_resolved: bool) -> list[in
         resolved = scanner.find_resolved()
     except ForgeEnumerationError as exc:
         raise _unknown(exc) from exc
+    if scanner.merged_window_full:
+        typer.echo(
+            f"NOTE: scanned the newest {MERGED_PR_WINDOW} merged PRs only; an issue fixed by an older PR is not listed."
+        )
     if not resolved:
         typer.echo("No resolved-but-open issues found.")
         return []

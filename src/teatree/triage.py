@@ -223,14 +223,19 @@ class StaleIssue:
     days_inactive: int
 
 
+#: The newest merged PRs one resolved-issue scan reads; an issue fixed by an older PR is outside it.
+MERGED_PR_WINDOW = 200
+
+
 class TriageScanner:
     """Find resolved-but-open issues and stale issues."""
 
     def __init__(self, repo: str) -> None:
         self.repo = repo
+        self.merged_window_full = False
 
     def _fetch_merged_prs(self) -> list[dict]:
-        return _gh_json(
+        prs = _gh_json(
             [
                 "pr",
                 "list",
@@ -239,13 +244,15 @@ class TriageScanner:
                 "--state",
                 "merged",
                 "--limit",
-                "200",
+                str(MERGED_PR_WINDOW),
                 "--json",
                 "number,title,mergedAt",
             ],
             repo=self.repo,
             what="gh pr list",
         )
+        self.merged_window_full = len(prs) >= MERGED_PR_WINDOW
+        return prs
 
     def find_resolved(self) -> list[ResolvedIssue]:
         issues = _open_issues(self.repo)
