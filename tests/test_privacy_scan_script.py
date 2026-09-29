@@ -563,9 +563,9 @@ class TestPrivacyScanDiffAddedLineScoping:
         assert "home_path" in result.stdout
 
     def test_commit_message_body_line_still_flagged(self) -> None:
-        # The push-gate blob is `%B` message + patch; a message-body line is new
-        # content on the pushed range (the #703 Co-authored-by case) and must
-        # still be scanned — the added-only scoping must not silence it.
+        # A non-hunk line on stdin (here a message body, the #703 Co-authored-by
+        # case) is new content and must still be scanned — the added-only
+        # scoping must not silence it.
         blob = (
             "Fix the thing\n"
             "\n"

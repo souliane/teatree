@@ -226,10 +226,11 @@ def _diff_scan_lines(text: str) -> Iterator[tuple[int, str]]:
     legitimate push (a refactor pulling synthetic fixtures into the diff as
     context/removed lines). They are skipped. Every other line is yielded
     verbatim: *added* (``+``) hunk lines carry the genuinely-new content the
-    gate must still catch, and lines outside any hunk — commit-message bodies
-    (the push-gate scans ``%B`` alongside the patch, the #703 case) or plain
+    gate must still catch, and lines outside any hunk — file headers, or plain
     text piped with no diff structure — are new content too and are scanned
-    exactly as in whole-file mode.
+    exactly as in whole-file mode. The push gate hands commit messages over as
+    a file (whole-file mode), never in this stream: git puts no separator
+    between one commit's last hunk and the next commit's subject.
 
     Combined diffs (``git show --cc`` on merge commits) carry one marker column
     per parent; a line counts as added when any column is ``+``, which keeps a
@@ -365,11 +366,11 @@ def main(
     if target is not None and target.is_dir():
         all_findings = _scan_directory(target, terms, allowlist)
     elif target is None:
-        # stdin is the push-gate path: a unified diff (or a `%B` message +
-        # patch blob). Scope the per-line detectors to added / non-hunk lines.
+        # stdin is the push-gate's patch path: a unified diff. Scope the
+        # per-line detectors to added / non-hunk lines.
         all_findings = _scan_diff(sys.stdin.read(), terms, allowlist)
     else:
-        # A filesystem file is raw content, not a diff — scan every line.
+        # A file (the push gate's commit messages among them) is raw content, not a diff — scan every line.
         all_findings = _scan_text(target.read_text(encoding="utf-8"), terms, allowlist)
 
     all_findings.sort(key=lambda f: (str(f.get("file", "")), int(f["line"])))
