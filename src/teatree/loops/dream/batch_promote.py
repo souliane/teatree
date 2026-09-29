@@ -227,8 +227,24 @@ def _batch_short_description(gaps: "list[GapSpec]") -> str:
     return f"Dream batch: {len(gaps)} gap(s) — {lead}"[:80]
 
 
+def _ledger_rows(gaps: "list[GapSpec]") -> dict[str, ConsolidatedMemory]:
+    rows = ConsolidatedMemory.objects.filter(cluster_key__in={gap.cluster_key for gap in gaps})
+    return {row.cluster_key: row for row in rows}
+
+
+def _gap_detail_lines(row: ConsolidatedMemory | None) -> list[str]:
+    if row is None:
+        return []
+    fields = (("Rule", row.rule), ("Evidence", row.verified_citation), ("Fix in", row.durable_destination))
+    return [f"    {label}: {' '.join(value.split())}" for label, value in fields if value.strip()]
+
+
 def _batch_context(umbrella_url: str, gaps: "list[GapSpec]") -> str:
-    """The manifest the dispatched coder reads — every gap, and the delivery contract."""
+    """The manifest the dispatched coder reads — every gap's full ledger row, and the delivery contract.
+
+    Never truncated: only the umbrella's public title is cut, and this context stays in the local DB.
+    """
+    rows = _ledger_rows(gaps)
     lines = [
         "Dream promotion batch (#4776) — fix each gap below independently.",
         (
@@ -239,7 +255,9 @@ def _batch_context(umbrella_url: str, gaps: "list[GapSpec]") -> str:
         "",
         "Gaps in this batch:",
     ]
-    lines.extend(f"- [{gap.gap_key}] {gap.title.strip()}" for gap in gaps)
+    for gap in gaps:
+        lines.append(f"- [{gap.gap_key}] {gap.title.strip()}")
+        lines.extend(_gap_detail_lines(rows.get(gap.cluster_key)))
     lines.extend(
         [
             "",
@@ -285,15 +303,15 @@ def _live_batch_ticket(*, umbrella_url: str, gaps: "list[GapSpec]") -> Ticket:
     stamp them onto a dead anchor that no reconcile ever revisits.
     """
     gap_keys = [gap.gap_key for gap in gaps]
+    defaults = {
+        "role": Ticket.Role.AUTHOR,
+        "short_description": _batch_short_description(gaps),
+        "context": _batch_context(umbrella_url, gaps),
+    }
     generation = 0
     while True:
         ticket, _ = Ticket.objects.get_or_create(
-            issue_url=_batch_issue_url(umbrella_url, gap_keys, generation=generation),
-            defaults={
-                "role": Ticket.Role.AUTHOR,
-                "short_description": _batch_short_description(gaps),
-                "context": _batch_context(umbrella_url, gaps),
-            },
+            issue_url=_batch_issue_url(umbrella_url, gap_keys, generation=generation), defaults=defaults
         )
         if not is_reconciled(ticket) and not ticket.is_settled:
             return ticket

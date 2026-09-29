@@ -1585,5 +1585,92 @@ class TestRefusePublicPushWithLeakingRefName:
         assert "ref-name privacy scan could not run" in result.stderr, result.stderr
 
 
+def _commit_verbatim(repo: Path, filename: str, content: str, message: str) -> str:
+    (repo / filename).write_text(content, encoding="utf-8")
+    _git(repo, "add", filename)
+    _git(repo, "commit", "--cleanup=verbatim", "-m", message)
+    return _rev(repo, "HEAD")
+
+
+def _stdin_draining_scanner(bin_dir: Path) -> str:
+    """The real scanner behind a wrapper that drains its stdin whenever it is handed a file path."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "draining-scan"
+    shim.write_text(
+        f'#!/usr/bin/env bash\nif [ "${{1:-}}" != "-" ]; then cat >/dev/null; fi\nexec {sys.executable} {SCAN} "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return str(shim)
+
+
+_QUOTED_HUNK_MESSAGE = f"docs: quote the config diff\n\n@@ -1 +1 @@\n-{_PLANTED_SECRET}+token = <placeholder>\n"
+
+
+class TestCommitMessagesAreScannedAsText:
+    """A commit message is published verbatim, so it is never read as part of a diff.
+
+    ``git log --patch`` puts no separator between one commit's last hunk line and the
+    next commit's subject, and a message can quote a hunk header itself. Read as a diff,
+    a message line opening with ``-`` or a space passes as a removed or context line.
+    """
+
+    @pytest.mark.parametrize("prefix", ["-", " "], ids=["minus", "space"])
+    def test_a_subject_right_after_a_hunk_is_still_scanned(self, tmp_path: Path, prefix: str) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        older = _commit_verbatim(work, "a.txt", "a clean line\n", prefix + _PLANTED_SECRET)
+        _commit_verbatim(work, "b.txt", "another clean line\n", "add b\n")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert f"commit {older} {_EARLIER_LABEL} (commit message):" in result.stdout, result.stdout
+
+    def test_a_clean_subject_right_after_a_hunk_passes(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _commit_verbatim(work, "a.txt", "a clean line\n", "- tidy wording\n")
+        _commit_verbatim(work, "b.txt", "another clean line\n", "add b\n")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_a_message_quoting_a_hunk_does_not_hide_its_own_lines(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        tip = _commit_verbatim(work, "notes.txt", "a clean note\n", _QUOTED_HUNK_MESSAGE)
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert f"commit {tip} (commit message):" in result.stdout, result.stdout
+
+    def test_removing_an_already_public_secret_line_still_passes(self, tmp_path: Path) -> None:
+        origin = tmp_path / "origin"
+        _make_repo(origin)
+        _commit_file(origin, "config.txt", _PLANTED_SECRET, "seed config")
+        work, env = _public_work_clone(tmp_path, origin)
+        _commit_file(work, "config.txt", "token = <placeholder>\n", "scrub config")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_a_message_scan_never_consumes_the_remaining_ref_updates(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        env["T3_PRIVACY_SCAN_CMD"] = _stdin_draining_scanner(tmp_path / "scanbin")
+        clean = _commit_file(work, "a.txt", "a clean line\n", "add a")
+        _git(work, "checkout", "-b", "feature", "origin/main")
+        leak = _commit_verbatim(work, "notes.txt", "a clean note\n", _QUOTED_HUNK_MESSAGE)
+        stdin = (
+            f"refs/heads/main {clean} refs/heads/main {ZERO_SHA}\n"
+            f"refs/heads/feature {leak} refs/heads/feature {ZERO_SHA}\n"
+        )
+
+        result = _run_hook(work, env, stdin)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert f"commit {leak} (commit message):" in result.stdout, result.stdout
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

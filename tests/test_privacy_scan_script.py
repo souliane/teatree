@@ -65,6 +65,26 @@ class TestPrivacyScanScriptEntrypoint:
         result = _run("a perfectly ordinary line of prose\n")
         assert result.returncode == 0, result.stdout + result.stderr
 
+    def test_non_utf8_file_still_finds_a_leak(self, tmp_path: Path) -> None:
+        """A commit under ``i18n.logOutputEncoding=ISO-8859-1`` is not valid UTF-8.
+
+        The file-argument path (the pre-push gate's commit-message scan) used
+        to call ``Path.read_text(encoding="utf-8")`` directly: a non-UTF-8 byte
+        raised ``UnicodeDecodeError``, exiting 1 — a code the gate reads as
+        "scanner crashed" and fails OPEN on (module docstring), so a leaking
+        commit message in a non-UTF-8 encoding passed through unscanned.
+        """
+        msg = "fix: caf\xe9 /Users/someone/secret\n".encode("latin-1")  # privacy-scan:allow self-fixture
+        target = tmp_path / "msg.txt"
+        target.write_bytes(msg)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
 
 class TestPrivacyScanOpaqueId:
     """Fix #3: the publish surface also flags real-shaped Slack/forge IDs.
@@ -563,9 +583,9 @@ class TestPrivacyScanDiffAddedLineScoping:
         assert "home_path" in result.stdout
 
     def test_commit_message_body_line_still_flagged(self) -> None:
-        # The push-gate blob is `%B` message + patch; a message-body line is new
-        # content on the pushed range (the #703 Co-authored-by case) and must
-        # still be scanned — the added-only scoping must not silence it.
+        # A non-hunk line on stdin (here a message body, the #703 Co-authored-by
+        # case) is new content and must still be scanned — the added-only
+        # scoping must not silence it.
         blob = (
             "Fix the thing\n"
             "\n"
