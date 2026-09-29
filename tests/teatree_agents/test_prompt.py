@@ -7,7 +7,12 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents.context_budget import MAX_APPEND_BYTES
-from teatree.agents.prompt import _parent_result_summary, build_system_context, build_task_prompt
+from teatree.agents.prompt import (
+    _MAX_TICKET_CONTEXT_BYTES,
+    _parent_result_summary,
+    build_system_context,
+    build_task_prompt,
+)
 from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.core.models.task_handoff import RESUME_CONTINUATION_CLAUSE, schedule_resume
@@ -120,6 +125,117 @@ class TestBuildTaskPrompt(TestCase):
 
         prompt = build_task_prompt(task)
         assert "pull requests" not in prompt.lower()
+
+
+_GAP_A = "a" * 64
+_GAP_B = "b" * 64
+_DELIVERY_LINE = "    ticket.merge_extra(set_keys={'dream_gap_claimed_delivered': [<gap_key>, ...]})"
+
+
+def _batch_context(gap_lines: list[str]) -> str:
+    return "\n".join(
+        [
+            "Dream promotion batch (#4776) — fix each gap below independently.",
+            "Umbrella ledger: https://github.com/owner/repo/issues/1",
+            "",
+            "Gaps in this batch:",
+            *gap_lines,
+            "",
+            _DELIVERY_LINE,
+        ]
+    )
+
+
+def _encoded_size(lines: list[str]) -> int:
+    return sum(len(line.encode()) + 1 for line in lines)
+
+
+class TestTicketContextInTaskPrompt(TestCase):
+    """A dream batch's gap manifest lives only in ``Ticket.context``, so the work prompt must carry it."""
+
+    def _prompt_for(self, ticket: Ticket) -> str:
+        return build_task_prompt(Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket)))
+
+    def _context_body(self, prompt: str) -> list[str]:
+        lines = prompt.splitlines()
+        heading = next(i for i, line in enumerate(lines) if line.startswith("Ticket context"))
+        return lines[heading + 1 : lines.index("Instructions:") - 1]
+
+    def test_dream_batch_manifest_reaches_the_prompt(self) -> None:
+        ticket = Ticket.objects.create(
+            context=_batch_context([f"- [{_GAP_A}] First gap", f"- [{_GAP_B}] Second gap"]),
+        )
+
+        prompt = self._prompt_for(ticket)
+
+        assert f"- [{_GAP_A}] First gap" in prompt
+        assert f"- [{_GAP_B}] Second gap" in prompt
+        assert _DELIVERY_LINE in prompt
+        assert prompt.index(_GAP_A) < prompt.index("Instructions:")
+
+    def test_blank_context_renders_no_section(self) -> None:
+        prompt = self._prompt_for(Ticket.objects.create(context="  \n\n  "))
+
+        assert "Ticket context" not in prompt
+
+    def test_appended_context_has_no_leading_blank_line(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.append_context("note")
+
+        body = self._context_body(self._prompt_for(ticket))
+
+        assert body[0].endswith("] note")
+
+    def test_oversized_context_keeps_head_and_tail_and_names_the_elision(self) -> None:
+        gaps = [f"- [{index:064x}] 📓 Gap number {index}" for index in range(2000)]
+        ticket = Ticket.objects.create(context=_batch_context(gaps))
+        source = ticket.context.strip().splitlines()
+
+        prompt = self._prompt_for(ticket)
+        body = self._context_body(prompt)
+        markers = [i for i, line in enumerate(body) if line.startswith("[…truncated")]
+        kept = [line for line in body if not line.startswith("[…truncated")]
+
+        assert gaps[0] in prompt
+        assert gaps[1000] not in prompt
+        assert _DELIVERY_LINE in prompt
+        assert len(markers) == 1
+        head = markers[0]
+        assert kept == source[:head] + source[len(source) - (len(kept) - head) :]
+        assert _encoded_size(kept) <= _MAX_TICKET_CONTEXT_BYTES
+        marker = body[head]
+        assert f"{len(source) - len(kept)} line(s)" in marker
+        assert f"{_encoded_size(source) - _encoded_size(kept)} bytes" in marker
+        assert f"ticket context show {ticket.pk}" in marker
+
+    def test_context_within_budget_passes_through_intact(self) -> None:
+        lines = [f"{index:05d}" + "x" * 94 for index in range(_MAX_TICKET_CONTEXT_BYTES // 100)]
+        ticket = Ticket.objects.create(context="\n".join(lines))
+
+        body = self._context_body(self._prompt_for(ticket))
+
+        assert body == lines
+
+    def test_single_oversized_line_still_names_the_pointer(self) -> None:
+        ticket = Ticket.objects.create(context="y" * 30_000)
+
+        body = self._context_body(self._prompt_for(ticket))
+
+        assert len(body) == 1
+        assert body[0].startswith("[…truncated 1 line(s), 30001 bytes")
+        assert f"ticket context show {ticket.pk}" in body[0]
+
+    def test_pointer_names_the_resolvable_pk(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/owner/repo/issues/2663#dream-batch=6299b5d89b466064",
+            context="note",
+        )
+        assert ticket.ticket_number != str(ticket.pk)
+
+        prompt = self._prompt_for(ticket)
+
+        assert f"`t3 <overlay> ticket context show {ticket.pk}`" in prompt
+        assert Ticket.objects.resolve(str(ticket.pk)) == ticket
 
 
 # --- build_system_context ---
