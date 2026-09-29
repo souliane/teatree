@@ -284,6 +284,17 @@ A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#
 - **A claimed gap the diff does not actually address is a HOLD, not a nitpick.** File it as a blocking finding naming the specific unaddressed `gap_key`.
 - **A gap NOT in `dream_gap_claimed_delivered` needs no review** — it was correctly dropped and stays open for the next pass; do not fault a PR for gaps it never claimed.
 
+#### A Forked Review Skill Reviews Whatever the Checkout Holds — Target It, Then Scope-Check Its Findings (Non-Negotiable)
+
+A review skill that the Skill tool runs forked starts with no ticket, PR or branch context. That skill is the overlay's `pr_review_companion`, `code-review` by default. With no target, it reviews the most recently touched worktree, or main's latest merge when the cwd is not a repo. In one case it returned 14 findings on a privacy scanner, for a PR that changed only skill prose and eval files.
+
+- **Always pass the dispatched PR URL as the Skill `args`**: `Skill(skill="code-review", args="<pr-url>")`. Do this even when the brief only says "load /code-review".
+- **Scope-check the fork's report before using any of it.** It must name the dispatched PR or head SHA, and each finding must cite a file in the changed-file set. Take that set from `gh pr diff <pr> --name-only` or `git diff --name-only <base>...<head>`. The DIFF UNDER REVIEW block is truncated and cannot supply it.
+- **Discard an out-of-diff finding** unless it names the in-diff change that causes it, such as a caller broken by a changed signature. Measure any finding you keep on the merge result.
+- **A fork whose findings all miss the diff reviewed the wrong target.** Discard its whole output, then re-run it with `args` or review the diff yourself. If nothing survives the filter, no review happened. That is never grounds for `merge_safe` with empty `findings`.
+
+The record-time out-of-diff gate (#4251, `teatree.core.modelkit.diff_scope`) refuses only blocking findings. An off-target nit gets past it, and so does an unreviewed diff recorded as clean.
+
 #### Two Lanes — a Colleague-Facing Post, and the Verdict Envelope (decide this first)
 
 This chapter's deliverable is one of two things, and the reporting rules are **opposite** between them. Decide which before drafting anything.

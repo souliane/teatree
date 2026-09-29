@@ -154,6 +154,7 @@ SANDBOX_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     "e2e_test_plan_manifest_carries_steps": ("e2e_artifacts", ("t3",)),
     "e2e_test_plan_manifest_declares_final_bdd_source": ("e2e_artifacts", ("t3",)),
     "e2e_test_plan_uses_canonical_command": ("e2e_artifacts", ("t3",)),
+    "forked_review_off_target_findings_not_recorded": ("", ("t3",)),
     "harness_canary_cli_stub_succeeds": ("", ("t3",)),
     "headless_blocker_records_durable_question_not_prose": ("", ("t3",)),
     "headless_question_survives_denied_tool_surface": ("", ("t3",)),
