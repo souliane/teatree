@@ -117,7 +117,6 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
         if binding.superseded:
             _supersede_moved_head(target)
         return binding.error
-    dispatch_head = target.head_sha
     target = dataclasses.replace(target, head_sha=binding.head)
 
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
@@ -132,7 +131,7 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
         _rubric_coverage_error(rubric, grades, returned=returned)
         or _merge_safe_over_fail_error(rubric, envelope, grades)
         or _record_verdict_and_grades(task, envelope, target=target, rubric=rubric, grades=grades)
-        or _settle_recorded_verdict(task, target, rubric=rubric, dispatch_head=dispatch_head)
+        or _settle_recorded_verdict(task, target, rubric=rubric)
     )
 
 
@@ -287,9 +286,9 @@ def _record_verdict_and_grades(
     return ""
 
 
-def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None", dispatch_head: str) -> str:
+def _settle_recorded_verdict(task: Task, target: ReviewTarget, *, rubric: "Rubric | None") -> str:
     """After a recorded verdict: rebind the claim, clear a satisfied escalation, and prove the row reads back."""
-    _rebind_claim_to_recorded_head(task, target, dispatch_head=dispatch_head)
+    _rebind_claim_to_recorded_head(task, target)
     if rubric is not None and rubric.is_fully_passed_at(target.head_sha):
         clear_honesty_escalation_on_pass(rubric.ticket)
     return _unpersisted_verdict_error(target)
@@ -303,10 +302,10 @@ def _supersede_moved_head(target: ReviewTarget) -> None:
     """
     if target.armed_by is not AutoReviewDispatch:
         return
-    AutoReviewDispatch.mark_superseded(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
+    AutoReviewDispatch.mark_superseded(slug=target.slug, pr_id=target.pr_id, head_sha=target.claim_head_sha)
 
 
-def _rebind_claim_to_recorded_head(task: Task, target: ReviewTarget, *, dispatch_head: str) -> None:
+def _rebind_claim_to_recorded_head(task: Task, target: ReviewTarget) -> None:
     """Point whatever key the resolver reads at the head the verdict landed on; no-op when unmoved.
 
     ``ReviewVerdict.record`` retires the claim keyed on the RECORDED head, which is not the
@@ -319,13 +318,13 @@ def _rebind_claim_to_recorded_head(task: Task, target: ReviewTarget, *, dispatch
     ``extra["reviewed_sha"]`` still named the pinned one, so the resolver re-read a tree the
     row is not on and the system could not find its own verdict.
     """
-    if target.head_sha == dispatch_head:
+    if target.head_sha == target.claim_head_sha:
         return
     if target.armed_by is AutoReviewDispatch:
         AutoReviewDispatch.mark_recorded_at(
             slug=target.slug,
             pr_id=target.pr_id,
-            head_sha=dispatch_head,
+            head_sha=target.claim_head_sha,
             recorded_head_sha=target.head_sha,
         )
         return
@@ -348,14 +347,14 @@ _REFUSAL_MARKER_HEAD_LEN = 12
 
 
 def _refusal_marker(target: ReviewTarget) -> str:
-    """The escalate-once key for a checks-contradiction refusal — one per reviewed head.
+    """The escalate-once key for a checks-contradiction refusal — one per claimed head.
 
     Bounded to the ``dedupe_marker`` column's own ``max_length`` read off the field, never
     a hand-copied 64, and composed so the head survives the bound: the SLUG is what gives
     way when there is not room for everything.
     """
     limit = DeferredQuestion._meta.get_field("dedupe_marker").max_length or 64  # noqa: SLF001 — Django's documented Model._meta API
-    tail = f"#{target.pr_id}@{target.head_sha.strip().lower()[:_REFUSAL_MARKER_HEAD_LEN]}"
+    tail = f"#{target.pr_id}@{target.claim_head_sha.strip().lower()[:_REFUSAL_MARKER_HEAD_LEN]}"
     room = max(limit - len(_REFUSAL_MARKER_PREFIX) - len(tail), 0)
     return f"{_REFUSAL_MARKER_PREFIX}{target.slug.strip()[:room]}{tail}"
 
@@ -381,9 +380,11 @@ def _latch_checks_contradiction(target: ReviewTarget, *, task: Task, reason: str
     the bound there is nothing terminal to report, and a run holding no claim at all has
     nothing re-arming it, so neither is worth waking the owner for.
 
-    A push mints a new head, which has no claim and no marker, and re-arms review normally.
+    A push mints a new head, which has no claim and no marker, and re-arms review normally. A
+    push that lands MID-review is different: the verdict binds to the new head, but the spent
+    claim is still the one this run was armed at, so the latch keys ``claim_head_sha``.
     """
-    latched = target.armed_by.mark_refused(slug=target.slug, pr_id=target.pr_id, head_sha=target.head_sha)
+    latched = target.armed_by.mark_refused(slug=target.slug, pr_id=target.pr_id, head_sha=target.claim_head_sha)
     if not latched:
         return
     DeferredQuestion.record(
@@ -395,10 +396,15 @@ def _latch_checks_contradiction(target: ReviewTarget, *, task: Task, reason: str
 
 def _refusal_question(target: ReviewTarget, *, reason: str) -> str:
     """The owner-facing statement of a head that spent its last retry on a refused verdict."""
+    red_head = (
+        "this head"
+        if target.head_sha == target.claim_head_sha
+        else f"{target.head_sha[:8]}, the head the branch advanced to mid-review,"
+    )
     return (
-        f"[review-refusal {target.slug}#{target.pr_id}@{target.head_sha[:8]}] This head has used all "
+        f"[review-refusal {target.slug}#{target.pr_id}@{target.claim_head_sha[:8]}] This head has used all "
         f"{MAX_DISPATCH_ATTEMPTS} auto-review attempts, and the last one returned a merge_safe verdict "
-        f"over checks a LIVE workflow-run read at this head confirms are RED: {reason} "
+        f"over checks a LIVE workflow-run read at {red_head} confirms are RED: {reason} "
         f"Auto-review is done for this head — not because the tree is unreviewable, but because the "
         f"retries are spent. A new push re-arms review by itself. Fix the red checks and push, land a "
         f"human verdict, or close the PR?"

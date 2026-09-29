@@ -49,6 +49,8 @@ class ReviewTarget:
     slug: str
     pr_id: int
     head_sha: str
+    #: The head the arming claim row is keyed on; it stays put when ``head_sha`` rebinds (#4737).
+    claim_head_sha: str
     #: The forge the PR lives on, so a live-head read addresses the right API (#4737).
     host_kind: str = "github"
     #: The identity this dispatch path holds the per-MR review lock under, or ``""`` for a
@@ -76,10 +78,12 @@ def review_target_for_ticket(ticket: "Ticket") -> ReviewTarget | None:
     reviewed_pr = pr_ref_from_url(ticket.issue_url)
     if reviewed_pr is None:
         return None
+    reviewed_sha = str((ticket.extra or {}).get("reviewed_sha", "")).strip()
     return ReviewTarget(
         slug=reviewed_pr.slug,
         pr_id=reviewed_pr.pr_id,
-        head_sha=str((ticket.extra or {}).get("reviewed_sha", "")).strip(),
+        head_sha=reviewed_sha,
+        claim_head_sha=reviewed_sha,
         host_kind=reviewed_pr.host_kind,
     )
 
@@ -97,6 +101,7 @@ def review_target_for_task(task: "Task") -> ReviewTarget | None:
             slug=dispatch.slug,
             pr_id=dispatch.pr_id,
             head_sha=(dispatch.recorded_head_sha or dispatch.head_sha).strip(),
+            claim_head_sha=dispatch.head_sha.strip(),
             host_kind="github" if dispatched_pr is None else dispatched_pr.host_kind,
             lock_holder=LOOP_SCANNER_HOLDER,
             armed_by=AutoReviewDispatch,

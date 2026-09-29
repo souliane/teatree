@@ -5,6 +5,8 @@ The writer and the reader each held half of this and disagreed: a reviewing task
 discarded while the task completed exit 0.
 """
 
+import dataclasses
+
 import pytest
 from django.test import TestCase
 
@@ -218,3 +220,41 @@ class TestTheForgeTheLiveHeadReadAddresses(TestCase):
 
         assert target is not None
         assert (target.slug, target.pr_id, target.host_kind) == ("acme/group/widget", 77, "gitlab")
+
+
+class TestTheClaimHeadIsTheArmingRowsKey(TestCase):
+    """``claim_head_sha`` names the claim row even after ``head_sha`` rebinds to a newer head."""
+
+    def test_the_dispatch_path_keys_the_row_head_even_once_a_newer_head_is_recorded(self) -> None:
+        dispatch = AutoReviewDispatch.enqueue(
+            slug=_SLUG,
+            pr_id=_PR_ID,
+            head_sha=_DISPATCH_HEAD,
+            pr_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}",
+            overlay="teatree",
+        )
+        assert dispatch is not None
+        assert dispatch.task is not None
+        AutoReviewDispatch.objects.filter(pk=dispatch.pk).update(recorded_head_sha=_HEAD)
+
+        target = review_target_for_task(dispatch.task)
+
+        assert target is not None
+        assert (target.head_sha, target.claim_head_sha) == (_HEAD, _DISPATCH_HEAD)
+
+    def test_the_ticket_path_keys_the_reviewed_head(self) -> None:
+        task = _reviewer_task(issue_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}", extra={"reviewed_sha": _HEAD})
+
+        target = review_target_for_task(task)
+
+        assert target is not None
+        assert target.claim_head_sha == target.head_sha == _HEAD
+
+    def test_rebinding_the_verdict_head_keeps_the_claim_head(self) -> None:
+        task = _reviewer_task(issue_url=f"https://github.com/{_SLUG}/pull/{_PR_ID}", extra={"reviewed_sha": _HEAD})
+        target = review_target_for_task(task)
+        assert target is not None
+
+        rebound = dataclasses.replace(target, head_sha=_DISPATCH_HEAD)
+
+        assert (rebound.head_sha, rebound.claim_head_sha) == (_DISPATCH_HEAD, _HEAD)

@@ -1265,3 +1265,73 @@ class TestDispatchAssignsTheRecordedIdentity(TestCase):
         assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+
+
+class TestAMovedHeadContradictionLatchesTheClaimHead(TestCase):
+    """A spent claim at A whose verdict binds to the live head B still latches (#4737, #4530).
+
+    The verdict and its live checks read belong to B, the tree the reviewer judged. The claim
+    row, its refusal latch and its page belong to A, the head the run was armed for. Keying the
+    latch on B looked up a claim that does not exist, so the contradiction never latched.
+    """
+
+    def _spent_dispatch_task(self) -> tuple[Task, AutoReviewDispatch]:
+        dispatch = _exhaust_dispatch()
+        task = task_of(dispatch)
+        task.claim(claimed_by="headless-reviewer")
+        return task, dispatch
+
+    def test_the_spent_dispatch_claim_latches_refused(self) -> None:
+        task, dispatch = self._spent_dispatch_task()
+
+        with _live_head(_OTHER_HEAD):
+            attempt = record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert "CONFIRMS red" in attempt.error
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.REFUSED
+
+    def test_the_owner_is_paged_once_under_the_claim_head_naming_the_red_head(self) -> None:
+        task, _ = self._spent_dispatch_task()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        questions = _pending_refusal_questions()
+        assert len(questions) == 1, [question.dedupe_marker for question in questions]
+        assert questions[0].dedupe_marker == f"review-refusal:{_SLUG}#{_PR_ID}@{_HEAD[:12]}"
+        assert _OTHER_HEAD[:8] in questions[0].question
+
+    def test_the_spent_codex_marker_latches_refused(self) -> None:
+        task = _codex_task_at_its_last_attempt()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
+        assert marker.state == CodexReviewMarker.State.REFUSED
+        assert len(_pending_refusal_questions()) == 1
+
+    def test_the_live_checks_are_still_read_at_the_head_the_verdict_binds_to(self) -> None:
+        task, _ = self._spent_dispatch_task()
+        seen: list[tuple[str, str]] = []
+
+        def probe(*, slug: str, head_sha: str) -> LiveChecksRead:
+            seen.append((slug, head_sha))
+            return LiveChecksRead(status="failed", detail="failing workflow run(s): test (3.13)")
+
+        with _live_head(_OTHER_HEAD), patch.object(review_envelope_recorder, "live_checks_at", probe):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert seen == [(_SLUG, _OTHER_HEAD)]
+
+    def test_a_claim_with_budget_left_neither_latches_nor_pages(self) -> None:
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.DISPATCHED
+        assert _pending_refusal_questions() == []
