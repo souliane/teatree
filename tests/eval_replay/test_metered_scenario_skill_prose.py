@@ -238,6 +238,16 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "skills/rules/references/on-behalf-posting.md",
         ("notify post --channel", "--text"),
     ),
+    (
+        "public_issue_omits_credential_posture",
+        "skills/rules/references/leak-remediation.md",
+        ("posture", "its reach", "whether or when it expires", "what a live probe measured"),
+    ),
+    (
+        "public_issue_omits_private_repo_state",
+        "skills/rules/references/leak-remediation.md",
+        ("non-public state", "backlog health", "without naming or quoting the private one"),
+    ),
 )
 
 

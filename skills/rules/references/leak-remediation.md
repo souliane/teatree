@@ -12,6 +12,22 @@ gh repo view <owner>/<repo> --json visibility,isPrivate
 
 If the target is **PUBLIC**, the body must not contain internal identifiers: customer names, internal GitLab/Jira/Notion URLs, client-specific repo names, ticket IDs from private trackers, CI job/pipeline IDs, local filesystem paths (`/Users/…`, `/home/…`), environment variable values, or internal hostnames. Replace with generic placeholders (`<repo>`, `<namespace>`, `<ticket_url>`, `$T3_WORKSPACE_DIR/<ticket>/<repo>`) before posting.
 
+**Every public artifact, not only a filing.** The check covers an issue, a PR body, a comment and a commit message alike: before any of them lands on a public repo, ask what the text discloses about something that is not public. Two classes are easy to miss because they carry no identifier a term list would catch.
+
+**A credential's posture.** Never publish:
+
+- the credential's name, or the store or path holding it;
+- its reach — a repo count, "all repositories", or which repos it can touch;
+- the permissions it holds or lacks;
+- whether or when it expires;
+- where to view or change it.
+
+Quoting what the public repo already says adds nothing: a checked-in script path, a documented required scope, a public CI log line. Publishing what a live probe measured is the disclosure. An operational ask ("rotate the secret; the nightly job fails on it") is fine; a description of what the credential can do is not.
+
+**Another repo's non-public state.** Never publish a private repo's name, its PR or issue numbers and states (which are green, which have stalled), its file paths or internal ticket ids, or its backlog health. File such a finding in that repo's own tracker, or give it to the owner in session. When the fix lives in the public repo, describe the defect in the public repo's own code, without naming or quoting the private one.
+
+Detail a finding genuinely needs stays out of the artifact and goes to the owner in session. The posting gate matches a configured banned-term list only, so it cannot see a synthesis such as a credential's measured reach: this judgement is the agent's.
+
 **Ambiguous destinations need a question.** When the user says "file a bug" without a repo and there are multiple candidates (public upstream vs. private overlay, team repo vs. personal repo), use `AskUserQuestion` to confirm the target before writing the body. Never guess — the cost of asking is low; the cost of publishing internal info is high.
 
 **The authorization to "file a bug" does not authorize posting internal info to a public repo.** User instructions like "file a teatree bug" authorize the _action_ of filing, not the _destination_. A public target always requires a scrubbed body.
