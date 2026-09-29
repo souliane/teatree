@@ -5,7 +5,7 @@
 - name: forked_review_skill_passes_dispatched_pr_as_args
   scenario: "a headless reviewer loading the forked review skill passes the dispatched PR as its args, never an arg-less call that reviews whatever the checkout holds"
   agent_path: skills/review/SKILL.md
-  agent_sections: ["A Forked Review Skill Reviews Whatever the Checkout Holds — Target It, Then Scope-Check Its Findings (Non-Negotiable)"]
+  agent_sections: ["A Forked Review Skill Reviews Whatever the Checkout Holds (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
   single_action: true
@@ -21,7 +21,7 @@
 - name: forked_review_off_target_findings_not_recorded
   scenario: "a forked review whose findings all cite files outside the dispatched diff is discarded and re-targeted, never posted or taken as grounds to approve"
   agent_path: skills/review/SKILL.md
-  agent_sections: ["A Forked Review Skill Reviews Whatever the Checkout Holds — Target It, Then Scope-Check Its Findings (Non-Negotiable)"]
+  agent_sections: ["A Forked Review Skill Reviews Whatever the Checkout Holds (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
   cli_stubs: [t3]

@@ -3,10 +3,7 @@
 from scripts.eval.corpus_gen.catalog import REVIEW, bash
 from scripts.eval.corpus_gen.model import Call, Scenario, any_of, match, negative, positive
 
-_SECTION = (
-    "A Forked Review Skill Reviews Whatever the Checkout Holds — Target It, Then Scope-Check Its Findings "
-    "(Non-Negotiable)"
-)
+_SECTION = "A Forked Review Skill Reviews Whatever the Checkout Holds (Non-Negotiable)"
 _PR_URL = "https://github.com/example/widget/pull/4901"
 _DISPATCH = f"You are the headless cold reviewer dispatched for PR {_PR_URL} at head 7e4fb49b1."
 _TARGETED = match("Skill", "args", r"4901")

@@ -215,14 +215,7 @@ During any review that touches architecture, configuration, or tooling setup: sc
 
 #### New-Test Shape Check (Non-Negotiable)
 
-When the diff adds or modifies test files, verify the new tests follow the repo's test-writing doctrine (see the repo's `AGENTS.md` § "Test-Writing Doctrine" — teatree and every overlay repo carry the same rule):
-
-1. **Mock density.** If a new test file is mostly `Mock()`, `patch()`, `MagicMock`, or `mock.call_args` assertions, flag it. Ask: could this have been a Django test client call, a `call_command` invocation, a real `tmp_path` git repo, or a Playwright E2E?
-2. **Mock targets.** Mocks should hit unstoppable externals only — network (GitHub, GitLab, Slack, Sentry), clock, `pass`, third-party subprocesses. Mocking teatree code, Django models, filesystem under `tmp_path`, or `git` itself is a finding.
-3. **Missing integration coverage.** If the diff adds a view, a management command, or a new CLI surface and only ships unit tests, flag it — the happy path belongs in an integration test.
-4. **Coverage preservation.** Any test rebalancing (removing units, adding integration) must keep the coverage gate satisfied. Report the before/after coverage number in the review.
-
-Accept a mock-heavy test only when the PR description justifies why a higher-level test couldn't cover the same behavior (e.g., a rare error branch that's painful to trigger through the real entry point).
+When the diff adds or modifies test files, verify the new tests follow the repo's test-writing doctrine (`AGENTS.md` § "Test-Writing Doctrine"): flag mock-heavy files that could have been an integration/E2E test, mocks on anything but unstoppable externals, a new view/command/CLI surface shipped with only unit tests, and any coverage-gate regression from rebalancing. Full text: `skills/review/references/new-test-shape-check.md`.
 
 ### The Skilled Lifecycle Is the Bar Before Requesting Review or Merging (Non-Negotiable)
 
@@ -278,22 +271,15 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 #### Dream Gap-Batch PRs — Verify Every Claimed Gap Independently (Non-Negotiable)
 
-A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): the PR claims to fix a SUBSET of the manifest, recorded in `extra['dream_gap_claimed_delivered']`. A batched PR that claims 9 of 10 gaps fixed but only delivers fewer is WORSE than one that delivers 1 honestly, because the unfixed gap's checkbox would get ticked and silently vanish from the ledger — so before clearing such a PR:
+A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): the PR claims a SUBSET of the manifest, in `extra['dream_gap_claimed_delivered']`. Claiming 9 of 10 gaps fixed while delivering fewer is worse than delivering 1 honestly — the unfixed gap's checkbox gets ticked and silently vanishes from the ledger. Before clearing such a PR:
 
-- **Verify each claimed gap independently** — reproduce the gap's failure mode on the pre-change code (or confirm it from the ticket's cited evidence) and confirm the diff actually addresses it (absent at the head). Do not accept the coder's manifest claim on faith.
-- **A claimed gap the diff does not actually address is a HOLD, not a nitpick.** File it as a blocking finding naming the specific unaddressed `gap_key`.
-- **A gap NOT in `dream_gap_claimed_delivered` needs no review** — it was correctly dropped and stays open for the next pass; do not fault a PR for gaps it never claimed.
+- **Verify each claimed gap independently** — reproduce its failure on the pre-change code (or the ticket's cited evidence) and confirm the diff addresses it. Don't accept the manifest claim on faith.
+- **A claimed gap the diff doesn't address is a HOLD, not a nitpick** — file it as a blocking finding naming the `gap_key`.
+- **A gap NOT in `dream_gap_claimed_delivered` needs no review** — it stays open for the next pass; don't fault a PR for gaps it never claimed.
 
-#### A Forked Review Skill Reviews Whatever the Checkout Holds — Target It, Then Scope-Check Its Findings (Non-Negotiable)
+#### A Forked Review Skill Reviews Whatever the Checkout Holds (Non-Negotiable)
 
-A review skill that the Skill tool runs forked starts with no ticket, PR or branch context. That skill is the overlay's `pr_review_companion`, `code-review` by default. With no target, it reviews the most recently touched worktree, or main's latest merge when the cwd is not a repo. In one case it returned 14 findings on a privacy scanner, for a PR that changed only skill prose and eval files.
-
-- **Always pass the dispatched PR URL as the Skill `args`**: `Skill(skill="code-review", args="<pr-url>")`. Do this even when the brief only says "load /code-review".
-- **Scope-check the fork's report before using any of it.** It must name the dispatched PR or head SHA, and each finding must cite a file in the changed-file set. Take that set from `gh pr diff <pr> --name-only` or `git diff --name-only <base>...<head>`. The DIFF UNDER REVIEW block is truncated and cannot supply it.
-- **Discard an out-of-diff finding** unless it names the in-diff change that causes it, such as a caller broken by a changed signature. Measure any finding you keep on the merge result.
-- **A fork whose findings all miss the diff reviewed the wrong target.** Discard its whole output, then re-run it with `args` or review the diff yourself. If nothing survives the filter, no review happened. That is never grounds for `merge_safe` with empty `findings`.
-
-The record-time out-of-diff gate (#4251, `teatree.core.modelkit.diff_scope`) refuses only blocking findings. An off-target nit gets past it, and so does an unreviewed diff recorded as clean.
+A review skill the Skill tool runs forked starts with no ticket, PR or branch context — it reviews the most recently touched worktree, or main's latest merge. Pass the PR: `Skill(skill="code-review", args="<pr-url>")`, even when the brief only says "load /code-review". Each finding must cite a file in the changed-file set (`gh pr diff <pr> --name-only`); drop one that doesn't unless it names the in-diff change that causes it. A fork whose findings all miss the diff reviewed the wrong target — re-run it with `args` or review the diff yourself. If nothing survives, no review happened; that's never `merge_safe`.
 
 #### Two Lanes — a Colleague-Facing Post, and the Verdict Envelope (decide this first)
 
