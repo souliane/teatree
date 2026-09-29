@@ -157,30 +157,11 @@ This step catches the class of bugs where the rules exist but weren't applied du
 
 #### Module-Level Architectural Check (Non-Negotiable)
 
-After verifying repo rules, **check the full file** (not just changed lines) of every file touched by the diff against the loaded coding skills' **"Architectural Health"** review checklist.
-
-1. **Identify loaded coding skills.** TeaTree auto-detects `ac-*` skills from the repo shape (e.g., `ac-python`, `ac-django`). If they have an "Architectural Health" review checklist section, apply it.
-2. **For each touched file**, evaluate the FULL file against those checklists. Key checks (skill-specific details are in the skill itself):
-   - Module size (LOC)
-   - Module-level function count and justification
-   - God-module detection (unrelated concerns in one file)
-   - Complexity rule suppressions in `pyproject.toml` — any `C901`/`PLR09xx` per-file-ignores beyond the project's boilerplate baseline are findings
-3. **When a threshold is crossed**, never suppress the lint rule. On **your own** change, refactor to comply in this same PR — the module is one this diff already touches, so `AGENTS.md` First Principles 8-10 put the fix here, not in a follow-up ticket. When reviewing **someone else's** change, post it as a finding and leave the fix to the author (maker ≠ checker).
-4. **Check `pyproject.toml` per-file-ignores** for the touched files. If any suppress complexity rules that are not in the project's boilerplate baseline, flag them as findings.
-
-This step prevents architectural drift. Each diff looks fine in isolation — this check catches the cumulative effect by examining the full module.
+After verifying repo rules, **check the full file** (not just changed lines) of every touched file against the loaded `ac-*` skills' **"Architectural Health"** checklist — module size, function count, god-modules, complexity suppressions in `pyproject.toml` per-file-ignores. When a threshold is crossed, never suppress the lint rule: on **your own** change refactor in this PR; on **someone else's**, post a finding (maker ≠ checker). Full text: `skills/review/references/architecture-checks.md`.
 
 #### File-Hierarchy & Module-Placement Check (Non-Negotiable)
 
-The Module-Level Architectural Check above asks *what's inside* each touched file. This one asks *where the changed files live* — but **scoped strictly to the diff**, never a whole-tree audit. Examine only files the change adds, moves, or renames, plus the directories they land in:
-
-1. **New files in the wrong directory or module.** For each added file, confirm it sits in the package whose concern it shares. A scanner belongs under the scanners package, a CLI command under the CLI package, a model under the models package — flag a file dropped beside unrelated neighbors with a concrete "this new file should live at `X`" suggestion.
-2. **Should the change have created or moved into a subpackage?** When a diff adds the third or fourth sibling file all serving one new concern into an already-crowded directory, flag that the cohesive set should become its own subpackage (with the proposed path).
-3. **Files added at the repo root that belong under a directory.** A new script, config, or module dropped at the repo root is a finding unless the repo's conventions place it there — name the directory it should move under.
-4. **Diffs that worsen module cohesion or scoping.** Flag a change that widens a module's responsibility (an unrelated concern bolted onto an existing file), leaks a private helper across a package boundary, or imports across a layer the architecture keeps separate — point at the boundary the change crosses.
-5. **Obvious reorg opportunities the change reveals.** When implementing the change makes a misplacement plain (e.g. the file you just edited clearly belongs next to the collaborators it now calls), surface the concrete move — but only for files this diff touches.
-
-Each finding must name the suggested target path so the implementer can act without re-deriving it. **Full-tree reorganization audits are out of scope here** — sweeping the entire repository's layout for misplaced modules is the `ac-reviewing-codebase` skill's job (the periodic holistic review dispatched by the architectural-review loop). Keep this per-change check scoped to the diff so the two surfaces complement rather than duplicate each other.
+Scoped strictly to the diff, never a whole-tree audit: check *where* added, moved or renamed files live — a wrong package, a subpackage now due, a repo-root drop, a widened concern or a crossed layer, a reorg the change reveals. Every finding must name the target path; a whole-tree layout audit is `ac-reviewing-codebase`'s job. Full text: `skills/review/references/architecture-checks.md`.
 
 #### The One-Place Test — Count the Files (Non-Negotiable)
 
@@ -271,15 +252,15 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 #### Dream Gap-Batch PRs — Verify Every Claimed Gap Independently (Non-Negotiable)
 
-A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): the PR claims a SUBSET of the manifest, in `extra['dream_gap_claimed_delivered']`. Claiming 9 of 10 gaps fixed while delivering fewer is worse than delivering 1 honestly — the unfixed gap's checkbox gets ticked and silently vanishes from the ledger. Before clearing such a PR:
+A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): the PR claims to fix a SUBSET of the manifest, recorded in `extra['dream_gap_claimed_delivered']`. A batched PR that claims 9 of 10 gaps fixed but only delivers fewer is WORSE than one that delivers 1 honestly, because the unfixed gap's checkbox would get ticked and silently vanish from the ledger — so before clearing such a PR:
 
-- **Verify each claimed gap independently** — reproduce its failure on the pre-change code (or the ticket's cited evidence) and confirm the diff addresses it. Don't accept the manifest claim on faith.
-- **A claimed gap the diff doesn't address is a HOLD, not a nitpick** — file it as a blocking finding naming the `gap_key`.
-- **A gap NOT in `dream_gap_claimed_delivered` needs no review** — it stays open for the next pass; don't fault a PR for gaps it never claimed.
+- **Verify each claimed gap independently** — reproduce the gap's failure mode on the pre-change code (or confirm it from the ticket's cited evidence) and confirm the diff actually addresses it (absent at the head). Do not accept the coder's manifest claim on faith.
+- **A claimed gap the diff does not actually address is a HOLD, not a nitpick.** File it as a blocking finding naming the specific unaddressed `gap_key`.
+- **A gap NOT in `dream_gap_claimed_delivered` needs no review** — it was correctly dropped and stays open for the next pass; do not fault a PR for gaps it never claimed.
 
 #### A Forked Review Skill Reviews Whatever the Checkout Holds (Non-Negotiable)
 
-A review skill the Skill tool runs forked starts with no ticket, PR or branch context — it reviews the most recently touched worktree, or main's latest merge. Pass the PR: `Skill(skill="code-review", args="<pr-url>")`, even when the brief only says "load /code-review". Each finding must cite a file in the changed-file set (`gh pr diff <pr> --name-only`); drop one that doesn't unless it names the in-diff change that causes it. A fork whose findings all miss the diff reviewed the wrong target — re-run it with `args` or review the diff yourself. If nothing survives, no review happened; that's never `merge_safe`.
+A review skill the Skill tool runs forked starts with no ticket, PR or branch context — it reviews the most recently touched worktree, or main's latest merge. Pass the PR: `Skill(skill="code-review", args="<pr-url>")`, even when the brief only says "load /code-review". Its report must name the PR or head SHA, and each finding must cite a file in the changed-file set (`gh pr diff <pr> --name-only` or `git diff --name-only <base>...<head>`); drop one that doesn't unless it names the in-diff change that causes it. A fork whose findings all miss the diff reviewed the wrong target — re-run it with `args` or review the diff yourself. If nothing survives, no review happened; that's never `merge_safe`. Full text: `skills/review/references/giving-review-investigation.md`.
 
 #### Two Lanes — a Colleague-Facing Post, and the Verdict Envelope (decide this first)
 
