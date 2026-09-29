@@ -283,6 +283,21 @@ class UploadVerification:
     detail: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class PipelineRead:
+    """What one CI read found in the latest pipeline, or why it could not read one.
+
+    Empty ``findings`` is a verdict ("nothing failed") only when ``unreadable_reason`` is blank.
+    """
+
+    findings: tuple[str, ...] = ()
+    unreadable_reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.unreadable_reason
+
+
 # ast-grep-ignore: ac-django-no-complexity-suppressions
 @runtime_checkable  # noqa: PLR0904 — method count IS the code-host capability surface, mirrored by the concrete backends.
 class CodeHostBackend(Protocol):
@@ -487,9 +502,9 @@ class CIService(Protocol):
 
     def cancel_pipelines(self, *, project: str, ref: str) -> list[int]: ...  # pragma: no branch
 
-    def fetch_pipeline_errors(self, *, project: str, ref: str) -> list[str]: ...  # pragma: no branch
+    def fetch_pipeline_errors(self, *, project: str, ref: str) -> PipelineRead: ...  # pragma: no branch
 
-    def fetch_failed_tests(self, *, project: str, ref: str) -> list[str]: ...  # pragma: no branch
+    def fetch_failed_tests(self, *, project: str, ref: str) -> PipelineRead: ...  # pragma: no branch
 
     def trigger_pipeline(
         self,

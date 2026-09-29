@@ -6,6 +6,10 @@ from typing import cast
 from urllib.parse import urlencode
 
 from teatree.backends.gitlab.api import GitLabAPI
+from teatree.core.backend_protocols import PipelineRead
+
+#: GitLab's JUnit case statuses that failed the job: an ``error`` is a test that raised outside its assertions.
+_FAILED_CASE_STATUSES = frozenset({"failed", "error"})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -30,14 +34,14 @@ class GitLabCIService:
     def __init__(self, client: GitLabAPI | None = None) -> None:
         self._client = client or GitLabAPI()
 
-    def fetch_pipeline_errors(self, *, project: str, ref: str) -> list[str]:
+    def fetch_pipeline_errors(self, *, project: str, ref: str) -> PipelineRead:
         project_info = self._client.resolve_project(project)
         if project_info is None:
-            return [f"Could not resolve project: {project}"]
+            return PipelineRead(unreadable_reason=f"could not resolve project: {project}")
 
         pipeline = self._latest_pipeline(project_info.project_id, ref)
         if pipeline is None:
-            return [f"No pipeline found for ref: {ref}"]
+            return PipelineRead(unreadable_reason=f"no pipeline found for ref: {ref}")
 
         pipeline_id = int(cast("int | str", pipeline["id"]))
         jobs = self._client.get_json_paginated(
@@ -55,21 +59,23 @@ class GitLabCIService:
                 errors.append(f"Job {name} failed:\n{_extract_error_tail(trace.text)}")
             else:
                 errors.append(f"Job {name} failed: trace unreadable ({trace.unreadable_reason})")
-        return errors
+        return PipelineRead(findings=tuple(errors))
 
-    def fetch_failed_tests(self, *, project: str, ref: str) -> list[str]:
+    def fetch_failed_tests(self, *, project: str, ref: str) -> PipelineRead:
         project_info = self._client.resolve_project(project)
         if project_info is None:
-            return []
+            return PipelineRead(unreadable_reason=f"could not resolve project: {project}")
 
         pipeline = self._latest_pipeline(project_info.project_id, ref)
         if pipeline is None:
-            return []
+            return PipelineRead(unreadable_reason=f"no pipeline found for ref: {ref}")
 
         pipeline_id = int(cast("int | str", pipeline["id"]))
         report = self._client.get_json(f"projects/{project_info.project_id}/pipelines/{pipeline_id}/test_report")
         if not isinstance(report, dict):
-            return []
+            return PipelineRead(unreadable_reason=f"pipeline {pipeline_id}'s test report is not a JSON object")
+        if not report.get("test_suites"):
+            return PipelineRead(unreadable_reason=f"pipeline {pipeline_id} published no test report")
 
         failed: list[str] = []
         for suite in cast("list[dict[str, object]]", report.get("test_suites", [])):
@@ -78,12 +84,12 @@ class GitLabCIService:
             for case in cast("list[dict[str, object]]", suite.get("test_cases", [])):
                 if not isinstance(case, dict):
                     continue
-                if case.get("status") == "failed":
+                if case.get("status") in _FAILED_CASE_STATUSES:
                     classname = str(case.get("classname", ""))
                     name = str(case.get("name", ""))
                     node_id = f"{classname}::{name}" if classname else name
                     failed.append(node_id)
-        return failed
+        return PipelineRead(findings=tuple(failed))
 
     def cancel_pipelines(self, *, project: str, ref: str) -> list[int]:
         project_info = self._client.resolve_project(project)
