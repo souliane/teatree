@@ -56,6 +56,7 @@ from teatree.core.models.worktree_occupancy import (
     release,
     release_task_occupancy,
     task_holder_id,
+    terminal_holder_task_pk,
     terminal_task_pk,
 )
 
@@ -75,6 +76,7 @@ __all__ = [
     "release_task_occupancy",
     "renew_ticket_checkout",
     "task_holder_id",
+    "terminal_holder_task_pk",
     "terminal_task_pk",
 ]
 

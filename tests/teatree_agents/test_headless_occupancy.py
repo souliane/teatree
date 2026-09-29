@@ -154,6 +154,34 @@ class DeferredOccupancyRaceTests(_DispatchCase):
         assert attempt.exit_code == 0
         assert "occupancy_deferred:" in str(attempt.result.get("summary", ""))
 
+    def test_a_refusal_naming_a_terminal_but_not_confirmed_dead_holder_is_parked(self) -> None:
+        """#4880: a third-party fail (#4872) keeps the holder's owner fields — still parks.
+
+        ``Task.fail(by_holder=False)`` on a live holder lands the row FAILED (terminal)
+        but deliberately leaves ``owner_pid`` intact when it cannot prove the owner
+        dead. A successor dispatch racing that holder must still PARK, never HALT —
+        the old run's own heartbeat unwinds the occupancy on its own (#4867). Reusing
+        the self-heal's liveness-gated ``terminal_task_pk`` for this decision instead
+        of the lenient ``terminal_holder_task_pk`` regressed this to a HALT.
+        """
+        rival_ticket = TicketFactory()
+        rival_session = SessionFactory(ticket=rival_ticket)
+        cancelled = Task.objects.create(ticket=rival_ticket, session=rival_session, phase="coding")
+        cancelled.claim(claimed_by="worker-B", claimed_by_session="session-B")
+        with mock.patch("teatree.utils.singleton.pid_alive", return_value=True):
+            Task.objects.get(pk=cancelled.pk).fail(reason="test: cancelled by an operator", by_holder=False)
+        driver = mock.Mock()
+
+        with mock.patch.object(runner, "occupy_ticket_checkout", return_value=self._refusal(holder_task=cancelled)):
+            self.dispatch(driver=driver)
+
+        driver.assert_not_called()
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+        assert self.task.not_before is not None
+        attempt = TaskAttempt.objects.filter(task=self.task).latest("pk")
+        assert "occupancy_deferred:" in str(attempt.result.get("summary", ""))
+
     def test_a_refusal_naming_a_live_holder_still_fails(self) -> None:
         rival_ticket = TicketFactory()
         live = Task.objects.create(

@@ -88,12 +88,16 @@ def terminal_task_pk(holder: str) -> int | None:
 
     ``None`` for a non-``task:`` holder (an operator's ``workspace ticket`` claim
     carries a free-form id), a malformed suffix, or a holder naming a Task that is
-    still active — every terminal-holder decision (the self-heal in
-    ``core.worktree.occupancy`` and ``run_agent``'s deferred-park fallback, #4867)
-    shares this ONE parse-and-check so a holder string is never interpreted two
-    different ways. Reads the Task's status fresh from the DB rather than
-    inferring it, preserving the occupancy module's 'advisory, only advisory'
-    invariant.
+    still active. Reads the Task's status fresh from the DB rather than inferring
+    it, preserving the occupancy module's 'advisory, only advisory' invariant.
+
+    Used ONLY by the self-heal in ``core.worktree.occupancy``
+    (:func:`_release_if_finished_task`), which then RELEASES the claim this answers
+    for. ``run_agent``'s deferred-park fallback (#4867) uses the lenient sibling
+    :func:`terminal_holder_task_pk` instead — that decision never releases
+    anything, so it must not share this function's liveness gate (#4880: reusing
+    this stricter predicate there turned a safe park into a HALT for a terminal
+    task whose owner is not yet confirmed dead).
 
     A TERMINAL task alone is not enough to self-heal (#4872): a third-party
     ``Task.fail()`` deliberately leaves its claim's owner fields INTACT when it
@@ -125,6 +129,31 @@ def terminal_task_pk(holder: str) -> int | None:
         owner_driving_since=row["owner_driving_since"],
     )
     return pk if holder_confirmed_dead(owner) else None
+
+
+def terminal_holder_task_pk(holder: str) -> int | None:
+    """The exact inverse of :func:`task_holder_id`, iff that ``Task`` already finished — status only.
+
+    The lenient sibling of :func:`terminal_task_pk`: it answers with the Task's
+    terminal status alone, asking nothing about the recorded owner's liveness.
+    That is correct here because every caller of THIS function only decides
+    whether to PARK a refused dispatch (defer it and retry later) — a decision
+    that never releases the claim it inspects. A third-party ``Task.fail()``
+    (#4872) may leave a terminal task's claim fields intact while its owner is
+    not yet confirmed dead; parking over that holder is still safe, because the
+    old run's own heartbeat (or its own eventual release) unwinds the occupancy
+    on its own (#4867) — no self-heal is needed for a park, only for a RELEASE
+    (see :func:`terminal_task_pk`, used by the self-heal in
+    ``core.worktree.occupancy``). Reusing the liveness-gated predicate here
+    instead turned a safe park into a HALT + repair-halt owner question for a
+    terminal task whose owner had not yet been proven dead (#4880).
+    """
+    prefix = "task:"
+    suffix = holder.removeprefix(prefix)
+    if suffix == holder or not suffix.isdigit():
+        return None
+    pk = int(suffix)
+    return pk if Task.objects.filter(pk=pk, status__in=Task.Status.terminal()).exists() else None
 
 
 #: The claim TTL. 30 minutes is 30x the 60s run heartbeat that renews it, so no live
