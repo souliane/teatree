@@ -167,11 +167,8 @@ def _orphan_items() -> list[WorkItem]:
         branch = orphan.get("branch", "?")
         ahead = orphan.get("ahead_count", 0)
         pushed = orphan.get("status", "") == "pushed_orphan"
-        command = (
-            f"t3 teatree pr ensure-pr --branch {branch}"
-            if pushed
-            else f"git -C {repo} push -u origin {branch} && t3 teatree pr ensure-pr --branch {branch}"
-        )
+        ensure_pr = f"t3 teatree pr ensure-pr --repo {repo} --branch {branch}"
+        command = ensure_pr if pushed else f"git -C {repo} push -u origin {branch} && {ensure_pr}"
         items.append(
             WorkItem(
                 state="orphan_branch",
