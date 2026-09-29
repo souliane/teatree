@@ -32,3 +32,26 @@
       args.command: '~ "(git grep|\brg\b|\bgrep\b[^|;&]*\s-(-recursive|[a-zA-Z]*[rR]))[^|;&]*holder_pk(?![^|;&]*claims\.py)"'
     - no_tool_call_matching:
         bash.command: '~ "sed -i|perl -pi"'
+
+- name: architecture_design_unattended_scan_queues_candidates_for_approval
+  scenario: "an unattended batch scanner records each candidate as a pending suggestion and surfaces the batch for user approval, never filing an issue per finding itself"
+  agent_path: skills/architecture-design/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are designing `src/teatree/loop/scanners/dependency_drift.py`, a new
+    scanner the loop runs weekly with nobody watching. Each tick it compares
+    every overlay repo's pinned dependencies with their latest releases and
+    finds the outdated pins. In at most three lines, state what `scan()` does
+    with each outdated pin it finds. Do not run any command; answer in your
+    final message.
+  expect:
+    # Positive: each finding is held as a pending candidate AND the batch goes
+    # to the user for approval. A scan that files one issue per pin says neither.
+    - final_state: '~ "(?is)(?=.*\b(pending|suggestions?|candidates?|queue[sd]?|record(s|ed)?)\b)(?=.*\b(approv\w*|sign[- ]?off|ask(s|ing)?\s+(the\s+)?(user|owner)|(user|owner)(.s)?\s+(go-ahead|decision|consent))).*"'
+    # Negative: no affirmative "files/opens/creates an issue for each pin". A
+    # negated statement ("never opens an issue for each pin") is allowed.
+    - final_state: '~ "(?is)^(?!.*(?<!not )(?<!never )(?<!n.t )\b(opens?|files?|creates?|raises?)\s+(an?|one)\s+(new\s+)?(github\s+|forge\s+)?(issue|ticket)\s+(for|per)\s+(each|every)\b)"'
+    - no_tool_call_matching:
+        bash.command: '~ "gh issue create|glab issue create"'

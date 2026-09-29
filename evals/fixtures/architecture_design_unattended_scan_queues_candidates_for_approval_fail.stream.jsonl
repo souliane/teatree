@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-architecture_design_unattended_scan_queues_candidates_for_approval-fail-20", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "scan() opens a GitHub issue for each outdated pin, deduped by a marker so a re-run is idempotent.\nIt labels the issue deps and assigns the repo owner.\nIt emits a heartbeat after each repo."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
