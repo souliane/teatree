@@ -388,7 +388,7 @@ for repo in "$T3_REPO" ~/workspace/<overlay>/<overlay-repo> ~/workspace/<skills-
 done
 ```
 
-**The `cd` crosses the container boundary as data.** The branch and stash passes read the invocation cwd `deploy/t3` exports (see "`clean-all` prunes the checkout you ran it FROM" above), so each iteration prunes its own `$repo` — provided the repo sits under a root the container mounts. For a checkout outside every mounted root, `deploy/t3` refuses the run rather than letting it resolve against the container's own tree.
+**The `cd` crosses the container boundary as data.** The branch and stash passes read the invocation cwd `deploy/t3` exports (see "`clean-all` prunes the checkout you ran it FROM" above), so each iteration prunes its own `$repo` — provided the repo sits under a root the container mounts. For a checkout outside every mounted root, `deploy/t3` refuses the run rather than letting it resolve against the container's own tree. Commands that take `--repo` instead — `t3 push`, `pr ensure-pr` — still default to `.`, so name the tree from a host shell (`/t3:ship` § 4a).
 
 Worktree pruning, orphan databases, and DSLR snapshots are global to the overlay's DB and only need to run once. Branch and stash pruning needs to run **per repo**.
 
