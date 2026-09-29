@@ -24,7 +24,14 @@ If the target is **PUBLIC**, the body must not contain internal identifiers: cus
 
 Quoting what the public repo already says adds nothing: a checked-in script path, a documented required scope, a public CI log line. Publishing what a live probe measured is the disclosure. An operational ask ("rotate the secret; the nightly job fails on it") is fine; a description of what the credential can do is not.
 
-**Another repo's non-public state.** Never publish a private repo's name, its PR or issue numbers and states (which are green, which have stalled), its file paths or internal ticket ids, or its backlog health. File such a finding in that repo's own tracker, or give it to the owner in session. When the fix lives in the public repo, describe the defect in the public repo's own code, without naming or quoting the private one.
+**Another repo's non-public state.** Never publish:
+
+- a private repo's name;
+- its PR or issue numbers and their states — which are green, which have stalled;
+- its file paths, a failing test's path included, or its internal ticket ids;
+- its backlog health — how much is open, how long its work has stalled.
+
+Scrubbing the name alone is not enough: an unnamed repo's stall duration, PR count or failing test's path is still its state. State the impact generically ("a PR can stay stalled indefinitely"), never as what that repo measured. File such a finding in that repo's own tracker, or give it to the owner in session. When the fix lives in the public repo, describe the defect in the public repo's own code, without naming or quoting the private one.
 
 Detail a finding genuinely needs stays out of the artifact and goes to the owner in session. The posting gate matches a configured banned-term list only, so it cannot see a synthesis such as a credential's measured reach: this judgement is the agent's.
 

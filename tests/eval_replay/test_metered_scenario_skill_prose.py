@@ -246,7 +246,14 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "public_issue_omits_private_repo_state",
         "skills/rules/references/leak-remediation.md",
-        ("non-public state", "backlog health", "without naming or quoting the private one"),
+        (
+            "non-public state",
+            "backlog health",
+            "a failing test's path",
+            "Scrubbing the name alone is not enough",
+            "State the impact generically",
+            "without naming or quoting the private one",
+        ),
     ),
 )
 
