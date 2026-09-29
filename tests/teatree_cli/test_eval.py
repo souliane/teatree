@@ -981,14 +981,17 @@ def _per_scenario_cost_runner(costs: dict[str, float]) -> type:
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestEvalCostRegressionGate:
-    def _record_baseline(self, specs: list[EvalSpec], *, cost_usd: float) -> None:
+    def _record_baseline(self, specs: list[EvalSpec], *, cost_usd: float | dict[str, float]) -> None:
         # A zero-cost baseline is a subscription run (no metered cost) — persist it
         # through the ledger directly, the way such a baseline really lands, rather than
         # the metered api path (whose $0-fail guard would correctly reject it). The
         # specs carry their RESOLVED model (the candidate run resolves per-scenario at
         # dispatch), so the per-scenario cost-regression diff keys on the same model.
+        costs = cost_usd if isinstance(cost_usd, dict) else {spec.name: cost_usd for spec in specs}
         resolved = [with_model(spec, resolve_eval_model(spec)) for spec in specs]
-        results = [evaluate(spec, _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=cost_usd)) for spec in resolved]
+        results = [
+            evaluate(spec, _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=costs[spec.name])) for spec in resolved
+        ]
         record = persist_run(results, model=resolve_eval_model(specs[0]), git_sha="")
         record.mark_baseline()
 
@@ -1029,18 +1032,33 @@ class TestEvalCostRegressionGate:
         assert result.exit_code == 0, result.output
         assert "COST REGRESSED" not in result.output
 
-    def test_zero_baseline_cost_passes_without_div_by_zero(self) -> None:
-        # The baseline run EXISTS but its per-scenario cost is $0 (a subscription
-        # baseline). The relative drift is undefined, so the gate skips the scenario:
-        # exit 0, never a COST REGRESSED, never a divide-by-zero — and NOT the
-        # "no cost baseline" path (a baseline run is present, just zero-cost).
+    def test_an_all_zero_cost_baseline_compares_nothing_and_fails(self) -> None:
+        # The baseline run EXISTS but every per-scenario cost is $0 (a subscription
+        # baseline): each relative drift is undefined, so no scenario was compared.
+        # That is the no-baseline case in another shape — never a green, never a
+        # COST REGRESSED, never a divide-by-zero.
         specs = [_spec("alpha")]
         self._record_baseline(specs, cost_usd=0.0)
 
         result = self._run_candidate(specs, cost_usd=0.50, extra=["--gate-cost-regression"])
 
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
+        assert "compared zero scenarios" in result.output
         assert "COST REGRESSED" not in result.output
+
+    def test_a_zero_cost_scenario_beside_a_metered_one_still_gates_the_metered_one(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        self._record_baseline(specs, cost_usd={"alpha": 0.10, "beta": 0.0})
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ApiInProcessRunner", _per_scenario_cost_runner({"alpha": 0.11, "beta": 5.0})),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "api", "--gate-cost-regression"])
+
+        assert result.exit_code == 0, result.output
+        assert "compared zero scenarios" not in result.output
 
     def test_a_requested_gate_with_no_baseline_fails_rather_than_certifying(self) -> None:
         # The control DB is a docker volume recreated on a rebuild, so "no baseline
