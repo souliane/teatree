@@ -361,6 +361,10 @@ def _handle_codex_review(action: DispatchAction) -> Task | None:
         )
         if ticket.role != Ticket.Role.REVIEWER or has_open_task(ticket, phase=phase):
             return None
+        if (ticket.extra or {}).get("reviewed_sha") != head_sha:
+            # A reused reviewer ticket keeps `defaults=` from the first claim only
+            # (#4897 regression) — re-stamp so claim_head_sha tracks THIS arming head.
+            ticket.merge_extra(set_keys={"reviewed_sha": head_sha})
         marker = CodexReviewMarker.claim(
             slug=slug,
             pr_id=pr_id,

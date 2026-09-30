@@ -49,7 +49,7 @@ class ReviewTarget:
     slug: str
     pr_id: int
     head_sha: str
-    #: The head the arming claim row is keyed on; it stays put when ``head_sha`` rebinds (#4737).
+    #: The head the arming claim row is keyed on; it stays put when ``head_sha`` rebinds.
     claim_head_sha: str
     #: The forge the PR lives on, so a live-head read addresses the right API (#4737).
     host_kind: str = "github"

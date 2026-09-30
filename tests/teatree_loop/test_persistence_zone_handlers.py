@@ -150,6 +150,21 @@ class TestCodexReviewZoneRevived(TestCase):
         assert created == []
         assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=13).exists()
 
+    def test_reused_ticket_restamps_reviewed_sha_to_the_new_arming_head(self) -> None:
+        first = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/15", pr_id=15, head_sha="csha-15-a")),
+        )
+        assert len(first) == 1
+        assert first[0].ticket.extra["reviewed_sha"] == "csha-15-a"
+        first[0].complete()
+        second = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/15", pr_id=15, head_sha="csha-15-b")),
+        )
+        assert len(second) == 1
+        assert second[0].ticket.pk == first[0].ticket.pk
+        second[0].ticket.refresh_from_db()
+        assert second[0].ticket.extra["reviewed_sha"] == "csha-15-b"
+
     def test_task_creation_failure_rolls_back_marker(self) -> None:
         with patch("teatree.loop.persistence.create_phase_task", side_effect=RuntimeError("boom")):
             errors: dict[str, str] = {}

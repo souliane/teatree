@@ -58,3 +58,14 @@ class TestHandleSelfPrReview(TestCase):
         Ticket.objects.create(issue_url=_PR_URL, overlay="acme", role=Ticket.Role.AUTHOR)
         assert handle_self_pr_review(_action(pr_id=92, head_sha="selfsha-92")) is None
         assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=92).exists()
+
+    def test_reused_ticket_restamps_reviewed_sha_to_the_new_arming_head(self) -> None:
+        first = handle_self_pr_review(_action(pr_id=93, head_sha="selfsha-93-a"))
+        assert first is not None
+        assert first.ticket.extra["reviewed_sha"] == "selfsha-93-a"
+        first.complete()
+        second = handle_self_pr_review(_action(pr_id=93, head_sha="selfsha-93-b"))
+        assert second is not None
+        assert second.ticket.pk == first.ticket.pk
+        second.ticket.refresh_from_db()
+        assert second.ticket.extra["reviewed_sha"] == "selfsha-93-b"
