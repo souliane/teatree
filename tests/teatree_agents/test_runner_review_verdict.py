@@ -24,6 +24,7 @@ from teatree.agents.attempt_recorder import record_result_envelope, validate_res
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.core.modelkit.diff_scope import ChangedFileSet
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveChecksRead, LiveHeadRead
+from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX, FailureKind
 from teatree.core.models import (
     AutoReviewDispatch,
@@ -41,7 +42,9 @@ from teatree.core.models.phase_landing import phase_landing_evidence
 from teatree.core.models.review_target import review_target_for_task, verdict_at
 from teatree.core.models.reviewer_identity import assigned_reviewer_identity
 from teatree.loop.dispatch import DispatchAction
+from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.persistence_self_pr_review import handle_self_pr_review
+from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -55,6 +58,7 @@ _SLUG = "souliane/teatree"
 _PR_ID = 4242
 _HEAD = "1f4b9c2ad0e7f61c83b25d90ac174e5f60a1b2c3"
 _OTHER_HEAD = "f89874729bb0a41ce6d5713a2c0e9f38b7a1d4e5"
+_MID_REVIEW_HEAD = "3c7a0e5b92d14f86a1e0b7c3d9f25a6e84b1c0d7"
 
 
 def _reviewing_task_via_dispatch(*, pr_id: int = _PR_ID) -> tuple[Task, AutoReviewDispatch]:
@@ -855,6 +859,25 @@ class TestOnlyTheChecksContradictionLatches(TestCase):
         assert _pending_refusal_questions() == []
 
 
+def _self_pr_review_action(*, pr_id: int = _PR_ID, head_sha: str = _HEAD) -> DispatchAction:
+    pr_url = f"https://github.com/{_SLUG}/pull/{pr_id}"
+    return DispatchAction(
+        kind="agent",
+        zone="t3:reviewer",
+        detail="self-PR review",
+        payload={
+            "slug": _SLUG,
+            "pr_id": pr_id,
+            "head_sha": head_sha,
+            "pr_url": pr_url,
+            "url": pr_url,
+            "variant": "claude:review",
+            "overlay": "teatree",
+            "self_pr": True,
+        },
+    )
+
+
 def _reviewing_task_via_codex_marker(*, pr_id: int = _PR_ID, head_sha: str = _HEAD) -> Task:
     """A reviewing task armed by the codex / self-PR claim rather than the #68 ledger.
 
@@ -864,24 +887,7 @@ def _reviewing_task_via_codex_marker(*, pr_id: int = _PR_ID, head_sha: str = _HE
     there is no dispatch row to read, which is exactly why a latch written against that
     table alone could not see this run.
     """
-    pr_url = f"https://github.com/{_SLUG}/pull/{pr_id}"
-    task = handle_self_pr_review(
-        DispatchAction(
-            kind="agent",
-            zone="t3:reviewer",
-            detail="self-PR review",
-            payload={
-                "slug": _SLUG,
-                "pr_id": pr_id,
-                "head_sha": head_sha,
-                "pr_url": pr_url,
-                "url": pr_url,
-                "variant": "claude:review",
-                "overlay": "teatree",
-                "self_pr": True,
-            },
-        )
-    )
+    task = handle_self_pr_review(_self_pr_review_action(pr_id=pr_id, head_sha=head_sha))
     assert task is not None
     assert not AutoReviewDispatch.objects.filter(slug=_SLUG, pr_id=pr_id).exists()
     task.claim(claimed_by="headless-reviewer")
@@ -1265,3 +1271,128 @@ class TestDispatchAssignsTheRecordedIdentity(TestCase):
         assert MRReviewLock.objects.get(slug=_SLUG, pr_id=_PR_ID).state == MRReviewLock.State.REVIEW_DISPATCHED
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+
+
+class TestAMovedHeadContradictionLatchesTheClaimHead(TestCase):
+    """A spent claim at A whose verdict binds to the live head B still latches (#4737, #4530).
+
+    The verdict and its live checks read belong to B, the tree the reviewer judged. The claim
+    row, its refusal latch and its page belong to A, the head the run was armed for. Keying the
+    latch on B looked up a claim that does not exist, so the contradiction never latched.
+    """
+
+    def _spent_dispatch_task(self) -> tuple[Task, AutoReviewDispatch]:
+        dispatch = _exhaust_dispatch()
+        task = task_of(dispatch)
+        task.claim(claimed_by="headless-reviewer")
+        return task, dispatch
+
+    def test_the_spent_dispatch_claim_latches_refused(self) -> None:
+        task, dispatch = self._spent_dispatch_task()
+
+        with _live_head(_OTHER_HEAD):
+            attempt = record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert "CONFIRMS red" in attempt.error
+        assert not ReviewVerdict.objects.filter(slug=_SLUG, pr_id=_PR_ID).exists()
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.REFUSED
+
+    def test_the_owner_is_paged_once_under_the_claim_head_naming_the_red_head(self) -> None:
+        task, _ = self._spent_dispatch_task()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        questions = _pending_refusal_questions()
+        assert len(questions) == 1, [question.dedupe_marker for question in questions]
+        assert questions[0].dedupe_marker == f"review-refusal:{_SLUG}#{_PR_ID}@{_HEAD[:12]}"
+        assert _OTHER_HEAD[:8] in questions[0].question
+
+    def test_the_spent_codex_marker_latches_refused(self) -> None:
+        task = _codex_task_at_its_last_attempt()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_HEAD)
+        assert marker.state == CodexReviewMarker.State.REFUSED
+        assert len(_pending_refusal_questions()) == 1
+
+    def test_the_live_checks_are_still_read_at_the_head_the_verdict_binds_to(self) -> None:
+        task, _ = self._spent_dispatch_task()
+        seen: list[tuple[str, str]] = []
+
+        def probe(*, slug: str, head_sha: str) -> LiveChecksRead:
+            seen.append((slug, head_sha))
+            return LiveChecksRead(status="failed", detail="failing workflow run(s): test (3.13)")
+
+        with _live_head(_OTHER_HEAD), patch.object(review_envelope_recorder, "live_checks_at", probe):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        assert seen == [(_SLUG, _OTHER_HEAD)]
+
+    def test_a_claim_with_budget_left_neither_latches_nor_pages(self) -> None:
+        task, dispatch = _reviewing_task_via_dispatch()
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        dispatch.refresh_from_db()
+        assert dispatch.state == AutoReviewDispatch.State.DISPATCHED
+        assert _pending_refusal_questions() == []
+
+
+class TestAReusedReviewerTicketReviewsEachNewHeadAfresh(TestCase):
+    """One reviewer ticket per PR is re-armed at every head, and must not carry the last head's review (#959).
+
+    The first review lands merge_safe at ``_HEAD`` and the forge caches the approval; the PR then
+    moves to ``_OTHER_HEAD`` and the self-PR handler re-arms the SAME ticket.
+    """
+
+    def setUp(self) -> None:
+        first = _reviewing_task_via_codex_marker(head_sha=_HEAD)
+        with _live_head(_HEAD):
+            record_result_envelope(first, _verdict_envelope(reviewed_sha=_HEAD), phase="reviewing")
+        first.ticket.merge_extra(set_keys={"last_review_state": ReviewState.APPROVED.value})
+        self.ticket = first.ticket
+
+    def test_the_old_heads_approval_does_not_discharge_the_new_head(self) -> None:
+        assert handle_self_pr_review(_self_pr_review_action(head_sha=_OTHER_HEAD)) is not None
+
+        self.ticket.refresh_from_db()
+        assert not _already_reviewed_at_head(self.ticket, _OTHER_HEAD)
+        assert _discharged_sha(self.ticket) == ""
+
+    def test_re_arming_the_reviewed_head_keeps_its_review(self) -> None:
+        assert handle_self_pr_review(_self_pr_review_action(head_sha=_HEAD)) is None
+
+        self.ticket.refresh_from_db()
+        assert _already_reviewed_at_head(self.ticket, _HEAD)
+        assert _discharged_sha(self.ticket) == _HEAD
+
+    def test_a_contradiction_at_the_new_head_latches_the_new_heads_claim(self) -> None:
+        task = _codex_task_at_its_last_attempt(head_sha=_OTHER_HEAD)
+
+        with _live_head(_OTHER_HEAD):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_OTHER_HEAD), phase="reviewing")
+
+        marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_OTHER_HEAD)
+        assert marker.state == CodexReviewMarker.State.REFUSED
+        assert [question.dedupe_marker for question in _pending_refusal_questions()] == [
+            f"review-refusal:{_SLUG}#{_PR_ID}@{_OTHER_HEAD[:12]}"
+        ]
+
+    def test_a_contradiction_after_a_mid_review_push_latches_the_arming_heads_claim(self) -> None:
+        task = _codex_task_at_its_last_attempt(head_sha=_OTHER_HEAD)
+
+        with _live_head(_MID_REVIEW_HEAD):
+            record_result_envelope(task, _contradiction_envelope(reviewed_sha=_MID_REVIEW_HEAD), phase="reviewing")
+
+        marker = CodexReviewMarker.objects.get(slug=_SLUG, pr_id=_PR_ID, head_sha=_OTHER_HEAD)
+        assert marker.state == CodexReviewMarker.State.REFUSED
+        questions = _pending_refusal_questions()
+        assert [question.dedupe_marker for question in questions] == [
+            f"review-refusal:{_SLUG}#{_PR_ID}@{_OTHER_HEAD[:12]}"
+        ]
+        assert _MID_REVIEW_HEAD[:8] in questions[0].question

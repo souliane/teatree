@@ -57,6 +57,7 @@ def handle_self_pr_review(action: DispatchAction) -> Task | None:
         )
         if marker is None:
             return None
+        ticket.rearm_review_at(head_sha)
         return create_phase_task(
             ticket,
             phase="reviewing",
