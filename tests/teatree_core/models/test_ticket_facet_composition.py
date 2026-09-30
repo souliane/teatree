@@ -55,6 +55,7 @@ class TestStatusFacetCohesionSplit:
             "has_active_work",
             "newest_task_was_cancelled",
             "is_settled",
+            "admits_review",
             "has_completed_phase",
             "phase_producing_state",
             "may_expedite",

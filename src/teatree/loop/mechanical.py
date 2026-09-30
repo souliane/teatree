@@ -5,11 +5,13 @@ Called by ``tick._execute_mechanical`` after dispatch, before statusline render.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, cast
 
+from django.db import transaction
 from django_fsm import can_proceed
 
+from teatree.core.models.errors import LeaseLostError
 from teatree.core.review.author_trust import classify_author
 from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.loop.dispatch import ActionPayload
@@ -121,24 +123,25 @@ def reopen_ticket(payload: ActionPayload) -> None:
 
 
 def reviewer_task_orphaned(payload: ActionPayload) -> None:
-    """Complete every open reviewing task on the orphaned reviewer ticket (#998).
+    """Close every PENDING reviewing task on a reviewer ticket no review is owed on (#998, #4901).
 
     The scanner emits this signal on either of two proofs, never on mere
     absence from the reviewer-assignment scan: ``host.get_pr_open_state``
-    confirmed the PR is genuinely MERGED or CLOSED (#1074), or the local FSM
-    already reached a terminal state (#1431). Without this sweep the PENDING
-    task lingers forever, surfacing on every ``pending-spawn`` and dispatching
-    a reviewer sub-agent for nothing.
+    confirmed the PR is genuinely MERGED or CLOSED (#1074), or the ticket sits
+    in a settled state that admits no review (#1431). Without this sweep the
+    PENDING task lingers forever, surfacing on every ``pending-spawn`` and
+    dispatching a reviewer sub-agent for nothing.
 
-    The two grounds are NOT interchangeable in a log (#3910): a terminal ticket
-    on a still-OPEN PR is a correct reap, so crediting it to the forge-state
-    proof reads as a forge bug and sends the operator hunting a phantom. The
-    signal carries the ground it actually used in ``payload["reason"]``.
+    The two grounds are NOT interchangeable in a log (#3910): a local reap on a
+    still-OPEN PR is correct, so crediting it to the forge-state proof reads as
+    a forge bug and sends the operator hunting a phantom. The signal carries
+    the ground it actually used in ``payload["reason"]``.
 
     The handler is intentionally narrow: it operates by ticket id and only
-    completes tasks in ``phase=reviewing`` with non-terminal status. Other
-    tasks on the same ticket (or other phases) are untouched. Best-effort —
-    a missing ticket or already-completed tasks no-op silently.
+    completes PENDING tasks in ``phase=reviewing``. A CLAIMED task is a run in
+    flight and belongs to the claim sweeps (#4901). Other tasks on the same
+    ticket (or other phases) are untouched. Best-effort — a missing ticket or
+    already-completed tasks no-op silently.
     """
     from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
 
@@ -150,17 +153,15 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
         ticket = ticket_model.objects.get(pk=ticket_id)
     except ticket_model.DoesNotExist:
         return
-    reason = payload.get("reason", "orphaned")
-    completed = _complete_open_reviewing_tasks(
-        ticket, skip_reason=f"the reviewing task was orphaned ({reason}), so no review ran"
-    )
+    reason = payload.get("reason", "no reason given")
+    completed = _complete_tasks(_pending_reviewing_tasks(ticket), skip_reason=f"no review is owed ({reason})")
     if completed:
         logger.info(
-            "Auto-completed %d orphaned reviewing task(s) on ticket %s (%s: %s)",
+            "Closed %d reviewing task(s) on ticket %s, no review owed (%s: %s)",
             completed,
             ticket_id,
             payload.get("url", "?"),
-            payload.get("reason", "orphaned"),
+            reason,
         )
 
 
@@ -175,9 +176,9 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
     only reaps MERGED/CLOSED PRs) lingers forever and re-dispatches a
     self-review every ``pending-spawn``.
 
-    Narrow and best-effort, mirroring :func:`reviewer_task_orphaned`: by
-    ticket id, only ``phase=reviewing`` non-terminal tasks; a missing
-    ticket no-ops silently.
+    Narrow and best-effort: by ticket id, only ``phase=reviewing``
+    non-terminal tasks, CLAIMED included (:func:`reviewer_task_orphaned`
+    closes PENDING only); a missing ticket no-ops silently.
 
     Narrower than :func:`reviewer_task_orphaned` in one way (#3910): a task the
     #68 auto-review dispatch armed is skipped. That premise — own MR means a
@@ -228,12 +229,14 @@ def _open_reviewing_tasks(ticket: object) -> "QuerySet":
     return Task.objects.pending_in_phase("reviewing").filter(ticket=ticket)
 
 
-def _complete_open_reviewing_tasks(ticket: object, *, skip_reason: str) -> int:
-    """Complete every non-terminal ``phase=reviewing`` task on *ticket*; return the count."""
-    return _complete_tasks(_open_reviewing_tasks(ticket), skip_reason=skip_reason)
+def _pending_reviewing_tasks(ticket: object) -> "QuerySet":
+    """The PENDING ``phase=reviewing`` tasks on *ticket* — the ones no run holds."""
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    return _open_reviewing_tasks(ticket).filter(status=Task.Status.PENDING)
 
 
-def _complete_tasks(tasks: "QuerySet", *, skip_reason: str) -> int:
+def _complete_tasks(tasks: "Iterable[Task]", *, skip_reason: str) -> int:
     """Complete each task, recording the attempt that says no review ran (#4308).
 
     A bare ``complete()`` leaves a reviewing row with ZERO attempts, which reads exactly
@@ -241,10 +244,18 @@ def _complete_tasks(tasks: "QuerySet", *, skip_reason: str) -> int:
     reviewed every time this skip fired. The attempt is exit-0 because the skip is
     deliberate (the PR is dead, or self-authored on a lane with no self-review): failing it
     would feed the auto-repair sweep a "re-do this" signal for work nobody owes.
+
+    A task claimed after it was read fails the claim-generation check and is skipped with
+    its attempt rolled back, so the run that took it keeps it (#4901).
     """
     completed = 0
     for task in tasks:
-        task.complete_with_attempt(result={"summary": f"no verdict reached: {skip_reason}"})
+        try:
+            with transaction.atomic():
+                task.complete_with_attempt(result={"summary": f"no verdict reached: {skip_reason}"})
+        except LeaseLostError:
+            logger.info("Left reviewing task %s to the run that claimed it after the read", task.pk)
+            continue
         completed += 1
     return completed
 
