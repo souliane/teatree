@@ -7,6 +7,8 @@ per measurement window rather than once per tick, and that it is VISIBLE when th
 moves — an adjustment nobody can see is indistinguishable from a knob nobody turned.
 """
 
+import contextlib
+from collections.abc import Iterator
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -16,6 +18,8 @@ from django.utils import timezone
 
 from teatree.core.admission_governor import MachineSignal, QuotaSignal
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.intake_concurrency import IntakeConcurrencyScanner
 from teatree.utils.ram_scope import RamHeadroom
@@ -47,19 +51,15 @@ def _quota(weekly: float = 0.0) -> QuotaSignal:
     )
 
 
-def _scan(
-    scanner: IntakeConcurrencyScanner,
-    *,
-    available_mib: int | None,
-    cores: int = 8,
-    load1: float = 0.0,
-    weekly: float = 0.0,
-) -> list[ScanSignal]:
-    """One window against a stated box.
+@contextlib.contextmanager
+def _pinned_box(
+    *, available_mib: int | None, cores: int = 8, load1: float = 0.0, weekly: float = 0.0
+) -> Iterator[None]:
+    """Pin every reading of one window.
 
-    Every reading is pinned: the ambient load average and the account quota cache are
-    live properties of the host, so leaving either unstubbed would make the cases below
-    pass or fail on whatever else the machine happens to be doing.
+    The ambient load average and the account quota cache are live properties of the
+    host, so leaving either unstubbed would make the cases below pass or fail on
+    whatever else the machine happens to be doing.
     """
     with (
         patch(
@@ -75,6 +75,19 @@ def _scan(
         ),
         patch(f"{_MODULE}.read_quota_signal", return_value=_quota(weekly)),
     ):
+        yield
+
+
+def _scan(
+    scanner: IntakeConcurrencyScanner,
+    *,
+    available_mib: int | None,
+    cores: int = 8,
+    load1: float = 0.0,
+    weekly: float = 0.0,
+) -> list[ScanSignal]:
+    """One window against a stated box."""
+    with _pinned_box(available_mib=available_mib, cores=cores, load1=load1, weekly=weekly):
         return list(scanner.scan())
 
 
@@ -160,16 +173,24 @@ class TestIntakeSeesTheTokenRunwayNotOnlyTheBox(TestCase):
         assert "box load 2.5 on 8 cores" in signal.summary
 
 
-class TestNeverCrashesTheTick(TestCase):
-    """A sizing job that dies takes the whole resource loop's tick with it."""
+class TestAFailedWindowIsReportedNotSilent(TestCase):
+    """A sizing job that fails reaches the tick's error surface instead of reading as a quiet window."""
 
-    def test_an_unloadable_marker_is_survived(self) -> None:
-        with patch.object(ResourcePressureMarker, "load", side_effect=RuntimeError("db gone")):
-            assert _scan(_scanner(), available_mib=_idle_mib()) == []
+    def test_an_unloadable_marker_reaches_the_tick_error_surface(self) -> None:
+        with (
+            patch.object(ResourcePressureMarker, "load", side_effect=RuntimeError("db gone")),
+            _pinned_box(available_mib=_idle_mib()),
+        ):
+            _, signals, error = _run_job(_ScannerJob(scanner=_scanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: db gone")
 
-    def test_a_failed_write_is_survived(self) -> None:
-        with patch.object(ResourcePressureMarker, "record_adaptive_concurrency", side_effect=RuntimeError("locked")):
-            assert _scan(_scanner(), available_mib=_idle_mib()) == []
+    def test_a_failed_write_reaches_the_tick_error_surface(self) -> None:
+        with (
+            patch.object(ResourcePressureMarker, "record_adaptive_concurrency", side_effect=RuntimeError("locked")),
+            _pinned_box(available_mib=_idle_mib()),
+        ):
+            _, signals, error = _run_job(_ScannerJob(scanner=_scanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: locked")
 
 
 class TestVisibility(TestCase):

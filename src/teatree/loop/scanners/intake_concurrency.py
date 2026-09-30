@@ -70,16 +70,13 @@ class IntakeConcurrencyScanner:
             ResourcePressureMarker,
         )
 
-        try:
-            marker = ResourcePressureMarker.load()
-        except Exception:
-            logger.exception("intake_concurrency: could not load marker — skipping tick")
-            return []
+        marker = ResourcePressureMarker.load()
         if self._cadence_blocks(marker):
             return []
         decision = self._decide(marker)
-        if decision is None or not _persist(marker, decision.concurrency):
+        if decision is None:
             return []
+        marker.record_adaptive_concurrency(decision.concurrency)
         return self._signals(decision)
 
     def _decide(self, marker: "ResourcePressureMarker") -> _Decision | None:
@@ -147,15 +144,6 @@ class IntakeConcurrencyScanner:
                 },
             )
         ]
-
-
-def _persist(marker: "ResourcePressureMarker", concurrency: int) -> bool:
-    try:
-        marker.record_adaptive_concurrency(concurrency)
-    except Exception:
-        logger.exception("intake_concurrency: failed to persist the adapted concurrency")
-        return False
-    return True
 
 
 __all__ = ["IntakeConcurrencyScanner"]

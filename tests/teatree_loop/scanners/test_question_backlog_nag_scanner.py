@@ -11,7 +11,8 @@ from unittest.mock import patch
 from django.db import OperationalError
 from django.test import TestCase
 
-from teatree.loop.domain_jobs import _global_dispatch_jobs
+from teatree.loop.domain_jobs import _global_dispatch_jobs, _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.question_backlog_nag import QuestionBacklogNagScanner
 
 
@@ -34,12 +35,10 @@ class TestQuestionBacklogNagScanner(TestCase):
         ):
             assert QuestionBacklogNagScanner().scan() == []
 
-    def test_unexpected_error_never_raises(self) -> None:
-        with patch(
-            "teatree.core.notify_question_drains.resurface_question_backlog",
-            side_effect=RuntimeError("boom"),
-        ):
-            assert QuestionBacklogNagScanner().scan() == []
+    def test_a_failed_resurface_reaches_the_tick_error_surface(self) -> None:
+        with patch("teatree.core.notify_question_drains.resurface_question_backlog", side_effect=RuntimeError("boom")):
+            _, signals, error = _run_job(_ScannerJob(scanner=QuestionBacklogNagScanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: boom")
 
 
 class TestNagRunsOnEveryTick(TestCase):

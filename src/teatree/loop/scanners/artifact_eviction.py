@@ -14,14 +14,11 @@ the destructive ladder; keeping the action as its sole writer is what makes a si
 nothing acted on re-fire rather than silently consume its window.
 """
 
-import logging
 from dataclasses import dataclass
 
 from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -44,11 +41,7 @@ class ArtifactEvictionScanner:
             ResourcePressureMarker,
         )
 
-        try:
-            marker = ResourcePressureMarker.load()
-        except Exception:
-            logger.exception("artifact_eviction: could not load marker — skipping tick")
-            return []
+        marker = ResourcePressureMarker.load()
         if self._cadence_blocks(marker):
             return []
         return [

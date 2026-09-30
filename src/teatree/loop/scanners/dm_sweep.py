@@ -57,9 +57,6 @@ class DmSweepScanner:
         except (OperationalError, ProgrammingError):
             logger.info("DmSweepScanner: tables unavailable (DB not migrated yet) — skipping")
             return []
-        except Exception:
-            logger.exception("DmSweepScanner sweep failed")
-            return []
         if result.silent:
             return []
         return [
