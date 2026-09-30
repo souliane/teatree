@@ -1,3 +1,5 @@
+# test-path: cross-cutting — asserts a skills/ship doc invariant; the
+# external_delivery import is only the lease TTL constant, not the unit under test.
 """A PR the no-orphan hook opens must land on its ticket's ``PullRequest`` ledger.
 
 The hook resolves the owning ticket only through a ``Worktree`` row on the branch,
