@@ -22,13 +22,13 @@ from teatree.cli.review.audit import (
     notify_review_after_receipt,
     record_note_claim,
     verify_approval_landed,
-    verify_bulk_publish,
     verify_discussion_resolved,
     verify_issue_note_deleted,
     verify_note_deleted,
     verify_note_landed,
     verify_unapproval_landed,
 )
+from teatree.cli.review.bulk_publish import BulkPublishBaseline
 from teatree.cli.review.shape_gate import fetch_mr_author
 
 _HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
@@ -197,9 +197,12 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
 def publish_draft_notes_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str) -> tuple[str, int]:
     """The pre-gate-passed publish body of :meth:`ReviewService.publish_draft_notes`."""
     api = service._get_api()
+    baseline = BulkPublishBaseline.read(api, encoded, mr)
+    if not baseline.pending_drafts:
+        return f"Nothing published: no draft notes are pending on {repo}!{mr}", 1
     status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
     if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
-        verify_bulk_publish(api, encoded, mr)
+        baseline.verify_published(api, encoded, mr)
         record_note_claim(service._resolve_base_url, repo, mr, "bulk_publish", endpoint="draft_notes/bulk_publish")
         notify_review_after_receipt(
             service._resolve_base_url,
