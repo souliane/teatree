@@ -4,9 +4,10 @@ Split out of ``teatree.core.worktree.occupancy`` (the ticket-level orchestration
 ``occupy_ticket_checkout``, ``refuse_if_ticket_checkout_occupied``): that module lives
 under ``teatree.core``, which ``teatree.core.models`` may never import (``tach``'s DAG
 would otherwise gain a cycle, since this claim is itself a ``Worktree``/``Task`` field
-mutation that already depends on ``core.models``). The two REAL terminal-status writers
-— ``task_claim.complete_claimed()`` and ``Task.fail()`` — need to release a claim in the
-SAME transaction as their status write, and only ``core.models`` can host that without
+mutation that already depends on ``core.models``). A holder's own terminal write —
+``task_claim.complete_claimed()`` or ``task_claim.fail(by_holder=True)`` — releases its claim
+in the SAME transaction as the status write, and a third-party ``task_claim.fail`` releases
+only once the holder is confirmed dead; only ``core.models`` can host that without
 crossing the boundary. ``core.worktree.occupancy`` imports the primitives back from here
 (an allowed ``core`` → ``core.models`` edge) for its ticket-level checkout orchestration.
 
@@ -84,34 +85,21 @@ def task_holder_id(task: Task) -> str:
 
 
 def terminal_task_pk(holder: str) -> int | None:
-    """The exact inverse of :func:`task_holder_id`, iff that ``Task`` already finished AND is safe to self-heal.
+    """The exact inverse of :func:`task_holder_id`, iff that ``Task`` is terminal AND its claim is safe to release.
 
     ``None`` for a non-``task:`` holder (an operator's ``workspace ticket`` claim
-    carries a free-form id), a malformed suffix, or a holder naming a Task that is
-    still active. Reads the Task's status fresh from the DB rather than inferring
-    it, preserving the occupancy module's 'advisory, only advisory' invariant.
+    carries a free-form id), a malformed suffix, a Task that is still active, or a
+    terminal Task whose recorded owner may still be live — a third-party
+    ``task_claim.fail`` keeps a live holder's claim (#4872), so terminal status alone
+    is no proof. Safe means no ``owner_pid`` is recorded (a legacy row, or
+    ``reap_stale_claims``' direct CAS, which leaves the Worktree side to this
+    self-heal) or :func:`~teatree.core.claim_liveness.holder_confirmed_dead` proves
+    the owner gone. Reads the status fresh from the DB, preserving the occupancy
+    module's 'advisory, only advisory' invariant.
 
-    Used ONLY by the self-heal in ``core.worktree.occupancy``
-    (:func:`_release_if_finished_task`), which then RELEASES the claim this answers
-    for. ``run_agent``'s deferred-park fallback (#4867) uses the lenient sibling
-    :func:`terminal_holder_task_pk` instead — that decision never releases
-    anything, so it must not share this function's liveness gate (#4880: reusing
-    this stricter predicate there turned a safe park into a HALT for a terminal
-    task whose owner is not yet confirmed dead).
-
-    A TERMINAL task alone is not enough to self-heal (#4872): a third-party
-    ``Task.fail()`` deliberately leaves its claim's owner fields INTACT when it
-    cannot prove the recorded owner dead, precisely so this status-only read does
-    not then release that withheld claim out from under a still-live holder on the
-    very next dispatch. So the row is only returned when its recorded owner is
-    CONFIRMED gone — no ``owner_pid`` is recorded (a legacy pre-#4164 row, or
-    ``reap_stale_claims``' own direct CAS write, which blanks the Task row's claim
-    fields but never calls ``release_task_occupancy``, relying on THIS self-heal to
-    free the Worktree side later) or
-    :func:`~teatree.core.claim_liveness.holder_confirmed_dead` positively proves
-    the owner process is dead. Otherwise the terminal status is withheld as
-    evidence, the same "can only ever WITHHOLD, never widen" bias
-    ``owner_is_executing`` already carries.
+    A release needs this liveness gate; a park never releases, so it uses
+    :func:`terminal_holder_task_pk`. The only caller is the RELEASING self-heal,
+    ``core.worktree.occupancy._release_if_finished_task``.
     """
     prefix = "task:"
     suffix = holder.removeprefix(prefix)
@@ -132,21 +120,13 @@ def terminal_task_pk(holder: str) -> int | None:
 
 
 def terminal_holder_task_pk(holder: str) -> int | None:
-    """The exact inverse of :func:`task_holder_id`, iff that ``Task`` already finished — status only.
+    """The exact inverse of :func:`task_holder_id`, iff that ``Task`` is terminal — status only.
 
-    The lenient sibling of :func:`terminal_task_pk`: it answers with the Task's
-    terminal status alone, asking nothing about the recorded owner's liveness.
-    That is correct here because every caller of THIS function only decides
-    whether to PARK a refused dispatch (defer it and retry later) — a decision
-    that never releases the claim it inspects. A third-party ``Task.fail()``
-    (#4872) may leave a terminal task's claim fields intact while its owner is
-    not yet confirmed dead; parking over that holder is still safe, because the
-    old run's own heartbeat (or its own eventual release) unwinds the occupancy
-    on its own (#4867) — no self-heal is needed for a park, only for a RELEASE
-    (see :func:`terminal_task_pk`, used by the self-heal in
-    ``core.worktree.occupancy``). Reusing the liveness-gated predicate here
-    instead turned a safe park into a HALT + repair-halt owner question for a
-    terminal task whose owner had not yet been proven dead (#4880).
+    The lenient sibling of :func:`terminal_task_pk`, for a decision that PARKS a
+    refused dispatch. A park never releases the claim it inspects, so it takes no
+    liveness gate: even over a live holder whose claim a third-party ``task_claim.fail``
+    kept (#4872), the old run's heartbeat abort or its lease lapse frees the checkout
+    on its own (#4867). A release needs :func:`terminal_task_pk`.
     """
     prefix = "task:"
     suffix = holder.removeprefix(prefix)
@@ -247,13 +227,14 @@ def release(worktree: Worktree, *, holder: str, holder_session: str = "") -> boo
 def release_task_occupancy(task: Task) -> bool:
     """Release *task*'s occupancy claim on its ticket's checkout, iff it holds one (#4867).
 
-    The single call the two REAL terminal-status writers share — ``complete_claimed()``
-    and ``Task.fail()`` — so a finished task's claim is gone the instant its status
-    lands, in the SAME transaction, rather than whenever (or never, on a process kill
-    between the two) ``occupy_ticket_checkout``'s ``finally`` next gets to unwind.
+    Runs in the SAME transaction as the terminal status write, so a process kill
+    before ``occupy_ticket_checkout``'s ``finally`` cannot strand the claim. The
+    callers are a holder's own report (``complete_claimed()``, ``fail(by_holder=True)``)
+    and a third-party ``fail`` of a confirmed-dead holder; any other third-party fail
+    keeps the claim for the holder's own unwind (#4872).
     Callers MUST run this BEFORE blanking ``claimed_by_session``: :func:`release`'s
     CAS matches on that exact session value, so calling this after clearing the claim
-    would silently no-op and reproduce the bug.
+    would silently no-op.
     """
     path = dispatch_worktree_path(task.ticket)
     worktree = _worktree_at(task.ticket, path) if path else None

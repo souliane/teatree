@@ -310,7 +310,7 @@ def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
     third-party caller silently release a claim it has no evidence is dead. ``True`` is a
     SELF-report: the claim holder's own process reporting its own terminal result, which
     releases the occupancy claim unconditionally. ``False`` is a THIRD-PARTY fail — an
-    operator cancel, ``ticket.rework()`` — which releases the claim ONLY once
+    operator cancel, ``ticket.rework()``, the MCP ``task_fail`` tool — which releases the claim ONLY once
     :func:`~teatree.core.claim_liveness.holder_confirmed_dead` positively proves the recorded
     owner is gone; otherwise the FAILED row's full claim record (``claimed_by``,
     ``claimed_by_session``, ``owner_pid``, ``owner_pid_namespace``, ``owner_driving_since``) is
@@ -350,7 +350,7 @@ def fail_claimed(task: "Task", *, reason: str) -> None:
     repair-loop budget and terminalizes work that is still running. Always a
     SELF-report (``by_holder=True``): the only caller is a worker terminalizing the
     claim IT holds, guarded by the same claim-generation check ``complete_claimed``
-    uses. A third-party fail (an operator cancel, ``ticket.rework()``) calls
+    uses. A third-party fail (an operator cancel, ``ticket.rework()``, MCP ``task_fail``) calls
     ``Task.fail(by_holder=False)`` directly instead — it has no claim generation of
     its own to guard, and #4872 is precisely that it must NOT release a claim it
     does not hold evidence is dead. ``reap_stale_claims`` (the lease-expiry sweep)
