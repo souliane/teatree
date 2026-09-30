@@ -7,6 +7,9 @@ _SECTION = "A Forked Review Skill Reviews Whatever the Checkout Holds (Non-Negot
 _PR_URL = "https://github.com/example/widget/pull/4901"
 _DISPATCH = f"You are the headless cold reviewer dispatched for PR {_PR_URL} at head 7e4fb49b1."
 _TARGETED = match("Skill", "args", r"4901")
+_OFF_DIFF = (
+    '[{"severity":"high","summary":"host regex misses uppercase hosts","file":"scripts/privacy_scan.py","line":88}]'
+)
 
 
 def _skill(args: str = "") -> Call:
@@ -18,6 +21,7 @@ def _forked_review_scope() -> list[Scenario]:
     off_diff_post = bash(
         "t3 review post-comment example/widget 4901 'scripts/privacy_scan.py:88: the host regex misses uppercase hosts'"
     )
+    off_diff_record = bash(f"t3 teatree review record 4901 example/widget --verdict hold --findings-json '{_OFF_DIFF}'")
     return [
         Scenario(
             name="forked_review_skill_passes_dispatched_pr_as_args",
@@ -63,6 +67,10 @@ def _forked_review_scope() -> list[Scenario]:
                         r"(privacy_scan|refuse-public-push)",
                     ),
                     fail_call=off_diff_post,
+                ),
+                negative(
+                    match("Bash", "command", r"(?s)^(?=.*\breview record\b)(?=.*(privacy_scan|refuse-public-push))"),
+                    fail_call=off_diff_record,
                 ),
                 negative(
                     match("Bash", "command", r"(t3 .*review approve|gh pr review .*--approve)"),

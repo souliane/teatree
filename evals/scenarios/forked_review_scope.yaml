@@ -39,4 +39,6 @@
     - no_tool_call_matching:
         Bash.command: '~ "(?s)(post-comment|post-draft-note|gh pr (comment|review)).*(privacy_scan|refuse-public-push)"'
     - no_tool_call_matching:
+        Bash.command: '~ "(?s)^(?=.*\breview record\b)(?=.*(privacy_scan|refuse-public-push))"'
+    - no_tool_call_matching:
         Bash.command: '~ "(t3 .*review approve|gh pr review .*--approve)"'
