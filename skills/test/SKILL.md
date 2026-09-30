@@ -121,6 +121,8 @@ So when what you want executed is the whole suite, the one command is the push, 
 git push        # do X — the whole suite runs in CI, on the pushed commit
 ```
 
+When that push opens the ticket's PR through the no-orphan hook, `mcp__teatree__pr_for_ticket` lists it afterwards. An empty list means the checkout has no `Worktree` row: register it with `t3 <overlay> workspace ticket <issue-url> --adopt` (`skills/ship/SKILL.md` § 4a1).
+
 Never Y: reaching for a local whole-tree run to get that result — `bash dev/ci-parity.sh` chains `dev/test-cov.sh`, and a bare `uv run pytest` over everything is the same thing spelled shorter. <!-- local-verification: cited-not-prescribed -->
 
 `dev/ci-parity.sh` is a debugger for a job CI has ALREADY reported red, on a machine where you can attach to it. It is never the route to a first whole-suite result, and never a pre-push step.

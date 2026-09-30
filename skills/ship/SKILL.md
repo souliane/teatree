@@ -264,6 +264,10 @@ A bare `git push` is fine only in a venue whose credential helper you have alrea
 
 **A public-repo privacy refusal is judged per commit, never on the tip.** The `refuse-public-push-with-leak` pre-push gate scans every commit the remote does not have yet — each one's own patch and message — so a fix-up commit that deletes or annotates the flagged line does not clear it; the refusal labels such a finding `(earlier than the pushed tip)`. Cut a fresh branch from the remote's tip and re-create the unpushed commits on it with generic placeholders (one combined commit is fine): that fast-forwards the remote, so nothing pushed or reviewed is rewritten. A deliberate fake value (a test-fixture email) carries the inline `privacy-scan:allow <reason>` marker in the commit that introduces it.
 
+### 4a1. A Hook-Opened PR Must Be on Its Ticket's Ledger (Non-Negotiable)
+
+Before a branch's first push, its checkout must be a `Worktree` row on the ticket: register a hand-made one with `t3 <overlay> workspace ticket <issue-url> --adopt`, run inside it. Once the PR opens, `mcp__teatree__pr_for_ticket` must list it, or shipping IGNOREs the ticket and the rubric gate never binds. Full text: `skills/ship/references/hook-opened-pr-ledger.md`.
+
 ### 4b. Review Gate (Non-Negotiable)
 
 Before creating a PR, the `pr create` command automatically checks the session gate:
