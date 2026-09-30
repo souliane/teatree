@@ -255,6 +255,24 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "without naming or quoting the private one",
         ),
     ),
+    (
+        "forked_review_skill_passes_dispatched_pr_as_args",
+        "skills/review/SKILL.md",
+        ("runs forked", "no ticket, PR or branch context", 'args="<pr-url>"', "even when the brief only says"),
+    ),
+    (
+        "forked_review_off_target_findings_not_recorded",
+        "skills/review/SKILL.md",
+        (
+            "changed-file set",
+            "--name-only",
+            "names the in-diff change that causes it",
+            "reviewed the wrong target",
+            "re-run it with `args`",
+            "review the diff yourself",
+            "no review happened",
+        ),
+    ),
 )
 
 
