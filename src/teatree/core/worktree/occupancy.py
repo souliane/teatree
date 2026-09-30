@@ -13,9 +13,9 @@ lost work silently.
 The worktree is the contended resource, so the claim lives on the ``Worktree``
 row. The CAS primitives (:func:`acquire`, :func:`release`, :func:`occupancy_holder`,
 :func:`task_holder_id`) live in :mod:`teatree.core.models.worktree_occupancy` — this
-module re-exports them — because the two REAL terminal-status writers
-(``task_claim.complete_claimed()``, ``Task.fail()``) must release a claim in the SAME
-transaction as their status write, and ``core.models`` may not depend on ``core.worktree``
+module re-exports them — because a holder's own terminal write (``task_claim.complete_claimed()``,
+``task_claim.fail(by_holder=True)``) must release its claim in the SAME transaction as the
+status write, and ``core.models`` may not depend on ``core.worktree``
 (``tach``'s DAG). This module owns the TICKET-level orchestration on top: resolving a
 ticket to its checkout's ``Worktree`` row and holding/refusing/renewing that claim for a
 dispatch's whole run.
@@ -28,9 +28,10 @@ inferring absence from one execution context. A lapsed lease therefore grants th
 NEXT requester without touching the previous holder's process, files or branch —
 the previous holder discovers the loss on its own :func:`renew_ticket_checkout`
 and aborts, the same shape ``Task.renew_lease`` has today. The one exception is
-:func:`_release_if_finished_task`'s self-heal (#4867): it only ever acts on a
-DEFINITIVE terminal ``Task`` status read fresh from the DB, never an inferred
-absence, so the advisory invariant holds.
+:func:`_release_if_finished_task`'s self-heal (#4867): it acts only on a terminal
+``Task`` read fresh from the DB whose recorded owner is unrecorded or confirmed dead
+(:func:`~teatree.core.models.worktree_occupancy.terminal_task_pk`), never on a claim a
+third-party fail kept for a live holder (#4872), so the advisory invariant holds.
 
 Identity is the FULLY-QUALIFIED ``(holder, holder_session)`` pair everywhere —
 CAS predicate, release, renewal, reporting. ``holder`` alone is never matched: two
@@ -56,6 +57,7 @@ from teatree.core.models.worktree_occupancy import (
     release,
     release_task_occupancy,
     task_holder_id,
+    terminal_holder_task_pk,
     terminal_task_pk,
 )
 
@@ -75,6 +77,7 @@ __all__ = [
     "release_task_occupancy",
     "renew_ticket_checkout",
     "task_holder_id",
+    "terminal_holder_task_pk",
     "terminal_task_pk",
 ]
 
@@ -89,7 +92,7 @@ def _gate_enabled() -> bool:
 
 
 def _release_if_finished_task(worktree: Worktree) -> None:
-    """Self-heal: release *worktree* if its holder is a ``Task`` that already finished (#4867).
+    """Self-heal: release *worktree* if its holder is a finished ``Task`` whose owner is gone (#4867, #4872).
 
     Covers every completion path that bypasses :func:`release_task_occupancy` (a
     pre-#4867 row, an out-of-process writer) plus the residual TOCTOU between a

@@ -175,11 +175,7 @@
 # 1: `_ticket_carrying_pr` walks `Ticket` rows, and `Ticket` reaches back into this
 # module's package — a genuine model cycle, so the sibling import stays call-time.
 "src/teatree/core/models/pull_request.py" = 1
-# 8 (+1, #4867): fail() defers `from teatree.core.models.worktree_occupancy import
-# release_task_occupancy` inside the same `transaction.atomic()` as the status write —
-# worktree_occupancy.py imports `Task` at module level, so a top-level import back from
-# task.py would be a genuine Python circular import; the release call stays call-time.
-"src/teatree/core/models/task.py" = 8
+"src/teatree/core/models/task.py" = 7
 # FSM disposition helpers (dispose_unshippable_review / escalate_unmatched_phase_
 # transition) split out of task.py; record_stuck_transition_question defers
 # `from teatree.core.models.deferred_question import DeferredQuestion`
@@ -268,9 +264,10 @@
 # which resolve only once the app registry is ready, so each stays call-time — the same
 # reason its `core/intake/budget.py` sibling defers its own ORM reads.
 "src/teatree/core/factory/drain_starvation.py" = 2
-# 2 (+1, #4867): complete_claimed() defers the same `release_task_occupancy` import as
-# Task.fail() above, for the same module-level circular-import reason.
-"src/teatree/core/models/task_claim.py" = 2 # F5: lazy _claimable_now_q park predicate import
+# 2 (+1, #4867): complete_claimed() defers `release_task_occupancy` — worktree_occupancy.py
+# imports `Task` at module level, so a top-level import back would be a circular import.
+# 3 (+1, #4872): this module's fail() defers the same import, releasing per `by_holder`.
+"src/teatree/core/models/task_claim.py" = 3 # F5: lazy _claimable_now_q park predicate import
 # PR #3479 module-health split: the path-only-TOML backend construction moved
 # out of backend_factory.py into toml_backends.py, carrying the same three
 # function-scoped intra-core imports verbatim (two `send_proxy.read_posting_credential`

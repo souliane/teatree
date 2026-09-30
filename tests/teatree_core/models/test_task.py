@@ -11,9 +11,10 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+import teatree.utils.singleton as singleton_mod
 from teatree.core.models import DeferredQuestion, InvalidTransitionError, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.task_attempt import TaskAttemptQuerySet
-from teatree.core.worktree.occupancy import acquire, occupancy_holder, task_holder_id
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, occupancy_holder, task_holder_id
 
 _FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
@@ -32,7 +33,7 @@ class TestTask(TestCase):
         task.complete(result_artifact_path="/tmp/result.json")
 
         failed_task = Task.objects.create(ticket=ticket, session=session)
-        failed_task.fail(reason="test: deliberate failure")
+        failed_task.fail(reason="test: deliberate failure", by_holder=True)
 
         attempt = TaskAttempt.objects.create(
             task=task,
@@ -156,7 +157,7 @@ class TestClaimedBySessionPersistence(TestCase):
     def test_fail_blanks_session_in_db(self) -> None:
         task = self._task()
         task.claim(claimed_by="worker", claimed_by_session="sess-1")
-        task.fail(reason="test: deliberate failure")
+        task.fail(reason="test: deliberate failure", by_holder=True)
         assert self._db_session(task) == ""
 
     def test_park_blanks_session_in_db(self) -> None:
@@ -382,7 +383,33 @@ class TaskOccupancyReleaseTests(TestCase):
         task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
         acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
 
-        task.fail(reason="test: deliberate failure")
+        task.fail(reason="test: deliberate failure", by_holder=True)
+
+        assert occupancy_holder(self.fresh_worktree()) is None
+
+    def test_third_party_fail_of_a_live_claim_keeps_the_occupancy_claim(self) -> None:
+        """#4872: an operator cancel / ``ticket.rework()`` of a live holder must not evict it."""
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        task.fail(reason="test: cancelled by a third party", by_holder=False)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        held = occupancy_holder(self.fresh_worktree())
+        assert held is not None
+        assert held.holder == task_holder_id(task)
+        with pytest.raises(WorktreeOccupiedError):
+            acquire(self.fresh_worktree(), holder="task:999999", holder_session="")
+
+    def test_third_party_fail_of_a_dead_holders_claim_releases_it(self) -> None:
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        with mock.patch.object(singleton_mod, "pid_alive", return_value=False):
+            task.fail(reason="test: cancelled by a third party", by_holder=False)
 
         assert occupancy_holder(self.fresh_worktree()) is None
 

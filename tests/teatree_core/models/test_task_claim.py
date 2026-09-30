@@ -16,6 +16,7 @@ from django.db import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
+import teatree.utils.singleton as singleton_mod
 from teatree.core.claim_liveness import reset_driving_registry
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
@@ -224,6 +225,61 @@ class TestFailClaimed(TestCase):
         rival = Task.objects.get(pk=task.pk)
         assert rival.status == Task.Status.CLAIMED
         assert rival.claimed_by == "worker-B"
+
+
+class TestTerminalizingAKeptClaimGeneration(TestCase):
+    """A live-owner third-party fail keeps the claim fields; only the holder is refused over it."""
+
+    def _task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        return Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+    def _holder_after_a_third_party_fail(self) -> Task:
+        holder = self._task()
+        claim(holder, claimed_by="worker-A", claimed_by_session="sess-A", lease_seconds=300)
+        with mock.patch.object(singleton_mod, "pid_alive", return_value=True):
+            Task.objects.get(pk=holder.pk).fail(reason="test: cancelled by an operator", by_holder=False)
+        return holder
+
+    def test_the_holder_cannot_complete_over_the_cancel(self) -> None:
+        holder = self._holder_after_a_third_party_fail()
+
+        with pytest.raises(LeaseLostError):
+            holder.complete()
+
+        assert Task.objects.get(pk=holder.pk).status == Task.Status.FAILED
+
+    def test_the_holder_cannot_fail_over_the_cancel(self) -> None:
+        holder = self._holder_after_a_third_party_fail()
+
+        with pytest.raises(LeaseLostError):
+            holder.fail_claimed(reason="the coder gave up")
+
+        assert Task.objects.get(pk=holder.pk).failure_reason == "test: cancelled by an operator"
+
+    def test_the_holder_cannot_complete_a_reopened_row(self) -> None:
+        holder = self._holder_after_a_third_party_fail()
+        Task.objects.get(pk=holder.pk).reopen()
+
+        with pytest.raises(LeaseLostError):
+            holder.complete()
+
+        assert Task.objects.get(pk=holder.pk).status == Task.Status.PENDING
+
+    def test_a_fresh_read_completes_the_cancelled_row(self) -> None:
+        holder = self._holder_after_a_third_party_fail()
+
+        Task.objects.get(pk=holder.pk).complete()
+
+        assert Task.objects.get(pk=holder.pk).status == Task.Status.COMPLETED
+
+    def test_a_never_claimed_row_completes(self) -> None:
+        task = self._task()
+
+        task.complete()
+
+        assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED
 
 
 class TestClaimGeneration(TestCase):
