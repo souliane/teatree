@@ -40,6 +40,7 @@ from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.review.review_findings import neutralize_bare_references
+from teatree.loops.dream._shared import DREAM_BATCH_MANIFEST_HEADER
 from teatree.loops.dream.umbrella_ledger import (
     _BATCH_MARKER_PREFIX,
     _UMBRELLA_KEY,
@@ -246,7 +247,7 @@ def _batch_context(umbrella_url: str, gaps: "list[GapSpec]") -> str:
     """
     rows = _ledger_rows(gaps)
     lines = [
-        "Dream promotion batch (#4776) — fix each gap below independently.",
+        f"{DREAM_BATCH_MANIFEST_HEADER} — fix each gap below independently.",
         (
             "Drop any gap you cannot deliver rather than stretching the change to cover it; "
             "an omitted gap stays open and is re-offered next pass."
