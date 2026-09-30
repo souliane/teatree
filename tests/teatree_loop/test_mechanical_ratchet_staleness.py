@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import django.test
+import pytest
 
 from teatree.loop.mechanical_ratchet_staleness import report_ratchet_staleness
 
@@ -38,8 +39,11 @@ class ReportRatchetStalenessTests(django.test.TestCase):
         assert keys[0] == keys[1], "the same stale set must reuse one key"
         assert keys[2] != keys[0], "a grown stale set must not be suppressed by the earlier key"
 
-    def test_a_messaging_failure_never_raises_into_the_tick(self) -> None:
-        with patch("teatree.loop.mechanical_ratchet_staleness.notify_user", side_effect=RuntimeError("slack down")):
+    def test_a_messaging_failure_raises_for_the_tick_to_record(self) -> None:
+        with (
+            patch("teatree.loop.mechanical_ratchet_staleness.notify_user", side_effect=RuntimeError("slack down")),
+            pytest.raises(RuntimeError, match="slack down"),
+        ):
             report_ratchet_staleness({"repo": "/clone", "stale": _ROWS})
 
     def test_a_long_list_is_truncated_with_an_honest_trailer(self) -> None:

@@ -5,7 +5,10 @@ and the stuck-ticket re-dispatch so a returned-failure task and a frozen ticket
 both self-heal from the loop tick, never only from an explicit ``t3 recover``.
 """
 
-from datetime import timedelta
+from collections.abc import Callable
+from contextlib import AbstractContextManager
+from datetime import UTC, datetime, timedelta
+from typing import cast
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -16,7 +19,10 @@ from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.models import ModeOverride, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.transition import TicketTransition
 from teatree.core.tasks import drain_queue_body
-from teatree.loop.tick_recovery import _reap_stale_task_claims
+from teatree.loop import mechanical_resources
+from teatree.loop.dispatch import ActionPayload, DispatchAction
+from teatree.loop.tick import TickReport
+from teatree.loop.tick_recovery import _execute_mechanical, _reap_stale_task_claims
 
 _DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
 
@@ -185,3 +191,62 @@ class TestAnUnreadableAdmissionVerdictHoldsReDispatch(TestCase):
         transient.refresh_from_db()
         assert transient.status == Task.Status.FAILED
         assert errors == {"recovery:admission": "RuntimeError: settings locked"}
+
+
+_BOOM = RuntimeError("boom")
+
+#: zone -> (payload, the dependency that fails). Each handler once wrapped its whole body in
+#: ``except Exception``, so the failure below never reached ``report.errors``.
+_FAILING_HANDLERS: dict[str, tuple[dict[str, object], Callable[[], AbstractContextManager[object]]]] = {
+    "run_db_backup": ({}, lambda: patch("teatree.utils.django_db.backup.run_backup", side_effect=_BOOM)),
+    "refresh_snapshot": (
+        {"config": object()},
+        lambda: patch("teatree.utils.django_db.snapshot_warmer.refresh_reference_snapshot", side_effect=_BOOM),
+    ),
+    "advance_ci_eval_heal": (
+        {"open_count": 1},
+        lambda: patch("teatree.loop.mechanical_ci_eval_heal.advance_open_sessions", side_effect=_BOOM),
+    ),
+    "report_ratchet_staleness": (
+        {"stale": [["ratchet", "path", "ref"]], "repo": "core"},
+        lambda: patch("teatree.loop.mechanical_ratchet_staleness.notify_user", side_effect=_BOOM),
+    ),
+    "free_resources": (
+        {"resource": "disk"},
+        lambda: patch.object(mechanical_resources, "_survey_disk", side_effect=_BOOM),
+    ),
+    "sweep_artifacts": ({}, lambda: patch("teatree.core.models.ResourcePressureMarker.load", side_effect=_BOOM)),
+    "assign_gitlab_reviewer": (
+        {"url": "https://gitlab.example.com/g/p/-/merge_requests/9", "reviewer_username": "bob"},
+        lambda: patch("teatree.core.overlay_loader.get_overlay", side_effect=_BOOM),
+    ),
+    "close_dead_issue": (
+        {"url": "https://github.com/o/r/issues/9", "reason": "dead"},
+        lambda: patch("teatree.core.overlay_loader.get_overlay", side_effect=_BOOM),
+    ),
+}
+
+
+class TestAFailingMechanicalHandlerReachesTheTick(TestCase):
+    """A handler that failed must not read as a handler that did its job.
+
+    ``_execute_mechanical`` isolates every handler and records a raise in ``report.errors`` —
+    the statusline's ``scanner errors`` line and the ``WARN`` lines ``t3 loops tick`` prints.
+    """
+
+    def test_the_failure_is_recorded_and_the_next_action_still_runs(self) -> None:
+        for zone, (payload, failing) in sorted(_FAILING_HANDLERS.items()):
+            with self.subTest(zone=zone):
+                ran: list[str] = []
+                report = TickReport(started_at=datetime.now(UTC))
+                report.actions = [
+                    DispatchAction(kind="mechanical", zone=zone, detail="x", payload=cast("ActionPayload", payload)),
+                    DispatchAction(kind="mechanical", zone="sentinel", detail="x", payload=cast("ActionPayload", {})),
+                ]
+                sentinel = {"sentinel": lambda _p, ran=ran: ran.append("sentinel")}
+
+                with failing(), patch.dict("teatree.loop.mechanical.HANDLERS", sentinel):
+                    _execute_mechanical(report)
+
+                assert report.errors == {f"{zone}[?]": "RuntimeError: boom"}
+                assert ran == ["sentinel"]

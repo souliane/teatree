@@ -84,18 +84,9 @@ _STATUSLINE_DIR = Path("/tmp/claude-statusline")  # noqa: S108 — fixed agent-c
 def free_resources(payload: ActionPayload) -> None:
     """Run the freeing ladder for the ``resource.cleanup_needed`` signal.
 
-    Best-effort top to bottom: a failure in any single step logs and is
-    swallowed so the tick continues. The whole body is additionally wrapped
-    so an unexpected error (a missing marker table on a pre-migration
-    install, an import failure) can never abort ``_execute_mechanical``.
+    A step that raises ends the pass there: ``_execute_mechanical`` records it in the
+    tick's errors, and the plan persisted before execution survives on the marker.
     """
-    try:
-        _free_resources_inner(payload)
-    except Exception:
-        logger.exception("free_resources: cleanup pass failed — swallowed to protect the tick")
-
-
-def _free_resources_inner(payload: ActionPayload) -> None:
     from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415 — lazy ORM import
 
     resource = str(payload.get("resource", ""))
