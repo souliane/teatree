@@ -81,7 +81,7 @@ _FP_CONFIRMED_RE = re.compile(r"\[fp-confirmed:\s*\S[^\]]*?\s*\]")
 # § "Escape markers & kill-switches".
 _SIGNATURE_STRIP_RE = re.compile(
     r"\[(?:add-all-ok|admission-ok|brief-anchor-ok|config-overwrite-ok|cron-loop-ok|delegate-ok|fg-ok|fp-confirmed"
-    r"|general-purpose-ok|glab-base-ok|headless-authoring-ok|main-clone-ok|merge-detect-ok"
+    r"|general-purpose-ok|glab-base-ok|grant-ask-ok|headless-authoring-ok|main-clone-ok|merge-detect-ok"
     r"|orchestration-ok|quote-ok|reviewer-ok|scope-push-ok|single-branch-ok|skill-load-ok"
     r"|skip-answer-gate|skip-completion-gate|skip-evidence-gate|skip-plan-gate|slack-mcp-ok"
     r"|standing-goal-hold|visible-plan-ok):[^\]]*\]"

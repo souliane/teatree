@@ -191,7 +191,7 @@ An orchestrator never blocks its foreground over ~15s: use a `Monitor` (`gh run 
 
 ## Always Use AskUserQuestion for Questions
 
-Ask through `AskUserQuestion`, one decision per call, then stop; never narrate or re-ask. Do the determinable best without asking, within any user-set shape; ask only for a missing fact or an authorization. Headless: `t3 <overlay> questions record`. Full text: `skills/rules/references/asking-questions.md`.
+Ask through `AskUserQuestion`, one decision per call, then stop; never narrate or re-ask. Do the determinable best without asking, within any user-set shape; ask only for a missing fact or an authorization, never one a standing grant already gives (`t3 <overlay> gate standing-grant-ask disable`). Headless: `t3 <overlay> questions record`. Full text: `skills/rules/references/asking-questions.md`.
 
 ## The User Asked a Question — Answer It (Non-Negotiable)
 

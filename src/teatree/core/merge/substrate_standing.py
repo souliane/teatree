@@ -67,6 +67,17 @@ def substrate_standing_authorization(
     )
 
 
+def configured_substrate_grant(*, overlay_name: str) -> SubstrateStandingAuthorization:
+    """The standing grant as configured — what a CLEAR presenting the configured delegation id would get."""
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+    name = overlay_name.strip()
+    if not name:
+        return SubstrateStandingAuthorization()
+    configured = get_effective_settings(overlay_name=name).substrate_auto_merge_authorized_by
+    return substrate_standing_authorization(overlay_name=name, presented_authorizer=configured)
+
+
 def resolve_overlay_by_repo_identity(*slugs: str, fallback: str = "") -> str:
     """The overlay owning the first *slugs* entry that resolves, else *fallback*.
 
