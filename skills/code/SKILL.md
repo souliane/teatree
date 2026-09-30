@@ -72,6 +72,8 @@ t3 <overlay> workspace ticket <ticket-url-or-id>   # creates the worktree + bran
 cd <printed-worktree-path>                          # all edits happen here, not in the main clone
 ```
 
+A ticket's checkout made any other way needs `t3 <overlay> workspace ticket <issue-url> --adopt`, run inside it before its first push, or the PR the no-orphan hook opens binds no ticket (`skills/ship/SKILL.md` § 4a1).
+
 For a quick ad-hoc fix with no overlay/ticket (a typo, a one-line doc change), create the worktree by hand from the default branch first — the edit comes **after** the worktree exists, never before:
 
 ```bash
