@@ -52,6 +52,7 @@ from teatree.core.modelkit.reask_cadence import REASK_KEY_PREFIX, RESURFACE_INTE
 from teatree.core.models import BotPing, DeferredQuestion, LoopLease
 from teatree.core.notify import NotifyKind, notify_user, notify_user_outcome
 from teatree.core.notify_types import NotifyOptions, NotifyReason
+from teatree.core.question_heal import live_owner_questions, withdraw_healed
 
 # How many deferred questions one tick may mirror. The backlog accumulates silently
 # while the owner is away, so an unbounded drain delivers it all in one burst the
@@ -306,7 +307,7 @@ def resurface_question_backlog(
     rows (an agent's own tool-lack self-report) are excluded, as in the two
     first-post drains.
     """
-    rows = [r for r in DeferredQuestion.pending() if r.audience != DeferredQuestion.Audience.INTERNAL]
+    rows = live_owner_questions()
     if not rows:
         return False, 0
 
@@ -396,9 +397,7 @@ def reask_escalated_questions(
     batch while their delivered pings answer ALREADY_SENT, and row six is never bumped
     at all (#4706).
     """
-    rows = [
-        row for row in DeferredQuestion.pending() if row.audience != DeferredQuestion.Audience.INTERNAL and row.slack_ts
-    ]
+    rows = [row for row in live_owner_questions() if row.slack_ts]
     if not rows:
         return 0, 0
 
@@ -488,7 +487,7 @@ def drain_deferred_questions(
     """
     # DM only owner-audience rows; INTERNAL escalations (repair-loop / dispatch
     # health the box raised about itself) stay logged/statusline-only.
-    owner_rows = [r for r in DeferredQuestion.pending() if r.audience != DeferredQuestion.Audience.INTERNAL]
+    owner_rows = live_owner_questions()
     # Skip what a fresh send would decline to re-deliver BEFORE applying the cap. The queue
     # is oldest-first, so capping it directly hands the same stood-down head back every
     # time: each call deduped to a no-op and every row behind it stayed unreachable, on a
@@ -536,10 +535,10 @@ def drain_deferred_questions(
 def _rows_to_mirror(only_ref: str) -> list[DeferredQuestion]:
     pending = DeferredQuestion.unmirrored_pending()
     if not only_ref:
-        return list(pending)[:_MAX_MIRRORS_PER_TICK]
+        return withdraw_healed(pending)[:_MAX_MIRRORS_PER_TICK]
     # Selection is oldest-first and the cap bounds a BURST, so a freshly-recorded
     # row queues behind the whole backlog. One targeted row is not a burst.
-    return [row for row in pending if row.stable_notify_ref == only_ref][:1]
+    return withdraw_healed(row for row in pending if row.stable_notify_ref == only_ref)[:1]
 
 
 def drain_unmirrored_deferred_questions(
