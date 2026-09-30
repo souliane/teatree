@@ -273,6 +273,11 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "no review happened",
         ),
     ),
+    (
+        "rubric_criteria_exclude_post_merge_obligations",
+        "skills/ticket/SKILL.md",
+        ("ticket plan", "gradeable PASS at the PR head", "post-merge steps", "never drop it"),
+    ),
 )
 
 

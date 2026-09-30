@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import NEEDS_TRIAGE_LABEL, SendAudit
@@ -137,18 +138,19 @@ class CloseDeadIssueTests(TestCase):
             close_dead_issue({"url": _URL, "reason": "obsolete"})  # must not raise
         assert len(host.closed) == 1
 
-    def test_close_exception_is_swallowed(self) -> None:
+    def test_a_close_exception_raises_for_the_tick_to_record(self) -> None:
         host = _Host(raise_on_close=True)
-        with _patched(host):
-            close_dead_issue({"url": _URL, "reason": "already_shipped"})  # must not raise
+        with _patched(host), pytest.raises(RuntimeError):
+            close_dead_issue({"url": _URL, "reason": "already_shipped"})
 
-    def test_overlay_resolution_failure_no_ops(self) -> None:
+    def test_an_overlay_resolution_failure_raises_and_closes_nothing(self) -> None:
         host = _Host()
         with (
             patch("teatree.core.overlay_loader.get_overlay", side_effect=RuntimeError("no overlay")),
             patch("teatree.backends.loader.get_code_host_for_url", return_value=host),
+            pytest.raises(RuntimeError, match="no overlay"),
         ):
-            close_dead_issue({"url": _URL, "reason": "already_shipped"})  # must not raise
+            close_dead_issue({"url": _URL, "reason": "already_shipped"})
         assert host.closed == []
 
 

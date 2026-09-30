@@ -336,23 +336,18 @@ def assign_gitlab_reviewer(payload: ActionPayload) -> None:
     Reads ``url`` and ``reviewer_username`` from the payload, resolves
     the active overlay's GitLab host, and calls
     :meth:`GitLabCodeHost.assign_reviewer` which preserves the existing
-    reviewer list. Best-effort: any failure logs without raising so a
-    Slack mention on a non-GitLab forge or a transient API hiccup
-    cannot wedge the tick.
+    reviewer list. A forge with no host or no ``assign_reviewer`` is a
+    logged no-op; a failure raises into ``_execute_mechanical``, which
+    records it in the tick's errors.
     """
+    from teatree.backends.loader import get_code_host  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
     pr_url = str(payload.get("url") or payload.get("mr_url") or "")
     reviewer_username = str(payload.get("reviewer_username", ""))
     if not pr_url or not reviewer_username:
         return
-    try:
-        from teatree.backends.loader import get_code_host  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
-
-        overlay = get_overlay(str(payload.get("overlay") or "") or None)
-        host = get_code_host(overlay)
-    except Exception:
-        logger.exception("Could not resolve code host for cap-B assignment of %s", pr_url)
-        return
+    host = get_code_host(get_overlay(str(payload.get("overlay") or "") or None))
     if host is None:
         logger.info("No code host resolved for cap-B assignment of %s", pr_url)
         return
@@ -360,12 +355,7 @@ def assign_gitlab_reviewer(payload: ActionPayload) -> None:
     if assign is None or not callable(assign):
         logger.info("Code host has no assign_reviewer support for %s — skipping cap-B", pr_url)
         return
-    try:
-        ok = assign(pr_url=pr_url, username=reviewer_username)
-    except Exception:
-        logger.exception("Failed to assign %s as reviewer on %s", reviewer_username, pr_url)
-        return
-    if ok:
+    if assign(pr_url=pr_url, username=reviewer_username):
         logger.info("Assigned %s as reviewer on %s via Slack-mention pickup", reviewer_username, pr_url)
     else:
         logger.warning("assign_reviewer returned False for %s on %s", reviewer_username, pr_url)
@@ -451,9 +441,9 @@ def close_dead_issue(payload: ActionPayload) -> None:
     only for issues carrying machine-checkable dead evidence; this handler
     resolves the code host for the issue URL and closes it. Idempotent: the
     backend ``close_issue`` is a no-op on an already-closed issue, so a re-tick
-    on the same candidate does no harm. Best-effort — a missing URL, an
-    unresolvable host, or a backend error logs without raising so the tick
-    never wedges. The handler labels/closes only; it creates no Task or claim.
+    on the same candidate does no harm. A missing URL or host is a logged
+    no-op; a raise reaches ``_execute_mechanical``, which records it in the
+    tick's errors. The handler labels/closes only; it creates no Task or claim.
     """
     from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: loaded at tick time
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
@@ -462,23 +452,14 @@ def close_dead_issue(payload: ActionPayload) -> None:
     if not issue_url:
         return
     reason = str(payload.get("reason", ""))
-    try:
-        overlay = get_overlay(str(payload.get("overlay") or "") or None)
-        host = get_code_host_for_url(overlay, issue_url)
-    except Exception:
-        logger.exception("close_dead_issue: could not resolve code host for %s", issue_url)
-        return
+    host = get_code_host_for_url(get_overlay(str(payload.get("overlay") or "") or None), issue_url)
     if host is None:
         logger.info("close_dead_issue: no code host resolved for %s", issue_url)
         return
     comment = _disposition_close_comment(host, issue_url, payload)
     if comment is None:
         return
-    try:
-        result = host.close_issue(issue_url=issue_url, comment=comment)
-    except Exception:
-        logger.exception("close_dead_issue: failed to close %s", issue_url)
-        return
+    result = host.close_issue(issue_url=issue_url, comment=comment)
     if isinstance(result, dict) and "error" in result:
         logger.warning("close_dead_issue: backend refused to close %s (%s)", issue_url, result["error"])
         return

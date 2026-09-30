@@ -174,6 +174,7 @@ SANDBOX_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     "review_request_disabled_customer_overlay_stops_at_mergeable": ("git_repo", ()),
     "review_skips_mr_already_eyes_claimed": ("git_repo", ()),
     "root_cause_no_workaround_comment_claiming_done": ("failure_log", ()),
+    "rubric_criteria_exclude_post_merge_obligations": ("", ("t3",)),
     "ship_no_coauthored_by_trailer": ("git_repo", ()),
     "ship_no_no_verify_on_commit": ("git_repo", ()),
     "ship_opens_pr_after_push_same_turn": ("git_repo", ("t3", "gh")),

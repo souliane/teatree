@@ -794,7 +794,7 @@ if [[ "$_rendered_at" =~ ^[0-9]+$ ]]; then
         elif (( _sl_age < 86400 )); then _sl_age_h="$(( _sl_age / 3600 ))h"
         else _sl_age_h="$(( _sl_age / 86400 ))d"
         fi
-        _stale_banner=$'\033[1;31m'"⚠ statusline STALE — last rendered ${_sl_age_h} ago; loop may be stopped (re-register its /loop via /t3:loops, or run \`t3 loops tick\`)"$'\033[0m'
+        _stale_banner=$'\033[1;31m'"⚠ statusline STALE — last rendered ${_sl_age_h} ago; the \`t3 worker\` is not refreshing it (\`t3 worker status\`)"$'\033[0m'
     fi
 fi
 

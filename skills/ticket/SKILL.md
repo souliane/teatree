@@ -196,6 +196,19 @@ Write criteria that can FAIL — one satisfied by inaction is refused at populat
 NOTHING. The one waiver is the human-authorized `t3 <overlay> ticket plan-bypass <id>
 --human-authorize <who> --reason <why>`, and even that never overrides a recorded FAIL.
 
+**Every criterion must be gradeable PASS at the PR head before merge.** The merge gate
+(`src/teatree/core/gates/rubric_gate.py`) refuses unless every criterion is PASS against the
+live head, and every plan criterion gates the merge — there is no post-merge criterion kind.
+A criterion bundling a post-merge obligation can never pass, so it deadlocks the merge. Put
+each post-merge obligation in a post-merge steps section of the plan text, never drop it, and
+split a compound criterion: the head-provable part stays a criterion, the rest moves there.
+
+- Criterion: "CI green at the PR head".
+- Post-merge steps, never criteria: "#N closed after merge", "post-deploy transcript reports the model".
+
+Already recorded a bundled one? Restate the rubric with `t3 <overlay> ticket rubric-set
+<ticket-id> --criteria-json '<json>'` — a replace that resets every grade, so re-grade after.
+
 **Grading happens at the end, by someone other than the maker — automatically.** The cold
 reviewer is the producer: it returns `rubric_grades` in the same envelope as its verdict, and
 the orchestrator stamps both in one transaction. A PASS must cite what proves it — any test
