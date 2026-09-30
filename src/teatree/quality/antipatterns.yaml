@@ -594,24 +594,6 @@
   linter: null
   eval_invariant: null
 
-- id: unattended-scan-files-issues-directly
-  name: Unattended scan files issues without approval
-  severity: high
-  detection: judgement
-  anti_pattern: >-
-    A loop tick, scanner, dream phase or other batch scan that runs with nobody
-    watching files a forge issue or ticket for each candidate it finds. The
-    owner chose none of them, and one noisy pass floods the backlog.
-  preferred_pattern: >-
-    Record each candidate as a pending suggestion (the PendingArticleSuggestion
-    ask-gate) and surface the batch once for explicit user approval; file only
-    what the user approves. Appending to a standing owner-created ledger is not
-    a new filing.
-  consumers: [architecture-design, ac-reviewing-codebase, eval]
-  refs: ["arch-design-check-7", "souliane/teatree#1391"]
-  linter: null
-  eval_invariant: null
-
 # ── Absent or unverifiable signal ──────────────────────────────────────────
 - id: unknown-reported-as-verdict
   name: Absent, unreadable or stale signal reported as a definite verdict

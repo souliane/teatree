@@ -96,14 +96,13 @@ For hook handlers, the test calls the handler with a hook payload and asserts th
 
 ### 7. Resilience invariants (#1192)
 
-For any external write (Slack post, GitHub PR mutation, GitLab MR update, DB row outside the request cycle, fs write under a watched path), verify these six invariants — the first five from #1192:
+For any external write (Slack post, GitHub PR mutation, GitLab MR update, DB row outside the request cycle, fs write under a watched path), verify the five invariants from #1192:
 
 - **verify-by-re-read** — after the write, fetch the live state and confirm the mutation landed
 - **fallback-transport** — when the primary channel is unavailable, the change has a sanctioned secondary path (durable DB row, snapshot, deferred task)
 - **idempotency** — repeated invocation with the same input is a no-op, not a duplicate
 - **heartbeat** — long-running work emits progress so a watchdog can distinguish "stuck" from "still working"
 - **sub-agent return contract** — sub-agent results are structured (`StructuredResult`), not free-form prose; the orchestrator can route on them
-- **approval-gated filing** — an unattended path (loop tick, scanner, dream phase, batch scan) files no forge issue or ticket itself, and handing the filing to a dispatcher or consumer is the same unapproved filing. It records each candidate as a pending suggestion (the `PendingArticleSuggestion` ask-gate, #1391) and surfaces the batch once for explicit user approval; only approved candidates are filed. Appending to a standing owner-created ledger is not a new filing.
 
 If even one is missing, the design is incomplete — adding it later is a tech-debt commitment, not a follow-up.
 
@@ -167,7 +166,7 @@ The implementer fills the template BEFORE touching `src/`, drafting it in a work
 <test file + assertion per behaviour; FSM/scanner/hook specifics>
 
 ## 7. Resilience invariants
-<per external write: verify-by-re-read, fallback-transport, idempotency, heartbeat, sub-agent return contract; per unattended path: approval-gated filing>
+<per external write: verify-by-re-read, fallback-transport, idempotency, heartbeat, sub-agent return contract>
 
 ## 8. Identity and key normalization
 <identities with bare vs qualified forms; canonical form chosen; one normalization function at every boundary; any strip/split whose purpose is to make a comparison succeed — justify or remove>

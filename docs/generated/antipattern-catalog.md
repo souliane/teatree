@@ -9,7 +9,7 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**38 entries** — 5 greppable, 33 judgement.
+**37 entries** — 5 greppable, 32 judgement.
 
 ## Index
 
@@ -37,7 +37,6 @@ holistic (`ac-reviewing-codebase`).
 - [Work can stall indefinitely with nothing raising an alarm](#silent-freeze) — high, judgement
 - [Command reports success on a failure it printed](#silent-success-on-failure) — high, judgement
 - [Test mocks the behaviour it is supposed to exercise](#test-mocks-the-unit-under-test) — high, judgement
-- [Unattended scan files issues without approval](#unattended-scan-files-issues-directly) — high, judgement
 - [Absent, unreadable or stale signal reported as a definite verdict](#unknown-reported-as-verdict) — high, judgement
 - [Guard green only where the defect cannot appear](#vacuous-guard) — high, judgement
 - [File placed outside the package whose concern it shares](#file-outside-its-package) — medium, judgement
@@ -511,21 +510,6 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A network call, subprocess, agent dispatch or multi-second read performed while holding the SQLite control-plane write lock, so every other writer on the box blocks behind one slow external dependency and the factory reads as hung rather than busy.
 
 **Preferred.** Do the I/O outside the transaction and take the write lock only to persist the result — read, call, then open a short atomic block. A transaction's body contains no call whose duration a remote party decides.
-
-## Unattended scan files issues without approval
-
-<a id="unattended-scan-files-issues-directly"></a>
-
-- **id:** `unattended-scan-files-issues-directly`
-- **severity:** high
-- **detection:** judgement
-- **linter:** _(none — gap)_
-- **consumers:** architecture-design, ac-reviewing-codebase, eval
-- **refs:** arch-design-check-7, souliane/teatree#1391
-
-**Anti-pattern.** A loop tick, scanner, dream phase or other batch scan that runs with nobody watching files a forge issue or ticket for each candidate it finds. The owner chose none of them, and one noisy pass floods the backlog.
-
-**Preferred.** Record each candidate as a pending suggestion (the PendingArticleSuggestion ask-gate) and surface the batch once for explicit user approval; file only what the user approves. Appending to a standing owner-created ledger is not a new filing.
 
 ## Absent, unreadable or stale signal reported as a definite verdict
 

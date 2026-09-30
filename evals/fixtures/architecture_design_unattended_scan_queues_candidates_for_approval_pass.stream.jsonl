@@ -1,3 +1,0 @@
-{"type": "system", "subtype": "init", "session_id": "fixt-architecture_design_unattended_scan_queues_candidates_for_approval-pass-20", "model": "haiku"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "scan() records each outdated pin as a pending suggestion, deduped by repo, package and version.\nIt files nothing itself; it surfaces the week's batch to the user for explicit approval.\nOnly candidates the user approves become issues."}]}}
-{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
