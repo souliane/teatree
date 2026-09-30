@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core import agent_runner as agent_runner_mod
@@ -22,9 +23,12 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
+from teatree.core.provision.failure_question import NO_REPOS_RETRY_DELAYS
 from teatree.core.runners import RetroPhaseMarker
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
+    TransitionResult,
     drain_queue,
     drain_queue_body,
     execute_provision,
@@ -985,6 +989,73 @@ class TestExecuteProvision(TestCase):
         self._fail_provision(ticket, "failed to create worktrees for: backend")
 
         assert DeferredQuestion.objects.filter(dedupe_marker=f"provision-failure:{ticket.pk}").count() == 1
+
+
+class TestExecuteProvisionRetriesARepoLessTicket(TestCase):
+    """``begin_planning`` starts a ticket before ``workspace ticket`` attaches its repos (#4904)."""
+
+    def setUp(self) -> None:
+        self.queue = execute_provision.get_backend()
+        self.queue.clear()
+        self.ticket = Ticket.objects.create(
+            overlay="test", issue_url="https://example.com/issues/4", state=Ticket.State.WORK_STARTED
+        )
+
+    def _provision(self, *, attempt: int, ok: bool = False) -> TransitionResult:
+        detail = "provisioned 1 worktree(s)" if ok else "no repos on ticket"
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = RunnerResult(ok=ok, detail=detail)
+            return execute_provision.call(self.ticket.pk, attempt)
+
+    def _questions(self) -> list[DeferredQuestion]:
+        return list(DeferredQuestion.objects.filter(dedupe_marker=f"provision-failure:{self.ticket.pk}"))
+
+    def test_the_first_failure_defers_a_retry_instead_of_asking(self) -> None:
+        before = timezone.now()
+
+        result = self._provision(attempt=0)
+
+        (queued,) = self.queue.results
+        assert queued.args == [self.ticket.pk, 1]
+        assert queued.task.run_after >= before + NO_REPOS_RETRY_DELAYS[0]
+        assert self._questions() == []
+        assert result == {"ticket_id": self.ticket.pk, "ok": False, "detail": "no repos on ticket; retry 1 queued"}
+
+    def test_a_spent_budget_asks_once_with_only_the_options_that_apply(self) -> None:
+        self._provision(attempt=len(NO_REPOS_RETRY_DELAYS))
+        self._provision(attempt=len(NO_REPOS_RETRY_DELAYS))
+
+        assert self.queue.results == []
+        (question,) = self._questions()
+        assert "drop the repo" not in question.question
+        assert "t3 test workspace ticket https://example.com/issues/4" in question.question
+
+    def test_repos_attached_before_the_retry_never_reach_the_owner(self) -> None:
+        self._provision(attempt=0)
+        Ticket.objects.filter(pk=self.ticket.pk).update(repos=["repo-a"], extra={"branch": "4-x"})
+        self._provision(attempt=1, ok=True)
+
+        assert self._questions() == []
+        assert drain_unmirrored_deferred_questions(user_id="U_ME") == (0, 0)
+        assert self.ticket.tasks.filter(phase="planning").exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_a_backend_that_cannot_defer_asks_at_once(self) -> None:
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = RunnerResult(ok=False, detail="no repos on ticket")
+            execute_provision.enqueue(self.ticket.pk)
+
+        (question,) = self._questions()
+        assert "drop the repo" not in question.question
+
+    def test_a_retry_after_the_ticket_moved_on_is_a_no_op(self) -> None:
+        Ticket.objects.filter(pk=self.ticket.pk).update(state=Ticket.State.PLAN_RECORDED)
+
+        result = self._provision(attempt=3)
+
+        assert result == {"ticket_id": self.ticket.pk, "skipped": True, "state": Ticket.State.PLAN_RECORDED}
+        assert self.queue.results == []
+        assert self._questions() == []
 
 
 class TestExecuteShip(TestCase):

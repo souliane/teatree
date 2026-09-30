@@ -15,6 +15,8 @@ The sweep runs in two stages, and the split is the whole design:
     state cannot carry — a subject whose pull requests have all settled, and a parked
     lane that has since re-run to completion — and both are POSITIVE-ONLY: short of
     proof they answer nothing at all, so they add drains without ever suppressing one.
+    The :data:`~teatree.core.question_heal.HEAL_CHECKS` resolvers are positive-only too:
+    each drains a row whose trigger it can prove has healed.
 * **backstop stage** — runs on every row the subject stage did NOT drain, including one
     it explicitly kept, so a KEEP is not a licence to sit forever. Past the age ceiling it
     records an escalation, which is a state transition and not a resolution; the stamp is
@@ -35,7 +37,7 @@ model with the subject derivation and the effective-settings read, and it is dri
 the tick recovery sweep.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -45,6 +47,7 @@ from django.utils import timezone
 
 from teatree.core.models import PullRequest, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.question_heal import HEAL_CHECKS
 from teatree.loop.question_subjects import SubjectIndex
 
 #: The pull-request states that are DONE either way — the same partition
@@ -113,6 +116,8 @@ class SweepContext:
     superseded_parked: frozenset[int]
     #: pks of the halt rows whose ticket has since run a phase to success.
     cleared_halts: frozenset[int]
+    #: Per ``HEAL_CHECKS`` name, the rows it proved healed and why.
+    healed: Mapping[str, Mapping[int, str]]
 
     @classmethod
     def build(cls, questions: Sequence[DeferredQuestion]) -> "SweepContext":
@@ -122,10 +127,21 @@ class SweepContext:
             now=timezone.now(),
             superseded_parked=_superseded_parked_questions(questions),
             cleared_halts=_cleared_halt_questions(questions, index),
+            healed={name: check(questions) for name, check in HEAL_CHECKS},
         )
 
 
 Resolver = Callable[[DeferredQuestion, SweepContext], Decision | None]
+
+
+def _heal_resolver(name: str) -> Resolver:
+    """The positive-only resolver over one ``HEAL_CHECKS`` entry: its trigger has healed, DRAIN."""
+
+    def resolve(question: DeferredQuestion, context: SweepContext) -> Decision | None:
+        reason = context.healed[name].get(question.pk)
+        return None if reason is None else Decision(Verdict.DRAIN, reason)
+
+    return resolve
 
 
 def _subject_terminal(question: DeferredQuestion, context: SweepContext) -> Decision | None:
@@ -303,9 +319,10 @@ def _lane_moved_on(
 
 
 #: Resolvers that decide from the question's SUBJECT — the only stage that may drain.
-#: The two positive-only resolvers run FIRST: each answers ``None`` on anything short
+#: The positive-only resolvers run FIRST: each answers ``None`` on anything short
 #: of proof, so they can only add a drain to what ``subject_terminal`` already decides.
 SUBJECT_RESOLVERS: tuple[tuple[str, Resolver], ...] = (
+    *((name, _heal_resolver(name)) for name, _check in HEAL_CHECKS),
     ("halt_trigger_cleared", _halt_trigger_cleared),
     ("parked_task_superseded", _parked_task_superseded),
     ("pr_terminal", _pr_terminal),

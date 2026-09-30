@@ -323,7 +323,10 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # leaves. Task dispatch is shared by core signals/tasks and loop timers.
 # Admission spans, their schema, skill assurance, and checked observation reads
 # form one cohesive core/telemetry/ package; none needs a flat root leaf.
-PINNED_FLAT_CORE_MODULES = 125
+# 126: +question_heal.py (#4904) — the withdraw-a-healed-question seam shared by every
+# question surfacing drain (the flat notify_question_drains.py) and the tick sweep. No
+# subpackage owns the DeferredQuestion lifecycle, and its checks span provision/ today.
+PINNED_FLAT_CORE_MODULES = 126
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:
