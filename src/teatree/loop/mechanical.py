@@ -176,9 +176,9 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
     only reaps MERGED/CLOSED PRs) lingers forever and re-dispatches a
     self-review every ``pending-spawn``.
 
-    Narrow and best-effort, mirroring :func:`reviewer_task_orphaned`: by
-    ticket id, only ``phase=reviewing`` non-terminal tasks; a missing
-    ticket no-ops silently.
+    Narrow and best-effort: by ticket id, only ``phase=reviewing``
+    non-terminal tasks, CLAIMED included (:func:`reviewer_task_orphaned`
+    closes PENDING only); a missing ticket no-ops silently.
 
     Narrower than :func:`reviewer_task_orphaned` in one way (#3910): a task the
     #68 auto-review dispatch armed is skipped. That premise — own MR means a
