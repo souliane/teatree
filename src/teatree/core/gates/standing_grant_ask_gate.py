@@ -27,20 +27,24 @@ _MERGE_WORD = r"(?:merg\w*|clear(?:s|ed|ing)?|land(?:s|ed|ing)?)"
 # At most 80 characters, never across a sentence end — a URL's dots do not end a sentence.
 _SAME_SENTENCE = r"(?:(?![.?!](?:\s|$))[^\n]){0,80}?"
 _SUBSTRATE_MERGE_RE = re.compile(
-    rf"--human-authori[sz]ed?\b"
+    rf"\b(?:with|using|use)\s+--human-authori[sz]ed?\b"
     rf"|\bsubstrate\b{_SAME_SENTENCE}\b{_MERGE_WORD}\b"
     rf"|\b{_MERGE_WORD}\b{_SAME_SENTENCE}\bsubstrate\b",
     re.IGNORECASE,
 )
 
 _NOT_COVERED_RE = re.compile(
-    r"\b(?:expedit\w*|waiv\w*|pending checks?|checks? (?:are |still )*pending|force[- ]?push\w*"
+    r"\b(?:expedit\w*|waiv\w*|force[- ]?push\w*"
     r"|history rewrite|rewrit\w* (?:the )?history|overrid\w*|bypass\w*|despite"
-    r"|revok\w*|revert\w*|disable[sd]?|disabling|turn(?:ing)? off|unset\w*|close|closing|rebas\w*|conflict\w*)\b",
+    r"|revok\w*|revert\w*|disable[sd]?|disabling|turn(?:ing)? off|unset\w*|close|closing"
+    r"|enabl\w*|extend\w*|widen\w*|hold(?:ing)?|defer(?:ring|red|s)?"
+    r"|clear enough|docs? (?:are|is) clear"
+    r"|is\s+(?:it\s+|this\s+|that\s+)?substrate\b"
+    r"|(?:does|do)(?:n't| not)\s+(?:\w+\s+){0,3}substrate\b|non-substrate)\b",
     re.IGNORECASE,
 )
 
-_OK_TOKEN_RE = re.compile(r"\[grant-ask-ok:\s*(\S[^\]]*?)\s*\]")
+_OK_TOKEN_RE = re.compile(r"\[grant-ask-ok:\s*([^\s\]][^\]]*?)\s*\]")
 _TOKEN_SCAN_CHARS = 512
 
 _FORGE_URL_RE = re.compile(r"https?://[^\s)>\]]+")
@@ -84,19 +88,29 @@ def grant_ask_ok_reason(text: str) -> str | None:
 
 
 def deny_reason(finding: StandingGrantAsk, *, overlay: str, delegated_by: str) -> str:
-    """The refusal: which grant already holds the sign-off, and how to merge without asking."""
+    """The refusal: which grant already holds the sign-off, and how to merge without asking.
+
+    Neither grant needs a per-PR ``--human-authorize`` at clear time — that flag
+    records a one-off owner approval on the CLEAR, which is exactly the per-PR
+    ask the owner opted out of. ``substrate_self_signoff`` needs no authorizer
+    at merge time either; the config delegation needs the CONFIGURED id
+    re-presented as ``--human-authorized`` at merge time (``_config_standing_
+    substrate_delegation`` matches it against the CLEAR's owning overlay, not
+    against what was recorded on the CLEAR).
+    """
+    clear = "`t3 <overlay> ticket clear …` (no per-PR `--human-authorize` needed)"
     if delegated_by:
         grant = f"`substrate_auto_merge_authorized_by = {delegated_by}`"
-        clear = f"`t3 <overlay> ticket clear … --blast-class substrate --human-authorize {delegated_by}`"
+        merge = f"`t3 <overlay> ticket merge <clear_id> --human-authorized {delegated_by}`"
     else:
         grant = "`substrate_self_signoff` at `autonomy = full`"
-        clear = "`t3 <overlay> ticket clear …` (no per-PR authorizer needed)"
+        merge = "`t3 <overlay> ticket merge <clear_id>`"
     question = finding.question[:_QUOTED_QUESTION_CHARS]
     return (
         f"BLOCKED: this question asks the owner to sign off a substrate merge — «{question}» — but the "
         f"standing grant on overlay `{overlay}` ({grant}) already authorizes it, and the owner asked not "
         "to be asked per PR. Decide it yourself against the bar: an independent cold review MERGE_SAFE on "
-        f"the live head and CI green, then {clear} and `t3 <overlay> ticket merge` — the keystone re-checks "
+        f"the live head and CI green, then {clear}, then {merge} — the keystone re-checks "
         "the grant and every floor gate. If the question is about something the grant does not cover, add "
         "a `[grant-ask-ok: <reason>]` token to it, or disable the gate with "
         "`t3 <overlay> gate standing-grant-ask disable`."

@@ -31,7 +31,21 @@ _OUT_OF_GRANT_ASKS = [
     "Do you approve closing substrate PR #4840 as a duplicate of #4839 instead of merging it?",
     "Do you approve merging substrate PR #4892 despite the HOLD verdict?",
     "Do you approve the substrate design before I start coding? Merging comes later.",
+    "Do you approve enabling substrate_self_signoff for private-skills so I can merge its substrate PRs?",
+    "Do you approve extending the standing grant to substrate merges on the private-skills repo?",
+    "Should I merge the dashboard PR - it does not touch substrate?",
+    "Can you confirm whether PR #4892 is substrate before I merge?",
+    "Do you approve holding substrate PR #4892 instead of merging it?",
+    "Do you approve deferring the substrate merge until after the release?",
+    "Which owner id should I pass to --human-authorize?",
+    "Can you confirm the substrate docs are clear enough?",
     "",
+]
+
+_GRANT_COVERED_ASKS_WITH_STATUS_NOISE = [
+    "Substrate PR #4892 is rebased, MERGE_SAFE and CI green. Do you approve merging it?",
+    "Substrate PR #4892 is rebased, MERGE_SAFE and CI green. Do you approve merging it? It has no conflicts.",
+    "Substrate PR #4892 has no pending checks, OK to merge it?",
 ]
 
 
@@ -60,6 +74,14 @@ class TestOutOfGrantAsks:
         assert find_standing_grant_ask([question]) is None
 
 
+class TestStatusNoiseStillFlags:
+    @pytest.mark.parametrize("question", _GRANT_COVERED_ASKS_WITH_STATUS_NOISE)
+    def test_a_status_report_in_the_ask_does_not_disable_the_gate(self, question: str) -> None:
+        finding = find_standing_grant_ask([question])
+
+        assert finding == StandingGrantAsk(question=question)
+
+
 class TestOkToken:
     @pytest.mark.parametrize(
         ("text", "expected"),
@@ -79,6 +101,11 @@ class TestOkToken:
 
     def test_token_past_the_scan_window_is_ignored(self) -> None:
         assert grant_ask_ok_reason("x" * 600 + "[grant-ask-ok: buried]") is None
+
+    def test_an_empty_token_with_a_later_bracket_does_not_escape(self) -> None:
+        text = "[grant-ask-ok: ] Do you approve merging substrate PR [#4892]?"
+
+        assert grant_ask_ok_reason(text) is None
 
 
 class TestRepoRefs:
@@ -114,4 +141,17 @@ class TestDenyReason:
         )
 
         assert "substrate_auto_merge_authorized_by" in reason
-        assert "--human-authorize souliane" in reason
+        assert "--human-authorized souliane" in reason
+        assert "ticket merge <clear_id> --human-authorized souliane" in reason
+
+    def test_neither_grant_asks_for_a_per_pr_authorizer_on_the_clear(self) -> None:
+        self_signoff_reason = deny_reason(
+            StandingGrantAsk(question="OK to land the substrate PR?"), overlay="t3-teatree", delegated_by=""
+        )
+        delegation_reason = deny_reason(
+            StandingGrantAsk(question="OK to land the substrate PR?"), overlay="t3-teatree", delegated_by="souliane"
+        )
+
+        assert "clear … --blast-class substrate --human-authorize" not in self_signoff_reason
+        assert "clear … --blast-class substrate --human-authorize" not in delegation_reason
+        assert "ticket merge <clear_id>`" in self_signoff_reason
