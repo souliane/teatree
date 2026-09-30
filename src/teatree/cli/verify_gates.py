@@ -3,16 +3,18 @@
 Registers onto the shared tool_app (side-effect import from cli/__init__,
 mirroring comment_density_tools / test_shape_tools).
 
-A plain ``prek run --all-files`` only fires the commit/manual-stage hooks:
-``.pre-commit-config.yaml`` sets ``default_stages: [commit, manual]``. The
+A plain ``prek run --all-files`` only fires the commit-stage hooks. The
 push-stage gates (refuse-public-push-with-leak, doc-update-gate,
 comment-density, ensure-pr) carry ``stages: [push]`` and are STRUCTURALLY
 skipped -- yet CI re-runs them on the PR-vs-base diff. So a builder reporting
 "local prek is green" can be honest about the commit-stage hooks while blind
-to the exact push-stage gate CI fails on.
+to the exact push-stage gate CI fails on. The same holds for the
+``stages: [manual]`` hooks CI runs as their own jobs (test-path-mirror,
+test-shape): no commit or push run fires them.
 
-This command runs BOTH stages against the changed files where filename-aware
-hooks allow it. ``always_run`` hooks still examine the whole tree. A config
+This command runs the commit and push stages against the changed files where
+filename-aware hooks allow it, then those manual-stage CI-job hooks.
+``always_run`` hooks still examine the whole tree. A config
 change or an unresolvable diff falls back to ``--all-files``. Each stage has a
 hard wall-clock deadline and a resource preflight, so refusal is visible rather
 than a host-level OOM.
@@ -52,6 +54,7 @@ _TARGET_BRANCH_CONFIG_KEY = "teatree.targetBranch"
 # prek's ``--hook-stage`` flag expects the canonical stage name. The config's
 # ``stages: [push]`` alias resolves to this; passing ``push`` verbatim errors.
 _PUSH_STAGE = "pre-push"
+_MANUAL_STAGE = "manual"
 _MIN_DISK_MIB = 4096
 _MIN_MEMORY_MIB = 2048
 _BYTES_PER_MIB = 1024 * 1024
@@ -88,7 +91,13 @@ UNCOVERED_CI_JOBS = (
     "jscpd-scan",
     "selection-audit",
     "refresh-durations",
+    "uv-audit",
+    "sbom",
 )
+
+#: Hermetic ``stages: [manual]`` hooks CI runs as a job of the same name.
+#: uv-audit (network) and cyclonedx-sbom (rewrites dist/) stay in UNCOVERED_CI_JOBS.
+CI_JOB_MANUAL_HOOKS = ("test-path-mirror", "test-shape")
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,8 +224,12 @@ def _record(repo: Path, state: str, reason: str) -> None:
 def _run_stages(scope_args: list[str], repo: Path) -> tuple[list[str], list[str]]:
     deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
     stages = (
-        ("commit + manual", [*deadline, "prek", "run", *scope_args]),
+        ("commit", [*deadline, "prek", "run", *scope_args]),
         ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
+        (
+            "manual (CI-job hooks)",
+            [*deadline, "prek", "run", *CI_JOB_MANUAL_HOOKS, *scope_args, "--hook-stage", _MANUAL_STAGE],
+        ),
     )
     failed: list[str] = []
     incomplete: list[str] = []
@@ -316,9 +329,9 @@ def verify_gates(
         if failed:
             typer.echo(f"verify-gates: FAILED stage(s): {', '.join(failed)} — measured {tree.head_sha}.", err=True)
         raise typer.Exit(code=1)
-    _record(repo, "green", "both gate stages passed")
+    _record(repo, "green", "all gate stages passed")
     typer.echo(
-        f"verify-gates: all gate stages green (commit + push) — measured {tree.head_sha}.",
+        f"verify-gates: all gate stages green (commit + push + manual CI-job hooks) — measured {tree.head_sha}.",
         err=True,
     )
     typer.echo(
