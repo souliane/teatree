@@ -155,3 +155,19 @@ class TestDenyReason:
         assert "clear … --blast-class substrate --human-authorize" not in self_signoff_reason
         assert "clear … --blast-class substrate --human-authorize" not in delegation_reason
         assert "ticket merge <clear_id>`" in self_signoff_reason
+
+    def test_self_signoff_reason_names_the_mcp_merge_tool_before_the_cli_fallback(self) -> None:
+        reason = deny_reason(
+            StandingGrantAsk(question="OK to land the substrate PR?"), overlay="t3-teatree", delegated_by=""
+        )
+
+        assert "mcp__teatree__pr_merge" in reason
+        assert reason.index("mcp__teatree__pr_merge") < reason.index("ticket merge <clear_id>`")
+
+    def test_delegation_reason_keeps_the_merge_on_the_cli(self) -> None:
+        reason = deny_reason(
+            StandingGrantAsk(question="OK to land the substrate PR?"), overlay="t3-teatree", delegated_by="souliane"
+        )
+
+        assert "mcp__teatree__pr_merge" not in reason
+        assert "ticket merge <clear_id> --human-authorized souliane" in reason

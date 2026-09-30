@@ -96,7 +96,8 @@ def deny_reason(finding: StandingGrantAsk, *, overlay: str, delegated_by: str) -
     at merge time either; the config delegation needs the CONFIGURED id
     re-presented as ``--human-authorized`` at merge time (``_config_standing_
     substrate_delegation`` matches it against the CLEAR's owning overlay, not
-    against what was recorded on the CLEAR).
+    against what was recorded on the CLEAR). ``mcp__teatree__pr_merge`` takes only
+    the clear_id, so it cannot present that id and the delegation stays on the CLI.
     """
     clear = "`t3 <overlay> ticket clear …` (no per-PR `--human-authorize` needed)"
     if delegated_by:
@@ -104,7 +105,7 @@ def deny_reason(finding: StandingGrantAsk, *, overlay: str, delegated_by: str) -
         merge = f"`t3 <overlay> ticket merge <clear_id> --human-authorized {delegated_by}`"
     else:
         grant = "`substrate_self_signoff` at `autonomy = full`"
-        merge = "`t3 <overlay> ticket merge <clear_id>`"
+        merge = "`mcp__teatree__pr_merge` with the clear_id (CLI fallback `t3 <overlay> ticket merge <clear_id>`)"
     question = finding.question[:_QUOTED_QUESTION_CHARS]
     return (
         f"BLOCKED: this question asks the owner to sign off a substrate merge — «{question}» — but the "
