@@ -27,6 +27,7 @@ from scripts.eval.corpus_gen.concise_doctrine import CONCISE_DOCTRINE
 from scripts.eval.corpus_gen.model import Scenario
 from scripts.eval.corpus_gen.per_skill import PER_SKILL
 from scripts.eval.corpus_gen.publish_gate_scenarios import PUBLISH_GATE_SCENARIOS
+from scripts.eval.corpus_gen.review_scope_scenarios import REVIEW_SCOPE_SCENARIOS
 from scripts.eval.corpus_gen.ship_scenario import ship_scenarios
 from scripts.eval.corpus_gen.todos_scenario import todos_scenarios
 
@@ -200,6 +201,7 @@ ALL_SCENARIOS: list[Scenario] = [
     for s in (
         *RECURRING,
         *PUBLISH_GATE_SCENARIOS,
+        *REVIEW_SCOPE_SCENARIOS,
         *blocked_subagent_scenarios(),
         *PER_SKILL,
         *ship_scenarios(),

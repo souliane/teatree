@@ -33,7 +33,7 @@ dependencies = [
   # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
   # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
   # bound, or reaches for an mcp symbol the locked 2.x does not provide.
-  "claude-agent-sdk==0.2.159",
+  "claude-agent-sdk==0.2.160",
   # Imported directly (cli/command_tree.py:25 and three more) yet only ever
   # arrived transitively through typer/django-typer, so nothing pinned it.
   # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
@@ -41,7 +41,8 @@ dependencies = [
   # help vanishes from ``t3 --help`` AND from the generated CLI reference — which
   # ``docs-drift`` cannot catch, because it regenerates under the same click.
   # No typer release fixes it on real click: typer 0.26+ vendors click, so the
-  # lift is the django-typer 4 migration, not a typer bump.
+  # lift is the django-typer 4 migration, not a typer bump. Dependabot rewrites this
+  # bound itself, so .github/dependabot.yml carries the matching ``>=8.5`` ignore.
   "click>=8.4,<8.5",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
@@ -188,7 +189,8 @@ dev = [
   # v0.15.1 in .pre-commit-config.yaml) never enforces. Bump in lockstep with
   # that hook's rev. Held at 0.15.x: 0.16's preview rules raise 6k+ findings,
   # most of them the ``# noqa`` -> ``# ruff: ignore`` rewrite that the repo's
-  # ``noqa``-parsing tools would need migrating for first.
+  # ``noqa``-parsing tools would need migrating for first. Dependabot rewrites this pin
+  # itself, so .github/dependabot.yml carries the matching ``>0.15.1`` ignore.
   "ruff==0.15.1",
   "slack-sdk>=3.35",
   "tach>=0.34",
@@ -771,7 +773,7 @@ constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
 #
 # `claude-agent-sdk` carried the only entry — its declared `mcp<2.0.0` had to be
 # replaced with the project's own `mcp>=2,<3` for the two to resolve together.
-# 0.2.159 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
+# 0.2.160 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
 # nothing left to override.
 #
 # The wide bound is safe rather than merely resolvable because the SDK reaches
