@@ -46,10 +46,12 @@ from typing import TYPE_CHECKING, Any, Final
 import pytest
 
 import hooks.scripts.hook_router as router
+import hooks.scripts.standing_grant_ask_gate as _standing_grant_ask_gate
 import hooks.scripts.verbatim_paste_gate as _verbatim_paste_gate
 from hooks.scripts.glab_stale_base_remote_guard import BASE_REMOTE
 from hooks.scripts.pretooluse_verdict import Verdict
 from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
+from teatree.core.merge.substrate_standing import SubstrateStandingAuthorization
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
 from teatree.hooks import verbatim_paste as _verbatim_paste
@@ -350,6 +352,31 @@ def _cron_loop_shell_allow(ctx: GateContext) -> dict:
         "tool_name": "CronCreate",
         "tool_input": {"cron": "*/12 * * * *", "prompt": "/followup"},
     }
+
+
+# block-standing-grant-ask (PreToolUse AskUserQuestion): with a standing substrate grant
+# configured, asking the owner to sign off a substrate merge blocks; a floor waiver passes.
+
+
+def _arrange_standing_grant(ctx: GateContext) -> None:
+    grant = ("t3-teatree", SubstrateStandingAuthorization(self_signoff=True))
+    ctx.monkeypatch.setattr(_standing_grant_ask_gate, "_configured_grant", lambda _refs: grant)
+
+
+def _standing_grant_ask(ctx: GateContext, question: str) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "AskUserQuestion",
+        "tool_input": {"questions": [{"question": question, "options": [{"label": "Yes"}, {"label": "No"}]}]},
+    }
+
+
+def _standing_grant_ask_deny(ctx: GateContext) -> dict:
+    return _standing_grant_ask(ctx, "Do you approve merging substrate PR souliane/teatree#4892?")
+
+
+def _standing_grant_ask_allow(ctx: GateContext) -> dict:
+    return _standing_grant_ask(ctx, "Authorize the expedite waiver so substrate PR #4805 can merge on pending checks?")
 
 
 def _block_config_overwrite_deny(ctx: GateContext) -> dict:
@@ -1205,6 +1232,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="CronCreate",
         deny_input=_cron_loop_shell_deny,
         allow_input=_cron_loop_shell_allow,
+    ),
+    GateRow(
+        gate_id="block-standing-grant-ask",
+        handler=router.handle_block_standing_grant_ask,
+        event="PreToolUse",
+        matched="AskUserQuestion",
+        deny_input=_standing_grant_ask_deny,
+        allow_input=_standing_grant_ask_allow,
+        arrange=_arrange_standing_grant,
     ),
     GateRow(
         gate_id="protect-default-branch",
