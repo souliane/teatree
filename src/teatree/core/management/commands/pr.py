@@ -7,6 +7,7 @@ returns the PR URL once the worker completes.
 """
 
 import re
+from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from django_typer.management import command
@@ -250,16 +251,19 @@ def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) ->
 
     ``--repo`` must be a filesystem path, never a forge slug (``owner/repo``) —
     ``git -C <slug>`` fails, and that failure used to be swallowed into a
-    false SYNCED classification (#2937). Returns ``(branch_name, None)`` on
-    success, or ``("", <result>)`` — the early :class:`EnsurePrResult` the
-    caller returns as-is — when validation stops the command before
-    classification.
+    false SYNCED classification (#2937). The omitted-``--repo`` default is
+    checked too: under the containerized ``t3`` the process cwd is the image
+    WORKDIR, and "not on a feature branch" there is a verdict about a branch
+    nobody read. Returns ``(branch_name, None)`` on success, or
+    ``("", <result>)`` — the early :class:`EnsurePrResult` the caller returns
+    as-is — when validation stops the command before classification.
     """
-    if repo and not git.check(repo=repo_path, args=["rev-parse", "--is-inside-work-tree"]):
+    if not git.check(repo=repo_path, args=["rev-parse", "--is-inside-work-tree"]):
+        named = f"--repo {repo!r}" if repo else f"the process cwd {str(Path.cwd())!r} (no --repo given)"
         return "", EnsurePrResult(
             error=(
-                f"--repo {repo!r} is not a git checkout on this filesystem. Pass a "
-                "path to a local clone or worktree (e.g. '.' or '/path/to/repo'), "
+                f"{named} is not a git checkout on this filesystem. Pass --repo with a "
+                "path to a local clone or worktree (e.g. '/path/to/repo'), "
                 "not a forge slug like 'owner/repo'."
             ),
         )

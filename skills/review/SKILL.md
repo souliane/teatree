@@ -405,7 +405,7 @@ The rest of steps 0 through 0h — the attachment-fetching recipes and annotatio
 
 **Step 1 — Structured Review Checklist:**
 
-1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.
+1. **Correctness** — does the code do what the ticket requires? Are all acceptance criteria met? When a change tightens a public contract or a shared predicate (e.g., serializer field becomes required, API parameter becomes mandatory), trace all callers — the change affects every flow that uses that interface, not just the one the ticket describes.
 2. **Completeness** — are there missing production code changes that the tests assume? Do test expectation changes have matching implementation changes?
 3. **Style** — follows project conventions?
 4. **Tests** — adequate coverage of new behavior?

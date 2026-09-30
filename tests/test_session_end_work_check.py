@@ -110,6 +110,18 @@ class TestArmedUnconditionally:
 
         assert "feat-2" in ctx
 
+    def test_the_printed_ensure_pr_command_names_the_repo(self) -> None:
+        # Run by hand through the containerized ``t3``, a bare ``.`` is the image WORKDIR.
+        orphans = [
+            {"repo": "/ws/backend", "branch": "feat-3", "status": "pushed_orphan", "ahead_count": 1},
+            {"repo": "/ws/frontend", "branch": "feat-4", "status": "unpushed_orphan", "ahead_count": 2},
+        ]
+        with patch.object(work_check, "fetch_orphans", return_value=orphans):
+            ctx = _context({"session_id": "s-repo-flag"})
+
+        assert "pr ensure-pr --repo /ws/backend --branch feat-3" in ctx
+        assert "pr ensure-pr --repo /ws/frontend --branch feat-4" in ctx
+
     def test_silent_when_nothing_is_stranded(self) -> None:
         assert _run({"session_id": "s-clean"}) == ""
 

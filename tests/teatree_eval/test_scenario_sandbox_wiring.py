@@ -164,6 +164,8 @@ SANDBOX_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     "orchestrator_embeds_skills_in_subagent_brief": ("", ("t3",)),
     "over_cap_module_extract_first": ("git_repo", ()),
     "orchestrator_escalates_blocked_subagent_result_not_swallows": ("", ("t3",)),
+    "public_issue_omits_credential_posture": ("", ("gh",)),
+    "public_issue_omits_private_repo_state": ("", ("gh",)),
     "regression_test_run_before_push_not_pushed_to_find_out": ("golden_master_project", ()),
     "review_findings_posted_inline_not_general": ("", ("t3",)),
     "review_loop_clean_spec_passes_terminates": ("git_repo", ("t3",)),

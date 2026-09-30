@@ -685,8 +685,9 @@ default `0.20` = +20%) prints a `COST REGRESSED` line and exits non-zero. This
 is *relative drift*, distinct from the absolute `--max-budget-usd` ceiling: a
 scenario can stay under the absolute cap while still doubling its cost vs the
 baseline. A `$0` baseline scenario (subscription — no metered reference)
-has undefined relative drift, so the gate no-ops it (never divides by zero) and
-reports "no cost baseline" when no metered baseline exists at all. The gate runs
+has undefined relative drift, so the gate no-ops it (never divides by zero); when
+that leaves no scenario compared — no baseline at all, or an all-`$0` one — the
+gate exits non-zero rather than reporting a green. The gate runs
 in every run shape — single-trial, `--trials` (pass@k, cost summed across
 trials), and `--models` (per `(scenario, model)` cell) — so a cost blow-up fails
 loud in the matrix/pass@k lanes too, not only the single-trial path.

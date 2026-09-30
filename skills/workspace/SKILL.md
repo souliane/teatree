@@ -388,7 +388,7 @@ for repo in "$T3_REPO" ~/workspace/<overlay>/<overlay-repo> ~/workspace/<skills-
 done
 ```
 
-**That `cd` does not cross the container boundary, so run the loop from a venue whose own cwd is the repo.** The branch and stash passes read the process cwd and there is no `--repo` to override it; `t3` execs into a container that starts at the image's `WORKDIR`, which is not a checkout — so a host-side `cd` leaves both passes reporting `SKIPPED branch + stash prune: cwd <path> is not a git repo`, once per iteration, having pruned nothing in any `$repo`. The worktree, database, docker and snapshot passes are unaffected — they take their bearings from the DB and the workspace roots, not from cwd, which is why they only need one run per overlay. This is the same venue split as `/t3:ship` § 4a, where `t3 push` and `pr ensure-pr` at least expose a `--repo` to name the tree explicitly.
+**The `cd` crosses the container boundary as data.** The branch and stash passes read the invocation cwd `deploy/t3` exports (see "`clean-all` prunes the checkout you ran it FROM" above), so each iteration prunes its own `$repo` — provided the repo sits under a root the container mounts. For a checkout outside every mounted root, `deploy/t3` refuses the run rather than letting it resolve against the container's own tree. Commands that take `--repo` instead — `t3 push`, `pr ensure-pr` — still default to `.`, so name the tree from a host shell (`/t3:ship` § 4a).
 
 Worktree pruning, orphan databases, and DSLR snapshots are global to the overlay's DB and only need to run once. Branch and stash pruning needs to run **per repo**.
 

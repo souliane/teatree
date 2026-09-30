@@ -1,5 +1,7 @@
 """Build agent prompts from ticket and task context."""
 
+from bisect import bisect_right
+from itertools import accumulate
 from pathlib import Path
 from typing import cast
 
@@ -31,6 +33,9 @@ _CODING_PHASE_ALWAYS_FULL = frozenset({"architecture-design"})
 
 
 _MAX_PARENT_SUMMARY_LEN = 2000
+
+# A quarter of the system-context budget keeps the work prompt small beside the skill append.
+_MAX_TICKET_CONTEXT_BYTES = MAX_APPEND_BYTES // 4
 
 # The skills pointer names the on-disk body and NOT the Skill tool: this lane is
 # denied that tool, so pointing at it would name an impossible recovery.
@@ -76,6 +81,35 @@ def _task_header_lines(task: Task, extra: dict) -> list[str]:
     return lines
 
 
+def _bounded_head_tail(entries: list[str], *, max_bytes: int, pointer: str) -> list[str]:
+    """Keep whole lines from both ends within *max_bytes* and mark the elided middle.
+
+    The tail survives because a dream batch ends on its delivery contract and
+    ``append_context`` adds the newest note last.
+    """
+    sizes = [len(entry.encode()) + 1 for entry in entries]
+    if sum(sizes) <= max_bytes:
+        return entries
+    half = max_bytes // 2
+    head = bisect_right(list(accumulate(sizes)), half)
+    tail = bisect_right(list(accumulate(reversed(sizes[head:]))), half)
+    dropped = sizes[head : len(sizes) - tail]
+    marker = f"[…truncated {len(dropped)} line(s), {sum(dropped)} bytes; see {pointer}]"
+    return [*entries[:head], marker, *entries[len(entries) - tail :]]
+
+
+def _ticket_context_lines(ticket: Ticket) -> list[str]:
+    entries = ticket.context.strip().splitlines()
+    if not entries:
+        return []
+    pointer = f"`t3 <overlay> ticket context show {ticket.pk}`"
+    return [
+        "",
+        f"Ticket context (durable knowledge store; full text: {pointer}):",
+        *_bounded_head_tail(entries, max_bytes=_MAX_TICKET_CONTEXT_BYTES, pointer=pointer),
+    ]
+
+
 def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skills: list[str] | None = None) -> str:
     """Build a work prompt for a headless agent.
 
@@ -90,6 +124,7 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None, stage_skil
 
     lines = _task_header_lines(task, extra)
     lines.extend(_format_pr_context(extra))
+    lines.extend(_ticket_context_lines(ticket))
 
     lines.extend(
         (

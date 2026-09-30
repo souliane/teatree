@@ -1096,11 +1096,7 @@ class TestTicketCommand(TestCase):
 class TestTasksCreateCommand(TestCase):
     """Tests for the tasks create subcommand — phase handoff used by /t3:next."""
 
-    def test_create_headless_defaults_for_free_form_phase(self) -> None:
-        # ``scoping`` has no registered author phase agent, so it is genuinely
-        # headless and the default sticks. (A loop-dispatched phase like
-        # ``coding`` is routed to INTERACTIVE by the Task.save invariant — see
-        # test_create_loop_dispatched_phase_is_interactive.)
+    def test_create_records_a_free_form_phase_task(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         result = cast(
             "dict[str, object]",
@@ -1112,13 +1108,17 @@ class TestTasksCreateCommand(TestCase):
         assert task.execution_reason == "Decide X."
         assert task.session.ticket_id == ticket.pk
 
-    def test_create_loop_dispatched_phase_is_interactive(self) -> None:
+    def test_create_accepts_a_loop_dispatched_phase(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         result = cast(
             "dict[str, object]",
             call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X."),
         )
-        Task.objects.get(pk=result["task_id"])
+        task = Task.objects.get(pk=result["task_id"])
+        assert result["phase"] == "coding"
+        assert task.phase == "coding"
+        assert task.ticket_id == ticket.pk
+        assert task.execution_reason == "Implement X."
 
     def test_create_reuses_latest_session(self) -> None:
         ticket = Ticket.objects.create(overlay="test")

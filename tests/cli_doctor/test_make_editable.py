@@ -87,7 +87,7 @@ class TestMakeEditable:
 
         assert "uv tool install" in capsys.readouterr().out
 
-    def test_reports_fail_without_host_project_when_install_fails(self, tmp_path):
+    def test_reports_fail_without_host_project_when_install_fails(self, tmp_path, capsys):
         failure = subprocess.CompletedProcess([], 1, "", "install failed")
         with (
             patch("teatree.cli.doctor.service._find_host_project_root", return_value=None),
@@ -95,7 +95,11 @@ class TestMakeEditable:
         ):
             DoctorService.make_editable("teatree", tmp_path)
 
-    def test_reports_fail_when_uv_sync_fails(self, tmp_path):
+        out = capsys.readouterr().out
+        assert "FAIL  Could not install teatree as editable: install failed" in out
+        assert "OK " not in out
+
+    def test_reports_fail_when_uv_sync_fails(self, tmp_path, capsys):
         pyproject = tmp_path / "pyproject.toml"
         pyproject.write_text(
             '[project]\nname = "test"\n\n[tool.uv.sources]\nteatree = { git = "https://x" }\n',
@@ -106,6 +110,10 @@ class TestMakeEditable:
             patch("subprocess.run", return_value=failure),
         ):
             DoctorService.make_editable("teatree", Path("/repos/teatree"))
+
+        out = capsys.readouterr().out
+        assert "FAIL  uv sync failed after patching sources: sync failed" in out
+        assert "OK " not in out
 
 
 class TestMakeEditableDoesNotLeakLockfile:

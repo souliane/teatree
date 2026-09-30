@@ -34,6 +34,15 @@ The ten checks apply when the work meets any of:
 
 Tactical fixes (typo, narrow string change, single-call-site bug) skip the gate — the implementer notes that in the PR body.
 
+### Making an existing function stricter — search its callers first (Non-Negotiable)
+
+A new liveness/strictness gate or a new `None`/`False` return on an existing function changes every caller, so it is "single-call-site" only once a search proves it. Your first command is the tree-wide search: it prints the definition and every caller in one pass, so opening the defining file first saves nothing. Then apply check 9 to each caller it finds.
+
+```bash
+git grep -n "<name>("               # do X first: the definition plus every caller, tree-wide
+grep -n "<name>" <defining-file>    # never Y first: one file cannot show who else calls it
+```
+
 ## The ten checks
 
 ### 1. BLUEPRINT § alignment
@@ -115,6 +124,7 @@ For any change that replaces or rewrites an existing implementation, **enumerate
 
 - A narrowing of a **privacy / leak / security matcher** — or of the gate's coverage in general — requires explicit user sign-off. A unilateral "documented trade-off" that weakens a public-repo privacy gate is a BLOCKER, not a self-approve.
 - **Never invert an existing must-block regression test to must-not-block** (e.g. `returncode == 1` → `== 0`) to make a weaker matcher pass. Deleting or inverting the test that pinned the old behavior is the tell that coverage was dropped without preservation.
+- **Tightening a shared predicate changes every caller, not only the one you wrote it for.** For each caller the tree-wide search finds, name the decision it makes. A release/commit caller may need the strict read; a park/defer caller does not, and inherits a wrong verdict when you tighten in place. When requirements differ, add a strict variant for the caller that needs it, leave the shared one as it was, and pin the untouched caller with a test (#4880: a release-path liveness gate turned a park into a HALT).
 - If a behavior genuinely must be dropped, the removal is its own reviewed decision: list it here, justify it, and (for safety gates) get sign-off — preserve-or-STOP, never silently narrow.
 
 ### 10. Removability / harness-vs-data
@@ -162,7 +172,7 @@ The implementer fills the template BEFORE touching `src/`, drafting it in a work
 <identities with bare vs qualified forms; canonical form chosen; one normalization function at every boundary; any strip/split whose purpose is to make a comparison succeed — justify or remove>
 
 ## 9. Behavior preservation / capability deletion
-<for a change that replaces/rewrites existing code: enumerate every behavior the old code handled, mark each preserved or dropped; flag any narrowing of a privacy/leak/security matcher as requiring user sign-off; confirm no must-block test was inverted to must-not-block; "n/a — purely additive" if nothing is removed>
+<for a change that replaces/rewrites existing code: enumerate every behavior the old code handled, mark each preserved or dropped; flag any narrowing of a privacy/leak/security matcher as requiring user sign-off; confirm no must-block test was inverted to must-not-block; for a tightened shared predicate: every caller and its decision, split strict/lenient where they differ; "n/a — purely additive" if nothing is removed>
 
 ## 10. Removability / harness-vs-data
 <is the component removable — the blast radius of deleting it; does it belong in the harness (code/gate/FSM) or in data/config (table/setting/registry)? justify the side chosen>

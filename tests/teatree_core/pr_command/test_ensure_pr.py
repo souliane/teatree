@@ -32,8 +32,9 @@ from ._shared import _MOCK_OVERLAY
 
 class TestEnsurePr(TestCase):
     @pytest.fixture(autouse=True)
-    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
 
     def test_no_op_when_branch_has_open_pr(self) -> None:
         host = MagicMock()
@@ -312,6 +313,17 @@ class TestEnsurePr(TestCase):
         assert "error" in result
         assert "owner/repo" in str(result["error"])
         mock_classify.assert_not_called()
+
+    def test_a_default_cwd_that_is_no_checkout_is_named_not_read_as_a_branch_verdict(self) -> None:
+        # Through the containerized ``t3`` the process cwd is the image WORKDIR, never a checkout.
+        not_a_checkout = Path(self._tmp_path)
+        self._monkeypatch.chdir(not_a_checkout)
+
+        result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert "skipped" not in result, result
+        assert "is not a git checkout" in str(result["error"])
+        assert "--repo" in str(result["error"])
 
     def test_classify_branch_git_failure_surfaces_as_structured_error(self) -> None:
         """#2937.

@@ -73,11 +73,11 @@ _SDK_MODULE = "claude_agent_sdk"
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
 #: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
-_PINNED_SDK_VERSION = "0.2.158"
+_PINNED_SDK_VERSION = "0.2.159"
 
 #: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
-#: :data:`_PINNED_SDK_VERSION` → ``2.1.280 (Claude Code)``.
-_SDK_BUNDLED_CLI_VERSION = "2.1.280"
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.281 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.281"
 
 #: The deployed runtime's pin: the version the factory host runs today.
 _RUNTIME_CLI_VERSION = "2.1.283"
@@ -553,7 +553,10 @@ class TestTheProbeRefusesRatherThanReportAClean:
         _bundled_cli_version.cache_clear()
         with (
             patch.object(importlib.metadata, "version", return_value="0.2.151"),
-            pytest.raises(RuntimeError, match=r"has claude-agent-sdk==0\.2\.151, not the pinned 0\.2\.158"),
+            pytest.raises(
+                RuntimeError,
+                match=rf"has claude-agent-sdk==0\.2\.151, not the pinned {re.escape(_PINNED_SDK_VERSION)}",
+            ),
         ):
             _bundled_cli_version()
         _bundled_cli_version.cache_clear()

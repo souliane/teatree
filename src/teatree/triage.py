@@ -56,14 +56,32 @@ def _gh_json(args: list[str], *, repo: str, what: str) -> list[dict]:
 #: The fields every open-issue enumeration here reads.
 _OPEN_ISSUE_FIELDS = "number,title,body,labels,updatedAt"
 
+#: The most open issues a scan judges; one more is requested so a larger backlog is detected, not truncated.
+OPEN_ISSUE_CEILING = 1000
+
 
 def _open_issues(repo: str) -> list[dict]:
-    """Every open issue in *repo*, or raise :class:`ForgeEnumerationError`."""
-    return _gh_json(
-        ["issue", "list", "--repo", repo, "--state", "open", "--limit", "200", "--json", _OPEN_ISSUE_FIELDS],
+    """Every open issue in *repo*, or raise :class:`ForgeEnumerationError` — never a silent prefix."""
+    issues = _gh_json(
+        [
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            str(OPEN_ISSUE_CEILING + 1),
+            "--json",
+            _OPEN_ISSUE_FIELDS,
+        ],
         repo=repo,
         what="gh issue list",
     )
+    if len(issues) > OPEN_ISSUE_CEILING:
+        msg = f"{repo} has more than {OPEN_ISSUE_CEILING} open issues; a verdict over part of them would not hold"
+        raise ForgeEnumerationError(msg)
+    return issues
 
 
 LABEL_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -223,14 +241,19 @@ class StaleIssue:
     days_inactive: int
 
 
+#: The newest merged PRs one resolved-issue scan reads; an issue fixed by an older PR is outside it.
+MERGED_PR_WINDOW = 200
+
+
 class TriageScanner:
     """Find resolved-but-open issues and stale issues."""
 
     def __init__(self, repo: str) -> None:
         self.repo = repo
+        self.merged_window_full = False
 
     def _fetch_merged_prs(self) -> list[dict]:
-        return _gh_json(
+        prs = _gh_json(
             [
                 "pr",
                 "list",
@@ -239,13 +262,15 @@ class TriageScanner:
                 "--state",
                 "merged",
                 "--limit",
-                "200",
+                str(MERGED_PR_WINDOW),
                 "--json",
                 "number,title,mergedAt",
             ],
             repo=self.repo,
             what="gh pr list",
         )
+        self.merged_window_full = len(prs) >= MERGED_PR_WINDOW
+        return prs
 
     def find_resolved(self) -> list[ResolvedIssue]:
         issues = _open_issues(self.repo)

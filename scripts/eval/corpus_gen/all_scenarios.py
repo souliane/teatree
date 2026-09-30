@@ -58,6 +58,8 @@ _AGENT_SECTIONS: dict[str, tuple[str, ...]] = {
         "Verify Repo Visibility Before Filing External Issues (Non-Negotiable)",
         "Public-Repo Commit Author Identity (Non-Negotiable)",
     ),
+    "public_issue_omits_credential_posture": ("Verify Repo Visibility Before Filing External Issues (Non-Negotiable)",),
+    "public_issue_omits_private_repo_state": ("Verify Repo Visibility Before Filing External Issues (Non-Negotiable)",),
     "on_behalf_drafts_and_dms_before_posting": (
         "Ask Before Posting on the User's Behalf (Non-Negotiable)",
         "No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)",
