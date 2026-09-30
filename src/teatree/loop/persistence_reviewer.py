@@ -68,16 +68,7 @@ def handle_reviewer(action: DispatchAction) -> Task | None:
             pr_url,
         )
         return None
-    if head_sha and (ticket.extra or {}).get("reviewed_sha") != head_sha:
-        # #800 N3: canonical locked RMW — a concurrent pr_urls /
-        # visual_qa writer no longer clobbers reviewed_sha.
-        #
-        # #959 defect 2: a SHA move invalidates any prior approval — drop
-        # ``last_review_state`` in the same RMW so the
-        # ``_already_reviewed_at_head`` dedup below does NOT suppress
-        # review of the genuinely new revision (the recorded APPROVED
-        # belonged to the old SHA).
-        ticket.merge_extra(set_keys={"reviewed_sha": head_sha}, pop_keys=["last_review_state", "discharged_sha"])
+    ticket.rearm_review_at(head_sha)
     if payload.get("invalidates_discharge"):
         ticket.merge_extra(pop_keys=["discharged_sha"])
     return _mint_reviewer_task(ticket, payload=payload, head_sha=head_sha)

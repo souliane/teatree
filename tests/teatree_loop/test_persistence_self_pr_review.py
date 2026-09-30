@@ -8,6 +8,7 @@ is referenced by name and its own edge cases are pinned at the unit level.
 
 from django.test import TestCase
 
+from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models import Task, Ticket
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.dispatch import DispatchAction
@@ -69,3 +70,17 @@ class TestHandleSelfPrReview(TestCase):
         assert second.ticket.pk == first.ticket.pk
         second.ticket.refresh_from_db()
         assert second.ticket.extra["reviewed_sha"] == "selfsha-93-b"
+
+    def test_an_unclaimed_new_head_leaves_the_reviewed_head_and_its_approval(self) -> None:
+        extra = {
+            "reviewed_sha": "selfsha-94-a",
+            "discharged_sha": "selfsha-94-a",
+            "last_review_state": ReviewState.APPROVED.value,
+        }
+        ticket = Ticket.objects.create(issue_url=_PR_URL, overlay="acme", role=Ticket.Role.REVIEWER, extra=dict(extra))
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=94, head_sha="selfsha-94-b", variant="claude:review")
+
+        assert handle_self_pr_review(_action(pr_id=94, head_sha="selfsha-94-b")) is None
+
+        ticket.refresh_from_db()
+        assert ticket.extra == extra
