@@ -494,7 +494,7 @@ holistic (`ac-reviewing-codebase`).
 
 **Anti-pattern.** A loop/scanner sweep where one item raising an exception aborts the entire pass, so a single bad row stops every sibling from being processed.
 
-**Preferred.** Isolate each item — catch and record per-item failure, continue the sweep — so one poison item never starves the rest. A failure of the scan as a whole propagates: the dispatcher already isolates each scanner and records it in the tick report, so catching it into an empty result reads as a quiet tick.
+**Preferred.** Isolate each item — catch and record per-item failure, continue the sweep — so one poison item never starves the rest. A failure of the scan as a whole propagates: the dispatcher already isolates each scanner and records it in the tick report, so catching it into an empty result reads as a quiet tick. A mechanical handler is held to the same rule — _execute_mechanical isolates each one and records its raise, so a handler that catches its own failure into a log line hides a backup or refresh that fails on every tick.
 
 ## Long I/O inside the control-plane write transaction
 

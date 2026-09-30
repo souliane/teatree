@@ -46,12 +46,15 @@ class TestRefreshSnapshotHandler:
             refresh_snapshot({"config": cfg})
         assert "did not succeed" in caplog.text
 
-    def test_exception_is_swallowed(self, tmp_path: Path) -> None:
+    def test_a_refresh_exception_raises_for_the_tick_to_record(self, tmp_path: Path) -> None:
         cfg = _cfg(tmp_path)
-        with patch(
-            "teatree.utils.django_db.snapshot_warmer.refresh_reference_snapshot", side_effect=RuntimeError("boom")
+        with (
+            patch(
+                "teatree.utils.django_db.snapshot_warmer.refresh_reference_snapshot", side_effect=RuntimeError("boom")
+            ),
+            pytest.raises(RuntimeError, match="boom"),
         ):
-            refresh_snapshot({"config": cfg})  # must not raise
+            refresh_snapshot({"config": cfg})
 
 
 class TestSnapshotWarmerWiring:

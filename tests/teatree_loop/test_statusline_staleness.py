@@ -34,12 +34,10 @@ class TestStalenessBannerWording:
         banner = staleness_banner(6 * 3600, colorize=False)
         assert "STALE" in banner
         assert "6h ago" in banner
-        # #2650 remedy: re-register the per-loop `/loop` via `/t3:health`, or force a
-        # render with the PLURAL `t3 loops tick` — never the retired singular
-        # `t3 loop tick` fat-loop shim.
-        assert "/t3:health" in banner
-        assert "t3 loops tick" in banner
-        assert "t3 loop tick" not in banner
+        # The worker's render chain keeps the file fresh, so a stale one means the worker
+        # is down; bare `t3 loops tick` is a hard error (#2650) and names no remedy.
+        assert "`t3 worker status`" in banner
+        assert "loops tick" not in banner
 
     def test_banner_colorized_wraps_red(self) -> None:
         banner = staleness_banner(6 * 3600, colorize=True)
