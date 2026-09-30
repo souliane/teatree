@@ -10,6 +10,8 @@ assertion scans every occurrence of its anchor.
 
 from pathlib import Path
 
+from teatree.core.models.external_delivery import LEASE_SECONDS
+
 _SKILLS = Path(__file__).resolve().parents[2] / "skills"
 _SHIP_SKILL = _SKILLS / "ship" / "SKILL.md"
 _REFERENCE = _SKILLS / "ship" / "references" / "hook-opened-pr-ledger.md"
@@ -65,6 +67,34 @@ class TestReferenceCarriesTheMechanism:
             must_include="skip_for_classified",
             radius=400,
         ), "the reference must say why re-running `pr ensure-pr` on an open-PR branch is no heal"
+
+
+class TestReferenceNamesTheAdoptLease:
+    def test_reference_cites_the_lease_writer_its_ttl_and_the_dispatch_filter(self) -> None:
+        text = _REFERENCE.read_text(encoding="utf-8")
+        for token in (
+            "teatree.core.models.external_delivery.mark_external_delivery",
+            "teatree.core.models.external_delivery.LEASE_SECONDS",
+            f"{LEASE_SECONDS} s",
+            "teatree.core.models.task.Task.dispatchable_q",
+        ):
+            assert token in text, f"hook-opened-pr-ledger.md must name `{token}`"
+
+    def test_reference_ties_the_lease_to_adopt(self) -> None:
+        assert _any_window_contains(
+            _REFERENCE.read_text(encoding="utf-8"),
+            "--adopt",
+            must_include="mark_external_delivery",
+            radius=300,
+        ), "the reference must say `--adopt` stamps the external-delivery lease"
+
+    def test_reference_has_a_loop_agent_check_the_row_before_adopting(self) -> None:
+        assert _any_window_contains(
+            _REFERENCE.read_text(encoding="utf-8"),
+            "mcp__teatree__worktree_status",
+            must_include="--adopt",
+            radius=300,
+        ), "the reference must have a loop agent read the worktree row before running `--adopt`"
 
 
 class TestPushersArePointedAtTheRule:
