@@ -42,7 +42,7 @@ def refused_review(request: pytest.FixtureRequest) -> TaskAttempt:
         msg = "the gate must refuse a reviewing task whose pull request head is not recorded"
         raise AssertionError(msg)
     attempt = TaskAttempt.objects.create(task=task, exit_code=1, ended_at=timezone.now(), error=refusal)
-    task.fail(reason=refusal)
+    task.fail(reason=refusal, by_holder=True)
     return attempt
 
 

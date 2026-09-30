@@ -66,7 +66,7 @@ class TestScheduleExternalReview(TestCase):
             role=Ticket.Role.REVIEWER,
         )
         first = mint_open_pr_review(ticket)
-        first.fail(reason="the reviewer sub-agent crashed")
+        first.fail(reason="the reviewer sub-agent crashed", by_holder=True)
 
         second = mint_open_pr_review(ticket)
 

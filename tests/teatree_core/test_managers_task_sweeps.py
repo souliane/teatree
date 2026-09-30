@@ -219,7 +219,7 @@ class TestClaimStampsTheOwnerProcess(TestCase):
         task = self.make_task()
         task.claim(claimed_by="headless-worker")
 
-        task.fail(reason="deliberate")
+        task.fail(reason="deliberate", by_holder=True)
 
         task.refresh_from_db()
         assert task.owner_pid is None

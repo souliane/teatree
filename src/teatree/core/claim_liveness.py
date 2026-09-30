@@ -34,7 +34,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TypedDict
 
-from teatree.core.loop_lease_liveness import namespace_is_attributable, pid_alive_probe, reader_pid_namespace
+from teatree.core.loop_lease_liveness import (
+    namespace_is_attributable,
+    namespace_is_proven,
+    owner_pid_is_dead,
+    pid_alive_probe,
+    reader_pid_namespace,
+)
 
 #: Task pks this process is executing right now, guarded because the sweeps run on the
 #: ``loops`` executor thread while the drive runs on ``default``.
@@ -204,3 +210,22 @@ def owner_is_executing(owner: ClaimOwner, task_pk: int, *, now: datetime) -> boo
 def executing_owner_reason(owner: ClaimOwner) -> str:
     """Why a sweep withheld its reap — worded identically by every consumer."""
     return f"pid {owner.owner_pid} is still executing it (the lease lapsed, the run did not)"
+
+
+def holder_confirmed_dead(owner: ClaimOwner) -> bool:
+    """Whether *owner*'s process is POSITIVELY proven dead — for a caller that must not guess (#4872).
+
+    The opposite bias from :func:`owner_is_executing`: that predicate WITHHOLDS a reap it
+    cannot prove premature, so ``False`` means "dead OR indeterminate" and errs toward
+    releasing. This predicate requires positive proof of death before a caller may release a
+    THIRD PARTY's claim with no lease-expiry sweep backstopping it (a third-party
+    ``Task.fail()`` and the terminal-task occupancy self-heal it must agree with) — so "not
+    confirmed dead" means "keep the claim", the opposite bias.
+
+    Requires the namespace to be PROVEN this reader's own (:func:`namespace_is_proven`, the
+    strict sibling of :func:`namespace_is_attributable` used above) — an unproven namespace
+    makes the pid no evidence at all, never a false "dead". Only then does the pid itself
+    have to positively fail the liveness probe (:func:`owner_pid_is_dead`); a null pid or an
+    unavailable probe is indeterminate, not proof.
+    """
+    return namespace_is_proven(owner.owner_pid_namespace) and owner_pid_is_dead(owner.owner_pid)

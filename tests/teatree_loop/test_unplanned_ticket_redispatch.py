@@ -37,7 +37,10 @@ def _refused_ticket(
     session = Session.objects.create(ticket=ticket, agent_id=phase)
     task = Task.objects.create(ticket=ticket, session=session, phase=phase, subject="refused")
     if status == Task.Status.FAILED:
-        task.fail(reason=f"{PLAN_MISSING_PREFIX}refusing to dispatch t3:coder for ticket {ticket.pk} ({phase})")
+        task.fail(
+            reason=f"{PLAN_MISSING_PREFIX}refusing to dispatch t3:coder for ticket {ticket.pk} ({phase})",
+            by_holder=False,
+        )
     else:
         Task.objects.filter(pk=task.pk).update(status=status)
     return ticket
