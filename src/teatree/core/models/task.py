@@ -12,18 +12,14 @@ from django_fsm import FSMField, TransitionNotAllowed
 from teatree.core.claim_liveness import RELEASED_CLAIM
 from teatree.core.managers import TaskManager
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
-from teatree.core.modelkit.task_failure_taxonomy import (
-    AGENT_ABANDONED_PREFIX,
-    FailureKind,
-    classify_failure,
-    exhausted_the_conversation,
-)
+from teatree.core.modelkit.task_failure_taxonomy import AGENT_ABANDONED_PREFIX, FailureKind, exhausted_the_conversation
 from teatree.core.models.auto_implement import is_auto_implement
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.session import Session
 from teatree.core.models.task_claim import claim as _claim_task
 from teatree.core.models.task_claim import complete_claimed as _complete_claimed_task
+from teatree.core.models.task_claim import fail as _fail_task
 from teatree.core.models.task_claim import fail_claimed as _fail_claimed_task
 from teatree.core.models.task_claim import renew_lease as _renew_task_lease
 from teatree.core.models.task_claim import window_parked as _window_parked
@@ -462,43 +458,14 @@ class Task(models.Model):
         last = self.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
         return bool(last and isinstance(last.result, dict) and last.result.get("needs_user_input"))
 
-    def fail(self, *, reason: str) -> None:
-        """Land this task FAILED with a NAMED cause (#3957).
+    def fail(self, *, reason: str, by_holder: bool) -> None:
+        """Land this task FAILED with a NAMED cause, releasing occupancy per *by_holder* (#3957, #4872).
 
-        *reason* is a REQUIRED keyword, and that is the whole point: a task listing and a
-        kanban card that render an error with no cause attached cannot tell a genuine
-        review defect from a lost lease, a bad harness pin, or an exhausted credential.
-        Making the reason un-omittable is what stops a NEW failure path from recording
-        nothing — a caller that forgets it fails at the call site, not silently in the DB.
-
-        The reason is classified once, here, into a
-        :class:`~teatree.core.modelkit.task_failure_taxonomy.FailureKind`, so every reader shares
-        one vocabulary instead of re-deriving a cause from free text.
+        A thin delegate, mirroring :meth:`fail_claimed` — the full contract (why *reason*
+        and *by_holder* are both required, and the self- vs third-party occupancy split)
+        lives on :func:`teatree.core.models.task_claim.fail`'s docstring.
         """
-        if not reason.strip():
-            msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
-            raise ValueError(msg)
-        from teatree.core.models.worktree_occupancy import (  # noqa: PLC0415 — deferred: import cycle
-            release_task_occupancy,
-        )
-
-        with transaction.atomic():
-            # Release BEFORE _clear_claim() blanks claimed_by_session — the CAS
-            # in release_task_occupancy matches on that exact session value (#4867).
-            release_task_occupancy(self)
-            self.status = self.Status.FAILED
-            self.failure_reason = reason.strip()
-            self.failure_kind = classify_failure(self.failure_reason)
-            self._clear_claim()
-            self.save(
-                update_fields=[
-                    "status",
-                    "failure_reason",
-                    "failure_kind",
-                    *CLAIM_FIELDS,
-                ],
-            )
-        self.observe_transition("task.failed", cause=self.failure_kind)
+        _fail_task(self, reason=reason, by_holder=by_holder)
 
     def fail_claimed(self, *, reason: str) -> None:
         _fail_claimed_task(self, reason=reason)
@@ -602,7 +569,10 @@ class Task(models.Model):
         else:
             # A non-zero exit with no error text still names a cause (#3957): the exit
             # code IS the only thing known, so record that rather than nothing.
-            self.fail(reason=error.strip() or f"{AGENT_ABANDONED_PREFIX}run exited {exit_code} with no error recorded")
+            self.fail(
+                reason=error.strip() or f"{AGENT_ABANDONED_PREFIX}run exited {exit_code} with no error recorded",
+                by_holder=True,
+            )
         return attempt
 
     def spawn_child_tasks(self, repos: list[str], *, phase: str = "") -> list["Task"]:

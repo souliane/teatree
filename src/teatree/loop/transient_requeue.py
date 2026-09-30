@@ -349,6 +349,7 @@ def _non_terminal_failed_tasks() -> list[Task]:
     per-tick scan bounded as dead letters pile up (a monotonically growing FAILED set
     would otherwise degrade tick latency linearly); prefetching ``attempts`` removes the
     per-task N+1 that :func:`_latest_error` would otherwise issue for every FAILED row.
+    A kept third-party claim waits out its Task lease: disposing it would free a live holder's checkout.
     """
     return list(
         Task.objects.filter(status=Task.Status.FAILED)
@@ -356,6 +357,7 @@ def _non_terminal_failed_tasks() -> list[Task]:
         .exclude(execution_reason__contains=HALT_STAMP)
         .exclude(execution_reason__contains=LIVE_SUCCESSOR_STAMP)
         .exclude(execution_reason__contains=SUPERSEDED_HEAD_STAMP)
+        .without_kept_claims()
         .select_related("ticket")
         .prefetch_related("attempts"),
     )

@@ -444,6 +444,37 @@ class TestActiveClaimExists(TestCase):
         assert Task.objects.active_claim_exists() is False
 
 
+class TestWithoutKeptClaims(TestCase):
+    """#4872: a third-party fail keeps a possibly-live holder's claim on the terminal row."""
+
+    def _task(self, *, status: str, claimed_by: str, lease_offset_seconds: int | None) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        lease = None if lease_offset_seconds is None else timezone.now() + timedelta(seconds=lease_offset_seconds)
+        return Task.objects.create(
+            ticket=ticket, session=session, status=status, claimed_by=claimed_by, lease_expires_at=lease
+        )
+
+    def _kept(self) -> set[int]:
+        return set(Task.objects.all().values_list("pk", flat=True)) - set(
+            Task.objects.without_kept_claims().values_list("pk", flat=True)
+        )
+
+    def test_a_terminal_row_with_a_live_kept_claim_is_dropped(self) -> None:
+        failed = self._task(status=Task.Status.FAILED, claimed_by="worker-1", lease_offset_seconds=300)
+        completed = self._task(status=Task.Status.COMPLETED, claimed_by="worker-1", lease_offset_seconds=300)
+
+        assert self._kept() == {failed.pk, completed.pk}
+
+    def test_released_expired_and_active_rows_stay(self) -> None:
+        self._task(status=Task.Status.FAILED, claimed_by="", lease_offset_seconds=None)
+        self._task(status=Task.Status.FAILED, claimed_by="worker-1", lease_offset_seconds=-10)
+        self._task(status=Task.Status.FAILED, claimed_by="worker-1", lease_offset_seconds=None)
+        self._task(status=Task.Status.CLAIMED, claimed_by="worker-1", lease_offset_seconds=300)
+
+        assert self._kept() == set()
+
+
 class TestReclaimOrphanedClaims(TestCase):
     """#652 — an orphaned in-flight task must be *taken over*, not failed.
 
@@ -988,7 +1019,7 @@ class TestTaskClaimAtomic(TestCase):
         from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
 
         task = self._task()
-        task.fail(reason="test: deliberate failure")  # terminal
+        task.fail(reason="test: deliberate failure", by_holder=True)  # terminal
 
         with pytest.raises(InvalidTransitionError):
             task.claim(claimed_by="session-A")

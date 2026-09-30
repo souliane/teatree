@@ -33,6 +33,7 @@ from teatree.core.overlay import (
     RunCommands,
 )
 from teatree.core.signals import _TERMINAL_TARGET_STATES, _TICKET_TRANSITION_TASKS
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
 from tests._ansi import strip_ansi as _strip_ansi
 from tests._pr_open_state_stub import mint_open_pr_review
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
@@ -1286,6 +1287,37 @@ class TestTasksCancelCommand(TestCase):
         assert task.status == Task.Status.FAILED
         assert task.failure_kind == FailureKind.CANCELLED
         assert "no reason given" in task.failure_reason
+
+    def test_cancel_of_a_live_claim_leaves_the_checkout_occupied_and_blocks_a_rival(self) -> None:
+        """#4872: cancelling a task whose holder is still alive must not evict its checkout.
+
+        Before the fix, ``tasks cancel --confirm`` released the occupancy claim
+        unconditionally, so a rival could immediately take the checkout the
+        cancelled task's own agent might still be writing in (#3952).
+        """
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        checkout = tempfile.mkdtemp()
+        self.addCleanup(lambda: Path(checkout).exists() and Path(checkout).rmdir())
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="souliane/teatree",
+            branch="feat/4872",
+            state=Worktree.State.PROVISIONED,
+            extra={"worktree_path": checkout},
+        )
+
+        with occupy_ticket_checkout(ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session):
+            call_command("tasks", "cancel", task.pk, confirm=True)
+
+            task.refresh_from_db()
+            assert task.status == Task.Status.FAILED
+
+            with pytest.raises(WorktreeOccupiedError), occupy_ticket_checkout(ticket, holder="task:999999"):
+                pass
 
 
 class TestTasksCompleteCommand(TestCase):

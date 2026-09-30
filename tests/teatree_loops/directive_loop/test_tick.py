@@ -137,7 +137,7 @@ class TestIntakeBranches(TestCase):
             assert run_tick(settings=_open_settings(), seams=_seams()).action == "interpret_dispatched"
             task = DirectiveDispatch.objects.get(directive=directive).task
             assert task is not None
-            task.fail(reason="missing required evidence: bad envelope")
+            task.fail(reason="missing required evidence: bad envelope", by_holder=True)
 
         with self.assertLogs("teatree.loops.directive_loop.tick", level="WARNING") as logs:
             result = run_tick(settings=_open_settings(), seams=_seams())
