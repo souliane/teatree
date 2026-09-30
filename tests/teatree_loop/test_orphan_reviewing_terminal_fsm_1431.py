@@ -23,12 +23,13 @@ wedge: even if an orphan exists, its disposition can complete cleanly.
 
 Gap B — reap orphans that already slipped through. The orphan sweep
 (``_orphaned_task_signals``) only reaped tickets whose forge PR state was
-MERGED/CLOSED. A reviewer ticket whose LOCAL FSM is terminal but whose MR
-stays OPEN (self-authored, no review owed) was never reaped. The sweep now
-also emits ``reviewer_pr.task_orphaned`` when ``ticket.state`` is terminal,
-independent of forge state — the local FSM is authoritative for the user's
-own decision. The existing fail-open default is preserved: an OPEN MR on a
-NON-terminal reviewer ticket still surfaces for review.
+MERGED/CLOSED. A reviewer ticket settled in a state that admits no review but
+whose MR stays OPEN (self-authored, no review owed) was never reaped. The
+sweep now also emits ``reviewer_pr.task_orphaned`` for such a ticket,
+independent of forge state. ``review_delivered`` admits a re-review, so it is
+not local proof (#4901) — Gap A already makes its no-action path a no-op. The
+existing fail-open default is preserved: an OPEN MR on a NON-terminal reviewer
+ticket still surfaces for review.
 
 These tests drive the real model method, the real persistence entry point,
 the real scanner, and the real mechanical handler, per the teatree
@@ -186,11 +187,11 @@ class TestGapBOrphanSweepTerminalLocalFsm(TestCase):
     """Gap B — the orphan sweep reaps on terminal LOCAL FSM, independent of forge state."""
 
     def test_terminal_ticket_open_mr_emits_orphaned_signal(self) -> None:
-        """A terminal reviewer ticket with an open reviewing task is reaped even when the MR is OPEN.
+        """A settled reviewer ticket that admits no review is reaped even when the MR is OPEN.
 
         The MR is OPEN and absent from the scanned set (self-authored, no
-        review owed). The local FSM is terminal (REVIEW_DELIVERED), so the sweep
-        emits ``reviewer_pr.task_orphaned`` despite the OPEN forge state.
+        review owed). The ticket is IGNORED, so the sweep emits
+        ``reviewer_pr.task_orphaned`` despite the OPEN forge state.
 
         RED on origin/main: OPEN is filtered out (``state not in
         {MERGED, CLOSED}``) so the sweep returns no signal.
@@ -199,7 +200,7 @@ class TestGapBOrphanSweepTerminalLocalFsm(TestCase):
         ticket = Ticket.objects.create(
             issue_url=url,
             role=Ticket.Role.REVIEWER,
-            state=Ticket.State.REVIEW_DELIVERED,
+            state=Ticket.State.IGNORED,
         )
         _seed_open_reviewing_task(ticket)
         host = FakeCodeHost(pr_open_state_by_url={url: PrOpenState.OPEN})
@@ -253,22 +254,17 @@ class TestGapBOrphanSweepTerminalLocalFsm(TestCase):
 class TestWedgeIntegrationSingleTick(TestCase):
     """Integration — one scan→dispatch→persist/handle tick reaps the orphan and creates no new one."""
 
-    def _review_posted_reviewer_ticket_with_orphan(self, url: str) -> tuple[Ticket, Task]:
-        """Reviewer ticket driven to REVIEW_DELIVERED carrying a live PENDING orphan task.
+    def _ignored_reviewer_ticket_with_orphan(self, url: str) -> tuple[Ticket, Task]:
+        """Reviewer ticket the user ignored, carrying a live PENDING orphan task.
 
-        REVIEW_DELIVERED is reached the real way: a first reviewing task completes
-        and fires ``mark_reviewed_externally``. A second reviewing task (the
-        orphan) is then seeded PENDING on the now-terminal ticket — exactly
-        the #1000/#1431 shape: a reviewing task surviving on a ticket that
-        already advanced past it.
+        IGNORED is reached the real way: a reviewing task is minted, then the
+        ticket takes its ``ignore`` transition — the #1000/#1431 shape of a
+        reviewing task surviving on a ticket that already left the review.
         """
         ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
-        first = mint_open_pr_review(ticket)
-        assert first is not None
-        first.complete()
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_DELIVERED
-        orphan = _seed_open_reviewing_task(ticket)
+        orphan = mint_open_pr_review(ticket)
+        ticket.ignore()
+        ticket.save()
         return ticket, orphan
 
     def _run_one_tick(self, scanner: ReviewerPrsScanner) -> None:
@@ -300,7 +296,7 @@ class TestWedgeIntegrationSingleTick(TestCase):
         (the OPEN MR is filtered by the MERGED/CLOSED-only gate).
         """
         url = "https://gitlab/x/-/merge_requests/405"
-        ticket, orphan = self._review_posted_reviewer_ticket_with_orphan(url)
+        ticket, orphan = self._ignored_reviewer_ticket_with_orphan(url)
         # The MR is absent from list_review_requested_prs (no forge reviewer
         # assignment), but the forge still reports it OPEN.
         host = FakeCodeHost(
@@ -313,9 +309,8 @@ class TestWedgeIntegrationSingleTick(TestCase):
         self._run_one_tick(scanner)
 
         reviewing_tasks = Task.objects.filter(ticket=ticket, phase="reviewing")
-        # Only the first (completed) review task + the seeded orphan — no new row.
-        assert reviewing_tasks.count() == 2, "the scan must not enqueue a NEW reviewing task on a terminal ticket"
+        assert reviewing_tasks.count() == 1, "the scan must not enqueue a NEW reviewing task on a terminal ticket"
         orphan.refresh_from_db()
         assert orphan.status == Task.Status.COMPLETED, "the existing orphan must be reaped in one tick"
         ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.REVIEW_DELIVERED, "the ticket must stay terminal after reaping"
+        assert ticket.state == Ticket.State.IGNORED, "the ticket must stay terminal after reaping"

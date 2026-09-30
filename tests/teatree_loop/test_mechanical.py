@@ -9,6 +9,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.loop import mechanical
 from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.mechanical import (
     HANDLERS,
@@ -196,6 +197,33 @@ class TestReviewerTaskOrphaned(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
 
+    def test_leaves_a_claimed_task_to_its_run(self) -> None:
+        ticket, task = self._make_reviewer_ticket_with_pending_task("https://x/-/merge_requests/375")
+        task.claim(claimed_by="worker-a")
+
+        reviewer_task_orphaned(_payload(ticket_id=ticket.pk, url=ticket.issue_url, reason="PR merged"))
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.attempts.count() == 0
+
+    def test_a_task_claimed_between_the_read_and_the_write_is_left_to_its_run(self) -> None:
+        ticket, task = self._make_reviewer_ticket_with_pending_task("https://x/-/merge_requests/376")
+        read = mechanical._pending_reviewing_tasks
+
+        def read_then_lose_the_race(target: object) -> list[Task]:
+            stale = list(read(target))
+            Task.objects.get(pk=task.pk).claim(claimed_by="worker-b")
+            return stale
+
+        with patch("teatree.loop.mechanical._pending_reviewing_tasks", side_effect=read_then_lose_the_race):
+            reviewer_task_orphaned(_payload(ticket_id=ticket.pk, url=ticket.issue_url, reason="PR merged"))
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "worker-b"
+        assert task.attempts.count() == 0
+
 
 class TestAutoCompletedReviewIsDistinguishableInTheLedger(TestCase):
     """#4308: a reviewing task that completed without reviewing must say so.
@@ -211,17 +239,17 @@ class TestAutoCompletedReviewIsDistinguishableInTheLedger(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
         return ticket, task
 
-    def test_the_orphaned_skip_records_an_attempt_naming_why_no_verdict_exists(self) -> None:
+    def test_the_no_review_owed_skip_records_an_attempt_naming_why_no_verdict_exists(self) -> None:
         ticket, task = self._reviewer_ticket_with_pending_task("https://x/-/merge_requests/4308")
 
-        reviewer_task_orphaned(_payload(ticket_id=ticket.pk, url=ticket.issue_url, reason="merged"))
+        reviewer_task_orphaned(_payload(ticket_id=ticket.pk, url=ticket.issue_url, reason="PR merged"))
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
         attempt = task.attempts.get()
         assert attempt.exit_code == 0
         assert "no verdict" in attempt.result["summary"]
-        assert "orphan" in attempt.result["summary"]
+        assert "no review is owed (PR merged)" in attempt.result["summary"]
 
     def test_the_self_authored_skip_records_an_attempt_naming_why_no_verdict_exists(self) -> None:
         url = "https://github.com/souliane/teatree/pull/4309"

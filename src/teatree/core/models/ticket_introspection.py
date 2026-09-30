@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db.models import Max
+from django_fsm import can_proceed
 
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
@@ -76,8 +77,12 @@ class TicketIntrospectionModel(TicketFacet):
 
     @property
     def is_settled(self) -> bool:
-        """True when the ticket is in a genuinely terminal/abandoned state (PR_OPENED/MERGED/DELIVERED/IGNORED)."""
+        """True in a terminal/abandoned state (PR_OPENED/MERGED/DELIVERED/REVIEW_DELIVERED/IGNORED)."""
         return self.state in self._SETTLED_STATES
+
+    def admits_review(self: "Ticket") -> bool:
+        """True when a finished review may still advance this ticket — the one test the reviewer mint and reap share."""
+        return can_proceed(self.mark_reviewed_externally, check_conditions=False)
 
     @classmethod
     def phase_producing_state(cls, state: str) -> str:
