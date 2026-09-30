@@ -13,7 +13,6 @@ import pytest
 from teatree.cli.review.audit import (
     ReviewArtifactNotVerifiedError,
     verify_approval_landed,
-    verify_bulk_publish,
     verify_discussion_resolved,
     verify_note_deleted,
     verify_note_landed,
@@ -99,22 +98,6 @@ class TestVerifyNoteDeleted:
         api = _API(errors={"/notes/9": _err(HTTPStatus.SERVICE_UNAVAILABLE)})
         with pytest.raises(httpx.HTTPStatusError):
             verify_note_deleted(api, "org%2Frepo", 7, 9)
-
-
-class TestVerifyBulkPublish:
-    def test_drafts_flushed_and_authored_note_present_passes(self) -> None:
-        api = _API(results={"/draft_notes": [], "/notes": [{"id": 1}]})
-        verify_bulk_publish(api, "org%2Frepo", 7)
-
-    def test_drafts_still_present_raises(self) -> None:
-        api = _API(results={"/draft_notes": [{"id": 1}]})
-        with pytest.raises(ReviewArtifactNotVerifiedError):
-            verify_bulk_publish(api, "org%2Frepo", 7)
-
-    def test_no_authored_notes_raises(self) -> None:
-        api = _API(results={"/draft_notes": [], "/notes": []})
-        with pytest.raises(ReviewArtifactNotVerifiedError):
-            verify_bulk_publish(api, "org%2Frepo", 7)
 
 
 class TestVerifyApprovalLanded:

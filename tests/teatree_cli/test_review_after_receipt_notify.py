@@ -27,6 +27,7 @@ import pytest
 
 from teatree.cli.review import ReviewService
 from teatree.core.models import BotPing
+from tests.teatree_cli.review._bulk_publish_mr import BulkPublishMR
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -78,6 +79,7 @@ class _StubAPI:
 
     def __init__(self) -> None:
         self._deleted_ids: set[str] = set()
+        self.mr = BulkPublishMR()
 
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
         return {
@@ -87,6 +89,7 @@ class _StubAPI:
         }
 
     def post_status(self, endpoint: str) -> int:
+        self.mr.saw_post(endpoint)
         return 200
 
     def put_status(self, endpoint: str, payload: object | None = None) -> int:
@@ -94,6 +97,9 @@ class _StubAPI:
 
     def current_username(self) -> str:
         return "souliane"
+
+    def get_json_paginated(self, endpoint: str) -> list[dict[str, object]]:
+        return self.mr.listing(endpoint) or []
 
     def get_json(self, endpoint: str) -> object:
         # Verify-after-post (#2081) reads the artifact back: confirm it landed.
@@ -104,10 +110,8 @@ class _StubAPI:
             return {"id": int(last), "resolvable": True, "resolved": True}
         if endpoint.endswith("/approvals"):
             return {"approved_by": [{"user": {"username": "souliane"}}]}
-        if last == "draft_notes":
-            return []
-        if last == "notes":
-            return [{"id": 99, "author": {"username": "souliane"}}]
+        if (listed := self.mr.listing(endpoint)) is not None:
+            return listed
         if "discussions/" in endpoint:
             return {"notes": [{"resolvable": True, "resolved": True}]}
         return []

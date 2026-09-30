@@ -39,6 +39,7 @@ PLAN_GATE_KEY = "plan_edit_gate_enabled"
 VISIBLE_PLAN_GATE_KEY = "visible_plan_gate_enabled"
 CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
 CRON_LOOP_SHELL_GATE_KEY = "cron_loop_shell_gate_enabled"
+STANDING_GRANT_ASK_GATE_KEY = "standing_grant_ask_gate_enabled"
 COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
 ANSWER_FIRST_GATE_KEY = "answer_first_gate_enabled"
 UNBACKED_CLAIM_GATE_KEY = "unbacked_claim_gate_enabled"
@@ -264,6 +265,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="cron-loop-shell",
         key=CRON_LOOP_SHELL_GATE_KEY,
         label="Cron-shells-a-t3-loop gate (the worker owns loop cadence)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="standing-grant-ask",
+        key=STANDING_GRANT_ASK_GATE_KEY,
+        label="Standing-grant sign-off ask gate (never ask for a merge the owner already authorized)",
     )
 
     _register_keyed_gate(

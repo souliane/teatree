@@ -494,6 +494,25 @@ def handle_warn_batched_questions(data: dict) -> None:
     sys.stderr.write(_BATCHED_QUESTION_WARN.format(n=len(questions)) + "\n")
 
 
+def ask_questions(data: dict) -> list[dict]:
+    """The ``AskUserQuestion`` payload's question dicts; ``[]`` for any malformed shape."""
+    tool_input = data.get("tool_input", {})
+    questions = tool_input.get("questions", []) if isinstance(tool_input, dict) else []
+    return [q for q in questions if isinstance(q, dict)] if isinstance(questions, list) else []
+
+
+def _first_question(data: dict) -> dict:
+    questions = data.get("tool_input", {}).get("questions", []) or []
+    first = questions[0] if isinstance(questions, list) and questions else {}
+    return first if isinstance(first, dict) else {}
+
+
+def _options_hash(options: list[dict]) -> str:
+    """SHA-256 of canonicalized options — the stable identity a re-ask is matched on."""
+    blob = json.dumps(options, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def denied_question_dedupe_key(question: dict) -> str:
     """Stable hash of *question* — the denied-retry idempotency key."""
     blob = json.dumps(question, sort_keys=True, ensure_ascii=False)

@@ -11,12 +11,15 @@ SET of undecided gates, so an unchanged set asks once and a changed set is a new
 """
 
 import datetime as dt
+from unittest.mock import patch
 
 import django.test
 from django.utils import timezone
 
 from teatree.config.gate_evidence import ActivationIntent, GateEvidence, ObservableKind
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.inert_gate_questions import MARKER_PREFIX, InertGateQuestionScanner
 
 _SHIPPED = dt.date(2020, 1, 1)
@@ -93,6 +96,21 @@ class TestEveryUndecidedGateGoesIntoOneQuestion(django.test.TestCase):
         InertGateQuestionScanner(registry=self.registry).scan()
 
         assert DeferredQuestion.objects.count() == 2
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestAFailedPassIsReportedNotSilent(django.test.TestCase):
+    def test_a_failed_inertness_read_reaches_the_tick_error_surface(self) -> None:
+        scanner = InertGateQuestionScanner(registry=_undecided(_UNDECIDED_SETTING))
+        with patch("teatree.core.factory.feature_inertness.feature_inertness", side_effect=RuntimeError("boom")):
+            _, signals, error = _run_job(_ScannerJob(scanner=scanner, overlay=""))
+        assert (signals, error) == ([], "RuntimeError: boom")
+
+    def test_a_failed_question_write_reaches_the_tick_error_surface(self) -> None:
+        scanner = InertGateQuestionScanner(registry=_undecided(_UNDECIDED_SETTING))
+        with patch.object(DeferredQuestion, "record", side_effect=RuntimeError("locked")):
+            _, signals, error = _run_job(_ScannerJob(scanner=scanner, overlay=""))
+        assert (signals, error) == ([], "RuntimeError: locked")
 
 
 @django.test.override_settings(USE_TZ=True)
