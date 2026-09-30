@@ -3,10 +3,11 @@
 Both statusline readers — the shell hook ``hooks/scripts/statusline.sh`` and
 the ``t3 loop status`` CLI — display the pre-rendered statusline file
 verbatim. The render is decoupled from the read so the hook stays fast
-(<10ms), but that decoupling has a cost: when the loop stops ticking (a
-dead loop, a stopped cron, a long pause), the file is frozen and every
-reader shows a confident, hours-old loop line — "next tick 4m" that will
-never come — with no signal that the information is stale.
+(<10ms), but that decoupling has a cost: the ``t3 worker`` render chain
+(:mod:`teatree.loops.statusline_refresh`) keeps the file fresh, so when the
+worker is down the file is frozen and every reader shows a confident,
+hours-old loop line — "next tick 4m" that will never come — with no signal
+that the information is stale.
 
 This module is the single home for the freshness decision:
 
@@ -68,10 +69,7 @@ def staleness_banner(age_seconds: int, *, colorize: bool = True) -> str:
     which mirrors this text) read identically.
     """
     age = _format_age(int(age_seconds))
-    text = (
-        f"⚠ statusline STALE — last rendered {age} ago; loop may be stopped "
-        "(re-register its /loop via /t3:health, or run `t3 loops tick`)"
-    )
+    text = f"⚠ statusline STALE — last rendered {age} ago; the `t3 worker` is not refreshing it (`t3 worker status`)"
     if colorize:
         return f"{_RED}{text}{_RST}"
     return text
