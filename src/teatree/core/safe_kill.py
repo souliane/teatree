@@ -17,8 +17,9 @@ that maps to no known dead target, or to a still-claimed task, is refused.
 
 **Confirmed non-live.** Two CPU samples show no activity, output has not
 advanced, the STAT is not a running/foreground state, AND a hang cause is
-stated. A process in STAT ``R``/``R+`` (actively running) or ``S+``/``R+``
-(live foreground TTY) is rejected outright.
+stated. A process whose STAT state is ``R`` (actively running — ``ps`` appends
+modifier flags, so a multi-threaded process reads ``Rl``) or carries the ``+``
+foreground flag (live TTY session) is rejected outright.
 
 The two externality boundaries — the per-pid liveness sample (shells out to
 ``ps``) and the pid→identity resolution (reads ``~/.claude/sessions`` + the
@@ -44,10 +45,10 @@ _CLAUDE_PROJECTS_DIR = Path(os.environ.get("TEATREE_CLAUDE_PROJECTS_DIR") or Pat
 # milliseconds, so a genuine match still differs by a tick or two.
 _PID_REUSE_TOLERANCE_SECONDS = 60.0
 
-# STAT codes that PROVE liveness: ``R`` running on CPU; a trailing ``+`` means a
+# STAT codes that PROVE liveness: state ``R`` running on CPU; a trailing ``+`` means a
 # foreground process group attached to a controlling terminal (a live session).
 # Either is an immediate refusal regardless of CPU samples.
-_RUNNING_STATS: frozenset[str] = frozenset({"R", "R+"})
+_RUNNING_STATE = "R"
 _FOREGROUND_SUFFIX = "+"
 
 _CPU_ACTIVITY_EPSILON = 0.5
@@ -64,7 +65,8 @@ class Liveness:
     ``stat`` is the ``ps`` STAT field (``R``/``S``/``Z``/… with an optional
     ``+`` foreground suffix). The two CPU samples are ``%cpu`` readings taken a
     moment apart; ``output_advanced`` is whether the session's transcript grew
-    between the samples.
+    between the samples. Linux ``%cpu`` is a lifetime average, so STAT — not the
+    samples — is what catches a process running right now.
     """
 
     stat: str
@@ -74,7 +76,7 @@ class Liveness:
 
     @property
     def is_running_stat(self) -> bool:
-        return self.stat in _RUNNING_STATS
+        return self.stat.startswith(_RUNNING_STATE)
 
     @property
     def is_foreground(self) -> bool:
