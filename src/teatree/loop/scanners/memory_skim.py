@@ -81,9 +81,6 @@ class MemorySkimScanner:
         except (OperationalError, ProgrammingError):
             logger.info("%s: DeferredQuestion unavailable (DB not migrated yet) — skipping", self.name)
             return []
-        except Exception:
-            logger.exception("%s skim failed", self.name)
-            return []
         noun = "memories" if len(entries) != 1 else "memory"
         return [
             ScanSignal(

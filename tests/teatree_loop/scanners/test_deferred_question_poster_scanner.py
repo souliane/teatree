@@ -13,6 +13,8 @@ from unittest.mock import patch
 from django.db import OperationalError
 from django.test import TestCase
 
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.deferred_question_poster import DeferredQuestionPosterScanner
 
 
@@ -41,9 +43,9 @@ class TestDeferredQuestionPosterScanner(TestCase):
         ):
             assert DeferredQuestionPosterScanner().scan() == []
 
-    def test_unexpected_error_never_raises(self) -> None:
+    def test_a_failed_drain_reaches_the_tick_error_surface(self) -> None:
         with patch(
-            "teatree.core.notify_question_drains.drain_unmirrored_deferred_questions",
-            side_effect=RuntimeError("boom"),
+            "teatree.core.notify_question_drains.drain_unmirrored_deferred_questions", side_effect=RuntimeError("boom")
         ):
-            assert DeferredQuestionPosterScanner().scan() == []
+            _, signals, error = _run_job(_ScannerJob(scanner=DeferredQuestionPosterScanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: boom")

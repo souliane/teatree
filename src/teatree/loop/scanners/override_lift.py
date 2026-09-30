@@ -179,12 +179,8 @@ class OverrideLiftScanner:
 
     @staticmethod
     def scan() -> list[ScanSignal]:
-        try:
-            proposals = override_lift_proposals()
-            raise_override_lift_questions()
-        except Exception:
-            logger.exception("override-lift scan failed — every override is untouched")
-            return []
+        proposals = override_lift_proposals()
+        raise_override_lift_questions()
         return [
             ScanSignal(
                 kind="override.lift_candidate",

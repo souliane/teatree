@@ -18,6 +18,8 @@ import django.test
 from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, Loop, Prompt, PullRequest, Ticket
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.override_lift import (
     PROSE_REMINDER_AGE,
     OverrideLiftScanner,
@@ -153,15 +155,14 @@ class TestAFailedCheckKeepsTheOverride(django.test.TestCase):
         assert [p.loop_name for p in override_lift_proposals(_NOW)] == ["fresh"]
 
 
-class TestTheScannerNeverCrashesTheTick(django.test.TestCase):
-    def test_a_failing_read_degrades_to_no_signals(self) -> None:
-        # Hosted on the hourly housekeeping loop, so a raise here would take the whole
-        # pass with it — for a reminder.
+class TestAFailedScanIsReportedNotSilent(django.test.TestCase):
+    def test_a_failing_read_reaches_the_tick_error_surface(self) -> None:
         with patch(
             "teatree.loop.scanners.override_lift.override_lift_proposals",
             side_effect=RuntimeError("the control DB went away"),
         ):
-            assert OverrideLiftScanner().scan() == []
+            _, signals, error = _run_job(_ScannerJob(scanner=OverrideLiftScanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: the control DB went away")
 
 
 class TestAgeIsMeasuredFromWhenTheOverrideWasSet(django.test.TestCase):

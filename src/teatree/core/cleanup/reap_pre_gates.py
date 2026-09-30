@@ -27,11 +27,11 @@ from pathlib import Path
 
 from teatree.config import get_effective_settings
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
-from teatree.core.cleanup.cleanup import _resolve_worktree_path
 from teatree.core.cleanup.cleanup_liveness import worktree_liveness
 from teatree.core.cleanup.cleanup_ownership import is_excluded_by_ownership
 from teatree.core.models import Worktree
 from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.worktree_location import resolve_worktree_path
 
 _CLEAN_IGNORE_REASON = "matches clean_ignore — keeping"
 
@@ -79,7 +79,7 @@ def reap_pre_gate(worktree: Worktree, *, workspace: Path, fsm_terminal: bool = F
     )
     if ownership.excluded:
         return ReapPreGateVerdict(ReapPreGate.OWNERSHIP, ownership.reason)
-    wt_path = Path(_resolve_worktree_path(workspace, worktree))
+    wt_path = Path(resolve_worktree_path(workspace, worktree))
     liveness = worktree_liveness(worktree, wt_path=wt_path, fsm_terminal=fsm_terminal)
     if liveness.active:
         return ReapPreGateVerdict(ReapPreGate.LIVENESS, liveness.reason)

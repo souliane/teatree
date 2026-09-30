@@ -13,12 +13,9 @@ so this scanner needs no marker. Best-effort: a DB error logs and returns an
 empty list rather than crashing the tick.
 """
 
-import logging
 from dataclasses import dataclass
 
 from teatree.loop.scanners.base import ScanSignal
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -31,13 +28,9 @@ class LocalStackQueueDrainerScanner:
     def scan(self) -> list[ScanSignal]:
         from teatree.core.models.local_stack_queue import LocalStackQueueItem  # noqa: PLC0415 — lazy ORM import
 
-        try:
-            due = list(
-                LocalStackQueueItem.objects.due_for_attempt().filter(overlay=self.overlay).select_related("worktree"),
-            )
-        except Exception:
-            logger.exception("local_stack_queue_drainer: due_for_attempt query failed — skipping tick")
-            return []
+        due = list(
+            LocalStackQueueItem.objects.due_for_attempt().filter(overlay=self.overlay).select_related("worktree"),
+        )
         return [
             ScanSignal(
                 kind="local_stack.queue_acquire",

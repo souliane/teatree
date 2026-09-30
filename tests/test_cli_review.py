@@ -10,6 +10,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.cli import app
 from teatree.cli.review import ReviewService
 from teatree.cli.review.service import _find_added_line
+from tests.teatree_cli.review._bulk_publish_mr import BulkPublishMR
 from tests.teatree_core._on_behalf_gate_helpers import arm_on_behalf_gate, disable_on_behalf_gate, posture_forbids_cm
 
 runner = CliRunner()
@@ -47,8 +48,8 @@ def _confirming_readback(endpoint: str, *, approver: str = "reviewer-bot") -> ob
     """Verify-after-post (#2081) read-back side_effect: every artifact confirms it landed.
 
     A note/draft note by id → present; ``/approvals`` → ``approver`` approved;
-    the bulk-publish lists → drafts flushed + an authored note present; a
-    discussion → resolved notes. Tests that need the inverse (a deleted note,
+    a discussion → resolved notes. The bulk-publish lists are read paginated
+    (see :class:`BulkPublishMR`). Tests that need the inverse (a deleted note,
     an unapprove) override this for the specific endpoint.
     """
     last = endpoint.rstrip("/").rsplit("/", 1)[-1]
@@ -56,10 +57,6 @@ def _confirming_readback(endpoint: str, *, approver: str = "reviewer-bot") -> ob
         return {"id": int(last), "resolvable": True, "resolved": True}
     if endpoint.endswith("/approvals"):
         return {"approved_by": [{"user": {"username": approver}}]}
-    if last == "draft_notes":
-        return []
-    if last == "notes":
-        return [{"id": 99, "author": {"username": approver}}]
     if "discussions/" in endpoint:
         return {"notes": [{"resolvable": True, "resolved": True}]}
     return {}
@@ -503,9 +500,12 @@ class TestPostComment:
 
     def test_publish_success(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mr = BulkPublishMR(author="reviewer-bot")
         mock_api = MagicMock()
-        mock_api.post_status.return_value = 204
+        mock_api.current_username.return_value = "reviewer-bot"
+        mock_api.post_status.side_effect = lambda endpoint: mr.saw_post(endpoint) or 204
         mock_api.get_json.side_effect = _confirming_readback
+        mock_api.get_json_paginated.side_effect = lambda endpoint: mr.listing(endpoint) or []
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "publish-draft-notes", "org/repo", "1"])
             assert result.exit_code == 0
@@ -513,8 +513,11 @@ class TestPostComment:
 
     def test_publish_failure(self, monkeypatch):
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        mr = BulkPublishMR(author="reviewer-bot")
         mock_api = MagicMock()
+        mock_api.current_username.return_value = "reviewer-bot"
         mock_api.post_status.return_value = 403
+        mock_api.get_json_paginated.side_effect = lambda endpoint: mr.listing(endpoint) or []
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "publish-draft-notes", "org/repo", "1"])
             assert result.exit_code == 1

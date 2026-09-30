@@ -428,11 +428,7 @@ class ResourcePressureScanner:
     def scan(self) -> list[ScanSignal]:
         from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415 — lazy ORM
 
-        try:
-            marker = ResourcePressureMarker.load()
-        except Exception:
-            logger.exception("resource_pressure: could not load marker — skipping tick")
-            return []
+        marker = ResourcePressureMarker.load()
         if self._cadence_blocks(marker):
             return []
         reading = measure_resources()

@@ -47,9 +47,6 @@ class UndeliveredNotifyScanner:
         except (OperationalError, ProgrammingError):
             logger.info("UndeliveredNotifyScanner: BotPing unavailable (DB not migrated yet) — skipping")
             return []
-        except Exception:
-            logger.exception("UndeliveredNotifyScanner drain failed")
-            return []
         if delivered == 0:
             return []
         return [
