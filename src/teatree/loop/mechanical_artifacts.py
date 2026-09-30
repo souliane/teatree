@@ -31,13 +31,6 @@ logger = logging.getLogger(__name__)
 
 def sweep_artifacts(payload: ActionPayload) -> None:
     """Reclaim dormant build artifacts — the loss-free pass, off the destructive ladder (#4244)."""
-    try:
-        _sweep_artifacts_inner(payload)
-    except Exception:
-        logger.exception("sweep_artifacts: pass failed — swallowed to protect the tick")
-
-
-def _sweep_artifacts_inner(payload: ActionPayload) -> None:
     from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415 — lazy ORM import
 
     plan = FreePlan(resource="artifacts")

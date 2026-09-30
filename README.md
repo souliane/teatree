@@ -480,11 +480,11 @@ action needed / in flight). The Claude Code statusline hook `cat`s that file in
 # Run the worker (the cadence owner). Bare `t3 worker` is the run alias:
 t3 worker
 
-# Check the worker: live flock holder, resolved loop_runner_enabled + source, timer counts:
+# Check the worker: live flock holder, how many loops the active preset admits, timer counts:
 t3 worker status            # --json for a machine-readable payload
-# Ensure one is running (spawns a detached worker iff enabled AND the flock is free,
-# then verifies it took the flock — a startup crash prints the child's own stderr):
-t3 worker ensure            # refuses (with the reason) when OFF or already running
+# Ensure one is running (spawns a detached worker iff the flock is free, then verifies
+# it took the flock — a startup crash prints the child's own stderr):
+t3 worker ensure            # refuses (with the reason) when one is already running
 
 # Quiesce admission WITHOUT stopping anything (the deploy verb — leaves the box
 # admitting no work until a fresh container boot, or `t3 worker restart`, clears the gate):
@@ -513,8 +513,9 @@ t3 loops list
 The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting
 `loop_cadence_seconds` in the teatree DB (`t3 <overlay> config_setting set
 loop_cadence_seconds 720`; env wins; default `720`).
-`loop_runner_enabled` is the kill-switch — set it `false` to stop the loops
-entirely (there is no fallback plane; PR-28 retired the native `/loop` cron mirror).
+To stop the loops entirely, switch to a preset that admits none:
+`t3 loop preset use off --reason "<why>"` (there is no fallback plane and no second
+stop switch; the worker stays alive so the next posture change is picked up).
 On a headless box with no Claude session ever opening, start `t3 worker` once from a
 login profile.
 
@@ -803,7 +804,6 @@ t3 <overlay> config_setting set agent_signature false                  # append 
 |-----|---------|--------|
 | `workspace_dir` | `~/workspace` | Root for per-ticket workspace directories |
 | `mode` | `auto` | `auto` is end-to-end; `interactive` confirms before publishing |
-| `privacy` | `""` | Named privacy-scan profile applied before pushes |
 | `contribute` | `false` | Allow `t3:retro` to write fixes into core skills |
 | `excluded_skills` | `[]` | Skills excluded on top of the built-in exclusions |
 | `loop_cadence_seconds` | `720` | Default cadence (seconds) for a loop's ticks |

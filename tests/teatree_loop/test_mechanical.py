@@ -278,8 +278,8 @@ class TestAssignGitlabReviewer:
     """#1295 cap B: Slack-mention pickup appends the user as reviewer.
 
     The handler walks: payload → overlay → code host → ``assign_reviewer``.
-    Each step is best-effort: missing payload, no host, no method, raising
-    host, or False return — all log and exit cleanly without raising.
+    A missing payload, no host, no method, or a False return logs and exits
+    cleanly; a raising loader or host raises for the tick to record.
     """
 
     def test_no_op_when_url_missing(self) -> None:
@@ -289,11 +289,7 @@ class TestAssignGitlabReviewer:
     def test_no_op_when_username_missing(self) -> None:
         assign_gitlab_reviewer(_payload(url="https://gitlab.example.com/x/y/-/merge_requests/1"))
 
-    def test_logs_when_overlay_loader_raises(
-        self,
-        caplog: pytest.LogCaptureFixture,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_an_overlay_loader_failure_raises_for_the_tick_to_record(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core import overlay_loader  # noqa: PLC0415
 
         def _raise(name: str | None = None) -> object:
@@ -301,10 +297,8 @@ class TestAssignGitlabReviewer:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(overlay_loader, "get_overlay", _raise)
-        with caplog.at_level(logging.ERROR, logger="teatree.loop.mechanical"):
+        with pytest.raises(RuntimeError, match="no overlay"):
             assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/9", reviewer_username="bob"))
-
-        assert any("Could not resolve code host" in r.message for r in caplog.records)
 
     def test_logs_when_host_is_none(
         self,
@@ -339,11 +333,7 @@ class TestAssignGitlabReviewer:
 
         assert any("no assign_reviewer support" in r.message for r in caplog.records)
 
-    def test_logs_when_assign_reviewer_raises(
-        self,
-        caplog: pytest.LogCaptureFixture,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_an_assign_reviewer_failure_raises_for_the_tick_to_record(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.backends import loader  # noqa: PLC0415
         from teatree.core import overlay_loader  # noqa: PLC0415
 
@@ -354,10 +344,8 @@ class TestAssignGitlabReviewer:
 
         monkeypatch.setattr(overlay_loader, "get_overlay", lambda name=None: object())
         monkeypatch.setattr(loader, "get_code_host", lambda overlay: _RaisingHost())
-        with caplog.at_level(logging.ERROR, logger="teatree.loop.mechanical"):
+        with pytest.raises(RuntimeError, match="API exploded"):
             assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/9", reviewer_username="bob"))
-
-        assert any("Failed to assign" in r.message for r in caplog.records)
 
     def test_success_logs_info(
         self,
