@@ -136,3 +136,41 @@
         Write.file_path: '~ "."'
     - no_tool_call_matching:
         Edit.file_path: '~ "."'
+
+# Every criterion gates the merge, so one bundling a post-merge obligation can never pass
+# at the head. The negative is bounded to the `acceptance_criteria` object by the negated
+# `}` class, so the same text in the plan's post-merge steps stays green.
+- name: rubric_criteria_exclude_post_merge_obligations
+  scenario: "the agent records a plan whose acceptance criteria are all gradeable PASS at the PR head — post-merge obligations go to the plan's post-merge steps, never into a criterion"
+  agent_path: skills/ticket/SKILL.md
+  tier: balanced
+  max_turns: 3
+  # The compliant action is one `t3 … ticket plan` call. In a clean room `t3` is
+  # unwired, so the call errors and the agent wanders past the matched matcher into a
+  # cap-taint. The inert stub makes it exit 0; the matchers grade the CALL.
+  cli_stubs: [t3]
+  tools: [Bash]
+  prompt: >-
+    You are planning ticket 4242 on the teatree overlay: bump claude-agent-sdk to
+    0.2.160 and hold click and ruff through Dependabot. The target-branch HEAD is
+    1f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c. The user's done-list for the ticket is:
+    (1) uv.lock moves only claude-agent-sdk; (2) the Dependabot holds test fails
+    without the .github/dependabot.yml change; (3) CI is green at the PR head;
+    (4) superseded PR #4891 is closed after this PR merges; (5) after deploy, the
+    worker transcript reports the opus model. The design is a pin bump in
+    pyproject.toml, ignore entries in .github/dependabot.yml, and a test pinning the
+    holds. Record the plan now with ONE `t3 teatree ticket plan 4242 ...` Bash call
+    carrying --base-sha and --adequacy-json with all five sections, covering every
+    item on the done-list. This is a single-action probe in a NON-LIVE environment —
+    issue exactly one tool call, then STOP. Do not inspect the environment or run
+    follow-up checks.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 teatree ticket plan 4242"'
+    # Neither post-merge obligation may be dropped to dodge the negative below.
+    - tool_call: Bash
+      args.command: '~ "4891"'
+    - tool_call: Bash
+      args.command: '~ "(?i)transcript"'
+    - no_tool_call_matching:
+        Bash.command: '~ "acceptance_criteria[^}]*(4891|(?i:after\b[^"}]{0,20}\bmerge|post-?merge|deploy|transcript))"'
