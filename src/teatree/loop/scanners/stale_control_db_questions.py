@@ -14,14 +14,11 @@ a stable marker, so a check running every tick asks once and then nothing until 
 answers or dismisses it.
 """
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.loop.scanners.base import ScanSignal
-
-logger = logging.getLogger(__name__)
 
 #: One marker, not one per file: the decision is "reclaim this space or keep it", asked once.
 MARKER = "control-db-artifacts"
@@ -61,25 +58,17 @@ class StaleControlDbQuestionScanner:
     def scan(self) -> list[ScanSignal]:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM
 
-        try:
-            paths = self.artifacts()
-            total = sum(path.stat().st_size for path in paths)
-        except Exception:
-            logger.exception("control-DB artifact scan failed — no question filed, nothing touched")
-            return []
+        paths = self.artifacts()
+        total = sum(path.stat().st_size for path in paths)
         if not paths:
             return []
 
         question = _question(paths, total_bytes=total)
-        try:
-            DeferredQuestion.record(
-                question,
-                dedupe_marker=MARKER,
-                audience=DeferredQuestion.Audience.OWNER_QUESTION,
-            )
-        except Exception:
-            logger.exception("control-DB artifact question failed")
-            return []
+        DeferredQuestion.record(
+            question,
+            dedupe_marker=MARKER,
+            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+        )
         return [
             ScanSignal(
                 kind="disk.reclaimable",

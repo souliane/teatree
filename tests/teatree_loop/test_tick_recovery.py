@@ -110,7 +110,10 @@ class TestReapStaleTaskClaims(TestCase):
         task = Task.objects.create(
             ticket=ticket, session=Session.objects.create(ticket=ticket, agent_id="coding"), phase="coding"
         )
-        task.fail(reason=f"{PLAN_MISSING_PREFIX}refusing to dispatch t3:coder for ticket {ticket.pk} (coding)")
+        task.fail(
+            reason=f"{PLAN_MISSING_PREFIX}refusing to dispatch t3:coder for ticket {ticket.pk} (coding)",
+            by_holder=False,
+        )
         return ticket
 
     def _transient_failed_task(self) -> Task:

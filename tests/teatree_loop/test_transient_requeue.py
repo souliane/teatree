@@ -10,19 +10,33 @@ failures, is NOT reopened and is escalated LOUDLY via a durable
 never reopened. The hardest pin: it NEVER retries endlessly.
 """
 
+import os
+import tempfile
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
 from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR
-from teatree.core.modelkit.task_failure_taxonomy import HEAD_SUPERSEDED_PREFIX, FailureKind
-from teatree.core.models import AutoReviewDispatch, PullRequest, ReviewVerdict, Session, Task, TaskAttempt, Ticket
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, HEAD_SUPERSEDED_PREFIX, FailureKind
+from teatree.core.models import (
+    AutoReviewDispatch,
+    PullRequest,
+    ReviewVerdict,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+    Worktree,
+)
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.repair_loop import max_phase_iterations
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, occupy_ticket_checkout, task_holder_id
 from teatree.core.worktree.recovery_sweeps import run_boot_sweeps
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 from teatree.loop.tick_recovery import _reap_stale_task_claims
@@ -393,7 +407,7 @@ class TestTransientRequeue(TestCase):
             iid="1",
             state=PullRequest.State.OPEN,
         )
-        task.fail(reason="result_error: the push gate refused the branch")
+        task.fail(reason="result_error: the push gate refused the branch", by_holder=True)
 
         requeue_transient_failed()
 
@@ -413,7 +427,7 @@ class TestTransientRequeue(TestCase):
             iid="2",
             state=PullRequest.State.OPEN,
         )
-        task.fail(reason="stuck_loop: lease lost for task 1: re-claimed in-process")
+        task.fail(reason="stuck_loop: lease lost for task 1: re-claimed in-process", by_holder=True)
 
         requeue_transient_failed()
 
@@ -860,7 +874,7 @@ class TestLandedReviewRetired(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
         AutoReviewDispatch.objects.create(slug="souliane/teatree", pr_id=4242, head_sha=self._HEAD, task=task)
-        task.fail(reason=self._LEASE_LOST)
+        task.fail(reason=self._LEASE_LOST, by_holder=True)
         return task
 
     def test_a_verdict_at_the_dispatch_head_retires_the_lease_lost_review(self) -> None:
@@ -978,7 +992,7 @@ class TestDisposalReleasesTheWholeClaim(TestCase):
         )
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
-        task.fail(reason=failed_with)
+        task.fail(reason=failed_with, by_holder=True)
         return task
 
     @staticmethod
@@ -1253,7 +1267,7 @@ class TestSupersededHeadReviewIsParkedNotPaged(TestCase):
         AutoReviewDispatch.objects.create(
             slug="souliane/teatree", pr_id=4716, head_sha=self._HEAD, task=task, state=claim_state
         )
-        task.fail(reason=reason)
+        task.fail(reason=reason, by_holder=True)
         _add_failed_attempt(task, error=reason)
         return task
 
@@ -1322,7 +1336,7 @@ class TestTheTicketPathParksAMovedHeadToo(TestCase):
         )
         session = Session.objects.create(ticket=ticket, agent_id="reviewing")
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
-        task.fail(reason=reason)
+        task.fail(reason=reason, by_holder=True)
         _add_failed_attempt(task, error=reason)
         return task
 
@@ -1346,3 +1360,78 @@ class TestTheTicketPathParksAMovedHeadToo(TestCase):
             requeue_transient_failed()
 
         assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 1
+
+
+class TestKeptThirdPartyClaimIsNotSwept(TestCase):
+    """A third-party fail keeps a live holder's claim; the sweep must leave that row alone (#4872)."""
+
+    _TRANSIENT = "outage_death: connection refused"
+    _LANDED = "result_error: no terminal ResultMessage"
+
+    def _kept_claim_task(self, *, error: str, phase: str = "coding", state: str = Ticket.State.WORK_STARTED) -> Task:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=state)
+        session = Session.objects.create(ticket=ticket, agent_id=phase)
+        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        checkout = tempfile.mkdtemp()
+        self.addCleanup(lambda: Path(checkout).exists() and Path(checkout).rmdir())
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="souliane/teatree",
+            branch="feat/4872",
+            state=Worktree.State.PROVISIONED,
+            extra={"worktree_path": checkout},
+        )
+        acquire(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+        task.fail(reason=f"{CANCELLED_PREFIX}operator requested", by_holder=False)
+        _add_failed_attempt(task, error=error)
+        return task
+
+    @staticmethod
+    def _expire_lease(task: Task) -> None:
+        Task.objects.filter(pk=task.pk).update(lease_expires_at=timezone.now() - timedelta(seconds=1))
+
+    def _assert_left_alone(self, task: Task) -> None:
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.claimed_by == "worker-1"
+        assert task.owner_pid == os.getpid()
+        assert DeferredQuestion.objects.filter(answered_at__isnull=True).count() == 0
+
+    def test_a_transient_failure_is_not_reopened_under_a_live_holder(self) -> None:
+        task = self._kept_claim_task(error=self._TRANSIENT)
+
+        assert requeue_transient_failed() == 0
+
+        self._assert_left_alone(task)
+
+    def test_a_landed_phase_is_not_retired_under_a_live_holder(self) -> None:
+        task = self._kept_claim_task(error=self._LANDED, phase="testing", state=Ticket.State.TESTED)
+
+        requeue_transient_failed()
+
+        self._assert_left_alone(task)
+
+    def test_the_checkout_stays_refused_to_a_successor_after_the_sweep(self) -> None:
+        task = self._kept_claim_task(error=self._LANDED, phase="testing", state=Ticket.State.TESTED)
+
+        requeue_transient_failed()
+
+        with pytest.raises(WorktreeOccupiedError), occupy_ticket_checkout(task.ticket, holder="task:999999"):
+            pass
+
+    def test_an_expired_lease_is_reopened_as_before(self) -> None:
+        task = self._kept_claim_task(error=self._TRANSIENT)
+        self._expire_lease(task)
+
+        assert requeue_transient_failed() == 1
+
+        assert Task.objects.get(pk=task.pk).status == Task.Status.PENDING
+
+    def test_an_expired_lease_is_retired_as_before(self) -> None:
+        task = self._kept_claim_task(error=self._LANDED, phase="testing", state=Ticket.State.TESTED)
+        self._expire_lease(task)
+
+        requeue_transient_failed()
+
+        assert Task.objects.get(pk=task.pk).status == Task.Status.COMPLETED

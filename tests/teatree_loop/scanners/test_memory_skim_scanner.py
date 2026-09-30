@@ -14,6 +14,8 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.models import DeferredQuestion
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.memory_skim import MemorySkimScanner, skim_question_text
 from teatree.memory_audit import MemoryEntry
 
@@ -80,6 +82,7 @@ class TestMemorySkimScanner(TestCase):
         assert "+3 more" in text
         assert "memory-22" not in text
 
-    def test_an_unreadable_memory_tree_never_breaks_the_tick(self) -> None:
+    def test_an_unreadable_memory_tree_reaches_the_tick_error_surface(self) -> None:
         with patch("teatree.memory_audit.scan_all", side_effect=OSError("no such dir")):
-            assert MemorySkimScanner().scan() == []
+            _, signals, error = _run_job(_ScannerJob(scanner=MemorySkimScanner(), overlay=""))
+        assert (signals, error) == ([], "OSError: no such dir")

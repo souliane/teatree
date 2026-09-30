@@ -13,6 +13,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import LocalStackQueueItem, Ticket, Worktree
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.idle_stack_reaper import IdleStackReaperScanner
 from teatree.loop.scanners.local_stack_queue_drainer import LocalStackQueueDrainerScanner
 
@@ -89,21 +91,23 @@ class TestIdleStackReaperScanner(TestCase):
             assert scanner.scan() == []
         classify.assert_not_called()
 
-    def test_classify_exception_returns_empty(self) -> None:
+    def test_a_classify_failure_reaches_the_tick_error_surface(self) -> None:
         scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
         with patch(
             "teatree.loop.scanners.idle_stack_reaper.classify_running_worktrees",
             side_effect=RuntimeError("boom"),
         ):
-            assert scanner.scan() == []
+            _, signals, error = _run_job(_ScannerJob(scanner=scanner, overlay=""))
+        assert (signals, error) == ([], "RuntimeError: boom")
 
-    def test_marker_load_failure_returns_empty(self) -> None:
+    def test_a_marker_load_failure_reaches_the_tick_error_surface(self) -> None:
         scanner = IdleStackReaperScanner(overlay="t3-heavy", idle_minutes=30)
         with patch(
             "teatree.core.models.local_stack_reaper_marker.LocalStackReaperMarker.load",
             side_effect=RuntimeError("db down"),
         ):
-            assert scanner.scan() == []
+            _, signals, error = _run_job(_ScannerJob(scanner=scanner, overlay=""))
+        assert (signals, error) == ([], "RuntimeError: db down")
 
     def test_stamp_failure_still_emits_signals(self) -> None:
         wt = _worktree(overlay="t3-heavy", ticket_number="603", state=Worktree.State.SERVICES_UP)
@@ -148,9 +152,12 @@ class TestLocalStackQueueDrainerScanner(TestCase):
     def test_name_is_stable(self) -> None:
         assert LocalStackQueueDrainerScanner(overlay="t3-heavy").name == "local_stack_queue_drainer"
 
-    def test_db_error_returns_empty(self) -> None:
+    def test_a_db_error_reaches_the_tick_error_surface(self) -> None:
         with patch(
             "teatree.core.models.local_stack_queue.LocalStackQueueItem.objects.due_for_attempt",
             side_effect=RuntimeError("db down"),
         ):
-            assert LocalStackQueueDrainerScanner(overlay="t3-heavy").scan() == []
+            _, signals, error = _run_job(
+                _ScannerJob(scanner=LocalStackQueueDrainerScanner(overlay="t3-heavy"), overlay="")
+            )
+        assert (signals, error) == ([], "RuntimeError: db down")

@@ -6,7 +6,9 @@ that the seam's gates fire identically over MCP.
 """
 
 import asyncio
+import tempfile
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import patch
 
@@ -25,6 +27,7 @@ from teatree.core.models import (
     Ticket,
     Worktree,
 )
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, occupancy_holder, task_holder_id
 from teatree.mcp import build_server, review_seam, review_write_tools, write_tools
 from teatree.mcp.review_seam import SeamNote, register_review_post_seam
 from tests.factories import MergeClearFactory, TaskFactory, TicketFactory
@@ -109,6 +112,32 @@ class TestTaskBookkeeping(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+
+    def test_task_fail_keeps_a_live_holders_checkout_claim(self) -> None:
+        """Any MCP client may fail any task mid-run, so the fail is third-party (#4872)."""
+        ticket = Ticket.objects.create()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        checkout = tempfile.mkdtemp()
+        self.addCleanup(lambda: Path(checkout).exists() and Path(checkout).rmdir())
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="souliane/teatree",
+            branch="feat/4872",
+            state=Worktree.State.PROVISIONED,
+            extra={"worktree_path": checkout},
+        )
+        acquire(worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        _call("task_fail", {"task_id": task.pk, "reason": "test: failed over MCP"})
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        held = occupancy_holder(Worktree.objects.get(pk=worktree.pk))
+        assert held is not None
+        assert held.holder == task_holder_id(task)
+        with pytest.raises(WorktreeOccupiedError):
+            acquire(Worktree.objects.get(pk=worktree.pk), holder="task:999999", holder_session="")
 
 
 class TestQuestionAnswer(TestCase):

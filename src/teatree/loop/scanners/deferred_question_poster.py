@@ -52,9 +52,6 @@ class DeferredQuestionPosterScanner:
         except (OperationalError, ProgrammingError):
             logger.info("DeferredQuestionPosterScanner: DeferredQuestion unavailable (DB not migrated yet) — skipping")
             return []
-        except Exception:
-            logger.exception("DeferredQuestionPosterScanner drain failed")
-            return []
         if mirrored == 0:
             return []
         return [

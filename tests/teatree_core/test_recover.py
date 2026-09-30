@@ -44,7 +44,7 @@ def _failed_outage_task(*, state: str = Ticket.State.WORK_STARTED, url: str = "h
     task = Task.objects.create(ticket=ticket, session=session, phase="coding")
     task.claim(claimed_by="loop")
     TaskAttempt.objects.create(task=task, error="outage_death: socket")
-    task.fail(reason="test: deliberate failure")
+    task.fail(reason="test: deliberate failure", by_holder=True)
     return task
 
 
@@ -94,7 +94,7 @@ class TestGatherRecoverReport(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         task.claim(claimed_by="loop")
         TaskAttempt.objects.create(task=task, error="boom")
-        task.fail(reason="test: deliberate failure")
+        task.fail(reason="test: deliberate failure", by_holder=True)
 
         with _mocked_probes():
             report = gather_recover_report()

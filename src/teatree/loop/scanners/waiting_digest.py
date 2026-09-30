@@ -60,9 +60,6 @@ class WaitingDigestScanner:
         except (OperationalError, ProgrammingError):
             logger.info("WaitingDigestScanner: waiting-lane tables unavailable (DB not migrated yet) — skipping")
             return []
-        except Exception:
-            logger.exception("WaitingDigestScanner failed")
-            return []
 
         if already_recorded:
             return []

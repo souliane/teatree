@@ -93,7 +93,8 @@ class _PhantomAPI:
         self.calls.append(("get_json_paginated", endpoint, None))
         if "discussions" in endpoint:
             return [{"notes": [{"author": {"username": "souliane"}}]}]
-        return []
+        listed = self.get_json(endpoint.split("?", 1)[0])
+        return listed if isinstance(listed, list) else []
 
     def current_username(self) -> str:
         return "souliane"
@@ -165,6 +166,81 @@ class TestPhantomPostReportsFailure:
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
 
 
+class _BulkPublishAPI(_PhantomAPI):
+    """A stateful MR: *drafts* are pending until ``bulk_publish``, then *landed* notes join *notes*."""
+
+    def __init__(
+        self,
+        *,
+        drafts: list[dict[str, object]],
+        notes: list[dict[str, object]],
+        landed: list[dict[str, object]] | None = None,
+    ) -> None:
+        super().__init__()
+        self.drafts, self.notes, self.landed = drafts, notes, landed or []
+        self.published = False
+
+    def post_status(self, endpoint: str) -> int:
+        self.published = self.published or endpoint.endswith("/bulk_publish")
+        return super().post_status(endpoint)
+
+    def get_json(self, endpoint: str) -> object:
+        self.calls.append(("get_json", endpoint, None))
+        if endpoint.endswith("/draft_notes"):
+            return [] if self.published else self.drafts
+        if endpoint.endswith("/notes"):
+            return self.notes + self.landed if self.published else self.notes
+        return []
+
+
+_SYSTEM_NOTE = {"id": 5, "system": True, "author": {"username": "souliane"}, "body": "added 1 commit"}
+_COLLEAGUE_NOTE = {"id": 6, "system": False, "author": {"username": "colleague"}, "body": "looks off"}
+_PENDING_DRAFT = {"id": 1, "note": "nit: rename"}
+
+
+class TestBulkPublishConfirmsWhatItPublished:
+    """#2081's no-op publish, on an MR that already carries notes (every real MR has system notes)."""
+
+    @pytest.fixture(autouse=True)
+    def _dms(self, monkeypatch: pytest.MonkeyPatch) -> list[object]:
+        self.dms: list[object] = []
+        monkeypatch.setattr(
+            "teatree.core.on_behalf_post_receipt.notify_user_on_behalf_post", lambda **kwargs: self.dms.append(kwargs)
+        )
+        return self.dms
+
+    def _assert_nothing_claimed(self, msg: str, code: int) -> None:
+        assert code == 1, msg
+        assert "all draft notes published" not in msg
+        assert not OutboundClaim.objects.filter(idempotency_key=f"gitlab_note:{OWNED_REPO}!11:bulk_publish").exists()
+        assert self.dms == [], "no after-receipt DM for a publish that published nothing"
+
+    def test_no_pending_draft_publishes_nothing_and_claims_nothing(self) -> None:
+        stub = _BulkPublishAPI(drafts=[], notes=[_SYSTEM_NOTE, _COLLEAGUE_NOTE])
+        msg, code = _service(stub).publish_draft_notes(OWNED_REPO, 11)
+        self._assert_nothing_claimed(msg, code)
+        assert "no draft notes are pending" in msg
+        assert not stub.published, "nothing to publish, so nothing is posted"
+
+    def test_flushed_drafts_with_no_new_authored_note_is_not_a_publish(self) -> None:
+        stub = _BulkPublishAPI(drafts=[_PENDING_DRAFT], notes=[_SYSTEM_NOTE, _COLLEAGUE_NOTE])
+        msg, code = _service(stub).publish_draft_notes(OWNED_REPO, 11)
+        self._assert_nothing_claimed(msg, code)
+
+    def test_a_new_system_note_is_not_the_published_draft(self) -> None:
+        commit_note = {"id": 7, "system": True, "author": {"username": "souliane"}, "body": "resolved all threads"}
+        stub = _BulkPublishAPI(drafts=[_PENDING_DRAFT], notes=[_SYSTEM_NOTE], landed=[commit_note])
+        msg, code = _service(stub).publish_draft_notes(OWNED_REPO, 11)
+        self._assert_nothing_claimed(msg, code)
+
+    def test_a_new_authored_note_confirms_the_publish(self) -> None:
+        published = {"id": 99, "system": False, "author": {"username": "souliane"}, "body": "nit: rename"}
+        stub = _BulkPublishAPI(drafts=[_PENDING_DRAFT], notes=[_SYSTEM_NOTE, _COLLEAGUE_NOTE], landed=[published])
+        msg, code = _service(stub).publish_draft_notes(OWNED_REPO, 11)
+        assert code == 0, msg
+        assert OutboundClaim.objects.filter(idempotency_key=f"gitlab_note:{OWNED_REPO}!11:bulk_publish").exists()
+
+
 class TestTransientReadbackDoesNotReportFailure:
     """A non-404 transport error on the read-back must NOT become a phantom-FAILURE."""
 
@@ -201,18 +277,9 @@ class TestVerifiedPostStillSucceeds:
         assert OutboundClaim.objects.filter(idempotency_key=f"gitlab_note:{OWNED_REPO}!7:42").exists()
 
     def test_publish_draft_notes_verified_succeeds(self) -> None:
-        # A bulk publish confirms by listing draft_notes == 0 (all flushed) and
-        # at least one authored note present — the incident's exact missed signal.
-        class _BulkConfirmAPI(_PhantomAPI):
-            def get_json(self, endpoint: str) -> object:
-                self.calls.append(("get_json", endpoint, None))
-                if endpoint.endswith("/draft_notes"):
-                    return []  # zero drafts remaining = all published
-                if endpoint.endswith("/notes"):
-                    return [{"id": 99, "author": {"username": "souliane"}}]
-                return []
-
-        stub = _BulkConfirmAPI()
+        # Confirmed by the drafts flushing AND a new note authored by the posting identity landing.
+        landed = {"id": 99, "system": False, "author": {"username": "souliane"}}
+        stub = _BulkPublishAPI(drafts=[_PENDING_DRAFT], notes=[], landed=[landed])
         service = _service(stub)
         msg, code = service.publish_draft_notes(OWNED_REPO, 11)
         assert code == 0, msg
