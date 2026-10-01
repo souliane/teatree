@@ -279,11 +279,19 @@ class TestVerifyGatesRunsBothStages:
         assert result.exit_code == 0, _text(result)
         assert _manual_selectors(run) == selected
 
-    @pytest.mark.parametrize("raw", [None, b"repos: [\n"], ids=["no-config", "unparsable-config"])
-    def test_config_that_shows_no_declared_hook_selects_none(self, worktree: Path, raw: bytes | None) -> None:
-        """No hook id is passed that the repo cannot be shown to declare; prek's own config error stays red."""
-        if raw is not None:
-            (worktree / ".pre-commit-config.yaml").write_bytes(raw)
+    @pytest.mark.parametrize(
+        ("hooks", "top_level"),
+        [
+            ((), {}),
+            ((_hook("test-shape", stages=["pre-commit"]),), {}),
+            ((_hook("test-path-mirror"), _hook("test-shape")), {"default_stages": ["pre-commit"]}),
+        ],
+        ids=["no-hooks", "ci-job-hook-at-commit-only", "default-stages-exclude-manual"],
+    )
+    def test_readable_config_that_declares_no_hook_selects_none(
+        self, worktree: Path, hooks: tuple[dict[str, object], ...], top_level: dict[str, object]
+    ) -> None:
+        _write_prek_config(worktree, *hooks, **top_level)
         with (
             patch("teatree.cli.verify_gates._prek_available", return_value=True),
             patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
@@ -292,6 +300,22 @@ class TestVerifyGatesRunsBothStages:
         assert result.exit_code == 0, _text(result)
         assert _manual_selectors(run) == []
         assert "manual (CI-job hooks) skipped" in _text(result)
+
+    @pytest.mark.parametrize(
+        "raw", [None, b"repos: [\n", b"- a list\n"], ids=["missing-config", "malformed-config", "non-mapping-config"]
+    )
+    def test_config_that_cannot_be_read_still_selects_every_hook(self, worktree: Path, raw: bytes | None) -> None:
+        """Reading "no hooks" into a config nobody could parse would skip CI's gates; prek's own error stays red."""
+        if raw is not None:
+            (worktree / ".pre-commit-config.yaml").write_bytes(raw)
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 0, _text(result)
+        assert _manual_selectors(run) == [list(CI_JOB_MANUAL_HOOKS)]
+        assert "manual (CI-job hooks) skipped" not in _text(result)
 
     def test_config_change_falls_back_to_all_files(self) -> None:
         with (
@@ -422,22 +446,27 @@ class TestDeclaredManualHooks:
         ],
         ids=["yaml-error", "not-utf8", "empty", "top-level-list", "repos-not-list", "repo-not-mapping", "hook-no-id"],
     )
-    def test_unparsable_yaml_config_selects_none(self, tmp_path: Path, raw: bytes) -> None:
+    def test_unparsable_yaml_config_selects_every_hook(self, tmp_path: Path, raw: bytes) -> None:
         config = tmp_path / ".pre-commit-config.yaml"
         config.write_bytes(raw)
-        assert _declared_manual_hooks(config) == ()
+        assert _declared_manual_hooks(config) == CI_JOB_MANUAL_HOOKS
 
-    def test_unparsable_toml_config_selects_none(self, tmp_path: Path) -> None:
+    def test_unparsable_toml_config_selects_every_hook(self, tmp_path: Path) -> None:
         config = tmp_path / "prek.toml"
         config.write_text("[[repos]\n", encoding="utf-8")
-        assert _declared_manual_hooks(config) == ()
+        assert _declared_manual_hooks(config) == CI_JOB_MANUAL_HOOKS
 
-    def test_unreadable_config_selects_none(self, tmp_path: Path) -> None:
-        assert _declared_manual_hooks(tmp_path / ".pre-commit-config.yaml") == ()
+    def test_unreadable_config_selects_every_hook(self, tmp_path: Path) -> None:
+        assert _declared_manual_hooks(tmp_path / ".pre-commit-config.yaml") == CI_JOB_MANUAL_HOOKS
 
     def test_neither_hook_declared_selects_none(self, tmp_path: Path) -> None:
         _write_prek_config(tmp_path, _hook("ruff"))
         assert _declared_manual_hooks(tmp_path / ".pre-commit-config.yaml") == ()
+
+    def test_config_with_no_repos_entries_selects_none(self, tmp_path: Path) -> None:
+        config = tmp_path / ".pre-commit-config.yaml"
+        config.write_text("repos: []\n", encoding="utf-8")
+        assert _declared_manual_hooks(config) == ()
 
     def test_hook_stages_decide(self, tmp_path: Path) -> None:
         _write_prek_config(

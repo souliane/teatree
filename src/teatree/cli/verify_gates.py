@@ -14,8 +14,9 @@ test-shape): no commit or push run fires them.
 
 This command runs the commit and push stages against the changed files where
 filename-aware hooks allow it, then whichever of those manual-stage CI-job hooks
-the config prek itself loads declares -- none shown declared skips that stage.
-``always_run`` hooks still examine the whole tree. A config
+the config prek itself loads declares -- a readable config declaring none skips
+that stage; a missing or unreadable one selects them all, so it cannot pass as
+"none declared". ``always_run`` hooks still examine the whole tree. A config
 change or an unresolvable diff falls back to ``--all-files``. Each stage has a
 hard wall-clock deadline and a resource preflight, so refusal is visible rather
 than a host-level OOM.
@@ -239,7 +240,7 @@ def _prek_config(repo: Path, toplevel: Path) -> Path | None:
 
 
 def _declared_manual_hooks(config: Path) -> tuple[str, ...]:
-    """The CI_JOB_MANUAL_HOOKS *config* runs at the manual stage; none when it cannot be read."""
+    """The CI_JOB_MANUAL_HOOKS *config* runs at the manual stage; all of them when it cannot be read."""
     try:
         text = config.read_text(encoding="utf-8")
         parsed = tomllib.loads(text) if config.suffix == ".toml" else yaml.safe_load(text)
@@ -247,7 +248,7 @@ def _declared_manual_hooks(config: Path) -> tuple[str, ...]:
         hooks = [hook for entry in parsed["repos"] for hook in entry.get("hooks") or []]
         declared = {hook["id"] for hook in hooks if _MANUAL_STAGE in (hook.get("stages") or default_stages)}
     except (OSError, UnicodeDecodeError, yaml.YAMLError, tomllib.TOMLDecodeError, AttributeError, KeyError, TypeError):
-        return ()
+        return CI_JOB_MANUAL_HOOKS
     return tuple(hook for hook in CI_JOB_MANUAL_HOOKS if hook in declared)
 
 
@@ -258,15 +259,15 @@ def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[t
         ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
     ]
     config = _prek_config(repo, toplevel)
-    manual_hooks = _declared_manual_hooks(config) if config else ()
+    # A config nobody could read is not one declaring no hooks: keep every id so the run cannot go green on it.
+    manual_hooks = _declared_manual_hooks(config) if config else CI_JOB_MANUAL_HOOKS
     # prek exits 1 on a selector no declared hook matches, and runs EVERY manual hook when given none.
     if not manual_hooks:
-        reason = (
-            f"{config} shows none of {', '.join(CI_JOB_MANUAL_HOOKS)} declared at that stage"
-            if config
-            else f"no prek config at or above {repo}"
+        typer.echo(
+            f"verify-gates: manual (CI-job hooks) skipped — {config} declares none of "
+            f"{', '.join(CI_JOB_MANUAL_HOOKS)} at that stage.",
+            err=True,
         )
-        typer.echo(f"verify-gates: manual (CI-job hooks) skipped — {reason}.", err=True)
         return stages
     manual = [*deadline, "prek", "run", *manual_hooks, *scope_args, "--hook-stage", _MANUAL_STAGE]
     return [*stages, ("manual (CI-job hooks)", manual)]
@@ -309,9 +310,10 @@ def verify_gates(
     cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
     gate). The manual stage runs the CI-job hooks (test-path-mirror, test-shape)
     declared by the prek config prek itself loads (``prek.toml`` or
-    ``.pre-commit-config.yaml``, nearest at or above ``--repo``), and is skipped
-    when that config shows none declared. The full test suite is NOT a push
-    gate -- push -> CI runs it.
+    ``.pre-commit-config.yaml``, nearest at or above ``--repo``). It is skipped
+    only when a readable config declares none; a missing or unreadable config
+    selects every one. The full test suite is NOT a push gate -- push -> CI
+    runs it.
 
     ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`, not
     ``Path.cwd()``: run through the containerized ``deploy/t3`` wrapper, the process
