@@ -22,7 +22,7 @@ from teatree.eval.ephemeral_checkout import (
     source_root_offset,
 )
 from teatree.paths import teatree_source_root
-from teatree.utils.run import run_checked
+from teatree.utils.run import run_allowed_to_fail, run_checked
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -171,6 +171,25 @@ class TestProvisionEphemeralCheckout:
             "the sub-agent switched the real clone's branch"
         )
         assert not (real / "src" / "teatree" / "core" / "session.py").exists()
+
+    def test_a_push_from_the_checkout_never_reaches_the_real_clone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The clone's `origin` IS the real clone, so a sandboxed `git push origin` wrote there.
+        real = tmp_path / "real-clone"
+        _init_repo(real)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: real)
+
+        with provision_ephemeral_checkout() as checkout:
+            push = run_allowed_to_fail(
+                ["git", "-C", str(checkout), "push", "origin", "HEAD:refs/heads/leaked"], expected_codes=None
+            )
+            assert push.returncode != 0, f"a sandboxed push must fail, it exited 0: {push.stderr}"
+            _git(checkout, "fetch", "--quiet", "origin")
+
+        assert _git(real, "for-each-ref", "refs/heads/leaked") == "", (
+            "the sandboxed push wrote a ref into the real clone"
+        )
 
     def test_cleans_up_the_checkout_on_exit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         real = tmp_path / "real-clone"

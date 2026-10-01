@@ -55,6 +55,8 @@ class TestStubExecutables:
             (["t3", "teatree", "review", "record", "--verdict", "merge_safe"], "recorded verdict"),
             (["t3", "teatree", "review-request", "check", "512"], "review-requestable"),
             (["t3", "slack", "react", "C1", "1.5", "eyes"], "reaction added"),
+            (["t3", "push"], "pushed"),
+            (["t3", "push", "--repo", "."], "pushed"),
         ],
     )
     def test_t3_stub_prints_a_success_line_per_verb_family(

@@ -47,6 +47,8 @@ from teatree.paths import teatree_source_root
 from teatree.utils.git_run import check as git_check
 from teatree.utils.git_run import run as git_run
 
+_PUSH_DISABLED_URL = "/nonexistent/t3-eval-ephemeral-checkout-push-disabled"
+
 
 class EphemeralCheckoutError(RuntimeError):
     """Raised when an isolated ephemeral checkout cannot be provisioned.
@@ -104,8 +106,20 @@ def _clone_detached(repo_root: Path, checkout: Path) -> bool:
     STRONGER isolation than a worktree: with its own ``HEAD``/refs/index and its own
     object store, a sub-agent's branch switches AND commits stay inside the throwaway —
     a shared worktree left the sub-agent's commits as loose objects in the real store.
+
+    The clone's ``origin`` IS the real clone, so its push URL is pointed at a path that
+    cannot exist: ``git push origin`` fails fast instead of writing a ref into the real
+    clone, while ``git fetch origin`` still reads it.
     """
-    if not git_check(repo=str(repo_root), args=["clone", "--quiet", str(repo_root), str(checkout)]):
+    clone = [
+        "clone",
+        "--quiet",
+        "--config",
+        f"remote.origin.pushurl={_PUSH_DISABLED_URL}",
+        str(repo_root),
+        str(checkout),
+    ]
+    if not git_check(repo=str(repo_root), args=clone):
         return False
     return git_check(repo=str(checkout), args=["checkout", "--quiet", "--detach", "HEAD"])
 

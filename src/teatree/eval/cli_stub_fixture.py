@@ -36,10 +36,11 @@ from teatree.core.on_behalf_gate_recorded import format_on_behalf_block_message
 #: ``t3`` stub — one success line per sanctioned verb family, exit 0. The verb
 #: families are the ones the opted-in scenarios (and the canary) actually issue:
 #: the self-DM notify, the on-behalf post-receipt notify, the directive capture,
-#: the e2e attestation and test-plan post, the on-behalf review post-comment, and
-#: the review/reaction verbs the (currently green) review probes would use. An
-#: unrecognised verb still exits 0 with a neutral line so a stray discovery call
-#: (``t3 --help``) never errors the agent back into a wander.
+#: the e2e attestation and test-plan post, the on-behalf review post-comment, the
+#: review/reaction verbs the (currently green) review probes would use, and the push
+#: a merge-only update ships with. An unrecognised verb still exits 0 with a neutral
+#: line so a stray discovery call (``t3 --help``) never errors the agent back into a
+#: wander.
 _T3_STUB = """\
 #!/bin/sh
 # Inert teatree CLI stub for clean-room evals — prints a plausible success line
@@ -62,6 +63,7 @@ case "$args" in
         echo "salvaged=True deleted=True branch=salvage/feat-y pr=https://github.com/example/repo/pull/2" ;;
     *" workspace emit "*) echo "[]" ;;
     *" worktree teardown "*) echo "worktree torn down" ;;
+    *" push "*) echo "pushed the branch to origin (CI runs on the new head)" ;;
     *) echo "ok" ;;
 esac
 exit 0
