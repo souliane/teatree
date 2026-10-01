@@ -24,9 +24,9 @@ from teatree.config.seed_defaults import shipped_seed_table
 from teatree.core.mode_resolution import owner_voice_forbidden, resolve_active_mode
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeOverride, ModeSchedule, ModeScheduleSlot
 from teatree.core.models.config_setting import ENTRYPOINT_SEEDER
+from teatree.core.models.mode_shape import backup_without_reclaim
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING, resolve_active_preset
 from teatree.loops.base import LoopDeterminism
-from teatree.loops.mode_shape import backup_without_reclaim
 from teatree.loops.preset_seed import (
     PresetSpec,
     ScheduleSpec,

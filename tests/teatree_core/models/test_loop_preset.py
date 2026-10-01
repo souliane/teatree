@@ -7,9 +7,12 @@ contract, and the token-outage auto-engage manager methods (#3159 item 6).
 import datetime as dt
 
 import django.test
+import pytest
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from teatree.core.models import ConfigSetting, Mode, ModeOverride
+from teatree.core.models.preset_totality import totalized_entries
 
 
 class TestModeCarriesOnlyTheLoopTableAndItsEgress(django.test.SimpleTestCase):
@@ -38,6 +41,18 @@ class TestLoopPresetIsTotal(django.test.SimpleTestCase):
 
 
 @django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestModeCleanRefusesAMaskThatOnlyConsumesDisk(django.test.TestCase):
+    """The admin writes ``entries`` raw, so ``clean()`` holds the shape the edit seams refuse (B4)."""
+
+    def test_backup_with_both_reclaim_loops_quiet_is_refused(self) -> None:
+        mode = Mode(name="probe", entries=totalized_entries({"db_backup": True}))
+        with pytest.raises(ValidationError, match="keeps db_backup admitted while every reclaim loop is quiet"):
+            mode.full_clean()
+
+    def test_one_admitted_reclaim_loop_relieves_it(self) -> None:
+        Mode(name="probe", entries=totalized_entries({"db_backup": True, "idle_stack_reaper": True})).full_clean()
+
+
 class TestLoopPresetOverride(django.test.TestCase):
     def test_set_override_keeps_a_single_row(self) -> None:
         ModeOverride.objects.set_override("a", reason="test override")
