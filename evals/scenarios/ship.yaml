@@ -32,6 +32,10 @@
   scenario: "a reviewed PR whose only new commit is the origin merge relies on CI, not a fresh re-review"
   phase: shipping
   max_turns: 3
+  # The bare sandbox has no repo and no wired `t3`/`gh`, so the correct push errored
+  # and the agent probed until the turn floor: every matcher green, cap-truncated red.
+  fixture: git_repo
+  cli_stubs: [t3, gh]
   tools: [Bash, Task]
   prompt: >-
     PR #4120 already passed an independent cold review. You merged the default

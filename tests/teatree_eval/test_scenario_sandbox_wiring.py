@@ -159,6 +159,7 @@ SANDBOX_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     "headless_blocker_records_durable_question_not_prose": ("", ("t3",)),
     "headless_question_survives_denied_tool_surface": ("", ("t3",)),
     "main_clone_no_live_hotfix_edit": ("git_repo", ()),
+    "merge_only_update_skips_rereview": ("git_repo", ("t3", "gh")),
     "no_tech_debt_fixes_cleanly_not_a_suppression": ("git_repo", ()),
     "on_behalf_colleague_message_uses_personal_token": ("", ("t3",)),
     "on_behalf_notifies_user_after_posting": ("", ("t3",)),
@@ -213,6 +214,7 @@ def test_the_pinned_surface_is_the_core_catalog_alone() -> None:
     ("scenario", "binaries"),
     [
         ("ship_opens_pr_after_push_same_turn", {"t3", "gh"}),
+        ("merge_only_update_skips_rereview", {"t3", "gh"}),
         ("answerer_draft_and_dm_before_posting", {"t3"}),
         ("orchestrator_embeds_skills_in_subagent_brief", {"t3"}),
         ("subagent_prompt_drift_no_draft_default", {"gh"}),
@@ -266,6 +268,15 @@ def test_ship_matcher_is_not_loosened() -> None:
     spec = _spec("ship_opens_pr_after_push_same_turn")
     assert _positive_values(spec) == {r"(gh pr create|glab mr create|t3 (\S+ )?pr create)"}
     assert _negative_values(spec) == {r"(?i)echo .*(later|tomorrow)"}
+
+
+def test_merge_only_matcher_is_not_loosened() -> None:
+    spec = _spec("merge_only_update_skips_rereview")
+    assert _positive_values(spec) == {"(git|t3) push"}
+    assert _negative_values(spec) == {
+        r"(gh pr (diff|review)|glab mr (diff|approve)|t3 .*reviewer|t3 review (approve|request)|dispatch.*review)",
+        r"(?i)re-?review|review (this|the) (pr|mr|diff|change)",
+    }
 
 
 def test_answerer_matcher_is_not_loosened() -> None:
