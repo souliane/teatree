@@ -3354,8 +3354,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      keyword-matching title and body.                        │
 │ find-duplicates      Flag pairs of open issues with near-identical titles.   │
 │ triage-issues        Scan for resolved-but-open and stale issues.            │
-│ verify-gates         Run the FULL CI-equivalent local gate set (commit AND   │
-│                      push stages).                                           │
+│ verify-gates         Run the FULL CI-equivalent local gate set (commit, push │
+│                      and manual CI-job stages).                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4085,13 +4085,19 @@ Usage: t3 tool triage-issues [OPTIONS] REPO
 ```
 Usage: t3 tool verify-gates [OPTIONS]
 
- Run the FULL CI-equivalent local gate set (commit AND push stages).
+ Run the FULL CI-equivalent local gate set (commit, push and manual CI-job
+ stages).
 
- Runs both prek stages under a 600-second deadline apiece and exits non-zero
- if EITHER stage fails. The push-stage run is
+ Runs each prek stage under a 600-second deadline and exits non-zero if ANY
+ stage fails. The push-stage run is
  what catches the gates CI fails on but a bare ``prek run --all-files``
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
- gate). The full test suite is NOT a push gate -- push -> CI runs it.
+ gate). The manual stage runs the CI-job hooks (test-path-mirror, test-shape)
+ declared by the prek config prek itself loads (``prek.toml`` or
+ ``.pre-commit-config.yaml``, nearest at or above ``--repo``). It is skipped
+ only when a readable config declares none; a missing or unreadable config
+ selects every one. The full test suite is NOT a push gate -- push -> CI
+ runs it.
 
  ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`,
  not

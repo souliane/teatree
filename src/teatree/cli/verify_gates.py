@@ -3,16 +3,20 @@
 Registers onto the shared tool_app (side-effect import from cli/__init__,
 mirroring comment_density_tools / test_shape_tools).
 
-A plain ``prek run --all-files`` only fires the commit/manual-stage hooks:
-``.pre-commit-config.yaml`` sets ``default_stages: [commit, manual]``. The
+A plain ``prek run --all-files`` only fires the commit-stage hooks. The
 push-stage gates (refuse-public-push-with-leak, doc-update-gate,
 comment-density, ensure-pr) carry ``stages: [push]`` and are STRUCTURALLY
 skipped -- yet CI re-runs them on the PR-vs-base diff. So a builder reporting
 "local prek is green" can be honest about the commit-stage hooks while blind
-to the exact push-stage gate CI fails on.
+to the exact push-stage gate CI fails on. The same holds for the
+``stages: [manual]`` hooks CI runs as their own jobs (test-path-mirror,
+test-shape): no commit or push run fires them.
 
-This command runs BOTH stages against the changed files where filename-aware
-hooks allow it. ``always_run`` hooks still examine the whole tree. A config
+This command runs the commit and push stages against the changed files where
+filename-aware hooks allow it, then whichever of those manual-stage CI-job hooks
+the config prek itself loads declares -- a readable config declaring none skips
+that stage; a missing or unreadable one selects them all, so it cannot pass as
+"none declared". ``always_run`` hooks still examine the whole tree. A config
 change or an unresolvable diff falls back to ``--all-files``. Each stage has a
 hard wall-clock deadline and a resource preflight, so refusal is visible rather
 than a host-level OOM.
@@ -31,10 +35,12 @@ CI jobs no local hook covers so exit 0 cannot be read as "CI will be green".
 """
 
 import shutil
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 import typer
+import yaml
 
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.quality.changed_set import ChangedSetError, changed_paths
@@ -52,12 +58,15 @@ _TARGET_BRANCH_CONFIG_KEY = "teatree.targetBranch"
 # prek's ``--hook-stage`` flag expects the canonical stage name. The config's
 # ``stages: [push]`` alias resolves to this; passing ``push`` verbatim errors.
 _PUSH_STAGE = "pre-push"
+_MANUAL_STAGE = "manual"
 _MIN_DISK_MIB = 4096
 _MIN_MEMORY_MIB = 2048
 _BYTES_PER_MIB = 1024 * 1024
 _STAGE_DEADLINE_SECONDS = 600
 _MAX_SCOPED_FILES = 500
-_CONFIG_NAMES = frozenset({"pyproject.toml", "uv.lock", ".pre-commit-config.yaml", "tach.toml"})
+# prek's own precedence when one directory holds several (measured on prek 0.4.10 and 0.5.3).
+_PREK_CONFIG_NAMES = ("prek.toml", ".pre-commit-config.yaml", ".pre-commit-config.yml")
+_CONFIG_NAMES = frozenset({"pyproject.toml", "uv.lock", *_PREK_CONFIG_NAMES, "tach.toml"})
 
 
 def _resource_refusal(repo: Path) -> str:
@@ -88,7 +97,13 @@ UNCOVERED_CI_JOBS = (
     "jscpd-scan",
     "selection-audit",
     "refresh-durations",
+    "uv-audit",
+    "sbom",
 )
+
+#: Hermetic ``stages: [manual]`` hooks CI runs as a job of the same name.
+#: uv-audit (network) and cyclonedx-sbom (rewrites dist/) stay in UNCOVERED_CI_JOBS.
+CI_JOB_MANUAL_HOOKS = ("test-path-mirror", "test-shape")
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,12 +227,53 @@ def _record(repo: Path, state: str, reason: str) -> None:
         typer.echo("verify-gates: could not write the local gate receipt; PR will show INCOMPLETE.", err=True)
 
 
-def _run_stages(scope_args: list[str], repo: Path) -> tuple[list[str], list[str]]:
+def _prek_config(repo: Path, toplevel: Path) -> Path | None:
+    """The config prek loads when run from *repo*: the nearest at or above it, never above *toplevel*."""
+    start, checkout = repo.resolve(), toplevel.resolve()
+    for directory in (start, *start.parents):
+        if not directory.is_relative_to(checkout):
+            return None
+        for name in _PREK_CONFIG_NAMES:
+            if (directory / name).is_file():
+                return directory / name
+    return None
+
+
+def _declared_manual_hooks(config: Path) -> tuple[str, ...]:
+    """The CI_JOB_MANUAL_HOOKS *config* runs at the manual stage; all of them when it cannot be read."""
+    try:
+        text = config.read_text(encoding="utf-8")
+        parsed = tomllib.loads(text) if config.suffix == ".toml" else yaml.safe_load(text)
+        default_stages = parsed.get("default_stages") or [_MANUAL_STAGE]
+        hooks = [hook for entry in parsed["repos"] for hook in entry.get("hooks") or []]
+        declared = {hook["id"] for hook in hooks if _MANUAL_STAGE in (hook.get("stages") or default_stages)}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, tomllib.TOMLDecodeError, AttributeError, KeyError, TypeError):
+        return CI_JOB_MANUAL_HOOKS
+    return tuple(hook for hook in CI_JOB_MANUAL_HOOKS if hook in declared)
+
+
+def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[tuple[str, list[str]]]:
     deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
-    stages = (
-        ("commit + manual", [*deadline, "prek", "run", *scope_args]),
+    stages = [
+        ("commit", [*deadline, "prek", "run", *scope_args]),
         ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
-    )
+    ]
+    config = _prek_config(repo, toplevel)
+    # A config nobody could read is not one declaring no hooks: keep every id so the run cannot go green on it.
+    manual_hooks = _declared_manual_hooks(config) if config else CI_JOB_MANUAL_HOOKS
+    # prek exits 1 on a selector no declared hook matches, and runs EVERY manual hook when given none.
+    if not manual_hooks:
+        typer.echo(
+            f"verify-gates: manual (CI-job hooks) skipped — {config} declares none of "
+            f"{', '.join(CI_JOB_MANUAL_HOOKS)} at that stage.",
+            err=True,
+        )
+        return stages
+    manual = [*deadline, "prek", "run", *manual_hooks, *scope_args, "--hook-stage", _MANUAL_STAGE]
+    return [*stages, ("manual (CI-job hooks)", manual)]
+
+
+def _run_stages(stages: list[tuple[str, list[str]]], repo: Path) -> tuple[list[str], list[str]]:
     failed: list[str] = []
     incomplete: list[str] = []
     for label, cmd in stages:
@@ -246,13 +302,18 @@ def verify_gates(
         help="Grade a clean main clone on its default branch (refused by default).",
     ),
 ) -> None:
-    """Run the FULL CI-equivalent local gate set (commit AND push stages).
+    """Run the FULL CI-equivalent local gate set (commit, push and manual CI-job stages).
 
-    Runs both prek stages under a 600-second deadline apiece and exits non-zero
-    if EITHER stage fails. The push-stage run is
+    Runs each prek stage under a 600-second deadline and exits non-zero if ANY
+    stage fails. The push-stage run is
     what catches the gates CI fails on but a bare ``prek run --all-files``
     cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
-    gate). The full test suite is NOT a push gate -- push -> CI runs it.
+    gate). The manual stage runs the CI-job hooks (test-path-mirror, test-shape)
+    declared by the prek config prek itself loads (``prek.toml`` or
+    ``.pre-commit-config.yaml``, nearest at or above ``--repo``). It is skipped
+    only when a readable config declares none; a missing or unreadable config
+    selects every one. The full test suite is NOT a push gate -- push -> CI
+    runs it.
 
     ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`, not
     ``Path.cwd()``: run through the containerized ``deploy/t3`` wrapper, the process
@@ -298,7 +359,8 @@ def verify_gates(
 
     scope_args, scope_reason = _scope_args(repo)
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
-    failed, incomplete = _run_stages(scope_args, repo)
+    stages = _stage_commands(scope_args, repo, tree.toplevel)
+    failed, incomplete = _run_stages(stages, repo)
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):
@@ -316,9 +378,9 @@ def verify_gates(
         if failed:
             typer.echo(f"verify-gates: FAILED stage(s): {', '.join(failed)} — measured {tree.head_sha}.", err=True)
         raise typer.Exit(code=1)
-    _record(repo, "green", "both gate stages passed")
+    _record(repo, "green", "all gate stages passed")
     typer.echo(
-        f"verify-gates: all gate stages green (commit + push) — measured {tree.head_sha}.",
+        f"verify-gates: all gate stages green ({' + '.join(label for label, _ in stages)}) — measured {tree.head_sha}.",
         err=True,
     )
     typer.echo(
