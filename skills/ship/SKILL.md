@@ -535,7 +535,7 @@ The `gh pr list` sweep commands for open and recently-merged PRs, and the title-
 
 ## Stacked Delivery — One Stack Per Repo (Default)
 
-Agent-maintained repos stack systematically and conflict-driven; human-reviewed product repos stack only when the work splits into dependent layers too big to review as one. Every layer's MR/PR targets its PARENT branch (`gh pr edit --base`), overlap is read with `gh pr diff`, published layers are merged forward and never rebased, and a layer the forge retargeted to the default branch never merges on its cheap upper-layer pipeline. Full text: `skills/ship/references/stacked-delivery.md`.
+Agent-maintained repos stack systematically and conflict-driven; human-reviewed product repos stack only when the work splits into dependent layers too big to review as one. Every layer's MR/PR targets its PARENT branch (`gh pr edit --base`), overlap is read with `gh pr diff`, published layers merge forward, never rebase, and a layer the forge retargeted to the default branch gets a full pipeline before merging: `git merge origin/<default> --no-edit && t3 push`. Full text: `skills/ship/references/stacked-delivery.md`.
 
 ## Bundle Into an Existing Open PR
 
