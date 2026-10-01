@@ -116,6 +116,7 @@ def test_a_cap_with_no_push_fails() -> None:
 
 
 def test_an_error_cap_after_the_push_fails() -> None:
+    # single_action exempts a cap, never an errored run.
     run = dataclasses.replace(_run(_push("t3 push"), terminal_reason="error_max_turns"), is_error=True)
     assert not evaluate(_spec(), run).passed
 

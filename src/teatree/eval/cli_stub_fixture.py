@@ -37,8 +37,10 @@ from teatree.core.on_behalf_gate_recorded import format_on_behalf_block_message
 #: families are the ones the opted-in scenarios (and the canary) actually issue:
 #: the self-DM notify, the on-behalf post-receipt notify, the directive capture,
 #: the e2e attestation and test-plan post, the on-behalf review post-comment, the
-#: review/reaction verbs the (currently green) review probes would use, and the push
-#: a merge-only update ships with. An unrecognised verb still exits 0 with a neutral
+#: review/reaction verbs the (currently green) review probes would use, and the
+#: top-level ``t3 push`` a merge-only update ships with — anchored to the first
+#: argument, because "push" also appears in titles and question text. An
+#: unrecognised verb still exits 0 with a neutral
 #: line so a stray discovery call (``t3 --help``) never errors the agent back into a
 #: wander.
 _T3_STUB = """\
@@ -63,7 +65,7 @@ case "$args" in
         echo "salvaged=True deleted=True branch=salvage/feat-y pr=https://github.com/example/repo/pull/2" ;;
     *" workspace emit "*) echo "[]" ;;
     *" worktree teardown "*) echo "worktree torn down" ;;
-    *" push "*) echo "pushed the branch to origin (CI runs on the new head)" ;;
+    " push "*) echo "pushed the branch to origin (CI runs on the new head)" ;;
     *) echo "ok" ;;
 esac
 exit 0

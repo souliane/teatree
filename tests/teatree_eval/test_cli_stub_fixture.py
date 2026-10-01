@@ -68,6 +68,20 @@ class TestStubExecutables:
         assert expected in result.stdout
 
     @pytest.mark.parametrize(
+        "argv",
+        [
+            ["t3", "teatree", "pr", "create", "--title", "fix push"],
+            ["t3", "teatree", "questions", "record", "Should I push now?"],
+        ],
+        ids=["pr-create-title", "questions-record-text"],
+    )
+    def test_t3_stub_reports_a_push_only_for_the_push_verb(self, argv: list[str]) -> None:
+        with provision_cli_stubs(["t3"]) as bindir:
+            result = _run_stub(bindir, argv)
+        assert result.returncode == 0
+        assert "pushed" not in result.stdout, f"{argv} is not a push, the stub claimed one: {result.stdout}"
+
+    @pytest.mark.parametrize(
         ("argv", "needle"),
         [
             (["gh", "pr", "diff", "1"], "diff --git"),
