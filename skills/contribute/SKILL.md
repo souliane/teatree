@@ -89,7 +89,7 @@ If the (possibly-bundled) branch has **more than one** commit, offer to squash f
 1. **`T3_CONTRIBUTE=true`** — if not, stop: "Self-improvement is disabled. Set `T3_CONTRIBUTE=true` in your environment (or set `contribute` with the `mcp__teatree__config_setting_set` MCP tool — it writes the DB-home value directly; fall back to `t3 <overlay> config_setting set contribute true` when the MCP server isn't connected)."
 2. **`T3_PUSH` is `true`** — if not, stop: "Pushing is disabled (`T3_PUSH=false`). Push manually with `git push` if you're sure."
 3. **Has a push remote:** `git -C "$T3_REPO" remote -v` → shows a push URL for `origin`.
-4. **Full gate set passes:** `cd "$T3_REPO" && t3 tool verify-gates` — runs BOTH commit- and push-stage hooks (a bare `prek run --all-files` skips the push-stage gates CI re-runs); fix first if it fails.
+4. **Full gate set passes:** `cd "$T3_REPO" && t3 tool verify-gates` — runs the commit-stage, push-stage and declared manual CI-job hooks (a bare `prek run --all-files` skips the push-stage and manual gates CI re-runs); fix first if it fails.
 5. **Affected tests pass:** `cd "$T3_REPO" && bash dev/test-affected.sh` — must be green. The diff-scoped lane, not the whole suite: it escalates to FULL itself on anything it cannot prove local, and CI's sharded lane is the whole-tree authority ([#3994](https://github.com/souliane/teatree/issues/3994)).
 6. **Privacy scan passes:** see `t3:retro` § Privacy Scan. Scan the diff of unpushed commits.
 
