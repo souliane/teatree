@@ -13,7 +13,8 @@ to the exact push-stage gate CI fails on. The same holds for the
 test-shape): no commit or push run fires them.
 
 This command runs the commit and push stages against the changed files where
-filename-aware hooks allow it, then those manual-stage CI-job hooks.
+filename-aware hooks allow it, then whichever of those manual-stage CI-job hooks
+the repo's prek config declares -- none declared skips that stage.
 ``always_run`` hooks still examine the whole tree. A config
 change or an unresolvable diff falls back to ``--all-files``. Each stage has a
 hard wall-clock deadline and a resource preflight, so refusal is visible rather
@@ -37,6 +38,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import typer
+import yaml
 
 from teatree.core.invocation_cwd import invocation_cwd
 from teatree.quality.changed_set import ChangedSetError, changed_paths
@@ -60,7 +62,8 @@ _MIN_MEMORY_MIB = 2048
 _BYTES_PER_MIB = 1024 * 1024
 _STAGE_DEADLINE_SECONDS = 600
 _MAX_SCOPED_FILES = 500
-_CONFIG_NAMES = frozenset({"pyproject.toml", "uv.lock", ".pre-commit-config.yaml", "tach.toml"})
+_PREK_CONFIG_NAME = ".pre-commit-config.yaml"
+_CONFIG_NAMES = frozenset({"pyproject.toml", "uv.lock", _PREK_CONFIG_NAME, "tach.toml"})
 
 
 def _resource_refusal(repo: Path) -> str:
@@ -221,16 +224,38 @@ def _record(repo: Path, state: str, reason: str) -> None:
         typer.echo("verify-gates: could not write the local gate receipt; PR will show INCOMPLETE.", err=True)
 
 
-def _run_stages(scope_args: list[str], repo: Path) -> tuple[list[str], list[str]]:
+def _declared_manual_hooks(repo: Path) -> tuple[str, ...]:
+    """The CI_JOB_MANUAL_HOOKS *repo*'s prek config runs at the manual stage; all of them when it is unreadable."""
+    try:
+        config = yaml.safe_load((repo / _PREK_CONFIG_NAME).read_text(encoding="utf-8"))
+        default_stages = config.get("default_stages") or [_MANUAL_STAGE]
+        hooks = [hook for entry in config["repos"] for hook in entry.get("hooks") or []]
+        declared = {hook["id"] for hook in hooks if _MANUAL_STAGE in (hook.get("stages") or default_stages)}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, AttributeError, KeyError, TypeError):
+        return CI_JOB_MANUAL_HOOKS
+    return tuple(hook for hook in CI_JOB_MANUAL_HOOKS if hook in declared)
+
+
+def _stage_commands(scope_args: list[str], repo: Path) -> list[tuple[str, list[str]]]:
     deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
-    stages = (
+    stages = [
         ("commit", [*deadline, "prek", "run", *scope_args]),
         ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
-        (
-            "manual (CI-job hooks)",
-            [*deadline, "prek", "run", *CI_JOB_MANUAL_HOOKS, *scope_args, "--hook-stage", _MANUAL_STAGE],
-        ),
-    )
+    ]
+    manual_hooks = _declared_manual_hooks(repo)
+    # prek exits 1 on a selector no declared hook matches, and runs EVERY manual hook when given none.
+    if not manual_hooks:
+        typer.echo(
+            f"verify-gates: manual stage skipped — {_PREK_CONFIG_NAME} declares none of "
+            f"{', '.join(CI_JOB_MANUAL_HOOKS)} at it.",
+            err=True,
+        )
+        return stages
+    manual = [*deadline, "prek", "run", *manual_hooks, *scope_args, "--hook-stage", _MANUAL_STAGE]
+    return [*stages, ("manual (CI-job hooks)", manual)]
+
+
+def _run_stages(stages: list[tuple[str, list[str]]], repo: Path) -> tuple[list[str], list[str]]:
     failed: list[str] = []
     incomplete: list[str] = []
     for label, cmd in stages:
@@ -259,13 +284,15 @@ def verify_gates(
         help="Grade a clean main clone on its default branch (refused by default).",
     ),
 ) -> None:
-    """Run the FULL CI-equivalent local gate set (commit AND push stages).
+    """Run the FULL CI-equivalent local gate set (commit, push and manual CI-job stages).
 
-    Runs both prek stages under a 600-second deadline apiece and exits non-zero
-    if EITHER stage fails. The push-stage run is
+    Runs each prek stage under a 600-second deadline and exits non-zero if ANY
+    stage fails. The push-stage run is
     what catches the gates CI fails on but a bare ``prek run --all-files``
     cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
-    gate). The full test suite is NOT a push gate -- push -> CI runs it.
+    gate). The manual stage runs the CI-job hooks (test-path-mirror, test-shape)
+    the repo's ``.pre-commit-config.yaml`` declares, and is skipped when it
+    declares none. The full test suite is NOT a push gate -- push -> CI runs it.
 
     ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`, not
     ``Path.cwd()``: run through the containerized ``deploy/t3`` wrapper, the process
@@ -311,7 +338,8 @@ def verify_gates(
 
     scope_args, scope_reason = _scope_args(repo)
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
-    failed, incomplete = _run_stages(scope_args, repo)
+    stages = _stage_commands(scope_args, repo)
+    failed, incomplete = _run_stages(stages, repo)
 
     finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):
@@ -331,7 +359,7 @@ def verify_gates(
         raise typer.Exit(code=1)
     _record(repo, "green", "all gate stages passed")
     typer.echo(
-        f"verify-gates: all gate stages green (commit + push + manual CI-job hooks) — measured {tree.head_sha}.",
+        f"verify-gates: all gate stages green ({' + '.join(label for label, _ in stages)}) — measured {tree.head_sha}.",
         err=True,
     )
     typer.echo(

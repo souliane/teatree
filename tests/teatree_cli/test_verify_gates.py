@@ -24,7 +24,7 @@ import yaml
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.verify_gates import CI_JOB_MANUAL_HOOKS, UNCOVERED_CI_JOBS, _resource_refusal
+from teatree.cli.verify_gates import CI_JOB_MANUAL_HOOKS, UNCOVERED_CI_JOBS, _declared_manual_hooks, _resource_refusal
 from teatree.quality.changed_set import ChangedSet, ChangeEntry
 from tests._git_repo import make_git_repo, run_git
 
@@ -110,6 +110,15 @@ def _make_feature_worktree(tmp_path: Path, name: str) -> Path:
     return checkout
 
 
+def _write_prek_config(repo: Path, *hooks: dict[str, object], **top_level: object) -> None:
+    config = {**top_level, "repos": [{"repo": "local", "hooks": list(hooks)}]}
+    (repo / ".pre-commit-config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+
+
+def _hook(hook_id: str, **fields: object) -> dict[str, object]:
+    return {"id": hook_id, "name": hook_id, "entry": "true", "language": "system", **fields}
+
+
 @pytest.fixture
 def _healthy_resource_preflight() -> Iterator[None]:
     with patch("teatree.cli.verify_gates._resource_refusal", return_value=""):
@@ -180,6 +189,34 @@ class TestVerifyGatesRunsBothStages:
         manual = [c for c in _calls(run) if c[-2:] == ["--hook-stage", "manual"]]
         assert len(manual) == 1, "verify-gates must invoke the manual stage once"
         assert "test-path-mirror" in manual[0]
+
+    def test_repo_declaring_no_ci_job_hook_skips_the_manual_stage(self, worktree: Path) -> None:
+        """A selector naming no declared hook makes prek exit 1, so the stage must not run at all."""
+        _write_prek_config(worktree, _hook("ruff"))
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 0, _text(result)
+        assert len(_calls(run)) == 2
+        assert not [c for c in _calls(run) if "manual" in c], "no hook declared, so no manual-stage run"
+        assert "manual stage skipped" in _text(result)
+        summaries = [line for line in _text(result).splitlines() if "all gate stages green" in line]
+        assert summaries
+        assert all("manual" not in line for line in summaries), "a green summary must not claim a stage never run"
+
+    def test_manual_stage_selects_only_the_declared_ci_job_hooks(self, worktree: Path) -> None:
+        _write_prek_config(worktree, _hook("test-path-mirror", stages=["manual"]))
+        with (
+            patch("teatree.cli.verify_gates._prek_available", return_value=True),
+            patch("teatree.cli.verify_gates.run_streamed", return_value=0) as run,
+        ):
+            result = runner.invoke(app, ["tool", "verify-gates"])
+        assert result.exit_code == 0, _text(result)
+        (manual,) = [c for c in _calls(run) if c[-2:] == ["--hook-stage", "manual"]]
+        assert "test-path-mirror" in manual
+        assert "test-shape" not in manual
 
     def test_config_change_falls_back_to_all_files(self) -> None:
         with (
@@ -253,6 +290,54 @@ class TestVerifyGatesRunsBothStages:
         with patch("teatree.cli.verify_gates._prek_available", return_value=False):
             result = runner.invoke(app, ["tool", "verify-gates"])
         assert result.exit_code == 1
+
+
+class TestDeclaredManualHooks:
+    """Which CI-job hooks the repo's prek config runs at the manual stage."""
+
+    def test_missing_config_fails_safe_to_every_hook(self, tmp_path: Path) -> None:
+        assert _declared_manual_hooks(tmp_path) == CI_JOB_MANUAL_HOOKS
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b"repos: [\n",
+            b"\xff\xfe\x00",
+            b"",
+            b"- a list\n",
+            b"repos: 3\n",
+            b"repos: [3]\n",
+            b"repos: [{hooks: [{}]}]\n",
+        ],
+        ids=["yaml-error", "not-utf8", "empty", "top-level-list", "repos-not-list", "repo-not-mapping", "hook-no-id"],
+    )
+    def test_unreadable_config_fails_safe_to_every_hook(self, tmp_path: Path, raw: bytes) -> None:
+        (tmp_path / ".pre-commit-config.yaml").write_bytes(raw)
+        assert _declared_manual_hooks(tmp_path) == CI_JOB_MANUAL_HOOKS
+
+    def test_neither_hook_declared_selects_none(self, tmp_path: Path) -> None:
+        _write_prek_config(tmp_path, _hook("ruff"))
+        assert _declared_manual_hooks(tmp_path) == ()
+
+    def test_hook_stages_decide(self, tmp_path: Path) -> None:
+        _write_prek_config(
+            tmp_path,
+            _hook("test-path-mirror", stages=["manual"]),
+            _hook("test-shape", stages=["pre-commit"]),
+            default_stages=["manual"],
+        )
+        assert _declared_manual_hooks(tmp_path) == ("test-path-mirror",)
+
+    def test_hook_without_stages_takes_the_default_stages(self, tmp_path: Path) -> None:
+        _write_prek_config(tmp_path, _hook("test-path-mirror"), _hook("test-shape"), default_stages=["pre-commit"])
+        assert _declared_manual_hooks(tmp_path) == ()
+
+    def test_hook_without_any_stages_runs_at_every_stage(self, tmp_path: Path) -> None:
+        _write_prek_config(tmp_path, _hook("test-shape"))
+        assert _declared_manual_hooks(tmp_path) == ("test-shape",)
+
+    def test_this_repo_declares_both(self) -> None:
+        assert _declared_manual_hooks(REPO_ROOT) == CI_JOB_MANUAL_HOOKS
 
 
 @pytest.mark.usefixtures("_healthy_resource_preflight")
