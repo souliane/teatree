@@ -182,7 +182,7 @@
     },
     {
       "bom-ref": "requirements-L48",
-      "description": "requirements line 48: coverage==7.16.1",
+      "description": "requirements line 48: coverage==7.16.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -191,9 +191,9 @@
         }
       ],
       "name": "coverage",
-      "purl": "pkg:pypi/coverage@7.16.1",
+      "purl": "pkg:pypi/coverage@7.16.2",
       "type": "library",
-      "version": "7.16.1"
+      "version": "7.16.2"
     },
     {
       "bom-ref": "requirements-L50",
