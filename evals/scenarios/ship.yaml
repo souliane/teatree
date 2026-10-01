@@ -33,6 +33,11 @@
   phase: shipping
   max_turns: 3
   tools: [Bash, Task]
+  # `Task` puts this in an ephemeral checkout where a real `t3 push` errors, so the agent
+  # wandered into the cap after pushing. The stub lets the push succeed; `single_action`
+  # exempts a post-push cap only while every matcher passes, so a re-review still reds.
+  cli_stubs: [t3]
+  single_action: true
   prompt: >-
     PR #4120 already passed an independent cold review. You merged the default
     branch into its branch to resolve a conflict; the ONLY new commit is that
