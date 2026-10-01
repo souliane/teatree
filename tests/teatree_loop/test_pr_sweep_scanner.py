@@ -658,6 +658,80 @@ class TestSkipPaths:
         assert signals[0].kind == "pr_sweep.merged"
 
 
+class TestPlanRestrictedRepo:
+    """The sweep's CI gate on a plan-restricted GitHub repo (#4844).
+
+    ``required_context_names`` reads ``None`` (branch protection unreadable) on a
+    plan-restricted repo (GitHub Free, private) — the sweep must take the same
+    Actions-API fallback the keystone merge gate does, instead of skipping forever
+    with ``required_checks_indeterminate``.
+    """
+
+    def test_plan_restricted_green_actions_read_merges(self) -> None:
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with (
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names",
+                return_value=None,
+            ),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.is_plan_restricted", return_value=True),
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.plan_restricted_actions_verdict",
+                return_value="green",
+            ),
+        ):
+            signals = scanner.scan()
+
+        assert keystone.calls == [int(clear.pk)]
+        assert signals[0].payload["reason"] == "all_green"
+
+    def test_plan_restricted_red_actions_read_skips_no_merge(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with (
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names",
+                return_value=None,
+            ),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.is_plan_restricted", return_value=True),
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.plan_restricted_actions_verdict",
+                return_value="failed",
+            ),
+        ):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "ci_red"
+
+    def test_not_plan_restricted_indeterminate_still_skips_closed(self) -> None:
+        # A genuine (non-plan-restriction) indeterminate branch-protection read
+        # must keep failing closed with the original reason — unchanged behaviour.
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with (
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.required_context_names",
+                return_value=None,
+            ),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.is_plan_restricted", return_value=False),
+        ):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "required_checks_indeterminate"
+
+
 class TestUvAuditFallback:
     def test_uv_audit_red_with_clean_main_skips(self) -> None:
         _issue_clear()

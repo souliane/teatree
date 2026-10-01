@@ -33,13 +33,12 @@ from teatree.core.backend_protocols import (
 )
 from teatree.core.merge import CodeHostQuery, classify_required_rollup, failing_required_names
 from teatree.core.merge.ci_rollup import (
-    _check_identity,
     _check_name,
-    _dedupe_newest_per_name,
     _expected_required_contexts_floor,
     _required_contexts_verdict,
     attach_touched_paths,
 )
+from teatree.core.merge.ci_rollup_dedupe import _check_identity, _dedupe_newest_per_name
 from teatree.core.merge.gitlab_pipeline import classify_gitlab_pipeline
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, REFUSING_CHECK_VERDICTS
 from teatree.core.models import MergeClear
@@ -474,6 +473,14 @@ class TestPlanRestrictedActionsAPIFallback(TestCase):
         call_command("config_setting", "set", "expected_required_contexts", '["test (3.13)"]')
         stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("some-other-workflow")])
         assert self._verdict(stub) == CHECKS_UNREADABLE
+
+    def test_floor_satisfied_by_matching_workflow_name_is_green(self) -> None:
+        # The floor on this fallback is matched against the Actions API's own
+        # workflow ``name`` field, not a branch-protection check name — a floor
+        # that names the actual workflow (e.g. "CI") is satisfied.
+        call_command("config_setting", "set", "expected_required_contexts", '["CI"]')
+        stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("CI")])
+        assert self._verdict(stub) == "green"
 
     def test_unreadable_head_sha_is_unreadable(self) -> None:
         stub = _plan_restricted_gh_stub(head_rc=1)
@@ -964,6 +971,20 @@ class TestRequiredStatusCheckContextsTransport:
         )
         assert sorted(str(entry["context"]) for entry in result) == ["lint", "sbom"]
         assert not plan_restricted_no_protection(result)
+
+    def test_one_source_plan_restricted_other_transient_error_is_indeterminate(self) -> None:
+        # Only the protection endpoint hits the plan-restriction 403; the rules
+        # endpoint fails with an UNRELATED transient error (neither determinate nor
+        # plan-restricted) — this must NOT classify as plan-restricted (that fact
+        # requires BOTH endpoints to agree it's a plan limit), it must fail CLOSED.
+        result = self._contexts(
+            _contexts_runner(
+                protection=(1, "", _PLAN_RESTRICTED_BODY),
+                rules=(1, "", "HTTP 502: server error"),
+            ),
+        )
+        assert not plan_restricted_no_protection(result)
+        assert rollup_query_failed(result)
 
 
 class TestFetchWorkflowRunsAtHeadTransport:

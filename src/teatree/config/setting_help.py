@@ -138,7 +138,10 @@ SETTING_HELP: dict[str, str] = {
     "harness_skill_exclusions": (
         "box-wide Claude Code or Codex skills removed from that harness until explicitly installed again"
     ),
-    "expected_required_contexts": "CI check names a pull request must carry before it can merge",
+    "expected_required_contexts": (
+        "CI check names a pull request must carry before it can merge "
+        "(workflow names on a plan-restricted GitHub Free fallback — #4844)"
+    ),
     "factory_score_enabled": "compute and record the factory health score each tick",
     "fleet_claim_enabled": "let this box claim work from the shared fleet queue",
     "foreign_branch_push_gate_enabled": "refuse a push onto a branch another author owns",

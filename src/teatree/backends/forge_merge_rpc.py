@@ -346,15 +346,11 @@ class GhMergeRpc:
         protection_contexts = _github_protection_required_contexts(prot_rc, prot_out, prot_err)
         determinate = [contexts for contexts in (rules_contexts, protection_contexts) if contexts is not None]
         if not determinate:
-            if _is_github_free_plan_403(rules_rc, rules_out, rules_err) or _is_github_free_plan_403(
+            if _is_github_free_plan_403(rules_rc, rules_out, rules_err) and _is_github_free_plan_403(
                 prot_rc, prot_out, prot_err
             ):
-                # Both sources hit GitHub Free's plan-restriction 403 — a determinate
-                # "no branch protection possible on this plan", not an indeterminate
-                # permission gap; the keystone falls back to the Actions API for it.
+                # BOTH sources plan-403 — a determinate "no protection on this plan", not a permission gap.
                 return [PLAN_RESTRICTED_NO_PROTECTION]
-            # Neither the rules endpoint nor the legacy protection endpoint could be
-            # read — the required set is genuinely indeterminate → fail CLOSED.
             return [ROLLUP_QUERY_FAILED]
         union: set[str] = set()
         for contexts in determinate:
@@ -372,9 +368,7 @@ class GhMergeRpc:
         returned runs — the latter is eventual-consistency lag, not proof that nothing
         is required.
         """
-        # Deferred: `head_workflow_runs` imports `core.models` (a Django ORM model),
-        # and this module loads during CLI bootstrap before `django.setup()` runs —
-        # a top-level import here raised `AppRegistryNotReady` on every `t3` command.
+        # Deferred: a top-level import here raises AppRegistryNotReady (CLI bootstrap predates django.setup()).
         from teatree.core.review.head_workflow_runs import (  # noqa: PLC0415 — deferred: see above
             parse_workflow_run_pages,
             workflow_runs_argv,

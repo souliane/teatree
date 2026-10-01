@@ -11,7 +11,7 @@ that keeps the intra-package DAG acyclic under ``forbid_circular_dependencies``.
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
 from teatree.core.backend_protocols import (
     DraftState,
@@ -21,6 +21,7 @@ from teatree.core.backend_protocols import (
     rollup_query_failed,
 )
 from teatree.core.backend_registry import get_backend_provider
+from teatree.core.merge.ci_rollup_dedupe import _dedupe_newest_per_name
 from teatree.core.merge.gitlab_pipeline import _gitlab_pipeline_verdict
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveHeadRead
 from teatree.core.models import MergeClear
@@ -31,6 +32,7 @@ from teatree.utils.throttled_log import warn_throttled
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
+    from teatree.core.merge.ci_rollup_dedupe import _RollupEntry
     from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -169,6 +171,27 @@ class CodeHostQuery:
         """
         return _required_context_names(self.backend, slug=self.ref.slug, pr_id=self.ref.pr_id)
 
+    def is_plan_restricted(self) -> bool:
+        """True iff the base repo's plan cannot answer branch protection at all (#4844).
+
+        :meth:`required_context_names` folds this into the same fail-closed ``None``
+        a genuine transport failure returns (by design — see its docstring); the
+        sweep calls this separately to tell the two apart and pick the Actions-API
+        fallback instead of blocking forever on a plan-restricted repo.
+        """
+        required = self.backend.fetch_required_status_check_contexts(slug=self.ref.slug, pr_id=self.ref.pr_id)
+        return plan_restricted_no_protection(required)
+
+    def plan_restricted_actions_verdict(self) -> str:
+        """GitHub Actions-API CI verdict for a plan-restricted repo (#4844).
+
+        The same fallback :meth:`required_checks_status` takes internally
+        (:func:`_github_actions_runs_verdict`), exposed so ``pr_sweep`` can classify
+        a plan-restricted PR without the branch-protection required-context set
+        :func:`classify_required_rollup` needs (there isn't one to read).
+        """
+        return _github_actions_runs_verdict(self.backend, slug=self.ref.slug, pr_id=self.ref.pr_id)
+
     def required_checks_status(self) -> str:
         """Live required-checks verdict for the PR/MR head — §17.4.3 step 3.
 
@@ -245,79 +268,6 @@ def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
         return
     clear.touched_paths = tuple(paths)
     clear.substrate_paths_indeterminate = False
-
-
-# One ``gh ... statusCheckRollup`` entry — a CheckRun or a legacy StatusContext.
-# Declared with the FUNCTIONAL ``TypedDict`` syntax because ``__typename`` (the
-# GraphQL discriminator the dedupe key reads via :func:`_check_identity`) is a
-# dunder name that the class-based syntax cannot express — the class body mangles
-# a leading-double-underscore attribute, so the key would silently not type-check.
-_RollupEntry = TypedDict(
-    "_RollupEntry",
-    {
-        "__typename": object,
-        "conclusion": object,
-        "status": object,
-        "state": object,
-        "name": object,
-        "context": object,
-        "startedAt": object,
-        "completedAt": object,
-        "createdAt": object,
-    },
-    total=False,
-)
-
-
-def _check_identity(entry: _RollupEntry) -> tuple[str, str]:
-    """The dedupe key for one rollup entry: ``(typename, name)``.
-
-    GitHub branch protection keys the newest check-run per check NAME within a
-    namespace. A CheckRun's name is ``name``; a legacy StatusContext's name is
-    ``context``. The ``__typename`` is part of the key so a CheckRun and a
-    StatusContext that happen to share a name stay distinct identities (they are
-    different check kinds the forge tracks separately).
-    """
-    typename = str(entry.get("__typename") or "")
-    name = str(entry.get("name") or entry.get("context") or "")
-    return (typename, name)
-
-
-def _check_recency(entry: _RollupEntry) -> str:
-    """The recency key for one rollup entry — newest wins on dedupe.
-
-    CheckRun entries carry ISO-8601 ``completedAt`` / ``startedAt``; legacy
-    StatusContext entries carry ``createdAt``. The lexicographic order of an
-    ISO-8601 UTC timestamp is its chronological order, so plain string ``max``
-    selects the newest entry. A missing timestamp sorts oldest (empty string),
-    so a timestamped entry always supersedes an untimestamped one.
-    """
-    return str(entry.get("completedAt") or entry.get("startedAt") or entry.get("createdAt") or "")
-
-
-def _dedupe_newest_per_name(rollup: "list[RawAPIDict]") -> "list[RawAPIDict]":
-    """Reduce the rollup to the newest check-run per ``(typename, name)``.
-
-    Matches GitHub branch-protection semantics: a cancelled/stale run that left
-    a spurious FAILURE check-run on the head commit is superseded by a newer
-    SUCCESS for the same name and must not block the merge. Entries with no
-    identity (neither ``name`` nor ``context``) are kept as-is so a malformed
-    rollup still classifies fail-closed via the existing per-entry path.
-    """
-    newest: dict[tuple[str, str], RawAPIDict] = {}
-    unkeyed: list[RawAPIDict] = []
-    for raw in rollup:
-        if not isinstance(raw, dict):
-            continue
-        entry = cast("_RollupEntry", raw)
-        identity = _check_identity(entry)
-        if not identity[1]:
-            unkeyed.append(dict(raw))
-            continue
-        incumbent = newest.get(identity)
-        if incumbent is None or _check_recency(entry) >= _check_recency(cast("_RollupEntry", incumbent)):
-            newest[identity] = dict(raw)
-    return [*newest.values(), *unkeyed]
 
 
 def _classify_check(check: object) -> str:
@@ -549,9 +499,13 @@ def _github_actions_runs_verdict(backend: "CodeHostBackend", *, slug: str, pr_id
 
     Never fails open: no runs at the head is UNREADABLE (eventual-consistency lag
     is not proof nothing is required), and a green Actions read still respects the
-    ``expected_required_contexts`` floor exactly as the branch-protection path does
-    — an unreadable floor fails closed, and a floor-named workflow that never ran
-    is UNREADABLE (its absence is not proof it passed).
+    ``expected_required_contexts`` floor — an unreadable floor fails closed, and a
+    floor-named workflow that never ran is UNREADABLE (its absence is not proof it
+    passed). Matched against the Actions API's own workflow ``name`` field here
+    (e.g. ``"CI"``), NOT the branch-protection check names
+    :func:`_github_required_checks_verdict` matches the same floor against — the two
+    forge surfaces name CI differently (a workflow vs. a job/check), and this
+    fallback only has the workflow-run surface to read (#4844).
     """
     head = LiveHeadRead.of(backend.fetch_live_head_sha(slug=slug, pr_id=pr_id))
     if head.unreadable:
