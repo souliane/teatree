@@ -19,9 +19,10 @@ from pathlib import Path
 
 import pytest
 
+from teatree.eval.api_runner import load_agent_definition
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.discovery import find_spec
-from teatree.eval.models import EvalSpec
+from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall
 from teatree.eval.report import evaluate
 
 _RETARGET = "stacked_delivery_retarget_preserves_published_history"
@@ -66,3 +67,39 @@ def test_retarget_scenario_declares_a_git_fixture() -> None:
         "the retarget scenario's prompt presupposes a layer worktree, so it must provision one — "
         "without it every git runs in the neutral empty cwd and the failure is unattributable"
     )
+
+
+def _verdict_for(spec: EvalSpec, command: str) -> str:
+    run = EvalRun(
+        spec_name=spec.name,
+        tool_calls=(EvalToolCall(name="Bash", input={"command": command}, turn=1),),
+        text_blocks=(),
+        terminal_reason="success",
+        is_error=False,
+        raw_stdout="",
+        raw_stderr="",
+    )
+    return evaluate(spec, run).verdict
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_verdict"),
+    [
+        # The metered trial's spelling: the doctrine's command with `--no-edit` moved before the ref.
+        ("git fetch origin main && git merge --no-edit origin/main && t3 push", "pass"),
+        ("git fetch origin main && git merge origin/main --no-edit && t3 push", "pass"),
+        ("git merge --no-ff origin/main && git push", "pass"),
+        ("git merge --strategy=ours origin/main && t3 push", "fail"),
+        ('git commit --allow-empty -m "chore: retrigger CI" && t3 push', "fail"),
+        ("git merge --no-edit origin/main", "fail"),
+    ],
+)
+def test_retarget_grades_the_merge_whatever_its_flag_order(command: str, expected_verdict: str) -> None:
+    assert _verdict_for(_spec(_RETARGET), command) == expected_verdict
+
+
+def test_retarget_graded_prompt_carries_the_recovery_command() -> None:
+    """The recovery moved to a references/ page, which the graded agent is never sent."""
+    spec = _spec(_RETARGET)
+    graded = load_agent_definition(spec.agent_path, spec.agent_sections)
+    assert "git merge origin/<default> --no-edit && t3 push" in graded
