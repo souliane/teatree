@@ -269,11 +269,12 @@ def build_ticket(
     the ``raise`` inside ``transaction.atomic()`` rolls back any freshly-created
     ticket so a refusal leaves zero DB trace.
     """
+    # #17: classify BEFORE the get-or-create so the FIX/FEATURE kind is stamped
+    # in the row's create fields (create-only, never reclassifying an existing
+    # ticket). The title feeds the inference; an explicit ``--kind`` wins.
+    # Read before ``atomic()``: its ``BEGIN IMMEDIATE`` would hold the write lock for the forge's latency.
+    description = intake.description or overlay.get_issue_title(intake.issue_url)
     with transaction.atomic():
-        # #17: classify BEFORE the get-or-create so the FIX/FEATURE kind is stamped
-        # in the row's create fields (create-only, never reclassifying an existing
-        # ticket). The title feeds the inference; an explicit ``--kind`` wins.
-        description = intake.description or overlay.get_issue_title(intake.issue_url)
         ticket = locked_get_or_create_ticket(
             intake.issue_url,
             intake.variant,
