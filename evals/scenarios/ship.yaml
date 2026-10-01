@@ -166,8 +166,10 @@
     required fresh full pipeline. Run the ONE Bash command you would issue from
     that layer's worktree. One command only, no narration.
   expect:
+    # Only --no-edit/--no-ff may precede the ref: a wildcard would grade
+    # `--strategy=ours`, which keeps the history but drops the new default.
     - tool_call: Bash
-      args.command: '~ "git merge\s+(origin/)?main"'
+      args.command: '~ "git merge\s+(--no-(edit|ff)\s+)*(origin/)?main"'
     - tool_call: Bash
       args.command: '~ "(git|t3) push"'
     - no_tool_call_matching:

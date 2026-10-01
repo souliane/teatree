@@ -333,7 +333,7 @@ The eight per-repo collection steps, the TTY prompt behaviour, and the raw subje
 
 After applying all fixes:
 
-- Run `t3 tool verify-gates` to validate (runs both commit- and push-stage hooks; a bare `prek run --all-files` skips the push-stage gates CI re-runs)
+- Run `t3 tool verify-gates` to validate (runs the commit-stage, push-stage and declared manual CI-job hooks; a bare `prek run --all-files` skips the push-stage and manual gates CI re-runs)
 - **Smoke test changed scripts** — if shell scripts or hook scripts were modified, run them end-to-end (linting alone does not catch runtime failures like Bash version incompatibility or platform-specific commands)
 - Verify no duplicate guidance across skills
 - Confirm updated playbooks match current codebase reality
