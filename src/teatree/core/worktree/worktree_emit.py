@@ -9,7 +9,7 @@ as the structured handoff record. Nothing in this module destroys anything.
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, _resolve_worktree_path
+from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord, banned_terms_status
 from teatree.core.cleanup.working_tree_dirt import working_tree_dirt
 from teatree.core.models import Worktree
@@ -20,6 +20,7 @@ from teatree.core.worktree.branch_classification import (
     effective_default_target,
 )
 from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.worktree_location import resolve_worktree_path
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -101,7 +102,7 @@ def _build_emit_record(
     record described a clean, redundant worktree while the CLI beside it printed
     "salvage, do not wipe". A checkout kept for its dirt now emits that dirt.
     """
-    wt_path = _resolve_worktree_path(workspace, worktree)
+    wt_path = resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
     target = probes.target if probes else _effective_target(str(repo_main), wt_path, worktree)
     ref = target.branch_to_delete or worktree.branch

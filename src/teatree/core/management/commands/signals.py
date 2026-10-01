@@ -17,7 +17,8 @@ from teatree.core.machine_output import MachineOutputCommand, emit
 
 
 class Command(MachineOutputCommand):
-    def handle(
+    # TyperCommand doesn't override BaseCommand.handle; the typed return is MachineOutputCommand's contract.
+    def handle(  # ty: ignore[invalid-method-override]
         self,
         *,
         window_days: Annotated[

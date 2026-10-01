@@ -340,7 +340,11 @@ def prune_branches(repo: str, *, dry_run: bool = False) -> list[str]:
         for line in git.run(repo=repo, args=["branch", "-v", "--no-color"]).splitlines()
         if "[gone]" in line
     ]
-    cleaned.extend(_delete_branches(repo, gone, protected | wt_branches, kind="gone", dry_run=dry_run))
+    # `[gone]` names a deleted upstream, not landed content: a follow-up commit never pushed reads it too.
+    landed_gone = [
+        name for name in gone if name not in protected | wt_branches and branch_landed_for_teardown(repo, name)
+    ]
+    cleaned.extend(_delete_branches(repo, landed_gone, protected | wt_branches, kind="gone", dry_run=dry_run))
 
     cleaned.extend(_prune_gone_remote_worktrees(repo, wt_map, protected, dry_run=dry_run))
 

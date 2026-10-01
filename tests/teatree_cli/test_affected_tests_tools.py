@@ -1,8 +1,10 @@
 """``t3 tool affected-tests`` — the CLI surface for the #113/#3672 selector."""
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
@@ -83,3 +85,50 @@ class TestOutputModes:
         with patch("teatree.cli.affected_tests_tools.build_selection", return_value=_FULL):
             result = runner.invoke(app, ["tool", "affected-tests", "--pytest-args"])
         assert result.exit_code == 0
+
+
+class TestAffectedTestsFollowsTheInvocationCwd:
+    """#4859: the containerized process cwd is the container WORKDIR, not the operator's.
+
+    Selecting against ``Path.cwd()`` built a selection for whatever checkout happened to
+    be mounted at WORKDIR.
+    """
+
+    def test_declared_invocation_cwd_is_passed_to_build_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        declared = tmp_path / "declared"
+        declared.mkdir()
+        monkeypatch.setenv("TEATREE_INVOCATION_CWD", str(declared))
+
+        with patch("teatree.cli.affected_tests_tools.build_selection", return_value=_SCOPED) as build:
+            result = runner.invoke(app, ["tool", "affected-tests"])
+
+        assert result.exit_code == 0
+        assert build.call_args.args[0] == declared
+
+    def test_an_explicit_repo_still_wins_over_the_declared_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Control: the declaration is a DEFAULT, never an override of what the caller asked."""
+        declared = tmp_path / "declared"
+        declared.mkdir()
+        explicit = tmp_path / "explicit"
+        explicit.mkdir()
+        monkeypatch.setenv("TEATREE_INVOCATION_CWD", str(declared))
+
+        with patch("teatree.cli.affected_tests_tools.build_selection", return_value=_SCOPED) as build:
+            result = runner.invoke(app, ["tool", "affected-tests", "--repo", str(explicit)])
+
+        assert result.exit_code == 0
+        assert build.call_args.args[0] == explicit
+
+    def test_no_declaration_falls_back_to_the_process_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Control: a host-native run is byte-identical to the pre-#4859 behaviour."""
+        monkeypatch.delenv("TEATREE_INVOCATION_CWD", raising=False)
+
+        with patch("teatree.cli.affected_tests_tools.build_selection", return_value=_SCOPED) as build:
+            result = runner.invoke(app, ["tool", "affected-tests"])
+
+        assert result.exit_code == 0
+        assert build.call_args.args[0] == Path.cwd()

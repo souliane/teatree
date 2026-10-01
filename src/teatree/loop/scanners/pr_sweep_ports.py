@@ -11,7 +11,7 @@ the adapters one canonical Protocol to satisfy.
 
 from typing import Protocol, runtime_checkable
 
-from teatree.loop.scanners.pr_sweep_types import PrSummary
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult, PrSummary
 
 __all__ = [
     "MergeKeystone",
@@ -42,7 +42,7 @@ class PrApiClient(Protocol):
         slug: str,
         pr_id: int,
         expected_head_oid: str,
-    ) -> tuple[bool, str]: ...  # pragma: no branch
+    ) -> BoundMergeResult: ...  # pragma: no branch
 
     def update_pr_branch(
         self,

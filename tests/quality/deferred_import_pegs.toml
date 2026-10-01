@@ -264,7 +264,10 @@
 # which resolve only once the app registry is ready, so each stays call-time — the same
 # reason its `core/intake/budget.py` sibling defers its own ORM reads.
 "src/teatree/core/factory/drain_starvation.py" = 2
-"src/teatree/core/models/task_claim.py" = 1 # F5: lazy _claimable_now_q park predicate import
+# 2 (+1, #4867): complete_claimed() defers `release_task_occupancy` — worktree_occupancy.py
+# imports `Task` at module level, so a top-level import back would be a circular import.
+# 3 (+1, #4872): this module's fail() defers the same import, releasing per `by_holder`.
+"src/teatree/core/models/task_claim.py" = 3 # F5: lazy _claimable_now_q park predicate import
 # PR #3479 module-health split: the path-only-TOML backend construction moved
 # out of backend_factory.py into toml_backends.py, carrying the same three
 # function-scoped intra-core imports verbatim (two `send_proxy.read_posting_credential`

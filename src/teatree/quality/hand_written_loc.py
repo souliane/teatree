@@ -23,7 +23,14 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 _NUMSTAT_FIELDS = 3
 _GENERATED_GLOBS = ("*.bundle", "*.patch")
 _GENERATED_DIRS = ("docs/generated", "migrations")
-_GENERATED_FILES = ("uv.lock", "config/defaults.toml", "evals/README.md")
+_GENERATED_FILES = (
+    "uv.lock",
+    "config/defaults.toml",
+    "evals/README.md",
+    "dev/.test_durations",
+    "dist/sbom.json",
+    "docs/dependency-graph.md",
+)
 
 
 @dataclass(frozen=True, slots=True)

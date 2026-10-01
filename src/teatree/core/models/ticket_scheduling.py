@@ -223,7 +223,10 @@ class TicketSchedulingModel(TicketFacet):
         from teatree.core.models.task import Task  # noqa: PLC0415 — import cycle
 
         for task in self.tasks.filter(status__in=Task.Status.active()):  # type: ignore[attr-defined]  # Django reverse FK
-            task.fail(reason=f"{SUPERSEDED_PREFIX}ticket reworked — this task's phase is being redone")
+            task.fail(
+                reason=f"{SUPERSEDED_PREFIX}ticket reworked — this task's phase is being redone",
+                by_holder=False,
+            )
 
     def _refuse_if_worktree_dirty(self: "Ticket", phase: str) -> None:
         """Preflight gate (#884): refuse the transition if a worktree is tracked-dirty.

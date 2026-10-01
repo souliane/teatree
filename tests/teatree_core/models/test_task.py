@@ -3,12 +3,18 @@
 Lifecycle, child-task spawning, and ``build_task_detail``.
 """
 
+import tempfile
+from pathlib import Path
+from unittest import mock
+
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import DeferredQuestion, InvalidTransitionError, Session, Task, TaskAttempt, Ticket
+import teatree.utils.singleton as singleton_mod
+from teatree.core.models import DeferredQuestion, InvalidTransitionError, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.task_attempt import TaskAttemptQuerySet
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, occupancy_holder, task_holder_id
 
 _FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
@@ -27,7 +33,7 @@ class TestTask(TestCase):
         task.complete(result_artifact_path="/tmp/result.json")
 
         failed_task = Task.objects.create(ticket=ticket, session=session)
-        failed_task.fail(reason="test: deliberate failure")
+        failed_task.fail(reason="test: deliberate failure", by_holder=True)
 
         attempt = TaskAttempt.objects.create(
             task=task,
@@ -151,7 +157,7 @@ class TestClaimedBySessionPersistence(TestCase):
     def test_fail_blanks_session_in_db(self) -> None:
         task = self._task()
         task.claim(claimed_by="worker", claimed_by_session="sess-1")
-        task.fail(reason="test: deliberate failure")
+        task.fail(reason="test: deliberate failure", by_holder=True)
         assert self._db_session(task) == ""
 
     def test_park_blanks_session_in_db(self) -> None:
@@ -334,3 +340,131 @@ class TestBuildTaskDetail(TestCase):
         from teatree.core.selectors import build_task_detail  # noqa: PLC0415
 
         assert build_task_detail(999999) is None
+
+
+class TaskOccupancyReleaseTests(TestCase):
+    """``complete()``/``fail()`` release their own occupancy claim (souliane/teatree#4867).
+
+    Before #4867 the ONLY release path was ``occupy_ticket_checkout``'s ``finally``
+    in ``run_agent`` — an in-process context-manager unwind a process kill between
+    the status write and that unwind skips entirely, stranding the claim for the
+    rest of its TTL and refusing the ticket's own next-phase task.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        checkout = tempfile.mkdtemp()
+        self.addCleanup(lambda: Path(checkout).exists() and Path(checkout).rmdir())
+        self.worktree = Worktree.objects.create(
+            ticket=self.ticket,
+            overlay="t3-teatree",
+            repo_path="souliane/teatree",
+            branch="feat/4867",
+            state=Worktree.State.PROVISIONED,
+            extra={"worktree_path": checkout},
+        )
+
+    def fresh_worktree(self) -> Worktree:
+        return Worktree.objects.get(pk=self.worktree.pk)
+
+    def test_complete_releases_the_occupancy_claim_it_holds(self) -> None:
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        task.complete(result_artifact_path="/tmp/result.json")
+
+        assert occupancy_holder(self.fresh_worktree()) is None
+
+    def test_fail_releases_the_occupancy_claim_it_holds(self) -> None:
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        task.fail(reason="test: deliberate failure", by_holder=True)
+
+        assert occupancy_holder(self.fresh_worktree()) is None
+
+    def test_third_party_fail_of_a_live_claim_keeps_the_occupancy_claim(self) -> None:
+        """#4872: an operator cancel / ``ticket.rework()`` of a live holder must not evict it."""
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        task.fail(reason="test: cancelled by a third party", by_holder=False)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        held = occupancy_holder(self.fresh_worktree())
+        assert held is not None
+        assert held.holder == task_holder_id(task)
+        with pytest.raises(WorktreeOccupiedError):
+            acquire(self.fresh_worktree(), holder="task:999999", holder_session="")
+
+    def test_third_party_fail_of_a_dead_holders_claim_releases_it(self) -> None:
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        with mock.patch.object(singleton_mod, "pid_alive", return_value=False):
+            task.fail(reason="test: cancelled by a third party", by_holder=False)
+
+        assert occupancy_holder(self.fresh_worktree()) is None
+
+    def test_the_release_rolls_back_with_a_failed_fsm_advance(self) -> None:
+        """Forcing ``_advance_ticket`` to raise inside ``complete()``'s atomic block.
+
+        Must leave the occupancy claim STILL held — proving the release is
+        genuinely coupled to the SAME transaction as the status write, not a
+        fire-and-forget side effect that already committed by the time the
+        FSM advance fails.
+        """
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
+
+        with (
+            mock.patch.object(Task, "_advance_ticket", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            task.complete(result_artifact_path="/tmp/result.json")
+
+        held = occupancy_holder(self.fresh_worktree())
+        assert held is not None
+        assert held.holder == task_holder_id(task)
+        task.refresh_from_db()
+        assert task.status != Task.Status.COMPLETED
+
+
+class TestAParkedConversationTheRetryCannotContinueStartsFresh(TestCase):
+    """souliane/teatree#4874: tasks 4973/4975 grew on Sonnet 5, then resumed as Opus 5.5 into a wall."""
+
+    def setUp(self) -> None:
+        ticket = Ticket.objects.create()
+        self.task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket))
+
+    def _parked(self, **attempt: object) -> str:
+        TaskAttempt.objects.create(
+            task=self.task,
+            agent_session_id=_FAKE_UUID,
+            exit_code=1,
+            **{"num_turns": 162, "model": "claude-opus-5-5", "selected_model": "claude-opus-5-5", **attempt},
+        )
+        return self.task.continuation_on_requeue()
+
+    def test_a_conversation_the_cli_fallback_served_is_not_resumed(self) -> None:
+        assert self._parked(model="claude-sonnet-5", model_fell_back=True) == Task.SessionContinuation.FRESH
+
+    def test_a_conversation_with_no_room_left_for_another_prompt_is_not_resumed(self) -> None:
+        assert self._parked(context_tokens=313_014, context_window_tokens=350_000) == Task.SessionContinuation.FRESH
+
+    def test_a_conversation_on_its_own_model_with_room_left_is_resumed(self) -> None:
+        assert self._parked(context_tokens=313_014, context_window_tokens=1_000_000) == Task.SessionContinuation.SELF
+
+    def test_a_router_resolving_its_handle_to_a_concrete_model_is_not_a_fallback(self) -> None:
+        """The metered lane records the router's pick as the model; that is no reason to drop its thread."""
+        routed = self._parked(model="qwen/qwen3-coder", selected_model="orcarouter/teatree-factory")
+
+        assert routed == Task.SessionContinuation.SELF

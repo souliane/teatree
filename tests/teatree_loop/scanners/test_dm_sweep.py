@@ -10,6 +10,8 @@ from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, Loop
 from teatree.core.owner_threads import OwnerThread
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.dm_sweep import DmSweepScanner, SlackThreadReply, _is_owner_reply
 from teatree.types import RawAPIDict
 
@@ -80,9 +82,10 @@ class TestScanIsResilient(TestCase):
         with mock.patch("teatree.core.owner_dm_sweep.run_sweep", side_effect=OperationalError("no such table")):
             assert DmSweepScanner().scan() == []
 
-    def test_an_unexpected_sweep_failure_is_swallowed(self) -> None:
+    def test_an_unexpected_sweep_failure_reaches_the_tick_error_surface(self) -> None:
         with mock.patch("teatree.core.owner_dm_sweep.run_sweep", side_effect=RuntimeError("boom")):
-            assert DmSweepScanner().scan() == []
+            _, signals, error = _run_job(_ScannerJob(scanner=DmSweepScanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: boom")
 
 
 class TestOwnerReplyProbeSkipsUnaddressableThreads(TestCase):

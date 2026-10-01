@@ -73,14 +73,14 @@ _SDK_MODULE = "claude_agent_sdk"
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
 #: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
-_PINNED_SDK_VERSION = "0.2.157"
+_PINNED_SDK_VERSION = "0.2.160"
 
 #: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
-#: :data:`_PINNED_SDK_VERSION` → ``2.1.277 (Claude Code)``.
-_SDK_BUNDLED_CLI_VERSION = "2.1.277"
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.283 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.283"
 
 #: The deployed runtime's pin: the version the factory host runs today.
-_RUNTIME_CLI_VERSION = "2.1.277"
+_RUNTIME_CLI_VERSION = "2.1.283"
 
 _FRONTIER_MODEL = TIER_MODELS["frontier"]
 _FRONTIER_MODEL_CLI_FLOOR = MODEL_MINIMUM_CLI_VERSIONS[_FRONTIER_MODEL]
@@ -96,8 +96,9 @@ _PYRIGHT_VERSION = "1.1.411"
 #: The floor is server-side: no manifest, lockfile or bot can read it, and the tier
 #: assertions below only ever compared the pins to EACH OTHER — which is how both tiers
 #: sat under it with this suite green (souliane/teatree#4704). Raise it only from an
-#: observed API refusal, never speculatively.
-_MODEL_MINIMUM_CLI_VERSION = "2.1.251"
+#: observed API refusal, never speculatively — ``claude-opus-5-5`` refused 2.1.277 with
+#: ``claude_code_version_too_old`` (souliane/teatree#4874).
+_MODEL_MINIMUM_CLI_VERSION = "2.1.280"
 
 _EVAL_TEST_SITES = frozenset(
     {
@@ -552,7 +553,10 @@ class TestTheProbeRefusesRatherThanReportAClean:
         _bundled_cli_version.cache_clear()
         with (
             patch.object(importlib.metadata, "version", return_value="0.2.151"),
-            pytest.raises(RuntimeError, match=r"has claude-agent-sdk==0\.2\.151, not the pinned 0\.2\.157"),
+            pytest.raises(
+                RuntimeError,
+                match=rf"has claude-agent-sdk==0\.2\.151, not the pinned {re.escape(_PINNED_SDK_VERSION)}",
+            ),
         ):
             _bundled_cli_version()
         _bundled_cli_version.cache_clear()

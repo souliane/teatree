@@ -268,6 +268,7 @@ SETTING_HELP: dict[str, str] = {
     "speak": "text-to-speech delivery, and which surfaces are spoken",
     "stale_stack_min_age_minutes": "minutes a stack must exist before staleness is judged",
     "standing_goal_stop_gate_enabled": "refuse ending a turn as done while a standing goal is unmet",
+    "standing_grant_ask_gate_enabled": "refuse asking the owner to sign off a merge a standing grant already covers",
     "statusline_chain": "which statusline segments render, in order",
     "statusline_engaged_render": "render the statusline only while the session is engaged",
     "stop_snapshotter_enabled": "snapshot session findings before a stop, so context survives",

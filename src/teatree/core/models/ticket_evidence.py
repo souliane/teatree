@@ -162,6 +162,11 @@ class TicketEvidenceModel(TicketFacet):
                 return
             type(self).objects.filter(pk=self.pk).update(extra=merged, **(also_set or {}))
 
+    def rearm_review_at(self, head_sha: str) -> None:
+        """Aim this reviewer ticket at *head_sha*; a review an older head earned does not carry over (#959)."""
+        if head_sha and (self.extra or {}).get("reviewed_sha") != head_sha:
+            self.merge_extra(set_keys={"reviewed_sha": head_sha}, pop_keys=["last_review_state", "discharged_sha"])
+
     def record_review_skill_run(self, skill: str) -> None:
         """Stamp durable evidence that the deep-review ``skill`` ran (#1539).
 

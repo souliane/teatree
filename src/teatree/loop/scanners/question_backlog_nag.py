@@ -66,9 +66,6 @@ class QuestionBacklogNagScanner:
         except (OperationalError, ProgrammingError):
             logger.info("QuestionBacklogNagScanner: DeferredQuestion unavailable (DB not migrated yet) — skipping")
             return []
-        except Exception:
-            logger.exception("QuestionBacklogNagScanner resurface failed")
-            return []
         if not posted and not bumped:
             return []
         return [

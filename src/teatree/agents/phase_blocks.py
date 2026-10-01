@@ -161,7 +161,9 @@ _PLAN_RETURN_LINES: tuple[str, ...] = (
     "Every section must be substantive OR carry an explicit reasoned negative instead of `content`",
     '(e.g. {"none_reason": "no seams: single leaf module, no registry touched"}); silence never passes.',
     "`acceptance_criteria` BECOMES the ticket's rubric, which an independent verifier grades before",
-    "the ticket can be delivered — so write criteria that can FAIL, never ones satisfied by inaction.",
+    "the ticket can merge or be delivered — so write criteria that can FAIL, never ones satisfied by",
+    "inaction, and that can PASS at the PR head: a post-merge obligation (close a superseded PR, a",
+    "post-deploy check) is a post-merge plan step, never a criterion.",
 )
 
 # Injected into a scanning_news brief (#3584): the shell-denied scanner

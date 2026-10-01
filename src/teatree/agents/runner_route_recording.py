@@ -72,6 +72,8 @@ def record_route_failure_attempt(
             lane=record.lane,
             tool_calls=record.outcome.tool_calls if record.outcome is not None else 0,
             provenance=provenance,
+            context_tokens=record.outcome.context_tokens if record.outcome is not None else None,
+            model_fell_back=record.outcome is not None and record.outcome.model_fell_back,
         ),
     )
     if record.agent_session_id:

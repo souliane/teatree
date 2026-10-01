@@ -27,6 +27,7 @@ from scripts.eval.corpus_gen.concise_doctrine import CONCISE_DOCTRINE
 from scripts.eval.corpus_gen.model import Scenario
 from scripts.eval.corpus_gen.per_skill import PER_SKILL
 from scripts.eval.corpus_gen.publish_gate_scenarios import PUBLISH_GATE_SCENARIOS
+from scripts.eval.corpus_gen.review_scope_scenarios import REVIEW_SCOPE_SCENARIOS
 from scripts.eval.corpus_gen.ship_scenario import ship_scenarios
 from scripts.eval.corpus_gen.todos_scenario import todos_scenarios
 
@@ -58,6 +59,8 @@ _AGENT_SECTIONS: dict[str, tuple[str, ...]] = {
         "Verify Repo Visibility Before Filing External Issues (Non-Negotiable)",
         "Public-Repo Commit Author Identity (Non-Negotiable)",
     ),
+    "public_issue_omits_credential_posture": ("Verify Repo Visibility Before Filing External Issues (Non-Negotiable)",),
+    "public_issue_omits_private_repo_state": ("Verify Repo Visibility Before Filing External Issues (Non-Negotiable)",),
     "on_behalf_drafts_and_dms_before_posting": (
         "Ask Before Posting on the User's Behalf (Non-Negotiable)",
         "No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)",
@@ -198,6 +201,7 @@ ALL_SCENARIOS: list[Scenario] = [
     for s in (
         *RECURRING,
         *PUBLISH_GATE_SCENARIOS,
+        *REVIEW_SCOPE_SCENARIOS,
         *blocked_subagent_scenarios(),
         *PER_SKILL,
         *ship_scenarios(),

@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 
     from teatree.core.cost import AttemptUsage, CostBreakdown, UsageGroup
 
+#: Room a resume needs beyond the conversation: teatree's dispatch prompts measure 39k-78k tokens (#4817).
+RESUME_HEADROOM_TOKENS = 80_000
+
 
 class TaskAttemptQuerySet(models.QuerySet):
     def create(self, **kwargs: object) -> "TaskAttempt":
@@ -259,6 +262,11 @@ class TaskAttempt(models.Model):
     # the recorded spend as a FLOOR; a zero here would be a measurement nobody made.
     usage_unknown = models.BooleanField(default=False)
     num_turns = models.IntegerField(null=True, blank=True)
+    # #4874: the conversation's size at its last turn, the window the served model reported, and
+    # whether the CLI's ``fallback_model`` served any of it.
+    context_tokens = models.PositiveIntegerField(null=True, blank=True)
+    context_window_tokens = models.PositiveIntegerField(null=True, blank=True)
+    model_fell_back = models.BooleanField(default=False)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)
     # souliane/teatree#657: the Layer-2 lane this attempt's tokens are
@@ -439,6 +447,14 @@ class TaskAttempt(models.Model):
             cache_write_tokens=self.cache_write_tokens or 0,
             lane=self.lane,
         ).effective_tokens
+
+    def cannot_continue_its_conversation(self) -> bool:
+        """Whether resuming this attempt's conversation hits a wall a fresh one avoids (#4874)."""
+        if self.model_fell_back:
+            return True
+        if self.context_tokens is None or self.context_window_tokens is None:
+            return False
+        return self.context_tokens + RESUME_HEADROOM_TOKENS > self.context_window_tokens
 
     def _stamp_repair_loop_fields(self) -> None:
         """Stamp the iteration counter + error fingerprint on insert (#2009).

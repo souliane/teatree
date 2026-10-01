@@ -8,7 +8,7 @@ adapters and the test fakes interchangeable.
 """
 
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
-from teatree.loop.scanners.pr_sweep_types import PrSummary
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult, PrSummary
 
 
 class _Api:
@@ -20,9 +20,9 @@ class _Api:
         _ = (slug, check_name)
         return False
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         _ = (slug, pr_id, expected_head_oid)
-        return True, "sha"
+        return BoundMergeResult(merged=True, merged_sha="sha")
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
         _ = (slug, pr_id, expected_head_oid)

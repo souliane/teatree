@@ -28,6 +28,7 @@ from teatree.core.forge_push_verdict import (
     PUSH_EXIT_CODES,
     CredentialSource,
     ForgeCredential,
+    GitPushError,
     PushFailure,
     credential_failure_hint,
 )
@@ -38,6 +39,30 @@ from teatree.utils.run import CompletedProcess, TimeoutExpired
 from tests._git_repo import make_git_repo, run_git
 
 FAKE_TOKEN = "gh" + "p_" + "x" * 36
+
+_ABORT_EMITTER_LINES = (
+    "=== push-gate: ABORTED waiting for lock held by pid=41 ===",
+    "worker 'gw0' crashed while running 'tests/test_x.py::test_y'",
+    "replacing crashed worker gw0",
+    "Cannot allocate memory",
+    "OSError: [Errno 12] Cannot allocate memory",
+    "E   OSError: [Errno 12] Cannot allocate memory",
+    "bash: fork: Cannot allocate memory",
+    ".git/hooks/pre-push: line 3: fork: Cannot allocate memory",
+    "caused by: Cannot allocate memory (os error 12)",
+    "cause: Cannot allocate memory (os error 12)",
+    "error: cannot fork() for git-remote-https: Cannot allocate memory",
+    "fatal: mmap failed: Cannot allocate memory",
+    "MemoryError",
+    "E   MemoryError",
+)
+_PYTEST_REPORT_SHAPES = (
+    "FAILED {node}[{line}] - assert 1",
+    "{node}[{line}] FAILED   [ 50%]",
+    "[gw0] [ 50%] FAILED {node}[{line}]",
+    "_____ {header}[{line}] _____",
+)
+_GIT_ABORTED_PUSH = "error: failed to push some refs to '../origin.git'"
 
 
 def _install_pre_push_hook(clone: Path, body: str) -> Path:
@@ -51,6 +76,15 @@ def _install_pre_push_hook(clone: Path, body: str) -> Path:
 def _recording_pre_push_hook(body: str) -> str:
     record_lib = Path(__file__).resolve().parents[2] / "dev" / "lib" / "gate-record.sh"
     return f'. "{record_lib}"\nstart_push_gate_record\ntrap \'finish_push_gate_record "$?"\' EXIT\n{body}'
+
+
+def _failing_gate_verdict(gate_output: str) -> PushFailure:
+    return GitPushError(
+        returncode=1,
+        stderr=f"{gate_output}\n{_GIT_ABORTED_PUSH}",
+        pre_push_hook=".git/hooks/pre-push",
+        credential=ForgeCredential(token=FAKE_TOKEN, source=CredentialSource.GH_TOKEN),
+    ).failure
 
 
 @pytest.fixture
@@ -666,16 +700,7 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
         assert "stage=3" in outcome.detail
         assert "oom_kill delta: 1" in outcome.detail
 
-    @pytest.mark.parametrize(
-        "marker",
-        [
-            "=== push-gate: ABORTED waiting for lock held by pid=41 ===",
-            "crashed while running",
-            "replacing crashed worker",
-            "Cannot allocate memory",
-            "MemoryError",
-        ],
-    )
+    @pytest.mark.parametrize("marker", _ABORT_EMITTER_LINES)
     def test_gate_abort_markers_never_become_branch_refusals(self, clone_with_origin: Path, marker: str) -> None:
         _install_pre_push_hook(clone_with_origin, f'echo "{marker}" >&2\nexit 1\n')
 
@@ -691,6 +716,30 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
 
         assert outcome.failure is PushFailure.GATE_REFUSED
         assert refusal in outcome.detail
+
+    @pytest.mark.parametrize("line", _ABORT_EMITTER_LINES)
+    @pytest.mark.parametrize("shape", _PYTEST_REPORT_SHAPES)
+    def test_a_refusal_whose_test_id_embeds_an_abort_line_stays_a_refusal(
+        self, request: pytest.FixtureRequest, shape: str, line: str
+    ) -> None:
+        abort_test = self.test_gate_abort_markers_never_become_branch_refusals.__name__
+        node = "::".join([*request.node.nodeid.split("::")[:2], abort_test])
+        report = shape.format(node=node, header=f"{type(self).__name__}.{abort_test}", line=line)
+
+        assert _failing_gate_verdict(line) is PushFailure.GATE_ABORTED
+        assert _failing_gate_verdict(report) is PushFailure.GATE_REFUSED
+
+    @pytest.mark.parametrize(
+        "quoted",
+        [
+            "# bash: fork: Cannot allocate memory",
+            "- bash: fork: Cannot allocate memory",
+            "tests/test_x.py:12: bash: fork: Cannot allocate memory",
+            "error: banned term 'bash: fork: Cannot allocate memory' in tests/test_x.py",
+        ],
+    )
+    def test_a_gate_quoting_an_abort_line_stays_a_refusal(self, quoted: str) -> None:
+        assert _failing_gate_verdict(quoted) is PushFailure.GATE_REFUSED
 
     def test_git_push_error_combines_stdout_and_stderr_before_classifying(self, clone_with_origin: Path) -> None:
         _install_pre_push_hook(clone_with_origin, "exit 0\n")

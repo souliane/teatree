@@ -3,7 +3,8 @@
 The guard refuses to signal a process unless BOTH hold. Positive identity —
 the pid maps to a KNOWN dead/failed target by session id, never by a heuristic
 "looks idle". Confirmed non-live — two CPU samples show no activity, STAT is
-not a running/foreground state (``R``/``R+``), and a hang cause is stated.
+neither running (``R``, with any modifier flags) nor foreground (``+``), and a
+hang cause is stated.
 
 Only the two externality boundaries are mocked: the per-pid liveness sample
 (real impl shells out to ``ps``) and the pid→identity resolution (real impl
@@ -79,6 +80,20 @@ class TestConfirmedNonLive:
         )
         assert not verdict.allowed
         assert "R+" in verdict.reason
+
+    @pytest.mark.parametrize("stat", ["Rl", "Rsl", "R<l", "RN"])
+    def test_refuses_a_running_process_whatever_flags_ps_appends(self, stat: str) -> None:
+        # A multi-threaded `claude`/node process reads `Rl`, never a bare `R`; and Linux
+        # `%cpu` is a lifetime average, so a long-idle process spinning now can read ~0.
+        running = Liveness(stat=stat, cpu_sample_1=0.1, cpu_sample_2=0.1, output_advanced=False)
+        verdict = evaluate_safe_kill(
+            4242,
+            hang_cause="task failed, process lingers",
+            resolve_identity=_resolver(_FAILED_TARGET),
+            sample_liveness=_sampler(running),
+        )
+        assert not verdict.allowed
+        assert f"STAT {stat} (running on CPU)" in verdict.reason
 
     def test_refuses_foreground_session_with_no_cpu_but_live_tty(self) -> None:
         verdict = evaluate_safe_kill(

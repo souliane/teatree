@@ -355,23 +355,23 @@ class RegressionGates:
         more than *tolerance* (relative drift) versus the baseline run. A scenario
         whose baseline cost is ``0.0`` (subscription baseline — no metered
         reference) has an undefined relative drift, so it is skipped, never flagged
-        and never a divide-by-zero. When no model has a baseline at all the gate
-        compared nothing, so it fails rather than reporting an unearned green.
+        and never a divide-by-zero. When that leaves no scenario compared — no
+        baseline at all, or an all-$0 one — it fails rather than reporting an unearned green.
         """
         if not enabled:
             return False
         from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
 
         any_regressed = False
-        any_baseline = False
+        compared = 0
         for model in record.models:
             baseline_run = EvalRunRecord.objects.for_model(model).baselines().exclude(pk=record.pk).first()
             if baseline_run is None:
                 continue
-            any_baseline = True
             for entry in EvalRunRecord.cost_regression_diff(baseline=baseline_run, candidate=record, model=model):
                 if entry.pct_increase is None:
                     continue
+                compared += 1
                 if entry.pct_increase > tolerance:
                     any_regressed = True
                     typer.echo(
@@ -379,10 +379,11 @@ class RegressionGates:
                         f"${entry.baseline_cost_usd:.4f} -> ${entry.candidate_cost_usd:.4f} "
                         f"(+{entry.pct_increase:.0%}, tolerance {tolerance:.0%})"
                     )
-        if not any_baseline:
+        if not compared:
             typer.echo(
-                "cost: no cost baseline recorded for these models — --gate-cost-regression was requested "
-                "but compared zero scenarios, so it cannot report a green. Record one with --baseline.",
+                "cost: no metered cost baseline for these models (none recorded, or every baseline scenario "
+                "cost $0) — --gate-cost-regression was requested but compared zero scenarios, so it cannot "
+                "report a green. Record a metered one with --baseline.",
                 err=True,
             )
             return True

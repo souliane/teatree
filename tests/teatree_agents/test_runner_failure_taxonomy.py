@@ -16,12 +16,22 @@ from claude_agent_sdk.types import RateLimitInfo
 from teatree.agents.runner_failure_taxonomy import (
     RESULT_ERROR_PREFIX,
     TURN_CEILING_SUBTYPE,
+    cli_too_old_fallback,
+    cli_too_old_reason,
     context_exhaustion_reason,
     error_result_reason,
     is_context_exhaustion,
+    is_refused_resume,
     limit_match,
+    refused_resume_reason,
 )
-from teatree.core.modelkit.task_failure_taxonomy import RecoveryStrategy, classify_failure, recovery_strategy
+from teatree.core.modelkit.task_failure_taxonomy import (
+    FailureKind,
+    RecoveryStrategy,
+    classify_failure,
+    exhausted_the_conversation,
+    recovery_strategy,
+)
 from teatree.llm.anthropic_limits import (
     RECOVERABLE_EXHAUSTION_CAUSES,
     LimitCause,
@@ -191,6 +201,78 @@ class TestContextExhaustion:
 
         assert reason.startswith(f"{RESULT_ERROR_PREFIX}context_exhausted")
         assert "Prompt is too long" in reason
+        assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.RETRY
+
+
+#: The ``model_fallback`` event the bundled CLI 2.1.277 streamed for every Opus 5.5 request on the
+#: worker (souliane/teatree#4874), as the SDK hands it over: snake_case, the 400 body in ``content``.
+_CLI_TOO_OLD_FALLBACK = {
+    "type": "system",
+    "subtype": "model_fallback",
+    "trigger": "last_resort",
+    "original_model": "claude-opus-5-5",
+    "fallback_model": "claude-sonnet-5",
+    "content": (
+        "Switched to Sonnet 5 because claude-opus-5-5 returned an error that could not be retried (400 "
+        '{"type":"error","error":{"type":"invalid_request_error","message":"Claude Code 2.1.277 does not '
+        "support this model; version 2.1.280 or newer is required. Run 'claude update', or update the Claude "
+        'desktop app, then try again.","details":{"error_code":"claude_code_version_too_old"}}})'
+    ),
+}
+_OVERLOAD_FALLBACK = {
+    "type": "system",
+    "subtype": "model_fallback",
+    "trigger": "overloaded",
+    "original_model": "claude-opus-5-5",
+    "fallback_model": "claude-sonnet-5",
+    "content": "Switched to Sonnet 5 because claude-opus-5-5 is overloaded (529)",
+}
+
+
+class TestACliTooOldForTheModelIsNeverASilentDowngrade:
+    def test_the_fallback_forced_by_an_outdated_cli_is_picked_out(self) -> None:
+        assert cli_too_old_fallback([_OVERLOAD_FALLBACK, _CLI_TOO_OLD_FALLBACK]) is _CLI_TOO_OLD_FALLBACK
+
+    def test_a_capacity_fallback_is_what_fallback_model_is_for(self) -> None:
+        assert cli_too_old_fallback([_OVERLOAD_FALLBACK]) is None
+        assert cli_too_old_fallback([]) is None
+
+    def test_the_reason_names_both_models_and_its_own_kind(self) -> None:
+        reason = cli_too_old_reason(_CLI_TOO_OLD_FALLBACK)
+
+        assert "claude-opus-5-5" in reason
+        assert "claude-sonnet-5" in reason
+        assert "claude_code_version_too_old" in reason
+        assert classify_failure(reason) == FailureKind.CLI_TOO_OLD_FOR_MODEL
+
+
+class TestAResumeTheCliDeclinedIsAnExhaustedConversation:
+    """Task 4973's first resume: ``is_error=False``, zero turns, no text — recorded ``no_result_envelope``."""
+
+    _DECLINED = ResultMessage(
+        subtype="success", duration_ms=0, duration_api_ms=0, is_error=False, num_turns=0, session_id="s1", result=""
+    )
+
+    def test_a_zero_turn_clean_ending_is_a_declined_resume(self) -> None:
+        assert is_refused_resume(self._DECLINED)
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            None,
+            _result(),
+            ResultMessage(
+                subtype="success", duration_ms=0, duration_api_ms=0, is_error=True, num_turns=0, session_id="s1"
+            ),
+        ],
+    )
+    def test_a_run_that_took_a_turn_or_already_failed_is_not(self, message: ResultMessage | None) -> None:
+        assert not is_refused_resume(message)
+
+    def test_the_reason_sends_the_retry_to_a_fresh_conversation(self) -> None:
+        reason = refused_resume_reason(self._DECLINED)
+
+        assert exhausted_the_conversation(reason)
         assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.RETRY
 
 

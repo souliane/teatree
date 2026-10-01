@@ -33,11 +33,12 @@ from teatree.core.worktree.branch_classification import (
     _branch_tree_matches_squash,
     content_equivalence_blockers,
     effective_default_target,
+    forge_merged_tip_captured,
 )
 from teatree.core.worktree.branch_verdict import branch_is_landed, branch_landed_for_teardown
 from teatree.core.worktree.clone_paths import resolve_clone_path
 from teatree.core.worktree.worktree_env import compose_project, worktree_pg_connection
-from teatree.core.worktree.worktree_paths import worktree_dir_for
+from teatree.core.worktree.worktree_location import resolve_worktree_path
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry
@@ -144,8 +145,8 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
     confirming the work already shipped despite a patch-id mismatch: the PR's merge
     commit tree compared against the branch tip (an empty diff means the cumulative
     content is captured in the squash, typical for post-merge retro commits), and
-    the forge's canonical PR-merged report (#1578, for branches diverged so far the
-    squash tree no longer matches). The error message lists up to
+    the forge's record that it merged EXACTLY the current tip (#1578) — a merged PR
+    under the same head-branch name proves only the tip it merged. The error message lists up to
     ``_SUBJECT_PREVIEW_LIMIT`` blockers so the caller can decide whether to push or
     abandon.
 
@@ -158,7 +159,7 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
 
     Deliberately the stricter :func:`branch_is_landed`, not the :func:`branch_landed_for_teardown`
     the other three destroy sites read: the only branches the wider one adds are
-    ``redundant and forge-merged-at-tip``, which :func:`_branch_pr_is_merged` below already takes.
+    ``redundant and forge-merged-at-tip``, which :func:`forge_merged_tip_captured` below already takes.
     """
     branch = target.branch_to_delete
     if branch is None:
@@ -186,7 +187,7 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree, target: _Effec
         return
     if branch_is_landed(repo_main, branch, default_target):
         return
-    if _branch_pr_is_merged(repo_main, branch):
+    if forge_merged_tip_captured(repo_main, branch):
         return
     preview = blockers[:_SUBJECT_PREVIEW_LIMIT]
     listed = ", ".join(sha[:_SHORT_SHA_LEN] if len(sha) >= _SHORT_SHA_LEN else sha for sha in preview)
@@ -373,20 +374,6 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree, target: _EffectiveTar
         f"{shas}. Push the branch or pass force=True to discard."
     )
     raise RuntimeError(msg)
-
-
-def _resolve_worktree_path(workspace: Path, worktree: Worktree) -> str:
-    """Return the on-disk worktree path, preferring extras and falling back to the canonical layout.
-
-    Provisioning records ``worktree_path`` in ``Worktree.extra`` after a
-    successful ``git worktree add``. When that record is missing (extras lost,
-    row created before the path was set, manual provisioning), fall back to the
-    shared :func:`worktree_dir_for` ``<workspace>/<branch>/<repo-leaf>`` layout.
-    """
-    stored = (worktree.extra or {}).get("worktree_path", "")
-    if stored:
-        return stored
-    return str(worktree_dir_for(workspace, worktree.branch, worktree.repo_path))
 
 
 def _run_data_loss_guards(
@@ -585,7 +572,7 @@ def cleanup_worktree(
     guard_live_worktree(worktree, respect_liveness=respect_liveness, force=force)
 
     workspace = clone_root()
-    wt_path = _resolve_worktree_path(workspace, worktree)
+    wt_path = resolve_worktree_path(workspace, worktree)
     overlay = _resolve_overlay_or_none(worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
 

@@ -40,6 +40,7 @@ from teatree.loop.scanners.pr_sweep_adapters import (
     _decode_pr,
 )
 from teatree.loop.scanners.pr_sweep_branch_update import MAX_BRANCH_UPDATES_PER_TICK
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
 from teatree.types import RawAPIDict
 
@@ -240,6 +241,9 @@ class FakePrApiClient:
     prs_by_slug: dict[str, list[PrSummary]] = field(default_factory=dict)
     main_uv_audit_red: bool = False
     fallback_succeeds: bool = True
+    #: The ``str(exc)`` a refused ``merge_pr_squash_bound`` carries (#4856) —
+    #: empty reproduces the pre-fix "no text at all" shape.
+    refusal_text: str = ""
     merge_pr_calls: list[tuple[str, int, str]] = field(default_factory=list)
     main_check_calls: list[tuple[str, str]] = field(default_factory=list)
     update_branch_calls: list[tuple[str, int, str]] = field(default_factory=list)
@@ -257,9 +261,11 @@ class FakePrApiClient:
         self.main_check_calls.append((slug, check_name))
         return self.main_uv_audit_red
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_pr_calls.append((slug, pr_id, expected_head_oid))
-        return self.fallback_succeeds, MAIN_SHA if self.fallback_succeeds else ""
+        if self.fallback_succeeds:
+            return BoundMergeResult(merged=True, merged_sha=MAIN_SHA)
+        return BoundMergeResult(merged=False, refusal=self.refusal_text)
 
     def update_pr_branch(self, *, slug: str, pr_id: int, expected_head_oid: str) -> bool:
         self.update_branch_calls.append((slug, pr_id, expected_head_oid))
@@ -1077,8 +1083,15 @@ class TestSoloOverlayBypassesClearGate:
         assert signals[0].payload["reason"] == "all_green"
 
     def test_solo_overlay_gh_fallback_failure_emits_blocked_signal(self) -> None:
+        # Regression for #4856: the refusal text from ``MergePreconditionError`` must
+        # surface in the reason, not the opaque ``solo_overlay_gh_fallback_failed``
+        # label that discarded it.
         _record_cold_review()
-        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]}, fallback_succeeds=False)
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr()]},
+            fallback_succeeds=False,
+            refusal_text="no rubric is recorded for this ticket",
+        )
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
 
@@ -1088,7 +1101,7 @@ class TestSoloOverlayBypassesClearGate:
         assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
         assert notifier.calls == []
         assert signals[0].kind == "pr_sweep.blocked"
-        assert signals[0].payload["reason"] == "solo_overlay_gh_fallback_failed"
+        assert signals[0].payload["reason"] == "solo_overlay_merge_refused: no rubric is recorded for this ticket"
 
     def test_collaborative_overlay_default_never_auto_merges_on_no_clear(self) -> None:
         # Anti-vacuous: without solo_overlay, the CLEAR contract stays in force —
@@ -1909,8 +1922,8 @@ class TestErrorIsolation:
 
             def merge_pr_squash_bound(  # pragma: no cover
                 self, *, slug: str, pr_id: int, expected_head_oid: str
-            ) -> tuple[bool, str]:
-                return False, ""
+            ) -> BoundMergeResult:
+                return BoundMergeResult(merged=False)
 
         api = _BoomApi()
         scanner = PrSweepScanner(
@@ -2171,6 +2184,30 @@ class TestSubstrateHoldPing:
         assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]  # non-substrate still escalates
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, True)]
         assert signals[0].payload["reason"] == "fallback_uv_audit_gh"
+        assert pinger.calls == []
+
+    def test_non_substrate_uv_audit_fallback_refusal_reports_its_own_reason(self) -> None:
+        # Regression for #4856: when the raw gh fallback ALSO refuses (for a reason
+        # distinct from the keystone's earlier refusal), the reason must name the
+        # FALLBACK's own cause, not the stale ``error`` captured before it was tried —
+        # this branch had no test at all before this ticket.
+        _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_uv_audit()))]},
+            main_uv_audit_red=True,
+            fallback_succeeds=False,
+            refusal_text="some refusal",
+        )
+        keystone = FakeKeystone(merged=False, error="uv-audit failing", escalation_kind="")
+        pinger = FakeSubstratePinger()
+        scanner, notifier = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
+
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
+        assert notifier.calls == []
+        assert signals[0].payload["reason"] == "fallback_uv_audit_gh_refused: some refusal"
         assert pinger.calls == []
 
     def test_substrate_hold_sends_no_owner_dm_and_logs_once(self) -> None:

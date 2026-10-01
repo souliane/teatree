@@ -11,13 +11,19 @@ proof: breaking the underlying real function flips a predicate to ``False``.
 
 from unittest.mock import patch
 
+import pytest
+from django.db import transaction
 from django.test import TestCase
 
 from teatree.config.resolution import get_effective_settings
 from teatree.config.settings import Autonomy
-from teatree.core.models import ConfigSetting
+from teatree.core.models import ConfigSetting, LoopLease
 from teatree.core.overlay_loader import infer_overlay_for_url
 from teatree.eval import regression_corpus_predicates as predicates
+
+
+class _BoomError(Exception):
+    """An exception no predicate catches — the probe for an uncaught mid-block failure."""
 
 
 class TestNonDbPredicatesHoldOnRealCode(TestCase):
@@ -162,3 +168,42 @@ class TestPredicatesLeaveNoDurableRows(TestCase):
         before = self._clear_pks()
         assert predicates._check_merge_precondition_maker_is_not_checker() is True
         assert self._clear_pks() == before
+
+
+class TestEphemeralRowNeverCommits(TestCase):
+    """``_ephemeral_row`` cleans up by never committing, not by an explicit delete.
+
+    A prior shape (``create()`` in autocommit, then ``finally: row.delete()``)
+    left the row durable the instant it was created — correct on any ordinary
+    exit, but a hard kill between the two (a timeout wrapper, an OOM, a crashed
+    eval run) skips the ``finally`` and the row survives permanently. Measured:
+    258 orphaned ``MergeClear`` rows this way over a month, false-tripping the S4
+    ``merge_latency`` factory signal RED. These prove the replacement's actual
+    guarantee — nothing the block writes is ever visible to a later reader,
+    regardless of how the block ends — which a "still returns True" test alone
+    cannot show.
+    """
+
+    _NAME = "ephemeral-row-probe"
+
+    def test_runs_inside_an_open_transaction(self) -> None:
+        with predicates._ephemeral_row():
+            assert transaction.get_connection().in_atomic_block
+
+    def test_a_write_is_visible_inside_the_block_but_gone_after_ordinary_exit(self) -> None:
+        with predicates._ephemeral_row():
+            LoopLease.objects.create(name=self._NAME)
+            # Uncommitted, but this same connection reads its own write.
+            assert LoopLease.objects.filter(name=self._NAME).exists()
+
+        assert not LoopLease.objects.filter(name=self._NAME).exists()
+
+    def test_a_write_is_gone_even_when_the_block_raises_an_exception_the_caller_never_catches(self) -> None:
+        def _create_then_raise() -> None:
+            LoopLease.objects.create(name=self._NAME)
+            raise _BoomError
+
+        with pytest.raises(_BoomError), predicates._ephemeral_row():
+            _create_then_raise()
+
+        assert not LoopLease.objects.filter(name=self._NAME).exists()

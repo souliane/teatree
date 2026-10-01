@@ -212,7 +212,7 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
             phase="architectural_review",
         )
         assert task.status == Task.Status.PENDING
-        task.fail(reason="test: deliberate failure")
+        task.fail(reason="test: deliberate failure", by_holder=True)
 
         with (
             fake_sdk(success_stream({"summary": "OK"})),
@@ -787,7 +787,7 @@ class TestSessionClosedOnTerminalTask(TestCase):
     def test_failing_the_owning_task_ends_the_session(self) -> None:
         session, task = self._session_with_task()
 
-        task.fail(reason="test: deliberate failure")
+        task.fail(reason="test: deliberate failure", by_holder=True)
 
         session.refresh_from_db()
         assert session.ended_at is not None
@@ -800,7 +800,7 @@ class TestSessionClosedOnTerminalTask(TestCase):
             phase="coding",
         )
 
-        task.fail(reason="test: deliberate failure")
+        task.fail(reason="test: deliberate failure", by_holder=True)
 
         session.refresh_from_db()
         assert session.ended_at is None
@@ -816,6 +816,6 @@ class TestSessionClosedOnTerminalTask(TestCase):
     def test_the_ticket_stops_reading_busy_once_its_task_terminates(self) -> None:
         session, task = self._session_with_task()
 
-        task.fail(reason="test: deliberate failure")
+        task.fail(reason="test: deliberate failure", by_holder=True)
 
         assert session.ticket.has_active_work() is False

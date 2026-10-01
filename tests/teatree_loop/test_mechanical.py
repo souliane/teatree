@@ -9,6 +9,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
+from teatree.loop import mechanical
 from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.mechanical import (
     HANDLERS,
@@ -196,6 +197,33 @@ class TestReviewerTaskOrphaned(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
 
+    def test_leaves_a_claimed_task_to_its_run(self) -> None:
+        ticket, task = self._make_reviewer_ticket_with_pending_task("https://x/-/merge_requests/375")
+        task.claim(claimed_by="worker-a")
+
+        reviewer_task_orphaned(_payload(ticket_id=ticket.pk, url=ticket.issue_url, reason="PR merged"))
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.attempts.count() == 0
+
+    def test_a_task_claimed_between_the_read_and_the_write_is_left_to_its_run(self) -> None:
+        ticket, task = self._make_reviewer_ticket_with_pending_task("https://x/-/merge_requests/376")
+        read = mechanical._pending_reviewing_tasks
+
+        def read_then_lose_the_race(target: object) -> list[Task]:
+            stale = list(read(target))
+            Task.objects.get(pk=task.pk).claim(claimed_by="worker-b")
+            return stale
+
+        with patch("teatree.loop.mechanical._pending_reviewing_tasks", side_effect=read_then_lose_the_race):
+            reviewer_task_orphaned(_payload(ticket_id=ticket.pk, url=ticket.issue_url, reason="PR merged"))
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "worker-b"
+        assert task.attempts.count() == 0
+
 
 class TestAutoCompletedReviewIsDistinguishableInTheLedger(TestCase):
     """#4308: a reviewing task that completed without reviewing must say so.
@@ -211,17 +239,17 @@ class TestAutoCompletedReviewIsDistinguishableInTheLedger(TestCase):
         task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
         return ticket, task
 
-    def test_the_orphaned_skip_records_an_attempt_naming_why_no_verdict_exists(self) -> None:
+    def test_the_no_review_owed_skip_records_an_attempt_naming_why_no_verdict_exists(self) -> None:
         ticket, task = self._reviewer_ticket_with_pending_task("https://x/-/merge_requests/4308")
 
-        reviewer_task_orphaned(_payload(ticket_id=ticket.pk, url=ticket.issue_url, reason="merged"))
+        reviewer_task_orphaned(_payload(ticket_id=ticket.pk, url=ticket.issue_url, reason="PR merged"))
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
         attempt = task.attempts.get()
         assert attempt.exit_code == 0
         assert "no verdict" in attempt.result["summary"]
-        assert "orphan" in attempt.result["summary"]
+        assert "no review is owed (PR merged)" in attempt.result["summary"]
 
     def test_the_self_authored_skip_records_an_attempt_naming_why_no_verdict_exists(self) -> None:
         url = "https://github.com/souliane/teatree/pull/4309"
@@ -278,8 +306,8 @@ class TestAssignGitlabReviewer:
     """#1295 cap B: Slack-mention pickup appends the user as reviewer.
 
     The handler walks: payload → overlay → code host → ``assign_reviewer``.
-    Each step is best-effort: missing payload, no host, no method, raising
-    host, or False return — all log and exit cleanly without raising.
+    A missing payload, no host, no method, or a False return logs and exits
+    cleanly; a raising loader or host raises for the tick to record.
     """
 
     def test_no_op_when_url_missing(self) -> None:
@@ -289,11 +317,7 @@ class TestAssignGitlabReviewer:
     def test_no_op_when_username_missing(self) -> None:
         assign_gitlab_reviewer(_payload(url="https://gitlab.example.com/x/y/-/merge_requests/1"))
 
-    def test_logs_when_overlay_loader_raises(
-        self,
-        caplog: pytest.LogCaptureFixture,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_an_overlay_loader_failure_raises_for_the_tick_to_record(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core import overlay_loader  # noqa: PLC0415
 
         def _raise(name: str | None = None) -> object:
@@ -301,10 +325,8 @@ class TestAssignGitlabReviewer:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(overlay_loader, "get_overlay", _raise)
-        with caplog.at_level(logging.ERROR, logger="teatree.loop.mechanical"):
+        with pytest.raises(RuntimeError, match="no overlay"):
             assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/9", reviewer_username="bob"))
-
-        assert any("Could not resolve code host" in r.message for r in caplog.records)
 
     def test_logs_when_host_is_none(
         self,
@@ -339,11 +361,7 @@ class TestAssignGitlabReviewer:
 
         assert any("no assign_reviewer support" in r.message for r in caplog.records)
 
-    def test_logs_when_assign_reviewer_raises(
-        self,
-        caplog: pytest.LogCaptureFixture,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_an_assign_reviewer_failure_raises_for_the_tick_to_record(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.backends import loader  # noqa: PLC0415
         from teatree.core import overlay_loader  # noqa: PLC0415
 
@@ -354,10 +372,8 @@ class TestAssignGitlabReviewer:
 
         monkeypatch.setattr(overlay_loader, "get_overlay", lambda name=None: object())
         monkeypatch.setattr(loader, "get_code_host", lambda overlay: _RaisingHost())
-        with caplog.at_level(logging.ERROR, logger="teatree.loop.mechanical"):
+        with pytest.raises(RuntimeError, match="API exploded"):
             assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/9", reviewer_username="bob"))
-
-        assert any("Failed to assign" in r.message for r in caplog.records)
 
     def test_success_logs_info(
         self,

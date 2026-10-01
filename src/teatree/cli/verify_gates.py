@@ -36,6 +36,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.core.invocation_cwd import invocation_cwd
 from teatree.quality.changed_set import ChangedSetError, changed_paths
 from teatree.quality.gate_receipt import write_gate_receipt
 from teatree.utils.git_branch import current_branch, head_sha
@@ -59,9 +60,9 @@ _MAX_SCOPED_FILES = 500
 _CONFIG_NAMES = frozenset({"pyproject.toml", "uv.lock", ".pre-commit-config.yaml", "tach.toml"})
 
 
-def _resource_refusal() -> str:
+def _resource_refusal(repo: Path) -> str:
     """Return the measured shortfall before a potentially expensive local gate run."""
-    disk_free = free_bytes(Path.cwd())
+    disk_free = free_bytes(repo)
     if disk_free is not None and disk_free // _BYTES_PER_MIB < _MIN_DISK_MIB:
         free_mib = disk_free // _BYTES_PER_MIB
         return f"disk: {free_mib} MiB free below {_MIN_DISK_MIB} MiB floor"
@@ -180,17 +181,17 @@ def _timeout_available() -> bool:
     return shutil.which("timeout") is not None
 
 
-def _scope_args() -> tuple[list[str], str]:
+def _scope_args(repo: Path) -> tuple[list[str], str]:
     """Use the branch/working-tree diff for filename hooks; uncertainty means FULL."""
     try:
-        changed = changed_paths()
+        changed = changed_paths(cwd=repo)
     except ChangedSetError as exc:
         return ["--all-files"], f"diff unavailable ({exc}); full tree"
     paths = sorted(
         {
             entry.path
             for entry in changed.entries
-            if entry.status not in {"D", "R", "C", "T"} and Path(entry.path).is_file()
+            if entry.status not in {"D", "R", "C", "T"} and (repo / entry.path).is_file()
         }
     )
     if not paths or len(paths) > _MAX_SCOPED_FILES:
@@ -202,16 +203,16 @@ def _scope_args() -> tuple[list[str], str]:
     return ["--files", *paths], f"{len(paths)} changed file(s); always-run hooks remain whole-tree"
 
 
-def _record(state: str, reason: str) -> None:
+def _record(repo: Path, state: str, reason: str) -> None:
     try:
-        write_gate_receipt(Path.cwd(), state=state, reason=reason)
+        write_gate_receipt(repo, state=state, reason=reason)
     except OSError:
         # No receipt is itself an INCOMPLETE PR verdict. Keep the gate result
         # visible even on a read-only or malformed git admin directory.
         typer.echo("verify-gates: could not write the local gate receipt; PR will show INCOMPLETE.", err=True)
 
 
-def _run_stages(scope_args: list[str]) -> tuple[list[str], list[str]]:
+def _run_stages(scope_args: list[str], repo: Path) -> tuple[list[str], list[str]]:
     deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
     stages = (
         ("commit + manual", [*deadline, "prek", "run", *scope_args]),
@@ -222,7 +223,7 @@ def _run_stages(scope_args: list[str]) -> tuple[list[str], list[str]]:
     for label, cmd in stages:
         typer.echo(f"== verify-gates: {label} ==", err=True)
         # ``check=False`` inherits stdio and lets us collect both stage results.
-        result = run_streamed(cmd, check=False)
+        result = run_streamed(cmd, check=False, cwd=repo)
         if result in {124, 137}:
             incomplete.append(label)
         elif result != 0:
@@ -238,6 +239,7 @@ def verify_gates(
         help="Full or abbreviated SHA this tree must be at; any other tree is refused.",
     ),
     *,
+    repo: Path = typer.Option(invocation_cwd, "--repo", help="Repo root (default: where t3 was invoked)"),
     allow_main_clone: bool = typer.Option(
         False,
         "--allow-main-clone",
@@ -252,14 +254,20 @@ def verify_gates(
     cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
     gate). The full test suite is NOT a push gate -- push -> CI runs it.
 
+    ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`, not
+    ``Path.cwd()``: run through the containerized ``deploy/t3`` wrapper, the process
+    cwd is the image WORKDIR, not the worktree the operator stood in, so measuring
+    ``Path.cwd()`` graded whatever checkout happened to be mounted at WORKDIR instead
+    of refusing or measuring the invoking worktree.
+
     Report the measured SHA it prints TOGETHER WITH its exit code as the
     green-proof — an exit code alone does not say which tree earned it. Exits 2
     without grading anything when the tree is not a git checkout, is not the
     ``--expect-sha`` target, or is a clean main clone on its default branch.
     """
-    tree = read_measured_tree()
+    tree = read_measured_tree(repo=str(repo))
     if tree is None:
-        typer.echo(f"verify-gates: {Path.cwd()} is not a git tree — nothing measured.", err=True)
+        typer.echo(f"verify-gates: {repo} is not a git tree — nothing measured.", err=True)
         raise typer.Exit(code=_WRONG_TREE_EXIT)
     refusal = wrong_tree_refusal(tree, expected=expect_sha.strip(), allow_main_clone=allow_main_clone)
     if refusal:
@@ -267,9 +275,9 @@ def verify_gates(
         raise typer.Exit(code=_WRONG_TREE_EXIT)
 
     typer.echo(f"verify-gates: measuring {tree.describe()}", err=True)
-    _record("incomplete", "run started but did not finish")
+    _record(repo, "incomplete", "run started but did not finish")
     if not _prek_available():
-        _record("incomplete", "prek unavailable")
+        _record(repo, "incomplete", "prek unavailable")
         typer.echo(
             "verify-gates: prek not found on PATH. Install prek (the pre-commit "
             "runner) so the local gate set matches CI.",
@@ -278,23 +286,23 @@ def verify_gates(
         raise typer.Exit(code=1)
 
     if not _timeout_available():
-        _record("incomplete", "GNU timeout unavailable")
+        _record(repo, "incomplete", "GNU timeout unavailable")
         typer.echo("verify-gates: INCOMPLETE — GNU `timeout` is required for a bounded run.", err=True)
         raise typer.Exit(code=1)
 
-    refusal = _resource_refusal()
+    refusal = _resource_refusal(repo)
     if refusal:
-        _record("incomplete", refusal)
+        _record(repo, "incomplete", refusal)
         typer.echo(f"verify-gates: INCOMPLETE — refusing to start: {refusal}. Reclaim resources and retry.", err=True)
         raise typer.Exit(code=1)
 
-    scope_args, scope_reason = _scope_args()
+    scope_args, scope_reason = _scope_args(repo)
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
-    failed, incomplete = _run_stages(scope_args)
+    failed, incomplete = _run_stages(scope_args, repo)
 
-    finished_tree = read_measured_tree()
+    finished_tree = read_measured_tree(repo=str(repo))
     if finished_tree is None or finished_tree.head_sha != tree.head_sha or (not tree.dirty and finished_tree.dirty):
-        _record("incomplete", "checkout changed during verification")
+        _record(repo, "incomplete", "checkout changed during verification")
         typer.echo(
             f"verify-gates: INCOMPLETE — checkout changed while grading {tree.head_sha}; rerun on the final tree.",
             err=True,
@@ -302,13 +310,13 @@ def verify_gates(
         raise typer.Exit(code=_WRONG_TREE_EXIT)
 
     if failed or incomplete:
-        _record("incomplete", f"failed={','.join(failed)}; timed_out={','.join(incomplete)}")
+        _record(repo, "incomplete", f"failed={','.join(failed)}; timed_out={','.join(incomplete)}")
         if incomplete:
             typer.echo(f"verify-gates: INCOMPLETE — timed out stage(s): {', '.join(incomplete)}", err=True)
         if failed:
             typer.echo(f"verify-gates: FAILED stage(s): {', '.join(failed)} — measured {tree.head_sha}.", err=True)
         raise typer.Exit(code=1)
-    _record("green", "both gate stages passed")
+    _record(repo, "green", "both gate stages passed")
     typer.echo(
         f"verify-gates: all gate stages green (commit + push) — measured {tree.head_sha}.",
         err=True,

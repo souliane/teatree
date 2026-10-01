@@ -22,7 +22,6 @@ off — joins the batch. A ``STAGED`` entry cites the issue or date the call was
 decision exists and asking again would be noise. That split is already in the data.
 """
 
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -33,7 +32,6 @@ from teatree.loop.scanners.base import ScanSignal
 if TYPE_CHECKING:
     from teatree.core.factory.feature_inertness import InertFeature
 
-logger = logging.getLogger(__name__)
 
 #: Namespaces the marker so a gate question can never collide with a repair one.
 MARKER_PREFIX = "inert-gate:"
@@ -56,26 +54,18 @@ class InertGateQuestionScanner:
             question_fingerprint,
         )
 
-        try:
-            undecided = sorted((f for f in feature_inertness(self.registry) if f.is_fault), key=lambda f: f.setting)
-        except Exception:
-            logger.exception("inert-gate scan failed — no question filed, no gate touched")
-            return []
+        undecided = sorted((f for f in feature_inertness(self.registry) if f.is_fault), key=lambda f: f.setting)
 
         if not undecided:
             return []
 
         settings = [finding.setting for finding in undecided]
         question = _question_text(undecided)
-        try:
-            DeferredQuestion.record(
-                question,
-                dedupe_marker=f"{MARKER_PREFIX}{question_fingerprint(' '.join(settings))}",
-                audience=DeferredQuestion.Audience.OWNER_QUESTION,
-            )
-        except Exception:
-            logger.exception("inert-gate question failed for %s", settings)
-            return []
+        DeferredQuestion.record(
+            question,
+            dedupe_marker=f"{MARKER_PREFIX}{question_fingerprint(' '.join(settings))}",
+            audience=DeferredQuestion.Audience.OWNER_QUESTION,
+        )
         return [
             ScanSignal(
                 kind="gate.undecided",

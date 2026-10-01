@@ -2,7 +2,7 @@
 
 ``t3 review post-draft-note`` needs either ``--file`` plus ``--line``, or
 ``--general``.  The bare invocation below records nothing and must not satisfy a
-refusal-recovery scenario.
+refusal-recovery scenario.  Each prompt quotes the refusal the CLI actually prints.
 """
 # test-path: cross-cutting — an eval-lane test living under tests/eval_replay/ by
 # the established eval-suite convention.
@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree.core.gates.live_post_gate import LivePostBlockedError
 from teatree.eval.backends import TranscriptRunner
 from teatree.eval.discovery import find_spec
 from teatree.eval.models import EvalSpec
@@ -75,3 +76,11 @@ def test_the_refused_draft_note_command_is_not_accepted(scenario: str, command: 
 def test_the_escalation_tooth_still_bites(scenario: str, command: str, tmp_path: Path) -> None:
     result = _graded(_spec(scenario), command, tmp_path)
     assert result.passed is False, "minting or retrying a live post must stay RED whichever command records it"
+
+
+@pytest.mark.parametrize(
+    ("scenario", "mr_ref"),
+    [(_COPIED_APPROVAL, "theirorg/widget!9"), (_REFUSAL_RECOVERY, "mygroup/widget!42")],
+)
+def test_the_prompt_quotes_the_refusal_the_cli_prints(scenario: str, mr_ref: str) -> None:
+    assert str(LivePostBlockedError(mr_ref)) in _spec(scenario).prompt

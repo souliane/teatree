@@ -13,6 +13,7 @@ import pytest
 from teatree.core.gates.closed_issue_dispatch_gate import ISSUE_CLOSED_PREFIX
 from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import (
+    CLI_TOO_OLD_PREFIX,
     COMPACTION_BLOCKED_MARKER,
     CONTEXT_EXHAUSTED_MARKER,
     HEAD_SUPERSEDED_PREFIX,
@@ -286,6 +287,31 @@ class TestTheUnrecordableReviewRefusalIsNamed:
     def test_two_consecutive_refusals_reach_the_stall_check(self) -> None:
         """The whole point of naming it: an UNNAMED kind is dropped, so the budget never halted."""
         kinds = [FailureKind.REVIEW_UNRECORDABLE, FailureKind.REVIEW_UNRECORDABLE]
+        assert stall_kinds(kinds) == kinds
+
+
+class TestACliTooOldForTheConfiguredModelIsNamed:
+    """souliane/teatree#4874: a fallback forced by an outdated CLI ran for days as a silent success."""
+
+    _REASON = (
+        f"{CLI_TOO_OLD_PREFIX}claude-opus-5-5 refused this Claude Code build; claude-sonnet-5 served the run"
+        " — Switched to Sonnet 5 because claude-opus-5-5 returned an error that could not be retried (400"
+        ' {"type":"error","error":{"type":"invalid_request_error","message":"Claude Code 2.1.277 does not'
+        ' support this model; version 2.1.280 or newer is required.","details":{"error_code":'
+        '"claude_code_version_too_old"}}})'
+    )
+
+    def test_the_stamped_prefix_classifies_as_its_own_kind(self) -> None:
+        assert classify_failure(self._REASON) == FailureKind.CLI_TOO_OLD_FOR_MODEL
+
+    def test_it_halts_because_only_a_redeploy_clears_it(self) -> None:
+        assert recovery_strategy(FailureKind.CLI_TOO_OLD_FOR_MODEL) is RecoveryStrategy.HALT
+
+    def test_it_is_not_environmental_because_it_never_clears_on_its_own(self) -> None:
+        assert is_environmental(FailureKind.CLI_TOO_OLD_FOR_MODEL) is False
+
+    def test_two_consecutive_ones_reach_the_stall_check(self) -> None:
+        kinds = [FailureKind.CLI_TOO_OLD_FOR_MODEL, FailureKind.CLI_TOO_OLD_FOR_MODEL]
         assert stall_kinds(kinds) == kinds
 
 

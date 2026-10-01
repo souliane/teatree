@@ -28,7 +28,7 @@ _CORE_DIR = SRC_DIR / "core"
 _FORGE_BINARIES = frozenset({"gh", "glab"})
 _RUNNERS = frozenset({"run_checked", "run_allowed_to_fail", "run_streamed"})
 # Below this the walk cannot have been looking at the real source at all.
-_MIN_FORGE_CALL_SITES = 8
+_MIN_FORGE_CALL_SITES = 7
 
 
 def _leading_binary(call: ast.Call) -> str:

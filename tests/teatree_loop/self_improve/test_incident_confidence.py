@@ -48,7 +48,7 @@ def _firing(detector: str, identity: str, *, now: dt.datetime | None = None) -> 
 class IncidentConfidenceTests(TestCase):
     def test_missing_lifecycle_file_preserves_attempt_incident_but_resolves_db_incident(self) -> None:
         task = TaskFactory()
-        task.fail(reason="ProcessError: worker exited")
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
         detector = LifecycleIncidentDetector()
         db_report = next(report for report in detector.detect() if report.payload["kind"] == "task_failed")
         db_firing = record_firing(db_report, action=ActionRung.STATUSLINE)

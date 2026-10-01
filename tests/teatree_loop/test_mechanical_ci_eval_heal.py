@@ -1,12 +1,13 @@
 """CI-eval heal mechanical handler wiring (#3201 PR-3a).
 
 The ``ci_eval_heal.advance`` signal must route to the ``advance_ci_eval_heal``
-mechanical executor (the scanner→dispatch→handler seam), and the handler must be
-best-effort — a failing advance pass logs and is swallowed, never raised into the tick.
+mechanical executor (the scanner→dispatch→handler seam), and a failing advance pass
+must raise so ``_execute_mechanical`` records it in the tick's errors.
 """
 
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.loop.dispatch_tables import MECHANICAL_BY_KIND
@@ -21,13 +22,13 @@ class TestWiring(TestCase):
         assert HANDLERS["advance_ci_eval_heal"] is advance_ci_eval_heal
 
 
-class TestBestEffort(TestCase):
-    def test_advance_pass_failure_is_swallowed(self) -> None:
-        with patch(
-            "teatree.loop.mechanical_ci_eval_heal.advance_open_sessions",
-            side_effect=RuntimeError("gh stalled"),
+class TestAdvance(TestCase):
+    def test_a_failed_advance_pass_raises_for_the_tick_to_record(self) -> None:
+        with (
+            patch("teatree.loop.mechanical_ci_eval_heal.advance_open_sessions", side_effect=RuntimeError("gh stalled")),
+            pytest.raises(RuntimeError, match="gh stalled"),
         ):
-            advance_ci_eval_heal({})  # must not raise
+            advance_ci_eval_heal({})
 
     def test_delegates_to_advance_open_sessions(self) -> None:
         with patch("teatree.loop.mechanical_ci_eval_heal.advance_open_sessions") as advance:

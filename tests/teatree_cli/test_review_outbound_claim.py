@@ -13,6 +13,7 @@ import pytest
 
 from teatree.cli.review import ReviewService
 from teatree.core.models import OnBehalfApproval, OutboundClaim
+from tests.teatree_cli.review._bulk_publish_mr import BulkPublishMR
 from tests.teatree_core._on_behalf_gate_helpers import OWNED_REPO, seed_forbidding_posture, seed_permitting_posture
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -30,6 +31,7 @@ class _StubAPI:
     def __init__(self, *, approvers: list[str] | None = None) -> None:
         self.calls: list[tuple[str, str, Any]] = []
         self.approvers = ["souliane"] if approvers is None else approvers
+        self.mr = BulkPublishMR()
 
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
         self.calls.append(("post_json", endpoint, payload))
@@ -37,6 +39,7 @@ class _StubAPI:
 
     def post_status(self, endpoint: str) -> int:
         self.calls.append(("post_status", endpoint, None))
+        self.mr.saw_post(endpoint)
         return 200
 
     def put_status(self, endpoint: str, payload: object | None = None) -> int:
@@ -48,17 +51,15 @@ class _StubAPI:
         # Verify-after-post (#2081) reads the artifact back: confirm it landed
         # so the happy path stays green. A bare note/draft-note by id → present;
         # /approvals → this identity approved; the bulk-publish lists →
-        # draft_notes flushed to empty, at least one authored note present; a
+        # draft_notes flushed and a new authored note landed (BulkPublishMR); a
         # discussion → its resolvable notes carry the requested flag.
         last = endpoint.rstrip("/").rsplit("/", 1)[-1]
         if last.isdigit():
             return {"id": int(last), "resolvable": True, "resolved": True}
         if endpoint.endswith("/approvals"):
             return {"approved_by": [{"user": {"username": u}} for u in self.approvers]}
-        if last == "draft_notes":
-            return []  # all drafts published
-        if last == "notes":
-            return [{"id": 99, "author": {"username": "souliane"}}]
+        if (listed := self.mr.listing(endpoint)) is not None:
+            return listed
         if "discussions/" in endpoint:
             return {"notes": [{"resolvable": True, "resolved": True}]}
         return []
@@ -67,7 +68,7 @@ class _StubAPI:
         self.calls.append(("get_json_paginated", endpoint, None))
         if "discussions" in endpoint:
             return [{"notes": [{"author": {"username": "souliane"}}]}]
-        return []
+        return self.mr.listing(endpoint) or []
 
     def current_username(self) -> str:
         return "souliane"

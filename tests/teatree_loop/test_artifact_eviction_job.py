@@ -17,6 +17,8 @@ from django.utils import timezone
 from teatree.config import UserSettings
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.loop.dispatch import dispatch
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.artifact_eviction import ArtifactEvictionScanner
 from teatree.loop.scanners.resource_pressure import ResourcePressureScanner
 
@@ -44,6 +46,13 @@ class ReachableWithoutDiskPressureTests(TestCase):
     def test_the_signal_carries_the_retention_window(self) -> None:
         signals = ArtifactEvictionScanner(artifact_idle_days=7.0).scan()
         assert signals[0].payload["artifact_idle_days"] == pytest.approx(7.0)
+
+
+class AFailedSweepIsReportedNotSilentTests(TestCase):
+    def test_an_unloadable_marker_reaches_the_tick_error_surface(self) -> None:
+        with patch.object(ResourcePressureMarker, "load", side_effect=RuntimeError("db gone")):
+            _, signals, error = _run_job(_ScannerJob(scanner=ArtifactEvictionScanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: db gone")
 
 
 class CadenceTests(TestCase):

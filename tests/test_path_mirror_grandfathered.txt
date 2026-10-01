@@ -117,7 +117,6 @@ tests/teatree_loop/test_per_item_fault_isolation_1597.py
 tests/teatree_loop/test_provision_smoke_scanner.py
 tests/teatree_loop/test_pull_main_clone_scanner.py
 tests/teatree_loop/test_red_card_scanner.py
-tests/teatree_loop/test_resource_pressure_scanner.py
 tests/teatree_loop/test_review_react_self_authored_skip_1838.py
 tests/teatree_loop/test_review_request_merge_react_scanner.py
 tests/teatree_loop/test_reviewer_prs_skip_conditions_1321.py
@@ -135,7 +134,6 @@ tests/teatree_loop/test_slack_self_audio_strip.py
 tests/teatree_loop/test_stale_tickets.py
 tests/teatree_loop/test_task_sweep_scanner.py
 tests/teatree_loop/test_ticket_dispositions.py
-tests/teatree_loop/test_undelivered_notify_scanner.py
 tests/teatree_loop/test_white_check_mark_sweep.py
 tests/teatree_loops/test_backward_compat_shims.py
 tests/teatree_loops/test_mini_loop_jobs.py

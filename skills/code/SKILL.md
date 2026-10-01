@@ -72,6 +72,8 @@ t3 <overlay> workspace ticket <ticket-url-or-id>   # creates the worktree + bran
 cd <printed-worktree-path>                          # all edits happen here, not in the main clone
 ```
 
+A ticket's checkout made any other way needs `t3 <overlay> workspace ticket <issue-url> --adopt`, run inside it before its first push, or the PR the no-orphan hook opens binds no ticket (`skills/ship/SKILL.md` § 4a1).
+
 For a quick ad-hoc fix with no overlay/ticket (a typo, a one-line doc change), create the worktree by hand from the default branch first — the edit comes **after** the worktree exists, never before:
 
 ```bash
@@ -123,7 +125,7 @@ When the active overlay has `require_ticket = True` in its configuration, a trac
 
 ### 0d. Dream Gap-Batch Tickets — Claim Only What You Delivered (Non-Negotiable)
 
-A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): `ticket.context` lists every gap the pass queued, each with its `gap_key`. A pass with 300 pending gaps mints ONE such ticket, not 300 — fix each gap in the manifest independently.
+A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): `ticket.context` lists every gap the pass queued, each with its `gap_key` and, when its ledger row exists, its full `Rule:` / `Evidence:` / `Fix in:` lines — work from those, never the truncated title. A pass with 300 pending gaps mints ONE such ticket, not 300 — fix each gap in the manifest independently.
 
 - **Drop, never stretch.** A gap you cannot deliver in this change is OMITTED from the PR, not padded in with a thin/partial fix. It stays unchecked on the umbrella and the next pass re-offers it — dropping it costs nothing; claiming it falsely is a review HOLD.
 - **Record exactly what you delivered, before shipping:** `ticket.merge_extra(set_keys={'dream_gap_claimed_delivered': [<gap_key>, ...]})` — only the keys you actually fixed. The reconcile step checks off and retires ONLY the gaps in this list, intersected with the manifest; an out-of-manifest key is ignored.

@@ -7,6 +7,7 @@ mock; the shared module-level ``_patch_*`` decorators and the
 ``_no_unpushed``/``_mock_workspace`` helpers are lifted unchanged.
 """
 
+import contextlib
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -54,6 +55,22 @@ def _no_unpushed(mock_git: MagicMock) -> None:
 
 def _mock_workspace(mock_config: MagicMock) -> None:
     mock_config.return_value.__truediv__ = lambda self, x: MagicMock(is_dir=lambda: True)
+
+
+_TIP = "a" * 40
+
+
+@contextlib.contextmanager
+def _forge_merged(*, recorded_tip: str, local_tip: str) -> Iterator[None]:
+    """The forge reports this branch name's PR merged at *recorded_tip*; the local branch sits at *local_tip*."""
+    local_git = MagicMock()
+    local_git.run.return_value = local_tip
+    with (
+        patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=True),
+        patch("teatree.core.worktree.branch_classification._merged_pr_head_sha", return_value=recorded_tip),
+        patch("teatree.core.worktree.branch_classification.git", local_git),
+    ):
+        yield
 
 
 class TestCleanupWorktree(TestCase):
@@ -410,12 +427,12 @@ class TestCleanupWorktree(TestCase):
         mock_overlay: MagicMock,
         mock_content: MagicMock,
     ) -> None:
-        """#1578 — a long-diverged branch whose PR the forge reports MERGED is reaped.
+        """#1578 — a long-diverged branch the forge merged AT ITS CURRENT TIP is reaped.
 
         The content gate reports a blocker (the squash created a new SHA so the
         patch-id no longer matches) and the squash tree no longer matches the
-        branch tip, so the prior signals refuse. The canonical forge PR-state
-        check overrides: a merged PR is the ground truth that the work shipped.
+        branch tip, so the prior signals refuse. The forge's record of the exact
+        tip it merged overrides: that tip shipped.
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
@@ -427,12 +444,44 @@ class TestCleanupWorktree(TestCase):
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
             patch("teatree.core.cleanup.cleanup._branch_tree_matches_squash", return_value=False),
-            patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=True),
+            patch("teatree.core.cleanup.cleanup.branch_is_landed", return_value=False),
+            _forge_merged(recorded_tip=_TIP, local_tip=_TIP),
         ):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
+
+    @_patch_content
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_refuses_a_branch_whose_name_merged_but_whose_tip_moved(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+        mock_content: MagicMock,
+    ) -> None:
+        """A merged PR under the same head-branch name proves only the tip it merged, not the commits after it."""
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = ["def456 feat: follow-up pushed after the merge"]
+        mock_content.return_value = ["def456"]
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with (
+            patch("teatree.core.cleanup.cleanup._branch_tree_matches_squash", return_value=False),
+            patch("teatree.core.cleanup.cleanup.branch_is_landed", return_value=False),
+            _forge_merged(recorded_tip=_TIP, local_tip="d" * 40),
+            pytest.raises(RuntimeError, match="content not upstream"),
+        ):
+            cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_not_called()
+        mock_git.branch_delete.assert_not_called()
 
     @_patch_content
     @_patch_overlay

@@ -161,7 +161,7 @@ def _orphaned_task_signals(
     host: CodeHostBackend,
     overlay: str = "",
 ) -> list[ScanSignal]:
-    """Emit ``reviewer_pr.task_orphaned`` for merged/closed PRs (#1074) or terminal-FSM tickets (#1431).
+    """Emit ``reviewer_pr.task_orphaned`` for a PENDING reviewing task no review is owed on.
 
     Scenario the sweep handles: scanner sees an open MR on tick #1 →
     persistence creates ``Ticket(role=reviewer)`` + ``Task(phase=reviewing,
@@ -170,17 +170,17 @@ def _orphaned_task_signals(
     surfacing on every ``pending-spawn`` and dispatching a reviewer
     sub-agent for nothing (#998).
 
-    **The local FSM is authoritative for the user's own decision (#1431).**
-    A reviewer ticket whose ``state`` is already terminal
-    (REVIEW_DELIVERED/DELIVERED/PR_OPENED/MERGED/IGNORED) has no legal FSM transition left for
-    its reviewing task: a re-dispatched orphan's "nothing to post"
-    disposition (``mark_review_no_action``) raises ``TransitionNotAllowed``
-    (no terminal state in its ``source=[...]``) and the task re-dispatches
-    forever. Such a ticket is reaped on terminal-state *proof* regardless
-    of the forge open-state — a self-authored MR the user already concluded
-    on legitimately stays OPEN, so a MERGED/CLOSED-only gate never reaches
-    it. This is terminal-LOCAL-FSM proof, not absence/UNKNOWN doubt; the
-    fail-open default below for non-terminal tickets is untouched.
+    **Only a PENDING task is a candidate (#4901).** A CLAIMED one is a run in
+    flight; the claim sweeps own it, and a dead claim they return to PENDING
+    is reaped on the next tick.
+
+    **A settled state that admits no review is local proof (#1431).** A
+    reviewer ticket in PR_OPENED/MERGED/DELIVERED/IGNORED is owed nothing
+    whatever the forge says — a self-authored MR the user already concluded
+    on legitimately stays OPEN — so it is reaped without a forge read.
+    ``review_delivered`` admits a re-review by the same ``Ticket.admits_review``
+    the mint's ``reviewer_dispatch_decline`` reads (#4901), so it takes the
+    forge check below like any live ticket.
 
     **The forge-state decision is state-authoritative, not absence-based (#1074).**
     Absence from ``scanned_urls`` is NOT proof the PR closed:
@@ -189,8 +189,8 @@ def _orphaned_task_signals(
     Slack-review-request MR that never got a forge reviewer assignment is
     permanently absent from that scan while still fully OPEN — reaping it
     on absence alone silently drops a live review obligation. So a
-    candidate (reviewer-role ticket with a non-terminal reviewing task
-    whose URL is absent from the scan) is reaped ONLY when
+    candidate (reviewer-role ticket with a PENDING reviewing task whose
+    URL is absent from the scan) is reaped ONLY when
     ``host.get_pr_open_state`` confirms the PR is genuinely ``MERGED`` or
     ``CLOSED``. ``OPEN`` and ``UNKNOWN`` (auth error, network, unparsable
     URL, draft, anything ambiguous) both skip — fail open, never reap on
@@ -214,7 +214,7 @@ def _orphaned_task_signals(
     candidates = ticket_model.objects.filter(
         role="reviewer",
         tasks__phase="reviewing",
-        tasks__status__in=open_statuses,
+        tasks__status=Task.Status.PENDING,
     )
     if overlay:
         candidates = candidates.filter(overlay=overlay)
@@ -225,7 +225,7 @@ def _orphaned_task_signals(
     # `.exclude(tasks__auto_review_dispatches__isnull=True)` reads like the same
     # thing but compiles to an UNCORRELATED `NOT EXISTS` over every task on the
     # ticket in any phase — it means "every task is armed", so one ordinary
-    # sibling task empties this set and the terminal branch reaps the armed
+    # sibling task empties this set and the local-proof branch reaps the armed
     # review again.
     armed_ticket_ids = set(
         ticket_model.objects.filter(
@@ -236,25 +236,9 @@ def _orphaned_task_signals(
     )
     signals: list[ScanSignal] = []
     for ticket in candidates:
-        # #1431: the LOCAL FSM is authoritative for the user's own
-        # decision. A reviewer ticket whose state is already terminal
-        # (REVIEW_DELIVERED/DELIVERED/PR_OPENED/MERGED/IGNORED) has no legal transition left
-        # for its reviewing task — re-dispatch wedges the loop. Reap it
-        # regardless of forge state (a self-authored MR with no review owed
-        # legitimately stays OPEN). This is terminal-LOCAL-FSM *proof*, not
-        # absence/UNKNOWN doubt — the fail-open default below is untouched.
-        #
-        # #3910: EXCEPT when ``pr_sweep`` armed a cold review on this ticket. A
-        # reviewer ticket goes terminal (``review_delivered``) after ANY review of
-        # the PR, so the ship loop routinely arms its own-PR review on a ticket
-        # that is ALREADY terminal — and reaping on local state alone killed
-        # that review while the PR was still open and still unmergeable without
-        # a verdict. An armed ticket falls through to the forge check below, so
-        # a genuinely merged/closed PR still reaps (an armed review on dead work
-        # is still dead work) and only STALE LOCAL state stops killing a
-        # deliberately-scheduled review.
-        if ticket.is_settled and ticket.pk not in armed_ticket_ids:
-            signals.append(_orphan_signal(ticket, f"ticket terminal: {ticket.state}"))
+        # #3910: an armed review is deliberate, so only the forge's MERGED/CLOSED ends it.
+        if ticket.is_settled and not ticket.admits_review() and ticket.pk not in armed_ticket_ids:
+            signals.append(_orphan_signal(ticket, f"ticket {ticket.state} admits no review"))
             continue
         try:
             state = host.get_pr_open_state(pr_url=ticket.issue_url)
@@ -271,15 +255,15 @@ def _orphaned_task_signals(
 def _orphan_signal(ticket: "_Ticket", reason: str) -> ScanSignal:
     """One ``reviewer_pr.task_orphaned`` signal carrying the ground it was reaped on (#3910).
 
-    The sweep reaps on two non-interchangeable grounds — terminal local FSM
-    (#1431) and forge state MERGED/CLOSED (#1074). ``reason`` travels in the
-    payload so the handler logs the one actually used: a terminal ticket on a
-    still-OPEN PR is a correct reap, and crediting it to the forge proof reads
-    as a forge bug.
+    The sweep reaps on two non-interchangeable grounds — a settled state that
+    admits no review (#1431) and forge state MERGED/CLOSED (#1074). ``reason``
+    travels in the payload so the handler logs the one actually used: a local
+    reap on a still-OPEN PR is correct, and crediting it to the forge proof
+    reads as a forge bug.
     """
     return ScanSignal(
         kind="reviewer_pr.task_orphaned",
-        summary=f"Reviewing task orphaned ({reason}): {ticket.issue_url}",
+        summary=f"No review owed ({reason}), closing the reviewing task: {ticket.issue_url}",
         payload={"url": ticket.issue_url, "ticket_id": ticket.pk, "reason": reason},
     )
 

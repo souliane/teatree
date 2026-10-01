@@ -18,10 +18,12 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from teatree.core.claim_liveness import current_owner, driving
+from teatree.core.claim_liveness import RELEASED_CLAIM, ClaimOwner, current_owner, driving, holder_confirmed_dead
+from teatree.core.modelkit.task_failure_taxonomy import classify_failure
 from teatree.core.models.errors import InvalidTransitionError, LeaseLostError
 
 if TYPE_CHECKING:
@@ -29,15 +31,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_COMPLETION_FIELDS = (
-    "status",
-    "result_artifact_path",
-    "claimed_at",
-    "claimed_by",
-    "claimed_by_session",
-    "lease_expires_at",
-    "heartbeat_at",
-)
+_COMPLETION_FIELDS = ("status", "result_artifact_path", *RELEASED_CLAIM)
 
 #: The lease every HEARTBEAT-RENEWED claim takes, in place of :func:`claim`'s 300s default.
 #: The renewal is an asyncio task on the same event loop the agent drives, so a starved box
@@ -259,17 +253,20 @@ def _generation_holds(task: "Task") -> bool:
     is compared against a generation that genuinely moved, while a freshly re-read row
     would be compared against itself. An out-of-process caller therefore proves its
     generation with :func:`claim_generation` at its own boundary before recording.
+
+    A holder instance (in-memory CLAIMED) also needs the live row still CLAIMED: a
+    live-owner ``fail(by_holder=False)`` keeps the claim fields, so the generation alone
+    cannot tell the holder from a fresh-reading operator or sweep on that row (#4872).
     """
-    return (
-        type(task)
-        .objects.filter(
-            pk=task.pk,
-            claimed_by=task.claimed_by,
-            claimed_by_session=task.claimed_by_session,
-            claimed_at=task.claimed_at,
-        )
-        .exists()
+    live = type(task).objects.filter(
+        pk=task.pk,
+        claimed_by=task.claimed_by,
+        claimed_by_session=task.claimed_by_session,
+        claimed_at=task.claimed_at,
     )
+    if task.status == task.Status.CLAIMED:
+        live = live.filter(status=task.Status.CLAIMED)
+    return live.exists()
 
 
 def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
@@ -283,14 +280,66 @@ def complete_claimed(task: "Task", *, result_artifact_path: str) -> None:
     """
     if not _generation_holds(task):
         raise LeaseLostError(describe_lease_loss(task))
-    task.status = task.Status.COMPLETED
-    task.result_artifact_path = result_artifact_path
-    task.claimed_at = None
-    task.claimed_by = ""
-    task.claimed_by_session = ""
-    task.lease_expires_at = None
-    task.heartbeat_at = None
-    task.save(update_fields=list(_COMPLETION_FIELDS))
+    from teatree.core.models.worktree_occupancy import release_task_occupancy  # noqa: PLC0415 — deferred: import cycle
+
+    with transaction.atomic():
+        # Release BEFORE blanking claimed_by_session below — release_task_occupancy's
+        # CAS matches on that exact session value (#4867).
+        release_task_occupancy(task)
+        task.status = task.Status.COMPLETED
+        task.result_artifact_path = result_artifact_path
+        # owner_pid included (#4872): terminal_task_pk trusts a COMPLETED row only once it is null.
+        for field, released_value in RELEASED_CLAIM.items():
+            setattr(task, field, released_value)
+        task.save(update_fields=list(_COMPLETION_FIELDS))
+
+
+def fail(task: "Task", *, reason: str, by_holder: bool) -> None:
+    """Land *task* FAILED with a NAMED cause (#3957), releasing occupancy per *by_holder* (#4872).
+
+    *reason* is a REQUIRED keyword, and that is the whole point: a task listing and a
+    kanban card that render an error with no cause attached cannot tell a genuine
+    review defect from a lost lease, a bad harness pin, or an exhausted credential.
+    Making the reason un-omittable is what stops a NEW failure path from recording
+    nothing — a caller that forgets it fails at the call site, not silently in the DB.
+    The reason is classified once, here, into a
+    :class:`~teatree.core.modelkit.task_failure_taxonomy.FailureKind`, so every reader shares
+    one vocabulary instead of re-deriving a cause from free text.
+
+    *by_holder* is likewise required, no default — a silent default would let a future
+    third-party caller silently release a claim it has no evidence is dead. ``True`` is a
+    SELF-report: the claim holder's own process reporting its own terminal result, which
+    releases the occupancy claim unconditionally. ``False`` is a THIRD-PARTY fail — an
+    operator cancel, ``ticket.rework()``, the MCP ``task_fail`` tool — which releases the claim ONLY once
+    :func:`~teatree.core.claim_liveness.holder_confirmed_dead` positively proves the recorded
+    owner is gone; otherwise the FAILED row's full claim record (``claimed_by``,
+    ``claimed_by_session``, ``owner_pid``, ``owner_pid_namespace``, ``owner_driving_since``) is
+    left INTACT rather than blanked, so a later evidence-reader (the liveness-aware
+    :func:`~teatree.core.models.worktree_occupancy.terminal_task_pk` self-heal, a manual
+    ``release-occupancy``) can still act on it once the owner genuinely dies, and a later CAS
+    release can still session-match. Without this a live third-party holder's checkout is
+    silently handed to a rival the instant the operator cancels.
+    """
+    if not reason.strip():
+        msg = "Task.fail() requires a non-blank reason — a FAILED task must name its cause (#3957)."
+        raise ValueError(msg)
+    from teatree.core.models.worktree_occupancy import release_task_occupancy  # noqa: PLC0415 — deferred: import cycle
+
+    release_now = by_holder or holder_confirmed_dead(ClaimOwner.of(task))
+    update_fields = ["status", "failure_reason", "failure_kind"]
+    with transaction.atomic():
+        if release_now:
+            # Release BEFORE blanking claimed_by_session below — release_task_occupancy's
+            # CAS matches on that exact session value (#4867).
+            release_task_occupancy(task)
+            for field, released_value in RELEASED_CLAIM.items():
+                setattr(task, field, released_value)
+            update_fields.extend(RELEASED_CLAIM)
+        task.status = task.Status.FAILED
+        task.failure_reason = reason.strip()
+        task.failure_kind = classify_failure(task.failure_reason)
+        task.save(update_fields=update_fields)
+    task.observe_transition("task.failed", cause=task.failure_kind)
 
 
 def fail_claimed(task: "Task", *, reason: str) -> None:
@@ -298,14 +347,20 @@ def fail_claimed(task: "Task", *, reason: str) -> None:
 
     The failure twin of :func:`complete_claimed`, and the half that was missing: a
     lapsed worker landing a verdict on a unit a rival now owns burns the rival's
-    repair-loop budget and terminalizes work that is still running. ``Task.fail``
-    itself stays unguarded because its other callers hold no claim — an operator
-    cancel, a superseded phase, the stale-claim reaper — and are deliberate
-    outside terminalizations rather than a worker reporting its own run.
+    repair-loop budget and terminalizes work that is still running. Always a
+    SELF-report (``by_holder=True``): the only caller is a worker terminalizing the
+    claim IT holds, guarded by the same claim-generation check ``complete_claimed``
+    uses. A third-party fail (an operator cancel, ``ticket.rework()``, MCP ``task_fail``) calls
+    ``Task.fail(by_holder=False)`` directly instead — it has no claim generation of
+    its own to guard, and #4872 is precisely that it must NOT release a claim it
+    does not hold evidence is dead. ``reap_stale_claims`` (the lease-expiry sweep)
+    never calls ``fail()`` at all — its own CAS writes ``FAILED`` directly onto the
+    ``Task`` row, relying on this same liveness-aware self-heal to release the row's
+    occupancy claim later, if any.
     """
     if not _generation_holds(task):
         raise LeaseLostError(describe_lease_loss(task))
-    task.fail(reason=reason)
+    task.fail(reason=reason, by_holder=True)
 
 
 def describe_lease_loss(task: "Task") -> str:

@@ -84,7 +84,7 @@ def reviewer_dispatch_decline(ticket: Ticket) -> ReviewDeclined | None:
     Cheapest first: a state a finished review cannot advance never reaches the forge, and
     the forge is read exactly once. A PR the forge cannot confirm OPEN fails closed.
     """
-    if not can_proceed(ticket.mark_reviewed_externally, check_conditions=False):
+    if not ticket.admits_review():
         if ticket.state not in Ticket.State.values:
             logger.warning("Reviewer ticket %s is in unknown state %r — no review minted", ticket.pk, ticket.state)
         return ReviewDeclined.NOTHING_OWED

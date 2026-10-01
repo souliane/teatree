@@ -7,6 +7,7 @@ from teatree.core.backend_protocols import (
     DraftState,
     ForgeMergeResult,
     MessagingBackend,
+    PipelineRead,
     PrMergeState,
     PrOpenState,
     PullRequestSpec,
@@ -20,13 +21,13 @@ class _FakeCIService:
         _ = (project, ref)
         return []
 
-    def fetch_pipeline_errors(self, *, project: str, ref: str) -> list[str]:
+    def fetch_pipeline_errors(self, *, project: str, ref: str) -> PipelineRead:
         _ = (project, ref)
-        return []
+        return PipelineRead()
 
-    def fetch_failed_tests(self, *, project: str, ref: str) -> list[str]:
+    def fetch_failed_tests(self, *, project: str, ref: str) -> PipelineRead:
         _ = (project, ref)
-        return []
+        return PipelineRead()
 
     def trigger_pipeline(
         self,

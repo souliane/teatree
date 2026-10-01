@@ -58,6 +58,9 @@ class AttemptUsage:
     cache_write_tokens: int | None = None
     cost_usd: float | None = None
     num_turns: int | None = None
+    context_tokens: int | None = None
+    context_window_tokens: int | None = None
+    model_fell_back: bool = False
     # souliane/teatree#657: the Layer-2 lane (``TaskAttempt.Lane``) this
     # attempt's credential authenticated through, or ``""`` when unattributed.
     lane: str = ""
@@ -216,6 +219,9 @@ class SpendColumns(TypedDict, total=False):
     cache_write_tokens: int | None
     cost_usd: float | None
     num_turns: int | None
+    context_tokens: int | None
+    context_window_tokens: int | None
+    model_fell_back: bool
     lane: str
     cost_is_estimated: bool
     usage_unknown: bool
@@ -253,6 +259,9 @@ def usage_fields(usage: AttemptUsage | None) -> SpendColumns:
         cache_write_tokens=usage.cache_write_tokens,
         cost_usd=usage.cost_usd,
         num_turns=usage.num_turns,
+        context_tokens=usage.context_tokens,
+        context_window_tokens=usage.context_window_tokens,
+        model_fell_back=usage.model_fell_back,
         lane=usage.lane,
         cost_is_estimated=usage.cost_is_estimated,
         usage_unknown=usage.usage_unknown,

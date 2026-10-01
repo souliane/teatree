@@ -29,6 +29,8 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any, cast
 
+from teatree.loops.dream._shared import DREAM_BATCH_MANIFEST_HEADER
+
 #: Transcript lines worth keeping on keyword alone — the rest is chatter that
 #: must never reach the LLM prompt. Necessary-not-sufficient: a line also
 #: survives when it reads like a raw user-correction turn (see
@@ -291,8 +293,12 @@ def high_signal_lines(raw: str) -> str:
     and neither a correction nor an ask cue, yet it is the day's richest drift — so the
     keyword gate used to starve it out and a plain pass distilled 0 clusters from a
     corpus full of real learnings.
+
+    A line carrying :data:`DREAM_BATCH_MANIFEST_HEADER` is dropped first: a session
+    implementing a batch quotes each gap's Rule/Evidence verbatim, so distilling it
+    would re-mint the very gaps that session delivers.
     """
-    lines = raw.splitlines()
+    lines = [line for line in raw.splitlines() if DREAM_BATCH_MANIFEST_HEADER not in line]
     repeated = _repeated_user_turns(lines)
     kept = [
         decode_transcript_line(line)

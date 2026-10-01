@@ -1,6 +1,5 @@
 """DB-backup mechanical handler: drives the snapshot + prune engine, best-effort (directive #2)."""
 
-import logging
 import sqlite3
 from pathlib import Path
 from unittest.mock import patch
@@ -42,10 +41,9 @@ class TestRunDbBackupHandler:
             run_db_backup({"backup_dir": str(backups)})
         assert list(backups.glob("db-*.sqlite3"))
 
-    def test_engine_failure_is_swallowed_and_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_an_engine_failure_raises_for_the_tick_to_record(self) -> None:
         with (
             patch("teatree.utils.django_db.backup.run_backup", side_effect=RuntimeError("boom")),
-            caplog.at_level(logging.ERROR),
+            pytest.raises(RuntimeError, match="boom"),
         ):
             run_db_backup({"retention_days": 7})
-        assert "backup pass failed" in caplog.text

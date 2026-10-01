@@ -3610,9 +3610,19 @@ Usage: t3 tool affected-tests [OPTIONS]
  plugin
  off.
 
+ ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`,
+ not
+ ``Path.cwd()`` — under the containerized ``deploy/t3`` wrapper the process cwd
+ is
+ the image WORKDIR, not the invoking worktree, so selecting against
+ ``Path.cwd()``
+ built a selection for the wrong checkout entirely.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --base               TEXT  Merge-base ref for the changed set.               │
 │                            [default: origin/main]                            │
+│ --repo               PATH  Repo root (default: where t3 was invoked)         │
+│                            [default: (dynamic)]                              │
 │ --json                     Emit the machine-readable selection.              │
 │ --pytest-args              Emit the pytest positional args (for `uv run      │
 │                            pytest`).                                         │
@@ -4083,6 +4093,15 @@ Usage: t3 tool verify-gates [OPTIONS]
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
  gate). The full test suite is NOT a push gate -- push -> CI runs it.
 
+ ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`,
+ not
+ ``Path.cwd()``: run through the containerized ``deploy/t3`` wrapper, the
+ process
+ cwd is the image WORKDIR, not the worktree the operator stood in, so measuring
+ ``Path.cwd()`` graded whatever checkout happened to be mounted at WORKDIR
+ instead
+ of refusing or measuring the invoking worktree.
+
  Report the measured SHA it prints TOGETHER WITH its exit code as the
  green-proof — an exit code alone does not say which tree earned it. Exits 2
  without grading anything when the tree is not a git checkout, is not the
@@ -4092,6 +4111,8 @@ Usage: t3 tool verify-gates [OPTIONS]
 │ --expect-sha              TEXT  Full or abbreviated SHA this tree must be    │
 │                                 at; any other tree is refused.               │
 │                                 [env var: T3_VERIFY_GATES_EXPECT_SHA]        │
+│ --repo                    PATH  Repo root (default: where t3 was invoked)    │
+│                                 [default: (dynamic)]                         │
 │ --allow-main-clone              Grade a clean main clone on its default      │
 │                                 branch (refused by default).                 │
 │ --help                          Show this message and exit.                  │
@@ -7321,54 +7342,57 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ status             Show whether the orchestrator heavy-Bash gate is enabled. │
-│ disable            Disable the gate (self-rescue from a Bash lockout).       │
-│ enable             Re-enable the gate.                                       │
-│ skill-loading      Skill-loading gate kill-switch (self-rescue).             │
-│ plan               Plan-before-code edit-block gate kill-switch              │
-│                    (self-rescue).                                            │
-│ visible-plan       Visible per-target plan-first gate kill-switch            │
-│                    (self-rescue).                                            │
-│ config-overwrite   Read-before-overwrite config/dotfile gate kill-switch     │
-│                    (self-rescue).                                            │
-│ cron-loop-shell    Cron-shells-a-t3-loop gate (the worker owns loop cadence) │
-│                    kill-switch (self-rescue).                                │
-│ completion-claim   Completion-claim gate (on-target evidence before done)    │
-│                    kill-switch (self-rescue).                                │
-│ answer-first       Answer-first gate (answer the user's question, do not     │
-│                    only dispatch) kill-switch (self-rescue).                 │
-│ unbacked-claim     Evidence gate (a diagnosis or an escalation cites what    │
-│                    was read) kill-switch (self-rescue).                      │
-│ brief-anchor       Brief-anchor lint (a dispatch brief anchors its           │
-│                    assertions or licenses overruling them) kill-switch       │
-│                    (self-rescue).                                            │
-│ main-clone         Main-clone working-tree mutation gate kill-switch         │
-│                    (self-rescue).                                            │
-│ memory-recall      Cold-tier memory recall injector kill-switch              │
-│                    (self-rescue).                                            │
-│ snapshot-baseline  Snapshot-baseline attestation gate kill-switch            │
-│                    (self-rescue).                                            │
-│ gate-relaxation    Anti-relaxation + tach-soundness gate kill-switch         │
-│                    (self-rescue).                                            │
-│ raw-merge          Out-of-band raw-merge gate kill-switch (self-rescue).     │
-│ raw-pr-create      Raw MR/PR-create gate (an owner-authored MR nobody can    │
-│                    approve) kill-switch (self-rescue).                       │
-│ standing-goal      Standing verified-green stop-gate kill-switch             │
-│                    (self-rescue).                                            │
-│ glab-base-remote   Stale `glab-base` remote gate (glab's silent MR-create    │
-│                    no-op) kill-switch (self-rescue).                         │
-│ add-all            Whole-tree `git add -A` / `git add .` gate kill-switch    │
-│                    (self-rescue).                                            │
-│ foreign-push       Foreign-branch push gate (never push onto a branch        │
-│                    another author owns) kill-switch (self-rescue).           │
-│ general-purpose    Blank general-purpose sub-agent dispatch gate kill-switch │
-│                    (self-rescue).                                            │
-│ verbatim-paste     Verbatim operator-paste publish gate kill-switch          │
-│                    (self-rescue).                                            │
-│ delegation         Orchestrator delegation gate (an unbounded read belongs   │
-│                    in a sub-agent) kill-switch (self-rescue).                │
-│ merged-detect      Hand-rolled merged-branch-detection advisory (WARN-only)  │
-│                    kill-switch (self-rescue).                                │
+│ status              Show whether the orchestrator heavy-Bash gate is         │
+│                     enabled.                                                 │
+│ disable             Disable the gate (self-rescue from a Bash lockout).      │
+│ enable              Re-enable the gate.                                      │
+│ skill-loading       Skill-loading gate kill-switch (self-rescue).            │
+│ plan                Plan-before-code edit-block gate kill-switch             │
+│                     (self-rescue).                                           │
+│ visible-plan        Visible per-target plan-first gate kill-switch           │
+│                     (self-rescue).                                           │
+│ config-overwrite    Read-before-overwrite config/dotfile gate kill-switch    │
+│                     (self-rescue).                                           │
+│ cron-loop-shell     Cron-shells-a-t3-loop gate (the worker owns loop         │
+│                     cadence) kill-switch (self-rescue).                      │
+│ standing-grant-ask  Standing-grant sign-off ask gate (never ask for a merge  │
+│                     the owner already authorized) kill-switch (self-rescue). │
+│ completion-claim    Completion-claim gate (on-target evidence before done)   │
+│                     kill-switch (self-rescue).                               │
+│ answer-first        Answer-first gate (answer the user's question, do not    │
+│                     only dispatch) kill-switch (self-rescue).                │
+│ unbacked-claim      Evidence gate (a diagnosis or an escalation cites what   │
+│                     was read) kill-switch (self-rescue).                     │
+│ brief-anchor        Brief-anchor lint (a dispatch brief anchors its          │
+│                     assertions or licenses overruling them) kill-switch      │
+│                     (self-rescue).                                           │
+│ main-clone          Main-clone working-tree mutation gate kill-switch        │
+│                     (self-rescue).                                           │
+│ memory-recall       Cold-tier memory recall injector kill-switch             │
+│                     (self-rescue).                                           │
+│ snapshot-baseline   Snapshot-baseline attestation gate kill-switch           │
+│                     (self-rescue).                                           │
+│ gate-relaxation     Anti-relaxation + tach-soundness gate kill-switch        │
+│                     (self-rescue).                                           │
+│ raw-merge           Out-of-band raw-merge gate kill-switch (self-rescue).    │
+│ raw-pr-create       Raw MR/PR-create gate (an owner-authored MR nobody can   │
+│                     approve) kill-switch (self-rescue).                      │
+│ standing-goal       Standing verified-green stop-gate kill-switch            │
+│                     (self-rescue).                                           │
+│ glab-base-remote    Stale `glab-base` remote gate (glab's silent MR-create   │
+│                     no-op) kill-switch (self-rescue).                        │
+│ add-all             Whole-tree `git add -A` / `git add .` gate kill-switch   │
+│                     (self-rescue).                                           │
+│ foreign-push        Foreign-branch push gate (never push onto a branch       │
+│                     another author owns) kill-switch (self-rescue).          │
+│ general-purpose     Blank general-purpose sub-agent dispatch gate            │
+│                     kill-switch (self-rescue).                               │
+│ verbatim-paste      Verbatim operator-paste publish gate kill-switch         │
+│                     (self-rescue).                                           │
+│ delegation          Orchestrator delegation gate (an unbounded read belongs  │
+│                     in a sub-agent) kill-switch (self-rescue).               │
+│ merged-detect       Hand-rolled merged-branch-detection advisory (WARN-only) │
+│                     kill-switch (self-rescue).                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7666,6 +7690,60 @@ Usage: t3 teatree gate cron-loop-shell disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate cron-loop-shell enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate standing-grant-ask`
+
+```
+Usage: t3 teatree gate standing-grant-ask [OPTIONS] COMMAND [ARGS]...
+
+ Standing-grant sign-off ask gate (never ask for a merge the owner already
+ authorized) kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate standing-grant-ask status`
+
+```
+Usage: t3 teatree gate standing-grant-ask status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate standing-grant-ask disable`
+
+```
+Usage: t3 teatree gate standing-grant-ask disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate standing-grant-ask enable`
+
+```
+Usage: t3 teatree gate standing-grant-ask enable [OPTIONS]
 
  Re-enable the gate.
 

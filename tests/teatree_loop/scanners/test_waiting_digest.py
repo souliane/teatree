@@ -5,10 +5,14 @@ surfaces a local statusline signal, but NEVER DMs the owner (the owner allowlist
 classifies the waiting digest as internal noise).
 """
 
+from unittest.mock import patch
+
 import pytest
 
 from teatree.core.models import BotPing
 from teatree.core.models.waiting_item import WaitingItem
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.waiting_digest import WaitingDigestScanner
 
 
@@ -44,3 +48,8 @@ class TestWaitingDigestScanner:
         signals = WaitingDigestScanner().scan()
         assert len(signals) == 1
         assert BotPing.objects.filter(status=BotPing.Status.LOGGED).count() == 2
+
+    def test_a_failed_gather_reaches_the_tick_error_surface(self) -> None:
+        with patch("teatree.core.waiting.gather_waiting", side_effect=RuntimeError("boom")):
+            _, signals, error = _run_job(_ScannerJob(scanner=WaitingDigestScanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: boom")

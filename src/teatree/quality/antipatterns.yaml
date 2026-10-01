@@ -128,6 +128,26 @@
   linter: null
   eval_invariant: no_raw_review_post
 
+# ── Shared predicates ──────────────────────────────────────────────────────
+- id: shared-predicate-tightened-for-one-caller
+  name: Shared predicate tightened for one caller's safety needs
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    Adding a liveness/strictness gate, or a new None/False path, to a function
+    several callers share, to suit the one caller being fixed. Every other
+    caller silently inherits the stricter verdict: a park/defer decision that
+    never needed the check a release decision needs now flips on it.
+  preferred_pattern: >-
+    Enumerate every caller tree-wide first and name the decision each makes.
+    When their requirements differ, add a strict variant for the caller that
+    needs it, leave the shared predicate as it was, and pin the untouched caller
+    with a test.
+  consumers: [architecture-design, ac-reviewing-codebase, eval]
+  refs: ["arch-design-check-9", "souliane/teatree#4880"]
+  linter: null
+  eval_invariant: null
+
 # ── Phantom gates ──────────────────────────────────────────────────────────
 - id: phantom-gate
   name: Deny handler keyed on a tool no matcher delivers
@@ -548,7 +568,12 @@
     pass, so a single bad row stops every sibling from being processed.
   preferred_pattern: >-
     Isolate each item — catch and record per-item failure, continue the sweep —
-    so one poison item never starves the rest.
+    so one poison item never starves the rest. A failure of the scan as a whole
+    propagates: the dispatcher already isolates each scanner and records it in
+    the tick report, so catching it into an empty result reads as a quiet tick.
+    A mechanical handler is held to the same rule — _execute_mechanical isolates
+    each one and records its raise, so a handler that catches its own failure
+    into a log line hides a backup or refresh that fails on every tick.
   consumers: [architecture-design, ac-reviewing-codebase]
   refs: ["loop-topology", "fault-isolation-note"]
   linter: null
@@ -569,6 +594,30 @@
     body contains no call whose duration a remote party decides.
   consumers: [architecture-design, ac-reviewing-codebase]
   refs: ["souliane/teatree#4215", "loop-topology"]
+  linter: null
+  eval_invariant: null
+
+- id: unattended-scan-files-candidates
+  name: Unattended scan files its candidates as issues
+  severity: high
+  detection: judgement
+  anti_pattern: >-
+    A loop scanner, cadence task or headless batch pass that turns each
+    candidate it surfaces into a forge issue or ticket directly — a
+    create_issue per candidate, or a dispatched skill told to file them. One
+    unattended pass publishes durable artifacts under the owner's account that
+    nobody decided should exist, and a noisy feed floods the backlog.
+  preferred_pattern: >-
+    Record each candidate as one PENDING row, idempotent on its source key
+    (PendingArticleSuggestion, PendingTriageRecommendation), surface the batch
+    as one approval question, and file only the approved rows — no answer
+    files nothing. A shell-denied agent returns its candidates in the result
+    envelope and the server-side recorder writes the rows. The boundary is a
+    single deduped defect report a human must resolve, labelled needs-triage:
+    that is the agent-filed path, not a candidate stream, and the dream
+    binding-reconciliation issue (Decision-3) is that case.
+  consumers: [architecture-design, ac-reviewing-codebase]
+  refs: ["souliane/teatree#1391", "loop-topology", "memory-consolidation"]
   linter: null
   eval_invariant: null
 

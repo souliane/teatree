@@ -33,6 +33,7 @@ from teatree.core.overlay import (
     RunCommands,
 )
 from teatree.core.signals import _TERMINAL_TARGET_STATES, _TICKET_TRANSITION_TASKS
+from teatree.core.worktree.occupancy import WorktreeOccupiedError, occupy_ticket_checkout, task_holder_id
 from tests._ansi import strip_ansi as _strip_ansi
 from tests._pr_open_state_stub import mint_open_pr_review
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
@@ -1095,11 +1096,7 @@ class TestTicketCommand(TestCase):
 class TestTasksCreateCommand(TestCase):
     """Tests for the tasks create subcommand — phase handoff used by /t3:next."""
 
-    def test_create_headless_defaults_for_free_form_phase(self) -> None:
-        # ``scoping`` has no registered author phase agent, so it is genuinely
-        # headless and the default sticks. (A loop-dispatched phase like
-        # ``coding`` is routed to INTERACTIVE by the Task.save invariant — see
-        # test_create_loop_dispatched_phase_is_interactive.)
+    def test_create_records_a_free_form_phase_task(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         result = cast(
             "dict[str, object]",
@@ -1111,13 +1108,17 @@ class TestTasksCreateCommand(TestCase):
         assert task.execution_reason == "Decide X."
         assert task.session.ticket_id == ticket.pk
 
-    def test_create_loop_dispatched_phase_is_interactive(self) -> None:
+    def test_create_accepts_a_loop_dispatched_phase(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         result = cast(
             "dict[str, object]",
             call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X."),
         )
-        Task.objects.get(pk=result["task_id"])
+        task = Task.objects.get(pk=result["task_id"])
+        assert result["phase"] == "coding"
+        assert task.phase == "coding"
+        assert task.ticket_id == ticket.pk
+        assert task.execution_reason == "Implement X."
 
     def test_create_reuses_latest_session(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
@@ -1286,6 +1287,37 @@ class TestTasksCancelCommand(TestCase):
         assert task.status == Task.Status.FAILED
         assert task.failure_kind == FailureKind.CANCELLED
         assert "no reason given" in task.failure_reason
+
+    def test_cancel_of_a_live_claim_leaves_the_checkout_occupied_and_blocks_a_rival(self) -> None:
+        """#4872: cancelling a task whose holder is still alive must not evict its checkout.
+
+        Before the fix, ``tasks cancel --confirm`` released the occupancy claim
+        unconditionally, so a rival could immediately take the checkout the
+        cancelled task's own agent might still be writing in (#3952).
+        """
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(ticket=ticket, session=session)
+        task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        checkout = tempfile.mkdtemp()
+        self.addCleanup(lambda: Path(checkout).exists() and Path(checkout).rmdir())
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="souliane/teatree",
+            branch="feat/4872",
+            state=Worktree.State.PROVISIONED,
+            extra={"worktree_path": checkout},
+        )
+
+        with occupy_ticket_checkout(ticket, holder=task_holder_id(task), holder_session=task.claimed_by_session):
+            call_command("tasks", "cancel", task.pk, confirm=True)
+
+            task.refresh_from_db()
+            assert task.status == Task.Status.FAILED
+
+            with pytest.raises(WorktreeOccupiedError), occupy_ticket_checkout(ticket, holder="task:999999"):
+                pass
 
 
 class TestTasksCompleteCommand(TestCase):

@@ -104,11 +104,7 @@ class BoardReconcileScanner:
     name: str = "board_reconcile"
 
     def scan(self) -> list[ScanSignal]:
-        try:
-            report = reconcile_board(overlay=self.overlay_name)
-        except Exception:
-            logger.exception("Board reconcile failed — the tick continues")
-            return []
+        report = reconcile_board(overlay=self.overlay_name)
         for line in report.lines():
             logger.info("board_reconcile: %s", line)
         return [

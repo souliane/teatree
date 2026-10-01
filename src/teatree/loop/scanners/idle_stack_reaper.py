@@ -41,18 +41,10 @@ class IdleStackReaperScanner:
     def scan(self) -> list[ScanSignal]:
         from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker  # noqa: PLC0415 — lazy ORM
 
-        try:
-            marker = LocalStackReaperMarker.load()
-        except Exception:
-            logger.exception("idle_stack_reaper: could not load marker — skipping tick")
-            return []
+        marker = LocalStackReaperMarker.load()
         if self._cadence_blocks(marker):
             return []
-        try:
-            classified = list(classify_running_worktrees(overlay=self.overlay, idle_minutes=self.idle_minutes))
-        except Exception:
-            logger.exception("idle_stack_reaper: classify_running_worktrees failed — skipping tick")
-            return []
+        classified = list(classify_running_worktrees(overlay=self.overlay, idle_minutes=self.idle_minutes))
         try:
             marker.stamp_run()
         except Exception:

@@ -25,6 +25,7 @@ from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient, NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, PrApiClient
+from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.types import RawAPIDict
 from tests.factories import waive_rubric
 
@@ -107,7 +108,7 @@ class _SweepApi:
     def main_check_failed(self, *, slug: str, check_name: str) -> bool:
         return self.main_uv_audit_red
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> BoundMergeResult:
         self.merge_calls.append((slug, pr_id, expected_head_oid))
         return GhPrApiClient().merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
 

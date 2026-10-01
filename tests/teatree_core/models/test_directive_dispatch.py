@@ -112,7 +112,7 @@ class TestDirectiveDispatchReArm(TestCase):
         first = DirectiveDispatch.enqueue(directive=directive, contract="c")
         assert first is not None
         assert first.task is not None
-        first.task.fail(reason="missing required evidence: bad envelope")  # run-then-fail
+        first.task.fail(reason="missing required evidence: bad envelope", by_holder=True)  # run-then-fail
         rearmed = DirectiveDispatch.enqueue(directive=directive, contract="c")
         assert rearmed is not None
         assert rearmed.task is not None
@@ -190,7 +190,7 @@ class TestDirectiveDispatchAttemptBudget(TestCase):
             row = DirectiveDispatch.enqueue(directive=directive, contract="c")
             assert row is not None
             assert row.task is not None
-            row.task.fail(reason="missing required evidence: bad envelope")
+            row.task.fail(reason="missing required evidence: bad envelope", by_holder=True)
 
         assert DirectiveDispatch.enqueue(directive=directive, contract="c") is None
         directive.refresh_from_db()
@@ -207,7 +207,7 @@ class TestDirectiveDispatchAttemptBudget(TestCase):
         for _ in range(MAX_INTERPRET_ATTEMPTS + 2):
             resume = schedule_resume(first.task, answer="a")
             resume.complete()
-        first.task.fail(reason="no envelope")
+        first.task.fail(reason="no envelope", by_holder=True)
 
         assert DirectiveDispatch.enqueue(directive=directive, contract="c") is not None
 
