@@ -14,6 +14,7 @@ failing never crashes the tick or stops the other phases. The runner takes a
 runner importing the command.
 """
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
@@ -23,9 +24,12 @@ from django.apps import apps
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models import ConsolidatedMemory
+    from teatree.loops.dream import promote_memory
     from teatree.loops.dream.decay import ArchivedMemory
     from teatree.loops.dream.gates import MemorySnapshot
     from teatree.loops.dream.merge import BindingConflict
+
+logger = logging.getLogger(__name__)
 
 #: Resolve the teatree backlog code host + repo slug for ticket filing.
 BacklogHostResolver = Callable[[], "tuple[CodeHostBackend | None, str]"]
@@ -51,6 +55,40 @@ def _broken_citation_warnings(archived: "tuple[ArchivedMemory, ...]") -> list[st
         for entry in archived
         if entry.broken_inbound
     ]
+
+
+def _notify_newly_queued_reconciliations(queued: "list[promote_memory.TicketOutcome]") -> None:
+    """DM the owner the newly-queued binding-reconciliation candidates (#2663 dream-batch dea750a552f8f2d2).
+
+    Mirrors the scanning-news digest (:func:`teatree.agents.reactive_envelope_recorders._post_press_review_digest`):
+    a :class:`PendingArticleSuggestion` queued with no accompanying notification is invisible to the owner
+    forever, since nothing else polls this kind. Record-and-proceed — a Slack failure must never lose the
+    already-persisted candidate, so it is logged and swallowed, same as the news path.
+    """
+    if not queued:
+        return
+    from teatree.core.modelkit.notify_policy import NotifyAudience  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: loaded at tick time
+
+    lines = [
+        (
+            f"Dream merge found {len(queued)} conflicting BINDING memory pair(s) queued behind the ask-gate. "
+            "Nothing is filed as an issue until you approve — review each PendingArticleSuggestion "
+            "(kind=memory_reconciliation):"
+        ),
+    ]
+    lines.extend(f"• {o.cluster_key}" for o in queued)
+    try:
+        notify_user(
+            "\n".join(lines),
+            kind=NotifyKind.INFO,
+            idempotency_key=f"dream-reconcile-digest-{'-'.join(sorted(o.cluster_key for o in queued))}",
+            audience=NotifyAudience.OWNER_DELIVERY,
+            linkify=False,
+        )
+    except Exception:
+        # The candidate is already persisted; losing the DM must not lose the backlog.
+        logger.warning("binding-reconciliation digest post failed — candidates are recorded regardless", exc_info=True)
 
 
 class MemoryPhaseRunner:
@@ -341,6 +379,7 @@ class MemoryPhaseRunner:
         except Exception as exc:  # noqa: BLE001 — a binding-reconciliation failure degrades to a WARN clause
             return f"; WARN binding reconciliation raised: {type(exc).__name__}: {exc}"
         filed = sum(1 for o in outcomes if o.filed)
+        _notify_newly_queued_reconciliations([o for o in outcomes if o.queued])
         return f"; filed {filed} binding-reconciliation ticket(s)" if filed else ""
 
     @staticmethod

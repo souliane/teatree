@@ -244,7 +244,10 @@ _DECLARATIONS: tuple[GateEvidence, ...] = (
         target="core.OuterLoopExperiment",
         shipped=dt.date(2026, 7, 5),
         intent=ActivationIntent.STAGED,
-        rationale="souliane/teatree#4189 — owner kept it 2026-08-04; unblocked by turning factory_score_enabled on",
+        rationale=(
+            "souliane/teatree#4189 — owner settled KEEP staged indefinitely (not a recheck date); "
+            "factory_score_enabled is on"
+        ),
         satisfier="the outer-loop tick proposes an experiment once a FactoryScoreSnapshot baseline exists",
     ),
     GateEvidence(

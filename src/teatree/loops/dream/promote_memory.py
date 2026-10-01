@@ -114,6 +114,11 @@ class TicketOutcome:
     ticket_url: str = ""
     withheld: bool = False
     reason: str = ""
+    #: True only when THIS call newly queued a :class:`PendingArticleSuggestion`
+    #: reconciliation candidate (``record_reconciliation_candidate`` returned a row)
+    #: — a re-run hitting the same already-queued key leaves this False, so the
+    #: caller DMs the owner once per candidate, not once per tick.
+    queued: bool = False
 
 
 def file_core_gap_tickets(
@@ -294,8 +299,13 @@ def _file_one_reconciliation(host: CodeHostBackend, conflict: "BindingConflict",
     # than building a parallel approval surface. The forge-write seam (leak gate +
     # #117 send-proxy audit) moves with the eventual filing, since nothing is
     # written to the forge here.
-    PendingArticleSuggestion.record_reconciliation_candidate(key=key, title=title, summary=body)
-    return TicketOutcome(cluster_key=key, filed=False, reason="queued for owner approval (PendingArticleSuggestion)")
+    row = PendingArticleSuggestion.record_reconciliation_candidate(key=key, title=title, summary=body)
+    return TicketOutcome(
+        cluster_key=key,
+        filed=False,
+        reason="queued for owner approval (PendingArticleSuggestion)",
+        queued=row is not None,
+    )
 
 
 def _find_existing_marker_issue(host: CodeHostBackend, *, repo: str, marker: str) -> str:

@@ -23,7 +23,14 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.cli.doctor.checks_loop import _check_dream_consolidation_blocked
-from teatree.core.models import ConsolidatedMemory, DreamRunMarker, InstructionComplianceSnapshot, Loop, LoopLease
+from teatree.core.models import (
+    ConsolidatedMemory,
+    DreamRunMarker,
+    InstructionComplianceSnapshot,
+    Loop,
+    LoopLease,
+    PendingArticleSuggestion,
+)
 from teatree.core.models.dream_run_marker import OUTCOME_FAILED, OUTCOME_GATES_FAILED
 from teatree.loops.dream.engine import DistilledCluster, DreamRunResult
 from teatree.loops.dream.gates import DreamQaReport, GateResult
@@ -552,7 +559,7 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
             f"---\nname: feedback_bind_two\ntype: feedback\n---\n{topic} BINDING never push first\n", encoding="utf-8"
         )
 
-    def test_two_binding_conflicts_file_a_reconciliation_ticket(self) -> None:
+    def test_two_binding_conflicts_queue_a_reconciliation_candidate(self) -> None:
         from unittest.mock import MagicMock  # noqa: PLC0415
 
         from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
@@ -560,19 +567,22 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         self._write_binding_conflict()
         host = MagicMock(spec=CodeHostBackend)
         host.search_open_issues.return_value = []
-        host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/9100"}
         stdout = StringIO()
         with patch(
             "teatree.core.management.commands.dream.Command._teatree_backlog_host",
             return_value=(host, "souliane/teatree"),
         ):
             self._tick(stdout)
-        # The two BINDING files were NOT merged; a reconciliation ticket was filed.
+        # The two BINDING files were NOT merged, and no issue was auto-filed (#2663
+        # dream-batch dea750a552f8f2d2) — the conflict is queued for owner approval instead.
         assert "merged" not in stdout.getvalue()
-        assert "filed 1 binding-reconciliation ticket" in stdout.getvalue()
+        assert "filed" not in stdout.getvalue()
         assert (self.memdir / "feedback_bind_one.md").exists()
         assert (self.memdir / "feedback_bind_two.md").exists()
-        host.create_issue.assert_called_once()
+        host.create_issue.assert_not_called()
+        assert PendingArticleSuggestion.objects.filter(
+            kind=PendingArticleSuggestion.Kind.MEMORY_RECONCILIATION
+        ).exists()
 
     def test_binding_conflict_with_no_host_is_warned_not_crashed(self) -> None:
         self._write_binding_conflict()
