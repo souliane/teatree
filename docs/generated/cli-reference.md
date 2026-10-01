@@ -4093,8 +4093,10 @@ Usage: t3 tool verify-gates [OPTIONS]
  what catches the gates CI fails on but a bare ``prek run --all-files``
  cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
  gate). The manual stage runs the CI-job hooks (test-path-mirror, test-shape)
- the repo's ``.pre-commit-config.yaml`` declares, and is skipped when it
- declares none. The full test suite is NOT a push gate -- push -> CI runs it.
+ declared by the prek config prek itself loads (``prek.toml`` or
+ ``.pre-commit-config.yaml``, nearest at or above ``--repo``), and is skipped
+ when that config shows none declared. The full test suite is NOT a push
+ gate -- push -> CI runs it.
 
  ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`,
  not

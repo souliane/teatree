@@ -14,7 +14,7 @@ test-shape): no commit or push run fires them.
 
 This command runs the commit and push stages against the changed files where
 filename-aware hooks allow it, then whichever of those manual-stage CI-job hooks
-the repo's prek config declares -- none declared skips that stage.
+the config prek itself loads declares -- none shown declared skips that stage.
 ``always_run`` hooks still examine the whole tree. A config
 change or an unresolvable diff falls back to ``--all-files``. Each stage has a
 hard wall-clock deadline and a resource preflight, so refusal is visible rather
@@ -34,6 +34,7 @@ CI jobs no local hook covers so exit 0 cannot be read as "CI will be green".
 """
 
 import shutil
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,8 +63,9 @@ _MIN_MEMORY_MIB = 2048
 _BYTES_PER_MIB = 1024 * 1024
 _STAGE_DEADLINE_SECONDS = 600
 _MAX_SCOPED_FILES = 500
-_PREK_CONFIG_NAME = ".pre-commit-config.yaml"
-_CONFIG_NAMES = frozenset({"pyproject.toml", "uv.lock", _PREK_CONFIG_NAME, "tach.toml"})
+# prek's own precedence when one directory holds several (measured on prek 0.4.10 and 0.5.3).
+_PREK_CONFIG_NAMES = ("prek.toml", ".pre-commit-config.yaml", ".pre-commit-config.yml")
+_CONFIG_NAMES = frozenset({"pyproject.toml", "uv.lock", *_PREK_CONFIG_NAMES, "tach.toml"})
 
 
 def _resource_refusal(repo: Path) -> str:
@@ -224,32 +226,47 @@ def _record(repo: Path, state: str, reason: str) -> None:
         typer.echo("verify-gates: could not write the local gate receipt; PR will show INCOMPLETE.", err=True)
 
 
-def _declared_manual_hooks(repo: Path) -> tuple[str, ...]:
-    """The CI_JOB_MANUAL_HOOKS *repo*'s prek config runs at the manual stage; all of them when it is unreadable."""
+def _prek_config(repo: Path, toplevel: Path) -> Path | None:
+    """The config prek loads when run from *repo*: the nearest at or above it, never above *toplevel*."""
+    start, checkout = repo.resolve(), toplevel.resolve()
+    for directory in (start, *start.parents):
+        if not directory.is_relative_to(checkout):
+            return None
+        for name in _PREK_CONFIG_NAMES:
+            if (directory / name).is_file():
+                return directory / name
+    return None
+
+
+def _declared_manual_hooks(config: Path) -> tuple[str, ...]:
+    """The CI_JOB_MANUAL_HOOKS *config* runs at the manual stage; none when it cannot be read."""
     try:
-        config = yaml.safe_load((repo / _PREK_CONFIG_NAME).read_text(encoding="utf-8"))
-        default_stages = config.get("default_stages") or [_MANUAL_STAGE]
-        hooks = [hook for entry in config["repos"] for hook in entry.get("hooks") or []]
+        text = config.read_text(encoding="utf-8")
+        parsed = tomllib.loads(text) if config.suffix == ".toml" else yaml.safe_load(text)
+        default_stages = parsed.get("default_stages") or [_MANUAL_STAGE]
+        hooks = [hook for entry in parsed["repos"] for hook in entry.get("hooks") or []]
         declared = {hook["id"] for hook in hooks if _MANUAL_STAGE in (hook.get("stages") or default_stages)}
-    except (OSError, UnicodeDecodeError, yaml.YAMLError, AttributeError, KeyError, TypeError):
-        return CI_JOB_MANUAL_HOOKS
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, tomllib.TOMLDecodeError, AttributeError, KeyError, TypeError):
+        return ()
     return tuple(hook for hook in CI_JOB_MANUAL_HOOKS if hook in declared)
 
 
-def _stage_commands(scope_args: list[str], repo: Path) -> list[tuple[str, list[str]]]:
+def _stage_commands(scope_args: list[str], repo: Path, toplevel: Path) -> list[tuple[str, list[str]]]:
     deadline = ["timeout", "--signal=TERM", "--kill-after=15s", f"{_STAGE_DEADLINE_SECONDS}s"]
     stages = [
         ("commit", [*deadline, "prek", "run", *scope_args]),
         ("pre-push (CI-parity gates)", [*deadline, "prek", "run", *scope_args, "--hook-stage", _PUSH_STAGE]),
     ]
-    manual_hooks = _declared_manual_hooks(repo)
+    config = _prek_config(repo, toplevel)
+    manual_hooks = _declared_manual_hooks(config) if config else ()
     # prek exits 1 on a selector no declared hook matches, and runs EVERY manual hook when given none.
     if not manual_hooks:
-        typer.echo(
-            f"verify-gates: manual stage skipped — {_PREK_CONFIG_NAME} declares none of "
-            f"{', '.join(CI_JOB_MANUAL_HOOKS)} at it.",
-            err=True,
+        reason = (
+            f"{config} shows none of {', '.join(CI_JOB_MANUAL_HOOKS)} declared at that stage"
+            if config
+            else f"no prek config at or above {repo}"
         )
+        typer.echo(f"verify-gates: manual (CI-job hooks) skipped — {reason}.", err=True)
         return stages
     manual = [*deadline, "prek", "run", *manual_hooks, *scope_args, "--hook-stage", _MANUAL_STAGE]
     return [*stages, ("manual (CI-job hooks)", manual)]
@@ -291,8 +308,10 @@ def verify_gates(
     what catches the gates CI fails on but a bare ``prek run --all-files``
     cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
     gate). The manual stage runs the CI-job hooks (test-path-mirror, test-shape)
-    the repo's ``.pre-commit-config.yaml`` declares, and is skipped when it
-    declares none. The full test suite is NOT a push gate -- push -> CI runs it.
+    declared by the prek config prek itself loads (``prek.toml`` or
+    ``.pre-commit-config.yaml``, nearest at or above ``--repo``), and is skipped
+    when that config shows none declared. The full test suite is NOT a push
+    gate -- push -> CI runs it.
 
     ``--repo`` defaults to :func:`~teatree.core.invocation_cwd.invocation_cwd`, not
     ``Path.cwd()``: run through the containerized ``deploy/t3`` wrapper, the process
@@ -338,7 +357,7 @@ def verify_gates(
 
     scope_args, scope_reason = _scope_args(repo)
     typer.echo(f"verify-gates: scope: {scope_reason}", err=True)
-    stages = _stage_commands(scope_args, repo)
+    stages = _stage_commands(scope_args, repo, tree.toplevel)
     failed, incomplete = _run_stages(stages, repo)
 
     finished_tree = read_measured_tree(repo=str(repo))
