@@ -291,6 +291,10 @@ _NON_CONTENT_PARAMS = frozenset(
         "spec",
         "filepath",
         "upload",
+        # ``head_sha`` is the READ-query scope of ``fetch_workflow_runs_at_head`` — a
+        # commit SHA that selects WHICH head's Actions runs come back, the same shape
+        # as ``since``/``branch``. It ferries no outbound colleague-visible text.
+        "head_sha",
     }
 )
 
