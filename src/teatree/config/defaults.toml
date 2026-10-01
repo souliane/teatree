@@ -235,7 +235,7 @@ review_skill = "" # str — skill a review dispatch runs
 review_skill_alternates = [] # list — extra skills whose recorded run also satisfies the reviewing-phase evidence gate
 
 [teatree.Gates.Quality."Merge & done"]
-expected_required_contexts = [] # list — CI check names a pull request must carry before it can merge
+expected_required_contexts = [] # list — CI check names a pull request must carry before it can merge (workflow names on a plan-restricted GitHub Free fallback — #4844)
 require_debt_delta = false # bool — require a change to state whether it added or removed tech debt
 require_executed_repro = false # bool — require an executed reproduction before a bug fix is accepted
 require_merge_evidence = false # bool — require merge evidence to be recorded before the merge lands
