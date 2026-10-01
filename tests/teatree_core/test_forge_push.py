@@ -670,10 +670,13 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
         "marker",
         [
             "=== push-gate: ABORTED waiting for lock held by pid=41 ===",
-            "crashed while running",
-            "replacing crashed worker",
+            "FAILED tests/test_x.py::test_y - worker 'gw0' crashed while running 'tests/test_x.py::test_y'",
+            "replacing crashed worker gw0",
             "Cannot allocate memory",
+            "OSError: [Errno 12] Cannot allocate memory",
+            "bash: fork: Cannot allocate memory",
             "MemoryError",
+            "E   MemoryError",
         ],
     )
     def test_gate_abort_markers_never_become_branch_refusals(self, clone_with_origin: Path, marker: str) -> None:
@@ -691,6 +694,20 @@ class TestAGateRefusalIsToldApartFromATransportFailure:
 
         assert outcome.failure is PushFailure.GATE_REFUSED
         assert refusal in outcome.detail
+
+    @pytest.mark.parametrize(
+        "marker", ["crashed while running", "replacing crashed worker", "Cannot allocate memory", "MemoryError"]
+    )
+    def test_a_refusal_whose_test_id_names_an_abort_marker_stays_a_refusal(
+        self, clone_with_origin: Path, marker: str
+    ) -> None:
+        test_id = f"test_gate_abort_markers_never_become_branch_refusals[{marker}]"
+        output = f"____ TestA.{test_id} ____\\nFAILED tests/test_forge_push.py::TestA::{test_id} - assert 1"
+        _install_pre_push_hook(clone_with_origin, f'printf "{output}\\n" >&2\nexit 1\n')
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.GATE_REFUSED
 
     def test_git_push_error_combines_stdout_and_stderr_before_classifying(self, clone_with_origin: Path) -> None:
         _install_pre_push_hook(clone_with_origin, "exit 0\n")

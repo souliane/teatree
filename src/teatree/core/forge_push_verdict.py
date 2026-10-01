@@ -1,6 +1,7 @@
 """Push failure types and classification, separate from push orchestration."""
 
 import os
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -26,12 +27,13 @@ _GATE_REFUSAL_RC = 1
 _GIT_OUTER_PUSH_NOISE: tuple[str, ...] = ("error: failed to push some refs", "hint:", "To ")
 #: A bare "ABORTED" also matches a failing test NAMED for this feature, which would
 #: report a real refusal as "nothing was rejected" — so match the emitted line.
-_GATE_ABORT_MARKERS: tuple[str, ...] = (
-    "push-gate: ABORTED",
-    "crashed while running",
-    "replacing crashed worker",
-    "Cannot allocate memory",
-    "MemoryError",
+#: Each pattern is anchored to its emitter's shape, so a test id like ``[MemoryError]`` never matches.
+_GATE_ABORT_LINES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"push-gate: ABORTED"),
+    re.compile(r"worker '[^']+' crashed while running"),
+    re.compile(r"^replacing crashed worker \S+$"),
+    re.compile(r"(?:^|: |\] )Cannot allocate memory\b"),
+    re.compile(r"^(?:E\s+)?MemoryError\b"),
 )
 
 
@@ -186,8 +188,8 @@ class GitPushError:
 
     @property
     def gate_aborted(self) -> bool:
-        lowered = self.stderr.lower()
-        marker_found = any(marker.lower() in lowered for marker in _GATE_ABORT_MARKERS)
+        lines = [line.strip() for line in self.stderr.splitlines()]
+        marker_found = any(pattern.search(line) for pattern in _GATE_ABORT_LINES for line in lines)
         record_interrupted = self.gate_run is not None and self.gate_run.was_interrupted
         oom_killed = self.oom_kill_delta is not None and self.oom_kill_delta > 0
         return self.refused_by_a_gate and (not self.gate_output or record_interrupted or oom_killed or marker_found)
