@@ -4,7 +4,7 @@ The ONE structural rule left. It is pure over a total mask: every loop is named,
 nothing has to be resolved against a base column to judge it.
 """
 
-from teatree.loops.mode_shape import BACKUP_LOOP, DISK_RECLAIM_LOOPS, backup_without_reclaim
+from teatree.core.models.mode_shape import BACKUP_LOOP, DISK_RECLAIM_LOOPS, backup_without_reclaim
 
 
 def _mask(**overrides: bool) -> dict[str, bool]:

@@ -16,8 +16,8 @@ quiet in every posture until someone admits it deliberately.
 Two functions, one derivation. :func:`totalized_entries` REPAIRS — every write seam
 folds its edit through it, so totality holds by construction and no operator can be
 locked out by a row an older teatree wrote. :func:`require_total_entries` REFUSES —
-it guards the one surface that writes the JSON directly, the Django admin, through
-``Mode.clean()``.
+it guards the surfaces that store a whole map as given, the Django admin and the config
+import, through :func:`teatree.core.models.loop_preset.mask_refusal`.
 """
 
 from collections.abc import Mapping

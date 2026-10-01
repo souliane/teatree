@@ -27,7 +27,9 @@ the git discovery vars (so ``git`` operations resolve to the ephemeral working t
 A clone (not a worktree) reads the source READ-ONLY, so it also works when the eval
 mounts the repo ``:ro`` in CI — and gives full isolation (separate refs + object
 store), so a sub-agent's commits never even land as loose objects in the real store.
-The checkout is torn down when the run finishes, so nothing leaks.
+Its ``origin`` is a throwaway bare mirror, not the real clone, so even a ``git push``
+to the origin URL stays in the temp dir. The checkout and its mirror are torn down
+when the run finishes, so nothing leaks.
 
 When the real teatree root cannot be located (a packaged install with no source
 tree, a corrupt repo) :func:`provision_ephemeral_checkout` raises
@@ -46,6 +48,8 @@ from pathlib import Path
 from teatree.paths import teatree_source_root
 from teatree.utils.git_run import check as git_check
 from teatree.utils.git_run import run as git_run
+
+_PUSH_DISABLED_URL = "/nonexistent/t3-eval-ephemeral-checkout-push-disabled"
 
 
 class EphemeralCheckoutError(RuntimeError):
@@ -104,10 +108,25 @@ def _clone_detached(repo_root: Path, checkout: Path) -> bool:
     STRONGER isolation than a worktree: with its own ``HEAD``/refs/index and its own
     object store, a sub-agent's branch switches AND commits stay inside the throwaway —
     a shared worktree left the sub-agent's commits as loose objects in the real store.
+
+    The clone's ``origin`` is a throwaway bare MIRROR of the source beside it in the
+    temp parent, with its own ``origin`` removed — so no origin-derived spelling (not
+    even a push to ``git remote get-url origin``) names the real clone, and every
+    such push lands in the throwaway. The push URL is also pointed at a path that
+    cannot exist, so a plain ``git push origin`` still fails fast, while
+    ``git fetch origin`` reads the mirror's copy of the source's branches.
     """
-    if not git_check(repo=str(repo_root), args=["clone", "--quiet", str(repo_root), str(checkout)]):
-        return False
-    return git_check(repo=str(checkout), args=["checkout", "--quiet", "--detach", "HEAD"])
+    mirror = checkout.parent / "origin.git"
+    steps = (
+        (repo_root, ["clone", "--quiet", "--bare", str(repo_root), str(mirror)]),
+        (mirror, ["remote", "remove", "origin"]),
+        (
+            mirror,
+            ["clone", "--quiet", "--config", f"remote.origin.pushurl={_PUSH_DISABLED_URL}", str(mirror), str(checkout)],
+        ),
+        (checkout, ["checkout", "--quiet", "--detach", "HEAD"]),
+    )
+    return all(git_check(repo=str(repo), args=args) for repo, args in steps)
 
 
 @contextmanager
@@ -120,8 +139,8 @@ def provision_ephemeral_checkout() -> Iterator[Path]:
     worktrees' working trees and branch refs stay untouched — and, unlike a shared
     worktree, the sub-agent's commits never even land as loose objects in the real
     store. The clone reads the source READ-ONLY, so it also provisions when the eval
-    mounts the repo ``:ro`` (the CI container). The temp parent is deleted on context
-    exit, success or failure.
+    mounts the repo ``:ro`` (the CI container). The temp parent, origin mirror
+    included, is deleted on context exit, success or failure.
 
     Raises :class:`EphemeralCheckoutError` when the real teatree root cannot be
     located or the clone cannot be created — the spawning scenario then refuses

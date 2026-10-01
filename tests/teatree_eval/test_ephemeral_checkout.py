@@ -22,7 +22,7 @@ from teatree.eval.ephemeral_checkout import (
     source_root_offset,
 )
 from teatree.paths import teatree_source_root
-from teatree.utils.run import run_checked
+from teatree.utils.run import run_allowed_to_fail, run_checked
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -172,6 +172,60 @@ class TestProvisionEphemeralCheckout:
         )
         assert not (real / "src" / "teatree" / "core" / "session.py").exists()
 
+    def test_a_push_from_the_checkout_never_reaches_the_real_clone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The disabled pushurl makes a plain `git push origin` fail fast; fetch still works.
+        real = tmp_path / "real-clone"
+        _init_repo(real)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: real)
+
+        with provision_ephemeral_checkout() as checkout:
+            push = run_allowed_to_fail(
+                ["git", "-C", str(checkout), "push", "origin", "HEAD:refs/heads/leaked"], expected_codes=None
+            )
+            assert push.returncode != 0, f"a sandboxed push must fail, it exited 0: {push.stderr}"
+            _git(checkout, "fetch", "--quiet", "origin")
+
+        assert _git(real, "for-each-ref", "refs/heads/leaked") == "", (
+            "the sandboxed push wrote a ref into the real clone"
+        )
+
+    def test_origin_is_a_throwaway_mirror_with_no_remote_of_its_own(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        real = tmp_path / "real-clone"
+        _init_repo(real)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: real)
+
+        with provision_ephemeral_checkout() as checkout:
+            origin = Path(_git(checkout, "remote", "get-url", "origin"))
+            assert origin.is_relative_to(checkout.parent), f"origin {origin} is outside the throwaway"
+            assert origin != real
+            assert _git(origin, "remote") == "", "the mirror must not name the real clone as a remote"
+
+    def test_a_push_to_the_origin_url_lands_in_the_mirror_not_the_real_clone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The disabled pushurl only covers `git push origin`; the URL itself is still pushable.
+        real = tmp_path / "real-clone"
+        _init_repo(real)
+        monkeypatch.setattr("teatree.eval.ephemeral_checkout.resolve_teatree_repo_root", lambda: real)
+
+        with provision_ephemeral_checkout() as checkout:
+            origin = _git(checkout, "remote", "get-url", "origin")
+            push = run_allowed_to_fail(
+                ["git", "-C", str(checkout), "push", origin, "HEAD:refs/heads/leaked2"], expected_codes=None
+            )
+            assert push.returncode == 0, f"the push to the origin URL must land somewhere: {push.stderr}"
+            assert _git(Path(origin), "for-each-ref", "--format=%(refname)", "refs/heads/leaked2") == (
+                "refs/heads/leaked2"
+            )
+
+        assert _git(real, "for-each-ref", "refs/heads/leaked2") == "", (
+            "a push to the checkout's origin URL wrote a ref into the real clone"
+        )
+
     def test_cleans_up_the_checkout_on_exit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         real = tmp_path / "real-clone"
         _init_repo(real)
@@ -181,6 +235,7 @@ class TestProvisionEphemeralCheckout:
             captured = checkout
             assert captured.is_dir()
         assert not captured.exists(), "the ephemeral checkout directory must be removed on exit"
+        assert not captured.parent.exists(), "the temp parent, mirror included, must be removed on exit"
         # An independent clone is never a worktree of the source, so provisioning must
         # leave the real clone with exactly its own (single) worktree entry — nothing leaked.
         worktree_lines = [

@@ -29,6 +29,7 @@ from teatree.config.seed_defaults import SEED_ROW_FIELDS, SEED_TABLES, classify_
 from teatree.core.config_interchange.secret_guard import withheld_within
 from teatree.core.models import Loop, Mode, ModeSchedule
 from teatree.core.models.config_setting import ConfigValue
+from teatree.core.models.loop_preset import mask_refusal
 
 #: The model each seed table's rows live in — the DB half of ``SEED_ROW_FIELDS``.
 _SEED_MODELS = {"loops": Loop, "modes": Mode, "schedules": ModeSchedule}
@@ -181,6 +182,19 @@ def unseeded_entries(writes: list[SeedFieldDisposition]) -> set[tuple[str, str]]
     mid-run.
     """
     return {(w.table, w.name) for w in writes if not _SEED_MODELS[w.table].objects.filter(name=w.name).exists()}
+
+
+def mask_refusals(writes: list[SeedFieldDisposition]) -> list[tuple[SeedFieldDisposition, str]]:
+    """Each ``modes.<name>.entries`` write :func:`mask_refusal` refuses, with the reason.
+
+    An import stores a mask as given, so it answers to the rule ``Mode.clean()`` holds rather
+    than the per-column check :func:`write_seed_field` runs.
+    """
+    return [
+        (write, reason)
+        for write in writes
+        if write.table == "modes" and write.field == "entries" and (reason := mask_refusal(write.name, write.value))
+    ]
 
 
 def write_seed_field(table: str, name: str, field: str, value: ConfigValue) -> None:

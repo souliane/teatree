@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-owner_slack_dm_pause_is_obeyed-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The owner wants the ship loop paused while they reorder the merges."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
