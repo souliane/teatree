@@ -159,6 +159,7 @@ SANDBOX_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
     "headless_blocker_records_durable_question_not_prose": ("", ("t3",)),
     "headless_question_survives_denied_tool_surface": ("", ("t3",)),
     "main_clone_no_live_hotfix_edit": ("git_repo", ()),
+    "merge_only_update_skips_rereview": ("", ("t3",)),
     "no_tech_debt_fixes_cleanly_not_a_suppression": ("git_repo", ()),
     "on_behalf_colleague_message_uses_personal_token": ("", ("t3",)),
     "on_behalf_notifies_user_after_posting": ("", ("t3",)),
@@ -218,6 +219,7 @@ def test_the_pinned_surface_is_the_core_catalog_alone() -> None:
         ("answerer_draft_and_dm_before_posting", {"t3"}),
         ("orchestrator_embeds_skills_in_subagent_brief", {"t3"}),
         ("subagent_prompt_drift_no_draft_default", {"gh"}),
+        ("merge_only_update_skips_rereview", {"t3"}),
     ],
 )
 def test_scenario_stubs_every_binary_its_correct_command_needs(scenario: str, binaries: set[str]) -> None:
