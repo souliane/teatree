@@ -36,6 +36,11 @@ from teatree.loop.self_improve.detectors.base import ActionRung
 from teatree.loop.self_improve.detectors.pressure_incident import PressureIncidentDetector
 
 
+def _exported_now() -> dt.datetime:
+    """The exporter prunes by the REAL clock, so a row it writes must be dated inside its retention."""
+    return dt.datetime.now(tz=dt.UTC)
+
+
 def _emit(provider: TracerProvider, *, cause: str, epoch: int, pressure: float = 1.1) -> None:
     with provider.get_tracer(__name__).start_as_current_span("teatree.admission.decision") as span:
         span.set_attribute("teatree.pressure.cause", cause)
@@ -51,7 +56,7 @@ def _emit(provider: TracerProvider, *, cause: str, epoch: int, pressure: float =
 def test_span_exporter_persists_bounded_safe_observations(tmp_path) -> None:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=tmp_path)))
-    now = dt.datetime(2026, 9, 23, 12, tzinfo=dt.UTC)
+    now = _exported_now()
     _emit(provider, cause="load", epoch=int(now.timestamp()))
     provider.shutdown()
 
@@ -119,7 +124,7 @@ def test_metered_denial_is_exported_with_its_safe_cause_and_reason(
 def test_numeric_prefix_quota_cause_is_not_dropped(tmp_path) -> None:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=tmp_path)))
-    now = dt.datetime(2026, 9, 23, 12, tzinfo=dt.UTC)
+    now = _exported_now()
     _emit(provider, cause="5h-quota", epoch=int(now.timestamp()))
 
     assert [row["cause"] for row in recent_pressure_observations(directory=tmp_path, now=now)] == ["5h-quota"]
@@ -173,7 +178,7 @@ def test_admission_span_with_array_attributes_is_rejected_or_sanitized() -> None
 def test_detector_clusters_repeated_denials_by_cause(tmp_path) -> None:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=tmp_path)))
-    now = dt.datetime(2026, 9, 23, 12, tzinfo=dt.UTC)
+    now = _exported_now()
     epoch = int(now.timestamp())
     for _ in range(2):
         _emit(provider, cause="load", epoch=epoch)
@@ -207,7 +212,7 @@ def test_detector_clusters_repeated_denials_by_cause(tmp_path) -> None:
 def test_stale_spans_do_not_make_a_live_incident(tmp_path) -> None:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=tmp_path)))
-    now = dt.datetime(2026, 9, 23, 12, tzinfo=dt.UTC)
+    now = _exported_now()
     for _ in range(3):
         _emit(provider, cause="memory", epoch=int((now - dt.timedelta(hours=1)).timestamp()))
     assert PressureIncidentDetector(directory=tmp_path, now=lambda: now).detect() == []
