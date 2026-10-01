@@ -25,15 +25,15 @@ _REMOTE_CONTACT_PREFIXES: tuple[str, ...] = ("To ", "remote:")
 _GIT_PUSH_ABORTED = "error: failed to push some refs"
 _GATE_REFUSAL_RC = 1
 _GIT_OUTER_PUSH_NOISE: tuple[str, ...] = ("error: failed to push some refs", "hint:", "To ")
-#: A bare "ABORTED" also matches a failing test NAMED for this feature, which would
-#: report a real refusal as "nothing was rejected" — so match the emitted line.
-#: Each pattern is anchored to its emitter's shape, so a test id like ``[MemoryError]`` never matches.
+#: ``bash: line 3: fork: `` / ``caused by: `` — a label never holds ``:``, a bracket or a quote, so never a node id.
+_EMITTER_LABELS = r"(?:-?[\w./()][\w./()-]*(?: [\w./()-]+)*: )*"
+#: Every pattern starts at the stripped line's TRUE start, so a test report line naming the marker never matches.
 _GATE_ABORT_LINES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"push-gate: ABORTED"),
-    re.compile(r"worker '[^']+' crashed while running"),
-    re.compile(r"^replacing crashed worker \S+$"),
-    re.compile(r"(?:^|: |\] )Cannot allocate memory\b"),
-    re.compile(r"^(?:E\s+)?MemoryError\b"),
+    re.compile(r"^=== push-gate: ABORTED\b"),  # utils/push_gate_lock.py
+    re.compile(r"^worker '[^']+' crashed while running '"),  # xdist dsession
+    re.compile(r"^replacing crashed worker \S+$"),  # xdist dsession
+    re.compile(rf"^(?:E\s+)?{_EMITTER_LABELS}(?:\[Errno 12\] )?Cannot allocate memory\b"),  # OSError, bash, git, prek
+    re.compile(r"^(?:E\s+)?MemoryError\b"),  # a traceback's last line
 )
 
 
