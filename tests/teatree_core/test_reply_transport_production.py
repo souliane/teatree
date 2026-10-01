@@ -10,7 +10,8 @@ still hold.
 from unittest.mock import MagicMock
 
 import pytest
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.reply_transport import GitHubReplier, GitLabReplier, NoopReplier, ReplySpec, SlackReplier, replier_for
@@ -311,6 +312,22 @@ class TestRecordRaceRecovery(TestCase):
 
         assert dispatch.idempotency_key == "slack:race:d"
         assert ReplyDispatch.objects.filter(idempotency_key="slack:race:d").count() == 1
+
+
+class TestTheWireCallHoldsNoWriteLock(TransactionTestCase):
+    """At top level ``atomic()`` opens ``BEGIN IMMEDIATE``, so a post inside one stalls every control-DB writer."""
+
+    def test_a_dm_is_posted_outside_any_transaction(self) -> None:
+        event = _event(IncomingEvent.Source.SLACK, key="slack:lock")
+        in_transaction: list[bool] = []
+        bot = MagicMock()
+        bot.open_dm.return_value = "D-CHAN"
+        bot.post_message.side_effect = lambda **_: in_transaction.append(connection.in_atomic_block) or {}
+
+        dispatch = SlackReplier(bot=bot).post_dm(event=event, actor="U_ALICE", body="psst", idempotency_key="lock:dm")
+
+        assert in_transaction == [False]
+        assert dispatch.status == ReplyDispatch.Status.SENT
 
 
 class TestIntrinsicIdempotency(TestCase):

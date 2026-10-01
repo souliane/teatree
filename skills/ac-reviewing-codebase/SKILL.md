@@ -63,6 +63,7 @@ The main-clone guard blocks every mutation of the shared clone, so **all writing
 - List/fetch reads only the first page
 - One item's exception aborts the whole sweep
 - Long I/O inside the control-plane write transaction
+- Unattended scan files its candidates as issues
 - Absent, unreadable or stale signal reported as a definite verdict
 - Command reports success on a failure it printed
 - Work can stall indefinitely with nothing raising an alarm

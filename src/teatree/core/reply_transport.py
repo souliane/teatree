@@ -19,6 +19,7 @@ real per-overlay backends is tracked separately).
 """
 
 import logging
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Protocol
 
@@ -311,7 +312,8 @@ class _BaseReplier:
                 # Savepoint so a DB-level error raised inside subclass
                 # `_deliver` (e.g. a create-vs-create race) does not poison
                 # the outer transaction and the FAILED finalize can still run.
-                with transaction.atomic():
+                # Only inside one: at top level atomic() is BEGIN IMMEDIATE around the wire call.
+                with transaction.atomic() if transaction.get_connection().in_atomic_block else nullcontext():
                     posted_ref = self._deliver(spec)
             except Exception as exc:  # noqa: BLE001 — any backend failure becomes a FAILED row
                 logger.warning("Reply %s delivery failed: %s", spec.idempotency_key, exc)

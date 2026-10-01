@@ -9,7 +9,7 @@ design-time (`architecture-design`), per-PR deterministic
 (`scripts/hooks/check_antipatterns.py`, manual stage), and periodic
 holistic (`ac-reviewing-codebase`).
 
-**37 entries** — 5 greppable, 32 judgement.
+**38 entries** — 5 greppable, 33 judgement.
 
 ## Index
 
@@ -37,6 +37,7 @@ holistic (`ac-reviewing-codebase`).
 - [Work can stall indefinitely with nothing raising an alarm](#silent-freeze) — high, judgement
 - [Command reports success on a failure it printed](#silent-success-on-failure) — high, judgement
 - [Test mocks the behaviour it is supposed to exercise](#test-mocks-the-unit-under-test) — high, judgement
+- [Unattended scan files its candidates as issues](#unattended-scan-files-candidates) — high, judgement
 - [Absent, unreadable or stale signal reported as a definite verdict](#unknown-reported-as-verdict) — high, judgement
 - [Guard green only where the defect cannot appear](#vacuous-guard) — high, judgement
 - [File placed outside the package whose concern it shares](#file-outside-its-package) — medium, judgement
@@ -510,6 +511,21 @@ holistic (`ac-reviewing-codebase`).
 **Anti-pattern.** A network call, subprocess, agent dispatch or multi-second read performed while holding the SQLite control-plane write lock, so every other writer on the box blocks behind one slow external dependency and the factory reads as hung rather than busy.
 
 **Preferred.** Do the I/O outside the transaction and take the write lock only to persist the result — read, call, then open a short atomic block. A transaction's body contains no call whose duration a remote party decides.
+
+## Unattended scan files its candidates as issues
+
+<a id="unattended-scan-files-candidates"></a>
+
+- **id:** `unattended-scan-files-candidates`
+- **severity:** high
+- **detection:** judgement
+- **linter:** _(none — gap)_
+- **consumers:** architecture-design, ac-reviewing-codebase
+- **refs:** souliane/teatree#1391, loop-topology, memory-consolidation
+
+**Anti-pattern.** A loop scanner, cadence task or headless batch pass that turns each candidate it surfaces into a forge issue or ticket directly — a create_issue per candidate, or a dispatched skill told to file them. One unattended pass publishes durable artifacts under the owner's account that nobody decided should exist, and a noisy feed floods the backlog.
+
+**Preferred.** Record each candidate as one PENDING row, idempotent on its source key (PendingArticleSuggestion, PendingTriageRecommendation), surface the batch as one approval question, and file only the approved rows — no answer files nothing. A shell-denied agent returns its candidates in the result envelope and the server-side recorder writes the rows. The boundary is a single deduped defect report a human must resolve, labelled needs-triage: that is the agent-filed path, not a candidate stream, and the dream binding-reconciliation issue (Decision-3) is that case.
 
 ## Absent, unreadable or stale signal reported as a definite verdict
 
