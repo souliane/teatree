@@ -23,7 +23,7 @@ on every new box, which is how a health surface becomes one people learn to igno
 
 A mask can also kill the BOX. Admitting ``db_backup`` once every reclaim loop is quiet
 leaves the box writing backups with nothing that can free the space — a fault wherever it
-is found (:mod:`teatree.loops.mode_shape`).
+is found (:mod:`teatree.core.models.mode_shape`).
 
 Presence alone was not enough (#4096). A live ``standard`` calendar carrying an extra
 ``Mon-Fri 19:00 -> maintenance`` slot, against a ``maintenance`` mask that stopped delivery
@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from teatree.loops.mode_shape import backup_without_reclaim
+from teatree.core.models.mode_shape import backup_without_reclaim
 from teatree.loops.preset_seed import PresetSpec, ScheduleSpec, default_preset_specs, default_schedule_specs
 from teatree.loops.seed import LoopSeedSpec, load_loop_specs
 from teatree.loops.seed_drift import SlotShape, mode_entry_drift, schedule_slot_drift

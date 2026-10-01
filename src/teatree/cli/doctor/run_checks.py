@@ -623,14 +623,7 @@ def run_doctor_checks(*, repair: bool = False, slack_roundtrip: bool = False) ->
     # template (#3410, WARN). Post-ensure_django — the concurrency autofix reads the ORM.
     ok = run_bootstrap_checks(repair=repair) and ok
 
-    # Pre-investigation stale-clone hard-fail gate (#948). Surfaces at
-    # session start so a bug-investigation sub-agent cannot start root-
-    # causing against a clone many commits behind ``origin/<default>``.
-    # Distinct from #940 (post-implementation branch-currency on PR
-    # branches); this is the *entry-point* gate before any investigation
-    # reads source files. An offline/missing remote is a valid state —
-    # ``doctor_check_clone_currency`` skips affected repos rather than
-    # FAILing (same posture as schema_guard's DB-offline WARN).
+    # Clone currency (#948): FAIL per stale clone; WARN, never gating, per clone it could not read.
     from teatree.cli.update import _collect_repos  # noqa: PLC0415 — deferred: keeps CLI startup light
     from teatree.core.gates.clone_guard import doctor_check_clone_currency  # noqa: PLC0415 — deferred: lazy CLI import
 
