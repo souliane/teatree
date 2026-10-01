@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from teatree.paths import teatree_source_root
-from teatree.quality.hand_written_loc import diff_range_loc, window_loc
+from teatree.quality.hand_written_loc import diff_range_loc, is_generated, window_loc
 from teatree.utils.run import run_allowed_to_fail, run_checked
 from tests._git_repo import git_identity_env, make_git_repo, run_git
 
@@ -70,6 +70,27 @@ class TestDiffRangeLoc:
         _commit(repo, "generated artifact under a path no glob names")
 
         assert diff_range_loc("main", "HEAD", repo=repo).added == 1
+
+
+#: Generator outputs outside ``docs/generated``: shard-durations refresh, SBOM hook, tach graph hook.
+_GENERATOR_OUTPUTS_OUTSIDE_DOCS_GENERATED = ("dev/.test_durations", "dist/sbom.json", "docs/dependency-graph.md")
+
+
+class TestGeneratorOutputsOutsideDocsGenerated:
+    """A durations refresh rewrites ~57k lines and no human writes one of them."""
+
+    @pytest.mark.parametrize("path", _GENERATOR_OUTPUTS_OUTSIDE_DOCS_GENERATED)
+    def test_the_live_artifact_is_classified_generated(self, path: str) -> None:
+        assert (teatree_source_root() / path).is_file()
+        assert is_generated(path)
+
+    def test_a_refresh_of_every_one_reports_no_hand_written_line(self, repo: Path) -> None:
+        for path in _GENERATOR_OUTPUTS_OUTSIDE_DOCS_GENERATED:
+            (repo / path).parent.mkdir(parents=True, exist_ok=True)
+            (repo / path).write_text("x\ny\n", encoding="utf-8")
+        _commit(repo, "refresh generated artifacts")
+
+        assert diff_range_loc("main", "HEAD", repo=repo).added == 0
 
 
 class TestTheAdvisoryScript:

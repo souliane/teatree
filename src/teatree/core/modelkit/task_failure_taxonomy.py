@@ -113,6 +113,9 @@ RESULT_ERROR_MARKER = "result_error:"
 #: was dispatched for, so the reviewer judged neither (souliane/teatree#4737).
 HEAD_SUPERSEDED_PREFIX = "head_superseded: "
 
+#: Prefix a run carries when the CLI fell back because its build cannot serve the requested model.
+CLI_TOO_OLD_PREFIX = "cli_too_old_for_model: "
+
 
 class FailureKind(models.TextChoices):
     """The named cause of a FAILED task, stamped on the attempt that failed it."""
@@ -144,6 +147,7 @@ class FailureKind(models.TextChoices):
     SUPERSEDED = "superseded", "Superseded by rework"
     AGENT_ABANDONED = "agent_abandoned", "Agent failed the task without a reason"
     HEAD_SUPERSEDED = "head_superseded", "PR head advanced past the reviewed tree"
+    CLI_TOO_OLD_FOR_MODEL = "cli_too_old_for_model", "Claude Code too old for the configured model"
 
 
 class RecoveryStrategy(StrEnum):
@@ -192,6 +196,8 @@ RECOVERY: Mapping[str, Recovery] = {
     # An exhausted account frees itself on a window reset; an UNCONFIGURED one never does, so it is
     # neither environmental nor retried — that pairing is the retry-into-the-same-wall it caused.
     FailureKind.CREDENTIAL_MISSING: Recovery(_HALT, environmental=False),
+    # Same pairing: an outdated CLI never updates itself, so only a redeploy clears it (#4874).
+    FailureKind.CLI_TOO_OLD_FOR_MODEL: Recovery(_HALT, environmental=False),
     # A defect, a deliberate stop, or a failure this vocabulary cannot name: never auto-reopened.
     # PLAN_MISSING is HALT because re-running the SAME implementing phase reproduces it exactly —
     # the remedy is a different phase (planning), which `unplanned_ticket_redispatch` schedules off
@@ -228,6 +234,14 @@ RECOVERY: Mapping[str, Recovery] = {
 #: while still being a harness fault to the health aggregator, which trips on a RUN of
 #: them (a factory dispatching and crashing is a factory completing nothing).
 _HARNESS_FAULT: frozenset[str] = frozenset({FailureKind.HARNESS_CRASH, FailureKind.HARNESS_CONTROL_TIMEOUT})
+
+#: Kinds that end a task WITHOUT the repair loop having failed on its own merits — an
+#: operator cancellation or a supersede by rework. Public (not the environmental axis:
+#: both are ``environmental=False`` above) because two independent readers need the
+#: SAME answer to "was this a real repair failure?": the incident detector (which of
+#: these to page on) and the repair-burn factory signal (which to count toward its
+#: failure fraction). One shared set keeps them from silently disagreeing.
+NON_REPAIR_KINDS: frozenset[str] = frozenset({FailureKind.CANCELLED, FailureKind.SUPERSEDED})
 
 #: Kinds that are the ABSENCE of a cause rather than a cause. Membership is that test, NOT
 #: fingerprint collision — ``no_result_envelope``'s constant reason self-collides,
@@ -272,6 +286,7 @@ _MATCHERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (FailureKind.HEAD_SUPERSEDED, (HEAD_SUPERSEDED_PREFIX,)),
     (FailureKind.SUPERSEDED, (SUPERSEDED_PREFIX,)),
     (FailureKind.AGENT_ABANDONED, (AGENT_ABANDONED_PREFIX,)),
+    (FailureKind.CLI_TOO_OLD_FOR_MODEL, (CLI_TOO_OLD_PREFIX,)),
     (FailureKind.LEASE_LOST, ("stuck_loop: lease lost",)),
     (FailureKind.RUNTIME_CEILING, ("stuck_loop:",)),
     # The ``LimitCause`` markers a limit-killed run records (``LimitMatch.as_reason``),
@@ -428,7 +443,9 @@ def stall_kinds(kinds: Iterable[str]) -> list[str]:
 __all__ = [
     "AGENT_ABANDONED_PREFIX",
     "CANCELLED_PREFIX",
+    "CLI_TOO_OLD_PREFIX",
     "LEASE_EXPIRED_PREFIX",
+    "NON_REPAIR_KINDS",
     "RECOVERY",
     "REVIEW_UNRECORDABLE_PREFIX",
     "SUPERSEDED_PREFIX",

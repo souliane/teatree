@@ -112,7 +112,7 @@ _HEADER = """\
 # EVERY live loop on or off. The table is TOTAL: there is no absent tier and nothing to
 # inherit, so what a mode does is readable from the mode alone, and a loop added later is
 # written `false` into every mode — quiet at birth, admitted only by a deliberate edit.
-# ONE shape invariant survives (`teatree.loops.mode_shape.backup_without_reclaim`): no
+# ONE shape invariant survives (`teatree.core.models.mode_shape.backup_without_reclaim`): no
 # mask may keep `db_backup` writing once every reclaim loop is quiet, the shape that can
 # only ever consume disk and the one reached exactly when an operator grabs a halt posture
 # mid-incident. The postures are a chain — `present` >= `afk` >= `maintenance` >= `off` —

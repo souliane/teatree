@@ -1,6 +1,7 @@
 """Two live Codex threads share one App Server and one auth-cache writer."""
 
 import asyncio
+import gc
 import os
 import sys
 import threading
@@ -8,6 +9,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -71,6 +73,9 @@ for raw in sys.stdin:
         }}) + '\n')
     sys.stdout.flush()
 """
+_EXITS_AFTER_TURN = _SERVER.replace(
+    "    sys.stdout.flush()\n", "    sys.stdout.flush()\n    if method == 'turn/start':\n        break\n"
+)
 
 
 class FakeCache:
@@ -220,11 +225,7 @@ def test_failed_auth_startup_can_be_closed_without_touching_a_closed_loop(tmp_pa
 
 def test_dead_codex_process_releases_cache_before_a_replacement(tmp_path: Path) -> None:
     script = tmp_path / "crashing_app_server.py"
-    script.write_text(
-        _SERVER.replace(
-            "    sys.stdout.flush()\n", "    sys.stdout.flush()\n    if method == 'turn/start':\n        break\n"
-        )
-    )
+    script.write_text(_EXITS_AFTER_TURN)
     cache = FakeCache()
     code_home = tmp_path / "private-home"
     options = CodexAppServerOptions.from_sdk_options(
@@ -256,6 +257,147 @@ def test_dead_codex_process_releases_cache_before_a_replacement(tmp_path: Path) 
         assert cache.active == 0
     finally:
         manager.close()
+
+
+def _exiting_server(
+    tmp_path: Path, cache: FakeCache | None = None
+) -> tuple[SharedCodexAppServer, CodexAppServerOptions]:
+    script = tmp_path / "exiting_app_server.py"
+    script.write_text(_EXITS_AFTER_TURN)
+    manager = SharedCodexAppServer(
+        code_home=tmp_path / "private-home",
+        cache=cache or FakeCache(),
+        command=(sys.executable, str(script)),
+        process_env={},
+    )
+    options = CodexAppServerOptions.from_sdk_options(
+        ClaudeAgentOptions(cwd=str(tmp_path), permission_mode="bypassPermissions")
+    )
+    return manager, options
+
+
+async def _query_until_server_exits(session: SharedCodexSession, manager: SharedCodexAppServer) -> None:
+    await session.start()
+    await session.query("ping")
+    for _ in range(1000):
+        if manager.stopped:
+            return
+        await asyncio.sleep(0.01)
+    pytest.fail("the exited Codex App Server never closed its owner loop")
+
+
+def test_a_turn_the_server_read_before_it_exited_is_still_delivered(tmp_path: Path) -> None:
+    manager, options = _exiting_server(tmp_path)
+
+    async def run() -> list[object]:
+        session = SharedCodexSession(options, manager=manager, resume=None)
+        await _query_until_server_exits(session, manager)
+        return [message async for message in session.receive_response()]
+
+    try:
+        messages = asyncio.run(asyncio.wait_for(run(), timeout=30))
+    finally:
+        manager.close()
+
+    assert any(isinstance(message, ResultMessage) and not message.is_error for message in messages)
+
+
+def test_a_drained_stream_failure_still_raises_once_the_server_exited(tmp_path: Path) -> None:
+    manager, options = _exiting_server(tmp_path)
+
+    async def run() -> None:
+        session = SharedCodexSession(options, manager=manager, resume=None)
+        await _query_until_server_exits(session, manager)
+        _ = [message async for message in session.receive_response()]
+        with pytest.raises(HarnessFallbackError, match="protocol stream"):
+            await manager.next_event(options, session.thread_id)
+        with pytest.raises(HarnessFallbackError, match="shared worker"):
+            await manager.next_event(options, session.thread_id)
+
+    try:
+        asyncio.run(asyncio.wait_for(run(), timeout=30))
+    finally:
+        manager.close()
+
+
+def _signal_submissions_after(
+    owner: asyncio.AbstractEventLoop, started: threading.Event, submitted: threading.Event
+) -> Any:
+    real_call_soon = owner.call_soon_threadsafe
+
+    def call_soon_then_signal(*args: Any, **kwargs: Any) -> asyncio.Handle:
+        handle = real_call_soon(*args, **kwargs)
+        if started.is_set():
+            submitted.set()
+        return handle
+
+    return patch.object(owner, "call_soon_threadsafe", call_soon_then_signal)
+
+
+def test_a_read_the_closing_owner_loop_accepted_but_never_ran_is_still_delivered(tmp_path: Path) -> None:
+    manager, options = _exiting_server(tmp_path)
+    closing, submitted = threading.Event(), threading.Event()
+
+    async def run() -> list[object]:
+        session = SharedCodexSession(options, manager=manager, resume=None)
+        await session.start()
+        owner = manager._loop
+        assert owner is not None
+        real_close = owner.close
+
+        def close_after_a_late_submission() -> None:
+            closing.set()
+            submitted.wait(timeout=10)
+            real_close()
+
+        with (
+            patch.object(owner, "close", close_after_a_late_submission),
+            _signal_submissions_after(owner, closing, submitted),
+        ):
+            await session.query("ping")
+            await asyncio.to_thread(closing.wait, 10)
+            return [message async for message in session.receive_response()]
+
+    try:
+        messages = asyncio.run(asyncio.wait_for(run(), timeout=20))
+    finally:
+        manager.close()
+    # A dropped call's coroutine left unclosed warns "never awaited" only when collected.
+    gc.collect()
+
+    assert submitted.is_set()
+    assert any(isinstance(message, ResultMessage) and not message.is_error for message in messages)
+
+
+def test_a_read_the_owner_loop_cancelled_at_shutdown_is_still_delivered(tmp_path: Path) -> None:
+    exiting, submitted = threading.Event(), threading.Event()
+
+    class ExitBlockingCache(FakeCache):
+        @asynccontextmanager
+        async def session(self) -> AsyncIterator[Path]:
+            async with super().session() as path:
+                yield path
+            exiting.set()
+            submitted.wait(timeout=10)
+
+    manager, options = _exiting_server(tmp_path, ExitBlockingCache())
+
+    async def run() -> list[object]:
+        session = SharedCodexSession(options, manager=manager, resume=None)
+        await session.start()
+        assert manager._loop is not None
+        with _signal_submissions_after(manager._loop, exiting, submitted):
+            await session.query("ping")
+            await asyncio.to_thread(exiting.wait, 10)
+            return [message async for message in session.receive_response()]
+
+    try:
+        messages = asyncio.run(asyncio.wait_for(run(), timeout=20))
+    finally:
+        manager.close()
+
+    assert submitted.is_set()
+    assert any(isinstance(message, ResultMessage) and not message.is_error for message in messages)
 
 
 def test_public_harness_uses_shared_server_and_resumes_same_thread(tmp_path: Path) -> None:

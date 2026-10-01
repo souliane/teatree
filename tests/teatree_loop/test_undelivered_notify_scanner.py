@@ -6,6 +6,8 @@ from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.models import BotPing
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.undelivered_notify import UndeliveredNotifyScanner
 
 
@@ -34,12 +36,10 @@ class TestUndeliveredNotifyScanner(TestCase):
         ):
             assert UndeliveredNotifyScanner().scan() == []
 
-    def test_unexpected_error_never_raises(self) -> None:
-        with patch(
-            "teatree.core.notify.drain_undelivered_notifies",
-            side_effect=RuntimeError("boom"),
-        ):
-            assert UndeliveredNotifyScanner().scan() == []
+    def test_a_failed_drain_reaches_the_tick_error_surface(self) -> None:
+        with patch("teatree.core.notify.drain_undelivered_notifies", side_effect=RuntimeError("boom")):
+            _, signals, error = _run_job(_ScannerJob(scanner=UndeliveredNotifyScanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: boom")
 
     def test_redelivers_parked_info_row_end_to_end(self) -> None:
         BotPing.objects.create(

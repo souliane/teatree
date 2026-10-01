@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from django.db import transaction
 from django.tasks import task
+from django.utils import timezone
 
 from teatree.config import get_effective_settings, worktree_root
 from teatree.core.admission.dispatch_mask import headless_admission_block_reason
@@ -20,6 +21,7 @@ from teatree.core.models.errors import CriticGateError, InvalidTransitionError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
+from teatree.core.provision.failure_question import no_repos_retry_delay, record_provision_failure_question
 from teatree.core.runners import RetroPhaseMarker, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
 from teatree.core.worktree.worktree_done import _DONE_TICKET_STATES
 from teatree.types import RawAPIDict
@@ -178,8 +180,6 @@ def drain_queue_body() -> dict[str, list[int]]:
     A frozen factory (``headless_admission_block_reason``) withholds live rows like a
     governor DENY; poison rows still fail, since that is cleanup, not paid work.
     """
-    from django.utils import timezone  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
     from teatree.core.agent_admission import agent_admission_verdict  # noqa: PLC0415 — deferred: call-time
     from teatree.core.task_dispatch import enqueue_execution  # noqa: PLC0415 — cycle-safe queue policy
 
@@ -415,7 +415,6 @@ class TeardownDispatch:
         SUCCESSFUL routinely means "ran, and the worktree is still there".
         """
         from django.tasks import TaskResultStatus  # noqa: PLC0415 — deferred: Django import at call time
-        from django.utils import timezone  # noqa: PLC0415 — deferred: keeps the module import Django-light
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415 — deferred: Django import at call time
 
         rows = DBTaskResult.objects.filter(
@@ -478,7 +477,7 @@ class TeardownDispatch:
 
 
 @task()
-def execute_provision(ticket_id: int) -> TransitionResult:
+def execute_provision(ticket_id: int, attempt: int = 0) -> TransitionResult:
     """Provision worktrees for a WORK_STARTED ticket and schedule the planning task.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
@@ -497,6 +496,9 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     explicitly opted out of planning, mirroring the external-delivery skip). The
     loop's own autonomous FSM never stamps either marker, so its flow is
     unchanged.
+
+    A failure on a ticket with no repos yet re-enqueues itself as *attempt* + 1 on
+    ``NO_REPOS_RETRY_DELAYS`` and asks the owner only once that budget is spent.
 
     ``WorktreeProvisioner.run()`` (git clone / worktree materialise / DB import —
     potentially minutes) runs OUTSIDE the FSM-advance transaction (#1522 shape,
@@ -519,7 +521,9 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     result = WorktreeProvisioner(ticket).run()
     if not result.ok:
         logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
-        _record_provision_failure_question(ticket, result.detail)
+        if not ticket.repos and _retry_provision_later(ticket_id, attempt):
+            return {"ticket_id": ticket_id, "ok": False, "detail": f"{result.detail}; retry {attempt + 1} queued"}
+        record_provision_failure_question(ticket, result.detail, retries=attempt)
         return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
     persist_intake_landscape(ticket)
@@ -554,34 +558,13 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 
 
-def _record_provision_failure_question(ticket: Ticket, detail: str) -> None:
-    """Surface an un-provisionable repo as a durable, deduped ``DeferredQuestion``.
-
-    ``run()`` is all-or-nothing, so one repo out of N holds the whole ticket at
-    STARTED — and the failure path recorded only a log line while the attachment
-    gate directly below it escalated, which is how one ticket retried ~28 times
-    unnoticed. The escalation IS the bound: there is no retry count to exhaust.
-    """
-    from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
-
-    where = ticket.issue_url or f"ticket {ticket.pk}"
-    overlay = ticket.overlay or "<overlay>"
-    # `worktree provision` RESOLVES an existing checkout and runs its DB/env/setup
-    # steps — it declares no `--verbose` and has nothing to resolve when checkout
-    # CREATION itself failed. `workspace ticket` is the seam that reaches
-    # `WorktreeProvisioner` (git clone / worktree materialise) and is idempotent
-    # to re-run — but only when the ticket has a real issue_url to re-run it on.
-    retry = (
-        f"`t3 {overlay} workspace ticket {ticket.issue_url}`"
-        if ticket.issue_url
-        else f"`t3 {overlay} workspace ticket` re-run against this ticket's issue reference"
-    )
-    question = (
-        f"Provision failed on {where} (overlay {overlay}): {detail}. Every repo must provision before "
-        f"planning starts, so the ticket holds at STARTED until this one does. Retry checkout creation "
-        f"from the venue that owns the worktrees ({retry}), or drop the repo from the ticket?"
-    )
-    DeferredQuestion.record(question, dedupe_marker=f"provision-failure:{ticket.pk}")
+def _retry_provision_later(ticket_id: int, attempt: int) -> bool:
+    """Queue retry *attempt* + 1; ``False`` once the budget is spent or the backend cannot defer."""
+    delay = no_repos_retry_delay(attempt)
+    if delay is None or not execute_provision.get_backend().supports_defer:
+        return False
+    execute_provision.using(run_after=timezone.now() + delay).enqueue(ticket_id, attempt + 1)
+    return True
 
 
 def _record_attachment_hold_question(ticket: Ticket, refusal: str) -> None:

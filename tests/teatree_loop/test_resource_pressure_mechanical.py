@@ -298,10 +298,12 @@ class DryRunFirstTests(TestCase):
         """Even if execution fails midway, the pre-execution plan is on the marker."""
         cache = self.tmp / "pre-commit"
         _write_file(cache / "blob", 1024)
-        with patch.object(mechanical_resources, "_run_uv_cache_prune", side_effect=RuntimeError("boom")):
+        with (
+            patch.object(mechanical_resources, "_run_uv_cache_prune", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
             free_resources({"resource": "disk", "disk_cache_allowlist": [str(cache)]})
         marker = ResourcePressureMarker.load()
-        # The failure was swallowed; the plan that was persisted first survives.
         assert "PURGE cache" in marker.last_plan
 
 
@@ -436,16 +438,19 @@ class RamLadderTests(TestCase):
 
 
 class ResilienceTests(TestCase):
-    """A failure in any step is swallowed — the tick never crashes."""
+    """Per-step failures are isolated; a failed pass raises for the tick to record."""
 
     def test_unknown_resource_is_noop(self) -> None:
         free_resources({"resource": "nonsense"})  # must not raise
 
-    def test_inner_exception_is_swallowed(self) -> None:
+    def test_a_failed_pass_raises_for_the_tick_to_record(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch.object(mechanical_resources, "_plan_disk", side_effect=RuntimeError("kaboom")):
-            free_resources({"resource": "disk"})  # must not raise
+        with (
+            patch.object(mechanical_resources, "_plan_disk", side_effect=RuntimeError("kaboom")),
+            pytest.raises(RuntimeError, match="kaboom"),
+        ):
+            free_resources({"resource": "disk"})
 
     def test_sigterm_oserror_is_swallowed(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415

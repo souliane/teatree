@@ -134,26 +134,6 @@ def verify_issue_note_deleted(api: "GitLabAPI", encoded: str, issue_iid: int, no
     raise ReviewArtifactNotVerifiedError(msg)
 
 
-def verify_bulk_publish(api: "GitLabAPI", encoded: str, mr: int) -> None:
-    """Confirm a bulk-publish actually flushed the drafts (#2081 incident's missed signal).
-
-    The incident: ``draft_notes/bulk_publish`` returned 200 yet ZERO notes
-    landed. Confirm by listing the MR's remaining draft notes — after a
-    successful publish there must be none — and that at least one authored note
-    now exists. A non-empty draft list (or no authored notes) means the publish
-    did not take; raise :class:`ReviewArtifactNotVerifiedError`. Transport
-    errors propagate unchanged (transient, not a failed post).
-    """
-    drafts = api.get_json(f"projects/{encoded}/merge_requests/{mr}/draft_notes")
-    if isinstance(drafts, list) and drafts:
-        msg = f"bulk publish reported OK but {len(drafts)} draft note(s) remain on !{mr} — not reporting as published"
-        raise ReviewArtifactNotVerifiedError(msg)
-    notes = api.get_json(f"projects/{encoded}/merge_requests/{mr}/notes")
-    if not (isinstance(notes, list) and notes):
-        msg = f"bulk publish reported OK but no authored notes are present on !{mr} — not reporting as published"
-        raise ReviewArtifactNotVerifiedError(msg)
-
-
 def verify_discussion_resolved(api: "GitLabAPI", encoded: str, mr: int, discussion_id: str, *, resolved: bool) -> None:
     """Read back a discussion after a resolve flip; raise if the state did not take (#2081).
 
@@ -273,7 +253,6 @@ __all__ = [
     "notify_review_after_receipt",
     "record_note_claim",
     "verify_approval_landed",
-    "verify_bulk_publish",
     "verify_discussion_resolved",
     "verify_issue_note_deleted",
     "verify_note_deleted",

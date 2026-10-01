@@ -15,6 +15,8 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState
 from teatree.core.models import Ticket
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners import board_reconcile
 from teatree.loop.scanners.board_reconcile import BoardReconcileScanner
 
@@ -59,6 +61,8 @@ class TestBoardReconcileScanner(TestCase):
             assert len(scanner.scan()) == 1
             assert scanner.scan() == []
 
-    def test_a_reconcile_failure_never_escapes_the_scan(self) -> None:
+    def test_a_reconcile_failure_reaches_the_tick_error_surface(self) -> None:
+        job = _ScannerJob(scanner=BoardReconcileScanner(overlay_name="t3-teatree"), overlay="")
         with patch.object(board_reconcile, "reconcile_board", side_effect=RuntimeError("boom")):
-            assert BoardReconcileScanner(overlay_name="t3-teatree").scan() == []
+            _, signals, error = _run_job(job)
+        assert (signals, error) == ([], "RuntimeError: boom")

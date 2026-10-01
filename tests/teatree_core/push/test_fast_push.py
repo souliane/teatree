@@ -25,6 +25,7 @@ from teatree.core.push.fast_push import (
     forge_for_repo,
 )
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
+from teatree.hooks import _repo_visibility
 from teatree.utils.run import CommandFailedError, run_checked
 
 
@@ -66,6 +67,13 @@ def repo(tmp_path: Path) -> Path:
 def leak_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("T3_BANNED_TERMS", "forbiddenbrand")
     monkeypatch.setenv("TEATREE_OVERLAY_LEAK_TERMS", "secretoverlay")
+
+
+@pytest.fixture(autouse=True)
+def _no_visibility_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No forge CLI to probe with, and a private verdict cache — so origin's visibility is undetermined."""
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
 
 
 def run_fast_push(repo: Path, forge: FakeForge, **kwargs: str) -> FastPushOutcome:
@@ -200,7 +208,7 @@ class TestAuthorIdentityGate:
         run_checked(["git", "config", "user.email", "dev@example.com"], cwd=repo)
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.push.fast_push._public_github_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.push.fast_push.visibility_for_remote", return_value="PUBLIC"):
             outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert not outcome.ok
@@ -212,21 +220,50 @@ class TestAuthorIdentityGate:
     def test_allows_noreply_identity_on_public_repo(self, repo: Path, leak_env: None) -> None:
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.push.fast_push._public_github_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.push.fast_push.visibility_for_remote", return_value="PUBLIC"):
             outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert outcome.ok
         assert outcome.pushed
 
-    def test_inert_when_not_public_github(self, repo: Path, leak_env: None) -> None:
+    @pytest.mark.parametrize("verdict", ["PRIVATE", "INTERNAL"])
+    def test_inert_when_origin_is_known_non_public(self, repo: Path, leak_env: None, verdict: str) -> None:
         run_checked(["git", "config", "user.email", "dev@example.com"], cwd=repo)
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.push.fast_push._public_github_slug", return_value=None):
+        with patch("teatree.core.push.fast_push.visibility_for_remote", return_value=verdict):
             outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert outcome.ok
         assert not any(f.gate == "author-identity" for f in outcome.findings)
+
+    def test_refuses_non_noreply_identity_when_visibility_is_undetermined(self, repo: Path, leak_env: None) -> None:
+        """The pre-push hook this lane bypasses treats an unconfirmed visibility as public; so must the lane."""
+        run_checked(["git", "config", "user.email", "dev@example.com"], cwd=repo)
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok
+        assert any(f.gate == "author-identity" and "example.com" in f.detail for f in outcome.findings)
+        assert not outcome.committed
+        assert not outcome.pushed
+
+    def test_an_unprobeable_github_origin_is_treated_as_public(
+        self, repo: Path, leak_env: None, tmp_path: Path
+    ) -> None:
+        run_checked(["git", "remote", "set-url", "origin", "https://github.com/octo/mystery.git"], cwd=repo)
+        run_checked(["git", "remote", "set-url", "--push", "origin", str(tmp_path / "origin.git")], cwd=repo)
+        run_checked(["git", "config", "user.email", "dev@example.com"], cwd=repo)
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
+
+        assert not outcome.ok
+        finding = next(f for f in outcome.findings if f.gate == "author-identity")
+        assert "octo/mystery" in finding.detail
+        assert "could not be confirmed" in finding.detail
+        assert not outcome.pushed
 
 
 class TestNonLeakGatesSkipped:
@@ -475,7 +512,7 @@ class TestTheGatesScanThePushRangeNotJustTheStagedDelta:
     def test_a_non_noreply_identity_on_an_unpushed_commit_is_refused(self, repo: Path, leak_env: None) -> None:
         _commit(repo, "clean.py", "x = 1\n", "feat: clean", email="dev@example.com")
 
-        with patch("teatree.core.push.fast_push._public_github_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.push.fast_push.visibility_for_remote", return_value="PUBLIC"):
             outcome = run_fast_push(repo, FakeForge())
 
         assert not outcome.ok
@@ -518,7 +555,7 @@ class TestThePushRangeDoesNotReJudgeAlreadyPublicHistory:
         _merge_forward(repo, main_content="a clean prior line\n", main_email="squash@example.com")
         (repo / "feature.py").write_text("x = 1\n")
 
-        with patch("teatree.core.push.fast_push._public_github_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.push.fast_push.visibility_for_remote", return_value="PUBLIC"):
             outcome = run_fast_push(repo, FakeForge(), message="feat: clean change")
 
         assert outcome.ok, outcome.findings

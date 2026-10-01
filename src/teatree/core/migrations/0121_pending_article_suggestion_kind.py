@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0119_rename_ticket_fsm_states"),
+        ("core", "0120_attempt_conversation_facts_and_cli_too_old"),
     ]
 
     operations = [

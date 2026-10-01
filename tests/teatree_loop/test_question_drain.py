@@ -12,18 +12,22 @@ things that closes:
 The over-resolve guard is pinned throughout: a live or undeterminable subject is KEPT.
 """
 
+import tempfile
 from datetime import timedelta
+from pathlib import Path
 
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import PullRequest, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit
+from teatree.core.provision.failure_question import record_provision_failure_question
 from teatree.loop.question_drain import DrainReport, Verdict, drain_pending_questions, question_reachability
 from teatree.loop.stuck_ticket_redispatch import STUCK_HALT_MARKER
 from teatree.loop.tick_recovery import _reap_stale_task_claims
+from tests._git_repo import make_git_repo
 
 
 def _ticket(state: str = Ticket.State.WORK_STARTED) -> Ticket:
@@ -568,3 +572,40 @@ class TestHaltTriggerCleared(TestCase):
 
         assert reach.has_subject
         assert reach.decisions["halt_trigger_cleared"] == Verdict.DRAIN
+
+
+class TestProvisionHealedDrain(TestCase):
+    """A provision-failure question already mirrored is drained once its ticket provisions (#4904)."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.ticket = Ticket.objects.create(repos=["backend", "frontend"], state=Ticket.State.WORK_STARTED)
+        self.question = record_provision_failure_question(self.ticket, "failed to create worktrees for: frontend")
+
+    def _checkout(self, repo: str) -> None:
+        path = make_git_repo(self.root / repo)
+        Worktree.objects.create(ticket=self.ticket, repo_path=repo, branch="x", extra={"worktree_path": str(path)})
+
+    def test_every_repo_checked_out_drains_it(self) -> None:
+        self._checkout("backend")
+        self._checkout("frontend")
+
+        assert drain_pending_questions().drained == 1
+        self.question.refresh_from_db()
+        assert not self.question.is_pending
+        assert DeferredQuestionAudit.objects.get(question=self.question).resolver_id == "provision_healed"
+
+    def test_a_repo_still_missing_keeps_it(self) -> None:
+        self._checkout("backend")
+
+        assert drain_pending_questions().drained == 0
+        self.question.refresh_from_db()
+        assert self.question.is_pending
+
+    def test_the_heal_resolver_reports_in_the_reachability_map(self) -> None:
+        self._checkout("backend")
+        self._checkout("frontend")
+
+        reach = next(r for r in question_reachability() if r.question_id == self.question.pk)
+
+        assert reach.decisions["provision_healed"] == Verdict.DRAIN

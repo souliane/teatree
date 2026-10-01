@@ -107,6 +107,14 @@ def _self_authored_host(url: str) -> FakeCodeHost:
     )
 
 
+def _ignored_ticket_with_review(url: str) -> Ticket:
+    ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
+    mint_open_pr_review(ticket)
+    ticket.ignore()
+    ticket.save()
+    return ticket
+
+
 def _arm_auto_review(pr_id: int) -> tuple[str, Ticket, Task]:
     """Arm a review exactly as ``PrSweepScanner._flag_no_review`` does — real rows, no stubs."""
     url = f"https://github.com/{_SLUG}/pull/{pr_id}"
@@ -194,8 +202,7 @@ class TestOrphanReasonIsReportedHonestly(TestCase):
 
     def test_terminal_ticket_orphan_signal_carries_its_own_reason(self) -> None:
         url = "https://github.com/souliane/teatree/pull/3895"
-        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_DELIVERED)
-        mint_open_pr_review(ticket)
+        ticket = _ignored_ticket_with_review(url)
         assert ticket.is_settled
 
         host = FakeCodeHost(user="user-gl", pr_open_state_default=PrOpenState.OPEN)
@@ -203,7 +210,7 @@ class TestOrphanReasonIsReportedHonestly(TestCase):
 
         orphan = [s for s in signals if s.kind == "reviewer_pr.task_orphaned" and s.payload.get("url") == url]
         assert orphan, f"a terminal reviewer ticket must still be reaped; got {[s.kind for s in signals]!r}"
-        assert orphan[0].payload.get("reason") == f"ticket terminal: {ticket.state}"
+        assert orphan[0].payload.get("reason") == "ticket ignored admits no review"
 
     def test_merged_pr_orphan_signal_carries_the_forge_reason(self) -> None:
         url = "https://github.com/souliane/teatree/pull/3896"
@@ -219,14 +226,14 @@ class TestOrphanReasonIsReportedHonestly(TestCase):
 
     def test_handler_logs_the_signal_reason_not_a_hardcoded_one(self) -> None:
         url = "https://github.com/souliane/teatree/pull/3897"
-        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=Ticket.State.REVIEW_DELIVERED)
-        task = mint_open_pr_review(ticket)
+        ticket = _ignored_ticket_with_review(url)
+        task = ticket.tasks.get()
 
         with self.assertLogs("teatree.loop.mechanical", level="INFO") as captured:
-            reviewer_task_orphaned({"ticket_id": ticket.pk, "url": url, "reason": "ticket terminal: review_delivered"})
+            reviewer_task_orphaned({"ticket_id": ticket.pk, "url": url, "reason": "ticket ignored admits no review"})
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
         logged = "\n".join(captured.output)
-        assert "ticket terminal: review_delivered" in logged
+        assert "ticket ignored admits no review" in logged
         assert "merged/closed" not in logged

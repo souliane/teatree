@@ -353,9 +353,9 @@ See [`references/commit-to-fork.md`](references/commit-to-fork.md) for pre-fligh
 
 Before committing to the fork or creating an upstream issue, scan **all public-facing content the agent has authored or is about to author this session** — not just the diff of newly-staged files.
 
-**Scan the whole branch, never just the cache (Non-Negotiable).** The diff you scan must be `git diff @{upstream}..HEAD` — the branch carries commits from prior sessions and compacted work the agent never re-read, and only that range covers every commit between the pushed base and HEAD. `git diff --cached` (and `git diff HEAD~..HEAD`) is **not enough**: it shows the most recent work only, so a leak committed earlier on the branch passes the scan unseen.
+**Scan the whole branch commit by commit, never just the cache or the net diff (Non-Negotiable).** The patches you scan must be `git log --patch --format= @{upstream}..HEAD` — the branch carries commits from prior sessions and compacted work the agent never re-read, and each commit's own patch is what the pre-push privacy gate judges. `git diff --cached` (and `git diff HEAD~..HEAD`) is **not enough**: it shows the most recent work only, so a leak committed earlier on the branch passes the scan unseen. Neither is the net `git diff @{upstream}..HEAD`: it hides a value one commit adds and a later one removes, which the gate still refuses because the earlier commit still publishes it.
 
-The four surfaces to scan (branch-vs-base diff, commit subjects and bodies, PR/issue/comment bodies, and any memory/config writes the session made — retro itself makes none), the detector set plus the Streisand-effect word grep, and the `strict` / `relaxed` `T3_PRIVACY` levels are in [`skills/retro/references/privacy-scan.md`](references/privacy-scan.md).
+The four surfaces to scan (every branch commit's patch, commit subjects and bodies, PR/issue/comment bodies, and any memory/config writes the session made — retro itself makes none), the detector set plus the Streisand-effect word grep, and the `strict` / `relaxed` `T3_PRIVACY` levels are in [`skills/retro/references/privacy-scan.md`](references/privacy-scan.md).
 
 ## What NOT to Do
 

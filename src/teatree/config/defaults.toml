@@ -45,7 +45,7 @@
 # EVERY live loop on or off. The table is TOTAL: there is no absent tier and nothing to
 # inherit, so what a mode does is readable from the mode alone, and a loop added later is
 # written `false` into every mode — quiet at birth, admitted only by a deliberate edit.
-# ONE shape invariant survives (`teatree.loops.mode_shape.backup_without_reclaim`): no
+# ONE shape invariant survives (`teatree.core.models.mode_shape.backup_without_reclaim`): no
 # mask may keep `db_backup` writing once every reclaim loop is quiet, the shape that can
 # only ever consume disk and the one reached exactly when an operator grabs a halt posture
 # mid-incident. The postures are a chain — `present` >= `afk` >= `maintenance` >= `off` —
@@ -307,6 +307,7 @@ self_dm_gate_enabled = true # bool — classify a self-DM apart from a colleague
 single_branch_repo_gate_enabled = true # bool — refuse a second branch in a repo declared single-branch
 skill_loading_gate_enabled = true # bool — refuse a turn that skipped a skill the loader required
 standing_goal_stop_gate_enabled = true # bool — refuse ending a turn as done while a standing goal is unmet
+standing_grant_ask_gate_enabled = true # bool — refuse asking the owner to sign off a merge a standing grant already covers
 stop_snapshotter_enabled = true # bool — snapshot session findings before a stop, so context survives
 unbacked_claim_gate_enabled = true # bool — refuse a diagnosis or an escalation that cites no artefact the agent read
 unknown_repo_push_gate_enabled = true # bool — refuse a push to a repo teatree does not recognise

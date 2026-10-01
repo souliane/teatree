@@ -601,6 +601,12 @@ class TaskQuerySet(models.QuerySet):
         """
         return self.active_claims().exists()
 
+    def without_kept_claims(self) -> models.QuerySet:
+        """Drop terminal rows whose third-party fail kept a still-leased claim — the holder may be live."""
+        task_model = cast("type[Task]", apps.get_model("core", "Task"))
+        terminal, now = task_model.Status.terminal(), timezone.now()
+        return self.exclude(status__in=terminal, claimed_by__gt="", lease_expires_at__gt=now)
+
 
 TicketManager = models.Manager.from_queryset(TicketQuerySet)
 WorktreeManager = models.Manager.from_queryset(WorktreeQuerySet)

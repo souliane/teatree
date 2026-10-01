@@ -92,6 +92,16 @@ class TestTheReviewerIsToldToGradeTheRubric(TestCase):
         assert "e2e_reviewing" not in _RUBRIC_GRADED_PHASES
 
 
+class TestThePlannerIsToldEveryCriterionGatesTheMerge(TestCase):
+    """The merge gate needs every criterion PASS at the live head, so a post-merge one deadlocks it."""
+
+    def test_the_planning_brief_keeps_post_merge_obligations_out_of_the_criteria(self) -> None:
+        brief = "\n".join(phase_specific_lines(_task("planning"), []))
+        assert "the ticket can merge" in brief
+        assert "PASS at the PR head" in brief
+        assert "post-merge plan step, never a criterion" in brief
+
+
 class TestFixRecordDirective(TestCase):
     """#4520: the FixRecord directive is KIND-conditional, so a feature brief is unchanged."""
 

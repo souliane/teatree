@@ -1,3 +1,4 @@
+# test-path: cross-cutting — pins hooks/scripts/statusline.sh against teatree.loop.statusline_staleness.
 """Tests for ``hooks/scripts/statusline.sh`` — the Claude Code statusline hook.
 
 The hook composes two info streams: the loop's pre-rendered zones file (anchors,
@@ -14,6 +15,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from teatree.loop.statusline_staleness import staleness_banner
 
 pytestmark = pytest.mark.integration
 
@@ -1375,9 +1378,9 @@ class TestTeamRoster:
 class TestStaleStatuslineBanner:
     """The render-age freshness gate (the months-long stale-info bug).
 
-    The shell hook mirrors the cutoff arithmetic in
+    The shell hook mirrors the cutoff arithmetic and the banner wording of
     ``teatree.loop.statusline_staleness`` inline. These tests pin the shell
-    side to the same boundary; the Python side is pinned in
+    side to the same boundary and text; the Python side is pinned in
     ``tests/teatree_loop/test_statusline_staleness.py``.
     """
 
@@ -1404,6 +1407,8 @@ class TestStaleStatuslineBanner:
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
         assert "statusline STALE" in plain, plain
+        # The shell mirrors the Python wording, not only its cutoff.
+        assert staleness_banner(6 * 3600, colorize=False) in plain, plain
         # The banner leads the frozen loop line it qualifies.
         assert plain.index("statusline STALE") < plain.index("next tick 4m"), plain
         # ...but it never leads the CHEAP line. Nothing writes ``rendered_at``

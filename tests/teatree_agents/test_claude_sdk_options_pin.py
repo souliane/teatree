@@ -67,7 +67,7 @@ from tests._git_repo import make_git_repo, run_git
 
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
-_OPTIONS_SHA256 = "e811342370449f9c0bad52d132bc3b4377e5a4b5dc3b1133dad2f34ca1351240"
+_OPTIONS_SHA256 = "57f3ffb633c3d4c3198ca20562d5556ebdde4e8d6fcdccf3075990cd4478dae5"
 _SYSTEM_CONTEXT_SHA256 = "04670799ff2364052a6b0933e4a4ff9b0aff6323c1bd9ec6d3cbf86e61af1207"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]

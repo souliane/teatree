@@ -23,6 +23,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
 _GH_BENCHMARK = _REPO_ROOT / ".github" / "workflows" / "eval-weekly-reusable.yml"
 _GH_PR = _REPO_ROOT / ".github" / "workflows" / "eval-pr-reusable.yml"
+_GH_PR_HOST = _REPO_ROOT / ".github" / "workflows" / "eval-pr.yml"
 
 # All three spend real credit per run, so all three owe the same post-mortem.
 _METERED_WORKFLOWS = (_GH_EVAL, _GH_BENCHMARK, _GH_PR)
@@ -30,6 +31,10 @@ _METERED_WORKFLOWS = (_GH_EVAL, _GH_BENCHMARK, _GH_PR)
 # Only the fan-out lanes can collide on an artifact name; the PR lane's eval job is
 # a single job with no matrix, so a per-leg suffix would be noise there.
 _MATRIX_WORKFLOWS = (_GH_EVAL, _GH_BENCHMARK)
+
+# The host PR workflow runs its own eval job, so it publishes artifacts too — but it
+# owes only the upload contracts, not the teed raw log the metered lanes carry.
+_UPLOADING_WORKFLOWS = (*_METERED_WORKFLOWS, _GH_PR_HOST)
 
 _SUFFIX_EXPR = "steps.artifact.outputs.suffix"
 _UPLOAD_ACTION = "actions/upload-artifact"
@@ -74,8 +79,8 @@ def _upload_step_named(workflow: Path, name_fragment: str) -> dict[str, Any]:
     raise AssertionError(msg)
 
 
-@pytest.mark.parametrize("workflow", _METERED_WORKFLOWS, ids=lambda path: path.name)
-class TestDiagnosticArtifactsSurviveAFailingLeg:
+@pytest.mark.parametrize("workflow", _UPLOADING_WORKFLOWS, ids=lambda path: path.name)
+class TestEveryUploadIsDiagnostic:
     def test_every_artifact_upload_is_unconditional(self, workflow: Path) -> None:
         # A success-only (or absent) `if:` drops the artifact on exactly the runs that
         # need it — the whole point of uploading a summary is to explain a failure.
@@ -98,6 +103,9 @@ class TestDiagnosticArtifactsSurviveAFailingLeg:
                 f"command never writes (it renders {sorted(written)})."
             )
 
+
+@pytest.mark.parametrize("workflow", _METERED_WORKFLOWS, ids=lambda path: path.name)
+class TestDiagnosticArtifactsSurviveAFailingLeg:
     def test_raw_run_log_is_uploaded(self, workflow: Path) -> None:
         # Every other artifact (transcript, summary, benchmark matrix) is rendered at
         # END of run, so a leg that dies mid-run writes none of them. The teed log

@@ -21,6 +21,7 @@ from teatree.core.factory.merge_backlog import STALE_CLEAR_HOURS, max_actionable
 from teatree.core.merge.clear_scope import clear_scope_predicate
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolve_pr_repo_slug
+from teatree.core.modelkit.task_failure_taxonomy import NON_REPAIR_KINDS
 from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.red_card_signal import RedCardSignal
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
@@ -437,10 +438,14 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
     same idiom (a DB-level park exclude for the perf win over the 340k-row park backlog,
     then a Python recoverable-exhaustion filter) — they are capacity events, not work
     iterations, so they neither inflate the burn mean nor the failure fraction
-    (#3689/#3690). A high failure fraction over a meaningful sample trips a companion
-    hard-red the scalar mean alone cannot see: a window where nearly every attempt fails
-    leaves too few success groups to measure, so the mean reads low (or insufficient)
-    while the loop is on fire.
+    (#3689/#3690). An operator cancellation or a rework supersede (``NON_REPAIR_KINDS``)
+    is excluded the same way — the repair loop never failed on its own merits there, and
+    the incident detector (``lifecycle_incident.py``) already agrees these are not real
+    failures, so counting them here would disagree with it while describing the same
+    attempt. A high failure fraction over a meaningful sample trips a companion hard-red
+    the scalar mean alone cannot see: a window where nearly every attempt fails leaves
+    too few success groups to measure, so the mean reads low (or insufficient) while the
+    loop is on fire.
     """
     attempts = (
         TaskAttempt.objects.filter(started_at__gte=window.start, started_at__lt=window.end)
@@ -449,7 +454,11 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
     )
     if overlay:
         attempts = attempts.filter(task__ticket__overlay=overlay)
-    rows = [attempt for attempt in attempts if recoverable_exhaustion_cause(attempt.error) is None]
+    rows = [
+        attempt
+        for attempt in attempts
+        if recoverable_exhaustion_cause(attempt.error) is None and attempt.failure_kind not in NON_REPAIR_KINDS
+    ]
     groups: dict[tuple[int, str], list[int]] = defaultdict(list)
     succeeded = 0
     failed = 0

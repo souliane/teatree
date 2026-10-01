@@ -11,12 +11,14 @@ verification. The trees happened to agree; two agents editing one file would hav
 lost work silently.
 
 The worktree is the contended resource, so the claim lives on the ``Worktree``
-row. :func:`acquire` is the #786 compare-and-swap the ``Task`` lease already uses
-(``core.models.task_claim``): ONE conditional ``UPDATE ... WHERE <grantable>``
-whose affected-row count IS the decision. Not a read-then-write — teatree's
-production DB is SQLite, where ``select_for_update`` is a silent no-op, so two
-requesters reading the same unheld row would both write and both believe they own
-the checkout.
+row. The CAS primitives (:func:`acquire`, :func:`release`, :func:`occupancy_holder`,
+:func:`task_holder_id`) live in :mod:`teatree.core.models.worktree_occupancy` — this
+module re-exports them — because a holder's own terminal write (``task_claim.complete_claimed()``,
+``task_claim.fail(by_holder=True)``) must release its claim in the SAME transaction as the
+status write, and ``core.models`` may not depend on ``core.worktree``
+(``tach``'s DAG). This module owns the TICKET-level orchestration on top: resolving a
+ticket to its checkout's ``Worktree`` row and holding/refusing/renewing that claim for a
+dispatch's whole run.
 
 **Advisory, and only advisory.** A refused requester is TOLD who holds the
 checkout; nothing here deletes, evicts, reaps, kills or force-releases anything,
@@ -25,7 +27,11 @@ ticket's, and it is not stylistic: this repo has already reaped live work by
 inferring absence from one execution context. A lapsed lease therefore grants the
 NEXT requester without touching the previous holder's process, files or branch —
 the previous holder discovers the loss on its own :func:`renew_ticket_checkout`
-and aborts, the same shape ``Task.renew_lease`` has today.
+and aborts, the same shape ``Task.renew_lease`` has today. The one exception is
+:func:`_release_if_finished_task`'s self-heal (#4867): it acts only on a terminal
+``Task`` read fresh from the DB whose recorded owner is unrecorded or confirmed dead
+(:func:`~teatree.core.models.worktree_occupancy.terminal_task_pk`), never on a claim a
+third-party fail kept for a live holder (#4872), so the advisory invariant holds.
 
 Identity is the FULLY-QUALIFIED ``(holder, holder_session)`` pair everywhere —
 CAS predicate, release, renewal, reporting. ``holder`` alone is never matched: two
@@ -36,78 +42,46 @@ matching the bare id would let a stale sibling refresh a claim it no longer owns
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
-
-from django.db.models import Q
-from django.utils import timezone
 
 from teatree.core.models import Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.models.worktree_occupancy import (
+    OccupancyHolder,
+    WorktreeOccupancyLostError,
+    WorktreeOccupiedError,
+    _occupied_error,
+    _worktree_at,
+    acquire,
+    occupancy_holder,
+    release,
+    release_task_occupancy,
+    task_holder_id,
+    terminal_holder_task_pk,
+    terminal_task_pk,
+)
 
 if TYPE_CHECKING:
-    from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
 
+__all__ = [
+    "OccupancyHolder",
+    "WorktreeOccupancyLostError",
+    "WorktreeOccupiedError",
+    "acquire",
+    "held_worktrees",
+    "occupancy_holder",
+    "occupy_ticket_checkout",
+    "refuse_if_ticket_checkout_occupied",
+    "release",
+    "release_task_occupancy",
+    "renew_ticket_checkout",
+    "task_holder_id",
+    "terminal_holder_task_pk",
+    "terminal_task_pk",
+]
+
 logger = logging.getLogger(__name__)
-
-
-class WorktreeOccupiedError(RuntimeError):
-    """A live agent already holds the checkout the caller asked for.
-
-    Carries the :class:`OccupancyHolder` so a caller can route on the holder
-    rather than re-parse the message — the dispatch lane records it verbatim on
-    the failed attempt, and the CLI prints it.
-    """
-
-    def __init__(self, message: str, *, holder: "OccupancyHolder | None" = None) -> None:
-        super().__init__(message)
-        self.holder = holder
-
-
-class WorktreeOccupancyLostError(RuntimeError):
-    """This holder's claim moved on — the checkout may now be occupied by someone else.
-
-    Raised by :func:`renew_ticket_checkout` when a rival now holds the row. The
-    caller must ABORT its work in that checkout rather than keep writing: the
-    whole point of the CAS is that two drivers never share one working tree.
-    """
-
-
-@dataclass(frozen=True)
-class OccupancyHolder:
-    """Who holds a checkout, and until when.
-
-    Only ever describes a LIVE claim, so ``expires_at`` is never absent — an
-    unexpiring claim is not held (see :func:`occupancy_holder`).
-    """
-
-    holder: str
-    holder_session: str
-    since: datetime | None
-    expires_at: datetime
-
-    def describe(self) -> str:
-        session = f" (session {self.holder_session})" if self.holder_session else ""
-        since = f", held since {self.since.isoformat()}" if self.since else ""
-        return f"{self.holder}{session}{since}, lease expires {self.expires_at.isoformat()}"
-
-
-def task_holder_id(task: "Task") -> str:
-    """The holder id a dispatched agent occupies a checkout under.
-
-    One function so the acquire, the heartbeat renewal and the release can never
-    disagree about who this run is. Namespaced (``task:<pk>``) because a ``Task``
-    pk and a forge id both number from ~1.
-    """
-    return f"task:{task.pk}"
-
-
-#: The claim TTL. 30 minutes is 30x the 60s run heartbeat that renews it, so no live
-#: agent can lose a claim it is still holding; short enough that a crashed operator lane
-#: does not hold a checkout for a working day.
-_OCCUPANCY_LEASE_SECONDS = 30 * 60
 
 
 def _gate_enabled() -> bool:
@@ -117,86 +91,19 @@ def _gate_enabled() -> bool:
     return bool(get_effective_settings().worktree_occupancy_gate_enabled)
 
 
-def occupancy_holder(worktree: Worktree) -> OccupancyHolder | None:
-    """Who currently holds *worktree*, or ``None`` when it is unheld or the lease lapsed.
+def _release_if_finished_task(worktree: Worktree) -> None:
+    """Self-heal: release *worktree* if its holder is a finished ``Task`` whose owner is gone (#4867, #4872).
 
-    The exact complement of :func:`acquire`'s ``grantable`` predicate, including on a
-    row naming a holder with NO expiry: the CAS grants that row, so reporting it as
-    held would refuse ``workspace ticket`` forever over a checkout every acquire wins.
-    Two predicates for one question is how a lockout gets in — they are complements or
-    the gate is incoherent, pinned by ``LivenessAgreementTests``.
+    Covers every completion path that bypasses :func:`release_task_occupancy` (a
+    pre-#4867 row, an out-of-process writer) plus the residual TOCTOU between a
+    stale read and a new requester's own acquire. Called right before each of the
+    two occupancy-consulting entry points acts, so neither refuses a checkout on
+    behalf of a holder that can never come back to it.
     """
-    expires = worktree.occupancy_expires_at
-    if not worktree.occupied_by or expires is None or expires <= timezone.now():
-        return None
-    return OccupancyHolder(
-        holder=worktree.occupied_by,
-        holder_session=worktree.occupied_by_session,
-        since=worktree.occupied_at,
-        expires_at=expires,
-    )
-
-
-def acquire(
-    worktree: Worktree,
-    *,
-    holder: str,
-    holder_session: str = "",
-    lease_seconds: int | None = None,
-) -> OccupancyHolder:
-    """Claim *worktree* for ``(holder, holder_session)``, or refuse naming the incumbent.
-
-    The single conditional ``UPDATE``'s affected-row count is the decision. A row
-    is grantable when it is unheld, when its lease has lapsed, or when this exact
-    ``(holder, holder_session)`` already holds it — the last making a re-acquire
-    idempotent, so a dispatch that resolves its checkout twice refreshes rather
-    than deadlocks against itself.
-
-    On a loss the row is read back ONLY to name the incumbent in the refusal; the
-    decision was already made by the row count, never by the read. On a win the
-    claim just written is returned, so a caller reporting it needs no re-read and
-    no "or nobody" fallback for a row it has this instant proven it holds.
-    """
-    now = timezone.now()
-    ttl = _OCCUPANCY_LEASE_SECONDS if lease_seconds is None else lease_seconds
-    expires = now + timedelta(seconds=ttl)
-    grantable = (
-        Q(occupied_by="")
-        | Q(occupancy_expires_at__isnull=True)
-        | Q(occupancy_expires_at__lte=now)
-        | Q(occupied_by=holder, occupied_by_session=holder_session)
-    )
-    won = (
-        Worktree.objects.filter(pk=worktree.pk)
-        .filter(grantable)
-        .update(
-            occupied_by=holder,
-            occupied_by_session=holder_session,
-            occupied_at=now,
-            occupancy_expires_at=expires,
-        )
-    )
-    if won != 1:
-        raise _occupied_error(worktree)
-    worktree.refresh_from_db()
-    return OccupancyHolder(holder=holder, holder_session=holder_session, since=now, expires_at=expires)
-
-
-def release(worktree: Worktree, *, holder: str, holder_session: str = "") -> bool:
-    """Hand *worktree* back, iff ``(holder, holder_session)`` is the current occupant.
-
-    Holder-scoped by CAS so a release can never steal: a caller that no longer
-    owns the claim (or never did) updates zero rows and gets ``False``. Returns
-    whether this call is what freed it.
-    """
-    freed = (
-        Worktree.objects.filter(pk=worktree.pk, occupied_by=holder, occupied_by_session=holder_session)
-        .exclude(occupied_by="")
-        .update(occupied_by="", occupied_by_session="", occupied_at=None, occupancy_expires_at=None)
-    )
-    if freed == 1:
-        worktree.refresh_from_db()
-    return freed == 1
+    current = occupancy_holder(worktree)
+    if current is None or terminal_task_pk(current.holder) is None:
+        return
+    release(worktree, holder=current.holder, holder_session=current.holder_session)
 
 
 @contextmanager
@@ -226,6 +133,7 @@ def occupy_ticket_checkout(
         yield path
         return
 
+    _release_if_finished_task(worktree)
     acquire(worktree, holder=holder, holder_session=holder_session, lease_seconds=lease_seconds)
     try:
         yield path
@@ -277,7 +185,10 @@ def refuse_if_ticket_checkout_occupied(ticket: "Ticket") -> None:
         return
     path = dispatch_worktree_path(ticket)
     worktree = _worktree_at(ticket, path) if path else None
-    if worktree is not None and occupancy_holder(worktree) is not None:
+    if worktree is None:
+        return
+    _release_if_finished_task(worktree)
+    if occupancy_holder(worktree) is not None:
         raise _occupied_error(worktree)
 
 
@@ -287,24 +198,3 @@ def held_worktrees() -> list[tuple[Worktree, OccupancyHolder]]:
         (worktree, occupancy_holder(worktree)) for worktree in Worktree.objects.exclude(occupied_by="").order_by("pk")
     )
     return [(worktree, holder) for worktree, holder in pairs if holder is not None]
-
-
-def _worktree_at(ticket: "Ticket", path: str) -> Worktree | None:
-    """The ticket's ``Worktree`` row whose recorded checkout is *path*."""
-    return Worktree.objects.filter(ticket=ticket, extra__worktree_path=path).order_by("pk").first()
-
-
-def _occupied_error(worktree: Worktree) -> WorktreeOccupiedError:
-    """The refusal for a lost acquisition, naming the incumbent read back from the row."""
-    current = Worktree.objects.filter(pk=worktree.pk).first()
-    holder = occupancy_holder(current) if current is not None else None
-    path = (current or worktree).worktree_path or "<unprovisioned>"
-    who = holder.describe() if holder is not None else "another agent"
-    msg = (
-        f"Checkout {path} is already occupied by {who}. Two agents in one working tree interleave "
-        "commits and stage each other's in-progress files, so this request is refused rather than "
-        "silently sharing it. Wait for the holder to finish, work a different ticket, or — once you "
-        f"have CONFIRMED the holder is gone — hand it back with `t3 <overlay> worktree "
-        f"release-occupancy {path}`. Nothing is evicted or deleted on your behalf."
-    )
-    return WorktreeOccupiedError(msg, holder=holder)

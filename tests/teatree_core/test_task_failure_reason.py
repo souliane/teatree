@@ -232,6 +232,7 @@ class TestClassifier(TestCase):
             "superseded: ticket reworked",
             "head_superseded: the PR head advanced past the reviewed tree",
             "agent_abandoned: agent failed the task without giving a reason",
+            "cli_too_old_for_model: claude-opus-5-5 refused this Claude Code build; claude-sonnet-5 served the run",
         ]
         assert {classify_failure(r) for r in reasons} == set(FailureKind.values)
 
@@ -367,7 +368,7 @@ class TestNoFailurePathRecordsNothing(TestCase):
 
     def test_fail_requires_a_reason_and_records_it(self) -> None:
         task = _task(status=Task.Status.CLAIMED)
-        task.fail(reason="mcp task_fail: agent abandoned the task")
+        task.fail(reason="mcp task_fail: agent abandoned the task", by_holder=True)
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert task.failure_reason == "mcp task_fail: agent abandoned the task"

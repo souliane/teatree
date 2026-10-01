@@ -109,5 +109,9 @@ Writing, running, and posting evidence for these Playwright tests is `/t3:e2e`'s
 job — point the coder there; you supply the scenarios, not the test code. Each
 planned scenario maps 1:1 onto a future per-ticket acceptance-rubric criterion.
 
+Every rubric criterion gates the merge, so each must be gradeable PASS at the PR
+head. A post-merge obligation (close a superseded PR, a post-deploy check) is a
+post-merge plan step, never a criterion — `skills/ticket/SKILL.md` § 2a.
+
 Follow the loaded skills for architecture conventions, workspace layout, and
 cross-cutting rules.

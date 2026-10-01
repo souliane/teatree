@@ -137,7 +137,7 @@
     },
     {
       "bom-ref": "requirements-L38",
-      "description": "requirements line 38: claude-agent-sdk==0.2.157",
+      "description": "requirements line 38: claude-agent-sdk==0.2.160",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -146,9 +146,9 @@
         }
       ],
       "name": "claude-agent-sdk",
-      "purl": "pkg:pypi/claude-agent-sdk@0.2.157",
+      "purl": "pkg:pypi/claude-agent-sdk@0.2.160",
       "type": "library",
-      "version": "0.2.157"
+      "version": "0.2.160"
     },
     {
       "bom-ref": "requirements-L40",
@@ -182,7 +182,7 @@
     },
     {
       "bom-ref": "requirements-L48",
-      "description": "requirements line 48: coverage==7.16.1",
+      "description": "requirements line 48: coverage==7.16.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -191,9 +191,9 @@
         }
       ],
       "name": "coverage",
-      "purl": "pkg:pypi/coverage@7.16.1",
+      "purl": "pkg:pypi/coverage@7.16.2",
       "type": "library",
-      "version": "7.16.1"
+      "version": "7.16.2"
     },
     {
       "bom-ref": "requirements-L50",

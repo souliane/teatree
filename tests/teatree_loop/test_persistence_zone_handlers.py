@@ -17,12 +17,15 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models import Task, Ticket
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.persistence import _FIX_REASON_BY_KIND, persist_agent_actions
+from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
 
 
 def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
@@ -149,6 +152,55 @@ class TestCodexReviewZoneRevived(TestCase):
         )
         assert created == []
         assert not CodexReviewMarker.objects.filter(slug="o/r", pr_id=13).exists()
+
+    def test_reused_ticket_restamps_reviewed_sha_to_the_new_arming_head(self) -> None:
+        first = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/15", pr_id=15, head_sha="csha-15-a")),
+        )
+        assert len(first) == 1
+        assert first[0].ticket.extra["reviewed_sha"] == "csha-15-a"
+        first[0].complete()
+        second = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/15", pr_id=15, head_sha="csha-15-b")),
+        )
+        assert len(second) == 1
+        assert second[0].ticket.pk == first[0].ticket.pk
+        second[0].ticket.refresh_from_db()
+        assert second[0].ticket.extra["reviewed_sha"] == "csha-15-b"
+
+    def _approved_reviewer_ticket(self, *, pr_id: int, head_sha: str) -> tuple[Ticket, dict[str, str]]:
+        extra = {"reviewed_sha": head_sha, "last_review_state": ReviewState.APPROVED.value}
+        ticket = Ticket.objects.create(
+            issue_url=f"https://github.com/o/r/pull/{pr_id}",
+            overlay="acme",
+            role=Ticket.Role.REVIEWER,
+            extra=dict(extra),
+        )
+        return ticket, extra
+
+    def test_reused_ticket_does_not_carry_the_old_heads_approval_to_the_new_arming_head(self) -> None:
+        ticket, _ = self._approved_reviewer_ticket(pr_id=16, head_sha="csha-16-a")
+
+        created = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/16", pr_id=16, head_sha="csha-16-b")),
+        )
+
+        assert len(created) == 1
+        ticket.refresh_from_db()
+        assert not _already_reviewed_at_head(ticket, "csha-16-b")
+        assert _discharged_sha(ticket) == ""
+
+    def test_an_unclaimed_new_head_leaves_the_reviewed_head_and_its_approval(self) -> None:
+        ticket, extra = self._approved_reviewer_ticket(pr_id=17, head_sha="csha-17-a")
+        assert CodexReviewMarker.claim(slug="o/r", pr_id=17, head_sha="csha-17-b", variant="codex:review")
+
+        created = persist_agent_actions(
+            _agent_actions(self._signal(pr_url="https://github.com/o/r/pull/17", pr_id=17, head_sha="csha-17-b")),
+        )
+
+        assert created == []
+        ticket.refresh_from_db()
+        assert ticket.extra == extra
 
     def test_task_creation_failure_rolls_back_marker(self) -> None:
         with patch("teatree.loop.persistence.create_phase_task", side_effect=RuntimeError("boom")):

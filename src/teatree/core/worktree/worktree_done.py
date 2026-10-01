@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.config import clone_root
-from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, _resolve_worktree_path, cleanup_worktree
+from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, cleanup_worktree
 from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord
 from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
 from teatree.core.cleanup.reap_pre_gates import ReapPreGate, ReapPreGateVerdict, reap_pre_gate
@@ -60,6 +60,7 @@ from teatree.core.worktree.worktree_emit import (
     _resolve_row_probes,
     _RowProbes,
 )
+from teatree.core.worktree.worktree_location import resolve_worktree_path
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -202,7 +203,7 @@ def analyze_worktree_changes(
     ``probes`` are the row-level resolutions the reaper already made; they are
     recomputed here only for a caller that has none.
     """
-    wt_path = _resolve_worktree_path(workspace, worktree)
+    wt_path = resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
     target = probes.target if probes else _effective_target(str(repo_main), wt_path, worktree)
     default_target = _effective_default_target(Path(repo_main))
@@ -231,7 +232,7 @@ def _wipe_fingerprint(
     (post-merge ref deletion) falls back to the reflog-recovered SHA so a moving
     dangling ref is still detected.
     """
-    wt_path = _resolve_worktree_path(workspace, worktree)
+    wt_path = resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
     target = probes.target if probes else _effective_target(str(repo_main), wt_path, worktree)
     resolved = git.run(repo=target.probe_repo, args=["rev-parse", "--verify", "--quiet", target.ref])
@@ -376,7 +377,7 @@ def reap_done_worktree(
     """
     if not dry_run:
         capture_unshipped_work(
-            Path(_resolve_worktree_path(workspace, worktree)), branch=worktree.branch, overlay=worktree.overlay
+            Path(resolve_worktree_path(workspace, worktree)), branch=worktree.branch, overlay=worktree.overlay
         )
     pre_gate = reap_pre_gate(worktree, workspace=workspace, fsm_terminal=fsm_terminal)
     if pre_gate is not None:
@@ -386,7 +387,7 @@ def reap_done_worktree(
     if broken.state is not BrokenCheckout.LIVE_CHECKOUT:
         return _dead_checkout_outcome(worktree, workspace=workspace, verdict=broken, dry_run=dry_run)
 
-    wt_path = _resolve_worktree_path(workspace, worktree)
+    wt_path = resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
     probes = _resolve_row_probes(workspace, Path(repo_main), wt_path, worktree)
 

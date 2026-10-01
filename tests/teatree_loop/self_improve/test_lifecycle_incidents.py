@@ -30,7 +30,7 @@ class LifecycleIncidentTests(TestCase):
     def test_failed_task_is_grouped_by_named_cause(self) -> None:
         for _ in range(3):
             task = TaskFactory()
-            task.fail(reason="ProcessError: worker exited")
+            task.fail(reason="ProcessError: worker exited", by_holder=True)
 
         reports = self._reports()
 
@@ -42,23 +42,23 @@ class LifecycleIncidentTests(TestCase):
 
     def test_recovered_and_cancelled_tasks_are_not_incidents(self) -> None:
         recovered = TaskFactory()
-        recovered.fail(reason="ProcessError: worker exited")
+        recovered.fail(reason="ProcessError: worker exited", by_holder=True)
         recovered.reopen()
         cancelled = TaskFactory()
-        cancelled.fail(reason="cancelled: operator requested")
+        cancelled.fail(reason="cancelled: operator requested", by_holder=False)
 
         assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
 
     def test_long_running_task_that_fails_now_is_not_lost_to_creation_window(self) -> None:
         task = TaskFactory()
         Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(days=7))
-        task.fail(reason="ProcessError: worker exited")
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
 
         assert any(report.payload["kind"] == "task_failed" for report in self._reports())
 
     def test_failed_task_on_settled_ticket_does_not_resurface(self) -> None:
         task = TaskFactory()
-        task.fail(reason="ProcessError: worker exited")
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
         Ticket.objects.filter(pk=task.ticket_id).update(state=Ticket.State.MERGED)
 
         assert not [report for report in self._reports() if report.payload["kind"] == "task_failed"]
@@ -183,7 +183,7 @@ class LifecycleIncidentTests(TestCase):
         )
         first_tasks = [TaskFactory() for _ in range(3)]
         for task in first_tasks:
-            task.fail(reason="ProcessError: worker exited")
+            task.fail(reason="ProcessError: worker exited", by_holder=True)
         first = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
         first_ticket_id = first.actions[0].firing.ticket_id
         assert first_ticket_id is not None
@@ -196,7 +196,7 @@ class LifecycleIncidentTests(TestCase):
 
         for _ in range(3):
             task = TaskFactory()
-            task.fail(reason="ProcessError: worker exited")
+            task.fail(reason="ProcessError: worker exited", by_holder=True)
         second = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
 
         assert len(second.actions) == 1
@@ -229,7 +229,7 @@ class LifecycleIncidentTests(TestCase):
 
     def test_single_failed_task_ages_through_delivered_alert_to_one_ticket(self) -> None:
         task = TaskFactory()
-        task.fail(reason="ProcessError: worker exited")
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
         alerts = []
         detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
         delivery = DeliveryRoutes(
@@ -283,7 +283,7 @@ class LifecycleIncidentTests(TestCase):
 
     def test_reopened_singleton_starts_new_age_window(self) -> None:
         task = TaskFactory()
-        task.fail(reason="ProcessError: worker exited")
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
         detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
         delivery = DeliveryRoutes(overlay_name="t3-teatree")
         first = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
@@ -291,7 +291,7 @@ class LifecycleIncidentTests(TestCase):
         SelfImproveFiring.objects.filter(pk=firing.pk).update(first_fired_at=timezone.now() - timedelta(days=1))
         task.reopen()
         run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
-        task.fail(reason="ProcessError: worker exited")
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
 
         reopened = run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), delivery=delivery)
 
@@ -301,8 +301,8 @@ class LifecycleIncidentTests(TestCase):
     def test_lifecycle_detector_does_not_mix_overlay_owned_rows(self) -> None:
         own_task = TaskFactory(ticket=TicketFactory(overlay="t3-teatree"))
         foreign_task = TaskFactory(ticket=TicketFactory(overlay="foreign"))
-        own_task.fail(reason="ProcessError: worker exited")
-        foreign_task.fail(reason="ProcessError: worker exited")
+        own_task.fail(reason="ProcessError: worker exited", by_holder=True)
+        foreign_task.fail(reason="ProcessError: worker exited", by_holder=True)
         own_message = PendingChatInjection.record(
             channel="D1", slack_ts="222.1", text="Own question?", overlay="t3-teatree"
         )
@@ -322,7 +322,7 @@ class LifecycleIncidentTests(TestCase):
 
     def test_scoped_scan_does_not_resolve_another_overlays_incident(self) -> None:
         task = TaskFactory(ticket=TicketFactory(overlay="foreign"))
-        task.fail(reason="ProcessError: worker exited")
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
         foreign_report = LifecycleIncidentDetector(overlay_name="foreign").detect()[0]
         foreign_firing = record_firing(foreign_report, action=ActionRung.STATUSLINE)
 
@@ -337,7 +337,7 @@ class LifecycleIncidentTests(TestCase):
 
     def test_singleton_waits_are_configurable_without_premature_alert(self) -> None:
         task = TaskFactory()
-        task.fail(reason="ProcessError: worker exited")
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
         detector = LifecycleIncidentDetector(
             overlay_name="t3-teatree", owner_alert_after=timedelta(minutes=5), repair_after=timedelta(minutes=10)
         )
@@ -396,7 +396,7 @@ class LifecycleIncidentTests(TestCase):
 
     def test_explicit_detector_cannot_route_foreign_evidence_to_local_owner(self) -> None:
         task = TaskFactory(ticket=TicketFactory(overlay="foreign"))
-        task.fail(reason="ProcessError: worker exited")
+        task.fail(reason="ProcessError: worker exited", by_holder=True)
 
         with self.assertRaisesMessage(ImproperlyConfigured, "belongs to overlay"):
             run_tier(
@@ -411,7 +411,7 @@ class LifecycleIncidentTests(TestCase):
     def test_failed_repair_task_remains_visible_without_spawning_another_repair(self) -> None:
         repair_ticket = TicketFactory(overlay="t3-teatree", extra={"source": "self_improve"})
         repair_task = TaskFactory(ticket=repair_ticket)
-        repair_task.fail(reason="ProcessError: repair worker exited")
+        repair_task.fail(reason="ProcessError: repair worker exited", by_holder=True)
         detector = LifecycleIncidentDetector(overlay_name="t3-teatree")
         delivery = DeliveryRoutes(overlay_name="t3-teatree", owner_alert=lambda *_: True)
 

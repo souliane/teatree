@@ -29,6 +29,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.resource_pressure import (
     ResourcePressureScanner,
     _disk_probe_paths,
@@ -805,15 +807,15 @@ class CleanupPayloadTests(_ScannerHarness):
 
 
 class ResilienceTests(_ScannerHarness):
-    """A marker load failure can never crash the tick."""
+    """A marker load failure reaches the tick's error surface instead of reading as a quiet box."""
 
-    def test_marker_load_failure_returns_empty(self) -> None:
-        scanner = ResourcePressureScanner()
+    def test_a_marker_load_failure_reaches_the_tick_error_surface(self) -> None:
         with patch(
             "teatree.core.models.resource_pressure_marker.ResourcePressureMarker.load",
             side_effect=RuntimeError("db down"),
         ):
-            assert scanner.scan() == []
+            _, signals, error = _run_job(_ScannerJob(scanner=ResourcePressureScanner(), overlay=""))
+        assert (signals, error) == ([], "RuntimeError: db down")
 
 
 class MarkerSwallowTests(_ScannerHarness):

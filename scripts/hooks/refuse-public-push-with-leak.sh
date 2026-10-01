@@ -2,8 +2,8 @@
 # Pre-push hook: public-repo privacy gate (#685, #730).
 #
 # Refuses `git push` when the `origin` remote resolves to a PUBLIC
-# repository and the branch-vs-base diff OR the commit messages in the
-# push range fail `t3 tool privacy-scan` (a planted secret, an internal
+# repository and the patch OR the message of any commit in the push
+# range fails `t3 tool privacy-scan` (a planted secret, an internal
 # `/Users/`-`/home/` path, a private IP, an API token, an internal
 # hostname, or a configured banned term). Commit messages and trailers reach
 # public history just like file content, so they are scanned too (#703).
@@ -192,27 +192,48 @@ _remote_exclusion() {
   printf '%s' "--remotes=${remote_name}"
 }
 
+# Messages of the commits named by the `git log` args, scanned apart from any patch.
+# A message is published verbatim, never a diff, so the file path selects whole-text mode.
+# Stdin is closed: every caller sits in a `while read` loop the scanner would otherwise drain.
+_scan_messages_as_text() {
+  local msg rc=0
+  msg=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-msg.XXXXXX")
+  git log --format='%B' "$@" >"${msg}" 2>/dev/null || true
+  if grep -q '[^[:space:]]' "${msg}"; then
+    ${scan_cmd} "${msg}" </dev/null || rc=$?
+  fi
+  rm -f "${msg}"
+  return "${rc}"
+}
+
 # On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each
 # changed file within a commit — so the refusal names the exact commit + file a
 # finding lives in. Without this the finding's line number is only an offset into
 # a concatenated multi-commit blob, unlocatable in public history; an operator who
 # cannot find the reported finding learns to distrust (and bypass) the gate. Only
 # the RARE blocked path pays this per-commit cost: a clean push is decided by the
-# single whole-range scan and never enters here. Args are the `<sha> --not
-# <public-tips>` range; uses the globals ${scan_cmd}/${findings_code}. Returns 0 if
-# it attributed at least one finding, 1 if none (caller then prints the raw report).
+# whole-range message and patch scans and never enters here. Args are the pushed tip commit, then
+# the `<sha> --not <public-tips>` range; uses the globals ${scan_cmd}/${findings_code}.
+# Returns 0 if it attributed at least one finding, 1 if none (caller then prints the raw report).
 _attribute_findings() {
+  local tip="$1"
+  shift
   local printed=1
-  local sha f sub sub_rc
+  local sha where f sub sub_rc
   while read -r sha; do
     [ -n "${sha}" ] || continue
+    where="commit ${sha}"
+    # A fix-up at the tip leaves this commit's finding in public history all the same.
+    if [ -n "${tip}" ] && [ "${sha}" != "${tip}" ]; then
+      where="${where} (earlier than the pushed tip)"
+    fi
     # A finding that lives only in the commit MESSAGE (a Co-authored-by line, a
     # banned term in the subject) has no file, so scan the message on its own.
     sub=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-msg.XXXXXX")
     sub_rc=0
-    git show -s --format='%B' "${sha}" | ${scan_cmd} - >"${sub}" 2>&1 || sub_rc=$?
+    _scan_messages_as_text -1 "${sha}" >"${sub}" 2>&1 || sub_rc=$?
     if [ "${sub_rc}" -eq "${findings_code}" ]; then
-      echo "  commit ${sha} (commit message):"
+      echo "  ${where} (commit message):"
       sed 's/^/    /' "${sub}"
       printed=0
     fi
@@ -224,7 +245,7 @@ _attribute_findings() {
       sub_rc=0
       git show --format= --patch --cc "${sha}" -- "${f}" | ${scan_cmd} - >"${sub}" 2>&1 || sub_rc=$?
       if [ "${sub_rc}" -eq "${findings_code}" ]; then
-        echo "  commit ${sha} file ${f}:"
+        echo "  ${where} file ${f}:"
         sed 's/^/    /' "${sub}"
         printed=0
       fi
@@ -313,13 +334,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     new_commits+=("--not" "${public_tips[@]}")
   fi
 
-  # `--patch --cc` under an explicit `--format` emits each newly-public
-  # commit's message body and its patch with no commit header, so the
-  # author/committer emails below are judged only by the noreply guard and
-  # never by the scanner's generic email matcher. `--cc` keeps a merge's
-  # conflict resolutions — content in neither parent — in scope while
+  # The patches alone, with no commit header, so the author/committer emails
+  # below are judged only by the noreply guard and never by the scanner's
+  # generic email matcher. Messages are scanned apart: git puts no separator
+  # between one commit's last hunk and the next commit's subject. `--cc` keeps a
+  # merge's conflict resolutions — content in neither parent — in scope while
   # leaving the already-public content the merge carried over out of it.
-  content=$(git log --format='%B' --patch --cc "${new_commits[@]}" 2>/dev/null || true)
+  patches=$(git log --format= --patch --cc "${new_commits[@]}" 2>/dev/null || true)
 
   # Author / committer email is metadata `git diff` and `%B` never show,
   # yet it lands in public history forever. On a PUBLIC remote every
@@ -345,14 +366,17 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
   # Commit messages and trailers reach public history exactly like file
   # content does (a `Co-authored-by:` line carrying an internal/customer
-  # address is the canonical case), so they are scanned alongside the
+  # address is the canonical case), so they are scanned as well as the
   # patches rather than excluded the way `git diff` excludes them (#703).
-  [ -n "${content}" ] || continue
-
   report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-gate.XXXXXX")
-  scan_rc=0
-  printf '%s\n' "${content}" | ${scan_cmd} - >"${report}" 2>&1 || scan_rc=$?
-  if [ "${scan_rc}" -eq "${findings_code}" ]; then
+  message_rc=0
+  _scan_messages_as_text "${new_commits[@]}" >>"${report}" 2>&1 || message_rc=$?
+  patch_rc=0
+  if [ -n "${patches}" ]; then
+    printf '%s\n' "${patches}" | ${scan_cmd} - >>"${report}" 2>&1 || patch_rc=$?
+  fi
+  scan_rc=$((message_rc != 0 ? message_rc : patch_rc))
+  if [ "${message_rc}" -eq "${findings_code}" ] || [ "${patch_rc}" -eq "${findings_code}" ]; then
     echo "✗ refuse: push to ${target} carries privacy findings on '${local_ref}'."
     echo "  Findings by commit + file (locate each in the pushed history and scrub it):"
     # Attribute each finding to its commit + file so the operator can find it.
@@ -360,10 +384,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # scanner writes to stdout, captured via 2>&1) only if attribution found
     # nothing to pin — e.g. a merge combined-diff finding — so a finding is
     # never hidden behind an empty locatable list.
-    if ! _attribute_findings "${new_commits[@]}"; then
+    pushed_tip=$(git rev-parse --verify --quiet "${local_sha}^{commit}" 2>/dev/null || true)
+    if ! _attribute_findings "${pushed_tip}" "${new_commits[@]}"; then
       sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
     fi
-    echo "  Scrub the diff (generic placeholders) before pushing to a public repo."
+    echo "  Every commit this push publishes is scanned on its own — patch and message — never just the tip"
+    echo "  or the net diff, so a later commit that deletes or annotates a flagged line does not clear it."
+    echo "  Nothing was published. Cut a new branch from the remote's tip, re-create the unpushed commits on it"
+    echo "  with generic placeholders so the flagged value is in none of them, and push that branch."
+    echo "  A deliberate fake value (a test-fixture email) instead carries an inline 'privacy-scan:allow <reason>'"
+    echo "  marker on that same line, in the commit that introduces it."
     echo "  (public-repo privacy gate — see /t3:rules § Verify Repo Visibility Before Filing External Issues)"
     [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
     blocked=1

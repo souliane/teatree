@@ -26,8 +26,8 @@ from teatree.loops.live import LoopOwnerStatus, LoopStatusEntry, LoopStatusRepor
 
 _NEVER = "—"
 _REMEDIATION = (
-    "re-register each enabled loop's `/loop` via the `/t3:health` skill, or run `t3 loop claim` "
-    "in a Claude Code session to take ownership (force a one-off render with `t3 loops tick`)"
+    "the `t3 worker` drives every loop — check it with `t3 worker status`, start one with "
+    "`t3 worker ensure` (force one loop's tick by hand with `t3 loops tick --loop <name>`)"
 )
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600

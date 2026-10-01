@@ -191,7 +191,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.277
+          npm install -g @anthropic-ai/claude-code@2.1.283
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -311,13 +311,14 @@ jobs:
           fi
       # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
       # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
-      # red run still publishes it.
+      # red run still publishes it. The path is a GLOB: the loop renders one report
+      # per scenario (`eval-transcripts-<name>.html`), never an un-suffixed file.
       - name: Upload the per-trial transcript report (private)
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-pr-transcripts
-          path: ${{ runner.temp }}/eval-transcripts.html
+          path: ${{ runner.temp }}/eval-transcripts-*.html
           if-no-files-found: warn
 
   # EVAL-GATE: the single always-reporting merge gate. A conditionally-skipped job

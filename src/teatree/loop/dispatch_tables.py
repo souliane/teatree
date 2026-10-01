@@ -315,14 +315,11 @@ DUAL_DISPATCH: frozenset[str] = frozenset(
 MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     "ticket.completion_detected": ("mechanical", "ticket_completion"),
     "ticket.reopen_needed": ("mechanical", "ticket_reopen"),
-    # #998/#1074: a reviewer-role ticket's PENDING/CLAIMED reviewing task
-    # can be orphaned when the underlying PR is merged/closed externally
-    # before the slot processes it. The scanner emits this signal ONLY
-    # after ``get_pr_open_state`` confirmed the PR is genuinely MERGED or
-    # CLOSED — never on mere absence from the reviewer-assignment scan
-    # (#1074: a Slack-review-request MR with no forge reviewer assignment
-    # is permanently absent yet fully OPEN). The mechanical handler then
-    # completes the task so ``pending-spawn`` stops surfacing it.
+    # #998/#1074/#1431/#4901: a reviewer-role ticket's PENDING reviewing task
+    # is owed no review once ``get_pr_open_state`` confirms the PR MERGED or
+    # CLOSED, or the ticket is settled in a state that admits no review —
+    # never on mere absence from the reviewer-assignment scan (#1074). The
+    # handler closes PENDING tasks only; a CLAIMED run belongs to the claim sweeps.
     "reviewer_pr.task_orphaned": ("mechanical", "reviewer_task_orphaned"),
     # #1321: ``list_review_requested_prs`` can surface an MR the user
     # authored (under any of their configured identities). Own MRs must

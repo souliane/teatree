@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from teatree.core.backend_protocols import CIService
+from teatree.core.backend_protocols import CIService, PipelineRead
 from teatree.utils.coverage_floor import measure_coverage
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -105,6 +105,14 @@ def _require_ci() -> tuple[CIService, str]:
     return ci, project
 
 
+def _require_readable(read: PipelineRead) -> tuple[str, ...]:
+    """The read's findings, or exit 1 naming why the pipeline was never read."""
+    if not read.ok:
+        typer.echo(f"UNKNOWN  {read.unreadable_reason}. Nothing was read — this is not a clean result.", err=True)
+        raise typer.Exit(code=1)
+    return read.findings
+
+
 @ci_app.command()
 def cancel(
     branch: str = typer.Argument("", help="Branch name (default: current branch)"),
@@ -148,7 +156,7 @@ def fetch_errors(
     """Fetch error logs from the latest CI pipeline."""
     ci, project = _require_ci()
     ref = branch or CICommands.current_git_branch()
-    errors = ci.fetch_pipeline_errors(project=project, ref=ref)
+    errors = _require_readable(ci.fetch_pipeline_errors(project=project, ref=ref))
     if errors:
         for error in errors:
             typer.echo(error)
@@ -164,7 +172,7 @@ def fetch_failed_tests(
     """Extract failed test IDs from the latest CI pipeline."""
     ci, project = _require_ci()
     ref = branch or CICommands.current_git_branch()
-    failed = ci.fetch_failed_tests(project=project, ref=ref)
+    failed = _require_readable(ci.fetch_failed_tests(project=project, ref=ref))
     if failed:
         typer.echo(f"Failed tests ({len(failed)}):")
         for test_id in failed:

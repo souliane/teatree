@@ -238,11 +238,8 @@ class GitHubSyncBackend(SyncBackend):
                 "50",
             ],
             env=env,
-            expected_codes=None,
             timeout=30,
         )
-        if out.returncode != 0:
-            return []
 
         prs: list[RawAPIDict] = json.loads(out.stdout)
         return [

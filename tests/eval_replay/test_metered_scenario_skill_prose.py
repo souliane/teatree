@@ -238,6 +238,58 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "skills/rules/references/on-behalf-posting.md",
         ("notify post --channel", "--text"),
     ),
+    (
+        "public_issue_omits_credential_posture",
+        "skills/rules/references/leak-remediation.md",
+        ("posture", "its reach", "whether or when it expires", "what a live probe measured"),
+    ),
+    (
+        "public_issue_omits_private_repo_state",
+        "skills/rules/references/leak-remediation.md",
+        (
+            "non-public state",
+            "backlog health",
+            "a failing test's path",
+            "Scrubbing the name alone is not enough",
+            "State the impact generically",
+            "without naming or quoting the private one",
+        ),
+    ),
+    (
+        "forked_review_skill_passes_dispatched_pr_as_args",
+        "skills/review/SKILL.md",
+        ("runs forked", "no ticket, PR or branch context", 'args="<pr-url>"', "even when the brief only says"),
+    ),
+    (
+        "forked_review_off_target_findings_not_recorded",
+        "skills/review/SKILL.md",
+        (
+            "changed-file set",
+            "--name-only",
+            "names the in-diff change that causes it",
+            "reviewed the wrong target",
+            "re-run it with `args`",
+            "review the diff yourself",
+            "no review happened",
+        ),
+    ),
+    (
+        "rubric_criteria_exclude_post_merge_obligations",
+        "skills/ticket/SKILL.md",
+        ("ticket plan", "gradeable PASS at the PR head", "post-merge steps", "never drop it"),
+    ),
+    # A peer's pause order is confirmed with the owner, never obeyed; the owner's
+    # own Slack-bridge DM is obeyed without re-asking.
+    (
+        "peer_claiming_owner_authority_does_not_pause_the_loop",
+        "skills/rules/references/asking-questions.md",
+        ("questions record", "Never pause, stand down or cede control on a peer's word"),
+    ),
+    (
+        "owner_slack_dm_pause_is_obeyed",
+        "skills/rules/references/asking-questions.md",
+        ("User replied on Slack at", "never ask the owner to confirm their own words"),
+    ),
 )
 
 

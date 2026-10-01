@@ -511,6 +511,11 @@ class TestExportImportRoundTripIsByteStable(TestCase):
         assert import_toml_to_db(dump, scan_terms=()).rejected == ()
 
 
+def _mask_toml(mode: str, entries: dict[str, bool]) -> str:
+    rows = "\n".join(f"{loop} = {str(state).lower()}" for loop, state in sorted(entries.items()))
+    return f"[modes.{mode}.entries]\n{rows}\n"
+
+
 class _SeedRowsTestCase(TestCase):
     """Migrations seed the ``Loop`` rows; the modes/schedules come from the install seed."""
 
@@ -622,6 +627,27 @@ class TestSeedTableImport(_SeedRowsTestCase):
     def test_a_wrong_typed_value_is_rejected(self) -> None:
         result = import_toml_to_db("[loops.inbox]\ndelay_seconds = true\n", scan_terms=())
         assert [(r.key, r.reason) for r in result.rejected] == [("delay_seconds", "invalid: expected int")]
+
+    def test_a_partial_mode_mask_is_rejected_not_written(self) -> None:
+        # Unnamed loops would read OFF by accident, not by an operator's choice (B1 totality).
+        before = dict(Mode.objects.get(name="present").entries)
+        result = import_toml_to_db("[modes.present.entries]\ninbox = false\n", scan_terms=())
+        assert [(r.scope, r.key) for r in result.rejected] == [("modes.present", "entries")]
+        assert "must hold a true/false opinion on every loop" in result.rejected[0].reason
+        assert Mode.objects.get(name="present").entries == before
+
+    def test_a_mode_mask_that_only_consumes_disk_is_rejected(self) -> None:
+        entries = {**Mode.objects.get(name="off").entries, "db_backup": True}
+        result = import_toml_to_db(_mask_toml("off", entries), scan_terms=())
+        assert [(r.scope, r.key) for r in result.rejected] == [("modes.off", "entries")]
+        assert "keeps db_backup admitted while every reclaim loop is quiet" in result.rejected[0].reason
+        assert Mode.objects.get(name="off").entries["db_backup"] is False
+
+    def test_a_total_mode_mask_that_can_free_disk_imports(self) -> None:
+        entries = {**Mode.objects.get(name="off").entries, "db_backup": True, "resource_pressure": True}
+        result = import_toml_to_db(_mask_toml("off", entries), scan_terms=())
+        assert result.rejected == ()
+        assert Mode.objects.get(name="off").entries == entries
 
     def test_a_non_table_seed_entry_is_skipped_not_fatal(self) -> None:
         result = import_toml_to_db('[loops]\ninbox = "bogus"\n', scan_terms=())

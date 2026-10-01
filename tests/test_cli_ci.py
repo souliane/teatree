@@ -15,6 +15,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.cli import app
 from teatree.cli.ci import CICommands
+from teatree.core.backend_protocols import PipelineRead
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 runner = CliRunner()
@@ -272,7 +273,7 @@ class TestCICommands:
     def test_fetch_errors_with_errors(self):
         """Fetch-errors shows error logs."""
         mock_ci = MagicMock()
-        mock_ci.fetch_pipeline_errors.return_value = ["Error in job build", "Error in job test"]
+        mock_ci.fetch_pipeline_errors.return_value = PipelineRead(findings=("Error in job build", "Error in job test"))
         with (
             patch.object(CICommands, "get_ci_service", return_value=mock_ci),
             patch.object(CICommands, "get_ci_project", return_value="org/repo"),
@@ -285,7 +286,7 @@ class TestCICommands:
     def test_fetch_errors_no_errors(self):
         """Fetch-errors shows clean message."""
         mock_ci = MagicMock()
-        mock_ci.fetch_pipeline_errors.return_value = []
+        mock_ci.fetch_pipeline_errors.return_value = PipelineRead()
         with (
             patch.object(CICommands, "get_ci_service", return_value=mock_ci),
             patch.object(CICommands, "get_ci_project", return_value="org/repo"),
@@ -298,7 +299,7 @@ class TestCICommands:
     def test_fetch_failed_tests_with_failures(self):
         """Fetch-failed-tests shows failed test IDs."""
         mock_ci = MagicMock()
-        mock_ci.fetch_failed_tests.return_value = ["test_foo", "test_bar"]
+        mock_ci.fetch_failed_tests.return_value = PipelineRead(findings=("test_foo", "test_bar"))
         with (
             patch.object(CICommands, "get_ci_service", return_value=mock_ci),
             patch.object(CICommands, "get_ci_project", return_value="org/repo"),
@@ -311,7 +312,7 @@ class TestCICommands:
 
     def test_fetch_failed_tests_none(self):
         mock_ci = MagicMock()
-        mock_ci.fetch_failed_tests.return_value = []
+        mock_ci.fetch_failed_tests.return_value = PipelineRead()
         with (
             patch.object(CICommands, "get_ci_service", return_value=mock_ci),
             patch.object(CICommands, "get_ci_project", return_value="org/repo"),
@@ -375,6 +376,54 @@ class TestCICommands:
         ):
             result = runner.invoke(app, ["ci", "quality-check"])
             assert result.exit_code == 1
+
+
+class TestFetchUnreadablePipeline:
+    """A pipeline the read never reached is UNKNOWN and exits 1 — never "none found"."""
+
+    def _invoke(self, command: str, client: MagicMock):
+        with (
+            patch.object(CICommands, "get_ci_service", return_value=GitLabCIService(client=client)),
+            patch.object(CICommands, "get_ci_project", return_value="org/repo"),
+            patch.object(CICommands, "current_git_branch", return_value="main"),
+        ):
+            return runner.invoke(app, ["ci", command])
+
+    def _client(self, *, resolves: bool = True, pipelines: list[dict] | None = None) -> MagicMock:
+        client = MagicMock(spec=gitlab_api_mod.GitLabAPI)
+        client.resolve_project.return_value = (
+            gitlab_api_mod.ProjectInfo(project_id=42, path_with_namespace="org/repo", short_name="repo")
+            if resolves
+            else None
+        )
+        client.get_json.return_value = [] if pipelines is None else pipelines
+        return client
+
+    @pytest.mark.parametrize("command", ["fetch-failed-tests", "fetch-errors"])
+    def test_an_unresolvable_project_is_unknown(self, command: str) -> None:
+        result = self._invoke(command, self._client(resolves=False))
+
+        assert result.exit_code == 1
+        assert "could not resolve project: org/repo" in result.stderr
+        assert "No failed tests" not in result.output
+        assert "No errors found" not in result.output
+
+    @pytest.mark.parametrize("command", ["fetch-failed-tests", "fetch-errors"])
+    def test_a_ref_with_no_pipeline_is_unknown(self, command: str) -> None:
+        result = self._invoke(command, self._client(pipelines=[]))
+
+        assert result.exit_code == 1
+        assert "no pipeline found for ref: main" in result.stderr
+
+    def test_a_pipeline_with_no_test_report_is_unknown(self) -> None:
+        client = self._client()
+        client.get_json.side_effect = [[{"id": 500}], {"total_count": 0, "test_suites": []}]
+
+        result = self._invoke("fetch-failed-tests", client)
+
+        assert result.exit_code == 1
+        assert "pipeline 500 published no test report" in result.stderr
+        assert "No failed tests" not in result.output
 
 
 # ── ci coverage ──────────────────────────────────────────────────────

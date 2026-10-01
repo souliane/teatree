@@ -1,6 +1,7 @@
 """Push failure types and classification, separate from push orchestration."""
 
 import os
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -24,14 +25,15 @@ _REMOTE_CONTACT_PREFIXES: tuple[str, ...] = ("To ", "remote:")
 _GIT_PUSH_ABORTED = "error: failed to push some refs"
 _GATE_REFUSAL_RC = 1
 _GIT_OUTER_PUSH_NOISE: tuple[str, ...] = ("error: failed to push some refs", "hint:", "To ")
-#: A bare "ABORTED" also matches a failing test NAMED for this feature, which would
-#: report a real refusal as "nothing was rejected" — so match the emitted line.
-_GATE_ABORT_MARKERS: tuple[str, ...] = (
-    "push-gate: ABORTED",
-    "crashed while running",
-    "replacing crashed worker",
-    "Cannot allocate memory",
-    "MemoryError",
+#: ``bash: line 3: fork: `` / ``caused by: `` — a label never holds ``:``, a bracket or a quote, so never a node id.
+_EMITTER_LABELS = r"(?:-?[\w./()][\w./()-]*(?: [\w./()-]+)*: )*"
+#: Every pattern starts at the stripped line's TRUE start, so a test report line naming the marker never matches.
+_GATE_ABORT_LINES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^=== push-gate: ABORTED\b"),  # utils/push_gate_lock.py
+    re.compile(r"^worker '[^']+' crashed while running '"),  # xdist dsession
+    re.compile(r"^replacing crashed worker \S+$"),  # xdist dsession
+    re.compile(rf"^(?:E\s+)?{_EMITTER_LABELS}(?:\[Errno 12\] )?Cannot allocate memory\b"),  # OSError, bash, git, prek
+    re.compile(r"^(?:E\s+)?MemoryError\b"),  # a traceback's last line
 )
 
 
@@ -186,8 +188,8 @@ class GitPushError:
 
     @property
     def gate_aborted(self) -> bool:
-        lowered = self.stderr.lower()
-        marker_found = any(marker.lower() in lowered for marker in _GATE_ABORT_MARKERS)
+        lines = [line.strip() for line in self.stderr.splitlines()]
+        marker_found = any(pattern.search(line) for pattern in _GATE_ABORT_LINES for line in lines)
         record_interrupted = self.gate_run is not None and self.gate_run.was_interrupted
         oom_killed = self.oom_kill_delta is not None and self.oom_kill_delta > 0
         return self.refused_by_a_gate and (not self.gate_output or record_interrupted or oom_killed or marker_found)

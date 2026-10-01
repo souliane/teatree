@@ -325,3 +325,58 @@ class TestGoneRemoteWorktreePrune(TestCase):
 
         assert any("Removed gone-remote worktree (branch kept): feature" in line for line in lines), lines
         assert not wt_path.exists()
+
+
+class TestGoneBranchPrune(TestCase):
+    """The ``[gone]`` pass force-deletes only what the shared deletion predicate proves landed (#4754).
+
+    ``[gone]`` says the upstream ref was deleted, not that the branch's commits reached the
+    target: a branch pushed once, then committed on locally, reads ``[gone]`` the moment its
+    remote is deleted, and ``git branch -D`` takes the unpushed commits with it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+
+    def _gone_branch(self, *, squash_into_main: bool, unpushed_commit: bool) -> Path:
+        work = init_pushed_main(self.tmp_path)
+        _run_git("checkout", "-q", "-b", "feature", "main", cwd=work)
+        (work / "feat.txt").write_text("v1\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=work)
+        _run_git("commit", "-q", "-m", "feat: add the feature", cwd=work)
+        _run_git("push", "-q", "-u", "origin", "feature", cwd=work)
+        if unpushed_commit:
+            (work / "later.txt").write_text("work that never left this clone\n", encoding="utf-8")
+            _run_git("add", "-A", cwd=work)
+            _run_git("commit", "-q", "-m", "feat: follow-up never pushed", cwd=work)
+        _run_git("checkout", "-q", "main", cwd=work)
+        if squash_into_main:
+            _run_git("merge", "-q", "--squash", "feature", cwd=work)
+            _run_git("commit", "-q", "-m", "feat: the feature (#7)", cwd=work)
+            _run_git("push", "-q", "origin", "main", cwd=work)
+        _run_git("push", "-q", "origin", "--delete", "feature", cwd=work)
+        return work
+
+    def _branches(self, work: Path) -> str:
+        return subprocess.run(
+            [_GIT, "-C", str(work), "branch", "--no-color"], check=True, capture_output=True, text=True
+        ).stdout
+
+    def test_a_gone_branch_carrying_unpushed_commits_is_kept(self) -> None:
+        work = self._gone_branch(squash_into_main=False, unpushed_commit=True)
+
+        with forge_reporting():
+            lines = prune_branches(str(work))
+
+        assert "Pruned gone branch: feature" not in lines, lines
+        assert "feature" in self._branches(work), "unpushed commits must survive the gone-branch pass"
+        assert any("'feature'" in line and "kept" in line for line in lines), lines
+
+    def test_a_gone_branch_whose_content_landed_is_still_pruned(self) -> None:
+        work = self._gone_branch(squash_into_main=True, unpushed_commit=False)
+
+        with forge_reporting():
+            prune_branches(str(work))
+
+        assert "feature" not in self._branches(work)

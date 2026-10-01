@@ -266,13 +266,16 @@ async def _task_complete(task_id: int, *, result_artifact_path: str = "") -> dic
 
 
 async def _task_fail(task_id: int, reason: str = "") -> dict[str, Any]:
-    """Fail a loop task — clears the claim without advancing the ticket FSM."""
+    """Fail a loop task as a third party, without advancing the ticket FSM — see ``task_claim.fail``."""
 
     def _fail() -> dict[str, Any]:
         task = Task.objects.get(pk=task_id)
         # An agent that names nothing still leaves a cause behind (#3957) — the board
         # must never show a FAILED task whose reason is blank.
-        task.fail(reason=reason.strip() or f"{AGENT_ABANDONED_PREFIX}agent failed the task without giving a reason")
+        task.fail(
+            reason=reason.strip() or f"{AGENT_ABANDONED_PREFIX}agent failed the task without giving a reason",
+            by_holder=False,
+        )
         return {"ok": True, "task_id": task_id, "status": task.status, "failure_kind": task.failure_kind}
 
     return await sync_to_async(_fail, thread_sensitive=True)()
@@ -441,9 +444,10 @@ _TOOLS: tuple[_WriteTool, ...] = (
         _task_fail,
         _DESTRUCTIVE,
         "teatree.core.models.Task.fail",
-        "- task_fail(task_id, reason): fail a loop task — clears the claim without advancing "
-        "the ticket FSM. Always pass a `reason` naming WHY it failed; it is what the task "
-        "listing and the ticket card show, and an omitted reason is recorded as "
+        "- task_fail(task_id, reason): fail a loop task without advancing the ticket FSM; its "
+        "checkout claim is released only once the holder is confirmed dead, otherwise the "
+        "holder's own unwind releases it. Always pass a `reason` naming WHY it failed; it is "
+        "what the task listing and the ticket card show, and an omitted reason is recorded as "
         "agent_abandoned rather than left blank.",
     ),
     _WriteTool(

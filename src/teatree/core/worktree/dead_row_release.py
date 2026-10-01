@@ -34,7 +34,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from teatree.core.cleanup.cleanup import _resolve_worktree_path
 from teatree.core.cleanup.reap_pre_gates import reap_pre_gate
 from teatree.core.models import Worktree
 from teatree.core.worktree.broken_checkout import (
@@ -43,6 +42,7 @@ from teatree.core.worktree.broken_checkout import (
     RemoteRefresh,
     classify_broken_checkout,
 )
+from teatree.core.worktree.worktree_location import resolve_worktree_path
 
 
 class DeadRowDisposition(StrEnum):
@@ -119,7 +119,7 @@ def _absent_directory_verdict(row: Worktree, *, workspace: Path) -> BrokenChecko
     branch. Provisioning re-materialises the checkout on the next pass, which is the
     remedy the reason names.
     """
-    path = Path(_resolve_worktree_path(workspace, row))
+    path = Path(resolve_worktree_path(workspace, row))
     if path.is_dir():
         return None
     return BrokenCheckoutVerdict(
@@ -141,7 +141,7 @@ def _verdict_for(row: Worktree, *, workspace: Path, checkout: BrokenCheckoutVerd
     return DeadRowVerdict(
         worktree_pk=int(row.pk),
         branch=row.branch,
-        path=str(_resolve_worktree_path(workspace, row)),
+        path=str(resolve_worktree_path(workspace, row)),
         disposition=DeadRowDisposition.PROTECTED if gate else _FROM_CHECKOUT_STATE[checkout.state],
         reason=gate.reason if gate else checkout.reason,
     )

@@ -56,6 +56,7 @@ from teatree.core.config_interchange.seed_tables import (
     classify_seed_rows,
     emit_seed_tables,
     holds_value,
+    mask_refusals,
     unseeded_entries,
     write_seed_field,
 )
@@ -539,7 +540,8 @@ def _file_seed_dispositions(
 
     An entry the shipped file carries can still have no DB row on a box that never ran the
     install seed, so a write onto a missing row is rejected rather than left to raise
-    mid-import — the whole import is refused and the operator is told to seed first.
+    mid-import — the whole import is refused and the operator is told to seed first. A mode
+    mask ``Mode.clean()`` would refuse is rejected the same way.
     """
     writes: list[SeedFieldDisposition] = []
     for entry in classify_seed_rows(doc):
@@ -552,6 +554,11 @@ def _file_seed_dispositions(
         else:
             writes.append(entry)
     unseeded = unseeded_entries(writes)
+    rejected.extend(
+        RejectedRow(entry.scope, entry.field, reason)
+        for entry, reason in mask_refusals(writes)
+        if (entry.table, entry.name) not in unseeded
+    )
     if not unseeded:
         return writes
     rejected.extend(

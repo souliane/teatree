@@ -1,1 +1,1 @@
-0120_pending_article_suggestion_kind
+0121_pending_article_suggestion_kind

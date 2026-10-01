@@ -15,7 +15,6 @@ Exits 0 silently for passthrough.
 
 import argparse
 import contextlib
-import hashlib
 import json
 import os
 import re
@@ -164,6 +163,8 @@ from hooks.scripts.protect_default_branch_guard import handle_protect_default_br
 from hooks.scripts.question_gates import (
     FENCED_CODE_RE,
     STRUCTURED_QUESTION_BLOCK,
+    _first_question,
+    _options_hash,
     denied_question_dedupe_key,
     denied_question_row_marker,
     handle_warn_batched_questions,
@@ -199,6 +200,7 @@ from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_
 from hooks.scripts.skill_path_probe import is_file_safe
 from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
 from hooks.scripts.standing_goal_stop_gate import handle_standing_goal_stop
+from hooks.scripts.standing_grant_ask_gate import handle_block_standing_grant_ask
 from hooks.scripts.state_files import append_line, read_lines
 from hooks.scripts.stop_snapshot_slot import handle_stop_snapshot_slot
 from hooks.scripts.stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
@@ -4398,18 +4400,6 @@ def _run_id(data: dict) -> str:
     return ""
 
 
-def _options_hash(options: list[dict]) -> str:
-    """SHA-256 of canonicalized options — the stable identity a re-ask is matched on."""
-    blob = json.dumps(options, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
-def _first_question(data: dict) -> dict:
-    questions = data.get("tool_input", {}).get("questions", []) or []
-    first = questions[0] if isinstance(questions, list) and questions else {}
-    return first if isinstance(first, dict) else {}
-
-
 def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> tuple[int | None, str]:
     """Record the loop-driven deny arm's durable ``DeferredQuestion`` (#1174, #4673).
 
@@ -5024,6 +5014,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_undelegated_investigation,
         handle_enforce_orchestrator_investigation_boundary,
         handle_warn_merged_detection_probe,
+        handle_block_standing_grant_ask,
         handle_warn_batched_questions,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,

@@ -15,7 +15,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import Worktree
+from teatree.core.models import Task, Worktree
 from teatree.core.worktree.occupancy import (
     WorktreeOccupancyLostError,
     WorktreeOccupiedError,
@@ -217,6 +217,59 @@ class RefuseIfOccupiedTests(_OccupancyCase):
         acquire(self.worktree, holder="task:7", holder_session="s7", lease_seconds=60)
         Worktree.objects.filter(pk=self.worktree.pk).update(occupancy_expires_at=timezone.now() - timedelta(seconds=1))
         refuse_if_ticket_checkout_occupied(self.ticket)
+
+
+class StaleFinishedHolderTests(_OccupancyCase):
+    """A claim named by a Task that already finished self-heals rather than refuses (#4867).
+
+    The two REAL terminal-status writers (``complete_claimed``, ``Task.fail``) now
+    release inline; this covers every row that bypasses them (an out-of-process
+    writer, a pre-#4867 row) via the self-heal in ``occupy_ticket_checkout`` and
+    ``refuse_if_ticket_checkout_occupied``. Only a DEFINITIVE terminal ``Task.status``
+    read triggers it — a live holder's claim must never be touched.
+    """
+
+    def test_occupy_ticket_checkout_self_heals_a_finished_holder(self) -> None:
+        finished = TaskFactory(status=Task.Status.COMPLETED)
+        acquire(self.worktree, holder=task_holder_id(finished), holder_session="s1")
+        with occupy_ticket_checkout(self.ticket, holder="task:2", holder_session="s2") as path:
+            assert path == str(self.checkout)
+        assert occupancy_holder(self.fresh()) is None
+
+    def test_occupy_ticket_checkout_still_refuses_a_live_holder(self) -> None:
+        live = TaskFactory(status=Task.Status.PENDING)
+        acquire(self.worktree, holder=task_holder_id(live), holder_session="s1")
+        with (
+            pytest.raises(WorktreeOccupiedError),
+            occupy_ticket_checkout(self.ticket, holder="task:2", holder_session="s2"),
+        ):
+            pass
+        held = occupancy_holder(self.fresh())
+        assert held is not None
+        assert held.holder == task_holder_id(live)
+
+    def test_refuse_if_occupied_self_heals_a_finished_holder(self) -> None:
+        finished = TaskFactory(status=Task.Status.FAILED)
+        acquire(self.worktree, holder=task_holder_id(finished), holder_session="s1")
+        refuse_if_ticket_checkout_occupied(self.ticket)
+        assert occupancy_holder(self.fresh()) is None
+
+    def test_refuse_if_occupied_still_refuses_a_live_holder(self) -> None:
+        live = TaskFactory(status=Task.Status.CLAIMED)
+        acquire(self.worktree, holder=task_holder_id(live), holder_session="s1")
+        with pytest.raises(WorktreeOccupiedError, match=task_holder_id(live)):
+            refuse_if_ticket_checkout_occupied(self.ticket)
+        held = occupancy_holder(self.fresh())
+        assert held is not None
+        assert held.holder == task_holder_id(live)
+
+    def test_a_non_task_holder_is_never_self_healed(self) -> None:
+        acquire(self.worktree, holder="operator:someone", holder_session="s1")
+        with pytest.raises(WorktreeOccupiedError):
+            refuse_if_ticket_checkout_occupied(self.ticket)
+        held = occupancy_holder(self.fresh())
+        assert held is not None
+        assert held.holder == "operator:someone"
 
 
 class HeldWorktreeReportTests(_OccupancyCase):

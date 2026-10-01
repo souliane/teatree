@@ -12,10 +12,13 @@ is KEEP, and a database copy is exactly the artifact where a wrong delete is unr
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import TestCase
 
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.stale_control_db_questions import MARKER, StaleControlDbQuestionScanner
 
 
@@ -63,9 +66,18 @@ class TestTheAskListsWhatItFoundAndDeletesNothing(TestCase):
         assert StaleControlDbQuestionScanner(artifacts=list).scan() == []
         assert DeferredQuestion.objects.count() == 0
 
-    def test_a_failing_probe_files_nothing_rather_than_crashing_the_tick(self) -> None:
+    def test_a_failing_probe_files_nothing_and_reaches_the_tick_error_surface(self) -> None:
         def boom() -> list[Path]:
             msg = "the data dir cannot be walked"
             raise OSError(msg)
 
-        assert StaleControlDbQuestionScanner(artifacts=boom).scan() == []
+        _, signals, error = _run_job(_ScannerJob(scanner=StaleControlDbQuestionScanner(artifacts=boom), overlay=""))
+
+        assert (signals, error) == ([], "OSError: the data dir cannot be walked")
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_a_failed_question_write_reaches_the_tick_error_surface(self) -> None:
+        scanner = self._scanner({"db.sqlite3.precorrupt-1": 16})
+        with patch.object(DeferredQuestion, "record", side_effect=RuntimeError("locked")):
+            _, signals, error = _run_job(_ScannerJob(scanner=scanner, overlay=""))
+        assert (signals, error) == ([], "RuntimeError: locked")

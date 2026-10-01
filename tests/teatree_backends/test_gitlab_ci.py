@@ -6,6 +6,7 @@ import pytest
 
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.ci import GitLabCIService, JobTrace, _extract_error_tail
+from teatree.core.backend_protocols import PipelineRead
 
 
 def _make_client(*, project: ProjectInfo | None = None) -> tuple[GitLabAPI, MagicMock]:
@@ -62,17 +63,53 @@ def test_fetch_failed_tests_extracts_from_test_report() -> None:
 
     result = service.fetch_failed_tests(project="org/repo", ref="main")
 
-    assert result == ["tests.test_b::test_broken"]
+    assert result == PipelineRead(findings=("tests.test_b::test_broken",))
 
 
-def test_fetch_failed_tests_returns_empty_for_no_pipeline() -> None:
+def test_fetch_failed_tests_counts_an_errored_case_as_failed() -> None:
+    client, mock = _make_client(project=_project())
+    mock.get_json.side_effect = [
+        [{"id": 500}],
+        {"test_suites": [{"test_cases": [{"status": "error", "classname": "tests.test_c", "name": "test_setup"}]}]},
+    ]
+    service = GitLabCIService(client=client)
+
+    result = service.fetch_failed_tests(project="org/repo", ref="main")
+
+    assert result == PipelineRead(findings=("tests.test_c::test_setup",))
+
+
+def test_fetch_failed_tests_is_unreadable_for_no_pipeline() -> None:
     client, mock = _make_client(project=_project())
     mock.get_json.return_value = []
     service = GitLabCIService(client=client)
 
     result = service.fetch_failed_tests(project="org/repo", ref="main")
 
-    assert result == []
+    assert result == PipelineRead(unreadable_reason="no pipeline found for ref: main")
+
+
+def test_fetch_failed_tests_is_unreadable_when_the_pipeline_published_no_test_report() -> None:
+    client, mock = _make_client(project=_project())
+    mock.get_json.side_effect = [[{"id": 500}], {"total_count": 0, "test_suites": []}]
+    service = GitLabCIService(client=client)
+
+    result = service.fetch_failed_tests(project="org/repo", ref="main")
+
+    assert result == PipelineRead(unreadable_reason="pipeline 500 published no test report")
+
+
+def test_fetch_failed_tests_reads_a_green_report_as_clean() -> None:
+    client, mock = _make_client(project=_project())
+    mock.get_json.side_effect = [
+        [{"id": 500}],
+        {"test_suites": [{"test_cases": [{"status": "success", "name": "test_ok"}]}]},
+    ]
+    service = GitLabCIService(client=client)
+
+    result = service.fetch_failed_tests(project="org/repo", ref="main")
+
+    assert result == PipelineRead()
 
 
 def test_fetch_pipeline_errors_extracts_from_failed_jobs() -> None:
@@ -88,8 +125,8 @@ def test_fetch_pipeline_errors_extracts_from_failed_jobs() -> None:
     ):
         result = service.fetch_pipeline_errors(project="org/repo", ref="main")
 
-    assert len(result) == 1
-    assert "test" in result[0]
+    assert len(result.findings) == 1
+    assert "test" in result.findings[0]
 
 
 def test_trigger_pipeline_posts_to_api() -> None:
@@ -149,23 +186,23 @@ def test_extract_error_tail_truncates_at_max_lines() -> None:
     assert result.count("\n") == 2  # exactly 3 lines
 
 
-def test_fetch_pipeline_errors_returns_message_for_unknown_project() -> None:
+def test_fetch_pipeline_errors_is_unreadable_for_unknown_project() -> None:
     client, _ = _make_client()
     service = GitLabCIService(client=client)
 
     result = service.fetch_pipeline_errors(project="unknown/repo", ref="main")
 
-    assert result == ["Could not resolve project: unknown/repo"]
+    assert result == PipelineRead(unreadable_reason="could not resolve project: unknown/repo")
 
 
-def test_fetch_pipeline_errors_returns_message_for_no_pipeline() -> None:
+def test_fetch_pipeline_errors_is_unreadable_for_no_pipeline() -> None:
     client, mock = _make_client(project=_project())
     mock.get_json.return_value = []  # empty pipeline list
     service = GitLabCIService(client=client)
 
     result = service.fetch_pipeline_errors(project="org/repo", ref="main")
 
-    assert result == ["No pipeline found for ref: main"]
+    assert result == PipelineRead(unreadable_reason="no pipeline found for ref: main")
 
 
 def test_latest_pipeline_url_encodes_ref_with_plus() -> None:
@@ -200,7 +237,7 @@ def test_fetch_pipeline_errors_returns_empty_when_no_jobs() -> None:
 
     result = service.fetch_pipeline_errors(project="org/repo", ref="main")
 
-    assert result == []
+    assert result == PipelineRead()
 
 
 def test_fetch_pipeline_errors_reports_a_failed_job_whose_trace_is_unreadable() -> None:
@@ -213,19 +250,19 @@ def test_fetch_pipeline_errors_reports_a_failed_job_whose_trace_is_unreadable() 
     with patch.object(service := GitLabCIService(client=client), "_get_job_trace", return_value=unreadable):
         result = service.fetch_pipeline_errors(project="org/repo", ref="main")
 
-    assert result == ["Job test failed: trace unreadable (HTTP 403)"]
+    assert result == PipelineRead(findings=("Job test failed: trace unreadable (HTTP 403)",))
 
 
-def test_fetch_failed_tests_returns_empty_for_unknown_project() -> None:
+def test_fetch_failed_tests_is_unreadable_for_unknown_project() -> None:
     client, _ = _make_client()
     service = GitLabCIService(client=client)
 
     result = service.fetch_failed_tests(project="unknown/repo", ref="main")
 
-    assert result == []
+    assert result == PipelineRead(unreadable_reason="could not resolve project: unknown/repo")
 
 
-def test_fetch_failed_tests_returns_empty_when_report_not_a_dict() -> None:
+def test_fetch_failed_tests_is_unreadable_when_report_not_a_dict() -> None:
     client, mock = _make_client(project=_project())
     mock.get_json.side_effect = [
         [{"id": 500}],  # latest pipeline
@@ -235,7 +272,7 @@ def test_fetch_failed_tests_returns_empty_when_report_not_a_dict() -> None:
 
     result = service.fetch_failed_tests(project="org/repo", ref="main")
 
-    assert result == []
+    assert result == PipelineRead(unreadable_reason="pipeline 500's test report is not a JSON object")
 
 
 def test_fetch_failed_tests_handles_non_dict_suite_and_case() -> None:
@@ -258,7 +295,7 @@ def test_fetch_failed_tests_handles_non_dict_suite_and_case() -> None:
 
     result = service.fetch_failed_tests(project="org/repo", ref="main")
 
-    assert result == ["test_only_name"]
+    assert result == PipelineRead(findings=("test_only_name",))
 
 
 def test_trigger_pipeline_returns_error_for_unknown_project() -> None:
@@ -414,5 +451,5 @@ def test_fetch_pipeline_errors_paginates_jobs_beyond_first_page() -> None:
         with patch.object(service, "_get_job_trace", return_value=JobTrace(text="FAILED in test_foo")):
             result = service.fetch_pipeline_errors(project="org/repo", ref="main")
 
-    assert len(result) == 1
-    assert "test" in result[0]
+    assert len(result.findings) == 1
+    assert "test" in result.findings[0]

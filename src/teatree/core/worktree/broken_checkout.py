@@ -38,12 +38,12 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from teatree.core.cleanup.cleanup import _resolve_worktree_path
 from teatree.core.models import Worktree
 from teatree.core.worktree.branch_classification import content_equivalence_blockers, effective_default_target
 from teatree.core.worktree.checkout_liveness import wrong_venue_reason
 from teatree.core.worktree.clone_paths import resolve_clone_path, stored_clone_path, unambiguous_clone_path
 from teatree.core.worktree.venue_safe_registry import registrations
+from teatree.core.worktree.worktree_location import resolve_worktree_path
 from teatree.core.worktree.worktree_roots import CheckoutState, probe_checkout
 from teatree.utils import git
 from teatree.utils.git_run import run_with_status
@@ -99,7 +99,7 @@ def classify_broken_checkout(
     Pass a shared *refresh* when classifying several rows so their common clones are
     fetched once; the default is a private one-shot cache.
     """
-    wt_path = Path(_resolve_worktree_path(workspace, worktree))
+    wt_path = Path(resolve_worktree_path(workspace, worktree))
     if not wt_path.is_dir():
         return BrokenCheckoutVerdict(BrokenCheckout.LIVE_CHECKOUT)
     # Resolved BEFORE the probe, not after: the clone is what turns "git cannot
@@ -129,7 +129,7 @@ def is_pure_ghost(worktree: Worktree, *, workspace: Path) -> bool:
     other. A ref probe that fails rather than answering "missing", and any other git error,
     answer ``False``.
     """
-    if Path(_resolve_worktree_path(workspace, worktree)).is_dir():
+    if Path(resolve_worktree_path(workspace, worktree)).is_dir():
         return False
     clone = stored_clone_path(worktree) or unambiguous_clone_path(workspace, worktree.repo_path)
     if clone is None or not worktree.branch:
@@ -146,7 +146,7 @@ def _has_registration(clone: Path, workspace: Path, worktree: Worktree) -> bool:
     under one leaves the registry naming a row that no longer exists. An unreadable
     registry is missing evidence, and missing evidence keeps the row.
     """
-    wt_path = Path(_resolve_worktree_path(workspace, worktree)).expanduser()
+    wt_path = Path(resolve_worktree_path(workspace, worktree)).expanduser()
     try:
         entries = registrations(str(clone))
     except CommandFailedError:

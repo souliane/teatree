@@ -97,6 +97,7 @@ class FakeCodeHost:
 
 
 _IDENTITIES = ("user-gl", "user-gh-a", "user-gh-b")
+_ORPHANED = "reviewer_pr.task_orphaned"
 
 
 class TestSelfAuthoredAcrossIdentities(TestCase):
@@ -281,10 +282,34 @@ class TestTerminalTicketDoesNotReapArmedReview(TestCase):
     """
 
     def _armed(self, url: str, state: str) -> tuple[Ticket, Task]:
-        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER, state=state)
+        ticket = Ticket.objects.create(issue_url=url, role=Ticket.Role.REVIEWER)
         task = mint_open_pr_review(ticket)
         AutoReviewDispatch.objects.create(slug="x", pr_id=400, head_sha="abc", pr_url=url, task=task)
+        Ticket.objects.filter(pk=ticket.pk).update(state=state)
+        ticket.refresh_from_db()
         return ticket, task
+
+    def _orphan_signals(self, url: str) -> list[str]:
+        host = FakeCodeHost(user="user-gl", pr_open_state_by_url={url: PrOpenState.OPEN})
+        return [s.kind for s in ReviewerPrsScanner(host=host, identities=_IDENTITIES).scan() if s.kind == _ORPHANED]
+
+    def test_armed_review_on_an_ignored_ticket_survives_while_the_pr_is_open(self) -> None:
+        """IGNORED is local proof of no review owed, so only the armed exemption spares this review."""
+        url = "https://github.com/souliane/teatree/pull/403"
+        _ticket, task = self._armed(url, Ticket.State.IGNORED)
+
+        assert self._orphan_signals(url) == []
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_armed_review_on_an_ignored_ticket_survives_alongside_an_unarmed_sibling(self) -> None:
+        url = "https://github.com/souliane/teatree/pull/404"
+        ticket, task = self._armed(url, Ticket.State.IGNORED)
+        Task.objects.create(ticket=ticket, session=task.session, phase="reviewing")
+
+        assert self._orphan_signals(url) == [], "one unarmed sibling made the ticket look unarmed"
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
 
     def test_armed_review_survives_alongside_an_unarmed_sibling_task(self) -> None:
         """A ticket is exempt when it carries an armed review, not only when EVERY task is armed.

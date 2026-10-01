@@ -20,7 +20,7 @@ from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import batch_promote as bp
 from teatree.loops.dream.promote_memory import file_core_gap_tickets
-from teatree.loops.dream.umbrella_ledger import GapSpec
+from teatree.loops.dream.umbrella_ledger import GapSpec, gap_title
 
 UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
 REPO = "souliane/teatree"
@@ -44,16 +44,21 @@ def _gap(key: str, *, title: str | None = None) -> GapSpec:
     return GapSpec(gap_key=key, title=title or f"Fix the gate {key}", cluster_key=key)
 
 
-def _memory(*, key: str = "gap-1", binding: bool = False, source_files: list | None = None) -> ConsolidatedMemory:
+def _memory(
+    *, key: str = "gap-1", binding: bool = False, source_files: list | None = None, **columns: str
+) -> ConsolidatedMemory:
     return ConsolidatedMemory.objects.create(
         cluster_key=key,
-        rule=f"Run the tree-wide health gate before any push ({key}).",
         source_files=source_files if source_files is not None else [f"feedback_{key}.md"],
-        durable_destination="skills/ship/SKILL.md",
         is_binding=binding,
         member_count=1,
         max_member_weight=90,
-        verified_citation="pushed without running the gate, CI went red",
+        **{
+            "rule": f"Run the tree-wide health gate before any push ({key}).",
+            "durable_destination": "skills/ship/SKILL.md",
+            "verified_citation": "pushed without running the gate, CI went red",
+            **columns,
+        },
     )
 
 
@@ -235,6 +240,107 @@ class PromoteBatchTestCase(TestCase):
         bp.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
         bp.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
         assert Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).count() == 1
+
+
+LONG_RULE = (
+    "A dream-batch manifest must carry each gap's full rule, grounding citation and durable destination, "
+    "not only its truncated checkbox title. Otherwise the coder guesses what to fix."
+)
+
+
+def _promoted_context(*gaps: GapSpec, host: CodeHostBackend | None = None) -> str:
+    bp.promote_batch(host or _fake_host(), umbrella_url=UMBRELLA, batch=bp.PromotionBatch(pending=list(gaps)))
+    return Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get().context
+
+
+class BatchContextLedgerDetailTestCase(TestCase):
+    """The manifest carries each gap's full ledger row; the public umbrella keeps the short title."""
+
+    def test_the_context_carries_the_full_rule_the_title_cut_off(self) -> None:
+        _memory(key="gap-1", rule=LONG_RULE)
+        title = gap_title("Workflow gap", LONG_RULE)
+        assert "durable destination" not in title
+
+        context = _promoted_context(GapSpec(gap_key="gap-1", title=title, cluster_key="gap-1"))
+
+        assert f"Rule: {LONG_RULE}" in context
+
+    def test_the_context_carries_the_citation_and_the_destination(self) -> None:
+        _memory(key="gap-1")
+
+        context = _promoted_context(_gap("gap-1"))
+
+        assert "Evidence: pushed without running the gate, CI went red" in context
+        assert "Fix in: skills/ship/SKILL.md" in context
+
+    def test_each_gaps_detail_sits_under_its_own_line(self) -> None:
+        _memory(key="gap-a")
+        _memory(key="gap-b")
+
+        context = _promoted_context(_gap("gap-a"), _gap("gap-b"))
+
+        rule_a = context.index("Rule: Run the tree-wide health gate before any push (gap-a).")
+        rule_b = context.index("Rule: Run the tree-wide health gate before any push (gap-b).")
+        assert context.index("- [gap-a]") < rule_a < context.index("- [gap-b]") < rule_b
+
+    def test_the_detail_is_read_by_cluster_key_not_gap_key(self) -> None:
+        _memory(key="compliance-gap", rule="The decoy row keyed by the gap key.")
+        _memory(key="cluster-x", rule="The row keyed by the cluster key.")
+
+        context = _promoted_context(GapSpec(gap_key="compliance-gap", title="Escalate x", cluster_key="cluster-x"))
+
+        assert "Rule: The row keyed by the cluster key." in context
+        assert "decoy" not in context
+
+    def test_a_gap_with_no_ledger_row_keeps_its_title_line_and_no_empty_labels(self) -> None:
+        key = "compliance-recurrence-x"
+
+        context = _promoted_context(GapSpec(gap_key=key, title="Escalate x to a gate", cluster_key=key))
+
+        assert f"- [{key}] Escalate x to a gate" in context
+        assert "Rule:" not in context
+        assert "Evidence:" not in context
+        assert "Fix in:" not in context
+
+    def test_a_blank_citation_and_destination_render_no_label(self) -> None:
+        _memory(key="gap-1", verified_citation="", durable_destination="  ")
+
+        context = _promoted_context(_gap("gap-1"))
+
+        assert "Rule: Run the tree-wide health gate" in context
+        assert "Evidence:" not in context
+        assert "Fix in:" not in context
+
+    def test_a_multi_line_rule_renders_on_one_line_with_every_word(self) -> None:
+        _memory(key="gap-1", rule="First   clause of the rule.\n\n  Second clause\tstays too.")
+
+        context = _promoted_context(_gap("gap-1"))
+
+        assert "Rule: First clause of the rule. Second clause stays too." in context
+
+    def test_the_public_umbrella_gets_only_the_short_title(self) -> None:
+        _memory(key="gap-1", rule=LONG_RULE)
+        host = _fake_host()
+
+        _promoted_context(
+            GapSpec(gap_key="gap-1", title=gap_title("Workflow gap", LONG_RULE), cluster_key="gap-1"), host=host
+        )
+
+        body = host.get_issue(UMBRELLA)["body"]
+        assert "<!-- dream-gap gap-1 -->" in body
+        assert LONG_RULE not in body
+        assert "pushed without running the gate" not in body
+        assert "skills/ship/SKILL.md" not in body
+
+    def test_the_ledger_is_read_in_one_query_for_the_whole_batch(self) -> None:
+        for key in ("gap-a", "gap-b", "gap-c"):
+            _memory(key=key)
+        gaps = [_gap("gap-a"), _gap("gap-b"), _gap("gap-c")]
+
+        with self.assertNumQueries(1):
+            context = bp._batch_context(UMBRELLA, gaps)
+
+        assert context.count("Rule: ") == 3
 
 
 class GapCoveredTestCase(TestCase):
@@ -470,6 +576,17 @@ class StampedBatchReconcileTestCase(TestCase):
 
         assert outcome.scheduled is True
         self._assert_rides_a_fresh_ticket(old, ("gap-a",))
+
+    def test_a_fresh_generation_reads_the_ledger_once_and_carries_the_detail(self) -> None:
+        old = self._stamped_merged_ticket(delivered=[], keys=("gap-a",))
+        bp.reconcile_batches(_host_with_gap_a_and_b(), umbrella_url=UMBRELLA)
+
+        with patch.object(bp, "_ledger_rows", wraps=bp._ledger_rows) as ledger_rows:
+            self._re_promote()
+
+        assert ledger_rows.call_count == 1
+        fresh = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).exclude(pk=old.pk).get()
+        assert "Rule: Run the tree-wide health gate before any push (gap-a)." in fresh.context
 
     def test_a_wholly_dropped_batch_is_re_promoted_into_a_fresh_ticket(self) -> None:
         old = self._stamped_merged_ticket(delivered=[])

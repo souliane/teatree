@@ -7,6 +7,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models.task_attempt import RESUME_HEADROOM_TOKENS
 
 
 class TestTaskAttemptEffectiveTokens(TestCase):
@@ -148,3 +149,23 @@ class TestTaskAttemptQuerySetUsagesCarriesLane(TestCase):
         )
         [usage] = TaskAttempt.objects.usages()
         assert usage.lane == "metered"
+
+
+class TestResumeHeadroom:
+    """A resume replays the whole conversation plus a fresh dispatch prompt (souliane/teatree#4874)."""
+
+    @staticmethod
+    def _attempt(context: int | None, window: int | None) -> TaskAttempt:
+        return TaskAttempt(context_tokens=context, context_window_tokens=window)
+
+    def test_no_room_for_another_dispatch_prompt_cannot_continue(self) -> None:
+        assert self._attempt(200_000 - RESUME_HEADROOM_TOKENS + 1, 200_000).cannot_continue_its_conversation()
+
+    def test_room_left_can_continue(self) -> None:
+        assert not self._attempt(200_000 - RESUME_HEADROOM_TOKENS, 200_000).cannot_continue_its_conversation()
+
+    @pytest.mark.parametrize(("context", "window"), [(None, 200_000), (313_014, None), (None, None)])
+    def test_an_unmeasured_size_or_window_is_never_judged_oversized(
+        self, context: int | None, window: int | None
+    ) -> None:
+        assert not self._attempt(context, window).cannot_continue_its_conversation()

@@ -370,6 +370,7 @@ def _handle_codex_review(action: DispatchAction) -> Task | None:
         )
         if marker is None:
             return None
+        ticket.rearm_review_at(head_sha)
         return create_phase_task(
             ticket,
             phase=phase,

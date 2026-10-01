@@ -25,6 +25,8 @@ PRIORITY_NAME: Final = "MEMORY_PRIORITY.md"
 #: Every ``*.md`` in a memory dir that is an INDEX rather than a lesson. One answer, so
 #: a phase added later cannot walk a set the others exclude.
 NON_MEMORY_DOCS: Final = frozenset({INDEX_NAME, ARCHIVE_INDEX_NAME, PRIORITY_NAME})
+#: Opens every batch manifest; the extract drops any line carrying it, since text the pass rendered is never drift.
+DREAM_BATCH_MANIFEST_HEADER: Final = "Dream promotion batch (#4776)"
 
 #: Weight floors per member, highest signal first — the ladder the engine ranks
 #: replay members by and the merge phase orders survivors by. Kept here so the two
@@ -54,6 +56,7 @@ def is_binding_text(text: str) -> bool:
 
 __all__ = [
     "ARCHIVE_INDEX_NAME",
+    "DREAM_BATCH_MANIFEST_HEADER",
     "INDEX_NAME",
     "NON_MEMORY_DOCS",
     "PRIORITY_NAME",
