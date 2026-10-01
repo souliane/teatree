@@ -27,6 +27,7 @@ _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 _SYNC = _WORKFLOWS / "dependabot-sbom-sync.yml"
 _CI = _WORKFLOWS / "ci.yml"
 _DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
+_BLUEPRINT = _REPO_ROOT / "BLUEPRINT.md"
 _SBOM = _REPO_ROOT / "dist" / "sbom.json"
 _DRIFT_SCRIPT = _REPO_ROOT / "scripts" / "ci" / "sbom_drift.py"
 _BASH = shutil.which("bash") or "/bin/bash"
@@ -176,6 +177,14 @@ class TestPushContract:
     @pytest.mark.parametrize("path", _SBOM_INPUTS)
     def test_the_base_guard_covers_every_sbom_input(self, path: str) -> None:
         assert path in str(_step(_FRESH)["run"])
+
+
+class TestDocumented:
+    def test_the_dependencies_section_names_the_workflow_and_its_classifier(self) -> None:
+        text = _BLUEPRINT.read_text(encoding="utf-8")
+        section = text[text.index("## 15. Dependencies") : text.index("## 16. ")]
+        assert _SYNC.name in section
+        assert "scripts/ci/sbom_drift.py" in section
 
 
 def _git(cwd: Path, *args: str, env: dict[str, str]) -> str:
