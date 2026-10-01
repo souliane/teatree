@@ -20,8 +20,8 @@ from django.utils import timezone
 
 from teatree.core.mode_resolution import set_mode_override
 from teatree.core.models import ConfigSetting, Loop, Mode, ModeSchedule, ModeScheduleSlot
+from teatree.core.models.mode_shape import BACKUP_LOOP, DISK_RECLAIM_LOOPS
 from teatree.loop.preset_resolution import ACTIVE_SCHEDULE_SETTING
-from teatree.loops.mode_shape import BACKUP_LOOP, DISK_RECLAIM_LOOPS
 from teatree.loops.preset_seed import default_preset_specs, seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.seed_inertness import (

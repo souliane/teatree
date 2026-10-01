@@ -14,8 +14,8 @@ partial is repaired by the next write rather than locking the operator out of it
 
 One shape is refused outright, judged on the RESULTING mask so a row written before the
 guard cannot be extended into it by an unrelated edit: admitting
-:data:`teatree.loops.mode_shape.BACKUP_LOOP` while every
-:data:`teatree.loops.mode_shape.DISK_RECLAIM_LOOPS` loop is quiet — the box then keeps
+:data:`teatree.core.models.mode_shape.BACKUP_LOOP` while every
+:data:`teatree.core.models.mode_shape.DISK_RECLAIM_LOOPS` loop is quiet — the box then keeps
 writing backups with nothing left that can free the space. No preset is exempt, because
 keeping the reclaim pair up while the writer runs is not a posture, it is arithmetic.
 
@@ -30,8 +30,8 @@ from django.db import transaction
 
 from teatree.core.mode_resolution import clear_mode_override, set_mode_override
 from teatree.core.models import Mode
+from teatree.core.models.mode_shape import backup_without_reclaim
 from teatree.core.models.preset_totality import live_loop_names, totalized_entries
-from teatree.loops.mode_shape import backup_without_reclaim
 
 #: The two values a preset entry can be set to.
 ENTRY_ON: Final = "on"

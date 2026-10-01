@@ -9,9 +9,27 @@ gate closes that gap.
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
-from django.urls import reverse
+from django.urls import URLPattern, reverse
+from django.views.generic.base import RedirectView
+
+from teatree.dash import urls as dash_urls
 
 _NON_LOOPBACK = "203.0.113.7"
+#: A placeholder per path converter, so every route can be reversed without fixtures.
+_ARG_FOR_CONVERTER = {"IntConverter": 1, "StringConverter": "x", "PathConverter": "x", "SlugConverter": "x"}
+
+
+def _gated_routes() -> list[str]:
+    """Every dashboard URL that serves a view — a bare redirect hands out no data, so it is exempt."""
+    routes = []
+    for pattern in dash_urls.urlpatterns:
+        assert isinstance(pattern, URLPattern)
+        if getattr(pattern.callback, "view_class", None) is RedirectView:
+            continue
+        converters = pattern.pattern.converters
+        kwargs = {name: _ARG_FOR_CONVERTER[type(converter).__name__] for name, converter in converters.items()}
+        routes.append(reverse(f"dash:{pattern.name}", kwargs=kwargs))
+    return routes
 
 
 class DashboardAccessGateTestCase(TestCase):
@@ -48,3 +66,17 @@ class DashboardAccessGateTestCase(TestCase):
             REMOTE_ADDR=_NON_LOOPBACK,
         )
         assert response.status_code == 302
+
+
+class EveryDashboardRouteIsGatedTestCase(TestCase):
+    """The gate is per-view, so a view that forgets it must redden here.
+
+    Asked with GET, so the gate must sit above the method decorator, as on every view today.
+    """
+
+    def test_an_off_loopback_anonymous_caller_is_refused_on_every_route(self) -> None:
+        routes = _gated_routes()
+        assert len(routes) > 30
+        for route in routes:
+            with self.subTest(route=route):
+                assert self.client.get(route, REMOTE_ADDR=_NON_LOOPBACK).status_code == 403

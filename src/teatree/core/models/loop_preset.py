@@ -58,6 +58,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 
 from teatree.core.models.config_setting import ConfigSetting
+from teatree.core.models.mode_shape import backup_without_reclaim
 from teatree.core.models.preset_totality import PresetNotTotalError, require_total_entries
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,21 @@ class Egress(models.TextChoices):
     FORBID = "forbid", "Never posts on the owner's behalf"
 
 
+def mask_refusal(name: str, entries: object) -> str:
+    """Why *entries* cannot be mode *name*'s loop mask, else ``""``.
+
+    The edit seams repair totality and refuse the consume-only shape on their own, so this
+    is the ONE check for a writer that stores a whole mask as given: the Django admin and
+    the config import.
+    """
+    try:
+        total = require_total_entries(entries, preset_name=name)
+    except PresetNotTotalError as error:
+        return str(error)
+    consuming = backup_without_reclaim(total)
+    return f"preset {name!r} {consuming.detail}" if consuming is not None else ""
+
+
 class Mode(models.Model):
     """One named operating **mode** — a total per-loop on/off table plus its egress posture.
 
@@ -128,16 +144,9 @@ class Mode(models.Model):
         return f"loop-preset<{self.name} ({self.entry_count} entries)>"
 
     def clean(self) -> None:
-        """Refuse a partial table — the guard on the one surface that writes ``entries`` raw.
-
-        Every other write folds through
-        :func:`teatree.core.models.preset_totality.totalized_entries` and cannot produce a
-        partial row; the Django admin edits the JSON directly.
-        """
-        try:
-            require_total_entries(self.entries, preset_name=self.name)
-        except PresetNotTotalError as error:
-            raise ValidationError({"entries": str(error)}) from error
+        """Refuse a mask :func:`mask_refusal` names — the guard for a surface that writes ``entries`` raw."""
+        if refusal := mask_refusal(self.name, self.entries):
+            raise ValidationError({"entries": refusal})
 
     @property
     def forbids_egress(self) -> bool:

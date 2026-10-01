@@ -1,16 +1,9 @@
-"""Pre-investigation stale-clone hard-fail gate (#948).
+"""Session-start clone-currency check (#948).
 
-Before #948 a bug-investigation sub-agent could begin root-causing
-against a repo clone many commits behind ``origin/<default>`` and form
-an initially-wrong root-cause hypothesis before re-fetching. #940 covers
-branch-currency *before cold review/ship*; this is the earlier point:
-**before any bug investigation reads repo files**.
-
-The gate fetches every in-scope repo, then asserts that
-``origin/<default>`` is an ancestor of ``HEAD``. If a clone is behind it
-hard-fails with an actionable "clone N commits behind — refusing to
-investigate stale code; sync first" message — not a warning, a
-deterministic refusal. Mirrors the ``schema_guard`` pattern (#869).
+``t3 doctor check`` fetches every registered clone and FAILs on each one
+whose ``origin/<default>`` is not an ancestor of ``HEAD``. A clone whose
+currency cannot be read is a WARN naming why, never a silent "current".
+Real ``git`` under ``tmp_path`` throughout.
 """
 
 import io
@@ -22,12 +15,7 @@ import pytest
 
 from teatree.cli import doctor as doctor_mod
 from teatree.core.gates import clone_guard
-from teatree.core.gates.clone_guard import (
-    StaleCloneError,
-    clones_behind_default,
-    doctor_check_clone_currency,
-    require_current_clones,
-)
+from teatree.core.gates.clone_guard import clone_currency, doctor_check_clone_currency
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -87,15 +75,12 @@ def _advance_remote(tmp_path: Path, bare: Path, n: int = 1) -> None:
 
 
 class TestClonesCurrent:
-    def test_clones_behind_default_returns_empty_when_in_sync(self, tmp_path: Path) -> None:
+    def test_a_clone_in_sync_is_neither_stale_nor_unverified(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
-        assert clones_behind_default([("repo", clone)]) == []
-
-    def test_require_current_clones_is_noop_when_in_sync(self, tmp_path: Path) -> None:
-        bare = _make_remote(tmp_path)
-        clone = _clone(tmp_path, bare)
-        require_current_clones([("repo", clone)])  # must not raise
+        survey = clone_currency([("repo", clone)])
+        assert survey.stale == []
+        assert survey.unverified == []
 
     def test_feature_branch_ahead_of_origin_is_current(self, tmp_path: Path) -> None:
         """A feature branch with commits on top of origin/main is NOT stale."""
@@ -105,38 +90,22 @@ class TestClonesCurrent:
         (clone / "f.txt").write_text("local-work\n")
         _git(clone, "add", "f.txt")
         _git(clone, "commit", "-m", "local")
-        require_current_clones([("repo", clone)])
-        assert clones_behind_default([("repo", clone)]) == []
+        assert clone_currency([("repo", clone)]).stale == []
 
 
 class TestClonesStale:
-    def test_clones_behind_default_returns_count_when_stale(self, tmp_path: Path) -> None:
+    def test_a_clone_behind_its_remote_is_stale_by_that_count(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
         # Remote advances 3 commits; the clone is now 3 behind.
         _advance_remote(tmp_path, bare, n=3)
 
-        staleness = clones_behind_default([("repo", clone)])
+        staleness = clone_currency([("repo", clone)]).stale
 
         assert len(staleness) == 1
         assert staleness[0].name == "repo"
         assert staleness[0].behind == 3
         assert staleness[0].default_branch == "main"
-
-    def test_require_current_clones_raises_actionable_error(self, tmp_path: Path) -> None:
-        bare = _make_remote(tmp_path)
-        clone = _clone(tmp_path, bare)
-        _advance_remote(tmp_path, bare, n=2)
-
-        with pytest.raises(StaleCloneError) as exc:
-            require_current_clones([("repo", clone)])
-
-        message = str(exc.value)
-        assert "2 commit" in message
-        assert "behind origin/main" in message
-        assert "refusing to investigate stale code" in message
-        assert "sync first" in message
-        assert "git pull --ff-only" in message or "t3 update" in message
 
     def test_feature_branch_diverged_from_advanced_origin_is_stale(self, tmp_path: Path) -> None:
         """origin/main advanced past the feature branch point."""
@@ -149,8 +118,7 @@ class TestClonesStale:
         # Now advance origin/main past the branch point
         _advance_remote(tmp_path, bare, n=1)
 
-        with pytest.raises(StaleCloneError):
-            require_current_clones([("repo", clone)])
+        assert [finding.behind for finding in clone_currency([("repo", clone)]).stale] == [1]
 
     def test_doctor_surface_fails_and_names_repos(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
@@ -166,6 +134,8 @@ class TestClonesStale:
         assert "FAIL" in out
         assert "repo" in out
         assert "behind origin/main" in out
+        assert "4 commit(s)" in out
+        assert "t3 update" in out
 
 
 class TestEdgeCases:
@@ -180,7 +150,7 @@ class TestEdgeCases:
         _git(seed, "add", "f.txt")
         _git(seed, "commit", "-m", "initial")
         # No origin remote at all.
-        require_current_clones([("repo", seed)])  # must not raise
+        assert clone_currency([("repo", seed)]) == clone_currency([])
 
     def test_doctor_check_passes_when_all_current(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
@@ -235,22 +205,46 @@ class TestDefensiveBranches:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
         monkeypatch.setattr(clone_guard, "_default_branch", lambda repo: None)
-        assert clones_behind_default([("repo", clone)]) == []
+        assert clone_currency([("repo", clone)]) == clone_currency([])
 
     def test_path_that_is_not_a_directory_is_skipped(self, tmp_path: Path) -> None:
         missing = tmp_path / "does-not-exist"
-        assert clones_behind_default([("ghost", missing)]) == []
-        require_current_clones([("ghost", missing)])  # must not raise
+        assert clone_currency([("ghost", missing)]) == clone_currency([])
 
-    def test_fetch_failure_is_treated_as_inconclusive_skip(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Failed fetch is an inconclusive skip, not a block."""
+
+class TestAnUnreadableCloneIsReportedNotPassed:
+    """A clone whose currency cannot be read is UNKNOWN: a WARN line, never a silent "current"."""
+
+    def _doctor(self, clone: Path) -> tuple[bool, str]:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            ok = doctor_check_clone_currency([("repo", clone)])
+        return ok, buffer.getvalue()
+
+    def test_a_failed_fetch_warns_without_gating(self, tmp_path: Path) -> None:
         bare = _make_remote(tmp_path)
         clone = _clone(tmp_path, bare)
-        _advance_remote(tmp_path, bare, n=3)
+        _git(clone, "remote", "set-url", "origin", str(tmp_path / "gone.git"))
 
-        monkeypatch.setattr(clone_guard, "_fetch_origin", lambda repo: False)
-        assert clone_guard.clones_behind_default([("repo", clone)]) == []
+        ok, out = self._doctor(clone)
+
+        assert ok is True
+        assert "WARN" in out
+        assert "repo" in out
+        assert "currency not verified" in out
+        assert "git fetch origin failed" in out
+        assert [clone.name for clone in clone_currency([("repo", clone)]).unverified] == ["repo"]
+
+    def test_an_origin_head_naming_a_pruned_branch_warns_without_gating(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _git(clone, "config", "fetch.prune", "true")
+        _git(bare, "branch", "-m", "main", "trunk")
+
+        ok, out = self._doctor(clone)
+
+        assert ok is True
+        assert "WARN" in out
+        assert "currency not verified" in out
+        assert "origin/main does not resolve" in out
+        assert clone_currency([("repo", clone)]).stale == []
