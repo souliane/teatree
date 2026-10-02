@@ -1,0 +1,541 @@
+"""One normalised pressure scalar the admission decision consults (#4508).
+
+Six brakes lived as six independent ``if``s — weekly quota, the 5h window, weekly
+pace, account exhaustion, machine load, free memory — each with its own watermark
+and its own sentence. That shape can only ever answer *admit* or *refuse*: there
+is no way to say "the box is at 0.85 of what it can take", so degradation was a
+cliff and the box could read healthy on load while being out of weekly runway.
+
+**1.0 IS each dimension's own existing watermark.** That single choice is the
+correctness argument: :data:`HALT_AT` reproduces the pre-#4508 brake set exactly,
+so folding them into one value is a re-expression rather than a new opinion
+(``tests/teatree_core/test_admission_pressure.py`` pins it against a frozen oracle
+of the old predicates). What the fold BUYS is the range below 1.0, which nothing
+could read before — see :class:`PressureBand`.
+
+**The signal dataclasses live here, not in the governor.** They are the scalar's
+inputs, and the governor's readers produce them; putting them beside the
+normalisation is what keeps the dependency one-way
+(:mod:`teatree.core.admission_governor` imports this module, never the reverse).
+:func:`box_load_headroom` and :func:`ram_headroom` come with them, because each
+is exactly ``1 - component`` for its dimension and two unsynchronised readers of
+one quantity drift (#4125).
+
+**Nothing here is telemetry.** The scalar is computed at the decision point and
+discarded; no table, no span, no emitter. Every value it produces has a named
+consumer before it is produced — :func:`~teatree.core.admission_governor.decide_admission`
+(HALT), :func:`~teatree.core.agent_admission.agent_admission_verdict` (SHED),
+:func:`~teatree.core.intake.concurrency.adapt_concurrency` (the continuous term),
+``t3 doctor check``'s box-occupancy line, and the ``admission_pressure`` health
+collector that clusters a persistent cause into ONE ``KnownIssue`` row.
+"""
+
+import math
+from dataclasses import dataclass
+from enum import StrEnum
+
+WEEKLY_WINDOW_SECONDS = 7 * 24 * 3600
+
+#: Load watermarks, as multiples of the core count. Above ``BRAKE`` new admissions are
+#: denied; a braked governor only re-admits once load falls back under ``RESUME``. The
+#: gap is the hysteresis that stops it flapping around one threshold.
+BRAKE_LOAD_PER_CORE = 5.0
+RESUME_LOAD_PER_CORE = 3.0
+
+#: Memory watermarks in GB, the same shape as the load pair above: below ``RAM_BRAKE``
+#: new admissions are denied, and a braked governor re-admits only above ``RAM_RESUME``.
+#: Absolute rather than per-core because a pytest worker's footprint is a property of the
+#: suite, not of the box that runs it.
+#:
+#: ``4.0`` is the headroom one p90 worker (1.24 GB) plus the OS and page cache need to
+#: survive the burst a fresh admission creates; it matches ``intake_ram_reserve_gb``,
+#: which reserves the same margin for the same reason one layer up. ``6.0`` is one more
+#: worker's worth above it — the gap is the hysteresis, so a box hovering at the floor
+#: cannot flap admissions on and off.
+RAM_BRAKE_FLOOR_GB = 4.0
+RAM_RESUME_FLOOR_GB = 6.0
+
+# Host swap is a lagging but decisive sign of thrash on macOS: Docker's VM may
+# still claim many GiB free while the physical machine has paged out heavily.
+SWAP_BRAKE_USED_FRACTION = 0.25
+SWAP_RESUME_USED_FRACTION = 0.10
+
+#: A 5h window this spent is an imminent hard rate-limit; retrying into one is pure burn.
+SHORT_WINDOW_BRAKE = 0.95
+#: Weekly headroom below this is spent — nothing left to admit against.
+WEEKLY_WINDOW_BRAKE = 0.99
+
+#: Pace = weekly headroom / weekly runway. Below 1 the burn outruns the window, so the
+#: ceiling is scaled down to land AT the reset instead of sprinting to zero. At/below
+#: ``PACE_DENY`` there is not enough left to start anything new.
+PACE_DENY = 0.1
+
+#: Band thresholds. ``DEGRADE_AT`` is where the continuous intake term is materially
+#: clamping and nothing is refused yet; ``SHED_AT_DEFAULT`` is where the EXPENSIVE agent
+#: class is refused while the cheap drain keeps running; ``HALT_AT`` is the pre-#4508
+#: brake set. Documented in BLUEPRINT § "Adaptive admission governor" so the behaviour is
+#: predictable rather than emergent.
+DEGRADE_AT = 0.7
+SHED_AT_DEFAULT = 0.9
+HALT_AT = 1.0
+
+#: The pre-#4508 brake evaluation order — quota brakes in their ``if`` order, then the
+#: machine ones. It survives as the tie-break among HALTing components so a refusal names
+#: the cause it always named: an exhausted fleet reports exhaustion, not the collapsed
+#: pace that exhaustion necessarily produces.
+BRAKE_PRECEDENCE = (
+    "accounts-exhausted",
+    "weekly-quota",
+    "5h-quota",
+    "weekly-pace",
+    "metered-lane-parked",
+    "metered-spend",
+    "load",
+    "memory",
+    "swap",
+)
+MACHINE_BRAKE_CAUSES = frozenset(("load", "memory", "swap"))
+
+
+@dataclass(frozen=True)
+class QuotaSignal:
+    """Live model-quota headroom — the PRIMARY admission signal.
+
+    ``fresh`` is False when no account's headroom is known; the decision then drops the
+    weekly-pace scaling — the only part that needs this signal — rather than trusting a
+    guess, and bounds the lane on the machine signal alone.
+    Utilizations are the BEST (lowest) across usable accounts: the account selector
+    already falls through to a non-exhausted account, so the governor asks what the
+    healthiest remaining account has left, and ``all_accounts_exhausted`` is the
+    separate signal that the fallthrough has nowhere left to go.
+    """
+
+    fresh: bool
+    all_accounts_exhausted: bool
+    weekly_utilization: float
+    short_utilization: float
+    seconds_to_weekly_reset: float | None
+
+
+@dataclass(frozen=True)
+class MeteredSignal:
+    """The METERED lane's own budget — the subscription quota's counterpart (#4816).
+
+    The two families are mutually exclusive by lane selection at the caller, so only one
+    ever contributes components to a given decision. ``fresh`` is False when the ledger
+    could not be read OR when this dispatch does not ride the metered lane; either way it
+    contributes nothing, which is what "does not apply" already means here.
+
+    ``parked`` is an uncleared metered ``UsageWindowState`` — a provider that has already
+    REFUSED the lane, which is a harder signal than any spend fraction and so reads a
+    flat 1.0.
+    """
+
+    fresh: bool
+    utilization: float = 0.0
+    parked: bool = False
+    spend_detail: str = ""
+    park_detail: str = ""
+
+
+@dataclass(frozen=True)
+class MachineSignal:
+    """Box pressure — the SECONDARY brake. ``ram_available_gb`` is ``None`` when unread.
+
+    ``memory_cap_gb`` is the cgroup ceiling ``ram_available_gb`` was measured INSIDE, and
+    is a configuration fact rather than pressure: it is carried so the memory component
+    can say *why* a refusal is unrecoverable (see :func:`resume_ceiling_conflict`) instead
+    of repeating a number that looks like ordinary back-pressure. ``None`` means either
+    uncapped or "this reading is not cgroup-scoped", and the reader is the one that knows
+    which — :func:`~teatree.core.admission_governor.read_machine_signal` supplies the cap
+    only when the reading it took actually came from that cgroup, since pairing a
+    host-scoped reading with a container's cap would diagnose the wrong thing.
+    """
+
+    cores: int
+    load1: float
+    ram_available_gb: float | None
+    memory_cap_gb: float | None = None
+    swap_used_fraction: float | None = None
+
+
+@dataclass(frozen=True)
+class MachineBrake:
+    """The caller's two inputs to the LOAD brake, as one value.
+
+    ``braked`` is the previous decision's brake state and supplies the hysteresis — a
+    braked governor is held to the lower watermark so it cannot flap.
+
+    ``applies`` is the cheap-phase exemption (#4098): the read-only phases that RETIRE
+    work were being refused on the very load their expensive siblings created, which
+    removed the only relief available and held the brake on. ``False`` drops the MACHINE
+    components for that class alone — never the token ones, which are a claim about
+    budget rather than pressure and so refuse a cheap phase exactly as they refuse an
+    expensive one. The caller supplies the exemption's own bound;
+    :func:`~teatree.core.admission_governor.decide_admission` never widens a lane on its own.
+    """
+
+    applies: bool = True
+    braked: bool = False
+
+
+#: The default: the brake applies, with no prior brake state to hold it to the low watermark.
+UNBRAKED = MachineBrake()
+
+#: The quota signal that contributes NOTHING — ``fresh=False`` being what "does not apply"
+#: already means here, for an unreadable reading and for a dimension this decision is not
+#: judged against alike. Two callers stand a dimension down: the lane selector, when the
+#: dispatch authenticates through a lane the subscription fleet says nothing about, and
+#: ``pressure_for``, when the operator has turned the token brakes off (#4816). Neither
+#: needs a mechanism of its own — an absent component is an absent component.
+UNREAD_QUOTA = QuotaSignal(
+    fresh=False,
+    all_accounts_exhausted=False,
+    weekly_utilization=0.0,
+    short_utilization=0.0,
+    seconds_to_weekly_reset=None,
+)
+
+
+class PressureBand(StrEnum):
+    """What degrades at each threshold — the ordering the six separate ``if``s could not express.
+
+    ``FULL`` nothing degrades. ``DEGRADED`` intake concurrency tightens on the worst
+    dimension (a continuous term, not a cliff — this band names where it starts to bite).
+    ``SHED`` refuses the EXPENSIVE agent class while the CHEAP review/ship lanes that
+    RETIRE work keep draining; that asymmetry is the whole point, since refusing the
+    drain alongside the class that filled the box is what held the brake on in #4098.
+    ``HALT`` refuses every class — the pre-#4508 brake set, and in-flight work is never
+    killed, only new admissions refused.
+    """
+
+    FULL = "full"
+    DEGRADED = "degraded"
+    SHED = "shed"
+    HALT = "halt"
+
+    @classmethod
+    def for_value(cls, value: float, *, shed_at: float) -> "PressureBand":
+        """Classify *value*; ``shed_at == HALT_AT`` collapses SHED into HALT (the rollback lever)."""
+        if value >= HALT_AT:
+            return cls.HALT
+        if value >= shed_at:
+            return cls.SHED
+        if value >= DEGRADE_AT:
+            return cls.DEGRADED
+        return cls.FULL
+
+
+@dataclass(frozen=True, slots=True)
+class PressureComponent:
+    """One dimension's normalised utilisation, and the sentence a refusal on it reads.
+
+    ``detail`` is the pre-#4508 brake's own wording, carried rather than regenerated so a
+    refusal is worded identically to how it always was.
+    """
+
+    name: str
+    value: float
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionPressure:
+    """The scalar, its inputs named, and the band it lands in.
+
+    ``components`` is empty when nothing was readable — a probe that cannot answer must
+    never raise the pressure, so that reads ``0.0`` / ``FULL`` and the caller falls back
+    to whatever it does without an opinion. That is the same direction every unknown
+    takes here, and the reason ``reason`` degrades to ``""`` rather than inventing one.
+    """
+
+    components: tuple[PressureComponent, ...]
+    shed_at: float = SHED_AT_DEFAULT
+
+    @property
+    def value(self) -> float:
+        return max((component.value for component in self.components), default=0.0)
+
+    @property
+    def dominant(self) -> PressureComponent | None:
+        """The one cause a refusal names, so N observations of it report as ONE incident.
+
+        Among components that have REACHED :data:`HALT_AT`, :data:`BRAKE_PRECEDENCE`
+        decides — the pre-#4508 brakes were an ordered ``if`` chain, so a spent fleet was
+        always reported as exhaustion even though its pace had also collapsed, and
+        picking the numeric maximum would silently rename it to the derived symptom.
+        Below HALT nothing was ever named, so there is no order to preserve and the
+        worst dimension is simply the worst one.
+        """
+        if not self.components:
+            return None
+        halted = [component for component in self.components if component.value >= HALT_AT]
+        if halted:
+            return min(halted, key=lambda component: BRAKE_PRECEDENCE.index(component.name))
+        return max(self.components, key=lambda component: component.value)
+
+    @property
+    def band(self) -> PressureBand:
+        return PressureBand.for_value(self.value, shed_at=self.shed_at)
+
+    @property
+    def reason(self) -> str:
+        dominant = self.dominant
+        return dominant.detail if dominant is not None else ""
+
+
+def resolve_shed_at(configured: float) -> float:
+    """Clamp the operator's ``admission_pressure_shed_at`` into the documented range.
+
+    A typo must not be able to wedge the expensive lane shut, so the floor is
+    :data:`DEGRADE_AT` rather than zero; the ceiling :data:`HALT_AT` is the rollback
+    lever (SHED collapses into HALT and admission is byte-identical to pre-#4508). A
+    non-finite value is not a threshold at all and falls back to the shipped default.
+    """
+    if not math.isfinite(configured):
+        return SHED_AT_DEFAULT
+    return min(HALT_AT, max(DEGRADE_AT, float(configured)))
+
+
+def weekly_pace(quota: QuotaSignal) -> float:
+    """Weekly headroom divided by weekly runway — 1.0 is exactly on pace.
+
+    Above 1 the window is being under-spent (there is room to raise admissions); below 1
+    the burn outruns the reset and admissions are paced down to land at it. An unknown
+    reset is treated as a FULL window remaining, the conservative reading: it makes the
+    runway look long, so the pace looks tight, so the ceiling tightens.
+    """
+    headroom = max(0.0, 1.0 - quota.weekly_utilization)
+    seconds = WEEKLY_WINDOW_SECONDS if quota.seconds_to_weekly_reset is None else quota.seconds_to_weekly_reset
+    runway = min(1.0, max(seconds, 0.0) / WEEKLY_WINDOW_SECONDS)
+    if runway <= 0:
+        return 1.0
+    return headroom / runway
+
+
+def box_load_headroom(*, load1: float | None, cores: int) -> float:
+    """The fraction of the box's load budget still free — ``1.0`` idle, ``0.0`` saturated.
+
+    Exactly ``1 - `` the ``load`` component below, clamped the way a ceiling multiplier
+    must be. It lives beside that component so the two cannot drift (#4125), and it is
+    consumed by :func:`~teatree.core.admission_governor.resume_agent_ceiling`, which
+    reads load through a Django-free hook path and so cannot ask for the whole scalar.
+
+    Load is whole-box by construction, which is the point of consuming it: a harness
+    sub-agent an orchestrating session dispatched claims no ``Task`` and appears in no
+    factory count, yet it runs a test suite on the same cores. A bound derived only from
+    what the factory itself is running reads healthy on a box at load 53 (#4407).
+
+    ``None`` (nothing readable) is ``1.0`` for the reason every unknown here is: a probe
+    that cannot answer must not be able to lower a ceiling.
+    """
+    if load1 is None:
+        return 1.0
+    return _headroom(_load_pressure(load1=load1, cores=cores, braked=False))
+
+
+def ram_headroom(ram_available_gb: float | None) -> float:
+    """The fraction of the agent population the live memory reading still supports.
+
+    ``1.0`` at or above :data:`RAM_RESUME_FLOOR_GB` (inert on a healthy box), ramping to
+    ``0.0`` at :data:`RAM_BRAKE_FLOOR_GB`, which is where the brake refuses outright.
+    ``None`` is ``1.0`` for the reason every unknown here is: a probe that cannot answer
+    must not be able to lower a ceiling.
+    """
+    if ram_available_gb is None:
+        return 1.0
+    return _headroom(_ram_pressure(ram_available_gb, braked=False))
+
+
+def resume_ceiling_conflict(cap_gb: float | None) -> str | None:
+    """Why *cap_gb* makes :data:`RAM_RESUME_FLOOR_GB` unreachable, or ``None`` when it does not.
+
+    A braked governor holds itself to the RESUME floor, so a cgroup capped at or below
+    that floor can never re-admit: the condition is unsatisfiable even with the container
+    completely EMPTY. That is an impossible CONFIGURATION rather than pressure, and no
+    amount of waiting or idling clears it — which is why it has to be named rather than
+    discovered from a queue that never drains.
+
+    ``RamHeadroom.box_watermark_mib`` already drops a cgroup below the agent-workload
+    floor (4 GiB) as out of scope, so the unrecoverable band this names is the gap
+    between that floor and :data:`RAM_RESUME_FLOOR_GB` — a cap of 5 GiB is judged
+    box-wide AND can never rise above a 6 GiB resume floor, which is exactly the
+    measured incident. ``None`` for *cap_gb* is uncapped or out-of-scope, neither of
+    which conflicts.
+
+    The band has ONE end, and *cap_gb* must already be SCOPE-QUALIFIED — ``None`` for a
+    cgroup whose reading does not govern. That question has exactly one owner,
+    :attr:`~teatree.utils.ram_scope.RamHeadroom.cgroup_is_box_scoped`, surfaced as
+    ``box_watermark_cap_gb``; every caller passes it through that. Closing this band at a
+    LOWER end instead would restate the scope test's floor here, and that floor is
+    operator-overridable (``TEATREE_WORKER_MEMORY_FLOOR_GIB``) — a lowered override makes
+    a small cap box-scoped and permanently braked while a restated default silently
+    declines to name it (#151).
+    """
+    if cap_gb is None or cap_gb > RAM_RESUME_FLOOR_GB:
+        return None
+    return (
+        f"impossible admission ceiling: the cgroup memory cap is {cap_gb:.3g} GiB but a braked "
+        f"governor only re-admits above RAM_RESUME_FLOOR_GB={RAM_RESUME_FLOOR_GB:.0f} GiB, so once "
+        "braked this lane can NEVER resume. Raise the container mem_limit above the resume floor "
+        "(or lower the floor)."
+    )
+
+
+def admission_pressure(
+    *,
+    quota: QuotaSignal,
+    machine: MachineSignal,
+    metered: "MeteredSignal | None" = None,
+    load_brake: MachineBrake = UNBRAKED,
+    shed_at: float = SHED_AT_DEFAULT,
+) -> AdmissionPressure:
+    """Fold every readable dimension into one scalar, each normalised to its own watermark.
+
+    *load_brake* carries the caller's two machine-brake inputs as one value (see
+    :class:`MachineBrake`): the previous decision's brake state, which moves the load and
+    memory watermarks to their hysteresis values so the scalar inherits the flap
+    protection the separate brakes had, and the cheap-phase exemption, which drops the two
+    machine components and leaves the token ones.
+
+    *metered* is the metered lane's own budget, the subscription quota's counterpart. The
+    two are mutually exclusive by lane selection at the caller, so a dispatch is judged
+    against the budget it would actually spend rather than against both (#4816).
+
+    An unreadable dimension contributes NO component rather than a zero, so it can
+    neither raise the pressure nor be mistaken for a healthy reading — a stale quota
+    cache is the steady state here, not an exception.
+    """
+    components: list[PressureComponent] = []
+    if quota.fresh:
+        components.extend(_quota_components(quota))
+    if metered is not None and metered.fresh:
+        components.extend(_metered_components(metered))
+    if load_brake.applies:
+        components.extend(_machine_components(machine, braked=load_brake.braked))
+    return AdmissionPressure(components=tuple(components), shed_at=shed_at)
+
+
+def _quota_components(quota: QuotaSignal) -> list[PressureComponent]:
+    pace = weekly_pace(quota)
+    return [
+        PressureComponent(
+            name="accounts-exhausted",
+            value=1.0 if quota.all_accounts_exhausted else 0.0,
+            detail="every account is quota-exhausted — retrying into a rate limit is pure burn",
+        ),
+        PressureComponent(
+            name="weekly-quota",
+            value=_clamp(quota.weekly_utilization / WEEKLY_WINDOW_BRAKE),
+            detail=f"weekly window spent ({quota.weekly_utilization:.0%}) — no budget left to admit against",
+        ),
+        PressureComponent(
+            name="5h-quota",
+            value=_clamp(quota.short_utilization / SHORT_WINDOW_BRAKE),
+            detail=f"5h window spent ({quota.short_utilization:.0%}) — a hard rate limit is imminent",
+        ),
+        PressureComponent(
+            name="weekly-pace",
+            value=_clamp((1.0 - pace) / (1.0 - PACE_DENY)),
+            detail=f"weekly burn outruns the reset (pace {pace:.2f}) — pacing to the window",
+        ),
+    ]
+
+
+def _metered_components(metered: MeteredSignal) -> list[PressureComponent]:
+    return [
+        PressureComponent(name="metered-lane-parked", value=1.0 if metered.parked else 0.0, detail=metered.park_detail),
+        PressureComponent(name="metered-spend", value=_clamp(metered.utilization), detail=metered.spend_detail),
+    ]
+
+
+def _machine_components(machine: MachineSignal, *, braked: bool) -> list[PressureComponent]:
+    cores = max(1, machine.cores)
+    watermark = _load_watermark(cores=cores, braked=braked)
+    components = [
+        PressureComponent(
+            name="load",
+            value=_load_pressure(load1=machine.load1, cores=cores, braked=braked),
+            detail=f"load {machine.load1:.0f} at/over the {watermark:.0f} watermark on {cores} core(s)",
+        )
+    ]
+    if machine.ram_available_gb is not None:
+        floor = _ram_floor(braked=braked)
+        detail = f"{machine.ram_available_gb:.1f} GB available at/under the {floor:.0f} GB watermark"
+        # A bare number reads as back-pressure someone can wait out. When the cap makes the
+        # resume floor unsatisfiable the wait is infinite, so the refusal carries its own
+        # diagnosis — this detail is what the CRITICAL admission-pressure KnownIssue prints.
+        conflict = resume_ceiling_conflict(machine.memory_cap_gb)
+        components.append(
+            PressureComponent(
+                name="memory",
+                value=_ram_pressure(machine.ram_available_gb, braked=braked),
+                detail=f"{detail} ({conflict})" if conflict else detail,
+            )
+        )
+    if machine.swap_used_fraction is not None:
+        swap_watermark = SWAP_RESUME_USED_FRACTION if braked else SWAP_BRAKE_USED_FRACTION
+        components.append(
+            PressureComponent(
+                name="swap",
+                value=_clamp(machine.swap_used_fraction / swap_watermark),
+                detail=f"host swap {machine.swap_used_fraction:.0%} at/over the {swap_watermark:.0%} watermark",
+            )
+        )
+    return components
+
+
+def _load_watermark(*, cores: int, braked: bool) -> float:
+    return (RESUME_LOAD_PER_CORE if braked else BRAKE_LOAD_PER_CORE) * max(1, cores)
+
+
+def _ram_floor(*, braked: bool) -> float:
+    return RAM_RESUME_FLOOR_GB if braked else RAM_BRAKE_FLOOR_GB
+
+
+def _load_pressure(*, load1: float, cores: int, braked: bool) -> float:
+    return _clamp(load1 / _load_watermark(cores=cores, braked=braked))
+
+
+def _ram_pressure(ram_available_gb: float, *, braked: bool) -> float:
+    span = RAM_RESUME_FLOOR_GB - RAM_BRAKE_FLOOR_GB
+    return _clamp(1.0 + (_ram_floor(braked=braked) - ram_available_gb) / span)
+
+
+def _clamp(value: float) -> float:
+    """Floor at zero only: an over-1.0 reading is a louder HALT and stays legible as one."""
+    return max(0.0, value)
+
+
+def _headroom(pressure: float) -> float:
+    return min(1.0, max(0.0, 1.0 - pressure))
+
+
+__all__ = [
+    "BRAKE_LOAD_PER_CORE",
+    "DEGRADE_AT",
+    "HALT_AT",
+    "PACE_DENY",
+    "RAM_BRAKE_FLOOR_GB",
+    "RAM_RESUME_FLOOR_GB",
+    "RESUME_LOAD_PER_CORE",
+    "SHED_AT_DEFAULT",
+    "SHORT_WINDOW_BRAKE",
+    "UNBRAKED",
+    "UNREAD_QUOTA",
+    "WEEKLY_WINDOW_BRAKE",
+    "WEEKLY_WINDOW_SECONDS",
+    "AdmissionPressure",
+    "MachineBrake",
+    "MachineSignal",
+    "MeteredSignal",
+    "PressureBand",
+    "PressureComponent",
+    "QuotaSignal",
+    "admission_pressure",
+    "box_load_headroom",
+    "ram_headroom",
+    "resolve_shed_at",
+    "resume_ceiling_conflict",
+    "weekly_pace",
+]

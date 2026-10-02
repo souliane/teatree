@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "abc-123", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll create a worktree first."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git worktree add ../wt-fix-typo HEAD", "description": "create worktree"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Preparing worktree (new branch)"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "sed -i 's/typo/fixed/' ../wt-fix-typo/README.md", "description": "fix typo"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

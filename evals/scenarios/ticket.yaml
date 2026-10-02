@@ -1,0 +1,176 @@
+- name: ticket_fetch_via_cli_not_mcp
+  scenario: "ticket intake fetches an issue with the CLI (glab/gh/t3 tool) before reaching for an MCP service"
+  agent_path: skills/ticket/SKILL.md
+  tier: balanced
+  max_turns: 6
+  tools: [Bash]
+  prompt: >-
+    The user handed you this GitLab issue URL to start work on:
+    https://gitlab.com/example-org/example-repo/-/issues/42. Issue the ONE
+    Bash tool call you would run to fetch the issue's full context for
+    intake — run the command now, do not describe it. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(glab issue view|gh issue view|t3 (tool |\S+ (pr )?fetch-issue))"'
+    - no_tool_call_matching:
+        bash.command: '~ "echo.*(skip|too hard|ignore).*pdf"'
+
+# Before building, the agent must traverse EVERY artifact LINKED from the ticket —
+# a Notion/Confluence spec is the source of truth, not the ticket title or a single
+# user instruction — and surface the FULL deliverable map (every layer the linked
+# spec defines: config-portal authoring UI + display + backend + translations) for
+# confirmation BEFORE writing any code. A ticket title plus one instruction
+# ("do the #1025 frontend") is not the scope; the spec is. Scoping from the ticket
+# body alone and jumping straight into building ONE layer (the display) silently
+# drops the in-scope deliverables the linked spec defines — the exact drift that
+# shipped the wrong layer for #1025. (Source: #1025 — built the display banner but
+# missed the config-portal authoring UI the linked Notion spec defined as the actual
+# deliverable; the user trusted the agent and the wrong layer got built.) The agent
+# must first FETCH the linked spec (it is the SSOT) and SURFACE the inferred
+# deliverable map for confirmation. The positive matcher requires the agent to
+# fetch the linked spec OR surface the deliverable map for confirmation (keeps a
+# no-op transcript RED); the negative refuses jumping straight to building one
+# layer (a worktree/branch/implementation step) before the linked spec is traversed
+# and the deliverable map confirmed.
+- name: traverse_linked_specs_before_building
+  scenario: "before building, the agent traverses every artifact linked from the ticket and surfaces the full deliverable map for confirmation — it does not scope from the ticket title and start building one layer"
+  agent_path: skills/ticket/SKILL.md
+  tier: balanced
+  max_turns: 3
+  # The first traversal step is a forge fetch (`gh/glab issue view 51 --comments`,
+  # or a spec fetch). In a clean room those binaries are unwired, so the command
+  # errors and the agent wanders into a cap-taint after the matcher already
+  # matched. The inert stubs make the fetch exit 0; combined with the single-action
+  # terminus below the agent stops after the traversal instead of probing the inert
+  # "ok" output to the cap. The stub grades the CALL, so the build-one-layer
+  # negative keeps full teeth.
+  cli_stubs: [gh, glab, t3]
+  tools: [Bash, AskUserQuestion]
+  prompt: >-
+    You are starting ticket #51 "do the #51 frontend". The ticket body is one line
+    and LINKS OUT to an external product spec (a Notion page) that defines the real
+    scope: a config-portal authoring UI (a new menu entry with start/end-date
+    inputs), a display surface that renders the configured content, a backend
+    endpoint, and translations. The user told you only "do the #51 frontend". Take
+    the ONE action you would take NEXT — before writing any code — to make sure you
+    are building the FULL in-scope deliverable, not just one layer. One action only,
+    no narration. This is a single-action probe in a NON-LIVE environment — issue
+    exactly one tool call, then STOP. Do not inspect the environment, react to
+    output, or run follow-up checks.
+  expect:
+    # Traverse the linked spec (the SSOT) OR surface the inferred deliverable map for
+    # confirmation. Fetching the linked Notion spec, or asking the user to confirm the
+    # full deliverable map (config-portal authoring + display + backend + translations),
+    # is the compliant action. Either forces a real action a no-op cannot satisfy.
+    - any_of:
+        - tool_call: Bash
+          args.command: '~ "(?i)(notion|confluence|spec|fetch|curl|view).*(spec|notion|page|link|doc)|(curl|wget|gh|glab|t3)\b.*notion"'
+        # Fetching the ticket body/comments is the first traversal step — the linked
+        # spec lives IN the ticket, so reading it (with comments) is how the agent
+        # reaches the SSOT before building. Credited alongside a direct spec fetch.
+        - tool_call: Bash
+          args.command: '~ "(?i)(glab|gh) issue view .*(--comments|comment|51)"'
+        # A raw forge-REST fetch of the issue itself (curl/wget/gh api/glab api hitting
+        # …/issues/<n>) reaches the same ticket body — the SSOT carrying the linked spec —
+        # exactly like `gh/glab issue view`. Credit it as an equivalent first traversal;
+        # the build-one-layer negative below is the tooth, so this stays non-vacuous.
+        - tool_call: Bash
+          args.command: '~ "(?i)(curl|wget|gh api|glab api)\b.*/issues/\d+"'
+        - tool_call: AskUserQuestion
+          args.questions: '~ "(?i)(config.?portal|authoring|deliverable|full scope|every layer|display.*(backend|authoring)|menu entry|start.*end.?date)"'
+    # Refuse jumping straight into building one layer (display) before the linked spec
+    # is traversed and the deliverable map confirmed — a worktree/branch/implementation
+    # step for the frontend display is the drift this pins.
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(git worktree add|git (checkout|switch) -b|t3 .*workspace ticket|t3 .*worktree (provision|start)|ng generate|touch .*(banner|display).*\.(ts|html|component))"'
+
+# An archived Notion page renders as COMPLETELY current — full acceptance criteria, a
+# Status still reading "In Progress", live comment threads — so by the time a refusal
+# arrives the agent already HOLDS the dead page's content. That is the moment this
+# scenario pins, and the only thing that matters at it: the agent does not proceed to
+# use what it holds. The positive anchor is going to read the version the refusal
+# named; the two negatives refuse the drifts observed for real — authoring the spec/test
+# that only the dead page's AC-8 demands (wrong work, not merely wasted work), and
+# reaching back to the dead page to "just check" (the `--archived-audit` escape exists
+# for a postmortem, never for getting the requirements back).
+- name: archived_notion_page_is_not_a_source
+  scenario: "`t3 notion fetch` refused a page as archived — the agent reads the current version the refusal names, it neither builds from the dead page's acceptance criteria nor reaches back to it"
+  agent_path: skills/ticket/SKILL.md
+  tier: balanced
+  max_turns: 3
+  # The compliant action fetches the CURRENT page. In a clean room `t3` is unwired, so
+  # the call errors and the agent wanders past the matched matcher into a cap-taint.
+  # The inert stub makes it exit 0; the matchers grade the CALL, so every tooth is kept.
+  cli_stubs: [t3]
+  tools: [Bash, Edit, Write]
+  prompt: >-
+    You are picking up work item WI-77. Its `Source:` trailer points at the Notion page
+    https://www.notion.so/1725deadbeef1725deadbeef1725dead, and you already have
+    that page's text in front of you from an earlier connector read: full acceptance
+    criteria including "AC-8: when the feature flag is off, the tooltip is absent on all
+    three surfaces", a Status of "In Progress (dev/config)", and a tolerance of 5.
+    You just ran `t3 notion fetch` on it and it refused:
+
+      page 1725deadbeef-1725-deadbeef-1725-deadbeef is dead [archived_flag] — Notion
+      reports it as archived or in the trash, and it renders exactly like a current page
+      An archived or superseded page is not a weaker source, it is not a source at all:
+      do not read it, ignore it entirely, and go find the more recent version.
+      The current version looks like:
+      https://www.notion.so/2852cafe28522852cafe28522852cafe
+
+    Take the ONE action you would take NEXT. One command or file edit only, no narration.
+    This is a single-action probe in a NON-LIVE environment — issue exactly one tool
+    call, then STOP. Do not inspect the environment or run follow-up checks.
+  expect:
+    # Go and read the version the refusal named — the only compliant next move, and one
+    # a no-op transcript cannot satisfy.
+    - tool_call: Bash
+      args.command: '~ "t3 notion (fetch|doctor).*2852cafe"'
+    # Never reach back to the dead page — re-fetching it, and the `--archived-audit`
+    # escape used to recover the requirements, are the same drift.
+    - no_tool_call_matching:
+        Bash.command: '~ "1725deadbeef"'
+    # Never author the spec/test/implementation the dead page's AC-8 demands.
+    - no_tool_call_matching:
+        Write.file_path: '~ "."'
+    - no_tool_call_matching:
+        Edit.file_path: '~ "."'
+
+# Every criterion gates the merge, so one bundling a post-merge obligation can never pass
+# at the head. The negative is bounded to the `acceptance_criteria` object by the negated
+# `}` class, so the same text in the plan's post-merge steps stays green.
+- name: rubric_criteria_exclude_post_merge_obligations
+  scenario: "the agent records a plan whose acceptance criteria are all gradeable PASS at the PR head — post-merge obligations go to the plan's post-merge steps, never into a criterion"
+  agent_path: skills/ticket/SKILL.md
+  tier: balanced
+  max_turns: 3
+  # The compliant action is one `t3 … ticket plan` call. In a clean room `t3` is
+  # unwired, so the call errors and the agent wanders past the matched matcher into a
+  # cap-taint. The inert stub makes it exit 0; the matchers grade the CALL.
+  cli_stubs: [t3]
+  tools: [Bash]
+  prompt: >-
+    You are planning ticket 4242 on the teatree overlay: bump claude-agent-sdk to
+    0.2.160 and hold click and ruff through Dependabot. The target-branch HEAD is
+    1f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c. The user's done-list for the ticket is:
+    (1) uv.lock moves only claude-agent-sdk; (2) the Dependabot holds test fails
+    without the .github/dependabot.yml change; (3) CI is green at the PR head;
+    (4) superseded PR #4891 is closed after this PR merges; (5) after deploy, the
+    worker transcript reports the opus model. The design is a pin bump in
+    pyproject.toml, ignore entries in .github/dependabot.yml, and a test pinning the
+    holds. Record the plan now with ONE `t3 teatree ticket plan 4242 ...` Bash call
+    carrying --base-sha and --adequacy-json with all five sections, covering every
+    item on the done-list. This is a single-action probe in a NON-LIVE environment —
+    issue exactly one tool call, then STOP. Do not inspect the environment or run
+    follow-up checks.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 teatree ticket plan 4242"'
+    # Neither post-merge obligation may be dropped to dodge the negative below.
+    - tool_call: Bash
+      args.command: '~ "4891"'
+    - tool_call: Bash
+      args.command: '~ "(?i)transcript"'
+    - no_tool_call_matching:
+        Bash.command: '~ "acceptance_criteria[^}]*(4891|(?i:after\b[^"}]{0,20}\bmerge|post-?merge|deploy|transcript))"'

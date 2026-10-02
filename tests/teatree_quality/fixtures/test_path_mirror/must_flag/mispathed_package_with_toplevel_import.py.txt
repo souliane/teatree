@@ -1,0 +1,6 @@
+from teatree.core.models import Ticket
+from teatree.identity import current_user
+
+
+def test_subject_is_core_models():
+    assert Ticket and current_user

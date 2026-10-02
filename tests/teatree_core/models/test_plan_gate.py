@@ -1,0 +1,280 @@
+"""Plan-before-code gate: PLAN_RECORDED FSM state + PlanArtifact DB record.
+
+Structural invariant: the only path from WORK_STARTED to CODED passes through PLAN_RECORDED.
+``code()`` is sourced from PLAN_RECORDED (not WORK_STARTED) so skipping ``plan()`` raises
+``TransitionNotAllowed`` — a STATE-GRAPH IMPOSSIBILITY, not a prose rule.
+
+``plan()`` is itself guarded by ``check_plan_artifact()`` which requires a
+``PlanArtifact`` DB row — no in-memory escape hatch.
+
+All tests follow the symmetric must-pass / must-fail pattern from
+dod_gate.py so a future regression is caught in both directions.
+"""
+
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+from django_fsm import TransitionNotAllowed
+
+from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope
+from teatree.agents.result_schema import check_evidence
+from teatree.core import tasks as tasks_mod
+from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.plan_artifact import NoPlanArtifactError, PlanArtifact
+from teatree.core.runners import WorktreeProvisioner
+from teatree.core.runners.base import RunnerResult
+from tests.factories import _FORTY_HEX, TEST_ADEQUACY, record_test_plan
+
+
+def _planning_envelope(plan_text: str) -> dict[str, object]:
+    return {
+        "summary": "Plan done",
+        "plan_text": plan_text,
+        "base_sha": _FORTY_HEX,
+        "adequacy": dict(TEST_ADEQUACY),
+    }
+
+
+def _started_ticket() -> Ticket:
+    t = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR)
+    t.state = Ticket.State.WORK_STARTED
+    t.save()
+    return t
+
+
+def _planned_ticket() -> Ticket:
+    t = _started_ticket()
+    record_test_plan(t, plan_text="Implement X by doing Y", recorded_by="t3:planner")
+    t.plan()
+    t.save()
+    return t
+
+
+class TestCannotReachCodedDirectlyFromStarted(TestCase):
+    """Structural: WORK_STARTED → CODED must raise TransitionNotAllowed.
+
+    This test is the anti-vacuous proof that the FSM gate is load-bearing.
+    With ``code()`` sourced from WORK_STARTED, this test passes → gate is broken.
+    With ``code()`` sourced from PLAN_RECORDED, this test passes → gate works.
+    Proven RED on the pre-implementation source (code() source=WORK_STARTED) then
+    GREEN after retargeting to PLAN_RECORDED.
+    """
+
+    def test_cannot_reach_coded_directly_from_started(self) -> None:
+        ticket = _started_ticket()
+        with pytest.raises(TransitionNotAllowed):
+            ticket.code()
+
+
+class TestPlanTransitionRequiresPlanArtifact(TestCase):
+    """``plan()`` must be guarded: no artifact → NoPlanArtifactError."""
+
+    def test_plan_without_artifact_raises(self) -> None:
+        ticket = _started_ticket()
+        with pytest.raises(NoPlanArtifactError):
+            ticket.plan()
+
+    def test_plan_with_artifact_advances_to_planned(self) -> None:
+        ticket = _started_ticket()
+        record_test_plan(ticket, plan_text="Implement X by doing Y", recorded_by="t3:planner")
+        ticket.plan()
+        ticket.save()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+
+    def test_plan_from_non_started_raises(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme")
+        ticket.state = Ticket.State.CODED
+        ticket.save()
+        with pytest.raises(TransitionNotAllowed):
+            ticket.plan()
+
+
+class TestCodeTransitionFromPlanned(TestCase):
+    """``code()`` must accept PLAN_RECORDED as source and advance to CODED."""
+
+    def test_code_from_planned_advances_to_coded(self) -> None:
+        ticket = _planned_ticket()
+        ticket.code()
+        ticket.save()
+        assert ticket.state == Ticket.State.CODED
+
+    def test_code_from_started_raises(self) -> None:
+        ticket = _started_ticket()
+        with pytest.raises(TransitionNotAllowed):
+            ticket.code()
+
+
+class TestPlanArtifactModel(TestCase):
+    """PlanArtifact.record() is the single guarded factory."""
+
+    def test_record_creates_artifact(self) -> None:
+        ticket = _started_ticket()
+        artifact = PlanArtifact.record(
+            ticket=ticket, plan_text="Do X", recorded_by="t3:planner", base_sha=_FORTY_HEX, adequacy=TEST_ADEQUACY
+        )
+        assert PlanArtifact.objects.filter(ticket=ticket).count() == 1
+        assert artifact.plan_text == "Do X"
+
+    def test_record_requires_non_empty_plan_text(self) -> None:
+        ticket = _started_ticket()
+        with pytest.raises(ValueError, match="plan_text"):
+            PlanArtifact.record(ticket=ticket, plan_text="", recorded_by="t3:planner")
+
+    def test_record_requires_non_whitespace_plan_text(self) -> None:
+        ticket = _started_ticket()
+        with pytest.raises(ValueError, match="plan_text"):
+            PlanArtifact.record(ticket=ticket, plan_text="   ", recorded_by="t3:planner")
+
+    def test_record_requires_non_empty_recorded_by(self) -> None:
+        ticket = _started_ticket()
+        with pytest.raises(ValueError, match="recorded_by"):
+            PlanArtifact.record(ticket=ticket, plan_text="Do X", recorded_by="")
+
+    def test_record_requires_non_whitespace_recorded_by(self) -> None:
+        ticket = _started_ticket()
+        with pytest.raises(ValueError, match="recorded_by"):
+            PlanArtifact.record(ticket=ticket, plan_text="Do X", recorded_by="   ")
+
+    def test_multiple_artifacts_allowed_newest_governs(self) -> None:
+        ticket = _started_ticket()
+        PlanArtifact.record(
+            ticket=ticket, plan_text="Plan v1", recorded_by="t3:planner", base_sha=_FORTY_HEX, adequacy=TEST_ADEQUACY
+        )
+        PlanArtifact.record(
+            ticket=ticket, plan_text="Plan v2", recorded_by="t3:planner", base_sha=_FORTY_HEX, adequacy=TEST_ADEQUACY
+        )
+        assert PlanArtifact.objects.filter(ticket=ticket).count() == 2
+
+    def test_artifact_for_wrong_ticket_does_not_unlock_plan(self) -> None:
+        ticket_a = _started_ticket()
+        ticket_b = _started_ticket()
+        PlanArtifact.record(
+            ticket=ticket_a,
+            plan_text="Plan for A",
+            recorded_by="t3:planner",
+            base_sha=_FORTY_HEX,
+            adequacy=TEST_ADEQUACY,
+        )
+        with pytest.raises(NoPlanArtifactError):
+            ticket_b.plan()
+
+
+class TestTrivialPlanSkipCarveOut(TestCase):
+    """A trivial-marked AUTHOR ticket advances WORK_STARTED→PLAN_RECORDED with no artifact.
+
+    The lightweight, audited carve-out (Batch C). Anti-vacuous proof: a
+    trivial-marked ticket's plan() advances with NO PlanArtifact and NO
+    --human-authorize, while an UNMARKED ticket's plan() STILL raises
+    NoPlanArtifactError (the carve-out must not leak to ordinary tickets — the
+    critical guard). RED-on-revert: if check_plan_artifact stops honouring the
+    marker, the first test goes red; if the marker were honoured too broadly
+    (any extra), the second goes red.
+    """
+
+    def test_trivial_marked_ticket_advances_without_artifact(self) -> None:
+        from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip  # noqa: PLC0415
+
+        ticket = _started_ticket()
+        mark_trivial_plan_skip(ticket, reason="one-line typo fix", by="operator")
+        assert not PlanArtifact.objects.filter(ticket=ticket).exists()
+        ticket.plan()
+        ticket.save()
+        assert ticket.state == Ticket.State.PLAN_RECORDED
+        assert not PlanArtifact.objects.filter(ticket=ticket).exists()
+
+    def test_unmarked_ticket_still_requires_artifact(self) -> None:
+        ticket = _started_ticket()
+        assert not PlanArtifact.objects.filter(ticket=ticket).exists()
+        with pytest.raises(NoPlanArtifactError):
+            ticket.plan()
+
+    def test_marker_with_empty_reason_does_not_unlock_plan(self) -> None:
+        ticket = _started_ticket()
+        ticket.extra = {"trivial_plan_skip": {"reason": "", "by": "x"}}
+        ticket.save()
+        with pytest.raises(NoPlanArtifactError):
+            ticket.plan()
+
+
+class TestAttemptRecorderRecordsPlanArtifact(TestCase):
+    """record_result_envelope auto-records PlanArtifact on a planning success."""
+
+    def _make_planning_task(self) -> Task:
+        ticket = _started_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="t3:planner")
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="planning",
+            execution_reason="test",
+        )
+
+    def test_planning_success_auto_records_plan_artifact(self) -> None:
+        task = self._make_planning_task()
+        result = _planning_envelope("Step 1: do X. Step 2: do Y.")
+        record_result_envelope(task, result, phase="planning", usage=AttemptUsage())
+        artifact = PlanArtifact.objects.filter(ticket=task.ticket).first()
+        assert artifact is not None
+        assert artifact.recorded_by == "t3:planner"
+
+    def test_auto_record_falls_back_to_planning_identity_when_agent_id_empty(self) -> None:
+        ticket = _started_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="planning",
+            execution_reason="test",
+        )
+        result = _planning_envelope("Step 1: do X.")
+        record_result_envelope(task, result, phase="planning", usage=AttemptUsage())
+        artifact = PlanArtifact.objects.filter(ticket=ticket).first()
+        assert artifact is not None
+        assert artifact.recorded_by == "planning"
+
+    def test_planning_without_plan_text_does_not_record_artifact(self) -> None:
+        task = self._make_planning_task()
+        record_test_plan(task.ticket, plan_text="pre-existing", recorded_by="t3:planner")
+        old_count = PlanArtifact.objects.filter(ticket=task.ticket).count()
+        result_no_text = {"summary": "Plan done", "plan_text": ""}
+        assert check_evidence(result_no_text, "planning")  # fails evidence check (returns error msg)
+        record_result_envelope(task, result_no_text, phase="planning", usage=AttemptUsage())
+        assert PlanArtifact.objects.filter(ticket=task.ticket).count() == old_count
+
+    def test_non_planning_phase_does_not_record_artifact(self) -> None:
+        ticket = _planned_ticket()
+        ticket.code()
+        ticket.save()
+        session = Session.objects.create(ticket=ticket, agent_id="t3:coder")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_reason="test",
+        )
+        count_before = PlanArtifact.objects.filter(ticket=ticket).count()
+        result = {
+            "summary": "Coded",
+            "plan_text": "This should not create a PlanArtifact",
+            "files_modified": [{"path": "foo.py", "action": "modified"}],
+        }
+        record_result_envelope(task, result, phase="coding", usage=AttemptUsage())
+        assert PlanArtifact.objects.filter(ticket=ticket).count() == count_before
+
+
+class TestStartSchedulesPlanning(TestCase):
+    """The real execute_provision schedules a planning task (not coding)."""
+
+    def test_start_schedules_planning_task(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR)
+        ticket.scope(issue_url="https://example.com/1", variant="acme", repos=["backend"])
+        ticket.save()
+        ticket.start()
+        ticket.save()
+
+        with patch.object(WorktreeProvisioner, "run", return_value=RunnerResult(ok=True, detail="provisioned")):
+            tasks_mod.execute_provision.call(ticket.pk)
+
+        assert Task.objects.filter(ticket=ticket, phase="planning").exists()
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()

@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-creport-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me write up what I found."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git rev-parse HEAD", "description": "read the head sha"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "abc1234"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "While working I uncovered a broader systemic problem: the discovery walk re-reads the catalog on every tick, which scales poorly and should be cached at module load. I traced it through several call sites and believe the right fix is a memoized loader. This pattern likely recurs across the scanners and is worth a dedicated refactor before adding more lanes."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

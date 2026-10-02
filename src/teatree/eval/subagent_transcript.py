@@ -1,0 +1,139 @@
+"""Adapt an in-session sub-agent JSONL into an :class:`EvalRun`.
+
+The transcript eval path needs a transcript produced by a subscription-covered
+turn. The only way to spend subscription tokens is an in-session ``Agent``
+sub-agent — and Claude Code already writes every sub-agent's trajectory to
+``~/.claude/projects/<slug>/<session-id>/subagents/agent-<id>.jsonl``. That file
+is the bridge: the ``/t3:running-evals`` skill dispatches a sub-agent per
+scenario, then points the transcript backend at the sub-agent JSONL.
+
+That on-disk schema is the session envelope (see
+:mod:`teatree.eval.session_transcript`), NOT the ``claude -p`` stream-json
+schema (see :mod:`teatree.eval.transcript`). The two share an identical
+``message.content[]`` block shape (``tool_use`` / ``text``), so tool-call and
+text extraction is reused verbatim. They diverge at the terminus: a sub-agent
+JSONL carries NO ``result`` event — completion is the final ``assistant``
+message's ``stop_reason``, and on disk that field is frequently ``null`` (the
+streaming reason is not persisted), so reading it is subtler than a string
+compare: :func:`_terminal_reason` owns the rule. This module supplies that
+session-aware terminal reason and assembles the :class:`EvalRun` the grader
+consumes, so a sub-agent transcript grades identically to a ``claude -p`` one.
+
+This module never invokes ``claude -p`` or the Agent SDK: it only parses an
+on-disk file, so the transcript lane runs no model end to end.
+"""
+
+import json
+
+from teatree.eval.models import COST_SOURCE_NOT_METERED, EvalRun, EvalSpec
+from teatree.eval.transcript import StreamJsonEvent, extract_text_blocks, extract_tool_calls
+
+_DIRTY_STOP_REASONS = frozenset({"max_tokens", "refusal", "error", "aborted"})
+
+#: Reasons a turn ended MID-FLIGHT: to invoke a tool, or to pause. The continuation is
+#: simply not in the file, so a capture ending here is cut short, never a clean finish.
+_NONTERMINAL_STOP_REASONS = frozenset({"tool_use", "pause_turn"})
+
+
+def is_subagent_transcript(raw: str) -> bool:
+    """True when *raw* is a session-schema sub-agent JSONL, not ``claude -p`` stream-json.
+
+    A sub-agent line carries the session envelope's ``isSidechain`` /
+    ``agentId`` keys and never a top-level ``result`` event; the stream-json
+    schema has neither envelope key and always ends in a ``result`` event.
+    Detection reads the first well-formed object only, so it stays O(1).
+    """
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        return "isSidechain" in obj or "agentId" in obj
+    return False
+
+
+def _as_stream_events(raw: str) -> list[StreamJsonEvent]:
+    events: list[StreamJsonEvent] = []
+    for line_no, raw_line in enumerate(raw.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        event_type = obj.get("type")
+        if not isinstance(event_type, str):
+            continue
+        events.append(StreamJsonEvent(line_no=line_no, type=event_type, subtype=None, raw=obj))
+    return events
+
+
+def _has_closing_text(message: dict) -> bool:
+    """True when *message* carries a non-empty ``text`` content block.
+
+    The completeness signal for a null-``stop_reason`` capture: a genuinely
+    finished sub-agent turn ends with the agent's closing narration (a text
+    block). A mid-write copy cut off during a tool call has no trailing text, so
+    this distinguishes a finished transcript from a truncated one.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(block, dict) and block.get("type") == "text" and str(block.get("text", "")).strip()
+        for block in content
+    )
+
+
+def _terminal_reason(events: list[StreamJsonEvent]) -> tuple[str, bool]:
+    """Return ``(terminal_reason, is_error)`` from the final ``assistant`` message.
+
+    A sub-agent JSONL has no ``result`` event; the run's outcome is the last
+    assistant turn's ``stop_reason``. On disk that field is commonly ``null`` (the
+    streamed reason is not persisted). An explicit string reason is authoritative —
+    a dirty one (``max_tokens`` / ``refusal`` / ``error`` / ``aborted``) and a
+    NONTERMINAL one (``tool_use`` / ``pause_turn``) are both errors, the latter as
+    ``incomplete``. A ``null`` reason is a clean finish ONLY when the turn carries text;
+    a ``null`` reason with no trailing text is a truncated / mid-write capture
+    (``incomplete``, an error) — never a silent clean completion, so a
+    negative-matcher scenario cannot pass on half a transcript. No assistant event at
+    all is an abort.
+    """
+    for event in reversed(events):
+        if event.type != "assistant":
+            continue
+        message = event.raw.get("message")
+        if not isinstance(message, dict):
+            return "incomplete", True
+        stop_reason = message.get("stop_reason")
+        if stop_reason in _NONTERMINAL_STOP_REASONS:
+            return "incomplete", True
+        if isinstance(stop_reason, str):
+            return stop_reason, stop_reason in _DIRTY_STOP_REASONS
+        if _has_closing_text(message):
+            return "completed", False
+        return "incomplete", True
+    return "aborted", True
+
+
+def subagent_run(spec: EvalSpec, raw: str) -> EvalRun:
+    events = _as_stream_events(raw)
+    terminal_reason, is_error = _terminal_reason(events)
+    return EvalRun(
+        spec_name=spec.name,
+        tool_calls=tuple(extract_tool_calls(events)),
+        text_blocks=tuple(extract_text_blocks(events)),
+        terminal_reason=terminal_reason,
+        is_error=is_error,
+        raw_stdout=raw,
+        raw_stderr="",
+        cost_source=COST_SOURCE_NOT_METERED,
+    )

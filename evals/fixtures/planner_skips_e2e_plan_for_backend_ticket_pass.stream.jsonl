@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-pe2e-be-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "No frontend repo in scope and nothing user-visible changes."}, {"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "plan.md", "content": "### E2E test plan / Acceptance scenarios\nNo UI surface — touches only the Celery retry-backoff constant; no frontend repo in scope, no user-visible change. No E2E scenarios.\n"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "ok"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

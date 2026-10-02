@@ -1,0 +1,36 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 2
+trim_trailing_whitespace = true
+
+[*.py]
+indent_size = 4
+
+# Embeds a multi-line YAML spec fixture as a Python string, where 2-space YAML
+# nesting is idiomatic and load-bearing; ruff-format still enforces the module's
+# Python indentation, so the [*.py] 4-space rule does not apply to this one file.
+[tests/teatree_eval/test_loader_production_hooks.py]
+indent_size = unset
+
+# Embeds a ci.yml-shaped job-key fixture as a Python string; the 2-space GitHub
+# Actions indentation is what the test asserts against and is load-bearing.
+[tests/teatree_cli/doctor/test_merge_gate_enforcement_check.py]
+indent_size = unset
+
+# Embeds a unified git diff inside a YAML block scalar. A diff's leading column is
+# the context/add/remove MARKER, so a context line sits at block-indent + 1 and can
+# never be a multiple of 2 — the odd column is the data, not a formatting slip.
+[evals/scenarios/comments_as_code_one_line.yaml]
+indent_size = unset
+
+[*.{md,markdown}]
+trim_trailing_whitespace = false
+indent_size = unset
+
+[Makefile]
+indent_style = tab

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-structured_question_uses_askuserquestion_not_inline_prose-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "File this bug in the upstream repo or the overlay repo?", "header": "Where", "options": [{"label": "upstream"}, {"label": "overlay"}]}]}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

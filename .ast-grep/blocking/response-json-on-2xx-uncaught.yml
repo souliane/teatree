@@ -1,0 +1,22 @@
+id: response-json-on-2xx-uncaught
+language: python
+severity: warning
+message: >-
+  response.json() on a 2xx body with no JSONDecodeError/ValueError guard.
+  A 2xx body is not guaranteed JSON; wrap .json() in
+  `except (json.JSONDecodeError, ValueError)` and degrade (return the
+  failure contract), do not crash the FSM. See slack_reactions.py:97.
+files:
+  - "src/teatree/backends/slack/reactions.py"
+rule:
+  pattern: $RESP.json()
+  not:
+    inside:
+      kind: try_statement
+      has:
+        kind: except_clause
+        has:
+          regex: 'ValueError|JSONDecodeError'
+          stopBy: end
+        stopBy: end
+      stopBy: end

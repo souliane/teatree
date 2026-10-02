@@ -1,0 +1,440 @@
+"""``t3 <overlay> gate`` — the orchestrator's guaranteed self-rescue.
+
+The orchestrator-execution-boundary gate (``handle_enforce_orchestrator_boundary``
+in ``hooks/scripts/hook_router.py``, [#115]/[#1472]) can deny the MAIN agent's
+heavy foreground ``Bash``. If detection ever misbehaves — e.g. a sub-agent is
+misclassified as the main agent — the orchestrator (and, by sidechain
+misdetection, every sub-agent) can be locked out of Bash entirely.
+
+This module backs the always-reachable escape hatch. ``t3 <overlay> gate
+disable`` flips the durable ``orchestrator_bash_gate_enabled`` kill-switch — DB-home
+(every setting lives in the canonical config DB), so it writes and reads that DB
+via the Django-free cold writer/reader. The cold writer needs no Django, so the
+self-rescue still works when the heavier overlay machinery is wedged.
+The command is unconditionally runnable EVEN WHEN the gate is enabled, because
+the gate's heavy-Bash denylist (``_ORCHESTRATOR_HEAVY_BASH_RE``) does not match
+a ``t3 …`` command, and ``t3 …`` invocations are the orchestration prefix the
+gate is built to allow.
+
+A second gate rides the same self-rescue surface: the skill-loading gate
+(``handle_enforce_skill_loading``, [#1488]) hard-blocks ``Bash``/``Edit``/``Write``
+code work until the matching teatree skill is loaded. If its detection ever
+misbehaves, ``t3 <overlay> gate skill-loading disable`` flips the
+``skill_loading_gate_enabled`` kill-switch — reachable for the same reason
+(``t3 …`` is the orchestration prefix every gate allows).
+
+Every read/write is a Django-free stdlib access of the canonical config DB — it
+does NOT route through Django or an overlay ``manage.py`` subprocess, so it stays
+runnable even when the heavier overlay machinery is wedged.
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+
+import typer
+
+GATE_KEY = "orchestrator_bash_gate_enabled"
+SKILL_GATE_KEY = "skill_loading_gate_enabled"
+PLAN_GATE_KEY = "plan_edit_gate_enabled"
+VISIBLE_PLAN_GATE_KEY = "visible_plan_gate_enabled"
+CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
+CRON_LOOP_SHELL_GATE_KEY = "cron_loop_shell_gate_enabled"
+STANDING_GRANT_ASK_GATE_KEY = "standing_grant_ask_gate_enabled"
+COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
+ANSWER_FIRST_GATE_KEY = "answer_first_gate_enabled"
+UNBACKED_CLAIM_GATE_KEY = "unbacked_claim_gate_enabled"
+BRIEF_ANCHOR_GATE_KEY = "brief_anchor_gate_enabled"
+MAIN_CLONE_GATE_KEY = "main_clone_guard_gate_enabled"
+MEMORY_RECALL_GATE_KEY = "memory_recall_enabled"
+SNAPSHOT_BASELINE_GATE_KEY = "snapshot_baseline_gate_enabled"
+GATE_RELAXATION_GATE_KEY = "gate_relaxation_gate_enabled"
+OUT_OF_BAND_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
+RAW_PR_CREATE_GATE_KEY = "raw_pr_create_gate_enabled"
+STANDING_GOAL_GATE_KEY = "standing_goal_stop_gate_enabled"
+GLAB_STALE_BASE_REMOTE_GATE_KEY = "glab_stale_base_remote_gate_enabled"
+GIT_ADD_ALL_GATE_KEY = "git_add_all_gate_enabled"
+FOREIGN_BRANCH_PUSH_GATE_KEY = "foreign_branch_push_gate_enabled"
+GENERAL_PURPOSE_AGENT_GATE_KEY = "general_purpose_agent_gate_enabled"
+VERBATIM_PASTE_GATE_KEY = "verbatim_paste_gate_enabled"
+MERGED_DETECTION_GATE_KEY = "merged_detection_gate_enabled"
+ORCHESTRATOR_DELEGATION_GATE_KEY = "orchestrator_delegation_gate_enabled"
+# Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
+# above (which default ENABLED and read ``is not False``), this is OFF by
+# default and reads ``is True`` — it must NEVER relax a gate by accident, only
+# by an explicit operator opt-in. When ON, every OVER-DENY gate flips to
+# fail-open at once; the PUBLIC-egress leak gate ignores it (fail-closed always).
+# The ``danger_`` prefix makes a forgotten ``true`` unmissable — this switch
+# disables protective gates wholesale.
+DANGER_GATE_FAIL_OPEN_KEY = "danger_gate_fail_open"
+DANGER_GATE_FAIL_OPEN_DEFAULT = False
+
+
+def _gate_key_is_enabled(key: str, *, default: bool = True) -> bool:
+    """Resolve the DB-home ``<key>`` gate, degrading to *default* on a missing/broken DB.
+
+    The per-gate kill-switches default True (enabled unless an explicit ``false``
+    is recorded); the master fail-open switch defaults False, so its callers pass
+    ``default=False`` — reading it through the wrong posture reports a value the
+    switch's own resolver would never return. Reads via the Django-free cold
+    reader, so ``t3 <overlay> gate status`` reports what the flipped hook sees.
+    """
+    from teatree.config import cold_reader  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    return cold_reader.bool_setting(key, default=default)
+
+
+def gate_is_enabled() -> bool:
+    """Resolve the orchestrator heavy-Bash gate (``GATE_KEY``, default True)."""
+    return _gate_key_is_enabled(GATE_KEY)
+
+
+def skill_loading_gate_is_enabled() -> bool:
+    """Resolve the skill-loading gate (``SKILL_GATE_KEY``, default True)."""
+    return _gate_key_is_enabled(SKILL_GATE_KEY)
+
+
+def config_overwrite_gate_is_enabled() -> bool:
+    """Resolve the read-before-overwrite config gate (``CONFIG_OVERWRITE_GATE_KEY``, default True)."""
+    return _gate_key_is_enabled(CONFIG_OVERWRITE_GATE_KEY)
+
+
+def completion_claim_gate_is_enabled() -> bool:
+    """Resolve the completion-claim Stop gate (``COMPLETION_CLAIM_GATE_KEY``, default True)."""
+    return _gate_key_is_enabled(COMPLETION_CLAIM_GATE_KEY)
+
+
+def memory_recall_gate_is_enabled() -> bool:
+    """Resolve the cold-tier memory recall injector (``MEMORY_RECALL_GATE_KEY``, default True)."""
+    return _gate_key_is_enabled(MEMORY_RECALL_GATE_KEY)
+
+
+def danger_gate_fail_open_is_enabled() -> bool:
+    """Resolve the master fail-open switch (``DANGER_GATE_FAIL_OPEN_KEY``, default False).
+
+    Reads the DB-home ``danger_gate_fail_open`` setting and returns True ONLY when
+    it is an explicit ``true``. Fails CLOSED to disabled (the protective default) on
+    a missing/broken DB — the inverse posture of :func:`gate_is_enabled`, because
+    accidentally relaxing every over-deny gate is exactly the failure this switch
+    must never cause. The over-deny gates consult this; the PUBLIC-egress leak gate
+    never does.
+    """
+    return _gate_key_is_enabled(DANGER_GATE_FAIL_OPEN_KEY, default=DANGER_GATE_FAIL_OPEN_DEFAULT)
+
+
+def _set_gate_key(key: str, *, enabled: bool) -> Path:
+    """Persist ``<key> = <enabled>`` to the canonical config DB; return the DB path.
+
+    Every gate key is DB-home, so the write goes to the canonical DB via the
+    Django-free cold writer and the returned destination is the canonical DB path.
+    A missing DB tier or a locked write is caught by the caller's read-back-verify —
+    the toggle does not silently land somewhere the reader ignores.
+    """
+    from teatree.config import cold_writer  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    cold_writer.write_setting(key, enabled)
+    return cold_writer.canonical_config_db()
+
+
+def _write_gate_and_verify(key: str, *, enabled: bool, default: bool = True) -> Path:
+    """Write ``<key>=<enabled>``, verify the toggle actually took, and return the DB destination.
+
+    After the write, read the gate back through :func:`_gate_key_is_enabled` under the
+    key's OWN unresolved-value posture (*default*) — the master fail-open switch
+    resolves default-False, so verifying its ``enable`` through the default-True
+    posture reported success over a write that never landed. If the observed state
+    disagrees with *enabled*, the canonical DB was missing or locked (or the write
+    otherwise failed) and the toggle did NOT take: raise ``typer.Exit(1)`` with a loud
+    message so the command never prints a success line over a stale, still-effective
+    gate. Catching the mismatch by read-back rather than by classifying the write error
+    covers EVERY failure mode, regardless of cause.
+    """
+    destination = _set_gate_key(key, enabled=enabled)
+    if _gate_key_is_enabled(key, default=default) != enabled:
+        still = "ENABLED" if not enabled else "DISABLED"
+        typer.echo(
+            f"ERROR: `{key}` did NOT take — the canonical DB is locked or the write failed; "
+            f"the gate is still {still}. Retry once the DB is free.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return destination
+
+
+@dataclass(frozen=True, slots=True)
+class _GateHelp:
+    """The status echo line + per-command CLI help for one gate kill-switch trio.
+
+    Defaults are the keyed-gate wording; the top-level heavy-Bash gate passes a
+    custom instance so the extraction leaves the published CLI surface (help text)
+    and the ``status`` echo byte-identical to the former hand-rolled commands.
+    """
+
+    enabled_status: str = "gate ENABLED"
+    status: str = "Show whether the gate is enabled."
+    disable: str = "Disable the gate (self-rescue from a lockout)."
+    enable: str = "Re-enable the gate."
+
+
+def _attach_gate_commands(app: typer.Typer, *, key: str, help_: _GateHelp | None = None) -> None:
+    """Register the ``status``/``disable``/``enable`` trio for ``key`` on ``app``.
+
+    The one home for a gate kill-switch's three commands, shared by
+    :func:`_register_keyed_gate` (which hangs them under a named subgroup) and the
+    top-level orchestrator heavy-Bash gate (which hangs them directly on the
+    ``gate`` group). ``help_`` carries the status echo line and the per-command
+    help text; the disabled echo line and the disable/enable receipts are keyed
+    off ``key`` and identical everywhere.
+    """
+    texts = help_ or _GateHelp()
+
+    @app.command(name="status", help=texts.status)
+    def status() -> None:
+        typer.echo(texts.enabled_status if _gate_key_is_enabled(key) else "gate DISABLED — no-op")
+
+    @app.command(name="disable", help=texts.disable)
+    def disable() -> None:
+        destination = _write_gate_and_verify(key, enabled=False)
+        typer.echo(f"gate DISABLED — wrote `{key} = false` to {destination}")
+
+    @app.command(name="enable", help=texts.enable)
+    def enable() -> None:
+        destination = _write_gate_and_verify(key, enabled=True)
+        typer.echo(f"gate ENABLED — wrote `{key} = true` to {destination}")
+
+
+def _register_keyed_gate(parent: typer.Typer, *, name: str, key: str, label: str) -> None:
+    """Attach a ``status``/``disable``/``enable`` subgroup for ``[teatree] <key>``."""
+    group = typer.Typer(no_args_is_help=True, help=f"{label} kill-switch (self-rescue).")
+    _attach_gate_commands(group, key=key)
+    parent.add_typer(group, name=name)
+
+
+def register_gate_commands(overlay_app: typer.Typer) -> None:
+    """Attach the ``gate`` subgroup (heavy-Bash + skill-loading kill-switches)."""
+    gate_group = typer.Typer(
+        no_args_is_help=True,
+        help="Enforcement-gate kill-switches (self-rescue).",
+    )
+
+    # The orchestrator heavy-Bash gate is the group's own top-level
+    # status/disable/enable (``t3 <overlay> gate disable`` — the primary
+    # self-rescue surface), so it attaches DIRECTLY to ``gate_group`` rather than
+    # under a named subgroup. It shares the exact command bodies with every keyed
+    # gate via ``_attach_gate_commands`` (F3.4), overriding only its enabled
+    # status wording.
+    _attach_gate_commands(
+        gate_group,
+        key=GATE_KEY,
+        help_=_GateHelp(
+            enabled_status="gate ENABLED — heavy orchestrator bash blocked",
+            status="Show whether the orchestrator heavy-Bash gate is enabled.",
+            disable="Disable the gate (self-rescue from a Bash lockout).",
+        ),
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="skill-loading",
+        key=SKILL_GATE_KEY,
+        label="Skill-loading gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="plan",
+        key=PLAN_GATE_KEY,
+        label="Plan-before-code edit-block gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="visible-plan",
+        key=VISIBLE_PLAN_GATE_KEY,
+        label="Visible per-target plan-first gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="config-overwrite",
+        key=CONFIG_OVERWRITE_GATE_KEY,
+        label="Read-before-overwrite config/dotfile gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="cron-loop-shell",
+        key=CRON_LOOP_SHELL_GATE_KEY,
+        label="Cron-shells-a-t3-loop gate (the worker owns loop cadence)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="standing-grant-ask",
+        key=STANDING_GRANT_ASK_GATE_KEY,
+        label="Standing-grant sign-off ask gate (never ask for a merge the owner already authorized)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="completion-claim",
+        key=COMPLETION_CLAIM_GATE_KEY,
+        label="Completion-claim gate (on-target evidence before done)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="answer-first",
+        key=ANSWER_FIRST_GATE_KEY,
+        label="Answer-first gate (answer the user's question, do not only dispatch)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="unbacked-claim",
+        key=UNBACKED_CLAIM_GATE_KEY,
+        label="Evidence gate (a diagnosis or an escalation cites what was read)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="brief-anchor",
+        key=BRIEF_ANCHOR_GATE_KEY,
+        label="Brief-anchor lint (a dispatch brief anchors its assertions or licenses overruling them)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="main-clone",
+        key=MAIN_CLONE_GATE_KEY,
+        label="Main-clone working-tree mutation gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="memory-recall",
+        key=MEMORY_RECALL_GATE_KEY,
+        label="Cold-tier memory recall injector",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="snapshot-baseline",
+        key=SNAPSHOT_BASELINE_GATE_KEY,
+        label="Snapshot-baseline attestation gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="gate-relaxation",
+        key=GATE_RELAXATION_GATE_KEY,
+        label="Anti-relaxation + tach-soundness gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="raw-merge",
+        key=OUT_OF_BAND_MERGE_GATE_KEY,
+        label="Out-of-band raw-merge gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="raw-pr-create",
+        key=RAW_PR_CREATE_GATE_KEY,
+        label="Raw MR/PR-create gate (an owner-authored MR nobody can approve)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="standing-goal",
+        key=STANDING_GOAL_GATE_KEY,
+        label="Standing verified-green stop-gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="glab-base-remote",
+        key=GLAB_STALE_BASE_REMOTE_GATE_KEY,
+        label="Stale `glab-base` remote gate (glab's silent MR-create no-op)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="add-all",
+        key=GIT_ADD_ALL_GATE_KEY,
+        label="Whole-tree `git add -A` / `git add .` gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="foreign-push",
+        key=FOREIGN_BRANCH_PUSH_GATE_KEY,
+        label="Foreign-branch push gate (never push onto a branch another author owns)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="general-purpose",
+        key=GENERAL_PURPOSE_AGENT_GATE_KEY,
+        label="Blank general-purpose sub-agent dispatch gate",
+    )
+    _register_keyed_gate(
+        gate_group,
+        name="verbatim-paste",
+        key=VERBATIM_PASTE_GATE_KEY,
+        label="Verbatim operator-paste publish gate",
+    )
+    _register_keyed_gate(
+        gate_group,
+        name="delegation",
+        key=ORCHESTRATOR_DELEGATION_GATE_KEY,
+        label="Orchestrator delegation gate (an unbounded read belongs in a sub-agent)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="merged-detect",
+        key=MERGED_DETECTION_GATE_KEY,
+        label="Hand-rolled merged-branch-detection advisory (WARN-only)",
+    )
+
+    overlay_app.add_typer(gate_group, name="gate")
+
+
+def register_fail_open_gate_commands(review_app: typer.Typer) -> None:
+    """Attach ``review gate fail-open enable|disable|status`` to the review app.
+
+    The master fail-open switch lives under ``t3 review gate fail-open`` (the
+    same surface as the rest of the review-gate machinery). ``enable`` flips
+    every OVER-DENY gate to fail-open at once; ``disable`` restores their
+    protective posture; ``status`` reports the current state. Default OFF.
+    """
+    gate_group = typer.Typer(no_args_is_help=True, help="Review-gate master switches.")
+    fail_open = typer.Typer(no_args_is_help=True, help="Master fail-open switch for the over-deny gates.")
+
+    @fail_open.command(name="status")
+    def status() -> None:
+        """Show whether the master fail-open switch is on."""
+        if danger_gate_fail_open_is_enabled():
+            typer.echo("fail-open ON — every over-deny gate is fail-open (leak gate still fail-closed)")
+        else:
+            typer.echo("fail-open OFF — over-deny gates enforce normally")
+
+    @fail_open.command(name="enable")
+    def enable() -> None:
+        """Turn the master fail-open switch ON (self-rescue from an over-deny lockout)."""
+        destination = _write_gate_and_verify(
+            DANGER_GATE_FAIL_OPEN_KEY, enabled=True, default=DANGER_GATE_FAIL_OPEN_DEFAULT
+        )
+        typer.echo(f"fail-open ON — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = true` to {destination}")
+
+    @fail_open.command(name="disable")
+    def disable() -> None:
+        """Turn the master fail-open switch OFF (restore normal gate enforcement)."""
+        destination = _write_gate_and_verify(
+            DANGER_GATE_FAIL_OPEN_KEY, enabled=False, default=DANGER_GATE_FAIL_OPEN_DEFAULT
+        )
+        typer.echo(f"fail-open OFF — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = false` to {destination}")
+
+    gate_group.add_typer(fail_open, name="fail-open")
+    review_app.add_typer(gate_group, name="gate")

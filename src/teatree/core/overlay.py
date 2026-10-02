@@ -1,0 +1,740 @@
+import copy
+import json
+import logging
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from importlib import import_module
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from teatree.backends.types import Service
+from teatree.config.credential_pass_key import PassKeyResolution, resolve_pass_key
+from teatree.core.e2e_scenario import Capture, E2eExtrasContext, Scenario
+from teatree.core.failed_e2e_watcher import FailedE2EWatcher
+from teatree.core.gates.merge_guard import MergeGuard
+from teatree.core.identity_wiring import AuthoringIdentity, classify_authoring_identity
+from teatree.core.mcp_tool_group import McpTool, McpToolGroup
+from teatree.core.modelkit.phases import canonicalize_phase_keys, normalize_phase
+from teatree.core.overlay_metadata import OverlayMetadata
+from teatree.core.overlays.connectors import OverlayConnectors
+from teatree.core.provision.variant import Variant
+from teatree.core.review.mr_triage import RepoOwner
+from teatree.core.statusline_segment import StatuslineSegment
+from teatree.core.worktree.health import HealthCheck
+from teatree.core.worktree.health import default_health_checks as _default_health_checks
+from teatree.provisioning.skill_drift import SkillSourceClone
+from teatree.types import (
+    DEFAULT_MR_TITLE_REGEX,
+    DEFAULT_TRANSITION_EMOJIS,
+    BaseImageConfig,
+    DbImportStrategy,
+    ProvisionStep,
+    RunCommand,
+    RunCommands,
+    ServiceSpec,
+    SkillMetadata,
+    SymlinkSpec,
+    ToolCommand,
+    ValidationResult,
+)
+from teatree.utils.run import CommandFailedError, TimeoutExpired
+
+if TYPE_CHECKING:
+    from teatree.core.factory.health_signal import HealthSignal
+    from teatree.core.models import Worktree
+    from teatree.core.worktree.readiness import Probe
+    from teatree.types import RawAPIDict
+    from teatree.utils.django_db import DjangoDbImportConfig
+
+logger = logging.getLogger(__name__)
+
+# Re-export all types so existing ``from teatree.core.overlay import X`` still works.
+__all__ = [
+    "DEFAULT_TRANSITION_EMOJIS",
+    "BaseImageConfig",
+    "Capture",
+    "DbImportStrategy",
+    "E2eExtrasContext",
+    "FailedE2EWatcher",
+    "HealthCheck",
+    "McpTool",
+    "McpToolGroup",
+    "MergeGuard",
+    "OverlayBase",
+    "OverlayConfig",
+    "OverlayConnectors",
+    "OverlayE2E",
+    "OverlayMetadata",
+    "OverlayProvisioning",
+    "OverlayReview",
+    "OverlayRuntime",
+    "ProvisionStep",
+    "RunCommand",
+    "RunCommands",
+    "Scenario",
+    "ServiceSpec",
+    "SkillMetadata",
+    "SymlinkSpec",
+    "ToolCommand",
+    "ValidationResult",
+    "Variant",
+]
+
+
+# ── Overlay configuration ────────────────────────────────────────────
+
+
+class OverlayConfig(BaseModel):
+    """Typed, fail-closed overlay configuration (PR-27b)."""
+
+    model_config = ConfigDict(extra="allow", validate_assignment=True, arbitrary_types_allowed=True)
+
+    gitlab_url: str = "https://gitlab.com/api/v4"
+    github_owner: str = ""
+    github_project_number: int = 0
+    code_host: str = ""
+    messaging_backend: str = "noop"
+    # Slack scope profile: ``"full"`` (default) provisions the read/write-everywhere
+    # bot + shared xoxp user token — customer overlays that post across channels and
+    # Slack-Connect. ``"dm_only"`` provisions a minimal bot that may talk ONLY to its
+    # one owner's DM (``channels:manage`` only to leave public channels, no user token); the loader builds its
+    # ``SlackBotBackend`` with ``owner_dm_only=True`` so a non-owner destination fails LOUD.
+    slack_scope_profile: str = "full"
+    slack_token_ref: str = ""
+    # ``user_token_ref`` is a FULL ``pass`` PATH (NOT a prefix like
+    # ``slack_token_ref``) holding the human's Slack OAuth token (``xoxp-…``),
+    # routed by ``SlackBotBackend`` for reactions on Slack-Connect channels the
+    # bot token is rejected on. Resolution + doctor diagnosis: #3334.
+    user_token_ref: str = ""
+    slack_user_id: str = ""
+    # Setup-time provisioned IM channel id between the per-overlay bot and
+    # the user (#1342). Populated by ``t3 setup`` calling ``conversations.open``.
+    slack_dm_channel_id: str = ""
+    require_ticket: bool = False
+    ready_labels: list[str] = Field(default_factory=list)
+    exclude_labels: list[str] = Field(default_factory=list)
+    max_concurrent_auto_starts: int = 1
+    stale_threshold_days: int = 3
+    notion_database_id: str = ""
+    # The Notion page property teatree reads for a ticket's status; non-secret.
+    notion_status_property: str = "Status"
+    # WRITE-back gate (default OFF): ``core.sync.push_notion_status`` PATCHes the
+    # Notion Status property only when this is True. Read-only otherwise.
+    notion_write_back: bool = False
+    mr_close_ticket: bool = False
+    # When True the pre-push ship gate REJECTS any auto-close keyword instead of
+    # silently rewriting it (#1012); teatree's own overlay leaves it False.
+    forbid_close_keywords: bool = False
+    teardown_removes_pass_entries: bool = False
+    known_variants: list[str] = Field(default_factory=list)
+    pr_auto_labels: list[str] = Field(default_factory=list)
+    # The standing reviewer policy: usernames set as REVIEWERS in the same POST that
+    # opens the PR, so no agent ever reaches the direct-assignment surfaces the
+    # self-reviewer-assign gate refuses. Empty in core.
+    pr_auto_reviewers: list[str] = Field(default_factory=list)
+    frontend_repos: list[str] = Field(default_factory=list)
+    workspace_repos: list[str] = Field(default_factory=list)
+    protected_branches: list[str] = Field(default_factory=list)
+    # ``identity_aliases`` groups one human's handles across forges so the
+    # disposition scanner can suppress self-handoff churn without conflating
+    # genuinely-distinct humans (#1015).
+    identity_aliases: list[list[str]] = Field(default_factory=list)
+    dev_env_url: str = ""
+    # #1295 capability J: privacy-redaction patterns scanned by the pre-publish
+    # privacy gate before every public-repo write; empty in core.
+    privacy_redact_terms: list[str] = Field(default_factory=list)
+    privacy_block_patterns: list[str] = Field(default_factory=list)
+    public_repos: list[str] = Field(default_factory=list)
+    # ``owned_repos`` is the SCOPE axis (forge-host-keyed namespace patterns).
+    # ORTHOGONAL to VISIBILITY (``private_repos``) and COLLABORATION
+    # (``author_is_self``). Owned gates ONLY the unknown-repo approval decision,
+    # never merge-without-review. See ``teatree.core.intake.repo_scope``.
+    owned_repos: dict[str, list[str]] = Field(default_factory=dict)
+    # Opt-in for the unknown-repo approval gate (``owned_repo_guard``). Default
+    # False keeps every unmodified overlay inert; fail-CLOSED when True + owned.
+    require_owned_repo_approval: bool = False
+    # Per-overlay skills loaded alongside the active lifecycle skill.
+    companion_skills: list[str] = Field(default_factory=list)
+    # Per-stage ADDITIONAL skills, keyed by canonical phase token (see
+    # ``core.modelkit.phases``). Always additive on top of the lifecycle skill,
+    # the overlay skill, and ``companion_skills`` — never a replacement. Code
+    # default per overlay (``STAGE_SKILLS`` in its settings module), DB-overridable
+    # via the ``overlays`` registry row exactly like ``required_third_party_services``.
+    # Keys are canonicalized on validation so a stored alias (``review``) and a
+    # lookup gerund (``reviewing``) resolve to one entry; an unknown phase key
+    # fails LOUD at config load.
+    stage_skills: dict[str, list[str]] = Field(default_factory=dict)
+    # Tried in order before a factory dispatch opens; a phase with no list keeps ``agent_harness``.
+    factory_phase_harness_candidates: dict[str, list[str]] = Field(default_factory=dict)
+    # The local clones whose reviewed ref is the source of truth for the skills
+    # installed on this box. An install is a physical COPY, so it cannot announce
+    # that its source moved on; declaring the source here is what lets
+    # ``t3 doctor`` compare the two and FAIL on a stale or never-installed skill
+    # instead of leaving a merged fix silently unreached. Empty in core — an
+    # overlay that declares no source reports no drift rather than a false one.
+    skill_source_clones: list[SkillSourceClone] = Field(default_factory=list)
+    # The single skill injected alongside ``/t3:review`` for a reviewer
+    # sub-agent; empty string disables injection without dropping the skill.
+    pr_review_companion: str = "code-review"
+    # The third-party services this overlay needs wrapped as MCP tool groups.
+    # Code default per overlay (settings.py tier), DB-overridable via the
+    # ``overlays`` registry row; a JSON list of service names validates against
+    # the ``Service`` enum and fails loud on an unknown one. Empty default =
+    # an undeclared overlay wraps nothing (fail-closed).
+    required_third_party_services: frozenset[Service] = Field(default_factory=frozenset[Service])
+    sentry_org: str = ""
+    sentry_url: str = "https://sentry.io"
+    # #36 settings promoted to an overlay code default: genuinely-constant, public
+    # skill / regex values whose code default now lives on the overlay, still
+    # DB-overridable. ``get_effective_settings`` reads each as
+    # env -> DB(overlay) -> DB(global) -> THIS overlay code default ->
+    # ``UserSettings`` dataclass default (see ``config.overlay_code_defaults``).
+    # Defaults MIRROR the ``UserSettings`` dataclass defaults so a bare overlay is
+    # a no-op; the public overlay promotes ``review_skill`` via its
+    # ``overlay_settings.py`` (``REVIEW_SKILL``).
+    review_skill: str = ""
+    review_skill_alternates: list[str] = Field(default_factory=list)
+    architectural_review_skill: str = "ac-reviewing-codebase"
+    scanning_news_skill: str = "scanning-news"
+    eval_local_skill: str = "eval"
+    backlog_sweep_skill: str = "sweeping-tickets"
+    dogfood_smoke_skill: str = "dogfood-smoke"
+    mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
+    # The dashboard header mark, as a static path; an overlay ships its own logo in
+    # its package's ``static/`` dir and names it here.
+    dashboard_logo: str = "dash/logo.jpg"
+    # ``<repo-slug>=<branch>`` entries; empty means the gate is inert here. The
+    # field must exist even for an overlay that declares nothing, because the
+    # provider reads every promoted key off the config in one comprehension and
+    # a single missing attribute collapses the whole tier to ``{}``.
+    single_branch_repos: list[str] = Field(default_factory=list)
+
+    def __init__(self, settings_module: str = "", overlay_name: str = "", **data: object) -> None:
+        super().__init__(**data)
+        # A plain instance dict, not a Pydantic ``PrivateAttr`` — an overlay
+        # subclass may set arbitrary private (underscore) instance attributes,
+        # which the ``__setattr__`` override below routes past Pydantic.
+        object.__setattr__(self, "_secret_pass_keys", {})
+        object.__setattr__(self, "_pass_key_scope", "")
+        if settings_module:
+            self._load_settings(settings_module)
+        if overlay_name:
+            self.apply_toml_overrides(overlay_name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        # Route past Pydantic's field machinery for the two overlay-config idioms
+        # a plain object supports but a strict model does not — but ONLY for names
+        # that are not declared model fields: private state (secret holders,
+        # caches — single-underscore names) and per-instance method overrides
+        # (``config.get_review_channel = lambda: ...`` in tests / dynamic
+        # overlays). Both land in the instance ``__dict__`` via
+        # ``object.__setattr__`` so a callable override shadows the class method
+        # exactly as normal Python attribute resolution does. A DECLARED field
+        # ALWAYS takes the validated model path, even when the assigned value is a
+        # callable — so a settings module that assigns a callable to a typed field
+        # fails LOUD (the fail-closed contract) instead of silently bypassing
+        # validation. Dunder ``__pydantic_*`` internals and real data fields keep
+        # the validated path.
+        fields = type(self).model_fields
+        if name not in fields and ((name.startswith("_") and not name.startswith("__")) or callable(value)):
+            object.__setattr__(self, name, value)
+        else:
+            # Pydantic's ``validate_assignment`` path REBUILDS ``__dict__`` from
+            # the validated fields, silently dropping every plain instance entry
+            # the branch above stored (the ``_secret_pass_keys`` registry, secret
+            # holders, per-instance overrides). ``_load_settings`` interleaves
+            # plain-setting assignments with ``*_PASS_KEY`` registrations, so
+            # without restoring them only the secrets registered after the LAST
+            # plain assignment survived — every earlier credential (e.g. a
+            # ``gitlab_token``) silently resolved to ``""``. Snapshot the
+            # non-field entries and restore any the rebuild dropped.
+            plain_entries = {
+                key: kept for key, kept in self.__dict__.items() if key not in fields and not key.startswith("__")
+            }
+            super().__setattr__(name, value)
+            for key, kept in plain_entries.items():
+                if key not in self.__dict__:
+                    object.__setattr__(self, key, kept)
+
+    def _load_settings(self, module_path: str) -> None:
+        mod = import_module(module_path)
+        for name in dir(mod):
+            if not name.isupper() or name.startswith("_"):
+                continue
+            value = getattr(mod, name)
+            if name.endswith("_PASS_KEY"):
+                # GITHUB_TOKEN_PASS_KEY → get_github_token() reads from pass
+                attr_name = name.removesuffix("_PASS_KEY").lower()
+                self._register_secret(attr_name, str(value))
+            else:
+                setattr(self, name.lower(), value)
+
+    def apply_toml_overrides(self, overlay_name: str) -> None:
+        """Apply ``[overlays.<overlay_name>]`` overrides from the DB overlays registry."""
+        from teatree.config import load_config  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+        self._pass_key_scope = overlay_name
+        config = load_config()
+        overlay_cfg = config.raw.get("overlays", {}).get(overlay_name, {})
+        for key, value in overlay_cfg.items():
+            if key in {"class", "path"}:
+                continue  # reserved keys for overlay discovery
+            if key.endswith("_pass_key"):
+                logger.warning(
+                    "Ignoring %s in the overlays registry for %r: it is a per-key setting now", key, overlay_name
+                )
+            else:
+                setattr(self, key, value)
+
+    def _secret_registry(self) -> dict[str, str]:
+        """The declared ``*_PASS_KEY`` defaults ``__init__`` installs in the instance ``__dict__``."""
+        return self.__dict__.setdefault("_secret_pass_keys", {})
+
+    def _register_secret(self, attr_name: str, pass_key: str) -> None:
+        self._secret_registry()[attr_name] = pass_key
+
+    def declared_credentials(self) -> frozenset[str]:
+        return frozenset(self._secret_registry())
+
+    def resolve_pass_key(self, name: str) -> PassKeyResolution:
+        scope = self.__dict__.get("_pass_key_scope", "")
+        return resolve_pass_key(name, overlay_name=scope, declared_default=self._secret_registry().get(name, ""))
+
+    def secret_pass_key(self, name: str) -> str:
+        """The ``pass`` entry *name* is routed to on this venue, or ``""`` when unconfigured."""
+        return self.resolve_pass_key(name).value
+
+    def _read_secret(self, name: str) -> str:
+        if not (pass_key := self.secret_pass_key(name)):
+            return ""
+        from teatree.utils.secrets import read_pass  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+        return read_pass(pass_key)
+
+    # ── Secret getters (override in subclass or via *_PASS_KEY) ──────
+
+    def get_gitlab_token(self) -> str:
+        return self._read_secret("gitlab_token")
+
+    def get_gitlab_token_for_remote(self, remote: str) -> str:
+        """The GitLab credential to act as on *remote*, defaulting to the overlay-wide one.
+
+        An overlay overrides this only where one repo must be written under a
+        DIFFERENT identity than the rest — the forge makes an MR's AUTHOR ineligible
+        to approve it, so authoring under a scoped credential is what keeps the
+        OWNER'S account eligible. The AGENT then records the approval under that
+        account; this is never the owner's manual step.
+        """
+        del remote
+        return self.get_gitlab_token()
+
+    def authoring_identity_on(self, remote: str) -> AuthoringIdentity:
+        """Whose credential *remote*'s MRs are actually written under, three-valued.
+
+        The boolean below cannot separate "the scoped credential resolved to the owner's" from
+        "it did not resolve at all", so a venue that cannot reach its bot reads exactly like a
+        repo the owner authors by design. ``t3 doctor check`` needs them apart.
+        """
+        if not remote:
+            return AuthoringIdentity.OWNER
+        return classify_authoring_identity(
+            owner_token=self.get_gitlab_token(), scoped_token=self.get_gitlab_token_for_remote(remote)
+        )
+
+    def acts_as_distinct_identity_on(self, remote: str) -> bool:
+        """Whether MRs on *remote* are authored by someone other than the owner.
+
+        The one question the override above exists to answer, asked directly: a
+        repo handed its own credential is written by a non-human, which keeps the
+        owner's ACCOUNT eligible to review and approve (the agent acts as it);
+        every other repo is written as the owner himself. Anything that makes the
+        owner's account a CHECKER — the standing
+        ``pr_auto_reviewers`` policy, the catch-up pass that applies it to MRs
+        already open — is scoped by this, so it can never name the owner as
+        reviewer of his own MR.
+
+        Fails conservative, as it always claimed to: only a credential that RESOLVED to something
+        other than the owner's answers ``True``. An unresolvable one used to answer ``True`` (it is
+        merely unequal), assigning the owner as reviewer of an MR no credential could author.
+        """
+        if not remote:
+            return False
+        identity = classify_authoring_identity(
+            owner_token=self.get_gitlab_token(), scoped_token=self.get_gitlab_token_for_remote(remote)
+        )
+        return identity is AuthoringIdentity.DISTINCT
+
+    def get_gitlab_username(self) -> str:
+        return self._read_secret("gitlab_username")
+
+    def get_github_token(self) -> str:
+        return self._read_secret("github_token")
+
+    def get_slack_token(self) -> str:
+        return self._read_secret("slack_token")
+
+    def get_notion_token(self) -> str:
+        # Wired via the ``notion_token_pass_key`` overlay config; default empty
+        # means the runtime Notion status-sync is a clean no-op.
+        return self._read_secret("notion_token")
+
+    def get_sentry_token(self) -> str:
+        return self._read_secret("sentry_token")
+
+    # ── Structured getters (need logic, can't be plain constants) ────
+
+    def get_review_channel(self) -> tuple[str, str]:
+        return ("", "")
+
+    def get_review_broadcast_channels(self, repo: str = "") -> list[tuple[str, str]]:
+        """Return all review-broadcast channels for the overlay (#1295 capability A)."""
+        del repo  # default impl is repo-agnostic; overrides may consult it.
+        channel_name, channel_id = self.get_review_channel()
+        if not channel_id:
+            return []
+        return [(channel_name, channel_id)]
+
+    def get_failed_e2e_watchers(self) -> list["FailedE2EWatcher"]:
+        """Return failed-E2E Slack-channel watchers for the overlay (#1295 cap E); default empty."""
+        return []
+
+    def get_transition_emojis(self) -> dict[str, str]:
+        override = getattr(self, "transition_emojis", None)
+        if isinstance(override, dict):
+            return {**DEFAULT_TRANSITION_EMOJIS, **override}
+        return dict(DEFAULT_TRANSITION_EMOJIS)
+
+    def get_review_companion_skills(self) -> list[str]:
+        """Return the skills a reviewer must hold, deduped and order-preserving."""
+        return list(dict.fromkeys(s for s in [self.pr_review_companion, *self.companion_skills] if s))
+
+    @field_validator("stage_skills", "factory_phase_harness_candidates", mode="after")
+    @classmethod
+    def _canonicalize_phase_keys(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        return canonicalize_phase_keys(value)
+
+    def get_stage_skills(self, phase: str) -> list[str]:
+        return list(self.stage_skills.get(normalize_phase(phase), []))
+
+    def get_factory_phase_harness_candidates(self, phase: str) -> list[str]:
+        return list(self.factory_phase_harness_candidates.get(normalize_phase(phase), []))
+
+
+# ── Overlay facets ───────────────────────────────────────────────────
+#
+# PR-27b: the ~44 flat ``get_*`` hooks that used to hang off ``OverlayBase``
+# regroup by concern into composed facet objects (mirroring ``config`` /
+# ``metadata``). Each facet's hooks stay INSTANCE methods with defaults, so an
+# overlay overrides a concern by subclassing the one facet — behaviour is
+# preserved exactly, and no hook is eagerly computed. ``OverlayBase`` shrinks to
+# the identity/reference surface plus the facet accessors.
+
+
+class OverlayProvisioning:
+    """Worktree setup + environment concern — ``overlay.provisioning``."""
+
+    def repo_clone_url(self, repo_name: str) -> str:
+        """The remote to clone *repo_name* from when no local clone exists yet.
+
+        This is what makes a runtime with an EMPTY clone root able to provision:
+        the containerized stack owns its own workspace volume and has no operator
+        pre-seeded checkouts, so provisioning materialises each repo from its
+        remote on first use. A host-native run with the clone already present
+        never reaches this hook.
+
+        The default declares no remote (``""``), which keeps the pre-existing
+        behaviour: a missing clone fails loud with "No git clone found" rather
+        than cloning something the overlay never named. Overlays that know their
+        repos' canonical remotes override it.
+
+        Return a URL git can clone WITHOUT an embedded secret — authentication is
+        the runtime's credential-helper concern (``deploy/entrypoint.sh`` wires
+        ``gh``/``glab`` as https helpers), never a token pasted into the URL,
+        which would persist in the new clone's ``.git/config``.
+        """
+        return ""
+
+    def env_extra(self, worktree: "Worktree") -> dict[str, str]:
+        return {}
+
+    def declared_env_keys(self) -> set[str]:
+        return set()
+
+    _CORE_SECRET_KEYS: frozenset[str] = frozenset({"POSTGRES_PASSWORD"})
+
+    def declared_secret_env_keys(self) -> set[str]:
+        return set(self._CORE_SECRET_KEYS)
+
+    def db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
+        return None
+
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def db_import(  # noqa: PLR0913 — overlay extension-point contract; each kwarg is a documented hook input.
+        self,
+        worktree: "Worktree",
+        *,
+        force: bool = False,
+        slow_import: bool = False,
+        dslr_snapshot: str = "",
+        dump_path: str = "",
+        approve_remote_dump: bool = False,
+    ) -> bool:
+        return False
+
+    def post_db_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
+        return []
+
+    def reset_passwords_command(self, worktree: "Worktree") -> ProvisionStep | None:
+        return None
+
+    def envrc_lines(self, worktree: "Worktree") -> list[str]:
+        return []
+
+    def symlinks(self, worktree: "Worktree") -> list[SymlinkSpec]:
+        return []
+
+    def services_config(self, worktree: "Worktree") -> dict[str, ServiceSpec]:
+        return {}
+
+    def compose_file(self, worktree: "Worktree") -> str:
+        return ""
+
+    def base_images(self, worktree: "Worktree") -> list[BaseImageConfig]:
+        return []
+
+    def docker_services(self, worktree: "Worktree") -> set[str]:
+        return set()
+
+    def cleanup_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
+        return []
+
+    def health_checks(self, worktree: "Worktree") -> list["HealthCheck"]:
+        return _default_health_checks(self, worktree)
+
+    def snapshot_warmer_configs(self) -> list["DjangoDbImportConfig"]:
+        """Reference-DB configs the snapshot-warmer loop keeps current, one per variant."""
+        return []
+
+    def reap_external_resources(self, worktree: "Worktree") -> list[str]:
+        """Remove out-of-band resources a reaped worktree leaves behind (default none)."""
+        return []
+
+    def resolve_variant(self, name: str) -> Variant:
+        """Resolve a variant *name* into a first-class :class:`Variant` (PR-27, #787)."""
+        return Variant.bare(name)
+
+
+class OverlayRuntime:
+    """Run-time concern (running services, tests, probes) — ``overlay.runtime``."""
+
+    def run_commands(self, worktree: "Worktree") -> RunCommands:
+        return {}
+
+    def pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
+        return []
+
+    def test_command(self, worktree: "Worktree") -> list[str] | RunCommand:
+        return []
+
+    def lint_command(self, worktree: "Worktree") -> list[str] | RunCommand:
+        """Return the argv (or ``RunCommand``) that lints this worktree."""
+        return []
+
+    def verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
+        return {}
+
+    def readiness_probes(self, worktree: "Worktree") -> list["Probe"]:
+        return []
+
+
+_EMPTY_EXTRAS_CONTEXT = E2eExtrasContext()
+
+
+class OverlayE2E:
+    """End-to-end test concern — ``overlay.e2e``."""
+
+    def env_extras(
+        self, env_cache: dict[str, str], *, context: E2eExtrasContext = _EMPTY_EXTRAS_CONTEXT
+    ) -> dict[str, str]:
+        """Overlay-specific Playwright env vars (e.g. ``CUSTOMER``); ``{}`` default."""
+        return {}
+
+    def run_provenance(self, spec_path: str) -> str:
+        """Manifest entry id (e.g. CI lane) for *spec_path*, recorded on the run (#272); ``""`` default."""
+        return ""
+
+    def playwright_args(self, spec_path: str) -> list[str]:
+        """Extra ``npx playwright test`` CLI args for *spec_path* (e.g. the lane's ``-c <config>``); ``[]`` default."""
+        return []
+
+    def scenarios(self, spec_path: str) -> tuple[Scenario, ...]:
+        """The authored acceptance scenarios for *spec_path*; ``()`` default (#3329)."""
+        return ()
+
+    def spec_paths(self) -> tuple[str, ...]:
+        """Enumerate the overlay's registered spec paths; ``()`` default (#3329)."""
+        return ()
+
+    def preflight(self, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
+        return []
+
+
+class OverlayReview:
+    """Review / merge / customer-display concern — ``overlay.review``."""
+
+    def merge_candidate_repo_slugs(self) -> list[str]:
+        """STATIC working-repo slugs the §17.4/#2323 cross-repo merge probe binds against."""
+        return []
+
+    def repo_owner_for_slug(self, slug: str) -> RepoOwner:
+        """Which org function reviews *slug* — picks how long a review request waits."""
+        _ = slug
+        return RepoOwner.ENGINEERING
+
+    def review_exempt_repo_slugs(self) -> tuple[str, ...]:
+        """Repo patterns whose merge requests must never get a review request."""
+        return ()
+
+    def mandatory_e2e_exempt_repo_slugs(self) -> tuple[str, ...]:
+        """Repo slugs that ship NO customer display surface — mandatory-E2E cannot apply (#1967)."""
+        return ()
+
+    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
+        """Return a merge-guard verdict for an approved merge request."""
+        _ = target_ref, thread_ref
+        return MergeGuard(allowed=True)
+
+    def visual_qa_targets(self, changed_files: list[str]) -> list[str]:
+        return []
+
+    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
+        """True iff *changed_files* could impact what is displayed to the customer (#1967)."""
+        return True
+
+
+# ── Overlay base class ───────────────────────────────────────────────
+
+
+class OverlayBase(ABC):
+    django_app: str | None = None
+    # These facet attributes are declared at class level as TEMPLATES only. The
+    # per-instance copies are installed by ``__init__`` below — declaring a bare
+    # ``OverlayConfig()`` here (or on a subclass) would otherwise share ONE
+    # mutable instance across every overlay, and ``_discover_overlays`` mutates
+    # ``overlay.config`` (``apply_toml_overrides``), so that shared instance would
+    # bleed one overlay's config into another.
+    config: OverlayConfig = OverlayConfig()
+    metadata: OverlayMetadata = OverlayMetadata()
+    provisioning: OverlayProvisioning = OverlayProvisioning()
+    runtime: OverlayRuntime = OverlayRuntime()
+    e2e: OverlayE2E = OverlayE2E()
+    review: OverlayReview = OverlayReview()
+    connectors: OverlayConnectors = OverlayConnectors()
+
+    #: The composed facet attributes ``__init__`` promotes to per-instance copies.
+    _FACET_ATTRS: tuple[str, ...] = ("config", "metadata", "provisioning", "runtime", "e2e", "review", "connectors")
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Give this overlay instance its OWN config + facets so state never bleeds
+        # across overlays. Whether the facets come from the OverlayBase defaults
+        # (a subclass that inherits them) or a subclass' own class-level overrides
+        # (``TeatreeOverlay.config = OverlayConfig(...)``), they are shared class
+        # attributes: two overlays would otherwise reference the SAME mutable
+        # OverlayConfig, and ``_discover_overlays`` mutates it during discovery.
+        # The config is deep-copied (it is the mutable one); each facet is a
+        # shallow per-instance copy with any reference to the shared class-level
+        # config re-pointed at this instance's copy so a facet built with the
+        # config (e.g. ``OverlayMetadata``) never diverges from ``self.config``.
+        cls = type(self)
+        shared_config = cls.config
+        own_config = shared_config.model_copy(deep=True)
+        self.config = own_config
+        for name in self._FACET_ATTRS:
+            if name == "config":
+                continue
+            facet = copy.copy(getattr(cls, name))
+            for attr, value in vars(facet).items():
+                if value is shared_config:
+                    setattr(facet, attr, own_config)
+            setattr(self, name, facet)
+
+    # ── Required hooks ───────────────────────────────────────────────
+
+    @abstractmethod
+    def get_repos(self) -> list[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_provision_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
+        raise NotImplementedError
+
+    # ── Repo identity ────────────────────────────────────────────────
+
+    def get_workspace_repos(self) -> list[str]:
+        if self.config.workspace_repos:
+            return list(self.config.workspace_repos)
+        return self.get_repos()
+
+    # ── Statusline contribution ──────────────────────────────────────
+
+    def get_statusline_segments(self) -> list[StatuslineSegment]:
+        """Inline statusline segments this overlay contributes (#3237)."""
+        return []
+
+    # ── Issue / reference resolution ─────────────────────────────────
+
+    def get_issue_title(self, url: str) -> str:
+        from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415 — deferred: call-time import
+
+        host = get_backend_provider().get_code_host(self)
+        if host is None:
+            return ""
+        try:
+            data = host.get_issue(url)
+        except (httpx.HTTPError, CommandFailedError, TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+            logger.warning("get_issue_title fetch failed for %s: %s", url, exc)
+            return ""
+        title = data.get("title", "") if isinstance(data, dict) else ""
+        return str(title)
+
+    def is_issue_done(self, issue_data: "RawAPIDict") -> bool:
+        state = issue_data.get("state")
+        return isinstance(state, str) and state in {"closed", "completed"}
+
+    def resolve_mr_token(self, iid: int) -> str | None:
+        """Return the canonical URL for ``!<iid>`` on this overlay's code host."""
+        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415 — deferred: call-time import
+
+        return ReferenceResolver.from_overlay(self).resolve_mr(iid)
+
+    def resolve_issue_token(self, iid: int) -> str | None:
+        """Return the canonical URL for ``#<iid>`` on this overlay's code host."""
+        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415 — deferred: call-time import
+
+        return ReferenceResolver.from_overlay(self).resolve_issue(iid)
+
+    # ── Loop / factory operational hooks ─────────────────────────────
+
+    def get_timeouts(self) -> dict[str, int]:
+        return {}
+
+    def get_health_signals(self) -> list["HealthSignal"]:
+        """Overlay operational-health signals for the global aggregator (PR-17; default none)."""
+        return []
+
+    def get_checking_sources(self) -> list[str]:
+        """Return extra "needs you" source identifiers for ``t3 <overlay> checking show``."""
+        return []
+
+    def get_eval_scenarios_dir(self) -> Path | None:
+        """Return the directory holding overlay-contributed behavioral eval scenarios.
+
+        ``None`` means "I contribute none"; a returned path is a claim the directory
+        EXISTS, and discovery degrades the catalog when it does not. Never collapse a
+        missing directory into ``None`` — that reports a defect as the legitimate answer.
+        """
+        return None

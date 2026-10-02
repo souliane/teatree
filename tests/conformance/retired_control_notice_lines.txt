@@ -1,0 +1,13 @@
+# Every prose line allowed to NAME the retired on-behalf dial, verbatim and stripped.
+# Exemption is enumerated here and nowhere else: a keyword an instruction can also carry
+# ('removed', 'no longer', 'retired') exempts nothing. Editing one of these lines turns
+# tests/conformance/test_retired_egress_control_is_not_instructed.py RED with the new text
+# to paste back — re-affirming that it is still a notice and not an instruction.
+(``branch_prefix``, ``ask_before_post_on_behalf``, #2731) and ``test_feature_flags``
+**Canonical control:** the active preset's `Mode.egress` — select it with `t3 loop preset use <name> --reason <why>`. It is box-global, with no per-overlay tier: a second per-post dial could disagree with the posture and the pair had no defined resolution. `on_behalf_post_mode` is retired (`config/retired_settings_ledger.py`); setting it writes a dead row and warns on every resolution.
+- **Backward compatibility:** the legacy `ask_before_post_on_behalf` boolean and its successor `on_behalf_post_mode` are both retired (`config/retired_settings_ledger.py`). `config_setting set` does not refuse a removed key, so setting either writes a dead row and makes the resolver warn on every resolution — use `t3 loop preset use <name>`.
+Both ``branch_prefix`` and ``ask_before_post_on_behalf`` were dead surface on
+Pre-fix, the CLI consulted only the global ``ask_before_post_on_behalf``
+The derived ``ask_before_post_on_behalf`` field and its shim are retired.
+``on_behalf_post_mode`` was a ``ConfigSetting`` row, so a degraded override read used
+them provably changed no effective value. These rows hold ``immediate`` instead — and

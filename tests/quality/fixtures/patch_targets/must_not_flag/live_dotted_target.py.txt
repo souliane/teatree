@@ -1,0 +1,6 @@
+from unittest.mock import patch
+
+
+def test_live_dotted():
+    with patch("teatree.config.load_config", return_value=None):
+        pass

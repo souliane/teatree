@@ -1,0 +1,27 @@
+# Skill Delegation Matrix
+
+Source: `teatree.skill_support.map.DEFAULT_SKILL_DELEGATION`
+
+## Delegation
+
+| Phase | Delegated Skills |
+| --- | --- |
+| `coding` | `test-driven-development`, `verification-before-completion` |
+| `debugging` | `systematic-debugging`, `verification-before-completion` |
+| `reviewing` | `requesting-code-review`, `verification-before-completion` |
+| `shipping` | `finishing-a-development-branch`, `verification-before-completion` |
+| `ticket-intake` | `writing-plans` |
+
+## TeaTree Responsibilities Retained Locally
+
+- Worktree lifecycle orchestration
+- Task claiming, leasing, and execution routing
+- Quality-gate state tracking on sessions
+- Generated documentation surfaces
+
+## Agent Launch Fields
+
+- `phase`
+- `overlay_skill_path`
+- `framework_skills`
+- `lifecycle_skill`

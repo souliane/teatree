@@ -1,0 +1,859 @@
+"""The ``pydantic_ai`` session must be able to report a FAILED turn (souliane/teatree#3157 Unit A).
+
+:class:`~teatree.agents.pydantic_ai_session.PydanticAiHarnessSession` is the single
+point translating pydantic_ai reality into the ``claude_agent_sdk`` message vocabulary
+the driver consumes, and the driver's whole failure taxonomy
+(:func:`~teatree.agents.runner_failure_taxonomy.limit_match` -> ``park_or_rotate_on_limit``,
+:func:`~teatree.agents.runner_failure_taxonomy.error_result_reason` -> FAILED) keys on
+``ResultMessage.is_error``. A terminal message that is unconditionally ``success``
+therefore makes a bad run indistinguishable from a good one on this lane: a 429
+escapes as a raw exception and lands as a ``sdk_error`` traceback instead of a park,
+``num_turns`` under-counts the watchdog's turn ceiling, and ``agent_session_id`` is
+empty.
+
+Hermetic throughout — pydantic_ai's own ``FunctionModel`` / ``TestModel`` doubles, no
+network, no credential, zero tokens.
+"""
+
+import asyncio
+import json
+import time
+from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
+
+import httpx2
+import pytest
+from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, ToolUseBlock
+from claude_agent_sdk.types import RateLimitInfo
+from django.test import TestCase
+from openai import AsyncOpenAI
+from pydantic_ai import Agent
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.models import override_allow_model_requests
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import RunUsage
+
+import teatree.agents.runner as runner_mod
+from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
+from teatree.agents.pydantic_ai_config import OpenAICompatibleLaneConfig, PydanticAiModelConfig
+from teatree.agents.pydantic_ai_session import _turns_made
+from teatree.agents.pydantic_ai_turn import SessionRun
+from teatree.agents.runner import HarnessOutcome, TaskUsage, _record_success, run_agent
+from teatree.agents.runner_failure_taxonomy import limit_match
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt
+from teatree.llm.anthropic_limits import EgressBlockedError, LimitCause
+from teatree.llm.usage_tee import UsageTee
+from tests.factories import planned_ticket
+from tests.teatree_agents._router_fake import RESOLVED_MODEL, spend_stop, text_reply, tool_call_reply
+
+_MODEL = "claude-opus-4-8"
+
+#: A phase-complete envelope — ``files_modified`` is the ``coding`` phase-evidence
+#: gate's required key, unrelated to the failure mapping under test.
+_RESULT_JSON = json.dumps({"summary": "done", "files_modified": ["a.py"]})
+
+_DROPPED_TRANSPORT = "connection reset by peer"
+_HARNESS_BUG = "a genuine bug in the harness"
+
+
+def _api_error_model(*, status_code: int, error_type: str, message: str) -> FunctionModel:
+    """A model double whose request is refused with a REAL-shaped Anthropic error body.
+
+    The body mirrors the documented Messages-API error envelope
+    (``{"type": "error", "error": {"type": <code>, "message": ...}}``), so the error
+    code the classifier has to recognise reaches it exactly as the wire delivers it.
+    """
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+        await asyncio.sleep(0)
+        raise ModelHTTPError(
+            status_code=status_code,
+            model_name=_MODEL,
+            body={"type": "error", "error": {"type": error_type, "message": message}},
+        )
+        yield ""  # unreachable — the ``yield`` is what makes this an async GENERATOR
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+def _dropped_mid_stream_model(*, after_requests: int = 1) -> FunctionModel:
+    """A model double that streams part of a turn, then loses the transport.
+
+    *after_requests* burns that many model requests first (each an unanswerable tool
+    call pydantic_ai retries), so the drop lands with a stream already in flight and a
+    request count above one — the case a hardcoded turn count cannot distinguish.
+    """
+    turns = {"n": 0}
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        turns["n"] += 1
+        if turns["n"] < after_requests:
+            yield {0: DeltaToolCall(name="ghost_tool", json_args="{}")}
+            return
+        yield "partial "
+        raise ModelAPIError(_MODEL, _DROPPED_TRANSPORT)
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+def _two_request_model(final_text: str = _RESULT_JSON) -> FunctionModel:
+    """A model double that burns TWO model requests before finishing.
+
+    The first request calls a tool the agent does not carry, which pydantic_ai answers
+    with a retry prompt — a genuine second model request, not a hand-counted one.
+    """
+    turns = {"n": 0}
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        turns["n"] += 1
+        if turns["n"] == 1:
+            yield {0: DeltaToolCall(name="ghost_tool", json_args="{}")}
+        else:
+            yield final_text
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+#: The exact opening sentence the metered coding dispatch returned as its whole
+#: result — a preamble, not an answer. Kept verbatim so the regression names the
+#: shape it guards rather than a paraphrase of it.
+_PREAMBLE = "I'll start by reading the issue and understanding the current state."
+
+
+def _preamble_then_tool_model(tool_name: str, final_text: str = _RESULT_JSON) -> FunctionModel:
+    """A model double emitting text THEN a tool call in one response — Anthropic's real shape.
+
+    Every Anthropic model narrates before it acts, so this is what a coding dispatch
+    actually receives back. It is the shape that must NOT end the run: the agent has to
+    execute the call, feed the result back, and let the model finish on a later turn.
+    """
+    turns = {"n": 0}
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        turns["n"] += 1
+        if turns["n"] == 1:
+            yield _PREAMBLE
+            yield {0: DeltaToolCall(name=tool_name, json_args="{}")}
+        else:
+            yield final_text
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+def _billed_then_refused_model(*, status_code: int = 403) -> FunctionModel:
+    """A model double that completes one BILLED request, then is refused on the next.
+
+    The refusal therefore lands with tokens already spent, which is the only state in
+    which "does the error path carry the run's usage?" is a question with a wrong answer.
+    """
+    turns = {"n": 0}
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        turns["n"] += 1
+        if turns["n"] == 1:
+            yield {0: DeltaToolCall(name="ghost_tool", json_args="{}")}
+            return
+        raise ModelHTTPError(
+            status_code=status_code,
+            model_name=_MODEL,
+            body={"code": "access_denied", "message": "token cycle spend limit reached"},
+        )
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+def _refused_model(*, status_code: int = 403, headers: dict[str, str] | None = None, body: object = None):
+    """A model double refused on its FIRST request, carrying real provider headers/body.
+
+    ``headers`` is what the router actually sends back; the session's job is to turn a
+    ``retry-after`` (or an instant in the body) into the reset the lane parks behind.
+    """
+
+    async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+        await asyncio.sleep(0)
+        raise ModelHTTPError(status_code=status_code, model_name=_MODEL, body=body, headers=headers)
+        yield ""  # unreachable — the ``yield`` is what makes this an async GENERATOR
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+def _drive(session: PydanticAiHarnessSession, prompt: str = "go") -> list[object]:
+    async def turn() -> list[object]:
+        await session.query(prompt)
+        return [message async for message in session.receive_response()]
+
+    return asyncio.run(turn())
+
+
+def _terminal(messages: list[object]) -> ResultMessage:
+    results = [message for message in messages if isinstance(message, ResultMessage)]
+    assert len(results) == 1, "a turn yields exactly one terminal ResultMessage"
+    return results[0]
+
+
+def _rejected_window(messages: list[object]) -> RateLimitInfo:
+    events = [m for m in messages if isinstance(m, RateLimitEvent)]
+    assert len(events) == 1, "a hard refusal yields exactly one rate-limit event"
+    assert events[0].rate_limit_info.status == "rejected"
+    return events[0].rate_limit_info
+
+
+class TestTerminalResultReportsProviderFailure:
+    """A provider/run failure becomes an ERROR ``ResultMessage``, never a raw exception."""
+
+    def test_a_refused_request_reports_the_status_and_the_full_provider_text(self) -> None:
+        session = PydanticAiHarnessSession(
+            Agent(
+                _api_error_model(
+                    status_code=429,
+                    error_type="rate_limit_error",
+                    message="Number of requests has exceeded your rate limit",
+                )
+            ),
+            model_name=_MODEL,
+        )
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is True
+        assert terminal.subtype == "error_during_execution"
+        assert terminal.api_error_status == 429
+        # The session stays DUMB: the provider's FULL text passes through in ``result``
+        # so the SHARED classifier — not this seam — owns the phrase vocabulary.
+        assert "rate_limit_error" in (terminal.result or "")
+
+    def test_a_transport_drop_without_a_status_still_reports_the_failure(self) -> None:
+        session = PydanticAiHarnessSession(Agent(_dropped_mid_stream_model()), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is True
+        assert terminal.subtype == "error_during_execution"
+        assert terminal.api_error_status is None
+        assert _DROPPED_TRANSPORT in (terminal.result or "")
+
+    def test_a_usage_limit_is_a_max_turns_failure_the_classifier_cannot_claim(self) -> None:
+        # The run hit its OWN step cap — a genuine FAILED, never a limit park. The
+        # taxonomy must refuse to claim it as a provider window, or a real failure
+        # would be laundered into an infinitely re-parked task. Asserted on
+        # `limit_match` (the decision point) rather than `classify_limit` (a raw
+        # substring matcher): the vendor's message now names its own docs on "usage
+        # limits", so the matcher alone can no longer carry this property.
+        from teatree.agents.runner_failure_taxonomy import limit_match  # noqa: PLC0415 — test-local assertion
+
+        session = PydanticAiHarnessSession(
+            Agent(_two_request_model()), model_name=_MODEL, run=SessionRun.start(request_limit=1)
+        )
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is True
+        assert terminal.subtype == "error_max_turns"
+        assert limit_match(terminal) is None
+
+    def test_a_programming_error_still_propagates_to_the_durable_failure_path(self) -> None:
+        # The handler is NARROW on purpose: a defect in teatree's own code must keep
+        # landing as the driver's durable ``sdk_error`` FAILED-with-traceback, never
+        # be laundered into a transport failure the recovery chain would retry.
+        async def stream_fn(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            await asyncio.sleep(0)
+            raise TypeError(_HARNESS_BUG)
+            yield ""  # unreachable — the ``yield`` is what makes this an async GENERATOR
+
+        session = PydanticAiHarnessSession(Agent(FunctionModel(stream_function=stream_fn)), model_name=_MODEL)
+
+        with pytest.raises(TypeError, match=_HARNESS_BUG):
+            _drive(session)
+
+    def test_a_healthy_turn_is_still_a_success_result(self) -> None:
+        session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="all good")), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is False
+        assert terminal.subtype == "success"
+        assert terminal.result == "all good"
+
+
+class TestATextPreambleDoesNotEndTheRun:
+    """A model that narrates before it acts must still get its tool loop.
+
+    The metered coding lane produced exactly one billed attempt and it did nothing:
+    ``num_turns=1``, a clean worktree, and the model's opening sentence recorded as
+    the result. The cause was the driving API, not the model — ``Agent.run_stream``
+    "will consider the first output matching the ``output_type`` to be the final
+    output, [...] stop running the agent graph and [...] not execute any tool calls
+    made by the model after this 'final' output", and with ``output_type=str``
+    pydantic_ai raises that final-result event on the FIRST ``TextPart``. So the run
+    ended on the preamble, and the tool results were never fed back.
+
+    The preamble test is RED on ``run_stream`` (``num_turns == 1``, the result is the
+    preamble) and GREEN on ``run``. The tool-call-first case below it is deliberately
+    the CONTROL: it iterated even on the broken code (no text part, so no early final
+    result), which is exactly why every existing tool double — scripted call-first —
+    passed while production could not act.
+    """
+
+    def test_the_model_keeps_going_after_a_preamble_and_finishes_on_its_envelope(self) -> None:
+        seen: list[str] = []
+
+        def read_issue() -> str:
+            seen.append("read_issue")
+            return "the issue body"
+
+        session = PydanticAiHarnessSession(
+            # Suppressed below: pydantic-ai 2.33 types `tools` as
+            # `Sequence[Tool[AgentDepsT] | ToolFuncEither[AgentDepsT, ...]]` and NO overload
+            # accepts a plain function, whatever its arity (reproduced on a 2-line probe
+            # outside this repo); the call is correct and is exercised at runtime below.
+            Agent(_preamble_then_tool_model("read_issue"), tools=[read_issue]),  # ty: ignore[no-matching-overload]
+            model_name=_MODEL,
+            phase="coding",
+        )
+        messages = _drive(session, "implement the ticket")
+        terminal = _terminal(messages)
+
+        assert seen == ["read_issue"], "the tool the model asked for must actually run"
+        assert terminal.num_turns == 2, "the tool result must go back to the model for a second turn"
+        assert terminal.result == _RESULT_JSON, f"the run ended on its preamble instead of an answer: {terminal.result}"
+        tool_uses = [
+            block
+            for message in messages
+            if isinstance(message, AssistantMessage)
+            for block in message.content
+            if isinstance(block, ToolUseBlock)
+        ]
+        assert [block.name for block in tool_uses] == ["read_issue"], "the driver must still see the tool stream"
+
+    def test_control_a_tool_call_with_no_preamble_iterates_either_way(self) -> None:
+        # The vacuity proof for the two rows above: this shape ALREADY passed on the
+        # broken code, so a suite built only from it could never have caught the bug.
+        session = PydanticAiHarnessSession(Agent(_two_request_model("done")), model_name=_MODEL)
+
+        assert _terminal(_drive(session)).num_turns == 2
+
+
+class TestTerminalResultCarriesTheRealRunIdentity:
+    """``num_turns`` and ``session_id`` describe the run that actually happened."""
+
+    def test_num_turns_counts_the_model_requests_the_run_actually_made(self) -> None:
+        session = PydanticAiHarnessSession(Agent(_two_request_model("done")), model_name=_MODEL)
+
+        assert _terminal(_drive(session)).num_turns == 2
+
+    def test_a_refused_first_request_still_records_one_attempted_turn(self) -> None:
+        session = PydanticAiHarnessSession(
+            Agent(_api_error_model(status_code=429, error_type="rate_limit_error", message="slow down")),
+            model_name=_MODEL,
+        )
+
+        assert _terminal(_drive(session)).num_turns == 1
+
+    def test_a_drop_mid_stream_records_the_turns_the_run_had_reached(self) -> None:
+        # The stream is already in flight, so the count comes from the run itself —
+        # not the flat "one attempt" the refused-first-request case falls back to.
+        session = PydanticAiHarnessSession(Agent(_dropped_mid_stream_model(after_requests=2)), model_name=_MODEL)
+
+        assert _terminal(_drive(session)).num_turns == 2
+
+    def test_the_session_id_is_non_empty_and_stable_across_the_session_turns(self) -> None:
+        session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL)
+
+        first = _terminal(_drive(session)).session_id
+        second = _terminal(_drive(session)).session_id
+
+        assert first, "an empty session_id leaves resume/audit with no independent handle"
+        assert first == second == session.session_id
+
+    def test_each_session_mints_its_own_id(self) -> None:
+        one = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL)
+        other = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL)
+
+        assert one.session_id != other.session_id
+
+
+class TestAFailedTurnStillReportsWhatItSpent:
+    """The crash path carries the usage its caller already holds (souliane/teatree#4816).
+
+    ``_error_result`` built its envelope with no ``usage`` at all, so every
+    provider/run error on the metered lane recorded no tokens — 1,757 turns whose
+    spend the ledger never saw. The caller owns the ``RunUsage`` pydantic_ai mutates
+    in place, so the figures were always there to carry.
+    """
+
+    def test_a_refusal_after_a_billed_request_reports_that_request_s_tokens(self) -> None:
+        session = PydanticAiHarnessSession(Agent(_billed_then_refused_model()), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is True
+        assert terminal.usage is not None, "a failed turn that billed tokens must not report None usage"
+        assert terminal.usage["input_tokens"] > 0
+        assert set(terminal.usage) == {
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "tool_calls",
+        }
+
+    def test_every_error_branch_reports_usage_not_none(self) -> None:
+        # The four raise sites are one contract, not four: a branch that forgets the
+        # run usage is the defect, wherever it sits.
+        for agent_model in (
+            _billed_then_refused_model(),
+            _dropped_mid_stream_model(after_requests=2),
+            _two_request_model(),
+        ):
+            session = PydanticAiHarnessSession(
+                Agent(agent_model), model_name=_MODEL, run=SessionRun.start(request_limit=1)
+            )
+
+            terminal = _terminal(_drive(session))
+
+            assert terminal.is_error is True
+            assert terminal.usage is not None
+
+    def test_control_a_refusal_before_any_request_completes_reports_zero_not_none(self) -> None:
+        # The pre-turn refusal is the OTHER state the ledger must be able to tell apart:
+        # a reported usage of zero is the provider's own answer, not a missing one.
+        session = PydanticAiHarnessSession(
+            Agent(_api_error_model(status_code=403, error_type="access_denied", message="spend limit reached")),
+            model_name=_MODEL,
+        )
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.usage == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
+
+    def test_control_a_healthy_turn_s_usage_is_unchanged(self) -> None:
+        session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is False
+        assert terminal.usage is not None
+        assert terminal.usage["input_tokens"] > 0
+
+
+class TestAHardRefusalCarriesItsReset:
+    """A 401/403 yields the rejected window the driver already knows how to park on (#4816).
+
+    ``_collect`` captures a rejected ``RateLimitEvent`` into ``outcome.rate_limit_info``
+    and ``_outcome_failure`` feeds its ``resets_at`` through to ``UsageWindowState`` — a
+    channel that existed and was never fed, so 307 tasks each burned a fresh probe.
+    """
+
+    def test_a_retry_after_header_becomes_the_reset_instant(self) -> None:
+        before = time.time()
+        session = PydanticAiHarnessSession(Agent(_refused_model(headers={"Retry-After": "3600"})), model_name=_MODEL)
+
+        messages = _drive(session)
+
+        event = _rejected_window(messages)
+        assert event.resets_at is not None
+        # ``int()`` truncates the sub-second part, so the floor is the truncated `before`.
+        assert int(before) + 3600 <= event.resets_at <= time.time() + 3600
+
+    def test_an_instant_in_the_body_is_read_when_no_header_is_sent(self) -> None:
+        resets = datetime.now(tz=UTC) + timedelta(hours=2)
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(body={"code": "access_denied", "message": f"resets at {resets.isoformat()}"})),
+            model_name=_MODEL,
+        )
+
+        messages = _drive(session)
+
+        assert _rejected_window(messages).resets_at == int(resets.timestamp())
+
+    def test_a_far_future_instant_is_refused_so_the_lane_parks_on_the_horizon(self) -> None:
+        # A refusal body carries more than one instant shape — a key ``expires_at``, an
+        # account ``valid_until`` — and nothing downstream caps a park, so believing this
+        # one parked the metered lane until 2099 with the low-power preset engaged.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(body={"code": "access_denied", "expires_at": "2099-01-02T03:04:05Z"})),
+            model_name=_MODEL,
+        )
+
+        assert _rejected_window(_drive(session)).resets_at is None
+
+    def test_a_stale_instant_is_refused_rather_than_landing_on_the_five_minute_floor(self) -> None:
+        # ``_ISO_INSTANT`` takes the FIRST instant in the body, which is as often the
+        # request's own ``created`` stamp as the reset. Clamped to the elapsed-reset floor
+        # that is 12 re-probes an hour — the burn the one-hour horizon exists to stop.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(body={"created": "2020-05-06T07:08:09Z", "code": "access_denied"})),
+            model_name=_MODEL,
+        )
+
+        assert _rejected_window(_drive(session)).resets_at is None
+
+    def test_a_far_future_retry_after_is_refused_on_the_same_band(self) -> None:
+        # The structured rung is no more verifiable than the scraped one: a router that
+        # answers with its key's remaining lifetime in seconds parks the lane for a year.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(headers={"Retry-After": "31536000"})), model_name=_MODEL
+        )
+
+        assert _rejected_window(_drive(session)).resets_at is None
+
+    def test_an_unparseable_refusal_still_parks_on_the_horizon(self) -> None:
+        # No reset is WORSE than a wrong one only if it fails: a None here means
+        # ``effective_resets_at`` falls back to the one-hour horizon, never to a failure.
+        session = PydanticAiHarnessSession(Agent(_refused_model(body="upstream said no")), model_name=_MODEL)
+
+        messages = _drive(session)
+
+        assert _rejected_window(messages).resets_at is None
+
+    def test_the_refusal_also_yields_the_error_result_carrying_its_usage(self) -> None:
+        session = PydanticAiHarnessSession(Agent(_refused_model(headers={"retry-after": "60"})), model_name=_MODEL)
+
+        terminal = _terminal(_drive(session))
+
+        assert terminal.is_error is True
+        assert terminal.api_error_status == 403
+        assert terminal.usage is not None
+
+    def test_control_a_429_yields_no_hard_refusal_window(self) -> None:
+        # The hard-refusal channel is for 401/403 only; a 429 keeps the pre-#4816 path,
+        # where the CLI's own typed window (when any) is the source of truth.
+        session = PydanticAiHarnessSession(
+            Agent(_refused_model(status_code=429, headers={"retry-after": "30"})), model_name=_MODEL
+        )
+
+        assert not [m for m in _drive(session) if isinstance(m, RateLimitEvent)]
+
+    def test_control_a_healthy_turn_yields_no_window_at_all(self) -> None:
+        session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL)
+
+        assert not [m for m in _drive(session) if isinstance(m, RateLimitEvent)]
+
+
+class TestRunHeadlessFoldsProviderFailuresIntoTheTaxonomy(TestCase):
+    """End-to-end: the driver's own park/fail taxonomy fires on this lane, untouched.
+
+    The driver never special-cases the transport — these prove the session yields the
+    same truthful shapes the ``claude_sdk`` lane yields, so ``park_or_rotate_on_limit``
+    and ``_record_failure`` reach the right verdict with no driver change at all.
+    """
+
+    def setUp(self) -> None:
+        self.ticket = planned_ticket()
+        self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding")
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+
+    def _dispatch(self, harness: PydanticAiHarness) -> TaskAttempt:
+        with (
+            patch.object(
+                runner_mod,
+                "resolve_dispatch_harness",
+                return_value=runner_mod.DispatchHarness(harness=harness, name="fake_harness", provider=None),
+            ),
+            patch.object(runner_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+        ):
+            return run_agent(self.task, phase="coding", overlay_skill_metadata={})
+
+    def _dispatch_api_error(self, *, status_code: int, error_type: str, message: str) -> TaskAttempt:
+        return self._dispatch(
+            PydanticAiHarness(model=_api_error_model(status_code=status_code, error_type=error_type, message=message))
+        )
+
+    def test_a_rate_limited_run_parks_for_auto_recovery_instead_of_crashing(self) -> None:
+        from teatree.core.models import UsageWindowState  # noqa: PLC0415 — test-local
+
+        attempt = self._dispatch_api_error(
+            status_code=429,
+            error_type="rate_limit_error",
+            message="Number of requests has exceeded your rate limit",
+        )
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING, "PARKED for auto-resume, NOT a terminal FAILED"
+        assert attempt.error.startswith("limit_parked: ")
+        assert UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED) is not None
+
+    def test_an_overloaded_server_is_classified_transient_like_a_rate_limit(self) -> None:
+        attempt = self._dispatch_api_error(status_code=529, error_type="overloaded_error", message="Overloaded")
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING, "PARKED for auto-resume, NOT a terminal FAILED"
+        assert "rate_limit" in attempt.error
+
+    def test_a_credit_exhausted_key_fails_and_is_never_parked(self) -> None:
+        # API-credit exhaustion has no timed window, so auto-recovery ON must STILL
+        # land a terminal FAILED — nothing re-arms until the operator adds credits.
+
+        attempt = self._dispatch_api_error(
+            status_code=400,
+            error_type="invalid_request_error",
+            message="Your credit balance is too low to access the Anthropic API.",
+        )
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.FAILED, "a $0 balance has no timed reset — never park it"
+        assert attempt.error.startswith("api_credit: ")
+
+    def test_a_run_that_hits_its_own_step_cap_fails_and_is_never_parked(self) -> None:
+        harness = PydanticAiHarness(
+            model=_two_request_model(),
+            config=PydanticAiModelConfig(backend=OpenAICompatibleLaneConfig(request_limit=1)),
+        )
+
+        attempt = self._dispatch(harness)
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.FAILED, "the run's OWN cap is a real failure, not a limit park"
+        assert "error_max_turns" in attempt.error
+        assert "Traceback" not in attempt.error
+
+    def test_a_hard_refusal_parks_the_lane_once_and_the_next_task_never_opens_a_session(self) -> None:
+        """The #4816 shape: 307 tasks each re-probed a key the provider had already refused.
+
+        One refusal must park the LANE, so the second dispatch is turned away by the
+        admission guard with the harness never opened at all.
+        """
+        from teatree.core.models import UsageWindowState  # noqa: PLC0415 — test-local
+
+        harness = PydanticAiHarness(model=_refused_model(headers={"retry-after": "3600"}))
+
+        first = self._dispatch(harness)
+
+        assert first.error.startswith("limit_parked: provider_access_denied: ")
+        window = UsageWindowState.objects.active_for_lane(TaskAttempt.Lane.METERED)
+        assert window is not None
+        assert window.cause == "provider_access_denied"
+        assert UsageWindowState.objects.count() == 1, "one refusal, one window — never one per task"
+        parked_until = window.resets_at
+
+        Task.objects.filter(pk=self.task.pk).update(status=Task.Status.CLAIMED, not_before=None)
+        self.task.refresh_from_db()
+
+        with patch.object(harness, "open", wraps=harness.open) as open_spy:
+            second = self._dispatch(harness)
+
+        assert open_spy.call_count == 0, "the parked lane must not be re-probed — that is the burn"
+        assert second.error.startswith("limit_parked: ")
+        assert UsageWindowState.objects.count() == 1, "the second task adds no second window"
+        window.refresh_from_db()
+        assert window.resets_at == parked_until, "the park is not extended by a task that never ran"
+
+    def test_a_successful_run_stamps_the_real_turns_and_session_id_on_the_attempt(self) -> None:
+        attempt = self._dispatch(PydanticAiHarness(model=_two_request_model()))
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.COMPLETED
+        assert attempt.num_turns == 2, "the watchdog's turn ceiling reads this — a hardcoded 1 never bounds a run"
+        assert attempt.agent_session_id, "resume/audit needs an independent handle on the run"
+
+
+_ROUTER_MODEL = "orcarouter/teatree-auto"
+
+
+def _router_session(
+    replies: Iterator[httpx2.Response],
+    *,
+    before_send: list[object] | None = None,
+    sent: list[httpx2.Request] | None = None,
+) -> PydanticAiHarnessSession:
+    """A real OpenAI-compatible model over a fake network, with the usage tee on its HTTP client."""
+    tee = UsageTee()
+
+    def reply(request: httpx2.Request) -> httpx2.Response:
+        if sent is not None:
+            sent.append(request)
+        return next(replies)
+
+    http_client = httpx2.AsyncClient(
+        transport=httpx2.MockTransport(reply),
+        event_hooks={"request": list(before_send or []), "response": [tee.capture]},
+    )
+    client = AsyncOpenAI(base_url="https://router.example/v1", api_key="test-key", http_client=http_client)
+    agent: Agent[None, str] = Agent(OpenAIChatModel(_ROUTER_MODEL, provider=OpenAIProvider(openai_client=client)))
+
+    @agent.tool_plain
+    def lookup(command: str = "") -> str:
+        return "found"
+
+    return PydanticAiHarnessSession(agent, model_name=_ROUTER_MODEL, run=SessionRun(session_id="run-7", usage_tee=tee))
+
+
+def _drive_router(session: PydanticAiHarnessSession, prompt: str = "go") -> list[object]:
+    """:func:`_drive` for a :func:`_router_session`, whose only transport is the fake network."""
+    with override_allow_model_requests(allow_model_requests=True):
+        return _drive(session, prompt)
+
+
+class TestTerminalResultCarriesTheWireReportedSpend:
+    """A metered router's own cost and resolved model reach the terminal message, on success and failure."""
+
+    def test_a_run_reports_the_router_cost_and_the_model_that_actually_ran(self) -> None:
+        session = _router_session(iter([text_reply(_RESULT_JSON, cost_usd=0.000382)]))
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is False
+        assert terminal.total_cost_usd == pytest.approx(0.000382)
+        assert terminal.model_usage == {RESOLVED_MODEL: {}}
+        assert terminal.usage is not None
+        assert terminal.usage["cache_read_input_tokens"] == 21824
+        assert terminal.usage["per_request"] == [
+            {
+                "model": RESOLVED_MODEL,
+                "router": "teatree-auto",
+                "request_id": "req-1",
+                "session_tier": "",
+                "fallback_level": "",
+                "fallback_model": "",
+                "prompt_tokens": 21870,
+                "completion_tokens": 5,
+                "cached_tokens": 21824,
+                "cost_usd": 0.000382,
+            }
+        ]
+
+    def test_a_turn_refused_after_billing_still_reports_its_usage_and_cost(self) -> None:
+        session = _router_session(iter([tool_call_reply("lookup", cost_usd=0.00004), spend_stop()]))
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is True
+        assert terminal.api_error_status == 403
+        assert terminal.total_cost_usd == pytest.approx(0.00004)
+        assert terminal.usage is not None
+        assert terminal.usage["input_tokens"] == 100
+        assert [request["cost_usd"] for request in terminal.usage["per_request"]] == [0.00004, None]
+
+    def test_each_turn_reports_only_the_requests_it_made(self) -> None:
+        session = _router_session(
+            iter([text_reply(_RESULT_JSON, cost_usd=0.001642), text_reply(_RESULT_JSON, cost_usd=0.000382)])
+        )
+
+        first = _terminal(_drive_router(session))
+        second = _terminal(_drive_router(session))
+
+        assert first.total_cost_usd == pytest.approx(0.001642)
+        assert second.total_cost_usd == pytest.approx(0.000382)
+        assert second.usage is not None
+        assert len(second.usage["per_request"]) == 1
+
+    def test_a_turn_refused_on_its_third_request_keeps_the_trajectory_it_made(self) -> None:
+        session = _router_session(
+            iter(
+                [tool_call_reply("lookup", cost_usd=0.00001), tool_call_reply("lookup", cost_usd=0.00002), spend_stop()]
+            )
+        )
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is True
+        assert terminal.usage is not None
+        calls = terminal.usage["tool_calls"]
+        assert [call["tool"] for call in calls] == ["lookup", "lookup"]
+        assert all(call["arg_keys"] == [] and call["args_bytes"] == len(b"{}") for call in calls)
+        assert all(call["output_bytes"] == len(b"found") for call in calls)
+        assert all(isinstance(call["duration_ms"], int) and call["duration_ms"] >= 0 for call in calls)
+        assert [request["request_id"] for request in terminal.usage["per_request"]] == ["req-1", "req-1", ""]
+
+    def test_a_successful_turn_keeps_its_trajectory_too(self) -> None:
+        session = _router_session(
+            iter([tool_call_reply("lookup", cost_usd=0.00001), text_reply(_RESULT_JSON, cost_usd=0.00002)])
+        )
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is False
+        assert terminal.usage is not None
+        assert [call["tool"] for call in terminal.usage["tool_calls"]] == ["lookup"]
+
+    def test_a_turn_without_tool_calls_records_none(self) -> None:
+        terminal = _terminal(_drive_router(_router_session(iter([text_reply(_RESULT_JSON, cost_usd=0.00002)]))))
+
+        assert terminal.usage is not None
+        assert "tool_calls" not in terminal.usage
+
+    def test_an_egress_block_ends_the_turn_as_a_leak_block_without_sending(self) -> None:
+        sent: list[httpx2.Request] = []
+
+        def refuse(_request: httpx2.Request) -> None:
+            detail = "secret-shaped token in the request body"
+            raise EgressBlockedError(detail)
+
+        session = _router_session(iter([text_reply(_RESULT_JSON, cost_usd=0.00002)]), before_send=[refuse], sent=sent)
+
+        terminal = _terminal(_drive_router(session))
+
+        assert terminal.is_error is True
+        assert (terminal.result or "").startswith("egress_blocked: ")
+        match = limit_match(terminal)
+        assert match is not None
+        assert match.cause is LimitCause.LEAK_BLOCKED
+        assert sent == [], "the refused body never reached the network"
+
+    def test_a_session_given_an_id_stamps_that_id(self) -> None:
+        run = SessionRun(session_id="minted-before-the-provider", usage_tee=UsageTee())
+        session = PydanticAiHarnessSession(Agent(TestModel(custom_output_text="hi")), model_name=_MODEL, run=run)
+
+        assert _terminal(_drive(session)).session_id == "minted-before-the-provider"
+
+
+_CANARY = "T3CANARY-5b0f3c1e9a"
+_BEARER_CANARY = "bearer-canary-value"
+
+
+class TestATrajectoryNeverCarriesArgumentValues(TestCase):
+    """A tool call's arguments hold commands, file contents and credentials; only their shape is recorded."""
+
+    def test_secrets_in_tool_arguments_reach_neither_the_result_message_nor_the_attempt(self) -> None:
+        arguments = json.dumps(
+            {"command": f"curl -H 'Authorization: Bearer {_BEARER_CANARY}' https://h.example/{_CANARY}"}
+        )
+        session = _router_session(
+            iter(
+                [
+                    tool_call_reply("lookup", cost_usd=0.00001, arguments=arguments),
+                    text_reply(_RESULT_JSON, cost_usd=0.00002),
+                ]
+            )
+        )
+
+        terminal = _terminal(_drive_router(session))
+        ticket = planned_ticket()
+        task = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="retro")
+        attempt = _record_success(
+            task,
+            HarnessOutcome(agent_text=_RESULT_JSON, result_message=terminal, stuck_reason=None),
+            phase="retro",
+            lane=TaskAttempt.Lane.METERED,
+        )
+        attempt.refresh_from_db()
+
+        assert terminal.usage is not None
+        recorded = {"result_message": json.dumps(terminal.usage), "attempt": json.dumps(attempt.result)}
+        for where, text in recorded.items():
+            for secret in (_CANARY, _BEARER_CANARY, "Bearer"):
+                assert secret not in text, f"{secret!r} leaked into the {where}"
+        assert [call["arg_keys"] for call in terminal.usage["tool_calls"]] == [["command"]]
+        assert terminal.usage["tool_calls"][0]["args_bytes"] == len(arguments.encode())
+
+
+def test_turns_made_counts_requests_and_never_returns_zero() -> None:
+    # a run that made 3 requests reports 3
+    assert _turns_made(RunUsage(requests=3)) == 3
+    # a run that recorded 0 requests (the provider refused the first one) still
+    # counts as the one turn it attempted
+    assert _turns_made(RunUsage(requests=0)) == 1

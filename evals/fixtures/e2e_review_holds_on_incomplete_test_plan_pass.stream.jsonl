@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e-review-h4-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The plan is accurate but unfinished — H4 fails on all three counts (unrouted scenarios, a red and a verdict-less scenario, carried-over captures). Recording a HOLD with the punch-list."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example review record 7912 e2e-8712 --reviewed-sha 00112233445566778899aabbccddeeff00112233 --verdict hold --reviewer-identity reviewer-bot --findings-json /tmp/findings.json", "description": "record HOLD — H4 test-plan completeness fails"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "recorded hold"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

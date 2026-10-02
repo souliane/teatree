@@ -1,0 +1,187 @@
+---
+name: contribute
+description: Push retro improvements to a branch, open a PR, and optionally create upstream issues. Use when user says "contribute", "push improvements", "push skills", or after retro creates a local commit.
+compatibility: macOS/Linux, git, gh CLI (for PRs and upstream issues).
+requires:
+  - retro
+metadata:
+  version: 0.0.1
+---
+
+# Contribute — Branch, PR & Upstream Issue Creation
+
+Handles the **push and PR workflow** for skill improvements created by `t3:retro`. Retro commits improvements locally in `$T3_REPO`; this skill pushes them to a branch and opens a PR — with explicit user consent every time.
+
+**All pushes go to branches, never to main.** The PR is the review gate.
+
+## Dependencies
+
+- `t3:retro` — creates the local commits that this skill pushes.
+
+## Configuration
+
+Uses these environment variables (set in your shell profile or via `/t3:setup`):
+
+- **`T3_CONTRIBUTE`** — must be `true` for this skill to do anything.
+- **`T3_PUSH`** — `false` (default) or `true`. When `false`, this skill refuses to push and tells the user to push manually. Exists as a safety stop for privacy/secret review.
+- **`T3_AUTO_PUSH_FORK`** — `false` (default) or `true`. When `true`, step 4 (push confirmation) is skipped **only** when the push target is the user's fork (`origin` push URL differs from `T3_UPSTREAM`). Upstream issue creation (step 6) always requires confirmation.
+- **`T3_UPSTREAM`** — upstream repo (e.g., `souliane/teatree`). Controls where the PR is created:
+  - **Empty** → push to branch on `origin`, create PR on `origin` (same repo).
+  - **Set** → push to branch on `origin` (your fork), create PR targeting `T3_UPSTREAM`.
+- **`T3_PRIVACY`** — `strict` (default) or `relaxed`. See `t3:retro` § Privacy Scan.
+
+## Why Not Just `git push`?
+
+Do **not** push retro commits with `git push` directly. This skill:
+
+1. Ensures commits are on a feature branch (never pushes to main)
+2. Runs pre-flight checks (pre-commit, tests, privacy scan)
+3. Requires explicit user confirmation before every push
+4. Opens a PR for review
+5. Optionally creates an upstream issue when working from a fork
+
+## Workflow
+
+### 1. Find Unpushed Commits
+
+```bash
+cd "$T3_REPO"
+git log --oneline @{upstream}..HEAD
+```
+
+If no unpushed commits exist, inform the user and stop.
+
+Show the commit log to the user.
+
+### 1a. Bundle Sibling Retro Branches (Default)
+
+When multiple local branches hold unpushed retro commits from the **same session** or same logical topic, **bundle them into a single PR by default** — do not open one PR per branch. Each PR costs a review cycle; the user's explicit policy is to minimise the number of PRs when commits belong together. This is the retro-commit instance of the general [`../rules/SKILL.md`](../rules/SKILL.md) § "Fewest PRs for Related Work" rule — related work ships as one PR, and splitting needs explicit user approval.
+
+**Detect siblings:**
+
+```bash
+cd "$T3_REPO"
+DEFAULT=$(git config init.defaultBranch || echo main)
+for ref in $(git for-each-ref --format='%(refname:short)' refs/heads/); do
+  [ "$ref" = "$DEFAULT" ] && continue
+  ahead=$(git rev-list --count "$DEFAULT..$ref" 2>/dev/null)
+  [ "${ahead:-0}" -gt 0 ] && git log --format="  %h %s  [$ref]" "$DEFAULT..$ref"
+done
+```
+
+A sibling is another branch whose commits (a) trace back to the same retro session or (b) touch overlapping skills / cross-reference each other's changes. When in doubt, show the list to the user and ask whether to bundle.
+
+**Bundle procedure:**
+
+1. Pick the branch whose scope most naturally covers the combined change as the umbrella (rename if helpful).
+2. `git cherry-pick` the commits from each sibling branch onto the umbrella (oldest-first, preserving authorship).
+3. Re-run § 2 pre-flight on the combined branch.
+4. Delete the now-empty sibling branches after the combined PR lands: `git branch -D <sibling>` and `git worktree remove <path>`.
+
+**Opt-out:** if the user explicitly asks for separate PRs (different review audiences, staged rollout, one-change-per-revert policy), skip bundling. Separate PRs are the exception, not the default.
+
+### 1b. Squash Option
+
+If the (possibly-bundled) branch has **more than one** commit, offer to squash following the squash rules in [`../ship/SKILL.md`](../ship/SKILL.md) § "Finalize Branch". Keep commits separate when each lands a distinct change that deserves its own revert boundary.
+
+### 2. Pre-Flight Checks (all must pass)
+
+1. **`T3_CONTRIBUTE=true`** — if not, stop: "Self-improvement is disabled. Set `T3_CONTRIBUTE=true` in your environment (or set `contribute` with the `mcp__teatree__config_setting_set` MCP tool — it writes the DB-home value directly; fall back to `t3 <overlay> config_setting set contribute true` when the MCP server isn't connected)."
+2. **`T3_PUSH` is `true`** — if not, stop: "Pushing is disabled (`T3_PUSH=false`). Push manually with `git push` if you're sure."
+3. **Has a push remote:** `git -C "$T3_REPO" remote -v` → shows a push URL for `origin`.
+4. **Full gate set passes:** `cd "$T3_REPO" && t3 tool verify-gates` — runs the commit-stage, push-stage and declared manual CI-job hooks (a bare `prek run --all-files` skips the push-stage and manual gates CI re-runs); fix first if it fails.
+5. **Affected tests pass:** `cd "$T3_REPO" && bash dev/test-affected.sh` — must be green. The diff-scoped lane, not the whole suite: it escalates to FULL itself on anything it cannot prove local, and CI's sharded lane is the whole-tree authority ([#3994](https://github.com/souliane/teatree/issues/3994)).
+6. **Privacy scan passes:** see `t3:retro` § Privacy Scan. Scan the diff of unpushed commits.
+
+### 3. Verify Branch
+
+Retro commits should already be on the session's working branch (see `t3:retro` § Branch Selection). Verify you're not on `main`:
+
+```bash
+cd "$T3_REPO"
+DEFAULT=$(git config init.defaultBranch || echo main)
+[ "$(git branch --show-current)" = "$DEFAULT" ] && echo "ERROR: on default branch" && exit 1
+```
+
+If somehow on `main` (shouldn't happen — retro handles branch selection), create a new branch:
+
+```bash
+BRANCH="fix/retro-$(date +%Y%m%d)-$(git log -1 --format=%s | sed 's/[^a-zA-Z0-9]/-/g' | head -c 50)"
+git checkout -b "$BRANCH"
+```
+
+### 4. Push Confirmation
+
+**Default: every push requires explicit user consent.**
+
+**Auto-push exception** (`T3_AUTO_PUSH_FORK=true`): skip the confirmation below and proceed directly to push when **all** of the following hold:
+
+1. `T3_CONTRIBUTE=true` and `T3_PUSH=true` (already required to reach this step).
+2. `T3_AUTO_PUSH_FORK=true`.
+3. `origin`'s push URL does **not** match `T3_UPSTREAM` — the push lands on the user's fork, not upstream.
+4. Pre-flight checks in § 2 all passed, including the privacy scan.
+
+When any of the above fail, fall back to the confirmation flow below.
+
+Show:
+
+```text
+════════════════════════════════════════════════════════════════
+  PUSH REVIEW — <branch> (<N> unpushed commits)
+════════════════════════════════════════════════════════════════
+
+  Remote: origin (<push-url>)
+
+  Commits to push:
+  - <hash> fix(<skill>): <description>
+
+  Files changed:
+  - <file list with short stat>
+
+  Privacy scan: PASSED
+
+════════════════════════════════════════════════════════════════
+  → Type "yes" to push, anything else to skip.
+════════════════════════════════════════════════════════════════
+```
+
+**Do NOT push without explicit "yes" from the user.**
+
+### 5. Push and Create PR
+
+```bash
+cd "$T3_REPO"
+git push -u origin HEAD
+```
+
+Then create the PR:
+
+- **`T3_UPSTREAM` is empty** → PR on `origin` (same repo):
+
+  ```bash
+  gh pr create --title "fix(<skill>): <title>" --body "<body>" --base main
+  ```
+
+- **`T3_UPSTREAM` is set** → PR targeting upstream:
+
+  ```bash
+  gh pr create --title "fix(<skill>): <title>" --body "<body>" \
+    --repo "$T3_UPSTREAM" --head "<fork-owner>:<branch>" --base main
+  ```
+
+The PR body should include: summary of changes, files changed, validation status (pre-commit, tests, privacy scan).
+
+### 6. Upstream Issue (if applicable)
+
+When `T3_UPSTREAM` is set AND the PR landed on a fork (not upstream itself), optionally file a public upstream issue for visibility. See [`references/upstream-issue.md`](references/upstream-issue.md) for the full procedure — divergence gate, issue template, privacy/tone rules, and user-confirmation gate.
+
+Skip this step entirely when `T3_UPSTREAM` is empty or when the PR already targets upstream.
+
+## What NOT to Do
+
+- Do not push without explicit user consent — except when `T3_AUTO_PUSH_FORK=true` and the push target is the user's fork (see § 4).
+- Do not push to main — always use a branch.
+- Do not auto-create upstream issues — § 6 always requires confirmation, regardless of `T3_AUTO_PUSH_FORK`.
+- Do not create upstream issues from heavily diverged forks — they're not useful.
+- Do not use `git push` directly — always go through this skill for retro commits.
+- Do not create duplicate upstream issues — check for existing ones first.

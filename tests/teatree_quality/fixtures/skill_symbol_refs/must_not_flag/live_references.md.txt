@@ -1,0 +1,12 @@
+# Live references
+
+The walk itself lives at `src/teatree/quality/skill_symbol_refs.py` and is
+reached as `teatree.quality.skill_symbol_refs.scan_tree`.
+
+Naming it twice on one line is one reference, not two:
+`src/teatree/quality/catalog.py` and again `src/teatree/quality/catalog.py`.
+
+```python
+from teatree.core.notify import NotifyKind, notify_user
+from teatree.config import *
+```

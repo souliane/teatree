@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-subagent-outcome-noop-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me look at the current loop cadence configuration before deciding anything."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review-blocker-withhold-glab-separator-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 review post-comment my-org/my-repo 4120 \"HIGH (correctness): duplicate identifiers drop valid work after the first row.\" --file src/teatree/core/sweep.py --line 88"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "true && glab mr approve 4120 --repo my-org/my-repo"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

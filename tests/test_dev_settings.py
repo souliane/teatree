@@ -1,0 +1,162 @@
+"""Tests for teatree.settings, teatree.urls, teatree.wsgi and teatree.__main__."""
+
+import importlib
+import os
+import subprocess
+import sys
+from unittest.mock import patch
+
+from django.contrib.staticfiles.views import serve as serve_static
+from django.test import override_settings
+from django.urls import resolve, reverse
+
+from teatree.settings import _debug_enabled
+
+
+def test_settings_importable():
+    """Importing the module should execute it without errors."""
+    mod = importlib.import_module("teatree.settings")
+    assert mod.SECRET_KEY == "teatree-dev-insecure"
+    # DEBUG is COMPUTED from T3_DEBUG, so asserting a constant here would pin the
+    # RUNNER'S environment rather than the code, and turn red wherever a deployment
+    # sets T3_DEBUG=0. Assert the wiring; the value contract itself is pinned
+    # environment-independently by `test_debug_follows_the_environment`.
+    assert mod.DEBUG is _debug_enabled()
+    assert mod.USE_TZ is True
+    assert mod.ROOT_URLCONF == "teatree.urls"
+    assert "default" in mod.DATABASES
+    assert mod.DATABASES["default"]["ENGINE"] == "teatree.db.sqlite3_boundary"
+    assert "teatree.core" in mod.INSTALLED_APPS
+    assert "teatree.agents" in mod.INSTALLED_APPS
+    assert "teatree.backends" in mod.INSTALLED_APPS
+    assert isinstance(mod.LOGGING, dict)
+    assert mod.LOGGING["version"] == 1
+    assert mod.STATIC_URL == "static/"
+
+
+class TestSuiteSettingsMirrorProduction:
+    """The suite must resolve dates in production's zone, and actually run on its own settings.
+
+    Django's global ``TIME_ZONE`` default is ``America/Chicago``, so omitting it from
+    ``tests/django_settings.py`` put every ``localdate()`` boundary at 05:00/06:00 UTC —
+    inside the window this repo's CI runs in — while production resolves them at 00:00
+    UTC. That is what turned a once-a-cycle rollover into a shuffle-lane red on an
+    unrelated PR (souliane/teatree#3996).
+    """
+
+    def test_timezone_matches_production(self) -> None:
+        prod = importlib.import_module("teatree.settings")
+        suite = importlib.import_module("tests.django_settings")
+        assert getattr(suite, "TIME_ZONE", None) == prod.TIME_ZONE
+        assert getattr(suite, "USE_TZ", None) is prod.USE_TZ
+
+    def test_the_active_settings_are_the_suite_settings(self) -> None:
+        # pytest-django ranks an ambient DJANGO_SETTINGS_MODULE above the ini key, so
+        # without the ``--ds`` in addopts a shell that exports it runs the whole suite
+        # against production settings — a different DB and a different TIME_ZONE.
+        from django.conf import settings  # noqa: PLC0415 — deferred: read the ACTIVE module, not an import-time copy
+
+        assert settings.SETTINGS_MODULE == "tests.django_settings"
+
+
+def test_discover_overlay_apps_skips_broken_entry_points():
+    """Entry points that raise on load are silently skipped."""
+    broken_ep = type("FakeEP", (), {"load": lambda self: (_ for _ in ()).throw(ImportError("boom"))})()
+    with patch("importlib.metadata.entry_points", return_value=[broken_ep]):
+        mod = importlib.import_module("teatree.settings")
+        result = mod._discover_overlay_apps()
+
+    assert result == []
+
+
+def test_main_module_sets_settings_and_delegates():
+    """Importing __main__ should work and main() should set DJANGO_SETTINGS_MODULE."""
+    mod = importlib.import_module("teatree.__main__")
+
+    with patch("django.core.management.execute_from_command_line") as mock_exec:
+        mod.main()
+
+    mock_exec.assert_called_once()
+    import os  # noqa: PLC0415
+
+    assert os.environ["DJANGO_SETTINGS_MODULE"] == "teatree.settings"
+
+
+def test_discover_overlay_apps_skips_entry_points_without_django_app():
+    """Entry points whose class has no django_app attribute are skipped."""
+    no_app_cls = type("NoApp", (), {})
+    ep = type("FakeEP", (), {"load": lambda self: no_app_cls})()
+    with patch("importlib.metadata.entry_points", return_value=[ep]):
+        mod = importlib.import_module("teatree.settings")
+        result = mod._discover_overlay_apps()
+
+    assert result == []
+
+
+def test_debug_defaults_on_and_env_disables_it(monkeypatch):
+    """DEBUG is on by default (local-dev convenience) but T3_DEBUG=0 turns it off."""
+    monkeypatch.delenv("T3_DEBUG", raising=False)
+    assert _debug_enabled() is True
+
+    monkeypatch.setenv("T3_DEBUG", "0")
+    assert _debug_enabled() is False
+    monkeypatch.setenv("T3_DEBUG", "false")
+    assert _debug_enabled() is False
+    monkeypatch.setenv("T3_DEBUG", "off")
+    assert _debug_enabled() is False
+
+    monkeypatch.setenv("T3_DEBUG", "1")
+    assert _debug_enabled() is True
+    monkeypatch.setenv("T3_DEBUG", "")
+    assert _debug_enabled() is True
+
+
+def test_admin_is_mounted_regardless_of_debug():
+    """/admin/ mounts unconditionally — no longer gated on DEBUG (the deploy footgun)."""
+    with override_settings(DEBUG=False):
+        assert reverse("admin:index") == "/admin/"
+    with override_settings(DEBUG=True):
+        assert reverse("admin:index") == "/admin/"
+
+
+def test_static_is_served_off_debug():
+    """Admin static assets resolve to the finder-serve view even with DEBUG off.
+
+    gunicorn does not wrap the app with runserver's dev static handler, so the
+    urlconf serves static itself (`insecure=True`) — otherwise the admin renders
+    unstyled under the production WSGI server.
+    """
+    with override_settings(DEBUG=False):
+        match = resolve("/static/admin/css/base.css")
+    assert match.func is serve_static
+    assert match.kwargs.get("insecure") is True
+
+
+def test_wsgi_application_is_a_callable():
+    """teatree.wsgi exposes a WSGI `application` callable for gunicorn."""
+    mod = importlib.import_module("teatree.wsgi")
+    assert callable(mod.application)
+
+
+def test_debug_follows_the_environment():
+    """``settings.DEBUG`` is derived from ``T3_DEBUG``, in BOTH directions.
+
+    ``DEBUG`` is evaluated once, at module import, so the wiring cannot be
+    observed by re-reading the attribute inside an already-configured Django
+    process. Each direction runs in a fresh interpreter instead, which makes the
+    assertion independent of the T3_DEBUG value the runner itself happens to
+    carry — a constant asserted in-process pins the runner's environment, not
+    the code, and turns red on any deployment that sets ``T3_DEBUG=0``.
+    """
+    script = "import teatree.settings as s; print(s.DEBUG)"
+    for value, expected in (("0", "False"), ("1", "True")):
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            env={**os.environ, "T3_DEBUG": value},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert completed.stdout.strip() == expected, (
+            f"T3_DEBUG={value} must yield DEBUG={expected}; settings.DEBUG is not wired to the env reader."
+        )

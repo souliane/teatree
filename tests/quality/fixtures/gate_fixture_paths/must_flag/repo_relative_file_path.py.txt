@@ -1,0 +1,3 @@
+def test_python_edit_blocks():
+    payload = {"session_id": "s", "tool_name": "Edit", "tool_input": {"file_path": "src/teatree/core/x.py"}}
+    run(payload)

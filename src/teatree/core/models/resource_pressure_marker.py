@@ -1,0 +1,104 @@
+"""Singleton cadence/rate-limit/hysteresis ledger for the resource-pressure scanner.
+
+The :class:`ResourcePressureScanner` runs every loop tick but only
+*measures* once per its own ``cadence_minutes`` and only runs a freeing
+pass once per its own ``min_free_interval_minutes`` — both gates are
+carried across tick boundaries by this durable row. Without
+it a sub-minute tick cadence would re-shell ``df``/``vm_stat`` (and worse,
+re-run cache purges) on every tick.
+
+There is one logical row (``singleton=True``, a unique boolean). Mirrors
+:class:`SelfUpdateMarker`: the scanner upserts after each measurement pass
+(swallow-and-continue on any DB error) so the cadence/rate-limit gates can
+short-circuit cheaply on the next tick. ``last_plan`` records the dry-run
+plan + reclaimed bytes from the most recent freeing pass so the user can
+see what the scanner did (or *would have* done, when destructive flags are
+off) — satisfying the done-claims-require-artifact-evidence contract.
+"""
+
+from typing import ClassVar
+
+from django.db import models
+from django.utils import timezone
+
+
+class ResourcePressureMarker(models.Model):
+    """One singleton row carrying the cadence/rate-limit/hysteresis state.
+
+    ``last_run_at`` gates the measurement cadence; ``last_freed_at`` gates
+    the freeing-pass rate-limit (anti-thrash) and ``last_artifact_sweep_at``
+    the artifact sweep's own, independent cadence. ``consecutive_critical``
+    counts back-to-back CRITICAL-RAM ticks so the flag-gated process-kill
+    escalation only fires after a sustained episode. ``last_warn_dm_at``
+    dedups the WARN-band advisory DM to once per day. ``last_plan`` is the
+    human-readable dry-run plan + reclaimed bytes of the most recent
+    freeing pass, and ``last_artifact_plan`` the same for the artifact sweep,
+    which runs on its own cadence and would otherwise overwrite it.
+    """
+
+    singleton = models.BooleanField(default=True, unique=True)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_disk_free_gb = models.FloatField(null=True, blank=True)
+    last_ram_avail_gb = models.FloatField(null=True, blank=True)
+    last_freed_at = models.DateTimeField(null=True, blank=True)
+    # Separate from last_freed_at so a loss-free artifact sweep never trips the
+    # destructive ladder's anti-thrash gate — being rate-limited there silently
+    # downgrades a CRITICAL band to a WARN that frees nothing (#4244).
+    last_artifact_sweep_at = models.DateTimeField(null=True, blank=True)
+    consecutive_critical = models.IntegerField(default=0)
+    last_warn_dm_at = models.DateTimeField(null=True, blank=True)
+    last_plan = models.TextField(blank=True, default="")
+    # Separate from last_plan for the same reason last_artifact_sweep_at is separate
+    # from last_freed_at: two passes run on this one mini-loop, and a single shared
+    # field means whichever wrote last is the only account that survives — the other
+    # pass's record of what it deleted, and what its guard stopped, is simply gone
+    # (#4244).
+    last_artifact_plan = models.TextField(blank=True, default="")
+    # #3992 The resource loop's OUTPUT, not another input: the intake concurrency it
+    # last derived from observed headroom. NULL means never computed, which the reader
+    # resolves to the operator's static setting — as does a value older than the
+    # freshness TTL, so a stopped loop stops being trusted instead of clamping forever.
+    adaptive_intake_concurrency = models.IntegerField(null=True, blank=True)
+    adaptive_intake_recorded_at = models.DateTimeField(null=True, blank=True)
+    # #4644 Consecutive freeing passes that ran below the critical floor and returned
+    # nothing. A pass that reclaims nothing and a pass that never ran read identically
+    # from outside; this is what tells them apart and feeds the health alarm.
+    zero_yield_passes = models.IntegerField(default=0)
+
+    class Meta:
+        db_table = "teatree_resource_pressure_marker"
+        ordering: ClassVar = ["-last_run_at"]
+
+    def __str__(self) -> str:
+        return f"resource-pressure<disk={self.last_disk_free_gb}gb ram={self.last_ram_avail_gb}gb>"
+
+    @classmethod
+    def load(cls) -> "ResourcePressureMarker":
+        """Return the singleton row, creating it on first access."""
+        marker, _ = cls.objects.get_or_create(singleton=True)
+        return marker
+
+    def record_measurement(self, *, disk_free_gb: float | None, ram_avail_gb: float | None) -> None:
+        """Stamp the pass. ``None`` for a resource this host could not measure at all (#4104)."""
+        self.last_run_at = timezone.now()
+        self.last_disk_free_gb = disk_free_gb
+        self.last_ram_avail_gb = ram_avail_gb
+        self.save(update_fields=["last_run_at", "last_disk_free_gb", "last_ram_avail_gb"])
+
+    def record_reclaim_pass(self, *, freed_gb: float, under_critical: bool) -> int:
+        """Stamp one freeing pass and return the resulting zero-yield streak.
+
+        Only a pass that ran under pressure AND returned nothing extends the
+        streak: reclaiming nothing on a box with room to spare is the correct
+        outcome, not a stall.
+        """
+        stalled = under_critical and freed_gb <= 0
+        self.zero_yield_passes = self.zero_yield_passes + 1 if stalled else 0
+        self.save(update_fields=["zero_yield_passes"])
+        return self.zero_yield_passes
+
+    def record_adaptive_concurrency(self, value: int) -> None:
+        """Stamp the derived intake concurrency; the timestamp IS its freshness heartbeat."""
+        self.adaptive_intake_concurrency = value
+        self.adaptive_intake_recorded_at = timezone.now()
+        self.save(update_fields=["adaptive_intake_concurrency", "adaptive_intake_recorded_at"])

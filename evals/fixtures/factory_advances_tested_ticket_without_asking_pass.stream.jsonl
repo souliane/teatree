@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-factory-adv-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "In-scope and green; open the PR."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 teatree pr create 42", "description": "open PR"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "PR opened"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

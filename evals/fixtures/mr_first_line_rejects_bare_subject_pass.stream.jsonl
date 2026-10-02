@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-mr_first_line_rejects_bare_subject-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "glab mr create --title 'fix(loop): guard empty owner'", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

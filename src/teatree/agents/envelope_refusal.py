@@ -1,0 +1,117 @@
+"""The refusal half of the result-envelope contract — one vocabulary, one owner.
+
+:mod:`teatree.agents.envelope_contract` states what every headless brief TEACHES;
+this module states what the pipeline REFUSES when an agent ignores that brief, and
+how that refusal is corrected. Both halves of one contract, so a new refusal can
+never be added on the producing side without the consuming side learning it.
+
+Two seams produce an envelope refusal, and they used to name it in two
+hand-maintained vocabularies that drifted:
+
+* the RUNNER (:func:`teatree.agents.runner._record_success`) refuses a run whose
+    output carried no JSON object at all — :data:`NO_ENVELOPE_ERROR`;
+* the RECORDER (:mod:`teatree.agents.attempt_recorder`, :func:`…result_schema.check_evidence`)
+    refuses an envelope that parsed but is unusable — wrong keys, not an object, or
+    missing the phase's evidence field.
+
+The consumer is :mod:`teatree.loop.transient_requeue`, whose one-shot corrective
+retry reopens such a task with an explicit emit-the-envelope instruction. It
+listed only the RECORDER's four strings, so ``no_result_envelope`` — the most
+literal omitted-envelope failure there is — was the one class that never earned
+the retry: the first prose-only run parked the task and paged a human. The fix is
+this shared module, not a fifth hand-typed literal.
+
+The refusal itself stays: a success you cannot parse is not evidence of success.
+What this module makes possible is a BOUNDED, satisfiable correction of it.
+"""
+
+from teatree.agents.result_schema import conditional_evidence_for_phase, required_evidence_for_phase
+
+#: Prefix the agent runner stamps on a run that emitted no JSON object at all.
+NO_ENVELOPE_PREFIX = "no_result_envelope: "
+
+#: The runner's full refusal reason. Deliberately a CONSTANT with no run-specific detail,
+#: so the reason CLASSIFIES stably (:func:`is_no_envelope_refusal`, ``classify_failure``)
+#: instead of varying with whatever prose the agent happened to emit; that prose is
+#: preserved on the failed attempt's ``result`` for diagnosis. The constant does NOT feed
+#: the repair loop's stall check: ``no_result_envelope`` is the absence of a cause, so
+#: ``task_failure_taxonomy.is_causeless`` drops it from the identical-failure comparison
+#: (souliane/teatree#4075) — otherwise the corrective retry below manufactured the second
+#: identical fingerprint and halted a phase that was never doomed.
+NO_ENVELOPE_ERROR = f"{NO_ENVELOPE_PREFIX}agent produced no JSON result envelope; refusing to record success"
+
+#: Prefix the recorder stamps on a returned ``fix_record`` that parsed but cannot be
+#: written (#4520) — a non-mapping, or one leaving a required field blank. A CONSTANT
+#: so the refusal classifies stably below rather than varying with the missing fields
+#: it names; the fields themselves are appended for the agent to act on.
+MALFORMED_FIX_RECORD_PREFIX = "malformed fix_record: "
+
+#: Prefix the recorder stamps on returned ``rubric_grades`` it cannot stamp — a
+#: non-list, a batch leaving a criterion ungraded, or a grade the guarded factory
+#: refuses. The mirror of :data:`MALFORMED_FIX_RECORD_PREFIX`: it classifies the
+#: refusal as an ENVELOPE refusal, so the reviewer earns ``transient_requeue``'s
+#: one-shot corrective retry rather than being paged as a genuine defect.
+MALFORMED_RUBRIC_GRADES_PREFIX = "malformed rubric_grades: "
+
+#: Substrings identifying a RECORDER-side envelope refusal — an envelope that
+#: parsed but is unusable, as opposed to a genuine defect (an assertion, a test
+#: failure, a review verdict the reviewer legitimately withheld).
+_RECORDER_REFUSAL_MARKERS = (
+    "missing required evidence",
+    "unexpected keys",
+    "result is not valid json",
+    "result must be a json object",
+    MALFORMED_FIX_RECORD_PREFIX.strip().casefold(),
+    MALFORMED_RUBRIC_GRADES_PREFIX.strip().casefold(),
+)
+
+
+def is_no_envelope_refusal(error: str) -> bool:
+    """Whether *error* is the RUNNER's "no JSON object at all" refusal.
+
+    Keyed on :data:`NO_ENVELOPE_PREFIX` rather than the whole reason, so rewording
+    the human-readable tail cannot silently drop the classification.
+    """
+    return NO_ENVELOPE_PREFIX.strip().casefold() in error.casefold()
+
+
+def is_recorder_refusal(error: str) -> bool:
+    """Whether *error* is a RECORDER-side refusal of a parsed-but-unusable envelope."""
+    haystack = error.casefold()
+    return any(marker in haystack for marker in _RECORDER_REFUSAL_MARKERS)
+
+
+def is_envelope_refusal(error: str) -> bool:
+    """Whether *error* is an envelope refusal of either kind (never a genuine defect)."""
+    return is_no_envelope_refusal(error) or is_recorder_refusal(error)
+
+
+def required_keys_phrase(phase: str) -> str:
+    """The phase's own required envelope keys, rendered for an instruction line.
+
+    Derived from :data:`~teatree.agents.result_schema.PHASE_REQUIRED_EVIDENCE`, never
+    a second hand-maintained list — an instruction that names a key the phase does
+    not require teaches the re-dispatched agent the wrong contract.
+    """
+    required = required_evidence_for_phase(phase)
+    if not required:
+        return "`summary`"
+    phrase = "`summary` and " + " or ".join(f"`{field}`" for field in required)
+    conditional = conditional_evidence_for_phase(phase)
+    if conditional:
+        also = " and ".join(f"`{field}`" for field in conditional)
+        phrase += f" (plus {also} when the request implies work)"
+    return phrase
+
+
+def corrective_instruction(phase: str) -> str:
+    """The one-shot corrective note appended to a re-dispatched task's prompt.
+
+    Lands in ``Task.execution_reason``, which ``agents/prompt.py`` renders as the
+    brief's ``Reason:`` line — so it is phase-accurate by construction.
+    """
+    return (
+        f"your last run omitted the required trailing JSON result envelope "
+        f"({required_keys_phrase(phase)}) — emit it as the last thing you write, "
+        "plain JSON, nothing after it."
+    )

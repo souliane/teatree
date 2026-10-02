@@ -1,0 +1,16 @@
+# Dotted and slashed tokens that are not teatree references
+
+A third-party head is not ours even with a symbol-shaped tail: `typer.Exit`,
+`re.IGNORECASE`, `os.unlink()`.
+
+A lowercase tail is an attribute of some object, not a module-level symbol:
+`permissions.allow`, `page.add_init_script`, `overlay.config.get_github_token()`.
+
+A bare module-local reference that resolves stays green:
+`live_presence.PRESENCE.is_live_user_turn`.
+
+A stand-in namespace has no parent directory in the tree, so it is not a citation:
+`src/acme/billing/sweep.py`, `tests/acme/test_sweep.py`, `src/app/thing.py`.
+
+An elision is not a path: `src/...py`. Nor is an environment pair: the deployed
+`dev/staging` URL.

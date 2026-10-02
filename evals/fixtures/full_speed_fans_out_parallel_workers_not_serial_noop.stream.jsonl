@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-full_speed_fans_out_parallel_workers_not_serial-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "At full speed I would fan out one worker per ticket in parallel and never implement in the foreground."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

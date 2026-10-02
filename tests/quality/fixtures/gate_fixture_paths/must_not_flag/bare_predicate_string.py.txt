@@ -1,0 +1,9 @@
+import pytest
+
+
+# A pure-predicate test parametrizes path strings with no PreToolUse payload —
+# the string never reaches a gate, so the protect-default-branch pre-emption
+# cannot apply. Not a fixture-path offender.
+@pytest.mark.parametrize("file_path", ["src/teatree/core/models.py", "tests/test_x.py"])
+def test_predicate_classifies(file_path):
+    assert is_code_work(file_path)

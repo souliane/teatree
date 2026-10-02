@@ -1,0 +1,106 @@
+{
+  "codex_cli_version": "0.155.1",
+  "source": "codex app-server generate-json-schema --experimental",
+  "sandbox_modes": ["read-only", "workspace-write", "danger-full-access"],
+  "methods": {
+    "initialize": {
+      "required": ["clientInfo"],
+      "allowed": ["capabilities", "clientInfo"]
+    },
+    "initialized": {
+      "required": [],
+      "allowed": []
+    },
+    "account/read": {
+      "required": [],
+      "allowed": ["refreshToken"]
+    },
+    "thread/start": {
+      "required": [],
+      "allowed": [
+        "allowProviderModelFallback",
+        "approvalPolicy",
+        "approvalsReviewer",
+        "baseInstructions",
+        "config",
+        "cwd",
+        "developerInstructions",
+        "dynamicTools",
+        "environments",
+        "ephemeral",
+        "experimentalRawEvents",
+        "historyMode",
+        "mockExperimentalField",
+        "model",
+        "modelProvider",
+        "multiAgentMode",
+        "permissions",
+        "personality",
+        "projectId",
+        "runtimeWorkspaceRoots",
+        "sandbox",
+        "selectedCapabilityRoots",
+        "serviceName",
+        "serviceTier",
+        "sessionStartSource",
+        "threadSource"
+      ]
+    },
+    "thread/resume": {
+      "required": ["threadId"],
+      "allowed": [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "baseInstructions",
+        "config",
+        "cwd",
+        "developerInstructions",
+        "excludeTurns",
+        "history",
+        "initialTurnsPage",
+        "model",
+        "modelProvider",
+        "path",
+        "permissions",
+        "personality",
+        "runtimeWorkspaceRoots",
+        "sandbox",
+        "serviceTier",
+        "threadId"
+      ]
+    },
+    "turn/start": {
+      "required": ["input", "threadId"],
+      "allowed": [
+        "additionalContext",
+        "approvalPolicy",
+        "approvalsReviewer",
+        "clientUserMessageId",
+        "collaborationMode",
+        "cwd",
+        "cyberAccessProgram",
+        "effort",
+        "environments",
+        "input",
+        "model",
+        "multiAgentMode",
+        "outputSchema",
+        "permissions",
+        "personality",
+        "responsesapiClientMetadata",
+        "runtimeWorkspaceRoots",
+        "sandboxPolicy",
+        "serviceTier",
+        "serviceTierForTurn",
+        "summary",
+        "threadId",
+        "toolOutput",
+        "turnTrigger"
+      ]
+    },
+    "turn/interrupt": {
+      "required": ["threadId", "turnId"],
+      "allowed": ["threadId", "turnId"]
+    }
+  }
+}

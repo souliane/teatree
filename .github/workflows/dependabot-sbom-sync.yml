@@ -1,0 +1,161 @@
+# ============================================================
+# DEPENDABOT SBOM SYNC — heal the stale SBOM a lockfile-only bump leaves
+# ============================================================
+#
+# `dist/sbom.json` is generated from uv.lock, and ci.yml's required `sbom` job
+# regenerates it and diffs. A Dependabot uv bump moves uv.lock and never the SBOM,
+# so every one goes red on `sbom` (souliane/teatree#4907).
+#
+# When such a run fails, this follow-up copies the `sbom` artifact that job
+# uploaded — the exact bytes its gate expects — onto the Dependabot branch, but
+# only when scripts/ci/sbom_drift.py calls the drift version-only. A component
+# added, removed or renamed stays red for a human (scripts/hooks/generate_sbom.sh).
+#
+# Why workflow_run: a Dependabot pull_request run gets no Actions secrets, and a
+# push made with GITHUB_TOKEN never re-triggers CI. This run executes in the
+# default branch's context, so it holds TEATREE_GH_TOKEN, and a PAT push re-fires
+# the PR's CI.
+#
+# Why copy rather than regenerate: regenerating means `uv sync` from a lockfile the
+# PR chose, inside a job holding a write credential. This job installs nothing,
+# never checks out the PR's tree, and builds the commit with plumbing on top of
+# the exact head CI tested.
+#
+# Loop: the PAT push makes the next CI run's actor the PAT owner, and the job runs
+# only for runs Dependabot started, so it never re-fires on its own push.
+#
+# Trade-off: Dependabot stops rebasing a PR that carries a foreign commit.
+# `@dependabot recreate` drops it, and the next red run re-applies the sync.
+# ============================================================
+
+name: Follow-up · Dependabot SBOM sync
+
+on:
+  workflow_run:
+    workflows: ["CI · Lint, test & quality gates"]
+    types: [completed]
+    branches: ["dependabot/uv/**"]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: dependabot-sbom-sync-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  dependabot-sbom-sync:
+    name: Dependabot SBOM sync
+    if: >-
+      github.event.workflow_run.conclusion == 'failure'
+      && github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.actor.login == 'dependabot[bot]'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      CI_RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v6
+        with:
+          python-version: "3.13"
+      - name: Download the SBOM CI regenerated
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: sbom
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/regenerated
+      - name: Skip a superseded head or a moved base
+        id: fresh
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote --heads origin "refs/heads/${HEAD_BRANCH}" | cut -f1)"
+          if [ "$tip" != "$HEAD_SHA" ]; then
+            echo "::notice::${HEAD_BRANCH} is at '${tip:-deleted}', not the ${HEAD_SHA} CI tested; that head's own run decides. Nothing synced."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags origin \
+            "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" \
+            "+refs/heads/${HEAD_BRANCH}:refs/remotes/origin/${HEAD_BRANCH}"
+          base="$(git merge-base "refs/remotes/origin/${DEFAULT_BRANCH}" "$HEAD_SHA")"
+          # CI built the merge ref, so its artifact is this head's SBOM only while the base left the inputs alone.
+          if ! git diff --quiet "$base" "refs/remotes/origin/${DEFAULT_BRANCH}" -- \
+            uv.lock pyproject.toml dist/sbom.json scripts/hooks/generate_sbom.sh; then
+            echo "::warning::${DEFAULT_BRANCH} changed the SBOM's inputs after ${HEAD_BRANCH} branched, so CI's artifact is the merge ref's SBOM, not this head's. Nothing synced; '@dependabot rebase' yields a run this can heal."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+      - name: Classify the SBOM drift
+        id: drift
+        if: steps.fresh.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          git show "${HEAD_SHA}:dist/sbom.json" > "${RUNNER_TEMP}/committed-sbom.json"
+          python scripts/ci/sbom_drift.py \
+            --committed "${RUNNER_TEMP}/committed-sbom.json" \
+            --regenerated "${RUNNER_TEMP}/regenerated/sbom.json"
+      - name: Verify TEATREE_GH_TOKEN before the push consumes it
+        if: steps.drift.outputs.verdict == 'version-only'
+        env:
+          GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::TEATREE_GH_TOKEN is unset or rejected — it is UNSET on ${GITHUB_REPOSITORY}. The SBOM sync needs it: a GITHUB_TOKEN push never re-triggers CI. Set the secret." >&2
+            exit 1
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}" --silent; then
+            echo "::error::TEATREE_GH_TOKEN is unset or rejected — the forge refused it for ${GITHUB_REPOSITORY}. Rotate the secret." >&2
+            exit 1
+          fi
+          echo "TEATREE_GH_TOKEN accepted for ${GITHUB_REPOSITORY}."
+      - name: Push the regenerated SBOM onto the Dependabot branch
+        id: push
+        if: steps.drift.outputs.verdict == 'version-only'
+        env:
+          TEATREE_GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          blob="$(git hash-object -w "${RUNNER_TEMP}/regenerated/sbom.json")"
+          export GIT_INDEX_FILE="${RUNNER_TEMP}/sbom-sync.index"
+          git read-tree "$HEAD_SHA"
+          git update-index --cacheinfo "100644,${blob},dist/sbom.json"
+          commit="$(git commit-tree "$(git write-tree)" -p "$HEAD_SHA" \
+            -m "chore(deps): regenerate dist/sbom.json for the lockfile bump" \
+            -m "Copied verbatim from the sbom artifact of CI run ${CI_RUN_ID}.")"
+          # The helper reads the token from the environment, so it never reaches argv or .git/config.
+          git config --local credential.helper '!f() { echo username=x-access-token; echo "password=${TEATREE_GH_TOKEN}"; }; f'
+          git push origin "${commit}:refs/heads/${HEAD_BRANCH}"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+      - name: Verify the push by re-reading the branch
+        if: steps.drift.outputs.verdict == 'version-only'
+        env:
+          PUSHED: ${{ steps.push.outputs.commit }}
+        run: |
+          set -euo pipefail
+          remote="$(git ls-remote --heads origin "refs/heads/${HEAD_BRANCH}" | cut -f1)"
+          if [ "$remote" != "$PUSHED" ]; then
+            echo "::error::${HEAD_BRANCH} is at '${remote:-deleted}' after the push, not the sync commit ${PUSHED}." >&2
+            exit 1
+          fi
+          if ! git show "${PUSHED}:dist/sbom.json" | cmp -s - "${RUNNER_TEMP}/regenerated/sbom.json"; then
+            echo "::error::The sync commit ${PUSHED} does not carry the regenerated SBOM byte for byte." >&2
+            exit 1
+          fi
+          echo "::notice::Synced dist/sbom.json onto ${HEAD_BRANCH} at ${PUSHED}; its CI re-runs on the push."

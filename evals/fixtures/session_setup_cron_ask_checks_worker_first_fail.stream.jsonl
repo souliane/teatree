@@ -1,0 +1,7 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-clsg-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Session setup asked for three reactive loops. Registering them now."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 loop drain-queue run", "description": "drive the drain-queue slot"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "OK    retired=0 drained=0"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Drain-queue is standing by as a safety net. Firing the next slot."}, {"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "t3 loop slack-answer run", "description": "drive the slack-answer slot"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_02", "content": "OK    processed=0"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "All three reactive infra loops are registered and firing on their cadences as the session-setup hook asked."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 5}

@@ -1,0 +1,227 @@
+from typing import Self
+from unittest.mock import MagicMock
+
+import httpx
+import pytest
+
+from teatree.backends import gitlab, notion, slack
+from teatree.backends.gitlab import http_client as gitlab_http
+from teatree.backends.gitlab.api import GitLabAPI
+from teatree.backends.notion import client as notion_client
+from teatree.backends.slack import client as slack_client
+from teatree.core.backend_protocols import BackendResolutionError
+
+
+def test_slack_backend_posts_webhook_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: dict[str, object] = {}
+
+    def fake_post(url: str, *, json: dict[str, object], timeout: float) -> httpx.Response:
+        sent["url"] = url
+        sent["json"] = json
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(slack_client.httpx, "post", fake_post)
+
+    assert slack.post_webhook_message("https://hooks.slack.test/123", "TeaTree ready") == {"ok": True}
+    assert sent["json"] == {"text": "TeaTree ready"}
+
+
+def test_slack_incoming_webhook_answers_plain_text_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An incoming webhook's success body is the literal ``ok``, which is not JSON."""
+
+    def fake_post(url: str, *, json: dict[str, object], timeout: float) -> httpx.Response:
+        return httpx.Response(200, text="ok", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(slack_client.httpx, "post", fake_post)
+
+    assert slack.post_webhook_message("https://hooks.slack.test/123", "TeaTree ready") == {"ok": True}
+
+
+def test_slack_incoming_webhook_surfaces_a_plain_text_error_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, *, json: dict[str, object], timeout: float) -> httpx.Response:
+        return httpx.Response(200, text="invalid_payload", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(slack_client.httpx, "post", fake_post)
+
+    assert slack.post_webhook_message("https://hooks.slack.test/1", "x") == {"ok": False, "error": "invalid_payload"}
+
+
+def test_notion_backend_fetches_page_with_version_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyClient:
+        def __init__(self, *, headers: dict[str, str], timeout: float) -> None:
+            self.headers = headers
+            self.timeout = timeout
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get(self, path: str) -> httpx.Response:
+            assert path == "https://api.notion.com/v1/pages/page-123"
+            return httpx.Response(200, json={"id": "page-123"}, request=httpx.Request("GET", path))
+
+    monkeypatch.setattr(notion_client.httpx, "Client", DummyClient)
+
+    client = notion.NotionClient(token="secret", version="2022-06-28")
+
+    assert client.get_page("page-123") == {"id": "page-123"}
+
+
+def test_gitlab_backend_builds_client_with_explicit_args() -> None:
+    client = gitlab.get_client(
+        token="gl-token",
+        base_url="https://gitlab.example.com/api/v4",
+    )
+
+    assert client.base_url == "https://gitlab.example.com/api/v4"
+    assert client.token == "gl-token"
+
+
+def test_get_client_defaults():
+    client = gitlab.get_client()
+
+    assert client.base_url == "https://gitlab.com/api/v4"
+
+
+def test_gitlab_code_host_update_pr_comment(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    mock_client = MagicMock()
+    mock_client.resolve_project.return_value = MagicMock(project_id=42, default_branch="main")
+    mock_client.put_json.return_value = {"id": 99}
+
+    host = gitlab.GitLabCodeHost(client=mock_client)
+    result = host.update_pr_comment(repo="org/repo", pr_iid=5, comment_id=99, body="Updated")
+
+    assert result == {"id": 99}
+    mock_client.put_json.assert_called_once()
+
+
+def test_gitlab_code_host_update_pr_comment_no_project(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    mock_client = MagicMock()
+    mock_client.resolve_project.return_value = None
+
+    host = gitlab.GitLabCodeHost(client=mock_client)
+    result = host.update_pr_comment(repo="bad/repo", pr_iid=5, comment_id=99, body="x")
+
+    assert "error" in result
+
+
+def test_gitlab_code_host_list_pr_comments() -> None:
+
+    mock_client = MagicMock()
+    mock_client.resolve_project.return_value = MagicMock(project_id=42, default_branch="main")
+    mock_client.get_json_paginated.return_value = [{"id": 1, "body": "note"}]
+
+    host = gitlab.GitLabCodeHost(client=mock_client)
+    result = host.list_pr_comments(repo="org/repo", pr_iid=5)
+
+    assert len(result) == 1
+    mock_client.get_json_paginated.assert_called_once()
+    mock_client.get_json.assert_not_called()
+
+
+def test_gitlab_code_host_list_pr_comments_paginates_beyond_first_page() -> None:
+    # A busy MR accumulates >100 notes; without pagination the ``## Test Plan``
+    # note on page 2 is invisible and the evidence-poster re-posts a duplicate.
+    page_one = [{"id": i, "body": f"note {i}"} for i in range(100)]
+    page_two = [{"id": 100, "body": "## Test Plan"}]
+
+    mock_client = MagicMock()
+    mock_client.resolve_project.return_value = MagicMock(project_id=42, default_branch="main")
+    mock_client.get_json_paginated.return_value = [*page_one, *page_two]
+
+    host = gitlab.GitLabCodeHost(client=mock_client)
+    result = host.list_pr_comments(repo="org/repo", pr_iid=5)
+
+    assert len(result) == 101
+    assert {"id": 100, "body": "## Test Plan"} in result
+    mock_client.get_json_paginated.assert_called_once()
+
+
+def test_gitlab_code_host_list_pr_comments_no_project() -> None:
+
+    mock_client = MagicMock()
+    mock_client.resolve_project.return_value = None
+
+    host = gitlab.GitLabCodeHost(client=mock_client)
+    assert host.list_pr_comments(repo="bad/repo", pr_iid=5) == []
+
+
+def test_gitlab_code_host_upload_file() -> None:
+
+    mock_client = MagicMock()
+    mock_client.resolve_project.return_value = MagicMock(project_id=42, default_branch="main")
+    mock_client.upload_file.return_value = {"markdown": "![img](/uploads/abc/img.png)"}
+
+    host = gitlab.GitLabCodeHost(client=mock_client)
+    result = host.upload_file(repo="org/repo", filepath="/tmp/img.png")
+
+    assert result["markdown"] == "![img](/uploads/abc/img.png)"
+
+
+def test_gitlab_code_host_upload_file_no_project() -> None:
+
+    mock_client = MagicMock()
+    mock_client.resolve_project.return_value = None
+
+    host = gitlab.GitLabCodeHost(client=mock_client)
+    result = host.upload_file(repo="bad/repo", filepath="/tmp/img.png")
+
+    assert "error" in result
+
+
+def test_gitlab_api_put_json(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    def fake_put(url: str, *, headers: dict, json: dict, timeout: float) -> httpx.Response:
+        return httpx.Response(200, json={"id": 1}, request=httpx.Request("PUT", url))
+
+    monkeypatch.setattr(httpx, "put", fake_put)
+
+    api = GitLabAPI(token="test", base_url="https://gl.test/api/v4")
+    result = api.put_json("projects/1/notes/2", {"body": "x"})
+    assert result == {"id": 1}
+
+
+def test_gitlab_api_put_json_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    monkeypatch.setattr(gitlab_http, "_resolve_token", lambda: "")
+    monkeypatch.setattr(gitlab_http, "overlay_pass_key", lambda _credential: "")
+    api = GitLabAPI(token="", base_url="https://gl.test/api/v4")
+    with pytest.raises(BackendResolutionError) as exc_info:
+        api.put_json("endpoint")
+
+    remedy = str(exc_info.value)
+    assert "gitlab_token_pass_key" in remedy
+    assert "config_setting set gitlab_token_pass_key" in remedy
+    assert "--overlay" in remedy
+
+
+def test_gitlab_api_upload_file(monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory) -> None:
+
+    img = tmp_path / "test.png"
+    img.write_bytes(b"PNG")
+
+    def fake_post(url: str, *, headers: dict, files: dict, timeout: float) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"markdown": "![test](/uploads/x/test.png)"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    api = GitLabAPI(token="test", base_url="https://gl.test/api/v4")
+    result = api.upload_file(42, str(img))
+    assert result is not None
+    assert result["markdown"] == "![test](/uploads/x/test.png)"
+
+
+def test_gitlab_api_upload_file_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    monkeypatch.setattr(gitlab_http, "_resolve_token", lambda: "")
+    api = GitLabAPI(token="", base_url="https://gl.test/api/v4")
+    with pytest.raises(BackendResolutionError):
+        api.upload_file(42, "/tmp/x.png")

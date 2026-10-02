@@ -1,0 +1,507 @@
+"""Bounded auto-requeue of transient-FAILED tasks — the retry, hard-bounded.
+
+``Task.fail()`` is terminal: a task that RETURNS a failure envelope (an outage,
+a provisioning-step failure, an incomplete run, a coder yield that landed no
+commit) lands FAILED and stays there forever — the crashed-session reclaim
+(``reclaim_orphaned_claims``) only rescues expired-lease CLAIMED rows, never a
+returned failure. This tick sweep reopens such a row (FAILED → PENDING) so the
+next dispatch resumes it.
+
+WHICH failures earn which treatment is not this sweep's call: it reads the one
+kind → strategy table in
+:data:`~teatree.core.modelkit.task_failure_taxonomy.RECOVERY` (souliane/teatree#4505).
+A ``RETRY`` kind is reopened, a ``CORRECTIVE_RETRY`` kind gets the bounded correction
+below, everything else escalates. Before that table the requeue decision was a second
+hand-maintained list keyed on error TEXT, which never consulted the classification: a
+kind could be named environmental and still never be retried, and ``harness_crash``
+was exactly that.
+
+The retry is HARD-BOUNDED by the #2009 repair-loop budget so it can never retry
+endlessly (it would always fail): a ticket-phase at its iteration cap, or stalled
+on two consecutive identical failures, is NOT reopened and is escalated LOUDLY
+via a durable :class:`DeferredQuestion` (§17.1 invariant 9) — never silently,
+never forever.
+
+A DETERMINISTIC failure (a test failure, an assertion, a schema/evidence refusal)
+is NOT reopened blindly, but it must never sit silent either. On a non-terminal
+ticket, a failure whose last attempt was an ENVELOPE REFUSAL — classified by the
+shared :mod:`teatree.agents.envelope_refusal` vocabulary, so the producing and
+consuming sides can never drift — gets exactly ONE bounded corrective retry, reopened
+with the phase-accurate emit-the-envelope instruction appended to its prompt. Any
+other deterministic failure, and any refusal that already spent its retry, hits the
+:class:`DeferredQuestion` path. An EMPTY-error FAILED task (no recorded error at
+all — neither transient nor deterministic) would otherwise match no branch and
+freeze silently; it is routed straight to the escalation path. The invariant: a
+terminal FAILED task on a non-terminal ticket ALWAYS escalates or retries-once,
+never freezes silently.
+
+A SELF-CORRECTABLE FAILED task — one whose deterministic failure is a config breach
+with exactly ONE valid resolution (an invalid ``agent_harness``/``agent_harness_provider``
+pair) — is CORRECTED and reopened rather than escalated (#3665). The message was
+excellent; the paging was the defect. Self-repair stays loud (a WARNING log and the
+durable :data:`~teatree.core.config_self_repair.SELF_REPAIR_STAMP` the dashboard renders)
+and fires at most once per task, so it cannot become the silent-failure bug class it
+replaces. The criterion — exactly one valid resolution, never a guess between two —
+lives in :mod:`teatree.core.config_self_repair`.
+
+An EXHAUSTION-killed FAILED task — one that died on a Claude usage-window limit (a
+subscription 5h/weekly window or a transient rate limit, recorded ``<cause>: …`` by
+``LimitMatch.as_reason``) — is NOT a defect and must not be escalated to a human as one.
+Such a task is auto-requeued once its window HORIZON has elapsed since the last failed
+attempt (the deterministic, probe-free twin of ``usage_window_recovery`` for tasks that
+ALREADY landed FAILED — a limit hit on a non-parking lane); before the horizon it is left
+FAILED and re-checked on a later tick, never escalated (a capacity dip is not a doomed
+failure). API-credit exhaustion is excluded (no timed reset) and stays on the escalation
+path.
+
+A SUPERSEDED FAILED task — one whose phase output demonstrably landed
+(:func:`~teatree.core.models.phase_landing.phase_landing_evidence`, the FULL author ladder,
+plus the phase artifact ONLY for a lease-loss failure — an unrelated PR, or a verdict some
+other reviewer recorded, must not excuse a deterministic defect) — is NOT escalated: it is
+a dead artifact of an earlier interrupted run while the ticket advanced on its own, retired
+COMPLETED silently (fixes 3366/3336/3352 and the shipping task that opened its PR, reached
+REVIEW_REQUESTED, then lost its lease — #3982).
+
+A FAILED task WITH A LIVE SUCCESSOR — a newer, still-active (PENDING/CLAIMED) sibling
+Task on the same ``(ticket, phase)`` — is PARKED (left FAILED, stamped out of every
+future scan), never escalated (3534). A stuck-phase redispatch mints a fresh Task and
+can re-claim the predecessor's lease out from under it; the predecessor lands FAILED
+carrying a ``stuck_loop: lease lost … re-claimed`` breach even though the phase is
+recovering fine under the successor. Escalating it files a ``DeferredQuestion`` already
+stale at write time — the successor has the work, so the only correct answer is
+"ignore". The park deliberately does NOT mark the row COMPLETED: the phase has not
+finished (the successor is still mid-flight), and a COMPLETED row would become the
+ticket's newest completed task, so ``replay_orphaned_transitions`` would fire its phase
+transition on the next tick and silently advance the ticket past a phase nobody landed.
+
+A DEAD-REVIEW-TARGET FAILED task — a review/codex-review phase (``reviewing`` /
+``codex_reviewing`` / ``codex_adversarial_reviewing`` / ``e2e_reviewing``) whose
+linked PR is provably MERGED/CLOSED — is likewise retired COMPLETED (and its reviewer
+ticket IGNORED), never reopened: a verdict can never land on a dead PR, so
+re-dispatching only burns a session that re-confirms the close (3556). Fail-OPEN on an
+UNKNOWN PR state so a transient forge hiccup never retires a live review.
+
+A SPAWN-FAILED task — one whose agent process never STARTED (#4301, classified by
+:func:`~teatree.failure_signatures.is_spawn_failure`) — escalates like any other
+deterministic failure, but with its own question: nothing in the ticket is implicated by a
+child that died at ``execve``, so asking whether to investigate or rework the TICKET aims
+the operator at the one thing that cannot be the cause. See :func:`_halt_question`.
+
+A once-escalated task is stamped (:data:`HALT_STAMP` in ``execution_reason``) and
+excluded from every subsequent scan, so the dead-letter set never grows the per-tick
+work unboundedly. The ``DeferredQuestion`` itself is deduped by a STABLE key —
+``(ticket, phase, failure-fingerprint)``, NOT the task pk — so the fresh ``Task`` rows
+a stuck phase mints each redispatch cycle collapse to ONE open question instead of one
+per cycle (the observed 10-15x duplicate flood).
+
+Lives in ``teatree.loop`` (orchestration): it needs both the envelope-refusal
+vocabulary (``teatree.agents``) and the ``Task`` model (``teatree.core.models``),
+which sit in the same ``domain`` layer and so cannot import each other — only an
+orchestration-layer module may compose both.
+"""
+
+import logging
+from datetime import datetime
+
+from django.db import transaction
+from django.utils import timezone
+
+from teatree.agents.envelope_refusal import corrective_instruction, is_no_envelope_refusal, is_recorder_refusal
+from teatree.core.claim_liveness import RELEASED_CLAIM
+from teatree.core.config_self_repair import SELF_REPAIR_STAMP
+from teatree.core.forge_url import is_synthetic_ticket_url
+from teatree.core.managers_task_claim import redispatch_window
+from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.task_failure_taxonomy import (
+    RecoveryStrategy,
+    classify_failure,
+    recovery_strategy,
+    stall_fingerprints,
+)
+from teatree.core.models import Task, TaskAttempt, Ticket
+from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.models.task_repair import phase_attempts
+from teatree.core.repair_loop import (
+    IterationStalled,
+    MaxIterationsExceeded,
+    requeue_verdict,
+    terminal_reason_fingerprint,
+)
+from teatree.failure_signatures import is_spawn_failure
+from teatree.llm.anthropic_limits import LimitCause, recoverable_exhaustion_cause, window_horizon
+from teatree.loop.config_self_repair import repair_for_error
+from teatree.loop.transient_requeue_disposal import LIVE_SUCCESSOR_STAMP, SUPERSEDED_HEAD_STAMP, dispose_without_reopen
+
+logger = logging.getLogger(__name__)
+
+#: Stamped onto ``execution_reason`` when a task is escalated (dead-lettered), so it
+#: is excluded from every future scan — bounds per-tick work and makes the escalation
+#: durably once-per-task regardless of whether the question is later answered.
+HALT_STAMP = "[repair-halt-parked]"
+#: Phases whose RECORDER-side envelope refusal earns the one-shot corrective retry.
+#: The RUNNER-side ``no_result_envelope`` is NOT gated on it (:func:`_corrective_note`).
+_CORRECTIVE_PHASES = frozenset({"coding", "debugging"})
+#: Idempotency stamp appended to ``execution_reason`` when the corrective retry
+#: fires — its presence means the one retry was already spent (escalate next time).
+_CORRECTIVE_MARKER = "[auto-corrective-retry]"
+
+
+def requeue_transient_failed() -> int:
+    """Reopen transient-FAILED tasks within budget; corrective-retry-or-escalate the rest.
+
+    Returns the count of tasks reopened (transient reopens + corrective retries).
+    A terminal FAILED task on a non-terminal ticket is NEVER left silent: it is
+    reopened, corrective-retried once, or escalated via ``DeferredQuestion`` — an
+    empty-error task (no recorded error) escalates rather than freezing.
+
+    The FAILED set is loaded ONCE with its attempts prefetched (no per-task N+1) and
+    already-parked rows excluded, so the per-tick cost stays bounded as dead letters
+    accumulate.
+    """
+    now = timezone.now()
+    reopened = 0
+    for task in _non_terminal_failed_tasks():
+        # Per-item fault isolation (#3441): a single poison row (a corrupt attempt, a
+        # classifier blow-up, a scheduling error) must NOT abort the sweep and strand
+        # every OTHER loop's FAILED tasks. Record the failure loudly and move on.
+        try:
+            with redispatch_window() as refusal:
+                if refusal:
+                    continue
+                reopened += _route_failed_task(task, now=now)
+        except Exception:
+            logger.exception(
+                "Transient-requeue skipped task %s (ticket %s) after an unexpected error",
+                task.pk,
+                task.ticket_id,  # ty: ignore[unresolved-attribute]
+            )
+    return reopened
+
+
+def _route_failed_task(task: Task, *, now: datetime) -> int:
+    """Route ONE FAILED task to reopen / dispose / corrective-retry / escalate. Returns the reopen count.
+
+    Isolated per task so :func:`requeue_transient_failed` can wrap it in a single
+    ``try`` and keep sweeping when one row raises — a terminal FAILED task on a
+    non-terminal ticket is still never left silent (reopened, disposed, retried, or
+    escalated), it just can no longer take the whole tick down with it.
+    """
+    error = _latest_error(task)
+    if dispose_without_reopen(task, error=error):
+        task.ticket.pop_task_thread(int(task.pk))
+        return 0
+    if not error:
+        # No recorded error → neither transient nor deterministic; must not freeze.
+        _escalate_once(task, reason="failed with no recorded error")
+        return 0
+    # The kind is re-derived rather than read off the attempt, so a row classified by an older
+    # build cannot route on a stale kind.
+    strategy = recovery_strategy(classify_failure(error))
+    if strategy is RecoveryStrategy.RETRY:
+        halt = _budget_halt_reason(task)
+        if halt is None:
+            return _reopen(task)
+        _escalate_once(task, reason=halt)
+        return 0
+    if (cause := recoverable_exhaustion_cause(error)) is not None:
+        return _requeue_on_window_reset(task, cause, now=now)
+    return _handle_deterministic(task, strategy)
+
+
+def _requeue_on_window_reset(task: Task, cause: LimitCause, *, now: datetime) -> int:
+    """Reopen an exhaustion-killed task once its window has reset; else leave it FAILED (#3407).
+
+    A task that died on a subscription session/weekly or transient rate limit is
+    window-recoverable: capacity RETURNS at a known horizon after the failure. Once
+    ``window_horizon(cause)`` has elapsed since the last failed attempt, the task is
+    reopened within the #2009 budget (an over-budget one is escalated LOUDLY, never
+    retried forever). Before the horizon it is left FAILED and re-checked on a later tick
+    — NOT escalated, because a capacity dip is not a doomed defect. Returns the reopen
+    count (0 or 1).
+
+    The horizon is anchored on the last attempt's ``ended_at`` when present, else on its
+    ``started_at`` (#3444). A crashed / killed attempt can land FAILED having never
+    recorded ``ended_at``; the old ``ended is None`` guard stranded such a task FOREVER
+    (never past the horizon, never reopened, never escalated). ``started_at`` is
+    ``auto_now_add`` so it is always set — anchoring on it makes the window elapse from a
+    slightly earlier instant, which requeues the task rather than silently stranding it.
+    """
+    horizon = window_horizon(cause)
+    last = _latest_attempt(task)
+    if horizon is None or last is None:
+        return 0
+    anchor = last.ended_at or last.started_at
+    if anchor + horizon > now:
+        return 0
+    halt = _budget_halt_reason(task)
+    if halt is not None:
+        _escalate_once(task, reason=halt)
+        return 0
+    return _reopen(task)
+
+
+def _handle_deterministic(task: Task, strategy: RecoveryStrategy) -> int:
+    """Self-repair, corrective-retry, or escalate a non-retried failure. Returns the reopen count.
+
+    The table says whether a bounded correction MAY apply to this kind; the two correction seams
+    keep their own eligibility predicates (one valid resolution, one spent retry, the phase gate),
+    and a correction they decline still escalates rather than freezing.
+    """
+    correctable = strategy is RecoveryStrategy.CORRECTIVE_RETRY
+    if correctable:
+        repaired = _self_repair_reopen(task)
+        if repaired is not None:
+            return repaired
+    halt = _budget_halt_reason(task)
+    if halt is not None:
+        _escalate_once(task, reason=halt)
+        return 0
+    if correctable:
+        note = _corrective_note(task)
+        if note is not None:
+            return _corrective_reopen(task, note)
+    _escalate_once(task, reason=_latest_error(task) or "deterministic failure")
+    return 0
+
+
+def _self_repair_reopen(task: Task) -> int | None:
+    """Correct a single-valid-resolution config breach and reopen *task*; ``None`` if it must page.
+
+    The #3665 ruling: a repair-halt condition with exactly one valid resolution
+    carries no decision, so it is corrected and logged rather than DM'd to the
+    owner. Over-suppression is foreclosed on both sides — the correction is loud
+    (WARNING log + the durable :data:`~teatree.loop.config_self_repair.SELF_REPAIR_STAMP`
+    the dashboard's configuration band renders), and it fires at most ONCE per
+    task, so a breach that survives its own repair escalates normally.
+    """
+    if SELF_REPAIR_STAMP in task.execution_reason:
+        return None
+    repair = repair_for_error(_latest_error(task))
+    if repair is None:
+        return None
+    repair.apply()
+    new_reason = f"{task.execution_reason}\n{repair.stamp()}".strip() if task.execution_reason else repair.stamp()
+    return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
+        status=Task.Status.PENDING,
+        session_continuation=task.continuation_on_requeue(),
+        **RELEASED_CLAIM,
+        execution_reason=new_reason,
+    )
+
+
+def _corrective_note(task: Task) -> str | None:
+    """The emit-the-envelope instruction *task* earns, or ``None`` if it must escalate.
+
+    The RUNNER-side ``no_result_envelope`` refusal is a pure output-FORMAT failure, so
+    it is corrective on ANY phase where ``ProseSummaryPolicy.allowed`` is False:
+    ``debugging`` (already in :data:`_CORRECTIVE_PHASES`) plus every no-evidence,
+    non-prose-exempt phase outside it (``architectural_review``, ``bughunt``, ``e2e``,
+    ``codex_*``) — which the old gate left paging a human on the first prose-only run.
+    A RECORDER-side refusal stays gated on the set: a withheld ``reviewing`` verdict is
+    a judgement to surface, not a format slip. ``None`` for a genuine defect, and for a
+    task whose one corrective retry is already spent.
+    """
+    if _CORRECTIVE_MARKER in task.execution_reason:
+        return None
+    error = _latest_error(task)
+    gated = normalize_phase(task.phase) in _CORRECTIVE_PHASES and is_recorder_refusal(error)
+    if is_no_envelope_refusal(error) or gated:
+        return corrective_instruction(task.phase)
+    return None
+
+
+def _corrective_reopen(task: Task, note: str) -> int:
+    """CAS FAILED → PENDING appending the emit-the-envelope instruction to the prompt.
+
+    Uses the same conditional ``UPDATE ... WHERE status=FAILED`` compare-and-swap
+    as :func:`_reopen` so a concurrent tick that already reopened the row updates 0
+    rows and does not re-append the note.
+    """
+    stamped = f"{_CORRECTIVE_MARKER} {note}"
+    new_reason = f"{task.execution_reason}\n{stamped}".strip() if task.execution_reason else stamped
+    return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
+        status=Task.Status.PENDING,
+        session_continuation=task.continuation_on_requeue(),
+        **RELEASED_CLAIM,
+        execution_reason=new_reason,
+    )
+
+
+def _latest_attempt(task: Task) -> TaskAttempt | None:
+    """The newest attempt from the prefetched ``attempts`` (no extra query), or ``None``."""
+    attempts = sorted(task.attempts.all(), key=lambda a: a.pk)  # ty: ignore[unresolved-attribute]  # Django reverse FK
+    return attempts[-1] if attempts else None
+
+
+def _latest_error(task: Task) -> str:
+    """The newest attempt's error, read from the prefetched ``attempts`` (no extra query)."""
+    attempt = _latest_attempt(task)
+    return attempt.error if attempt is not None else ""
+
+
+def _non_terminal_failed_tasks() -> list[Task]:
+    """FAILED tasks on a non-terminal ticket, minus already-parked rows, attempts prefetched.
+
+    Excluding the parked rows — :data:`HALT_STAMP` (escalated) and
+    :data:`~teatree.loop.transient_requeue_disposal.LIVE_SUCCESSOR_STAMP` (a live successor holds the
+    phase) and :data:`~teatree.loop.transient_requeue_disposal.SUPERSEDED_HEAD_STAMP` (the PR moved past
+    the reviewed head) — keeps the
+    per-tick scan bounded as dead letters pile up (a monotonically growing FAILED set
+    would otherwise degrade tick latency linearly); prefetching ``attempts`` removes the
+    per-task N+1 that :func:`_latest_error` would otherwise issue for every FAILED row.
+    A kept third-party claim waits out its Task lease: disposing it would free a live holder's checkout.
+    """
+    return list(
+        Task.objects.filter(status=Task.Status.FAILED)
+        .exclude(ticket__state__in=Ticket._SETTLED_STATES)  # noqa: SLF001 — the model's SSOT terminal set
+        .exclude(execution_reason__contains=HALT_STAMP)
+        .exclude(execution_reason__contains=LIVE_SUCCESSOR_STAMP)
+        .exclude(execution_reason__contains=SUPERSEDED_HEAD_STAMP)
+        .without_kept_claims()
+        .select_related("ticket")
+        .prefetch_related("attempts"),
+    )
+
+
+def _budget_halt_reason(task: Task) -> str | None:
+    """Return the loud halt reason if *task*'s phase is out of budget, else ``None`` (may requeue).
+
+    Uses the pure :func:`~teatree.core.repair_loop.requeue_verdict` over the SAME
+    recorded attempts the reclaim path budgets on, WITHOUT the escalation side
+    effect of ``Task.check_requeue_allowed`` — this sweep escalates both the cap
+    AND the stall itself (idempotently), which that helper does only for the
+    stall.
+
+    A CAUSELESS attempt is dropped from the stall comparison (#4075): this sweep's own
+    corrective retry is what produces the second no-envelope attempt, so counting it made
+    the halt an artifact of the repair rather than an observation about the work.
+
+    The CAP is skipped for a synthetic cadence-anchor ticket (``architectural_review``,
+    ``eval_local``, …) — same exemption and rationale as
+    :func:`~teatree.core.models.task_repair.check_requeue_allowed`: ``PhaseCadence``
+    re-fires such a ticket's phase forever by design, so a lifetime attempt count is not
+    a doom signal there. Stall detection stays live either way.
+    """
+    attempts = phase_attempts(task)
+    last_two = stall_fingerprints((a.failure_kind, a.error_fingerprint) for a in attempts[-2:])
+    try:
+        requeue_verdict(
+            ticket_id=task.ticket.pk,
+            phase=normalize_phase(task.phase),
+            iteration_count=len(attempts),
+            last_two_fingerprints=last_two,
+        )
+    except IterationStalled as exc:
+        return str(exc)
+    except MaxIterationsExceeded as exc:
+        if is_synthetic_ticket_url(task.ticket.issue_url):
+            return None
+        return str(exc)
+    return None
+
+
+def _reopen(task: Task) -> int:
+    """CAS FAILED → PENDING; returns 1 on the winning transition, 0 if already moved.
+
+    A single conditional ``UPDATE ... WHERE status=FAILED`` (the same
+    backend-agnostic compare-and-swap ``reclaim_orphaned_claims`` uses) so a
+    concurrent tick that already reopened the row updates 0 rows and does not
+    double-dispatch.
+
+    The retry runs on the SAME row, whose ``parent_task`` is unchanged, so the
+    conversation it continues is stamped here rather than inferred from that chain.
+    """
+    return Task.objects.filter(pk=task.pk, status=Task.Status.FAILED).update(
+        status=Task.Status.PENDING,
+        session_continuation=task.continuation_on_requeue(),
+        **RELEASED_CLAIM,
+    )
+
+
+def _stamp_halt(task: Task) -> None:
+    """Park *task* out of future scans by stamping :data:`HALT_STAMP` onto ``execution_reason``.
+
+    Idempotent — a no-op once the stamp is present. The per-task park: an escalated
+    row is excluded from :func:`_non_terminal_failed_tasks`, so answering or dismissing
+    the question can never resurrect a fresh escalation for THIS row. Cross-row
+    collapse of the fresh ``Task`` rows a stuck phase mints each cycle is the separate
+    job of the stable ``dedupe_marker`` (:func:`escalation_marker`).
+    """
+    if HALT_STAMP in task.execution_reason:
+        return
+    reason = f"{task.execution_reason}\n{HALT_STAMP}".strip() if task.execution_reason else HALT_STAMP
+    Task.objects.filter(pk=task.pk).update(execution_reason=reason)
+
+
+def escalation_marker(task: Task) -> str:
+    """Stable dedupe key for a halted task's escalation — ``(phase, failure)``, ticket-agnostic.
+
+    Keyed on the canonical phase + the NORMALIZED failure fingerprint — NOT the task pk
+    and NOT the ticket id. This collapses two levels of flood to ONE open
+    ``DeferredQuestion`` (⇒ one owner DM). First, a stuck phase mints a FRESH ``Task`` row
+    every redispatch cycle, so a per-task key filed one identical question per cycle (the
+    observed 10-15x flood). Second, several DISTINCT tickets stalling on the SAME root
+    cause — the harness/provider mismatch that paged once per ticket (#3671) — filed one
+    question per ticket under a per-ticket key even though a single systemic condition
+    underlies all of them.
+
+    Dropping the ticket id collapses both onto the underlying standing condition, so one
+    halt condition pages the owner once. A genuinely different failure (different
+    fingerprint) or a different phase keeps its own key, so a real new problem still
+    surfaces. Truncated to fit the indexed ``dedupe_marker`` column (max 64).
+    """
+    fingerprint = terminal_reason_fingerprint(_latest_error(task))
+    phase = normalize_phase(task.phase)
+    return f"repair-halt:{phase}:{fingerprint}"[:64]
+
+
+def _halt_question(task: Task, *, where: str, phase: str, reason: str) -> str:
+    """The escalation text, split on whether the agent could not START or the WORK failed.
+
+    A spawn death (#4301) implicates nothing in the ticket — the child never read a byte
+    of it — so the ticket-adjudication question ("investigate, rework, or ignore") points
+    the operator at the one thing that cannot be the cause. It gets its own question naming
+    the environment as the subject; every other halt keeps the wording it always had.
+    """
+    head = f"[repair-halt ticket={task.ticket.pk} phase={phase!r}]"
+    if is_spawn_failure(_latest_error(task)):
+        return (
+            f"{head} The AGENT COULD NOT START on {where}: {reason} "
+            "No work was attempted and the ticket's own content is not implicated — this is a "
+            "spawn/environment defect, and re-queueing is stopped because it fails identically "
+            "every time. Fix the spawn environment, or ignore?"
+        )
+    return (
+        f"{head} Auto-retry halted on {where}: {reason} "
+        "Re-queueing is stopped so it does not retry a doomed failure forever. "
+        "How should it proceed — investigate, rework, or ignore?"
+    )
+
+
+def _escalate_once(task: Task, *, reason: str) -> None:
+    """Record a durable escalation for a halted task, then park the row. Deduped by condition.
+
+    The row is stamped (:data:`HALT_STAMP`) so it drops out of every future scan; the
+    ``DeferredQuestion`` is deduped by the STABLE :func:`escalation_marker` (ticket +
+    phase + failure fingerprint) through the model's indexed ``dedupe_marker`` — so the
+    fresh ``Task`` rows a stuck phase mints each redispatch cycle collapse to a SINGLE
+    open question instead of one per cycle. Reuses the §17.1 invariant 9 surface
+    (statusline / ``t3 teatree questions list`` / the Slack DM drain).
+
+    Both writes share one transaction: the stamp is permanent and the question is the
+    ONLY surface the halt reaches a human on, so a stamp that outlived a failed
+    ``record`` would park the task silently, forever, with nobody told. The row's stored
+    conversation is dropped in the same transaction, since no retry will continue it.
+    """
+    where = task.ticket.issue_url or f"ticket {task.ticket.pk}"
+    phase = normalize_phase(task.phase)
+    question = _halt_question(task, where=where, phase=phase, reason=reason)
+    with transaction.atomic():
+        _stamp_halt(task)
+        task.ticket.pop_task_thread(int(task.pk))
+        DeferredQuestion.record(
+            question,
+            session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
+            dedupe_marker=escalation_marker(task),
+            audience=DeferredQuestion.Audience.INTERNAL,
+        )

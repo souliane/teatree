@@ -1,0 +1,1261 @@
+#!/usr/bin/env bash
+# Container-wrapping `t3` entry (#3232). Runs the teatree CLI inside the headless
+# Docker stack so an operator needs no host Python / uv / py3.13 / prek / direnv /
+# ttyd — `t3 <args>` on the host executes transparently in a container that shares
+# the live DB, credential, and session mounts. `t3 setup` installs a shell alias
+# pointing here; `t3 doctor` verifies the wiring.
+#
+# Prefers `exec` into the already-running worker (fast; shares the live state).
+# Falls back to a one-off `run --rm` container (worker role, same mounts) when the
+# stack is down, overriding the role-dispatch entrypoint to run the CLI directly.
+set -euo pipefail
+
+# PHYSICAL resolution (`pwd -P`), not logical: a host project commonly exposes
+# `<host>/deploy -> vendor/teatree/deploy`, and bash resolves `..` LOGICALLY —
+# `<host>/deploy/..` is `<host>`, which rebases REPO_ROOT onto the host root and
+# defeats the layout checks below. Resolving both hops physically makes the
+# symlinked and the direct entry point resolve identically. On a standalone clone,
+# where no symlink is involved, `pwd -P` is `pwd`.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+HOST_IDENTITY_FILE="$SCRIPT_DIR/docker-compose.host-identity.yml"
+SERVICE="${TEATREE_DOCKER_CLI_SERVICE:-teatree-worker}"
+# Every control-DB route, preferred first. A convergence recreates them ONE AT A
+# TIME (deploy.sh's staged swap), so the one being replaced always has a live
+# sibling — dispatching there turns what used to be an opaque `service "X" is not
+# running` into a call that simply works. The worker leads because it alone carries
+# the docker-socket group, so `worktree provision` needs it; the admin is the
+# documented second `docker exec` target and shares every mount.
+CLI_SERVICE_FALLBACKS="${TEATREE_DOCKER_CLI_FALLBACK_SERVICES:-teatree-admin teatree-worker}"
+# deploy.sh's single-convergence lock — the authoritative "an update is happening
+# right now" signal, read the same read-only way deploy/watchdog.sh reads it.
+DEPLOY_LOCK="${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}"
+# How long to wait for a route to come back when a convergence is demonstrably in
+# flight. 0 reports immediately instead of waiting.
+UPDATE_WAIT_SECONDS="${TEATREE_UPDATE_WAIT_SECONDS:-180}"
+# EX_TEMPFAIL, distinct from every code the CLI itself returns, so a caller branches
+# on "the substrate is mid-update" rather than parsing a message.
+UPDATE_IN_PROGRESS_EXIT=75
+# The container path the source mount always lands on (the compose target is
+# fixed — it is what `teatree.paths` resolves inside the container).
+CONTAINER_SOURCE_DIR=/home/teatree/teatree
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "deploy/t3: docker CLI not found on PATH — the containerized t3 workflow needs Docker. See deploy/README.md" >&2
+    exit 127
+fi
+
+# The host home whose tree carries the compose bind-mount SOURCES (see
+# docker-compose.yml's `volumes:`). On the box this is the deploy user's home,
+# `/home/teatree` — identical to the compose default and to what deploy.sh
+# exports — so the box is unaffected. On an operator laptop it is `/Users/<name>`,
+# which is what makes the stack mountable there at all: dockerd refuses a source
+# path that does not exist on the host ("mounts denied: … is not shared").
+export TEATREE_HOST_HOME="${TEATREE_HOST_HOME:-$HOME}"
+
+# PATH IDENTITY for the worktree tree, added only when the host home differs from the
+# container's. docker-compose.yml deliberately gives up path identity off-box: mount
+# TARGETS are fixed container paths under the container HOME while the host-side SOURCE
+# root follows the real host home. That is right for everything the container reads
+# itself — and wrong for what it hands the docker DAEMON. `t3 <overlay> worktree start`
+# runs `docker compose up` for a worktree stack through the mounted socket; compose
+# resolves that stack's relative `volumes:` against its own cwd (a CONTAINER path) and
+# gives the daemon a source that does not exist on the host, which answers "mounts
+# denied: the path ... is not shared from the host" and fails every worktree stack. The
+# overlay ADDS a second, host-identical view so a worktree path is valid as both
+# coordinates. On the box the two homes coincide, the two mount targets would collide,
+# and the overlay is correctly not added — so the box is byte-identical to before.
+# Derived from the source-mount target rather than restated, so the container HOME
+# has exactly one definition in this file.
+CONTAINER_HOME="${CONTAINER_SOURCE_DIR%/*}"
+COMPOSE_ARGS=(-f "$COMPOSE_FILE")
+# Whether the identity overlay above is in play, so the cwd translation below can
+# TRANSLATE the root it binds. The two must move together: the overlay file binds
+# `$TEATREE_HOST_HOME/workspace` at path identity, and a visibility model that omits
+# it refuses a checkout that is demonstrably readable inside the container under its
+# own absolute path. That refusal named two remedies, neither usable, and drove agents
+# to a host `git push` — which authors the MR as the human, who then cannot approve it.
+HOST_IDENTITY_MOUNT=0
+if [ "$TEATREE_HOST_HOME" != "$CONTAINER_HOME" ]; then
+    COMPOSE_ARGS+=(-f "$HOST_IDENTITY_FILE")
+    HOST_IDENTITY_MOUNT=1
+fi
+
+# The checkout this wrapper runs out of — the directory holding `deploy/`. The
+# watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs
+# `$TEATREE_DEPLOY_CHECKOUT/deploy/watchdog.sh` from it, so both read this one
+# value; hard-coding the box path left the watchdog permanently `Created` with
+# "mounts denied" on every other host. On the box `$REPO_ROOT` IS the compose
+# default, so nothing changes there.
+export TEATREE_DEPLOY_CHECKOUT="${TEATREE_DEPLOY_CHECKOUT:-$REPO_ROOT}"
+
+# TEATREE_DOCKER_SOCKET_GID — the group owning the docker socket AS THE CONTAINER
+# SEES IT, which is what docker-compose.yml's `group_add` on teatree-worker reads.
+# The worker runs as the non-root TEATREE_UID and needs the daemon for `worktree
+# provision` (docker build) and `worktree start` (compose up); the socket is mode
+# 0660 root-owned, so without a matching group the mount grants nothing. Needed in
+# this wrapper too: with the stack down it starts a one-off worker itself.
+#
+# NOT always a `stat` of the host socket. On Linux the daemon shares the host
+# kernel, so the host's socket IS the container's and its gid transfers (on Debian
+# and Ubuntu the `docker` group, not 0). Under Docker Desktop the socket is served
+# from the product's own Linux VM where it is root:root — gid 0 — while the
+# host-side node is an ordinary user-owned file whose gid (`staff`) means nothing
+# inside the container, so reading the host there would export a group the
+# container does not have and leave provisioning as broken as no group at all.
+#
+# Kept INLINE rather than sourced from a sibling: this wrapper is copied and run
+# standalone (deploy/README.md § alias, and the tests that materialize it), so an
+# extra required file is a failure mode the six lines are not worth. deploy.sh
+# carries the identical block; tests/test_deploy_docker_socket_access.py pins them
+# in sync. An operator-set value always wins.
+if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
+    TEATREE_DOCKER_SOCKET_GID=0
+    if [ "$(uname -s)" = Linux ] && [ -S /var/run/docker.sock ]; then
+        TEATREE_DOCKER_SOCKET_GID="$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0)"
+    fi
+fi
+export TEATREE_DOCKER_SOCKET_GID
+
+# The sources must PRE-EXIST: dockerd auto-creates a missing bind source, and on
+# the box it creates it ROOT-owned, locking the non-root container out of the
+# mount (deploy.sh pre-creates the same set for the same reason). Credential-plane
+# dirs are mode 700, as pass and gpg require.
+#
+# Named once HERE, because these same host roots are the whole answer to "can the
+# container see this path?" and the reachability check below reads them. They are a
+# second copy of docker-compose.yml's own bind sources, which is what actually gets
+# mounted; tests/test_deploy_bindmount_compose.py pins the two in sync.
+CREDENTIAL_MOUNT_SOURCES=(
+    "$TEATREE_HOST_HOME/.password-store"
+    "$TEATREE_HOST_HOME/.gnupg"
+)
+DATA_MOUNT_SOURCES=(
+    "$TEATREE_HOST_HOME/.local/share/teatree"
+    "$TEATREE_HOST_HOME/.local/share/teatree-worktrees"
+    # The uv interpreter root, mounted at THIS path in the container too — an
+    # identity mount, not a container path rebased onto the host home. It has to
+    # be: uv writes its `cpython-<minor>` aliases here as ABSOLUTE symlinks, so
+    # whatever the container calls this directory is what the host reads back. A
+    # venv under the worktree bind then stays valid in each venue and is never
+    # rebuilt (#4642).
+    "$TEATREE_HOST_HOME/.local/share/uv/python"
+    "$TEATREE_HOST_HOME/workspace/t3-workspaces"
+    # The host WORKSPACE root — the off-box host-identity overlay mounts it whole
+    # so the container can resolve source clones (a linked worktree's gitdir
+    # names its clone by the HOST's absolute path) and clean-all verdicts are
+    # verifiable instead of clone-unresolvable.
+    "$TEATREE_HOST_HOME/workspace"
+    "$TEATREE_HOST_HOME/.claude/projects"
+    "$TEATREE_HOST_HOME/.local/bin"
+)
+install -d -m 700 "${CREDENTIAL_MOUNT_SOURCES[@]}"
+install -d "${DATA_MOUNT_SOURCES[@]}"
+
+# A DANGLING `cpython-*` alias in the host's interpreter root is the fingerprint of a
+# container that mounted that root at ITS OWN coordinate instead of the host's: uv
+# writes those aliases as ABSOLUTE symlinks and has no relative mode, so the target it
+# records is valid only in the venue that wrote it. This wrapper is the ONLY layer that
+# can name it — every other `t3` check execs INTO the container, where the rewritten
+# aliases resolve perfectly and the plane reads clean. Warn only, never repair:
+# reinstalling an interpreter is the operator's call and deleting a live one is not
+# ours. A few stats over a handful of entries, on a path that is already being created
+# one line above.
+warn_dangling_interpreter_aliases() {
+    local root="${1:?interpreter root}" alias_path found=0
+    for alias_path in "$root"/cpython-*; do
+        if [ -L "$alias_path" ] && [ ! -e "$alias_path" ]; then
+            printf 't3: WARNING dangling interpreter alias: %s -> %s\n' "$alias_path" "$(readlink "$alias_path")" >&2
+            found=1
+        fi
+    done
+    [ "$found" -eq 0 ] || printf 't3: WARNING   a host venv resolving through one is DELETED and rebuilt on its next `uv run`. Repair on the HOST with `uv python install <version>`.\n' >&2
+}
+warn_dangling_interpreter_aliases "$TEATREE_HOST_HOME/.local/share/uv/python"
+
+# THE SUPERSEDED SHELL ALIAS, retired from the HOST rc files (#3232). An earlier
+# `t3 setup` wrote a marker-fenced `alias t3=...` block; a PATH launcher reaches
+# interactive AND non-interactive shells, so the alias only ever added a second,
+# independently-stale answer to "which t3" — the split-brain itself. The removal
+# lives HERE because the container that now runs `t3 setup` cannot see the
+# operator's rc files: this wrapper is the only layer that executes on the host.
+# The markers are the strings teatree.docker.workflow defines;
+# tests/test_deploy_alias_retirement.py pins the two spellings together.
+ALIAS_MARKER_BEGIN='# >>> teatree docker t3 alias >>>'
+ALIAS_MARKER_END='# <<< teatree docker t3 alias <<<'
+
+retire_managed_alias_block() {
+    local rc line out drop closed
+    for rc in "$TEATREE_HOST_HOME/.bashrc" "$TEATREE_HOST_HOME/.zshrc"; do
+        [ -f "$rc" ] || continue
+        case "$(<"$rc")" in
+        *"$ALIAS_MARKER_BEGIN"*) ;;
+        *) continue ;;
+        esac
+        out=""
+        drop=0
+        closed=1
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+            "$ALIAS_MARKER_BEGIN")
+                drop=1
+                closed=0
+                continue
+                ;;
+            "$ALIAS_MARKER_END")
+                drop=0
+                closed=1
+                continue
+                ;;
+            esac
+            [ "$drop" = 1 ] || out="$out$line"$'\n'
+        done <"$rc"
+        # An unclosed BEGIN leaves `drop` set to end-of-file, so writing `out` would
+        # delete every line the operator wrote after it. Their rc file is not ours to
+        # guess at: report it and change nothing.
+        if [ "$closed" = 0 ]; then
+            echo "deploy/t3: $rc opens a managed t3 alias block that is never closed by '$ALIAS_MARKER_END'." >&2
+            echo "          Leaving it untouched — removing to end-of-file would take your own lines with it." >&2
+            echo "          Close the block or delete it by hand, then re-run \`t3 setup\`." >&2
+            continue
+        fi
+        # Written THROUGH the path, never renamed over it: an rc file is commonly a
+        # symlink into a dotfiles repo, and a rename would replace the link itself.
+        printf '%s' "$out" >"$rc"
+        echo "deploy/t3: retired the superseded managed t3 alias block from $rc — the PATH launcher replaces it." >&2
+    done
+}
+
+# Run the WORKING TREE the wrapper was invoked from when teatree is installed
+# BENEATH a host project — the `<host>/vendor/teatree/deploy/t3` layout. The tree
+# is bind-mounted over the container's source path, so the containerized `t3`
+# executes the code being edited here instead of the `teatree_src` volume's
+# clone. A standalone teatree checkout (`<clone>/deploy/t3`) does not match and
+# keeps the volume — the self-update path via the entrypoint's origin
+# fast-forward. `TEATREE_SOURCE_MOUNT` set in the environment always wins.
+#
+# What gets mounted is the HOST PROJECT ROOT, not the nested core alone. Overlays
+# register through the HOST project's `teatree.overlays` entry point, so the
+# container resolves a host-provided overlay only once the host root is installed
+# alongside core (`--with-editable`, deploy/entrypoint.sh). The entrypoint
+# derives that host root from the layout it can SEE — `$TEATREE_CLONE_DIR` ending
+# in `/vendor/teatree`, the conventional path a host project installs core at,
+# with a `pyproject.toml` at its parent — so mounting core alone leaves it
+# nothing to find, no overlay registered, and every headless task on an
+# overlay-owned ticket dead at dispatch ("Overlay '<name>' not found. Available:
+# t3-teatree"). Mounting the host root puts core one level down, which is exactly
+# the shape that detection matches; `TEATREE_CLONE_DIR` follows it there and
+# reaches the container through the compose services' `environment:` (an
+# operator's own value still wins).
+#
+# A `vendor/` parent with no `pyproject.toml` is not a host project — the
+# entrypoint would reject it too — so that layout keeps the core-only mount
+# unchanged.
+if [ -z "${TEATREE_SOURCE_MOUNT:-}" ] &&
+    [ "$(basename "$REPO_ROOT")" = teatree ] &&
+    [ "$(basename "$(dirname "$REPO_ROOT")")" = vendor ]; then
+    HOST_PROJECT_ROOT="$(dirname "$(dirname "$REPO_ROOT")")"
+    if [ -f "$HOST_PROJECT_ROOT/pyproject.toml" ]; then
+        export TEATREE_SOURCE_MOUNT="$HOST_PROJECT_ROOT"
+        export TEATREE_CLONE_DIR="${TEATREE_CLONE_DIR:-$CONTAINER_SOURCE_DIR/vendor/teatree}"
+    else
+        export TEATREE_SOURCE_MOUNT="$REPO_ROOT"
+    fi
+fi
+
+# WHERE THE OPERATOR STANDS. `compose exec`/`run` start the process in the image's
+# own WORKDIR (/home/teatree), so the host cwd never crosses the boundary and the
+# containerized CLI sees the same directory no matter where `t3` was typed. Most
+# commands do not care; a command whose whole contract is "resolve from where I
+# am" is dead on arrival — `t3 overlay install` walks up from cwd to find the
+# teatree workspace and failed identically from the host root and from /tmp.
+#
+# A `--workdir` cannot carry it: the path must exist INSIDE the container, and the
+# host cwd usually has no container counterpart, so passing it would make docker
+# fail the exec for every invocation from ~, /tmp, or any repo outside the mount —
+# breaking every other containerized command to serve this one. Passing it only
+# when mappable is worse: the CLI would then run under two different cwds
+# depending on where the operator stood, changing behaviour for every cwd-sensitive
+# code path at once.
+#
+# So it crosses as DATA the CLI opts into reading (teatree.core.invocation_cwd),
+# translated HERE — the only layer that knows the mount mapping — into container
+# coordinates. Only a cwd inside the mounted tree is translatable; anywhere else
+# the name stays unset and the CLI keeps its own cwd, exactly as before.
+# EVERY bind-mounted tree is translatable, not just the source mount. The
+# worktree roots are where the operator actually stands when running a
+# worktree-scoped command, and leaving them out made `worktree provision` fail
+# from every worktree with "Cannot auto-detect worktree from /home/teatree" —
+# the image WORKDIR, which is what an untranslated cwd degrades to.
+#
+# The pairs mirror docker-compose.yml's `volumes:` for this service, longest
+# host prefix first so a nested mount wins over the tree containing it.
+#
+# Both sides of every comparison are PHYSICAL. `pwd -P` already resolves the cwd,
+# so a logical `$TEATREE_HOST_HOME` prefix would never match it on a host whose
+# home traverses a symlink (`/home` -> `/usr/home`, an NFS-mounted home, macOS's
+# `/tmp` -> `/private/tmp`): the cwd would silently fall through untranslated and
+# the command would resolve from the image WORKDIR again — the exact failure this
+# block exists to remove, reappearing only on some hosts. `-P` on a path that is
+# already physical is a no-op, so the common case is unchanged.
+# The host roots the container can see — every mount. That is the whole answer for
+# an unreachable path ARGUMENT below: a file under any of them is readable inside.
+print_visible_host_roots() {
+    local root
+    for root in "${TEATREE_SOURCE_MOUNT:-}" "${DATA_MOUNT_SOURCES[@]}" "${CREDENTIAL_MOUNT_SOURCES[@]}"; do
+        if [ -n "$root" ]; then
+            echo "             $root" >&2
+        fi
+    done
+}
+
+# The narrower set a WORKING DIRECTORY may sit under. Being mounted is not enough:
+# the cwd must also TRANSLATE, and only the MOUNT_PAIRS built below do. Naming the
+# visible set in the refusal advertised ~/.claude/projects and the credential roots
+# as somewhere to work, then refused a checkout under them all the same.
+print_translatable_host_roots() {
+    local pair
+    for pair in "${MOUNT_PAIRS[@]}"; do
+        echo "             ${pair%%:*}" >&2
+    done
+}
+
+# The checkout enclosing $1, or nothing when $1 is not inside one. A `.git` entry
+# is what git itself looks for, and it is a FILE in a linked worktree — teatree's
+# own worktrees are exactly that shape. Pure expansion, no `git`: the wrapper's
+# whole contract is that the host needs no teatree toolchain, and a hook subprocess
+# inherits a restricted PATH where shelling out silently yields nothing.
+enclosing_checkout_root() {
+    local dir="$1"
+    while [ -n "$dir" ] && [ "$dir" != / ]; do
+        if [ -e "$dir/.git" ]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+        dir="${dir%/*}"
+    done
+    if [ -e /.git ]; then
+        printf '%s\n' /
+    fi
+    return 0
+}
+
+refuse_invisible_checkout() {
+    echo "deploy/t3: refusing to run — this checkout is not visible inside the container." >&2
+    echo "           cwd:      $1" >&2
+    echo "           checkout: $2" >&2
+    echo "           The container carries its OWN copy of the teatree source (a Docker" >&2
+    echo "           volume, a separate tree from this one), so dispatching from here would" >&2
+    echo "           silently operate on that copy instead of the checkout you are in." >&2
+    echo "           A working directory must sit under one of these host roots:" >&2
+    print_translatable_host_roots
+    echo "           Fix: work from a checkout under one of them — \`t3 <overlay> workspace" >&2
+    echo "           ticket <id>\` creates one — or export TEATREE_INVOCATION_CWD to the" >&2
+    echo "           container-side path when you know this tree is reachable there." >&2
+    exit 1
+}
+
+if [ -z "${TEATREE_INVOCATION_CWD:-}" ]; then
+    HOST_CWD="$(pwd -P)"
+    PHYSICAL_HOST_HOME="$(cd "$TEATREE_HOST_HOME" 2>/dev/null && pwd -P)" || PHYSICAL_HOST_HOME="$TEATREE_HOST_HOME"
+    : "${PHYSICAL_HOST_HOME:=$TEATREE_HOST_HOME}"
+    MOUNT_PAIRS=(
+        "$PHYSICAL_HOST_HOME/workspace/t3-workspaces:/home/teatree/workspace/t3-workspaces"
+        "$PHYSICAL_HOST_HOME/.local/share/teatree-worktrees:/home/teatree/.local/share/teatree-worktrees"
+    )
+    # The source mount is operator- or layout-derived, so it is appended only when
+    # one was resolved; it can nest under neither of the fixed pairs above.
+    if [ -n "${TEATREE_SOURCE_MOUNT:-}" ]; then
+        MOUNT_PAIRS+=("$TEATREE_SOURCE_MOUNT:$CONTAINER_SOURCE_DIR")
+    fi
+    # LAST, because it is the least specific root and every pair above nests inside it
+    # with its own canonical container target that must keep winning: a `Worktree` row
+    # records `/home/teatree/workspace/t3-workspaces/...`, and the source mount resolves
+    # to what `teatree.paths` answers inside the container. First match wins, so the
+    # identity pair only catches what nothing more specific claimed — the sibling
+    # checkouts and ad-hoc worktrees under the workspace root that used to be refused.
+    if [ "$HOST_IDENTITY_MOUNT" = 1 ]; then
+        MOUNT_PAIRS+=("$PHYSICAL_HOST_HOME/workspace:$PHYSICAL_HOST_HOME/workspace")
+    fi
+    for PAIR in "${MOUNT_PAIRS[@]}"; do
+        HOST_PREFIX="${PAIR%%:*}"
+        CONTAINER_PREFIX="${PAIR##*:}"
+        if [ "$HOST_CWD" = "$HOST_PREFIX" ]; then
+            export TEATREE_INVOCATION_CWD="$CONTAINER_PREFIX"
+            break
+        fi
+        case "$HOST_CWD" in
+        "$HOST_PREFIX"/*)
+            export TEATREE_INVOCATION_CWD="${CONTAINER_PREFIX}${HOST_CWD#"$HOST_PREFIX"}"
+            break
+            ;;
+        esac
+    done
+
+    # WHEN THE UNTRANSLATED CWD IS A WRONG TREE, NOT MERELY AN UNKNOWN ONE. An
+    # untranslated cwd degrades to the image WORKDIR, and under it sits the
+    # container's own source volume — so a cwd-sensitive command run from a host
+    # checkout outside every mount resolves against that copy and reports success
+    # having touched a different tree. Nothing downstream can detect this: both
+    # trees are real teatree checkouts, so there is no error to surface.
+    #
+    # Scoped to a CHECKOUT because that is the only cwd a tree can be wrong about.
+    # `~`, `/tmp` and the like carry no tree, and every cwd-insensitive command
+    # (`t3 doctor`, `t3 info`, `t3 notify send`) must keep running from them — the
+    # pre-existing degrade-to-container-cwd behaviour, unchanged.
+    #
+    # A refusal, where an unreachable path ARGUMENT below only warns: the wrapper
+    # cannot know whether the CLI will open that argument, but the cwd is read by
+    # the CLI on every invocation, so the wrong-tree resolution is certain.
+    if [ -z "${TEATREE_INVOCATION_CWD:-}" ]; then
+        CHECKOUT_ROOT="$(enclosing_checkout_root "$HOST_CWD")"
+        if [ -n "$CHECKOUT_ROOT" ]; then
+            refuse_invisible_checkout "$HOST_CWD" "$CHECKOUT_ROOT"
+        fi
+    fi
+fi
+
+# WHEN A HOST PATH CANNOT CROSS THE BOUNDARY. The container sees only the bind
+# mounts above, so an absolute path outside them does not exist there — and the
+# CLI reports it by the name it was given, producing "No such file or directory"
+# against a path the operator can `ls` on the host. That reads as a teatree bug
+# and has cost real debugging time; the cause is never in the message.
+#
+# The wrapper is the only layer that knows the mapping, so it names it here. The
+# test is deliberately narrow: an argument that is ABSOLUTE, EXISTS on the host,
+# and lies under no mount source. Such a path is unreadable inside the container
+# by construction, so the note cannot be wrong about the boundary. It is a note,
+# not a refusal — the wrapper cannot know whether the CLI will actually open the
+# argument, and refusing would break a command that merely passes it through.
+unreachable_host_paths() {
+    local arg root reachable
+    for arg in "$@"; do
+        case "$arg" in
+        /*) ;;
+        *) continue ;;
+        esac
+        if [ ! -e "$arg" ]; then
+            continue
+        fi
+        reachable=0
+        for root in "${TEATREE_SOURCE_MOUNT:-}" "${DATA_MOUNT_SOURCES[@]}" "${CREDENTIAL_MOUNT_SOURCES[@]}"; do
+            if [ -n "$root" ]; then
+                case "$arg" in
+                "$root" | "$root"/*)
+                    reachable=1
+                    break
+                    ;;
+                esac
+            fi
+        done
+        if [ "$reachable" -eq 0 ]; then
+            printf '%s\n' "$arg"
+        fi
+    done
+    return 0
+}
+
+warn_unreachable_host_paths() {
+    local unreachable path
+    unreachable="$(unreachable_host_paths "$@")"
+    if [ -z "$unreachable" ]; then
+        return 0
+    fi
+    echo "deploy/t3: these paths exist on the host but are NOT inside any mount, so the" >&2
+    echo "           containerized t3 cannot see them (expect 'No such file or directory'):" >&2
+    # Read line-wise, never word-split: a host path may legitimately contain spaces.
+    while IFS= read -r path; do
+        echo "             $path" >&2
+    done <<<"$unreachable"
+    echo "           The container sees only these host roots:" >&2
+    print_visible_host_roots
+    echo "           Move the path under one of them." >&2
+    return 0
+}
+
+warn_unreachable_host_paths "$@"
+
+compose() { docker compose "${COMPOSE_ARGS[@]}" "$@"; }
+
+# The first control-DB route that is actually running, preferring $SERVICE. Echoes
+# its name; non-zero when none of them is up. A route is "running" only when it has a
+# SERVICE container: `running_service_container` skips the ephemeral one-offs compose
+# lists under the same service name, which `exec` can never target.
+#
+first_running_service() {
+    local svc seen=""
+    for svc in $SERVICE $CLI_SERVICE_FALLBACKS; do
+        case " $seen " in
+        *" $svc "*) continue ;;
+        esac
+        seen="$seen $svc"
+        if [ -n "$(running_service_container "$svc")" ]; then
+            printf '%s' "$svc"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Say which route a dispatch took when it is not the preferred one. The routes are NOT
+# interchangeable — only the worker carries the docker-socket group — so a provisioning
+# command dispatched to the admin fails in the daemon's vocabulary, about a socket, with
+# nothing connecting that to a worker that is down. Printed at most once per invocation,
+# so a hop that already announced its route does not repeat it.
+FALLBACK_ROUTE_ANNOUNCED=""
+announce_route() {
+    local route="$1"
+    [ -n "$route" ] || return 0
+    [ "$route" != "$SERVICE" ] || return 0
+    [ -z "$FALLBACK_ROUTE_ANNOUNCED" ] || return 0
+    FALLBACK_ROUTE_ANNOUNCED=1
+    echo "deploy/t3: $SERVICE is not running — dispatching in $route instead. It shares every mount," >&2
+    echo "           but only the worker carries the docker-socket group, so a provisioning command needs it back." >&2
+}
+
+# The route to dispatch at, announced when it is a fallback. Every hop asks HERE rather
+# than calling `first_running_service` bare, so no hop can dispatch elsewhere in silence.
+dispatch_route() {
+    local route
+    route="$(first_running_service)" || return 1
+    announce_route "$route"
+    printf '%s' "$route"
+}
+
+# True when deploy.sh's single-convergence flock is held. READ-ONLY by construction:
+# it matches the lock file's device+inode against /proc/locks and never opens the
+# file for locking. A probe that briefly ACQUIRED the lock would make a deploy
+# starting in that instant see it as busy — and deploy.sh exits 0 on a busy lock, so
+# that deploy would be silently skipped. Non-zero means "not held, or cannot tell"
+# (macOS, an unreadable /proc/locks, no lock file), which keeps the stopped-stack
+# path below rather than inventing an update that may not be running.
+deploy_lock_held() {
+    local fields maj min ino
+    [ -r /proc/locks ] || return 1
+    fields="$(stat -c '%Hd %Ld %i' "$DEPLOY_LOCK" 2>/dev/null)" || return 1
+    read -r maj min ino <<<"$fields"
+    [ -n "${ino:-}" ] || return 1
+    grep -qF "$(printf ' %02x:%02x:%s ' "$maj" "$min" "$ino")" /proc/locks
+}
+
+
+# THE CONTAINER `exec` WILL ACTUALLY TARGET. Compose lists an ephemeral `run --rm`
+# one-off under the SAME service name as the service container, so on a paused stack
+# `ps --status running` answered with the one-off while `exec` resolved the paused
+# worker and died — leaving the one-off fallback, which works, unreachable for as long
+# as any one-off existed. The mount guard reads the same answer, so it cleared a drift
+# on a container the command never runs in.
+#
+# The `oneoff` label is the only thing separating them. Only a PROVEN one-off is
+# skipped — an absent label renders EMPTY and is kept — so a daemon that cannot answer
+# degrades to the previous choice, never to a fallback on every call.
+#
+# ONE DAEMON CALL FOR EVERY ROUTE, NOT ONE PER ROUTE PER ASK. This used to run
+# `compose ps` per service and then a `docker inspect` per returned id, and the
+# wrapper asks four times on a normal invocation (`SERVICE_CONTAINER` below, then
+# `first_running_service` at the browser, forward and dispatch hops). `docker compose`
+# is a plugin binary that re-reads and re-interpolates the 36 KB compose file on every
+# call before it ever reaches the daemon — MEASURED at ~4s each on Docker Desktop, so
+# route resolution alone cost ~16s of every `t3` call. A plain `docker ps` label query
+# answers all of it in one ~100ms daemon round trip: the project label scopes it to
+# this stack, and the service + oneoff labels come back in the same row, so the
+# per-container `inspect` disappears too.
+#
+# The project name is compose's own (`name: teatree` in docker-compose.yml), which is
+# exactly what compose would have derived — `COMPOSE_PROJECT_NAME` still wins where an
+# operator set it, matching compose's own precedence. `tests/test_deploy_t3_route_probe.py`
+# pins the two spellings together so renaming one without the other cannot pass.
+COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-teatree}"
+
+# `<id> <service> <oneoff>` per running container of this project. The ID leads
+# because it is the one field always present: an absent oneoff label renders as an
+# empty trailing field, which `read` folds harmlessly, whereas a leading empty field
+# would shift every column.
+probe_running_services() {
+    docker ps \
+        --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+        --filter status=running \
+        --format '{{.ID}} {{.Label "com.docker.compose.service"}} {{.Label "com.docker.compose.oneoff"}}' \
+        2>/dev/null || true
+}
+
+# The resolved table, filled ONCE below and reused by every ask. The update-wait loop
+# re-fills it deliberately — that loop exists to observe a CHANGE, so it is the one
+# caller a memo must not answer from.
+RUNNING_SERVICE_TABLE=""
+
+running_service_container() {
+    local id name oneoff svc="${1:-$SERVICE}"
+    while read -r id name oneoff; do
+        [ -n "$id" ] || continue
+        [ "$name" = "$svc" ] || continue
+        [ "$oneoff" != True ] || continue
+        printf '%s\n' "$id"
+        return 0
+    done <<<"$RUNNING_SERVICE_TABLE"
+    return 0
+}
+
+RUNNING_SERVICE_TABLE="$(probe_running_services)"
+SERVICE_CONTAINER="$(running_service_container)"
+
+# WHICH TREE THE RUNNING CONTAINER ACTUALLY EXECUTES. `TEATREE_SOURCE_MOUNT` above
+# resolves the host project this wrapper was invoked from, so the container runs the
+# code being edited here — but that value reaches a container only through `up` /
+# `run`. The fast path below is `exec` into an ALREADY-RUNNING worker, and no exec
+# can change a mount, so the resolved value is silently DISCARDED and the CLI
+# executes whatever tree was in effect when the stack came up.
+#
+# Measured: a running stack bind-mounting a clone 16 commits behind this checkout.
+# Every fix of that day was invisible to the running system — including the fix for
+# a bug that destroyed a development stack — and nothing reported it, because
+# nothing compared the two. Staleness is not the defect; SILENCE is.
+#
+# Reporting rather than refusing. A false positive here would break every `t3` call
+# on a live stack, and the wrapper already owns a loud non-blocking diagnostic
+# (warn_unreachable_host_paths). An answer the daemon cannot give is not evidence of
+# divergence, so an unreadable inspect stays silent rather than inventing a drift.
+warn_source_mount_drift() {
+    local mounted running_type running_source resolved
+    [ -n "${TEATREE_SOURCE_MOUNT:-}" ] || return 0
+    [ -n "$SERVICE_CONTAINER" ] || return 0
+    mounted="$(docker inspect --format \
+        "{{range .Mounts}}{{if eq .Destination \"$CONTAINER_SOURCE_DIR\"}}{{.Type}} {{.Source}}{{end}}{{end}}" \
+        "$SERVICE_CONTAINER" 2>/dev/null)" || return 0
+    [ -n "$mounted" ] || return 0
+    running_type="${mounted%% *}"
+    running_source="${mounted#* }"
+    # Docker Desktop reports some bind sources under `/host_mnt`; comparing raw would
+    # flag every mount on a Mac and make the warning worthless.
+    running_source="${running_source#/host_mnt}"
+    if [ "$running_type" = bind ]; then
+        resolved="$(cd "$running_source" 2>/dev/null && pwd -P)" || resolved="$running_source"
+        [ "$resolved" = "$TEATREE_SOURCE_MOUNT" ] && return 0
+    fi
+    echo "deploy/t3: WARNING the running $SERVICE runs a DIFFERENT source tree than this checkout." >&2
+    echo "           editing here : $TEATREE_SOURCE_MOUNT" >&2
+    echo "           executing    : ${running_source:-<the teatree_src volume clone>} ($running_type)" >&2
+    echo "           Every change made here is invisible to the running factory until the" >&2
+    echo "           stack is recreated against this tree:" >&2
+    echo "             TEATREE_SOURCE_MOUNT=$TEATREE_SOURCE_MOUNT \\" >&2
+    echo "               docker compose ${COMPOSE_ARGS[*]} up -d" >&2
+    echo "           To run THIS checkout for one invocation without touching the stack:" >&2
+    echo "             TEATREE_FORCE_ONE_OFF=1 $0 <command>" >&2
+    echo "           That one-off runs this checkout's code against the SHARED control DB: never" >&2
+    echo "           use it for 'db migrate' or for code carrying migrations the stack has not applied." >&2
+    return 0
+}
+
+warn_source_mount_drift
+
+# WHAT AN EXEC'D PROCESS MUST RESOLVE FOR ITSELF, decided INSIDE the container: the
+# GitLab token. The GPG home is NOT repaired here, and deliberately so — a per-venue
+# repair in this wrapper is the defect class, not the fix. What every venue starts
+# from is set where a container is CREATED: deploy/docker-compose.yml pins GNUPGHOME on
+# each service, which `up -d` applies with no rebuild, and deploy/Dockerfile bakes the same
+# value for a bare `docker run`. A container created before either landed still opens the
+# host keybox — `t3 doctor check` reports that from the running container's own
+# environment, and recreating the stack is the repair.
+#
+# `deploy/entrypoint.sh` exports GITLAB_TOKEN into the ROLE's process tree only, so an
+# exec'd process starts from the container's create-time environment and the baked https
+# credential helper interpolates an EMPTY password — which GitLab reports as `HTTP Basic:
+# Access denied`, indistinguishable from a branch that does not exist. The host side below
+# forwards a token only when the operator exported one or explicitly named a bootstrap
+# pass entry. Otherwise the command receives no host token and the owning overlay's DB
+# route remains authoritative. An already-set value always wins.
+#
+# THE READ IS BOUNDED AND LOUD. `pass show` shells out to gpg, which blocks with no
+# deadline of its own on a keybox lock it cannot judge stale: the unbounded read this
+# replaces left 322 orphaned `pass`/`gpg` pairs alive for ten hours and then exported an
+# EMPTY token as if the credential were merely absent. `timeout` bounds it, and a
+# store that fails to ANSWER refuses outright rather than continuing with that empty
+# value — matching the host-side `refuse_wedged_secret_store` below.
+#
+# NO STORE IS NOT A BROKEN STORE, and the read below must keep the two apart. `pass`
+# ABSENT — no binary at all — is CI and the operator laptop that never set one up, and
+# it reports 127, which is `> 1` and so was read as a wedge that stopped the CLI on
+# every such venue. Only a store that is PRESENT and then fails to answer (the deadline,
+# or gpg's own rc 2) is the wedge this refusal exists for. `command -v pass` is the same
+# guard `host_gitlab_token_from_pass` already carries; 127 covers the second absence,
+# `timeout` itself, which the deploy image always ships but a host evaluating this
+# prologue need not — no bounded read is possible there, and an unbounded one is the
+# hang this whole block replaced.
+#
+# Single-quoted, and passed as the `sh -c` PROGRAM so the HOST shell never expands
+# it: `$0` is the label, `$@` the command to run.
+CONTAINER_CREDENTIAL_PROLOGUE='if [ -z "${GITLAB_TOKEN:-}" ] && [ -z "${TEATREE_SKIP_CREDENTIAL_READ:-}" ] && [ -n "${TEATREE_GITLAB_TOKEN_PASS_PATH:-}" ] && command -v pass >/dev/null 2>&1; then
+    pass_path="${TEATREE_GITLAB_TOKEN_PASS_PATH:-}"
+    deadline="${TEATREE_SECRET_READ_DEADLINE_SECONDS:-20}"
+    rc=0
+    token_out="$(timeout "$deadline" pass show "$pass_path" 2>/dev/null)" || rc=$?
+    if [ "$rc" -eq 127 ]; then
+        rc=1
+    fi
+    if [ "$rc" -eq 124 ] || [ "$rc" -gt 1 ]; then
+        echo "t3(container): the credential store did not answer for $pass_path within ${deadline}s (rc=$rc)." >&2
+        echo "               This is a WEDGED store, not a missing secret. Refusing rather than running" >&2
+        echo "               with an EMPTY credential, which surfaces later as HTTP Basic access denied" >&2
+        echo "               or as a branch that does not exist." >&2
+        echo "               GNUPGHOME=${GNUPGHOME:-<unset>}; clear the daemons with: gpgconf --kill all" >&2
+        echo "               A daemon under a DIFFERENT GNUPGHOME survives that - pgrep -al keyboxd gpg-agent." >&2
+        exit 1
+    fi
+    GITLAB_TOKEN="$(printf %s "$token_out" | head -n1)"
+    if [ -n "$GITLAB_TOKEN" ]; then
+        export GITLAB_TOKEN
+    else
+        # rc 0 and NO output is a wedged store answering emptily, and an EXPORTED empty
+        # value shadows the container environment - the same reason the host side never
+        # forwards one. Unset reaches the baked credential helper as a missing secret.
+        unset GITLAB_TOKEN
+    fi
+fi
+exec "$@"'
+
+# Operator-settable env the CONTAINERIZED CLI must still see. `compose exec`/`run`
+# start the process from the service's own `environment:`, so a value the operator
+# exported on the host is invisible inside — and teatree reads several of these at
+# the host boundary. `T3_OVERLAY_NAME` is the one whose loss kills a whole surface:
+# on a multi-overlay install the review CLI's token and base-URL reads call
+# `get_overlay()` with no name, raise "Multiple overlays found", and every GitLab
+# review post dies. Only names actually SET are forwarded, so an unset one never
+# shadows the service's own value. `$TEATREE_FORWARD_ENV` (comma-separated) extends
+# the list without editing this script.
+FORWARD_ENV_NAMES=(
+    T3_OVERLAY_NAME
+    TEATREE_INVOCATION_CWD
+    PYTEST_XDIST_AUTO_NUM_WORKERS
+    GITLAB_TOKEN
+    GITLAB_URL
+    # The launcher `t3 setup` writes through the host-bin mount execs THIS
+    # checkout's deploy/t3. An `exec` inherits the environment the stack came up
+    # with, so without forwarding it a relocated checkout would repair itself to
+    # the path the running container was started from — the stale one.
+    TEATREE_DEPLOY_CHECKOUT
+    # Set only when this invocation runs no command, so the container's own fallback
+    # read (the prologue above) skips its ~17s decrypt too.
+    TEATREE_SKIP_CREDENTIAL_READ
+    # `docker exec` starts from the DAEMON's environment, so without these the calling
+    # session is anonymous inside the container and every identity resolver falls
+    # through to the loop registry — answering with the TICK OWNER's id. Mirrors
+    # `teatree.core.session_identity.SESSION_ID_ENV_VARS`, pinned in sync by
+    # tests/test_deploy_t3_session_identity_forwarding.py.
+    CLAUDE_SESSION_ID
+    CLAUDE_CODE_SESSION_ID
+    T3_LOOP_SESSION_ID
+)
+if [ -n "${TEATREE_FORWARD_ENV:-}" ]; then
+    IFS=',' read -r -a EXTRA_ENV_NAMES <<<"$TEATREE_FORWARD_ENV"
+    FORWARD_ENV_NAMES+=("${EXTRA_ENV_NAMES[@]}")
+fi
+
+# HOW LONG a credential read may block before it is called a WEDGE rather than a slow
+# answer. Mirrors the Python seam's deadline (`src/teatree/utils/secrets.py`) so the
+# two venues cannot disagree about when a store has stopped answering.
+SECRET_READ_DEADLINE_SECONDS="${TEATREE_SECRET_READ_DEADLINE_SECONDS:-20}"
+# GNU `timeout`'s own code for "the deadline expired", reused so both branches of
+# `run_with_deadline` answer a wedge with ONE number, distinct from any rc `pass` or
+# `glab` returns for a missing entry.
+DEADLINE_TIMEOUT_RC=124
+
+# Run "$@" under a wall-clock deadline, portably. `timeout(1)` is GNU coreutils and is
+# ABSENT on macOS — which is exactly where this wrapper runs on an operator laptop, so
+# a bare `timeout` would be "command not found" on the host that needs the bound most.
+# The fallback races the read against a killer subshell. stdout passes through
+# untouched so a caller still captures the value; only the WAITING is bounded.
+run_with_deadline() {
+    local seconds="$1" pid killer rc=0
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@" || rc=$?
+        return "$rc"
+    fi
+    "$@" &
+    pid=$!
+    (
+        deadline_waited=0
+        while [ "$deadline_waited" -lt "$seconds" ]; do
+            kill -0 "$pid" 2>/dev/null || exit 0
+            sleep 1
+            deadline_waited=$((deadline_waited + 1))
+        done
+        kill -TERM "$pid" 2>/dev/null
+    ) >/dev/null 2>&1 &
+    killer=$!
+    wait "$pid" 2>/dev/null || rc=$?
+    kill -TERM "$killer" 2>/dev/null || true
+    wait "$killer" 2>/dev/null || true
+    # A TERM'd child reports 128+SIGTERM; normalise onto the timeout code so a caller
+    # branches on the deadline identically under both implementations.
+    if [ "$rc" -eq 143 ]; then
+        rc="$DEADLINE_TIMEOUT_RC"
+    fi
+    return "$rc"
+}
+
+# THE LOUD REFUSAL, in the PARENT shell. `src/teatree/utils/secrets.py` raises
+# `SecretStoreError.timed_out` for this exact case and its docstring says why: a
+# swallowed store failure yields an EMPTY credential, which is indistinguishable from
+# "this secret is not configured" — and a messaging backend then posts with no token
+# and reports success. Naming the wedge is the only outcome that cannot be mistaken
+# for an absent secret.
+#
+# Called from the parent, never from inside a `$(...)`: an `exit` in a command
+# substitution kills only the SUBSHELL, and the caller would sail on with the empty
+# value this exists to prevent.
+refuse_wedged_secret_store() {
+    echo "deploy/t3: the credential store did not answer for '$1' within ${SECRET_READ_DEADLINE_SECONDS}s." >&2
+    echo "           This is a WEDGED store, NOT a missing secret. Continuing would hand the" >&2
+    echo "           container an EMPTY credential, which surfaces later as 'HTTP Basic: Access" >&2
+    echo "           denied' or as a branch that does not exist — a whole day of wrong diagnosis." >&2
+    echo "           GNUPGHOME is currently '${GNUPGHOME:-<unset>}'. Clear the daemons with:" >&2
+    echo "             gpgconf --kill all" >&2
+    echo "           A gpg-agent/keyboxd left under a DIFFERENT GNUPGHOME survives that — find" >&2
+    echo "           it with 'pgrep -al keyboxd gpg-agent' and TERM it directly." >&2
+    exit 1
+}
+
+host_keybox_lock_is_clear() {
+    [ ! -f "$SCRIPT_DIR/gnupg-lock-doctor.sh" ] ||
+        env GNUPGHOME="$TEATREE_HOST_HOME/.gnupg" sh "$SCRIPT_DIR/gnupg-lock-doctor.sh"
+}
+
+# WHEN NO CREDENTIAL IS NEEDED AT ALL. Resolving an explicitly configured bootstrap
+# token costs a `pass` decrypt — MEASURED at ~20s on a contended box. `t3` with no
+# command, and the two flags answered by the binary itself, reach neither a forge nor
+# the DB, so the whole block is skipped for them.
+#
+# Deliberately NOT a table of which commands need credentials: such an allowlist rots
+# the moment a command grows a forge call, and it rots in the SILENT direction — a
+# real command dispatched with no token. Only the cases that run NO command are here.
+needs_gitlab_credential() {
+    [ "$#" -gt 0 ] || return 1
+    case "$1" in
+    --version | --help | -h) return 1 ;;
+    esac
+    return 0
+}
+
+# Everything from here on resolves the credential into a shell variable, and xtrace
+# prints an assignment's value. It is therefore switched OFF for the remainder of the
+# script and never restored, so `bash -x t3` cannot print a secret; only the
+# mount/layout wiring above stays traceable, which is the part worth tracing. Restoring
+# it before the dispatch would put the token straight back into the trace.
+set +x
+
+# The host's OWN pass store is read only through an explicitly named bootstrap entry.
+# The container's entrypoint reads the same explicitly configured bootstrap
+# entry, so both sides resolve one credential from one place. With no explicit entry this
+# path is skipped rather than guessing a legacy default. Value captured, never echoed.
+# BOUNDED, and it reports a WEDGE distinctly from an ABSENCE. The two used to look
+# identical: `2>/dev/null` plus an unconditional `return 0` turned "gpg never answered"
+# into the same empty string as "no such entry", so a locked keybox read as an
+# unconfigured secret. Exit codes here: 0 = answered (value on stdout, possibly empty),
+# 1 = the entry is genuinely absent, 2 = the store is WEDGED. Only the caller, running
+# in the parent shell, may act on 2 — see `refuse_wedged_secret_store`.
+#
+# No pipeline: `pass show … | head -n1` reports HEAD's status, and with `pipefail` an
+# early close raises SIGPIPE on `pass`, so the read's own rc was unreadable either way.
+# The first line is taken with a parameter expansion instead.
+host_gitlab_token_from_pass() {
+    local value rc=0 pass_path="${TEATREE_GITLAB_TOKEN_PASS_PATH:-}"
+    [ -n "$pass_path" ] || return 1
+    command -v pass >/dev/null 2>&1 || return 1
+    value="$(run_with_deadline "$SECRET_READ_DEADLINE_SECONDS" pass show "$pass_path" 2>/dev/null)" || rc=$?
+    if [ "$rc" -eq "$DEADLINE_TIMEOUT_RC" ] || [ "$rc" -gt 1 ]; then
+        return 2
+    fi
+    [ "$rc" -eq 0 ] || return 1
+    printf '%s' "${value%%$'\n'*}"
+    return 0
+}
+
+# SKIPPED ENTIRELY when the invocation runs no command (see `needs_gitlab_credential`),
+# which is what keeps `t3 --version` off a ~20s decrypt it has no use for. The skip is
+# forwarded to the container too: the prologue holds the SAME fallback read, so
+# resolving nothing here would merely move the cost across the boundary.
+if needs_gitlab_credential "$@"; then
+    host_keybox_lock_is_clear
+    if [ -z "${GITLAB_TOKEN:-}" ]; then
+        # `|| refuse_...` runs in the PARENT: an assignment takes the substitution's
+        # exit status, so a wedge (2) refuses here rather than inside a subshell that
+        # cannot stop this script.
+        GITLAB_TOKEN="$(host_gitlab_token_from_pass)" || {
+            [ "$?" -eq 2 ] && refuse_wedged_secret_store "${TEATREE_GITLAB_TOKEN_PASS_PATH:-}"
+            GITLAB_TOKEN=""
+        }
+    fi
+else
+    TEATREE_SKIP_CREDENTIAL_READ=1
+    export TEATREE_SKIP_CREDENTIAL_READ
+fi
+# EXPORTED, not merely assigned: compose interpolates `${GITLAB_TOKEN:-}` in
+# docker-compose.yml from this process's ENVIRONMENT, so the one-off `run --rm`
+# fallback below would otherwise create a token-less container even though the
+# `--env` forward carries it for the exec path.
+export GITLAB_TOKEN
+
+# BARE NAME, never `NAME=value`. docker reads a bare `--env NAME` from THIS process's
+# environment, so the credential crosses the boundary without ever entering an argv —
+# and an argv is world-readable in the host process table for the life of the call, so
+# `NAME=value` handed every local process the operator's GitLab token. `export` is what
+# makes the value readable there: a name merely ASSIGNED above would forward as empty.
+ENV_ARGS=()
+for ENV_NAME in "${FORWARD_ENV_NAMES[@]}"; do
+    if [ -n "${!ENV_NAME:-}" ]; then
+        export "${ENV_NAME?}"
+        ENV_ARGS+=(--env "$ENV_NAME")
+    fi
+done
+# `set -u` treats an empty array's plain expansion as an unbound-variable error on
+# bash 3.2 (the macOS default), so every use below takes the empty-safe form.
+
+# THE TWO VERBS WHOSE DELIVERABLE IS A PAGE IN THE OPERATOR'S BROWSER. Everything else
+# the containerized CLI can finish by itself; these two cannot. The image carries no
+# browser and no $BROWSER, so `webbrowser.open` inside it opens nothing — and the CLI's
+# own `127.0.0.1` is the CONTAINER's, so it can neither reach nor prove the host url it
+# just published. This wrapper is the only layer executing on the host, so it owns the
+# last two steps: prove the url answers, then open it.
+#
+# The url is READ from the file the CLI wrote, never rebuilt here: a second copy of the
+# port in bash is free to disagree with `--port`, which is the same unreachable-url bug
+# in a different place. `teatree.cli.admin.BROWSE_URL_FILE` names the file;
+# tests/test_deploy_admin_browser_handoff.py pins the two spellings together.
+ADMIN_BROWSE_URL_FILE="$TEATREE_HOST_HOME/.local/share/teatree/admin-browse-url"
+# The same handoff shape for `t3 peer`: the CLI resolves each forward from the
+# `peer_instances` registry (which only it can read — the control DB is a named volume) and
+# writes the plan here; opening the forward is a HOST act, because the transport binaries and
+# their credentials are the operator's and the near end must bind the loopback the dashboard's
+# fetch actually means. `teatree.core.host_hop.peer_forward.PLAN_FILE` names the file;
+# tests/test_deploy_peer_forward.py pins the two spellings together.
+PEER_FORWARD_PLAN_FILE="$TEATREE_HOST_HOME/.local/share/teatree/peer-forward-plan"
+PEER_FORWARD_RUNNER="$SCRIPT_DIR/peer-forward.sh"
+# The same handoff, generalised to any overlay tool leaf. The container half stages a
+# runner and its plan here and the wrapper carries them out; unlike the two hops above it
+# is keyed on the command SHAPE rather than a core verb, so an overlay owns its own host
+# half without core knowing the tool exists. `teatree.core.host_hop.host_run` names the directory
+# and both filenames; overlay/tests/test_stack_plan_contract.py pins the spellings together.
+HOST_RUN_DIR="$TEATREE_HOST_HOME/.local/share/teatree/host-run"
+HOST_RUN_PLAN="$HOST_RUN_DIR/plan"
+HOST_RUN_RUNNER="$HOST_RUN_DIR/runner.sh"
+
+wants_host_browser() {
+    case "${1:-}" in
+    admin | dashboard) ;;
+    *) return 1 ;;
+    esac
+    local arg
+    for arg in "$@"; do
+        if [ "$arg" = --no-browser ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+open_host_browser() {
+    local url="$1"
+    if command -v open >/dev/null 2>&1; then
+        open "$url"
+    elif command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$url"
+    else
+        echo "deploy/t3: no browser opener on this host — open $url yourself." >&2
+    fi
+}
+
+# A REFUSAL, not a browser at a dead page. ERR_CONNECTION_REFUSED tells an operator
+# nothing about which of the stack, the forward or the publish failed; this names it.
+refuse_unreachable_admin() {
+    echo "deploy/t3: refusing to open a browser — $1 does not answer from this host." >&2
+    echo "           The admin gunicorn binds the CONTAINER's loopback, so a forward" >&2
+    echo "           container must publish it on the host. Check it is up:" >&2
+    echo "             docker ps --filter name=teatree-admin-forward" >&2
+    echo "           and that the stack's admin is running:" >&2
+    echo "             docker compose "${COMPOSE_ARGS[@]}" ps teatree-admin" >&2
+    exit 1
+}
+
+# Any HTTP answer is a healthy one — a redirect to the login page proves reachability
+# just as well as a 200, and only a connection-level failure is the defect here.
+dispatch_then_open_browser() {
+    local route="$1"
+    shift
+    local rc=0 url=""
+    : >|"$ADMIN_BROWSE_URL_FILE" 2>/dev/null || true
+    if [ -n "$route" ]; then
+        announce_route "$route"
+        docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$route" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@" || rc=$?
+    else
+        docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint sh "$SERVICE" -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@" || rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
+    url="$(cat "$ADMIN_BROWSE_URL_FILE" 2>/dev/null || true)"
+    if [ -z "$url" ]; then
+        echo "deploy/t3: the CLI recorded no browse url — not opening a browser." >&2
+        exit 1
+    fi
+    if command -v curl >/dev/null 2>&1 && ! curl --silent --output /dev/null --max-time 15 "$url"; then
+        refuse_unreachable_admin "$url"
+    fi
+    open_host_browser "$url"
+    exit 0
+}
+
+# The forward verbs take the same host hop, for the same reason and with the same shape: the
+# CLI resolves the plan in the container, the wrapper carries it out here. Whatever the runner
+# reports is this command's own result, so its exit code is the wrapper's.
+#
+# `open` is here rather than with the browser verbs because its FIRST step is a forward — the
+# page it wants does not answer until one is up, so probing the url before opening it, as the
+# browser hop does, would refuse every peer whose forward is merely not open yet.
+wants_host_forward() {
+    [ "${1:-}" = peer ] || return 1
+    case "${2:-}" in
+    up | down | status | open) return 0 ;;
+    esac
+    return 1
+}
+
+dispatch_then_run_forward() {
+    local route="$1"
+    shift
+    local rc=0 url=""
+    : >|"$PEER_FORWARD_PLAN_FILE" 2>/dev/null || true
+    : >|"$ADMIN_BROWSE_URL_FILE" 2>/dev/null || true
+    if [ -n "$route" ]; then
+        announce_route "$route"
+        docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$route" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@" || rc=$?
+    else
+        docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint sh "$SERVICE" -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@" || rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
+    if [ ! -s "$PEER_FORWARD_PLAN_FILE" ]; then
+        echo "deploy/t3: the CLI recorded no forward plan — nothing to open." >&2
+        exit 1
+    fi
+    bash "$PEER_FORWARD_RUNNER" "$PEER_FORWARD_PLAN_FILE" || exit $?
+    url="$(cat "$ADMIN_BROWSE_URL_FILE" 2>/dev/null || true)"
+    [ -n "$url" ] && open_host_browser "$url"
+    exit 0
+}
+
+# An overlay tool leaf is `t3 <overlay> tool <leaf>`, so `tool` is the SECOND word. Core's
+# own top-level `t3 tool` has it FIRST and never matches — it has no host half.
+wants_host_run() {
+    [ "${2:-}" = tool ]
+}
+
+# Whatever the runner reports is this command's own result. An EMPTY plan is not a failure:
+# it is the tool saying it finished inside the container, which most invocations of most
+# tools do — only the leaves that need the operator's own machine stage one.
+#
+# Called INSTEAD of a route's `exec`, never as a gate in FRONT of one, and on EVERY route
+# rather than only the running-stack one. Both halves of that matter, for the same reason:
+# `running_in_container()` is true in the one-off `compose run` exactly as it is in a
+# `compose exec`, so the container half stages its plan either way — and `exec` then
+# replaces the only layer that could carry it out. A hop gated on the stack being up
+# therefore did not fall back to doing the work itself; it exited 0 having staged a plan
+# nobody would ever read, which is worse than the unreachable command it replaced.
+# $1 is the route: a service name to `exec` into, or empty for the one-off container.
+dispatch_then_run_host_plan() {
+    local route="$1"
+    shift
+    local rc=0
+    announce_route "$route"
+    mkdir -p "$HOST_RUN_DIR" 2>/dev/null || true
+    : >|"$HOST_RUN_PLAN" 2>/dev/null || true
+    if [ -n "$route" ]; then
+        docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$route" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@" || rc=$?
+    else
+        docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint sh "$SERVICE" -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@" || rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+        exit "$rc"
+    fi
+    if [ ! -s "$HOST_RUN_PLAN" ]; then
+        exit 0
+    fi
+    T3_HOST_WRAPPER="$SCRIPT_DIR/t3" bash "$HOST_RUN_RUNNER" "$HOST_RUN_DIR"
+    exit $?
+}
+
+RUNNING_SERVICE="$(first_running_service || true)"
+# No exec can change a mount, so a running stack serves the tree it came up with; a one-off `run --rm`
+# takes TEATREE_SOURCE_MOUNT at create time and runs THIS checkout (the drift warn_source_mount_drift reports).
+DISPATCH_MODE=auto
+DISPATCH_ROUTE="$RUNNING_SERVICE"
+if [ -n "${TEATREE_FORCE_ONE_OFF:-}" ]; then
+    DISPATCH_MODE=one-off
+    DISPATCH_ROUTE=""
+fi
+
+# A convergence swaps the routes one at a time, so a moment with NONE of them up is
+# short and self-clearing. Waiting it out is what turns the window from an outage an
+# operator escalates on into a call that simply succeeds; a caller who cannot wait
+# sets TEATREE_UPDATE_WAIT_SECONDS=0 and gets the named refusal immediately.
+if [ "$DISPATCH_MODE" = auto ] && [ -z "$RUNNING_SERVICE" ] && deploy_lock_held; then
+    if [ "$UPDATE_WAIT_SECONDS" -gt 0 ]; then
+        echo "deploy/t3: a teatree update is in progress — waiting up to ${UPDATE_WAIT_SECONDS}s for a control-DB route." >&2
+        UPDATE_WAITED=0
+        while [ "$UPDATE_WAITED" -lt "$UPDATE_WAIT_SECONDS" ]; do
+            sleep 2
+            UPDATE_WAITED=$((UPDATE_WAITED + 2))
+            # RE-PROBE, never the memo: this loop's whole purpose is to notice the
+            # route coming back, and a memoized table would answer "still down" for
+            # the full wait and then report a false timeout.
+            RUNNING_SERVICE_TABLE="$(probe_running_services)"
+            RUNNING_SERVICE="$(first_running_service || true)"
+            [ -z "$RUNNING_SERVICE" ] || break
+        done
+    fi
+    if [ -z "$RUNNING_SERVICE" ]; then
+        echo "deploy/t3: a teatree update is in progress and no control-DB service came back within ${UPDATE_WAIT_SECONDS}s." >&2
+        echo "           This is an UPDATE, not an outage — retry shortly; exit $UPDATE_IN_PROGRESS_EXIT says so to a caller." >&2
+        exit "$UPDATE_IN_PROGRESS_EXIT"
+    fi
+fi
+
+if [ "$DISPATCH_MODE" = auto ]; then
+    DISPATCH_ROUTE="$RUNNING_SERVICE"
+fi
+
+refuse_host_bound_agent_home_on_setup() {
+    [ "${1:-}" = setup ] || return 0
+    [ -n "$DISPATCH_ROUTE" ] || return 0
+    local container mounts type source target
+    container="$(running_service_container "$DISPATCH_ROUTE")"
+    if [ -z "$container" ]; then
+        echo "deploy/t3: refusing setup — cannot verify the running container's agent-home mounts (container disappeared)." >&2
+        echo "           Recreate the stack with $REPO_ROOT/deploy/deploy.sh, then retry." >&2
+        exit 1
+    fi
+    if ! mounts="$(docker inspect --format '{{range .Mounts}}{{printf "%s %s %s\n" .Type .Destination .Source}}{{end}}' "$container" 2>/dev/null)"; then
+        echo "deploy/t3: refusing setup — cannot verify the running container's agent-home mounts." >&2
+        echo "           Recreate the stack with $REPO_ROOT/deploy/deploy.sh, then retry." >&2
+        exit 1
+    fi
+    while read -r type target source; do
+        [ "$type" = bind ] || continue
+        # The session corpus is the one host bind the Claude home carries; setup never writes there.
+        [ "$target" = /home/teatree/.claude/projects ] && continue  # privacy-scan:allow — the box's public, documented deploy home
+        case "$target" in
+        /home/teatree/.claude | /home/teatree/.claude/* | /home/teatree/.codex | /home/teatree/.codex/* | /home/teatree/.agents | /home/teatree/.agents/*)
+            echo "deploy/t3: refusing setup — the running container bind-mounts $source at $target." >&2
+            echo "           Setup would reconcile skills/plugins into the host agent home." >&2
+            echo "           Recreate the stack with $REPO_ROOT/deploy/deploy.sh, then retry." >&2
+            exit 1
+            ;;
+        esac
+    done <<<"$mounts"
+}
+
+refuse_host_bound_agent_home_on_setup "$@"
+
+# Only after setup's mount preflight: a refusal must not edit host rc files.
+if [ "${1:-}" = setup ]; then
+    retire_managed_alias_block
+    # The CLI runs in Docker, so install the macOS-owned pressure feed on the
+    # host only after the unsafe agent-home mount check has passed.
+    if [ "$(uname -s)" = Darwin ]; then
+        if command -v launchctl >/dev/null 2>&1; then
+            "$SCRIPT_DIR/install-host-pressure.zsh"
+        else
+            echo "t3 setup: WARN launchctl unavailable; macOS host pressure feed will go stale without a publisher" >&2
+        fi
+    fi
+fi
+
+# A running service is the cheapest, most consistent runtime — exec into it. `-T`
+# is added when stdin is not a TTY (a script/pipe) so compose does not fail trying
+# to allocate one; an interactive shell keeps the TTY for prompts/pagers.
+if [ -n "$DISPATCH_ROUTE" ]; then
+    announce_route "$DISPATCH_ROUTE"
+    if wants_host_browser "$@"; then
+        dispatch_then_open_browser "$DISPATCH_ROUTE" "$@"
+    fi
+    if wants_host_forward "$@"; then
+        dispatch_then_run_forward "$DISPATCH_ROUTE" "$@"
+    fi
+    if wants_host_run "$@"; then
+        dispatch_then_run_host_plan "$DISPATCH_ROUTE" "$@"
+    fi
+    # `compose` is a shell function, not a binary on PATH — `exec` replaces the
+    # process image via a real command lookup and cannot resolve a function
+    # (`exec: compose: not found`), so the final hop inlines `docker compose`
+    # directly instead of calling through the function.
+    if [ -t 0 ]; then
+        exec docker compose "${COMPOSE_ARGS[@]}" exec ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$DISPATCH_ROUTE" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"
+    fi
+    exec docker compose "${COMPOSE_ARGS[@]}" exec -T ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$DISPATCH_ROUTE" sh -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"
+fi
+
+# Nothing running. Two different worlds reach this line: a merely STOPPED stack,
+# where the one-off below is the intended path and works, and a stack that was
+# never deployed here (or a dead daemon), where the one-off cannot run at all.
+# Only the second needs saying, and docker says it in its own vocabulary —
+# "Cannot connect to the Docker daemon", or a pull attempt against an image that
+# was only ever built locally — which names nothing an operator can act on. The
+# host `t3` is a shim, so this is the whole of what a stopped deployment can
+# report; leaving it as docker's own text is the traceback-shaped failure the
+# shim exists to remove.
+#
+# Preflighted HERE rather than at the top so the cost lands only on the path that
+# can hit it: a running worker already proved both facts by answering `ps`.
+refuse_absent_stack() {
+    echo "deploy/t3: refusing to run — the teatree stack is not available on this host." >&2
+    echo "           $1" >&2
+    echo "           Start it with: $REPO_ROOT/deploy/deploy.sh" >&2
+    exit 1
+}
+
+if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+    refuse_absent_stack "The Docker daemon is not reachable — start Docker first."
+fi
+
+# The image the compose file names for this service, asked of compose rather than
+# assembled here so a renamed or operator-overridden image can never be probed
+# under a stale name. An empty answer means compose could not resolve the service
+# at all, which the one-off is about to report far better than a guess would.
+#
+# The first line is taken by expansion, never `| head`: under `pipefail` the
+# reader closing the pipe early kills the writer with SIGPIPE and the whole
+# assignment fails 141, so a service resolving to more than one image would abort
+# the wrapper instead of dispatching.
+SERVICE_IMAGES="$(compose config --images "$SERVICE" 2>/dev/null || true)"
+SERVICE_IMAGE="${SERVICE_IMAGES%%$'\n'*}"
+if [ -n "$SERVICE_IMAGE" ] && ! docker image inspect "$SERVICE_IMAGE" >/dev/null 2>&1; then
+    refuse_absent_stack "No local image \`$SERVICE_IMAGE\` — this host has never built the stack."
+fi
+
+# Announce the one-off venue before dispatch, on stderr so a `--json` consumer
+# is unaffected; said afterwards it arrives as one more opaque rc=1 (#4076).
+# Forge operations resolve the repository owner's routed credential inside it.
+if [ "$DISPATCH_MODE" = one-off ]; then
+    echo "deploy/t3: one-off dispatch was requested — dispatching in a one-off container." >&2
+else
+    echo "deploy/t3: the teatree worker is not running — dispatching in a one-off container." >&2
+    echo "           It shares the mounts but not the worker process. Start the stack first:" >&2
+    echo "           $REPO_ROOT/deploy/deploy.sh" >&2
+fi
+
+if wants_host_browser "$@"; then
+    dispatch_then_open_browser "" "$@"
+fi
+if wants_host_forward "$@"; then
+    dispatch_then_run_forward "" "$@"
+fi
+if wants_host_run "$@"; then
+    dispatch_then_run_host_plan "" "$@"
+fi
+
+# `--entrypoint sh` bypasses the TEATREE_ROLE dispatcher so we run the CLI directly,
+# not a server — through the same prologue the exec paths use, so this venue repairs
+# its own GPG home and resolves its own GitLab token rather than inheriting neither.
+exec docker compose "${COMPOSE_ARGS[@]}" run --rm --no-deps ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} --entrypoint sh "$SERVICE" -c "$CONTAINER_CREDENTIAL_PROLOGUE" t3-in-container t3 "$@"

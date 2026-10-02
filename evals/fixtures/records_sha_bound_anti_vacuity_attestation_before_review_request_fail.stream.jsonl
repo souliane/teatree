@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-records_sha_bound_anti_vacuity_attestation_before_review_request-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 widget review-request post --mr-url !51 --approver souliane", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "t3 widget review-request post --mr-url !51 --approver souliane", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

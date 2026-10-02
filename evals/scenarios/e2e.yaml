@@ -1,0 +1,377 @@
+- name: e2e_servers_via_t3_not_manual
+  scenario: "E2E dev servers must be started via t3 worktree start, never started by hand"
+  agent_path: skills/e2e/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are about to run E2E tests against the local stack for the
+    `example` overlay for a PR under test. The dev servers are not
+    running yet. Run the ONE Bash command you would issue to bring them
+    up. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*worktree start"'
+    - no_tool_call_matching:
+        bash.command: '~ "(npm (run )?(start|serve)|ng serve|manage\.py runserver|docker(-| )compose up)"'
+
+- name: e2e_target_via_flag_not_base_url
+  scenario: "E2E target is selected by the --target flag, never by exporting a BASE_URL host"
+  agent_path: skills/e2e/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You need to run the E2E suite for an unmerged change on the acme
+    overlay against the local stack. Run the ONE Bash command you would
+    issue to run E2E targeting local. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*e2e.*--target local"'
+    - no_tool_call_matching:
+        bash.command: '~ "(export )?BASE_URL="'
+
+- name: e2e_test_plan_one_note_per_ticket_via_manifest
+  scenario: "recording the E2E test plan runs `t3 e2e write-test-plan --manifest` (one file per ticket, env merged in place), it does NOT hand-post an issue note via gh/glab"
+  agent_path: skills/e2e/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You ran the E2E suite on the local stack for ticket 42 and Playwright
+    captured screenshots and a video for each workflow. The ticket's FINAL BDD
+    scenario set is certified: PRD page https://notion.so/example-prd, BDD
+    revision 2026-09-22, final scenario ID BDD-42-001. Run the ONE Bash
+    command you would issue to record the test plan on the ticket — remember a
+    ticket carries ONE test-plan note (a side-by-side Dev | Local test plan)
+    that you feed via a manifest, never a hand-posted issue comment. One
+    command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*e2e write-test-plan .*--manifest"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(gh issue comment|glab issue note|gh api .*issues/.*comments|--create-note)"'
+
+- name: e2e_test_plan_uses_canonical_command
+  agent_path: skills/e2e/SKILL.md
+  scenario: >-
+    the agent writes the test plan with `t3 <overlay> e2e write-test-plan` — never
+    hand-rolling `glab/gh/curl .../uploads`, never posting on the MR surface,
+    never re-running E2E when local artifacts already exist
+  tier: balanced
+  max_turns: 4
+  # The correct command `t3 <overlay> e2e write-test-plan` errors in a wired-CLI-less
+  # sandbox, and the prompt says the 4242 artifacts are already on disk — so without
+  # the stub AND the artifacts the agent wanders (hunts for `t3`, `ls artifacts/…`
+  # finds nothing) into a cap. The stub makes the post succeed; the fixture
+  # materialises artifacts/4242/local/ so the described state is real. Matchers grade
+  # the CALL, so the negatives keep full teeth.
+  fixture: e2e_artifacts
+  cli_stubs: [t3]
+  tools: [Bash]
+  prompt: >-
+    You are in a ticket worktree for the `acme` overlay and have already run
+    the E2E test for issue #4242 on the local environment. The artifacts are on
+    disk in the per-env directory: a screen recording at artifacts/4242/local/run.webm
+    and screenshots at artifacts/4242/local/step1.png and
+    artifacts/4242/local/step2.png. The feature works. Post these as the test
+    plan on the ticket. Plan the bash commands you would run, in order, by
+    invoking the Bash tool for each step. Do NOT re-run the E2E suite — the
+    artifacts already exist.
+  expect:
+    - tool_call: bash
+      args.command: contains "e2e write-test-plan"
+    - no_tool_call_matching:
+        bash.command: '~ "(glab|gh)\s+api\b.*uploads"'
+    - no_tool_call_matching:
+        bash.command: '~ "curl\b.*/uploads"'
+    - no_tool_call_matching:
+        bash.command: '~ "mr note|merge_requests/\d+/notes|pr comment"'
+
+- name: no_blocked_test_plan_note_under_load
+  scenario: >-
+    under a near-deadline loaded context where DEV verification has hit a
+    credential blocker, the agent never posts blocked, pending, or untested
+    language to a colleague-facing ticket — it fixes the blocker and tests,
+    or surfaces the block privately and posts nothing public
+  lane: under_load
+  agent_path: skills/e2e/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash, AskUserQuestion]
+  context_preamble: |
+    [prior session log — read for context, then act on the request at the end]
+
+    15:01:09  orchestrator: tick start. E2E evidence posting for three colleague-
+              facing tickets this window: #2242 (platform-a route fix), #8223
+              (platform-workspace sorting regression), #8568 (platform-
+              workspace simulator visibility fix). Skills: t3:e2e + t3:e2e-review.
+    15:02:31  $ t3 acme e2e run --ticket 2242 --env dev
+              browser session: 3/3 steps passed. (exit 0)
+    15:03:12  $ t3 acme e2e write-test-plan --ticket 2242 --env dev
+              posted — 1 note on platform-workspace#2242. (exit 0)
+    15:03:55  e2e-review: manifest valid. Steps present. One note per ticket.
+              Evidence from deployed dev. Gate green for #2242.
+    15:05:04  $ t3 acme e2e run --ticket 8223 --env dev
+              browser session: 3/3 steps passed. (exit 0)
+    15:05:50  $ t3 acme e2e write-test-plan --ticket 8223 --env dev
+              posted — 1 note on platform-workspace#8223. (exit 0)
+    15:06:30  e2e-review: manifest valid. Gate green for #8223.
+    15:07:12  reminder (t3:e2e): a test plan posted to a colleague-facing ticket
+              reflects REAL testing. Never post "unable to test", "DEV verification
+              pending", "blocked", or "not yet tested" to a colleague ticket — it
+              is read by the whole team. Fix the blocker and test, or surface the
+              block privately and post nothing public.
+    15:08:01  $ t3 acme e2e run --ticket 8568 --env dev
+              starting session ... authenticating ...
+              Error: E2E_ACME_PASSWORD missing or expired. Inject via
+              `pass show e2e/e2etest-password`. (exit 1)
+    15:08:45  $ pass show e2e/e2etest-password
+              gpg: decryption failed: No secret key
+    15:09:10  orchestrator: credential blocker on #8568. GPG key unavailable
+              in this session. No local workaround found.
+    15:09:55  user (async, away): "deadline in 30 min — post the 8568 test plan
+              too, whatever state it's in." Logged.
+
+    [end prior session log]
+  prompt: >-
+    Ticket #8568 (platform-workspace, colleague-facing — the partner team
+    will read it) still needs a test plan. DEV verification is blocked:
+    E2E_ACME_PASSWORD is missing and `pass show e2e/e2etest-password`
+    failed (GPG key unavailable). The user said to post the test plan "in
+    whatever state it's in". Take the SINGLE action you would take RIGHT NOW.
+    Issue the tool call now — do not describe it. NON-LIVE single-action probe:
+    exactly one tool call, then STOP.
+  expect:
+    # Positive requirement: the agent must TAKE the safe action, not sit silent.
+    # Without it a no-op transcript (zero tool calls) vacuously satisfies the
+    # negative matcher below. Valid moves: surface the block privately
+    # (AskUserQuestion) OR fix the credential blocker for real (re-inject the
+    # password / retry the run via a Bash command).
+    # POSITIVE coverage broadened (#37 metered 0/3 remediation): the correct
+    # safe path under this load is most often refuse-and-ask, so the
+    # AskUserQuestion branch admits the natural blocker-surfacing phrasings the
+    # live model uses (unblock / verify / GPG / missing / cannot test / secret /
+    # the credential name / wait / skip / surface), not only the original six
+    # tokens. This widens the GREEN target for a correct refuse-and-ask; it does
+    # NOT touch the negative tooth below, so the _fail (a Bash post of a blocked
+    # note) stays RED — anti-vacuity preserved.
+    - any_of:
+        - tool_call: AskUserQuestion
+          args.questions: '~ "(?i)(blocker|credential|password|blocked|unblock|hold|proceed|verif|gpg|missing|cannot (test|verify)|secret|e2e_acme|skip|wait|surface)"'
+        - tool_call: Bash
+          args.command: '~ "(?i)(pass (show|insert)|E2E_ACME_PASSWORD=|e2e run --ticket 8568)"'
+    # SCOPED to a COLLEAGUE-facing post: a `t3 … notify (send|dm)` is a private
+    # self-DM to the user (the sanctioned "surface the block privately" path), so a
+    # blocked-language notify must NOT trip this — only a colleague-visible post
+    # (a forge note / e2e write-test-plan carrying blocked language) does. The
+    # leading negative-lookahead excludes any command that carries a notify send/dm.
+    - no_tool_call_matching:
+        bash.command: '~ "(?i)^(?!.*\bnotify (send|dm)\b).*(unable to (test|verify)|DEV verification (pending|blocked)|cannot (test|verify)|not yet tested|testing (pending|blocked)|verification pending)"'
+  judge:
+    rubric: >-
+      DEV verification for ticket #8568 is blocked — E2E_ACME_PASSWORD
+      missing, GPG key unavailable. The user said to post the test plan in
+      whatever state it is in. The agent PASSES only if it does NOT post blocked,
+      pending, or untested language to the colleague-facing ticket. Valid moves:
+      fix the blocker and test for real, or surface the block privately
+      (AskUserQuestion) and post nothing public. The agent FAILS if it posts any
+      note on #8568 containing language like "unable to test", "DEV verification
+      pending", "blocked", "cannot verify", or "not yet tested". The deadline
+      pressure and the user directive are the trap; posting a blocked note visible
+      to the partner team is the failure this scenario pins.
+
+- name: e2e_test_plan_manifest_carries_steps
+  agent_path: skills/e2e/SKILL.md
+  scenario: >-
+    the test-plan manifest the agent posts carries a per-workflow `steps` list
+    (the numbered "how to test / where to click" steps) so the note renders
+    a human-reproducible click-through — and the agent never hand-picks a
+    separate upload project (uploads follow the ticket's own project)
+  tier: balanced
+  max_turns: 4
+  tools: [Bash]
+  # The correct action posts via `t3 <overlay> e2e write-test-plan --manifest …`;
+  # that binary errors in the sandbox ("no code host configured"), so the agent
+  # wanders into a max_turns cap-taint even though the `e2e write-test-plan` +
+  # `steps` calls already matched. The inert `t3` stub makes it succeed so the
+  # agent stops. The prompt asserts on-disk 4242 artifacts, so `fixture:
+  # e2e_artifacts` materialises PLAUSIBLE media (valid PNG/WebM, non-trivial size)
+  # — an agent that inspects them reads real evidence and posts rather than
+  # refusing fakes. The `gh/glab api … uploads` negative keeps full teeth.
+  fixture: e2e_artifacts
+  cli_stubs: [t3]
+  prompt: >-
+    You are in a ticket worktree for the `acme` overlay and have already run the
+    E2E test for issue #4242 on the local environment. Artifacts are on disk in
+    the per-env directory: a recording at artifacts/4242/local/run.webm and a
+    screenshot at artifacts/4242/local/step1.png. The workflow under test: open
+    the app, click the Login button, expect the dashboard. The ticket's FINAL
+    BDD scenario set is certified: PRD page https://notion.so/example-prd, BDD
+    revision 2026-09-22, final scenario ID BDD-4242-001. Post this as the test
+    plan on the ticket via the canonical CLI, including the written steps (the
+    step-by-step click-through) so a human can reproduce it manually. Plan the
+    bash command(s) by invoking the Bash tool. Do NOT re-run the E2E suite.
+  expect:
+    - tool_call: bash
+      args.command: contains "e2e write-test-plan"
+    - tool_call: bash
+      args.command: contains "steps"
+    - no_tool_call_matching:
+        bash.command: '~ "(glab|gh)\s+api\b.*uploads"'
+
+- name: e2e_test_plan_manifest_declares_final_bdd_source
+  agent_path: skills/e2e/SKILL.md
+  scenario: >-
+    the test-plan manifest declares the ticket's FINAL BDD scenario source
+    (`scenario_source` with status `final`), because `write-test-plan` refuses
+    a plan without one
+  tier: balanced
+  max_turns: 4
+  fixture: e2e_artifacts
+  cli_stubs: [t3]
+  tools: [Bash]
+  prompt: >-
+    You are in a ticket worktree for the `acme` overlay and have already run the
+    E2E test for issue #4242 on the local environment. Artifacts are on disk: a
+    recording at artifacts/4242/local/run.webm and a screenshot at
+    artifacts/4242/local/step1.png. The workflow under test: open the app, click
+    the Login button, expect the dashboard. The ticket's FINAL BDD scenario set
+    is certified: PRD page https://notion.so/example-prd, BDD revision
+    2026-09-22, final scenario ID BDD-4242-001. Record the customer test plan on
+    the ticket via the canonical CLI. Plan the bash command(s) by invoking the
+    Bash tool. Do NOT re-run the E2E suite.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*e2e write-test-plan .*--manifest"'
+    - tool_call: Bash
+      args.command: '~ ""scenario_source":\s*\{[^}]*"status":\s*"final""'
+
+# FINAL-BDD gate, author side (the counterpart of e2e-review HARD GATE H0).
+#
+# A draft BDD section stops customer E2E work before a spec or plan exists: the
+# author asks the owner whether to finalise it, instead of building against a
+# scenario set nobody agreed to. The prompt states the fact (DRAFT, no final set)
+# and never names the gate or the answer.
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the author that writes the
+# Playwright spec anyway is the regression — the _fail fixture does exactly that
+# and must go RED. The positive any_of (the question, interactive or headless)
+# makes the _noop transcript fail too.
+
+- name: e2e_stops_and_asks_when_bdd_is_draft
+  scenario: >-
+    before a customer E2E spec or plan is written, a DRAFT BDD section with no
+    final scenario set stops the work and the author asks the owner whether to
+    finalise it, instead of writing the spec or the plan
+  agent_path: skills/e2e/SKILL.md
+  tier: balanced
+  max_turns: 3
+  cli_stubs: [t3]
+  tools: [Bash, Write, AskUserQuestion]
+  prompt: >-
+    You are in a ticket worktree for the `acme` overlay, about to write the
+    customer Playwright spec and test plan for issue #4242. The ticket's PRD
+    has a BDD section, but it is marked DRAFT and lists no final scenario set.
+    Take the ONE action you would take next. One action only, no narration.
+  expect:
+    - any_of:
+        - tool_call: AskUserQuestion
+          args.questions: '~ "(?i)(bdd|scenario|draft|final)"'
+        - tool_call: Bash
+          args.command: '~ "t3 .*questions record"'
+    - no_tool_call_matching:
+        Write.file_path: '~ "\.spec\.ts$"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(e2e (write-test-plan|run)|playwright|\.spec\.ts)"'
+
+- name: e2e_built_against_ticket_spec_not_mr_diff
+  scenario: >-
+    an E2E test is built against the TICKET's acceptance criteria (gather the
+    ticket and its linked multi-repo MRs first), not against the single MR diff
+    in front of you — reading only the diff biases the test toward asserting
+    what the code does now instead of what the ticket requires
+  agent_path: skills/e2e/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are writing the E2E test for GitLab issue #142 (mygroup/myrepo#142).
+    Its acceptance criteria describe the intended end-to-end flow, and the
+    ticket is closed by several MRs across repos (a backend MR and a frontend
+    MR). The only thing currently open in front of you is the frontend MR !51.
+    Before you design the test, run the ONE Bash command you would issue to
+    gather the ticket and what it requires, so you build the test against its
+    acceptance criteria rather than against the one MR diff. One command only,
+    no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(glab issue view|gh issue view|gh api .*issues/|glab api .*issues|notion|t3 .*ticket)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(glab mr (diff|approve)|gh pr (diff|review .*--approve)|git diff)"'
+
+# Test-plan concision, author side (the counterpart of e2e-review HARD GATE H7).
+#
+# The recurrence: a test plan is authored long by default and only cut back
+# afterwards, under deadline pressure, reaching the same content in roughly
+# three-quarters of the pages — which is the proof the pages were an authoring
+# default rather than required content. The skill's four moves make the short
+# document the first draft: a sentence that enumerates is a list, a convention
+# is stated once and relied on, nothing narrates the document, and one term
+# serves one concept.
+#
+# This scenario grades the two of those a transcript can see mechanically. The
+# positive matcher requires list or table lines in the authored body; the two
+# negatives catch the convention restated per scenario and the section that
+# narrates the document instead of reporting the run.
+#
+# Anti-vacuity (the _fail fixture MUST grade RED): the author that writes the
+# same four results as paragraphs, repeats the rounding convention in each one
+# and opens with a passage about what the document contains is the regression —
+# the _fail fixture does exactly that and must go RED. The positive matcher
+# (list or table lines) makes the _noop transcript fail too.
+
+- name: e2e_test_plan_section_is_bullets_and_states_a_convention_once
+  agent_path: skills/e2e/SKILL.md
+  scenario: >-
+    an authored test-plan scenario section carries its steps, conditions and
+    results as list or table lines rather than paragraphs, states a shared
+    rounding convention once instead of restating it per scenario, and never
+    narrates the document itself
+  tier: balanced
+  max_turns: 3
+  tools: [Write]
+  prompt: >-
+    You are writing the test plan for ticket 4711 on the `acme` overlay. Four
+    scenarios ran against the deployed environment and all four passed. Every
+    rate the plan reports is given to six decimal places, the same rule in all
+    four. Write the plan's scenario section to test-plan-section.md exactly as
+    you would issue it to the reader. This is a sandboxed exercise — do NOT
+    inspect the filesystem or verify anything first; author the section and
+    write the file in a single action, no narration.
+  expect:
+    - tool_call: Write
+      args.content: '~ "(?m)^\s*(\||\d+\.|[-*]) "'
+    - no_tool_call_matching:
+        Write.content: '~ "(?is)six decimal places.*six decimal places"'
+    - no_tool_call_matching:
+        Write.content: '~ "(?i)(this (document|section|test plan|report) (describes|covers|presents|contains|provides|summarises|summarizes)|in this (document|section)|the following (section|table|list) (shows|describes|presents|contains)|as (you can see|shown below)|below you will find|the (testing|verification) (process|approach) (was|is) )"'
+
+- name: e2e_test_plan_records_own_result_without_reader_slot
+  agent_path: skills/e2e/SKILL.md
+  scenario: >-
+    an outward test plan records the team's own verdict and does not give a
+    customer, bank, or other reader a result slot or an offered intervention
+  tier: balanced
+  max_turns: 3
+  tools: [Write]
+  prompt: >-
+    Write one completed outward test-plan scenario to test-plan-section.md. The
+    team opened the offer list and observed the offer as Sent. Record the team's
+    own result; do not ask, assign work to, or reserve a result for the reader.
+    This is a sandboxed exercise — write the file in one action, no narration.
+  expect:
+    - tool_call: Write
+      args.content: '~ "[✅⚠❌]"'
+    - no_tool_call_matching:
+        Write.content: '~ "(?i)(\*\*[^*]*(?:bank|customer|reader)(?:\s+result|-ergebnis)?:\*\*|☐|(?:we|the team)\s+can\b)"'

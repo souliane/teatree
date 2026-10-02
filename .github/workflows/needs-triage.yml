@@ -1,0 +1,25 @@
+# TRIGGER: issue opened — auto-apply the `needs-triage` label to any issue a
+# non-owner files, gating the factory's issue-implementer claim path.
+name: Issues · Auto-label needs-triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    if: github.event.issue.user.login != github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ["needs-triage"],
+            });

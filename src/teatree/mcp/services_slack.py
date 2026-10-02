@@ -1,0 +1,165 @@
+"""Slack MCP tool group — reads + one gated reaction write (#3076).
+
+Registered only when a registered overlay declares ``Service.SLACK``. The
+messaging client is resolved through
+:func:`teatree.core.backend_factory.configured_messaging_from_overlay` (a core
+seam that returns ``None`` for a noop-messaging declarer so the resolver reaches
+the credentialed overlay — #3299), never a direct ``teatree.backends.slack``
+import, so the transport-boundary fitness test holds. The reads stay read-only; the one write (``slack_react``) routes
+through :class:`~teatree.core.on_behalf_egress.OnBehalfSlackEgress` — the single
+colleague-surface Slack egress owner — so the #117 send-proxy, the on-behalf
+approval gate, and the after-post notify receipt all fire (a self-DM reaction is
+ungated by design; a colleague-surface reaction with no recorded approval is
+refused). All other posting stays on the gated ``t3`` / review surfaces.
+"""
+
+from typing import Any
+
+from asgiref.sync import sync_to_async
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
+
+from teatree.backends.types import Service
+from teatree.core.backend_factory import configured_messaging_from_overlay
+from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.mcp.service_resolver import resolve_declaring_overlay_client
+from teatree.types import ChannelReadRefusedError
+
+_READ_ONLY = ToolAnnotations(read_only_hint=True)
+_WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=False)
+
+INSTRUCTIONS = (
+    "- slack_mentions(since): queued @-mentions. Errors (never returns an empty list) when "
+    "this process holds no Socket-Mode queue — the receiver writes mentions to a JSONL the "
+    "loop's scanner drains, so `[]` here would mean 'I cannot see mentions', not 'none'.\n"
+    "- slack_channel_history(channel, limit): recent messages in a channel. Errors "
+    "(never returns an empty list) when the bot cannot read the channel — a bot token "
+    "reads only channels it was invited to, so `[]` always means genuinely empty.\n"
+    "- slack_thread_replies(channel, thread_ts): replies under one thread. Errors with Slack's "
+    "error code (never returns an empty list) when the read is refused; a thread in a channel "
+    "the bot is not in is read through the user token, so `[]` always means genuinely empty.\n"
+    "- slack_permalink(channel, ts): the permalink for one message.\n"
+    "- slack_react(channel, ts, emoji): add a reaction. A self-DM reaction is "
+    "ungated; a colleague/channel reaction goes through the on-behalf gate and "
+    "returns ok=false + a `blocked` remediation when no approval is recorded."
+)
+
+
+def _client() -> MessagingBackend:
+    # ``configured_messaging_from_overlay`` (not ``messaging_from_overlay``) so a
+    # noop-messaging overlay that declares ``Service.SLACK`` without credentials
+    # is skipped and the resolver reaches the overlay that has them (#3299).
+    return resolve_declaring_overlay_client(
+        Service.SLACK, configured_messaging_from_overlay, description="Slack messaging backend"
+    )
+
+
+class MentionQueueUnreadableError(ToolError):
+    """``slack_mentions`` found no queue to read — never "the user was not mentioned".
+
+    A ``ToolError`` because only that class keeps its text on the way out of
+    ``call_tool``; any other exception reaches the agent as a reasonless
+    ``UnexpectedToolError``, which is the silent-empty this refusal replaced.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Cannot read mentions: this process holds no Socket-Mode mention queue. The receiver "
+            "(`t3 slack listen`) writes inbound mentions to slack-events.jsonl, which the loop's "
+            "SlackMentionsScanner drains in its own process — an MCP server started separately "
+            "sees an empty in-memory queue whether or not the user was mentioned. Read the "
+            "action_needed statusline zone, or the drained mention signals, instead."
+        )
+
+
+async def _slack_mentions(*, since: str = "") -> list[dict[str, Any]]:
+    """Queued Socket-Mode mentions — refuses loudly rather than returning a misleading ``[]``.
+
+    An agent asking "was I pinged?" cannot act on a bare empty list: "nobody
+    mentioned you" and "this process cannot see mentions at all" are opposite
+    facts, and only the second is ever true here — the queue is filled in the
+    receiver's process, not the MCP server's. Same hardening as the sibling
+    ``slack_channel_history``, whose silent-empty form reported the first while
+    meaning the second.
+    """
+    mentions = await sync_to_async(lambda: _client().fetch_mentions(since=since), thread_sensitive=True)()
+    if not mentions:
+        raise MentionQueueUnreadableError
+    return mentions
+
+
+async def _slack_channel_history(channel: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Recent messages in *channel* — refuses loudly rather than returning a misleading ``[]``.
+
+    An agent asking about ONE channel cannot act on a bare empty list: "the channel
+    is quiet" and "the bot was never invited, so it sees nothing" are opposite facts
+    demanding opposite responses, and the silent-empty form reported the first while
+    meaning the second. A bot token reads only channels the bot is a MEMBER of, so
+    that refusal is the common case, not an edge case. The backend raises
+    :class:`~teatree.types.ChannelReadRefusedError`, which lives in the dependency-free
+    :mod:`teatree.types` and so cannot itself be a ``ToolError``; it is re-raised as one
+    here — the same boundary conversion ``services_forge`` does for the send-proxy
+    refusals — because only a ``ToolError``'s text survives ``call_tool``.
+    """
+    try:
+        return await sync_to_async(
+            lambda: _client().fetch_channel_history_or_refuse(channel=channel, limit=limit), thread_sensitive=True
+        )()
+    except ChannelReadRefusedError as refused:
+        raise ToolError(str(refused)) from refused
+
+
+async def _slack_thread_replies(channel: str, thread_ts: str) -> list[dict[str, Any]]:
+    """Every message in one thread — raises with Slack's error code rather than returning a misleading ``[]``.
+
+    "Nobody replied" and "this token may not read that channel" are opposite facts; the
+    backend retries a bot ``not_in_channel`` through the user token and raises what is left.
+    """
+    if not channel or not thread_ts:
+        msg = "slack_thread_replies needs a non-empty channel and thread_ts; Slack was not asked."
+        raise ToolError(msg)
+    return await sync_to_async(
+        lambda: _client().fetch_thread_replies(channel=channel, thread_ts=thread_ts), thread_sensitive=True
+    )()
+
+
+async def _slack_permalink(channel: str, ts: str) -> str:
+    return await sync_to_async(lambda: _client().get_permalink(channel=channel, ts=ts), thread_sensitive=True)()
+
+
+async def _slack_react(channel: str, ts: str, emoji: str) -> dict[str, Any]:
+    """Add an emoji reaction, gated on a colleague surface, ungated for a self-DM.
+
+    Routes through :class:`OnBehalfSlackEgress` so a colleague/channel reaction
+    runs the #117 send-proxy + the on-behalf approval gate + the after-post
+    notify receipt; a self-DM (the user's own DM) is ungated. A blocked
+    colleague reaction returns ``ok=false`` and a ``blocked`` remediation string
+    instead of crashing the tool call.
+    """
+
+    def _react() -> dict[str, Any]:
+        name = emoji.strip().strip(":")
+        try:
+            response = OnBehalfSlackEgress(_client()).react(
+                channel=channel,
+                ts=ts,
+                emoji=name,
+                target=channel,
+                action="mcp_slack_react",
+                destination=channel,
+            )
+        except OnBehalfPostBlockedError as blocked:
+            return {"ok": False, "blocked": str(blocked)}
+        return {"ok": bool(response.get("ok")), "channel": channel, "ts": ts, "response": response}
+
+    return await sync_to_async(_react, thread_sensitive=True)()
+
+
+def register(server: MCPServer) -> None:
+    server.add_tool(_slack_mentions, name="slack_mentions", annotations=_READ_ONLY)
+    server.add_tool(_slack_channel_history, name="slack_channel_history", annotations=_READ_ONLY)
+    server.add_tool(_slack_thread_replies, name="slack_thread_replies", annotations=_READ_ONLY)
+    server.add_tool(_slack_permalink, name="slack_permalink", annotations=_READ_ONLY)
+    server.add_tool(_slack_react, name="slack_react", annotations=_WRITE)

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-colleague-mr-no-e2e-pass-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Reviewing the colleague MR statically."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 review run https://gitlab.com/acme/product/-/merge_requests/4120", "description": "static review-shape audit"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

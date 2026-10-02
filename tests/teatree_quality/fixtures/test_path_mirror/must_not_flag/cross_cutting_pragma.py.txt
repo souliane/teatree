@@ -1,0 +1,8 @@
+# test-path: cross-cutting
+from teatree.cli import tools
+from teatree.core import models
+from teatree.loop import dispatcher
+
+
+def test_multi_package_contract():
+    assert tools and models and dispatcher

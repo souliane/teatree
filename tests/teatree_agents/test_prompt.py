@@ -1,0 +1,981 @@
+"""Tests for teatree.agents.prompt — agent prompt building."""
+
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+from django.test import TestCase
+
+from teatree.agents.context_budget import MAX_APPEND_BYTES
+from teatree.agents.prompt import (
+    _MAX_TICKET_CONTEXT_BYTES,
+    _parent_result_summary,
+    build_system_context,
+    build_task_prompt,
+)
+from teatree.core.models import LandscapeArtifact, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.reviewer_identity import assigned_reviewer_identity
+from teatree.core.models.task_handoff import RESUME_CONTINUATION_CLAUSE, schedule_resume
+
+# --- build_task_prompt ---
+
+
+class TestBuildTaskPrompt(TestCase):
+    def test_basic(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/42")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        prompt = build_task_prompt(task)
+        assert "42" in prompt
+        assert "https://example.com/issues/42" in prompt
+
+    def test_threaded_stage_skills_not_reresolved(self) -> None:
+        # #3206: build_task_prompt reuses the dispatch-resolved stage skills.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        with patch("teatree.agents.skill_bundle.active_overlay_stage_skills") as resolver:
+            build_task_prompt(task, skills=["code"], stage_skills=[])
+        resolver.assert_not_called()
+
+    def test_includes_title_and_labels(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/issues/1",
+            extra={"issue_title": "Fix the bug", "labels": ["bug", "urgent"]},
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        prompt = build_task_prompt(task)
+        assert "Fix the bug" in prompt
+        assert "bug, urgent" in prompt
+
+    def test_includes_phase_and_reason(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_reason="Auto-scheduled review",
+        )
+
+        prompt = build_task_prompt(task)
+        assert "reviewing" in prompt
+        assert "Auto-scheduled review" in prompt
+
+    def test_includes_pr_context(self) -> None:
+        ticket = Ticket.objects.create(
+            extra={
+                "prs": {
+                    "backend": {
+                        "url": "https://gitlab.com/mr/1",
+                        "title": "Backend changes",
+                        "draft": True,
+                        "pipeline_status": "success",
+                    },
+                },
+            },
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        prompt = build_task_prompt(task)
+        assert "https://gitlab.com/mr/1" in prompt
+        assert "(draft)" in prompt
+        assert "pipeline: success" in prompt
+        assert "Backend changes" in prompt
+
+    def test_skips_non_dict_pr_items(self) -> None:
+        ticket = Ticket.objects.create(
+            extra={"prs": {"bad": "not-a-dict", "good": {"url": "https://x.com/mr/2"}}},
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        prompt = build_task_prompt(task)
+        assert "https://x.com/mr/2" in prompt
+
+    def test_handles_non_dict_extra(self) -> None:
+        ticket = Ticket.objects.create(extra="not-a-dict")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        prompt = build_task_prompt(task)
+        assert "Work on ticket" in prompt
+
+    def test_pr_without_title_or_pipeline(self) -> None:
+        ticket = Ticket.objects.create(
+            extra={"prs": {"repo": {"url": "https://x.com/mr/3", "draft": False}}},
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        prompt = build_task_prompt(task)
+        assert "https://x.com/mr/3" in prompt
+        assert "(draft)" not in prompt
+        assert "pipeline:" not in prompt
+
+    def test_non_dict_prs_ignored(self) -> None:
+        ticket = Ticket.objects.create(extra={"prs": "not-a-dict"})
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        prompt = build_task_prompt(task)
+        assert "pull requests" not in prompt.lower()
+
+
+_GAP_A = "a" * 64
+_GAP_B = "b" * 64
+_DELIVERY_LINE = "    ticket.merge_extra(set_keys={'dream_gap_claimed_delivered': [<gap_key>, ...]})"
+
+
+def _batch_context(gap_lines: list[str]) -> str:
+    return "\n".join(
+        [
+            "Dream promotion batch (#4776) — fix each gap below independently.",
+            "Umbrella ledger: https://github.com/owner/repo/issues/1",
+            "",
+            "Gaps in this batch:",
+            *gap_lines,
+            "",
+            _DELIVERY_LINE,
+        ]
+    )
+
+
+def _encoded_size(lines: list[str]) -> int:
+    return sum(len(line.encode()) + 1 for line in lines)
+
+
+class TestTicketContextInTaskPrompt(TestCase):
+    """A dream batch's gap manifest lives only in ``Ticket.context``, so the work prompt must carry it."""
+
+    def _prompt_for(self, ticket: Ticket) -> str:
+        return build_task_prompt(Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket)))
+
+    def _context_body(self, prompt: str) -> list[str]:
+        lines = prompt.splitlines()
+        heading = next(i for i, line in enumerate(lines) if line.startswith("Ticket context"))
+        return lines[heading + 1 : lines.index("Instructions:") - 1]
+
+    def test_dream_batch_manifest_reaches_the_prompt(self) -> None:
+        ticket = Ticket.objects.create(
+            context=_batch_context([f"- [{_GAP_A}] First gap", f"- [{_GAP_B}] Second gap"]),
+        )
+
+        prompt = self._prompt_for(ticket)
+
+        assert f"- [{_GAP_A}] First gap" in prompt
+        assert f"- [{_GAP_B}] Second gap" in prompt
+        assert _DELIVERY_LINE in prompt
+        assert prompt.index(_GAP_A) < prompt.index("Instructions:")
+
+    def test_blank_context_renders_no_section(self) -> None:
+        prompt = self._prompt_for(Ticket.objects.create(context="  \n\n  "))
+
+        assert "Ticket context" not in prompt
+
+    def test_appended_context_has_no_leading_blank_line(self) -> None:
+        ticket = Ticket.objects.create()
+        ticket.append_context("note")
+
+        body = self._context_body(self._prompt_for(ticket))
+
+        assert body[0].endswith("] note")
+
+    def test_oversized_context_keeps_head_and_tail_and_names_the_elision(self) -> None:
+        gaps = [f"- [{index:064x}] 📓 Gap number {index}" for index in range(2000)]
+        ticket = Ticket.objects.create(context=_batch_context(gaps))
+        source = ticket.context.strip().splitlines()
+
+        prompt = self._prompt_for(ticket)
+        body = self._context_body(prompt)
+        markers = [i for i, line in enumerate(body) if line.startswith("[…truncated")]
+        kept = [line for line in body if not line.startswith("[…truncated")]
+
+        assert gaps[0] in prompt
+        assert gaps[1000] not in prompt
+        assert _DELIVERY_LINE in prompt
+        assert len(markers) == 1
+        head = markers[0]
+        assert kept == source[:head] + source[len(source) - (len(kept) - head) :]
+        assert _encoded_size(kept) <= _MAX_TICKET_CONTEXT_BYTES
+        marker = body[head]
+        assert f"{len(source) - len(kept)} line(s)" in marker
+        assert f"{_encoded_size(source) - _encoded_size(kept)} bytes" in marker
+        assert f"ticket context show {ticket.pk}" in marker
+
+    def test_context_within_budget_passes_through_intact(self) -> None:
+        lines = [f"{index:05d}" + "x" * 94 for index in range(_MAX_TICKET_CONTEXT_BYTES // 100)]
+        ticket = Ticket.objects.create(context="\n".join(lines))
+
+        body = self._context_body(self._prompt_for(ticket))
+
+        assert body == lines
+
+    def test_single_oversized_line_still_names_the_pointer(self) -> None:
+        ticket = Ticket.objects.create(context="y" * 30_000)
+
+        body = self._context_body(self._prompt_for(ticket))
+
+        assert len(body) == 1
+        assert body[0].startswith("[…truncated 1 line(s), 30001 bytes")
+        assert f"ticket context show {ticket.pk}" in body[0]
+
+    def test_pointer_names_the_resolvable_pk(self) -> None:
+        ticket = Ticket.objects.create(
+            issue_url="https://github.com/owner/repo/issues/2663#dream-batch=6299b5d89b466064",
+            context="note",
+        )
+        assert ticket.ticket_number != str(ticket.pk)
+
+        prompt = self._prompt_for(ticket)
+
+        assert f"`t3 <overlay> ticket context show {ticket.pk}`" in prompt
+        assert Ticket.objects.resolve(str(ticket.pk)) == ticket
+
+
+# --- build_system_context ---
+
+
+class TestBuildSystemContext(TestCase):
+    def test_basic(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/10")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        ctx = build_system_context(task, skills=[])
+        assert "TeaTree headless agent" in ctx
+        assert "10" in ctx
+        assert "/t3:next" in ctx
+
+    def test_with_skills(self) -> None:
+        tmp_dir = Path(tempfile.mkdtemp())
+        skill_dir = tmp_dir / "test-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# Test Skill Content", encoding="utf-8")
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        ctx = build_system_context(task, skills=["test-skill"])
+        # skill content is read from default skills_dir, not tmp_dir — so skill will not be found.
+        # The test verifies the code path is exercised (lines 78-81).
+        assert "TeaTree headless agent" in ctx
+
+    def test_threaded_stage_skills_not_reresolved(self) -> None:
+        # #3206: the dispatch resolves the overlay stage skills once and threads
+        # them in; build_system_context must reuse that list, not re-resolve.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        with patch("teatree.agents.skill_bundle.active_overlay_stage_skills") as resolver:
+            build_system_context(task, skills=["code"], lifecycle_skill="code", stage_skills=[])
+        resolver.assert_not_called()
+
+    def test_reviewing_phase(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        ctx = build_system_context(task, skills=[])
+        assert "PHASE: reviewing" in ctx
+        assert "code review" in ctx
+
+    def test_reviewing_brief_carries_verification_rigor_block(self) -> None:
+        # PR-12: a verification brief must demand the dimensions-checked verdict
+        # and a proof-of-concept read first, so review never rubber-stamps.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        ctx = build_system_context(task, skills=[])
+        assert "VERIFICATION RIGOR" in ctx
+        assert "reproduce" in ctx
+        assert "robustness" in ctx
+
+    def test_reviewing_brief_instructs_returning_the_verdict_envelope(self) -> None:
+        # corr-11: the reviewing phase has no shell, so the brief must tell the
+        # reviewer to RETURN a `review_verdict` and NOT run `t3 <overlay> review record`.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        ctx = build_system_context(task, skills=[])
+        assert "review_verdict" in ctx
+        assert "do NOT try `t3 <overlay> review record`" in ctx
+
+    def test_answering_phase(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+
+        ctx = build_system_context(task, skills=[])
+        assert "PHASE: answering" in ctx
+
+    def test_answering_brief_instructs_returning_the_answer_envelope(self) -> None:
+        # The answering phase has no shell (agents/answerer.md tools = Read/Grep/Glob),
+        # so the brief MUST tell the answerer to RETURN an `answer` envelope rather than
+        # try to post itself — otherwise the phase evidence gate refuses the run for
+        # "missing required evidence for phase 'answering'".
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+
+        ctx = build_system_context(task, skills=[])
+        assert '"answer"' in ctx
+        assert "thread_ref" in ctx
+        assert "do NOT try to post" in ctx
+
+    def test_answering_brief_surfaces_slack_thread_context(self) -> None:
+        # When the reactive slack-answer cycle stamps the inbound thread onto
+        # ticket.extra["slack_answer"], the brief surfaces the ts (as thread_ref)
+        # and the user's message so the agent can fill the envelope.
+        ticket = Ticket.objects.create(
+            extra={"slack_answer": {"channel": "C1", "slack_ts": "1700000000.0001", "question": "is it ready?"}}
+        )
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+
+        ctx = build_system_context(task, skills=[])
+        assert "1700000000.0001" in ctx
+        assert "is it ready?" in ctx
+
+    def test_coding_brief_carries_heartbeat_dm_block(self) -> None:
+        # PR-12: a long-running maker brief auto-injects the heartbeat-DM cue.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        ctx = build_system_context(task, skills=["code"], lifecycle_skill="code")
+        assert "HEARTBEAT" in ctx
+
+    def test_planning_phase_injects_persisted_intake_survey(self) -> None:
+        # #2541: the planner CONSUMES the survey the intake FSM step persisted —
+        # it appears in the planning context, so the planner does not re-derive it.
+        from teatree.core.models import LandscapeArtifact  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        survey = {"open_prs": [{"url": "https://forge/pr/77"}], "worktrees": [], "recommendations": [], "warnings": []}
+        LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
+
+        ctx = build_system_context(task, skills=[])
+        assert "INTAKE LANDSCAPE SURVEY" in ctx
+        assert "https://forge/pr/77" in ctx
+
+    def test_planning_phase_omits_survey_block_when_none_persisted(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+
+        ctx = build_system_context(task, skills=[])
+        assert "INTAKE LANDSCAPE SURVEY" not in ctx
+
+    def test_planning_brief_instructs_returning_the_plan_text_envelope(self) -> None:
+        # #3584: PHASE_REQUIRED_EVIDENCE["planning"] refuses a run whose envelope
+        # omits `plan_text`, so the brief MUST tell the planner to carry the full
+        # plan under that key — otherwise the plan is produced but the attempt is
+        # refused for "missing required evidence for phase 'planning'" and re-run.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+
+        ctx = build_system_context(task, skills=[])
+        assert "plan_text" in ctx
+        assert "the phase evidence gate refuses a run with no `plan_text`" in ctx
+
+    def test_scanning_news_brief_instructs_returning_the_article_suggestions_envelope(self) -> None:
+        # #3584: PHASE_REQUIRED_EVIDENCE["scanning_news"] refuses a run whose envelope
+        # omits `article_suggestions`, so the shell-denied scanner's brief MUST tell it
+        # to RETURN the candidates rather than try to enqueue them itself.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="scanning_news")
+
+        ctx = build_system_context(task, skills=[])
+        assert "PHASE: scanning_news" in ctx
+        assert "article_suggestions" in ctx
+        assert "rationale" in ctx
+
+    def test_shipping_phase_embeds_reviewer_dispatch_skill_block(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="shipping")
+
+        with patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=["code-review"]):
+            ctx = build_system_context(task, skills=[])
+        assert "PHASE: shipping" in ctx
+        assert "call the Skill tool for EACH of these skills" in ctx
+        assert "/t3:review" in ctx
+        assert "/code-review" in ctx
+
+    def test_skills_with_content(self) -> None:
+        """Ensure skill content is included when skills resolve to files."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        skill_file = tmp_dir / "my-skill" / "SKILL.md"
+        skill_file.parent.mkdir()
+        skill_file.write_text("# Loaded Skill", encoding="utf-8")
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(task, skills=["my-skill"])
+        assert "# Loaded Skills" in ctx
+        assert "# Loaded Skill" in ctx
+
+    def test_with_lifecycle_skill_scopes_loading(self) -> None:
+        """When lifecycle_skill is set, only that skill + rules get full content."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name in ("rules", "test", "ac-django"):
+            d = tmp_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(f"# {name} instructions", encoding="utf-8")
+
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="testing")
+
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(
+                task,
+                skills=["ac-django", "rules", "test"],
+                lifecycle_skill="test",
+            )
+
+        assert "# test instructions" in ctx
+        assert "# rules instructions" in ctx
+        assert "# ac-django instructions" not in ctx
+        assert "COMPANION SKILLS" in ctx
+
+    def test_empty_skill_content(self) -> None:
+        """When skills list is non-empty but no SKILL.md found, skip the section."""
+        with patch("teatree.agents.prompt._read_skill_contents", return_value=""):
+            ticket = Ticket.objects.create()
+            session = Session.objects.create(ticket=ticket)
+            task = Task.objects.create(ticket=ticket, session=session)
+
+            ctx = build_system_context(task, skills=["nonexistent"])
+            assert "# Loaded Skills" not in ctx
+
+    def test_includes_parent_result(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        parent = Task.objects.create(ticket=ticket, session=session)
+        TaskAttempt.objects.create(
+            task=parent,
+            result={"summary": "Prior work done"},
+        )
+        child = Task.objects.create(ticket=ticket, session=session, parent_task=parent)
+
+        ctx = build_system_context(child, skills=[])
+
+        assert "Prior Task Result" in ctx
+        assert "Prior work done" in ctx
+
+    def test_includes_context_budget(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        ctx = build_system_context(task, skills=[])
+
+        assert "Context Budget" in ctx
+        assert "Truncate file reads" in ctx
+
+
+class TestSystemContextByteBudget(TestCase):
+    """The assembled append never exceeds the argv-element byte budget (E2BIG guard).
+
+    The claude-agent-sdk passes the whole system context as ONE
+    ``--append-system-prompt`` argv element; Linux caps a single element at 128
+    KiB, so an oversized survey/skills/parent block makes the spawn die with
+    ``OSError: [Errno 7] Argument list too long``. The builder must bound the
+    append under :data:`MAX_APPEND_BYTES`, truncating largest-first with a marker.
+    """
+
+    def test_oversized_survey_is_truncated_under_budget(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="planning")
+        # A survey whose JSON alone dwarfs the budget — the live P0 shape.
+        survey = {"blob": "x" * (MAX_APPEND_BYTES * 2), "warnings": [], "recommendations": []}
+        LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
+
+        ctx = build_system_context(task, skills=[])
+
+        assert len(ctx.encode()) <= MAX_APPEND_BYTES
+        assert "…truncated" in ctx
+        assert "landscape survey" in ctx
+
+    def test_oversized_skills_are_truncated_under_budget(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        with patch("teatree.agents.prompt._read_skill_contents", return_value="S" * (MAX_APPEND_BYTES * 2)):
+            ctx = build_system_context(task, skills=["huge-skill"])
+
+        assert len(ctx.encode()) <= MAX_APPEND_BYTES
+        assert "…truncated" in ctx
+        # The marker points at the body on disk. It must NOT tell the agent to
+        # load the skill on demand: this lane denies the Skill tool, so that
+        # names a recovery the dispatch structurally cannot perform.
+        assert "skills/<skill>/SKILL.md" in ctx
+        assert "load it on demand via the Skill tool" not in ctx
+
+    def test_normal_context_passes_through_byte_identical(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/11")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+
+        ctx = build_system_context(task, skills=[])
+
+        # A normal-sized context is never rewritten — no truncation marker, and
+        # well under the budget so nothing was elided.
+        assert len(ctx.encode()) < MAX_APPEND_BYTES
+        assert "…truncated" not in ctx
+
+
+class TestNonPlanningPhaseWithPersistedSurvey(TestCase):
+    """A persisted survey must not spend the budget on a phase that never embeds it.
+
+    Only the ``planning`` block embeds the intake landscape survey, so on every
+    other phase the survey string is not a substring of the assembled context.
+    Crediting its bytes against the overage anyway drove ``overage`` to 0 before
+    the pass reached the skill bundle — the one block that is really over budget
+    — and shipped a 141-144 KB ``--append-system-prompt`` that the kernel refuses
+    (``MAX_ARG_STRLEN`` = 131,072), killing every coding/testing/reviewing
+    dispatch at spawn with ``[Errno 7] Argument list too long`` (#4386).
+    """
+
+    #: Sized so the survey alone exceeds the overage, which is the live shape:
+    #: the phantom absorbs the whole overage in one step and the pass exits
+    #: having reclaimed nothing at all.
+    _SURVEY_BLOB_BYTES = 60_000
+    _SKILL_BUNDLE_BYTES = MAX_APPEND_BYTES + 30_000
+    _AFFECTED_PHASES = ("coding", "testing", "reviewing")
+
+    def _context_with_survey(self, phase: str) -> str:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase=phase)
+        survey = {"blob": "x" * self._SURVEY_BLOB_BYTES, "warnings": [], "recommendations": []}
+        LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
+
+        with patch("teatree.agents.prompt._read_skill_contents", return_value="S" * self._SKILL_BUNDLE_BYTES):
+            return build_system_context(task, skills=["huge-skill"])
+
+    def test_append_stays_within_the_argv_element_budget(self) -> None:
+        for phase in self._AFFECTED_PHASES:
+            with self.subTest(phase=phase):
+                assert len(self._context_with_survey(phase).encode()) <= MAX_APPEND_BYTES
+
+    def test_the_real_skill_bundle_is_what_absorbs_the_overage(self) -> None:
+        for phase in self._AFFECTED_PHASES:
+            with self.subTest(phase=phase):
+                ctx = self._context_with_survey(phase)
+                # The skills pointer is the marker the truncation left behind; the
+                # survey pointer must be absent because nothing of it was in the text.
+                assert "skills/<skill>/SKILL.md" in ctx
+                assert "workspace landscape" not in ctx
+
+    def test_planning_still_truncates_its_own_embedded_survey(self) -> None:
+        # The companion change must stay behaviour-preserving for the one phase
+        # that really does embed the survey.
+        ctx = self._context_with_survey("planning")
+
+        assert len(ctx.encode()) <= MAX_APPEND_BYTES
+        assert "workspace landscape" in ctx
+
+
+# --- _parent_result_summary ---
+
+
+class TestParentResultSummary(TestCase):
+    @classmethod
+    def setUpTestData(cls) -> None:
+        cls.ticket = Ticket.objects.create()
+        cls.session = Session.objects.create(ticket=cls.ticket)
+
+    def test_includes_prior_result(self) -> None:
+        parent = Task.objects.create(ticket=self.ticket, session=self.session)
+        TaskAttempt.objects.create(
+            task=parent,
+            result={
+                "summary": "Implemented feature X",
+                "files_modified": ["src/a.py", "src/b.py"],
+                "next_steps": ["Run tests", "Deploy"],
+            },
+        )
+        child = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parent)
+
+        summary = _parent_result_summary(child)
+
+        assert "Implemented feature X" in summary
+        assert "src/a.py" in summary
+        assert "Run tests" in summary
+
+    def test_empty_without_parent(self) -> None:
+        task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+        assert _parent_result_summary(task) == ""
+
+    def test_empty_without_attempts(self) -> None:
+        parent = Task.objects.create(ticket=self.ticket, session=self.session)
+        child = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parent)
+
+        assert _parent_result_summary(child) == ""
+
+    def test_handles_non_dict_result(self) -> None:
+        parent = Task.objects.create(ticket=self.ticket, session=self.session)
+        TaskAttempt.objects.create(task=parent, result="not-a-dict")
+        child = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parent)
+
+        assert _parent_result_summary(child) == ""
+
+
+# --- coding-phase builder dispatch contract (symmetric to reviewer prompt) ---
+
+
+class TestCodingPhaseDispatchContract(TestCase):
+    """Coding-phase builder prompt carries the dispatch-contract directive.
+
+    The forced-load + behavior-preservation + no-AI-signature clauses are
+    symmetric to ``build_reviewer_dispatch_prompt``.
+
+    Pins the dispatch-contract symmetry: the reviewer path force-loads its
+    skills, but the builder path historically only said "run tests before
+    declaring done" — so the enumerate-and-preserve discipline never reached
+    a dispatched builder. These assertions keep the contract from silently
+    regressing.
+    """
+
+    def _coding_task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+    def test_task_prompt_has_forced_load_directive(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "/t3:architecture-design" in prompt
+        assert "/t3:code" in prompt
+        assert "REQUIRED: before writing code" in prompt
+
+    def test_task_prompt_has_behavior_preservation_clause(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "BEHAVIOR PRESERVATION" in prompt
+        assert "enumerate every behavior" in prompt
+        assert "NEVER invert a must-block test to must-not-block" in prompt
+        assert "weakening a" in prompt
+        assert "privacy gate is a BLOCKER" in prompt
+
+    def test_task_prompt_has_no_ai_signature_clause(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "NO AI SIGNATURE" in prompt
+        assert "Co-Authored-By" in prompt
+        assert "Generated with Claude Code" in prompt
+
+    def test_task_prompt_has_open_questions_clause(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "OPEN QUESTIONS & ASSUMPTIONS" in prompt
+        assert "Open questions & assumptions" in prompt
+        assert "commit message" in prompt
+        assert "PR description" in prompt
+
+    def test_task_prompt_verify_step_replaces_bare_run_tests(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        # Step 5 now points at the CI-parity verify command, not the vague
+        # "Run tests before declaring done".
+        assert "t3 tool verify-gates" in prompt
+        assert "Run tests before declaring done" not in prompt
+
+    def test_non_coding_task_prompt_has_no_coding_directive(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        prompt = build_task_prompt(task)
+        assert "BEHAVIOR PRESERVATION" not in prompt
+        assert "REQUIRED: before writing code" not in prompt
+
+    def test_coding_prompt_has_no_head_state_block_without_a_worktree(self) -> None:
+        # Byte-identical to pre-PR-12 when the ticket has no materialised branch.
+        prompt = build_task_prompt(self._coding_task())
+        assert "DISPATCH PREFLIGHT" not in prompt
+
+
+class TestCodingPhaseHeadStateInjection(TestCase):
+    """PR-12: a maker brief carries the worktree HEAD state so it builds on it."""
+
+    def _coding_task_with_commit(self, tmp: Path) -> Task:
+        from teatree.core.models import Worktree  # noqa: PLC0415
+        from tests._git_repo import make_git_repo, run_git  # noqa: PLC0415
+
+        make_git_repo(tmp, default_branch="feat-x")
+        (tmp / "f.txt").write_text("x\n")
+        run_git(tmp, "add", "f.txt")
+        run_git(tmp, "commit", "-q", "-m", "feat: prior partial work")
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(ticket=ticket, repo_path=str(tmp), branch="feat-x", extra={"worktree_path": str(tmp)})
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+    def test_task_prompt_injects_head_state_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_task_prompt(self._coding_task_with_commit(Path(tmp)))
+        assert "DISPATCH PREFLIGHT" in prompt
+        assert "feat: prior partial work" in prompt
+
+    def test_system_context_injects_head_state_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = build_system_context(
+                self._coding_task_with_commit(Path(tmp)),
+                skills=["code", "rules"],
+                lifecycle_skill="code",
+            )
+        assert "DISPATCH PREFLIGHT" in ctx
+        assert "feat: prior partial work" in ctx
+
+    def test_system_context_coding_phase_embeds_directive(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        ctx = build_system_context(task, skills=["code", "rules"], lifecycle_skill="code")
+        assert "PHASE: coding" in ctx
+        assert "/t3:architecture-design" in ctx
+        assert "BEHAVIOR PRESERVATION" in ctx
+        assert "NO AI SIGNATURE" in ctx
+        assert "t3 tool verify-gates" in ctx
+
+    def test_system_context_coding_phase_embeds_architecture_design_in_full(self) -> None:
+        """architecture-design is a primary (full-embed) skill on the coding phase."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name in ("rules", "code", "architecture-design"):
+            d = tmp_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(f"# {name} SENTINEL BODY", encoding="utf-8")
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(
+                task,
+                skills=["code", "rules", "architecture-design"],
+                lifecycle_skill="code",
+            )
+        # Full body, not the demoted "not embedded" companion line.
+        assert "# architecture-design SENTINEL BODY" in ctx
+        assert "- architecture-design: not embedded" not in ctx
+
+
+# --- #1368: explicit stack + overlay skill-load block on code-touching dispatch ---
+
+
+class TestCodingPhaseStackSkillLoadInjection(TestCase):
+    """A code-touching dispatch prompt force-loads the stack + overlay skills.
+
+    #1368: a dispatched builder relies on auto-detect for ``/ac-django`` /
+    ``/ac-python`` and the active overlay skill, which mis-fires when the
+    worktree shape doesn't trip the detector (dispatched in /tmp, renamed
+    SKILL.md, no parent-skill inheritance). The resolved bundle already carries
+    them, so both builder prompts must inject them as an explicit "load BEFORE
+    code" block — never rely on auto-detect.
+    """
+
+    def _coding_task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+    def test_task_prompt_django_stack_load_block(self) -> None:
+        # The bundle reaching the builder is already requires-resolved, so a
+        # Django repo carries both ac-django and ac-python (#1368).
+        prompt = build_task_prompt(
+            self._coding_task(),
+            skills=["t3:demo-overlay", "ac-django", "ac-python", "code", "rules"],
+        )
+        assert "/ac-django" in prompt
+        assert "/ac-python" in prompt
+        assert "/t3:demo-overlay" in prompt
+        assert "do NOT rely on auto-detect" in prompt
+
+    def test_system_context_django_stack_load_block(self) -> None:
+        ctx = build_system_context(
+            self._coding_task(),
+            skills=["t3:demo-overlay", "ac-django", "ac-python", "code", "rules"],
+            lifecycle_skill="code",
+        )
+        assert "/ac-django" in ctx
+        assert "/ac-python" in ctx
+        assert "/t3:demo-overlay" in ctx
+
+    def test_stack_block_does_not_relist_directive_forced_skills(self) -> None:
+        prompt = build_task_prompt(self._coding_task(), skills=["ac-django", "code", "rules", "architecture-design"])
+        stack_block = prompt.split("stack/overlay skills:")[1]
+        # code / architecture-design / rules are force-loaded by the directive's
+        # own lines, never re-listed in the stack block.
+        assert "/code" not in stack_block
+        assert "/architecture-design" not in stack_block
+        assert "/rules" not in stack_block
+
+    def test_unresolved_stack_emits_conservative_default(self) -> None:
+        prompt = build_task_prompt(self._coding_task(), skills=["code", "rules"])
+        assert "could not be auto-resolved" in prompt
+        assert "/ac-django for a Django repo" in prompt
+        assert "do NOT skip this" in prompt
+
+    def test_no_skills_passed_still_emits_conservative_default(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "could not be auto-resolved" in prompt
+
+    def test_stack_block_dedupes_bare_and_path_forms(self) -> None:
+        prompt = build_task_prompt(
+            self._coding_task(),
+            skills=["ac-python", "some/path/ac-python/SKILL.md", "code", "rules"],
+        )
+        stack_block = prompt.split("stack/overlay skills:")[1]
+        assert stack_block.count("/ac-python") == 1
+
+    def test_non_coding_task_has_no_stack_load_block(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        prompt = build_task_prompt(task, skills=["ac-django", "t3:demo-overlay"])
+        assert "stack/overlay skills" not in prompt
+        assert "could not be auto-resolved" not in prompt
+
+    def test_summary_does_not_contradict_directive(self) -> None:
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name in ("rules", "code", "architecture-design", "ac-django", "t3:demo-overlay"):
+            d = tmp_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(f"# {name} BODY", encoding="utf-8")
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(
+                self._coding_task(),
+                skills=["ac-django", "t3:demo-overlay", "code", "rules", "architecture-design"],
+                lifecycle_skill="code",
+            )
+        # The force-loaded stack/overlay skills are NOT demoted to the ignorable
+        # summary that would undercut the directive's "REQUIRED load" block.
+        assert "- ac-django: not embedded" not in ctx
+        assert "- t3:demo-overlay: not embedded" not in ctx
+        assert "/ac-django" in ctx
+
+
+class TestCacheablePrefixStability(TestCase):
+    """The stable framing leads the append; per-task content trails it.
+
+    Prompt caching on the agent lane is CLI-internal and exposes no
+    ``cache_control`` surface, so prefix STABILITY is the only lever teatree has
+    over the hit rate (``_runner_options._build_options``). Task ID / Ticket /
+    the prior-task result diverge on every dispatch, so leading with them
+    invalidates the cached prefix at line 2 and re-processes the whole ~96 KB
+    skill block uncached. The eval lane already leads with the stable framing
+    (BLUEPRINT.md § "SKILL_BUNDLE_FRAMING"); this pins the same for dispatch.
+    """
+
+    def _task(self, *, issue: str, phase: str, parent_summary: str = "") -> Task:
+        ticket = Ticket.objects.create(issue_url=issue)
+        session = Session.objects.create(ticket=ticket)
+        parent = None
+        if parent_summary:
+            parent = Task.objects.create(ticket=ticket, session=session, phase=phase)
+            TaskAttempt.objects.create(task=parent, result={"summary": parent_summary})
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, parent_task=parent)
+
+    @staticmethod
+    def _shared_prefix_len(first: str, second: str) -> int:
+        for index, (a, b) in enumerate(zip(first, second, strict=False)):
+            if a != b:
+                return index
+        return min(len(first), len(second))
+
+    def _skill_dir(self, body: str) -> Path:
+        tmp_dir = Path(tempfile.mkdtemp())
+        skill = tmp_dir / "code"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(body, encoding="utf-8")
+        return tmp_dir
+
+    def test_two_tasks_in_one_phase_share_a_prefix_past_the_skill_block(self) -> None:
+        body = "# code\n\n" + "\n".join(f"## Rule {i}\nbody {i}" for i in range(200))
+        skills_dir = self._skill_dir(body)
+        first = self._task(issue="https://example.com/issues/101", phase="coding")
+        second = self._task(
+            issue="https://example.com/issues/202", phase="coding", parent_summary="prior work on the other ticket"
+        )
+
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", skills_dir):
+            ctx_first = build_system_context(first, skills=["code"], lifecycle_skill="code", stage_skills=[])
+            ctx_second = build_system_context(second, skills=["code"], lifecycle_skill="code", stage_skills=[])
+
+        assert ctx_first != ctx_second, "the fixture must produce genuinely different contexts"
+        assert self._shared_prefix_len(ctx_first, ctx_second) >= len(body)
+
+    def test_task_identity_trails_the_stable_framing(self) -> None:
+        skills_dir = self._skill_dir("# code\n\n## Only\nbody")
+        task = self._task(issue="https://example.com/issues/303", phase="coding")
+
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", skills_dir):
+            ctx = build_system_context(task, skills=["code"], lifecycle_skill="code", stage_skills=[])
+
+        assert ctx.index("# Loaded Skills") < ctx.index(f"Task ID: {task.pk}")
+        assert ctx.index("# Context Budget") < ctx.index(f"Task ID: {task.pk}")
+
+
+class TestTheResumeInstructionReachesTheAgentOnlyWhenItIsTrue(TestCase):
+    """The prompt is where the clause lands, so it is where the FRESH override has to bite.
+
+    ``dispatch_reason`` is applied at both dispatch surfaces; this pins the headless one, which
+    renders ``execution_reason`` straight into the work prompt.
+    """
+
+    def _resume(self, continuation: str) -> Task:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/1")
+        session = Session.objects.create(ticket=ticket)
+        parked = Task.objects.create(ticket=ticket, session=session)
+        resume = schedule_resume(parked, answer="postgres-1")
+        Task.objects.filter(pk=resume.pk).update(session_continuation=continuation)
+        resume.refresh_from_db()
+        return resume
+
+    def test_a_resumed_dispatch_is_told_to_continue(self) -> None:
+        prompt = build_task_prompt(self._resume(Task.SessionContinuation.PARENT))
+
+        assert RESUME_CONTINUATION_CLAUSE in prompt
+        assert "postgres-1" in prompt
+
+    def test_a_fresh_dispatch_is_told_the_answer_and_nothing_about_continuing(self) -> None:
+        prompt = build_task_prompt(self._resume(Task.SessionContinuation.FRESH))
+
+        assert RESUME_CONTINUATION_CLAUSE not in prompt
+        assert "postgres-1" in prompt
+
+
+class TestReviewingSystemContextCarriesTheAssignedIdentity(TestCase):
+    """#2663: the envelope EXAMPLE is what a model copies, so it carries the literal too."""
+
+    _PR_ID = 4658
+
+    def _system_context(self, *, issue_url: str) -> str:
+        ticket = Ticket.objects.create(issue_url=issue_url, role=Ticket.Role.REVIEWER, state=Ticket.State.WORK_STARTED)
+        session = Session.objects.create(ticket=ticket, agent_id="reviewing")
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        return build_system_context(task, skills=[])
+
+    def test_the_minimal_example_names_the_assigned_identity(self) -> None:
+        context = self._system_context(issue_url=f"https://github.com/souliane/teatree/pull/{self._PR_ID}")
+        assert assigned_reviewer_identity(self._PR_ID) in context
+
+    def test_a_review_answerable_for_no_pr_still_renders(self) -> None:
+        context = self._system_context(issue_url="https://github.com/souliane/teatree/issues/2663")
+        assert "reviewer_identity" in context

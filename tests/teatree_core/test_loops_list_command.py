@@ -1,0 +1,374 @@
+"""``manage.py loops_list`` — list DB-configured autonomous loops (#1796).
+
+Integration-first: drives the real ``loops_list`` command via ``call_command``
+against the seeded :class:`Loop` table, asserting the rendered text columns
+(interval + daily cadence) and the ``--json`` shape. Read-only — never mutates.
+"""
+
+import datetime as dt
+import io
+import json
+from unittest.mock import patch
+
+import django.test
+import pytest
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.utils import timezone
+
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
+
+#: Patched where it is DEFINED — the command reaches it through a deferred import.
+_STARVED_SEAM = "teatree.loops.chain_membership.starved_loop_names"
+
+
+def _prompt(name: str = "demo-prompt") -> Prompt:
+    """A reusable :class:`Prompt` FK target for loops under test (#2513)."""
+    prompt, _ = Prompt.objects.get_or_create(name=name, defaults={"body": "do x"})
+    return prompt
+
+
+def _loop_names(payload: str) -> set[str]:
+    return {entry["name"] for entry in json.loads(payload)["loops"]}
+
+
+def _run(*args: str) -> str:
+    # The emit() seam sends JSON to stdout and the human view to stderr; exactly
+    # one channel is populated per invocation, so their concatenation is the output.
+    out = io.StringIO()
+    err = io.StringIO()
+    call_command("loops_list", *args, stdout=out, stderr=err)
+    return out.getvalue() + err.getvalue()
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListText(django.test.TestCase):
+    def test_lists_seeded_interval_loop_with_cadence(self) -> None:
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("ship"))
+        assert "every 300s" in line
+
+    def test_lists_seeded_daily_loop_shows_schedule(self) -> None:
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("news"))
+        assert "daily 08:00" in line
+
+    def test_disabled_loop_marked_disabled(self) -> None:
+        Loop.objects.create(name="demo-off", delay_seconds=60, prompt=_prompt(), enabled=False)
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-off"))
+        assert "disabled" in line
+
+    def test_never_run_interval_loop_renders_due(self) -> None:
+        Loop.objects.create(name="demo-new", delay_seconds=60, prompt=_prompt())
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-new"))
+        assert "last —" in line
+        assert "next due" in line
+
+    def test_colleague_facing_loop_is_marked(self) -> None:
+        Loop.objects.create(name="demo-cf", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-cf"))
+        assert "colleague-facing" in line
+
+    def test_an_internal_loop_is_not_marked(self) -> None:
+        Loop.objects.create(name="demo-internal", delay_seconds=60, prompt=_prompt(), colleague_facing=False)
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-internal"))
+        assert "colleague-facing" not in line
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListTags(django.test.TestCase):
+    """The code-declared reach/determinism tags render, and filter, from the registry."""
+
+    def test_renders_the_declared_tags_of_a_colleague_reaching_ai_loop(self) -> None:
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("review"))
+        assert "[ingress egress colleague ai]" in line
+
+    def test_renders_deterministic_for_a_local_only_loop(self) -> None:
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("db_backup"))
+        assert "[deterministic]" in line
+
+    def test_a_row_with_no_registered_loop_renders_no_tags(self) -> None:
+        Loop.objects.create(name="demo-unregistered", delay_seconds=60, prompt=_prompt())
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-unregistered"))
+        assert "[" not in line
+
+    def test_tag_filter_keeps_only_matching_loops(self) -> None:
+        names = _loop_names(_run("--json", "--tag", "ai"))
+        assert "review" in names
+        assert "db_backup" not in names
+
+    def test_tag_filters_compose_as_and(self) -> None:
+        names = _loop_names(_run("--json", "--tag", "ai", "--tag", "colleague"))
+        assert "review" in names
+        assert "tickets" not in names
+
+    def test_egress_filter_catches_every_colleague_loop(self) -> None:
+        colleague = _loop_names(_run("--json", "--tag", "colleague"))
+        egress = _loop_names(_run("--json", "--tag", "egress"))
+        assert colleague
+        assert colleague <= egress
+
+    def test_unknown_tag_is_rejected_naming_the_valid_choices(self) -> None:
+        with pytest.raises(CommandError, match="unknown tag\\(s\\) bogus"):
+            _run("--tag", "bogus")
+
+    def test_unknown_tag_error_names_every_valid_choice(self) -> None:
+        with pytest.raises(CommandError, match="ingress\\|egress\\|colleague\\|deterministic\\|ai"):
+            _run("--tag", "bogus")
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListDescription(django.test.TestCase):
+    def test_renders_description_on_its_own_line(self) -> None:
+        Loop.objects.create(
+            name="demo-desc",
+            delay_seconds=60,
+            prompt=_prompt(),
+            description="Does the thing every minute.",
+        )
+        lines = _run().splitlines()
+        status = next(ln for ln in lines if ln.strip().startswith("demo-desc"))
+        # The status columns stay on their own line (no description bleed-in)…
+        assert "Does the thing every minute." not in status
+        # …and the description renders on the indented continuation line below it.
+        desc_line = lines[lines.index(status) + 1]
+        assert desc_line.strip() == "Does the thing every minute."
+
+    def test_blank_description_emits_no_continuation_line(self) -> None:
+        Loop.objects.create(name="demo-nodesc", delay_seconds=60, prompt=_prompt(), description="")
+        lines = _run().splitlines()
+        status = next(ln for ln in lines if ln.strip().startswith("demo-nodesc"))
+        following = lines[lines.index(status) + 1 :]
+        # The next non-empty line is another loop's status row, not a blank
+        # description continuation line.
+        assert not following or following[0].strip()
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListJson(django.test.TestCase):
+    def test_json_carries_description(self) -> None:
+        Loop.objects.create(
+            name="demo-json-desc", delay_seconds=60, prompt=_prompt(), description="A useful one-liner."
+        )
+        payload = json.loads(_run("--json"))
+        demo = next(e for e in payload["loops"] if e["name"] == "demo-json-desc")
+        assert demo["description"] == "A useful one-liner."
+
+    def test_json_interval_loop_shape(self) -> None:
+        Loop.objects.create(
+            name="demo-json", delay_seconds=120, prompt=_prompt(), last_run_at=timezone.now() - dt.timedelta(seconds=30)
+        )
+        payload = json.loads(_run("--json"))
+        demo = next(e for e in payload["loops"] if e["name"] == "demo-json")
+        # ``enabled`` is the MANUAL override slot, empty until a human sets one.
+        assert demo["enabled"] is None
+        assert demo["delay_seconds"] == 120
+        assert demo["daily_at"] == ""
+        assert demo["last_run_at"] != ""
+        assert demo["due"] is False
+
+    def test_json_daily_loop_carries_schedule(self) -> None:
+        payload = json.loads(_run("--json"))
+        news = next(e for e in payload["loops"] if e["name"] == "news")
+        assert news["daily_at"] == "08:00"
+        assert news["cadence"] == "daily 08:00"
+
+    def test_json_carries_colleague_facing(self) -> None:
+        Loop.objects.create(name="demo-json-cf", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
+        payload = json.loads(_run("--json"))
+        demo = next(e for e in payload["loops"] if e["name"] == "demo-json-cf")
+        assert demo["colleague_facing"] is True
+
+    def test_json_carries_the_declared_reach_and_determinism(self) -> None:
+        payload = json.loads(_run("--json"))
+        review = next(e for e in payload["loops"] if e["name"] == "review")
+        assert review["reach"] == ["ingress", "egress", "colleague"]
+        assert review["determinism"] == "ai"
+        assert review["tags"] == ["ingress", "egress", "colleague", "ai"]
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListReflectsPauseHold(django.test.TestCase):
+    """#3117 bonus: a ``LoopState`` pause/disable hold is visible in the state column.
+
+    ``t3 loop pause`` holds a loop via ``LoopState`` WITHOUT flipping
+    ``Loop.enabled``, so the row alone still read ``enabled`` — a pause was
+    invisible in ``t3 loops list``. The state column now folds in the hold so a
+    pause is confirmable at a glance.
+    """
+
+    def test_paused_loop_renders_paused_not_enabled(self) -> None:
+        Loop.objects.create(name="demo-held", delay_seconds=60, prompt=_prompt(), enabled=True)
+        LoopState.objects.pause("demo-held")
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-held"))
+        assert "paused" in line
+        assert "enabled" not in line
+        assert "next —" in line
+
+    def test_state_disabled_hold_renders_disabled(self) -> None:
+        Loop.objects.create(name="demo-killed", delay_seconds=60, prompt=_prompt(), enabled=True)
+        LoopState.objects.disable("demo-killed")
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-killed"))
+        assert "disabled" in line
+
+    def test_json_carries_effective_status(self) -> None:
+        Loop.objects.create(name="demo-held-json", delay_seconds=60, prompt=_prompt(), enabled=True)
+        LoopState.objects.pause("demo-held-json")
+        demo = next(e for e in json.loads(_run("--json"))["loops"] if e["name"] == "demo-held-json")
+        assert demo["status"] == "paused"
+        # ``enabled`` keeps its row-flag meaning for backward compatibility.
+        assert demo["enabled"] is True
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestLoopsListDecidingLayerColumn(django.test.TestCase):
+    """A verdict says WHICH layer decided it.
+
+    A masked loop reads ``masked (…)`` instead of silently vanishing, and a manual
+    override is never invisible (A7).
+    """
+
+    def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
+        Mode.objects.create(name=preset_name, entries=entries)
+        ModeOverride.objects.set_override(preset_name, reason="test override")
+
+    def test_masked_off_loop_is_annotated(self) -> None:
+        Loop.objects.create(name="demo-mask", delay_seconds=60, prompt=_prompt())
+        self._activate("maintenance", {"demo-mask": False})
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-mask"))
+        assert "masked" in line
+
+    def test_a_manual_override_is_annotated_with_its_reason(self) -> None:
+        Loop.objects.create(name="demo-forced", delay_seconds=60, prompt=_prompt())
+        Loop.objects.set_manual_override("demo-forced", runs=True, reason="CI is red")
+        self._activate("maintenance", {"demo-forced": False})
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-forced"))
+        assert "manual override — CI is red" in line
+
+    def test_a_preset_admitting_a_loop_adds_no_note(self) -> None:
+        # Every admitted row carrying a note buries the two that matter.
+        Loop.objects.create(name="demo-plain", delay_seconds=60, prompt=_prompt())
+        self._activate("present", {"demo-plain": True})
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-plain"))
+        assert "masked" not in line
+        assert "manual override" not in line
+
+    def test_json_carries_effective_layer(self) -> None:
+        Loop.objects.create(name="demo-json-mask", delay_seconds=60, prompt=_prompt())
+        self._activate("maintenance", {"demo-json-mask": False})
+        demo = next(e for e in json.loads(_run("--json"))["loops"] if e["name"] == "demo-json-mask")
+        assert demo["effective_layer"] == "override"
+        assert demo["effective_admitted"] is False
+
+    def test_json_names_the_manual_layer_when_an_override_decides(self) -> None:
+        Loop.objects.create(name="demo-json-manual", delay_seconds=60, prompt=_prompt())
+        Loop.objects.set_manual_override("demo-json-manual", runs=False, reason="noisy")
+        self._activate("present", {"demo-json-manual": True})
+        demo = next(e for e in json.loads(_run("--json"))["loops"] if e["name"] == "demo-json-manual")
+        assert demo["effective_layer"] == "manual"
+        assert demo["effective_admitted"] is False
+
+    def test_no_preset_governing_leaves_the_default_layer(self) -> None:
+        Loop.objects.create(name="demo-base", delay_seconds=60, prompt=_prompt())
+        demo = next(e for e in json.loads(_run("--json"))["loops"] if e["name"] == "demo-base")
+        assert demo["effective_layer"] == "default"
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListReadOnly(django.test.TestCase):
+    def test_no_rows_created_or_mutated(self) -> None:
+        before = Loop.objects.count()
+        _run()
+        _run("--json")
+        assert Loop.objects.count() == before
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListRendersTheVerdictNotTheRawColumn(django.test.TestCase):
+    """State and Next come from the effective verdict, not one plane read alone (#4185).
+
+    A preset-admitted loop rendered ``disabled`` with a Next of ``—`` while the tick was
+    about to fire it — one column deciding both is the same defect the timer chain had,
+    on the read side. The row carries NO manual override, so the preset decides.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        Loop.objects.create(name="audit", delay_seconds=60, prompt=_prompt())
+        Mode.objects.create(name="present", entries={"audit": True})
+        ModeOverride.objects.set_override("present", reason="test override")
+
+    def _line(self) -> str:
+        return next(ln for ln in _run().splitlines() if ln.strip().startswith("audit"))
+
+    def test_a_preset_admitted_loop_renders_an_admitted_state(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            line = self._line()
+        assert "disabled" not in line
+        assert "enabled" in line
+
+    def test_a_preset_admitted_loop_renders_a_real_next_countdown(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            line = self._line()
+        assert "next —" not in line
+
+    def test_a_starved_loop_is_marked(self) -> None:
+        with patch(_STARVED_SEAM, return_value={"audit"}):
+            line = self._line()
+        assert "starved" in line
+
+    def test_a_driven_loop_is_not_marked_starved(self) -> None:
+        with patch(_STARVED_SEAM, return_value=set()):
+            assert "starved" not in self._line()
+
+    def test_a_masked_off_loop_still_renders_disabled_with_no_countdown(self) -> None:
+        Mode.objects.filter(name="present").update(entries={"audit": False})
+        line = self._line()
+        assert "disabled" in line
+        assert "next —" in line
+
+    def test_json_carries_the_starved_flag(self) -> None:
+        with patch(_STARVED_SEAM, return_value={"audit"}):
+            payload = json.loads(_run("--json"))
+        audit = next(entry for entry in payload["loops"] if entry["name"] == "audit")
+        assert audit["starved"] is True
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopsListSurfacesAWithheldAnchor(django.test.TestCase):
+    """A loop being driven must not render identically to one nothing drives (#4355).
+
+    ``dream`` read ``last 257h37m`` while its tick command ran every ten minutes and
+    declined to stamp each pass — so the issue filed against it opened "nothing drives
+    it", which the rendering had made the only available reading.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+        Loop.objects.create(
+            name="audit",
+            prompt=_prompt(),
+            delay_seconds=1800,
+            enabled=True,
+            last_run_at=timezone.now() - dt.timedelta(days=7),
+        )
+
+    def _line(self) -> str:
+        return next(ln for ln in _run().splitlines() if ln.strip().startswith("audit"))
+
+    def test_a_withheld_anchor_renders_the_attempt(self) -> None:
+        Loop.objects.filter(name="audit").update(last_attempt_at=timezone.now())
+        assert "attempted" in self._line()
+
+    def test_a_loop_nothing_attempts_renders_no_note(self) -> None:
+        assert "attempted" not in self._line()
+
+    def test_an_attempt_that_only_matches_the_run_renders_no_note(self) -> None:
+        ran = timezone.now()
+        Loop.objects.filter(name="audit").update(last_run_at=ran, last_attempt_at=ran)
+        assert "attempted" not in self._line()
+
+    def test_json_carries_the_attempt_anchor(self) -> None:
+        attempted = timezone.now()
+        Loop.objects.filter(name="audit").update(last_attempt_at=attempted)
+        payload = json.loads(_run("--json"))
+        audit = next(entry for entry in payload["loops"] if entry["name"] == "audit")
+        assert audit["last_attempt_at"] == attempted.isoformat()

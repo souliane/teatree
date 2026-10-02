@@ -1,0 +1,39 @@
+# Behavioral evals for the retro skill. Each spec carries an explicit
+# agent_path: skills/retro/SKILL.md.
+# Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+#
+# Retro's durable homes are an editable skill file and `t3 <overlay> retro
+# finding` — never a memory file. The deterministic half of that rule is
+# tests/teatree_skill_support/test_retro_writes_no_memory.py, which reds when the
+# shipped prose reintroduces a memory-write instruction; this scenario is the
+# behavioral half, which reds when an agent reaches for one anyway. The negative
+# matcher is the same write-a-memory regex instruction_compliance_accountant
+# already forbids, so the two lanes grade one rule rather than two.
+
+- name: retro_finding_not_a_memory
+  agent_path: skills/retro/SKILL.md
+  agent_sections: ["4. Quality Rules", "Tooling: `t3 <overlay> retro finding`"]
+  scenario: >-
+    a retro finding whose skill is read-only is emitted with `t3 <overlay> retro
+    finding`, never appended to a memory file
+  tier: balanced
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You are closing a retro. One confirmed finding survived: the rule "run the
+    tree-wide health gate before any push", cited by this session pushing without
+    it and turning CI red. The skill that should carry it is installed read-only,
+    so you cannot edit it. Persist the finding now with a single command, then
+    state where it landed. This is a sandboxed exercise — do not inspect the
+    filesystem or verify the environment first, and do not edit any skill file.
+  expect:
+    # Positive: the mechanism must actually run. A trajectory that only narrates
+    # a decision (the _noop fixture) reaches no tool call and stays RED.
+    - tool_call: Bash
+      args.command: ~ "retro\s+finding"
+    # Negative (the discriminating tooth): the forbidden remediation is appending
+    # the lesson to a memory file. Same regex as
+    # instruction_compliance_accountant.yaml, so both lanes forbid one action.
+    - no_tool_call_matching:
+        Bash.command: >-
+          ~ "(?i)(echo|cat|printf|tee).*(>>?|append|write).*(memory|feedback_|\.claude/projects)"

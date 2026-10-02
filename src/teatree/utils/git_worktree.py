@@ -1,0 +1,187 @@
+"""Worktree management and the teardown data-loss guards.
+
+The worktree partition of :mod:`teatree.utils.git`. Holds worktree add/remove
+and the #706 "absent from all remotes" guard, all via the
+:mod:`teatree.utils.git_run` runners.
+"""
+
+from pathlib import Path
+
+from teatree.utils.git_run import check, run, run_strict
+from teatree.utils.git_upstream import normalize_branch_upstream
+from teatree.utils.git_worktree_query import list_worktrees
+from teatree.utils.run import CommandFailedError, run_checked
+
+# A git reflog line is "<old-sha> <new-sha> <committer> <ts> <tz>\t<message>";
+# fewer than two whitespace fields means there is no <new-sha> to recover.
+_REFLOG_MIN_FIELDS = 2
+
+
+def recovered_head_sha_after_ref_gone(wt_path: str) -> str | None:
+    """Return the worktree's last HEAD SHA when its checked-out branch ref is gone.
+
+    A forge post-merge branch deletion leaves a worktree's HEAD a *dangling
+    symref*: ``refs/heads/<branch>`` is gone, so ``git rev-parse HEAD`` and every
+    ``HEAD@{N}`` reflog walk in the worktree dir exit 128 ("unknown revision").
+    The tip SHA survives only in the per-worktree HEAD reflog (``logs/HEAD`` under
+    the worktree's gitdir), which git itself keeps but cannot resolve through the
+    dangling symref. This reads that reflog's most-recent entry — the
+    authoritative record of what HEAD pointed at before the ref vanished — and
+    returns the resolved commit SHA.
+
+    Used only on the rc=128 branch of the teardown data-loss probe: a recovered
+    SHA lets the caller decide by *containment in a remote* instead of refusing
+    blindly. Returns ``None`` when there is nothing safe to recover — the dir is
+    gone, no reflog exists, the entry is malformed, or the SHA does not resolve to
+    a commit in ``wt_path`` — so the caller keeps its fail-closed refusal.
+    """
+    if not Path(wt_path).is_dir():
+        return None
+    git_dir = run(repo=wt_path, args=["rev-parse", "--absolute-git-dir"])
+    if not git_dir:
+        return None
+    head_log = Path(git_dir) / "logs" / "HEAD"
+    if not head_log.is_file():
+        return None
+    try:
+        last_entry = head_log.read_text(encoding="utf-8").splitlines()[-1]
+    except (OSError, IndexError):
+        return None
+    # The second whitespace field is the SHA HEAD moved TO (the surviving tip).
+    fields = last_entry.split()
+    if len(fields) < _REFLOG_MIN_FIELDS:
+        return None
+    candidate = fields[1]
+    resolved = run(repo=wt_path, args=["rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"])
+    return resolved or None
+
+
+def commits_absent_from_all_remotes(repo: str, ref: str) -> list[str]:
+    """Return ``ref`` commits not reachable from ANY ``refs/remotes/*`` ref.
+
+    The data-loss guard for worktree teardown (#706). ``ref`` is any revision
+    git accepts — a branch name, or the literal ``HEAD`` when probing a worktree
+    directory directly (robust to a DB-vs-git branch drift and to detached HEAD).
+    Unlike :func:`unsynced_commits` (which compares against ``origin/main`` only
+    and therefore flags pushed-but-unmerged branches), ``--not --remotes`` is
+    empty whenever the tip's own SHA was pushed anywhere — to its own remote
+    tracking ref or to main as a fast-forward / merge commit. It is NOT empty for
+    a squash-merge: that rewrites the branch's commits into a NEW SHA on the
+    default branch, so the original commit is absent-from-all-remotes by SHA even
+    though its WORK is shipped — a patch-id comparison
+    (:func:`teatree.core.management.commands._workspace.cleanup.is_squash_merged`)
+    is what recognises that case. A non-empty result here means these commits
+    exist on NO remote BY SHA: removing the worktree on this signal alone would
+    destroy a genuinely-unmerged tip. Returns ``"<sha> <subject>"`` lines (newest
+    first).
+
+    **Fails closed.** Uses :func:`run_strict` so a non-zero ``git log`` exit
+    (invalid/missing ref, corrupt repo, any git error) raises
+    ``CommandFailedError`` rather than yielding an empty list. For a data-loss
+    guard, "we couldn't determine whether the commits are pushed" must block
+    teardown, not allow it. The legitimate empty case (``git log`` exits 0 with
+    no output because the ref genuinely has nothing absent from remotes)
+    still returns ``[]`` and allows teardown.
+
+    **Only as fresh as local ``refs/remotes/*``.** This is a purely local graph
+    query — it never contacts a remote. A tracking ref goes STALE when its branch
+    is deleted upstream by anything other than this clone (a forge's
+    auto-delete-on-merge, or a sibling clone), and against a stale ref this
+    returns ``[]`` for commits that exist on NO remote — the exact misread that
+    authorises reaping the last copy of unmerged work. A destructive caller MUST
+    therefore pass :func:`teatree.utils.git.fetch_all_prune` first and fail
+    closed when it returns ``False``. Read-only callers may accept the staleness.
+    """
+    output = run_strict(repo=repo, args=["log", ref, "--not", "--remotes", "--oneline"])
+    return [line for line in output.splitlines() if line.strip()]
+
+
+def worktree_remove(repo: str = ".", path: str = "") -> bool:
+    return check(repo=repo, args=["worktree", "remove", "--force", path])
+
+
+def worktree_move(repo: str, src: str, dst: str) -> None:
+    """``git worktree move <src> <dst>`` run from *repo* (the source clone).
+
+    Updates git's worktree admin (the per-worktree gitdir + the gitfile pointer)
+    so the moved worktree stays linked to its clone — the reason a raw ``mv`` is
+    wrong (it leaves git's metadata pointing at the stale path). Run from *repo*
+    (the clone, or any OTHER worktree), never from inside *src*: git refuses to
+    move the worktree it is currently sitting in. Raises ``CommandFailedError``
+    on failure so the caller can report-and-continue.
+    """
+    run_strict(repo=repo, args=["worktree", "move", src, dst])
+
+
+def locked_worktree_paths(repo: str) -> set[str]:
+    """Resolved paths of *repo*'s git-locked worktrees.
+
+    A locked worktree must never be relocated. A thin derivation of
+    :func:`list_worktrees`; paths are ``resolve()``-d so they compare equal to a
+    caller's ``Path(...).resolve()``.
+    """
+    return {str(record.path.resolve()) for record in list_worktrees(repo) if record.locked}
+
+
+def worktree_add_at_ref(repo: str, path: str, ref: str) -> bool:
+    """Materialise a detached worktree at an explicit ``ref`` (SHA or branch).
+
+    The e2e ladder (#794) provisions each repo at a resolved ref — a recorded
+    last-green SHA or ``origin/main`` — not only at a branch HEAD. ``git
+    worktree add <path> <ref>`` checks out ``ref`` in a detached HEAD, which
+    is exactly what running the e2e against a recorded SHA-set requires.
+    """
+    return check(repo=repo, args=["worktree", "add", "--detach", path, ref])
+
+
+def remote_branch_start_point(repo: str, branch: str, remote: str = "origin") -> str:
+    """``<remote>/<branch>`` when the branch exists on *remote*, else ``""``.
+
+    Resolved against the REMOTE, not against whatever ``refs/remotes/*`` this
+    clone happens to hold: a targeted ``git fetch <remote> <branch>`` runs first
+    so a clone that has never seen the branch (or whose tracking ref is stale)
+    still answers correctly. A branch that genuinely does not exist upstream
+    makes the fetch exit non-zero, which is the expected "no start point" answer
+    and never an error.
+    """
+    check(repo=repo, args=["fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"])
+    ref = f"refs/remotes/{remote}/{branch}"
+    return f"{remote}/{branch}" if run(repo=repo, args=["rev-parse", "--verify", "--quiet", ref]) else ""
+
+
+def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+    """``git worktree add`` for *branch*, born from its REMOTE tip when one exists.
+
+    ``-b <branch>`` with no start point forks the clone's current HEAD — the
+    default branch — so provisioning a ticket's EXISTING remote branch silently
+    produced a same-named local branch carrying default-branch content. Every
+    consumer downstream then read the default branch's files while believing it
+    read the ticket's: the frontend i18n mirror is the case that surfaced it,
+    filled from ``master`` so every key the ticket ADDS rendered raw.
+
+    So a created branch starts at ``origin/<branch>`` whenever the remote holds
+    one (git then sets up tracking), and only falls back to HEAD for a branch
+    that is genuinely new.
+
+    Whatever tracking git derives from that start point is then normalised
+    (#4225): under ``branch.autoSetupMerge = inherit`` the HEAD fallback copies
+    the DEFAULT branch's upstream onto the new branch, so ``git push`` on it aims
+    at ``main`` under ``push.default = upstream``. Only the created branch is
+    normalised — an existing branch's upstream is the repair command's business,
+    not a side effect of checking it out.
+    """
+    args = ["worktree", "add"]
+    if create_branch:
+        args.extend(["-b", branch])
+    args.append(path)
+    if not create_branch:
+        args.append(branch)
+    elif start_point := remote_branch_start_point(repo, branch):
+        args.append(start_point)
+    try:
+        run_checked(["git", "-C", repo, *args])
+    except CommandFailedError:
+        return False
+    if create_branch:
+        normalize_branch_upstream(repo, branch)
+    return True

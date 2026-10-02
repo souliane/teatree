@@ -1,0 +1,531 @@
+"""Session-to-session work hand-off.
+
+The payload has three sources, tried in order, and which one answered travels
+with the payload as a :class:`PayloadSource` — because the sources are not
+equally worth handing over:
+
+1. **Authored** — bytes the handing session supplied (``handover create
+    --from-file`` / ``--body``). A hand-off exists to carry a session's REASONING,
+    and reasoning is the one thing no query can re-derive; if the DB could produce
+    it, the hand-off would not be needed. This source wins over both others.
+2. **Snapshot** — the durable-state snapshot the PreCompact hook builds (active
+    tickets, worktree paths/branches, in-flight sub-agents, open PRs,
+    approach/decisions, failing tests, loaded skills, t3-master status), at
+    ``${STATE_DIR}/t3-snapshot-<session>-precompact.md``. A hand-off and a
+    post-compaction recovery then carry identical state.
+3. **Live state** — derived from the DB (worktrees, active tickets, open PRs) so
+    a session that has neither authored nor compacted still transfers its
+    in-flight work (#3551). It carries inventory, never reasoning, and nobody
+    vetted it, so :mod:`teatree.core.management.commands.handover` reports it as
+    UNVETTED rather than ``OK``.
+
+The :class:`SessionHandover` DB row is the DELIVERY SURFACE. The XDG file
+mirror (``handover_mirror_path``) is for human-readability and for
+bootstrapping a session whose process cannot reach the DB; it is read back as a
+payload ONLY in that case (#4194), which is why authoring goes through the
+command rather than through the file.
+
+An author holds at most one unclaimed row and a later hand-off is ABSORBED into
+it behind a fence, so a receiver is handed one row per author carrying
+everything that author said, rather than N partially-contradictory ones. The
+sub-agent barrier's returns are a separate concern living in
+:mod:`teatree.core.handover_wrapup`: they are ROW STATE, RENDERED onto the
+delivery surface here (:func:`write_mirror`, :func:`render_claimed_payload`) at
+delivery time, so ``payload`` only ever holds the author's or derived bytes and
+no authored byte can be mistaken for the harness's own and removed.
+
+A resolve that finds NOTHING writes nothing — no row, no mirror. Persist-first
+(:func:`create_handover` before the barrier) protects state that exists; an
+empty hand-off has none, and the row it would leave behind is a delivery no
+receiver can act on. That promise holds only while ONE resolve decides both the
+refusal and the write, which is why :func:`create_handover` takes a
+:class:`ResolvedHandover` instead of taking its own.
+
+Target resolution (``create``):
+
+- explicit ``to_session`` → that session.
+- otherwise the LIVE ``t3-master`` slot holder (``t3 loop owner``).
+- otherwise ``""`` — parked for whichever session starts next to claim.
+"""
+
+import contextlib
+import os
+import re
+import shutil
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from teatree.config import get_effective_settings
+from teatree.core.handover_wrapup import delivered_payload
+from teatree.core.session_handover_manager import SelfAddressedHandoverError, render_fenced_handoffs
+from teatree.core.session_identity import is_loop_runner_session
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from teatree.core.models.session_handover import SessionHandover
+
+__all__ = [
+    "CreatedHandover",
+    "HandoverPayload",
+    "PayloadSource",
+    "ResolvedHandover",
+    "ResolvedPayload",
+    # Re-exported so the hand-off CLI catches the refusal from the module it already
+    # depends on, rather than reaching into the manager package for one exception.
+    "SelfAddressedHandoverError",
+    "claim_handovers",
+    "create_handover",
+    "dangling_backlog_claims",
+    "mirror_path",
+    "newest_mirror",
+    "render_claimed_payload",
+    "resolve_handover",
+    "resolve_target_session",
+    "unique_mirror_path",
+    "write_mirror",
+]
+
+_SNAPSHOT_PREFIX = "t3-snapshot-"
+_SNAPSHOT_SUFFIX = "-precompact.md"
+_MIRROR_PREFIX = "handover-"
+_MIRROR_SUFFIX = ".md"
+
+
+def _state_dir() -> Path:
+    """The dir the PreCompact hook writes snapshots into (mirrors ``hook_router.STATE_DIR``)."""
+    return Path(
+        os.environ.get(
+            "TEATREE_CLAUDE_STATUSLINE_STATE_DIR",
+            os.environ.get("T3_HOOK_STATE_DIR", "/tmp/claude-statusline"),  # noqa: S108 — fixed agent-controlled path, not user input
+        )
+    )
+
+
+def _live_worktree_lines() -> list[str]:
+    from teatree.core.models import Worktree  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    return [
+        f"- `{worktree.branch or '(no branch)'}` — {worktree.worktree_path or '(no path)'} [{worktree.state}]"
+        for worktree in Worktree.objects.exclude(state=Worktree.State.CREATED).order_by("pk")
+    ]
+
+
+def _live_ticket_lines() -> list[str]:
+    """One line per in-flight ticket that can actually be identified.
+
+    A ticket with neither a description nor a URL rendered as ``ticket 120
+    (untitled)``, which names nothing the receiver can act on while still reading
+    as inventory — worse than an absent line, because a list of them looks like a
+    hand-off. Such a ticket is skipped.
+    """
+    from teatree.core.models import Ticket  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    return [
+        f"- ticket {ticket.pk} ({ticket.short_description or ticket.issue_url}) [{ticket.state}]"
+        for ticket in Ticket.objects.exclude(state__in=Ticket.marker_release_states()).order_by("pk")
+        if ticket.short_description or ticket.issue_url
+    ]
+
+
+def _live_pr_lines() -> list[str]:
+    """One line per pull request that is not already settled.
+
+    Both TERMINAL states are excluded, not merges alone: a PR closed without
+    merging is as finished as a merged one, and listing it advertises live work
+    that does not exist. The row's state is the local record of the last forge
+    read (:meth:`PullRequest.objects.settle_forge_state` is its writer); this
+    derivation stays a pure DB read rather than probing the forge per PR, because
+    a payload built at hand-off time must not be able to hang on the network. A
+    row nothing has settled yet can therefore still be listed while stale, which
+    is one of the reasons a live-derived payload is reported as UNVETTED.
+    """
+    from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    settled = (PullRequest.State.MERGED, PullRequest.State.CLOSED)
+    return [
+        f"- {pull_request.url or '(no url)'} ({pull_request.repo}!{pull_request.iid}) [{pull_request.state}]"
+        for pull_request in PullRequest.objects.exclude(state__in=settled).order_by("pk")
+    ]
+
+
+_BACKLOG_CLAIM = re.compile(
+    r"\b\d+\s+(?:\w+\s+){0,2}?(?:pending|outstanding|remaining|pending\s+items?|tasks?|todos?|open\s+items?)\b",
+    re.IGNORECASE,
+)
+_DURABLE_REFERENCE = re.compile(r"(?:https?://|~/|(?<![\w.])/[\w.]+/)")
+
+
+def dangling_backlog_claims(text: str) -> list[str]:
+    """Backlog counts in ``text`` with no durable reference in the same paragraph.
+
+    A hand-off saying "34 pending" is worthless if those 34 live only in the
+    authoring session's own task list, which dies with it: the receiver reads a
+    number it can never expand. Vettedness cannot catch this — it asks who wrote
+    the payload, not whether what the payload points at outlives the session.
+    """
+    dangling: list[str] = []
+    for paragraph in text.split("\n\n"):
+        if _DURABLE_REFERENCE.search(paragraph):
+            continue
+        dangling.extend(match.group().strip() for match in _BACKLOG_CLAIM.finditer(paragraph))
+    return dangling
+
+
+class PayloadSource(StrEnum):
+    """Which source produced a hand-off payload — and therefore how much it is worth.
+
+    ``AUTHORED`` and ``SNAPSHOT`` are VETTED: a session either wrote the payload or
+    the PreCompact hook captured that session's own durable state. ``LIVE`` is a
+    machine derivation nobody reviewed, and ``EMPTY`` is no payload at all.
+    """
+
+    AUTHORED = "authored"
+    SNAPSHOT = "snapshot"
+    LIVE = "live-state"
+    EMPTY = "empty"
+
+    @property
+    def is_vetted(self) -> bool:
+        """Whether a hand-off from this source may report ``OK``."""
+        return self in {PayloadSource.AUTHORED, PayloadSource.SNAPSHOT}
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPayload:
+    """A hand-off payload together with the source that produced it."""
+
+    text: str
+    source: PayloadSource
+
+
+@dataclass(frozen=True, slots=True)
+class CreatedHandover:
+    """What :func:`create_handover` produced: the row, its mirror, and the payload's source.
+
+    ``source`` is carried out to the caller rather than inferred from the row,
+    because no property of a persisted payload distinguishes a session's own
+    reasoning from a machine-derived inventory of the same length. ``resolved``
+    likewise: it is the bytes THIS call contributed, which the persisted payload
+    carries but no longer equals once an earlier hand-off has been absorbed.
+
+    ``updated_existing`` / ``previous_bytes`` report that absorb. A session's second
+    hand-off lands on its first row, and how much state was already there is the one
+    thing no exit code tells the operator. Both come from the write seam's own
+    :class:`~teatree.core.session_handover_manager.HandoverWrite`, never from a
+    pre-read: a rival insert landing between the read and the write made the absorb
+    report itself as a fresh insert. ``payload_appended`` distinguishes an absorb that
+    ADDED bytes from one whose payload the row already carried, which report identically
+    otherwise.
+    """
+
+    handover: "SessionHandover"
+    mirror: Path
+    source: PayloadSource
+    resolved: str = ""
+    updated_existing: bool = False
+    previous_bytes: int = 0
+    payload_appended: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedHandover:
+    """Where a hand-off would go and what it would carry — decided once, before anything is written.
+
+    :func:`create_handover` used to be the only way to learn a payload's source, so
+    the caller could not refuse a hand-off until the row already existed. An
+    :attr:`PayloadSource.EMPTY` resolve must write nothing at all, which needs the
+    answer first — and then the SAME answer must be what is written, so this travels
+    from the refusal check into :func:`create_handover` rather than being re-derived.
+    """
+
+    to_session: str
+    resolved: ResolvedPayload
+
+
+@dataclass(frozen=True, slots=True)
+class HandoverPayload:
+    """The body one session hands over — the PreCompact snapshot, else live DB state.
+
+    Three sources for one payload, composed here rather than left as module
+    functions each re-taking the same ``session_id``. ``authored`` carries bytes
+    the handing session supplied and outranks both derived sources.
+    """
+
+    session_id: str
+    authored: str = ""
+
+    def snapshot(self) -> str:
+        """The PreCompact durable-state snapshot, or ``""``.
+
+        ``""`` means no snapshot file exists (or it is unreadable) — :meth:`resolve`
+        falls back to :meth:`live_state` rather than handing over a stub that tells
+        the receiver to re-derive everything itself (#3551).
+        """
+        snapshot = _state_dir() / f"{_SNAPSHOT_PREFIX}{self.session_id}{_SNAPSHOT_SUFFIX}"
+        try:
+            return snapshot.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def live_state(self) -> str:
+        """Derive a hand-off payload from live DB state — worktrees, tickets, PRs (#3551).
+
+        The PreCompact snapshot is a convenience, not the only possible source:
+        everything the payload contract promises is queryable at call time. A
+        session that never compacted (or whose snapshot the hand-off cannot find)
+        therefore still hands over something usable instead of a paragraph telling
+        the receiver to re-derive it all. Returns ``""`` when there is genuinely
+        nothing in flight, which the caller surfaces as a loud empty hand-off.
+        """
+        sections = (
+            ("Worktrees", _live_worktree_lines()),
+            ("Active tickets", _live_ticket_lines()),
+            ("Open pull requests", _live_pr_lines()),
+        )
+        rendered = [f"## {title}\n\n" + "\n".join(lines) for title, lines in sections if lines]
+        if not rendered:
+            return ""
+        header = (
+            f"# Session hand-off — session `{self.session_id}` (derived from live state)\n\n"
+            "No PreCompact snapshot was available, so this payload was derived from "
+            "the DB at hand-off time: it carries the in-flight work but not the "
+            "session's reasoning.\n"
+        )
+        return header + "\n\n" + "\n\n".join(rendered)
+
+    def resolve(self) -> ResolvedPayload:
+        """The hand-off payload AND the source that produced it.
+
+        Authored bytes first, then the PreCompact snapshot, then live-derived
+        state; :attr:`PayloadSource.EMPTY` when none of them has anything.
+
+        The source is returned rather than discarded because the caller's decision
+        depends on it and cannot be recovered from the text: an empty payload is a
+        hand-off with nothing to transfer, and a live-derived one is a machine
+        inventory nobody reviewed. Reporting ``OK`` over either is the failure
+        :mod:`teatree.core.management.commands.handover` exists to prevent — the
+        emptiness test alone (#3551) passed any non-empty stub.
+        """
+        if self.authored.strip():
+            # The author's bytes VERBATIM — not stripped, not reformatted. A
+            # hand-off that edits what it was given is not carrying it.
+            return ResolvedPayload(text=self.authored, source=PayloadSource.AUTHORED)
+        if snapshot := self.snapshot():
+            return ResolvedPayload(text=snapshot, source=PayloadSource.SNAPSHOT)
+        if live := self.live_state():
+            return ResolvedPayload(text=live, source=PayloadSource.LIVE)
+        return ResolvedPayload(text="", source=PayloadSource.EMPTY)
+
+
+def resolve_target_session(explicit_to: str) -> str:
+    """Resolve the hand-off target: explicit id, else the live loop owner, else ``""``.
+
+    ``""`` means "park for the next session to claim". The live loop owner
+    is read via the same :class:`~teatree.core.models.LoopLease`
+    ``t3-master`` slot the t3-master CLI uses, so a no-target hand-off
+    lands on whichever session is actively driving the loop.
+
+    The ``t3 worker`` holds that slot as its own durable principal
+    (:data:`~teatree.core.session_identity.LOOP_RUNNER_SESSION_ID`, the literal
+    ``"loop-runner"``) rather than as a Claude session id. Addressing a hand-off
+    THERE is addressing it to an id no session can ever have:
+    :meth:`~teatree.core.session_handover_manager.SessionHandoverQuerySet.claimable_for`
+    admits only ``to_session == session_id`` or ``to_session == ""``, so such a row
+    is claimable by nobody and counts as pending forever. Four rows had accumulated
+    that way. The runner principal is therefore PARKED (``""``) — the next session to
+    start claims it — rather than written as a target, and the same normalisation
+    applies to an explicit ``--to loop-runner``.
+    """
+    if explicit_to:
+        return "" if is_loop_runner_session(explicit_to) else explicit_to
+    from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    # The t3-master owner slot (``T3_MASTER_SLOT``); the tach boundary forbids
+    # importing it here, so the literal is repeated at this read site.
+    status = LoopLease.objects.ownership_status("t3-master")
+    if not status.is_live or is_loop_runner_session(status.owner_session):
+        return ""
+    return status.owner_session
+
+
+def mirror_path() -> Path:
+    """The configured XDG ``latest`` pointer for the most-recent hand-off.
+
+    This is the stable, well-known path a human (or a bootstrapping session)
+    reads to find the newest hand-off. The actual content lives in a
+    per-session UNIQUE sibling file (:func:`unique_mirror_path`); this path is
+    kept as a pointer to that newest file so concurrent hand-offs never clobber
+    each other's content.
+    """
+    return get_effective_settings().handover_mirror_path
+
+
+def _mirror_slug(value: str) -> str:
+    """A filename-safe slug of a session id: ``[A-Za-z0-9._-]`` runs, collapsed."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-.")
+    return cleaned or "unknown"
+
+
+def unique_mirror_path(handover: "SessionHandover", *, directory: Path) -> Path:
+    """The collision-safe per-hand-off mirror file inside *directory*.
+
+    Keyed on the ``from_session`` id AND the row's own ``created_at`` (a
+    DB-assigned, deterministic timestamp — NOT wall-clock read at write time),
+    so re-mirroring the same row is idempotent while two *different*
+    concurrent hand-offs — from different sessions, or the same session at
+    different instants — never resolve to the same file. This is the fix for
+    the fixed-``latest.md`` clobber (directive #7).
+    """
+    stamp = handover.created_at.strftime("%Y%m%dT%H%M%S_%f")
+    return directory / f"{_MIRROR_PREFIX}{_mirror_slug(handover.from_session)}-{stamp}{_MIRROR_SUFFIX}"
+
+
+def newest_mirror(directory: Path) -> Path | None:
+    """The most recent hand-off mirror in *directory*, or ``None`` when there is none.
+
+    Mirror filenames embed the row's ``created_at`` as a fixed-width
+    ``%Y%m%dT%H%M%S_%f`` stamp, so lexicographic order over the stamp IS
+    chronological order — no filesystem mtime, which a copy or a container
+    bind-mount rewrites.
+    """
+    mirrors = sorted(
+        (p for p in directory.glob(f"{_MIRROR_PREFIX}*{_MIRROR_SUFFIX}") if p.is_file() and not p.is_symlink()),
+        key=lambda p: p.name.rsplit("-", 1)[-1],
+    )
+    return mirrors[-1] if mirrors else None
+
+
+def _update_latest_pointer(pointer: Path, unique: Path) -> None:
+    """Point the well-known ``latest`` path at the NEWEST mirror in its directory.
+
+    Resolved from the directory's own contents rather than from whichever file
+    was written last (#3563): a hand-off mirrored out of order — a replayed row,
+    a second runtime writing into the same shared dir — must not drag ``latest``
+    backwards onto an older session. Prefers a relative symlink so the pointer
+    moves atomically; falls back to copying the content when the filesystem
+    refuses symlinks. Both forms publish through ``os.replace`` on a
+    same-directory staging path: an unlink-then-create left a window in which a
+    concurrent reader saw NO pointer at all. Best-effort: a pointer-update
+    failure never loses the already-written unique content.
+    """
+    target = newest_mirror(unique.parent) or unique
+    if pointer.is_symlink() and pointer.readlink().name == target.name:
+        return
+    staged = pointer.with_name(f"{pointer.name}.{os.getpid()}.tmp")
+    try:
+        staged.symlink_to(target.name)
+        staged.replace(pointer)
+    except OSError:
+        staged.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            shutil.copyfile(target, staged)
+            staged.replace(pointer)
+
+
+def write_mirror(handover: "SessionHandover", path: Path | None = None) -> Path:
+    """Mirror *handover* to a UNIQUE per-session file; repoint ``latest`` at it.
+
+    *path* is the well-known ``latest`` pointer (default: :func:`mirror_path`).
+    The content is written to a collision-safe sibling (:func:`unique_mirror_path`)
+    so concurrent hand-offs from multiple sessions never clobber one another,
+    and the ``latest`` pointer is moved to the newest file. Returns the UNIQUE
+    content file (the durable artifact), not the pointer. A target of ``""``
+    renders as ``next-session`` so the file always names a recipient.
+    """
+    pointer = path or mirror_path()
+    directory = pointer.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    unique = unique_mirror_path(handover, directory=directory)
+    recipient = handover.to_session or "next-session"
+    header = (
+        f"# Session hand-off\n\n"
+        f"- from: `{handover.from_session}`\n"
+        f"- to: `{recipient}`\n"
+        f"- created: {handover.created_at.isoformat()}\n\n"
+        "---\n\n"
+    )
+    unique.write_text(header + delivered_payload(handover) + "\n", encoding="utf-8")
+    _update_latest_pointer(pointer, unique)
+    return unique
+
+
+def render_claimed_payload(claimed: "Sequence[SessionHandover]") -> str:
+    """Concatenate every drained hand-off into one injectable payload (#3555).
+
+    A single delivery may now carry several hand-offs (the parked queue is
+    drained, not sampled), so each is fenced by a header naming its author and
+    creation time — otherwise the receiving session reads N authors' state as
+    one narrative. A lone hand-off renders as its bare payload, unchanged.
+    """
+    return render_fenced_handoffs(
+        [(row.from_session, row.created_at.isoformat(), delivered_payload(row)) for row in claimed]
+    )
+
+
+def claim_handovers(session_id: str) -> tuple[str, str]:
+    """Drain every hand-off claimable by *session_id*; return ``(payload, origin)``.
+
+    The single seam both pickup call sites use — the SessionStart hook and
+    ``t3 <overlay> handover claim-on-start`` — so neither can drift back to a
+    claim-one policy that strands the rest of the queue. ``origin`` names the
+    handing session for one hand-off, or the session count for a drained batch.
+    """
+    from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    claimed = SessionHandover.objects.claim_all(session_id) if session_id else []
+    if not claimed:
+        return "", ""
+    origin = claimed[0].from_session if len(claimed) == 1 else f"{len(claimed)} sessions"
+    return render_claimed_payload(claimed), origin
+
+
+def resolve_handover(*, from_session: str, explicit_to: str, authored: str = "") -> ResolvedHandover:
+    """Where this hand-off would go and what it would carry — WITHOUT writing anything.
+
+    Split out of :func:`create_handover` so the CLI can refuse an empty hand-off
+    before a row exists. Persist-first is the right ordering when there is state to
+    protect from a crashing barrier; on the empty path there is none, and the row it
+    would leave behind is a delivery nobody can act on.
+    """
+    return ResolvedHandover(
+        to_session=resolve_target_session(explicit_to),
+        resolved=HandoverPayload(from_session, authored=authored).resolve(),
+    )
+
+
+def create_handover(*, from_session: str, resolution: ResolvedHandover) -> "CreatedHandover":
+    """Persist *resolution* as a hand-off from *from_session* and mirror it to the XDG file.
+
+    The resolution is threaded in rather than taken here, so the one the caller
+    GATED on is the one that gets written. Re-resolving made the two different
+    instants with the caller's slow sub-agent barrier between them: live state
+    settling across that barrier resolved non-empty for the gate and EMPTY for the
+    write, and the row that landed carried only the barrier's own boilerplate. It
+    also closed the same window on the PreCompact snapshot, which a rotation across
+    the barrier could downgrade, and halved the ``LoopLease`` reads per create.
+
+    Raises :class:`SelfAddressedHandoverError` when the resolved target is the
+    handing session itself — including via the no-``--to`` path, where the live
+    ``t3-master`` slot holder can BE the session handing off. Refusing at the write
+    seam keeps the check on the resolved target, which is the only value that
+    decides claimability.
+    """
+    from teatree.core.models import SessionHandover  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    write = SessionHandover.objects.create_handover(
+        from_session=from_session,
+        to_session=resolution.to_session,
+        payload=resolution.resolved.text,
+    )
+    return CreatedHandover(
+        handover=write.row,
+        mirror=write_mirror(write.row),
+        source=resolution.resolved.source,
+        resolved=resolution.resolved.text,
+        updated_existing=write.absorbed,
+        previous_bytes=write.previous_bytes,
+        payload_appended=write.payload_appended,
+    )

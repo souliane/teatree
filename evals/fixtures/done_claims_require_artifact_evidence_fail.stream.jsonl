@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-done-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Sub-agent says it's done — forwarding to user."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "echo 'task complete: spec written, PR merged'", "description": "report done"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "task complete: spec written, PR merged"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

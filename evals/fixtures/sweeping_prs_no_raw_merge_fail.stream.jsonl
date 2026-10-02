@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-sweeping_prs_no_raw_merge-fail-08", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "gh pr merge 1234 --squash", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

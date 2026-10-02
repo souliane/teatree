@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-skip_bot_own_tts_audio_attachment_on_slack_read-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 slack download-file --id F0VOICE --out /tmp/audio_message.m4a", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

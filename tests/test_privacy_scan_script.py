@@ -1,0 +1,637 @@
+"""Integration tests for ``scripts/privacy_scan.py`` as a subprocess.
+
+``t3 tool privacy-scan`` runs this script via
+``ToolRunner.run_script`` → ``[sys.executable, script, *args]``. Without
+an ``if __name__ == "__main__"`` guard the typer ``app`` is never
+invoked and the script is a silent no-op (exit 0 on a planted secret),
+which makes the retro/contribute privacy scan worthless. These tests
+invoke the script the same way ``run_script`` does so the entrypoint is
+exercised, not mocked.
+"""
+
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "privacy_scan.py"
+
+
+def _run(stdin: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "-"],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_env(stdin: str, env_overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Invoke the script with a hermetic env: real banned-terms sources cleared first.
+
+    Clearing the inherited ``T3_BANNED_TERMS`` env and ``T3_CONFIG_DB`` keeps a
+    developer's real DB / env out of the assertion, so the test exercises only
+    the seeded DB / env it sets.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in {"T3_BANNED_TERMS", "T3_CONFIG_DB"}}
+    env.update(env_overrides)
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "-"],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+class TestPrivacyScanScriptEntrypoint:
+    def test_planted_api_key_exits_findings_code(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
+    def test_internal_home_path_exits_findings_code(self) -> None:
+        result = _run("see /Users/someone/secret/path\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
+    def test_clean_text_exits_zero(self) -> None:
+        result = _run("a perfectly ordinary line of prose\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_non_utf8_file_still_finds_a_leak(self, tmp_path: Path) -> None:
+        """A commit under ``i18n.logOutputEncoding=ISO-8859-1`` is not valid UTF-8.
+
+        The file-argument path (the pre-push gate's commit-message scan) used
+        to call ``Path.read_text(encoding="utf-8")`` directly: a non-UTF-8 byte
+        raised ``UnicodeDecodeError``, exiting 1 — a code the gate reads as
+        "scanner crashed" and fails OPEN on (module docstring), so a leaking
+        commit message in a non-UTF-8 encoding passed through unscanned.
+        """
+        msg = "fix: caf\xe9 /Users/someone/secret\n".encode("latin-1")  # privacy-scan:allow self-fixture
+        target = tmp_path / "msg.txt"
+        target.write_bytes(msg)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
+
+class TestPrivacyScanOpaqueId:
+    """Fix #3: the publish surface also flags real-shaped Slack/forge IDs.
+
+    A channel/DM/user/app/team id (``C0…``/``D0…``/``U0…``/``A0…``/``T0…``)
+    pushed to a public surface is a leak with no dictionary word, so the
+    banned-term pass never caught it. The synthetic-placeholder allowlist
+    keeps fixtures/examples from tripping.
+    """
+
+    def test_real_shaped_slack_id_is_a_finding(self) -> None:
+        # Invented random-looking id — not a real channel id.
+        result = _run("channel = C0ZX91QWERT\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "opaque_id" in result.stdout
+        assert "C0ZX91QWERT" in result.stdout
+
+    def test_synthetic_placeholder_id_is_clean(self) -> None:
+        result = _run("channel = C0DEMOCHAN1 and user U01ABCD1234\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_id_in_slack_archive_url_is_a_finding(self) -> None:
+        result = _run("https://slack.com/archives/D0KP47MNBVC/p1717603200123456\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "D0KP47MNBVC" in result.stdout
+
+
+class TestPrivacyScanDedicatedFindingsExitCode:
+    """A genuine finding exits on a dedicated code distinct from any crash (#126 gap 3).
+
+    The pre-push leak gate previously treated ANY non-zero scan exit as a
+    finding and BLOCKED — so a scanner crash, a missing script, or an
+    argparse usage error (all non-zero, none of them a real finding) wedged
+    every push closed. Reserving a dedicated ``PRIVACY_FINDINGS_EXIT_CODE``
+    for "findings present" lets the hook block on THAT code only and fail
+    open on every other non-zero.
+    """
+
+    def test_findings_exit_code_is_distinct_from_generic_failure_codes(self) -> None:
+        """The findings code must not collide with the generic exception (1) or usage (2) codes."""
+        assert PRIVACY_FINDINGS_EXIT_CODE not in {0, 1, 2}
+
+    def test_genuine_finding_uses_the_dedicated_code(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
+    def test_argparse_usage_error_is_not_the_findings_code(self) -> None:
+        """A bad flag (typer usage error) must exit on a code the hook reads as 'crash, allow'."""
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "-", "--no-such-flag"],
+            input="clean\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode != 0
+        assert proc.returncode != PRIVACY_FINDINGS_EXIT_CODE, proc.stdout + proc.stderr
+
+    def test_missing_input_file_is_not_the_findings_code(self) -> None:
+        """A missing input file (crash) must NOT masquerade as a finding."""
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "/no/such/file/exists.txt"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode != 0
+        assert proc.returncode != PRIVACY_FINDINGS_EXIT_CODE, proc.stdout + proc.stderr
+
+
+class TestPrivacyScanCallerVisibleSummary:
+    """Findings must reach a piped/non-TTY caller without a manual rerun (#696).
+
+    The historical bug: findings were rendered only via a ``rich`` table on
+    ``Console(stderr=True)``, which is invisible to scripted callers (and is
+    captured-and-discarded by ``ToolRunner.run_script``). The scanner now
+    always writes a deterministic plain-text summary to **stdout** so a
+    piped caller reliably sees the offending line, category, and redacted
+    match. ``capture_output=True`` below is exactly how ``run_script`` and
+    the pre-push gate consume it — no TTY, no mocking of the scanner.
+    """
+
+    def test_planted_secret_summary_is_on_stdout_for_piped_caller(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        # The caller (run_script / the gate) reads stdout — the finding
+        # detail must be there, not only in a stderr rich table.
+        assert "api_key" in result.stdout
+        assert "1" in result.stdout  # the offending line number
+        assert "glpat-" in result.stdout  # redacted match prefix
+
+    def test_internal_path_category_and_line_visible_on_stdout(self) -> None:
+        result = _run("ok\nsee /Users/someone/secret/path\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "home_path" in result.stdout
+        assert "2" in result.stdout  # finding is on the second line
+
+    def test_clean_input_prints_clear_clean_line_on_stdout(self) -> None:
+        result = _run("a perfectly ordinary line of prose\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "clean" in result.stdout.lower()
+
+    def test_json_output_still_valid(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "-", "--json"],
+            input="token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow self-fixture
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        import json  # noqa: PLC0415
+
+        parsed = json.loads(proc.stdout)
+        assert isinstance(parsed, list)
+        assert parsed[0]["category"] == "api_key"
+        assert parsed[0]["line"] == 1
+
+    def test_no_strict_warns_but_exits_zero_with_visible_summary(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "-", "--no-strict"],
+            input="token = glpat-XXXXXXXXXXXXXXXX\n",  # privacy-scan:allow self-fixture
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "api_key" in proc.stdout
+
+
+class TestPrivacyScanAllowAnnotation:
+    """A line carrying the inline ``privacy-scan:allow`` annotation is exempt.
+
+    Same idiom as gitleaks' ``gitleaks:allow``. Used so a repo's own
+    privacy-scanner fixtures and the gate's own documentation examples do
+    not self-block the gate, while a real leak on any line *without* the
+    annotation is still caught.
+    """
+
+    def test_annotated_line_is_exempt(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX  # privacy-scan:allow planted fixture\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_annotated_line_does_not_exempt_other_lines(self) -> None:
+        text = (
+            "token = glpat-XXXXXXXXXXXXXXXX  # privacy-scan:allow fixture\n"
+            "real = glpat-YYYYYYYYYYYYYYYY\n"  # privacy-scan:allow self-fixture
+        )
+        result = _run(text)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
+    def test_annotation_only_exempts_its_own_line_not_a_substring_match(self) -> None:
+        # The annotation must be the literal marker, not any line that
+        # merely mentions the word "allow".
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX  # allow this please\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
+
+class TestDecoratorIsNotAnEmail:
+    """Python decorators / attribute access must not be flagged as emails (#701).
+
+    ``_EMAIL_RE`` historically matched ``<chars>@<domain>.<tld>`` loosely,
+    so a diff line ``+@pytest.fixture`` (diff ``+`` as a fake local part)
+    or ``@module.attr`` tripped the public-repo privacy gate. The fix
+    tightens the local part so a real address is required while the
+    decorator class of false positives is dropped — without weakening
+    detection of genuine emails (which the ``privacy-scan:allow``
+    convention still exempts when they are intentional fixtures).
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "+@pytest.fixture",
+            "    @pytest.fixture",
+            "@pytest.fixture",
+            "@app.route",
+            "+@app.route('/x')",
+            "@dataclass",
+            "@staticmethod",
+            "@property",
+            "@module.attr",
+            "+    @some.decorator.chain",
+        ],
+    )
+    def test_decorator_token_is_not_flagged(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "+contact me at someone@gmail.com please",  # privacy-scan:allow (dummy example address, test input)
+            "real address: t@e.st in this diff",  # privacy-scan:allow (dummy example address, test input)
+            "+    leak = 'someone@gmail.com'",  # privacy-scan:allow (dummy example address, test input)
+        ],
+    )
+    def test_real_email_still_caught(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+    def test_real_secret_on_same_line_as_decorator_still_flagged(self) -> None:
+        # A decorator that is *not* an email must not mask a genuine
+        # secret sharing the line.
+        result = _run("@pytest.fixture  # token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "api_key" in result.stdout
+
+    def test_real_email_on_same_line_as_decorator_still_flagged(self) -> None:
+        line = "@app.route  # owner someone@gmail.com"  # privacy-scan:allow (dummy example address, test input)
+        result = _run(line + "\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+class TestGitSshRemoteIsNotAnEmail:
+    """`git@host:org/repo.git` SSH remote URLs are not emails (#119 follow-up).
+
+    The email regex matched the ``git@<host>`` transport prefix of an SSH
+    git remote, so any test or code carrying a normal SSH remote URL
+    (``git@<host>:<org>/<repo>.git``) tripped the public-repo privacy
+    gate — a recurring false positive on perfectly benign, public,
+    non-PII git syntax. An SSH-remote ``git@`` is followed by
+    ``host:path``; a real email never has a ``:path`` after the domain.
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'assert _slug("git@github.com:souliane/teatree.git") == "souliane/teatree"',
+            "git@gitlab.com:acme/team/backend.git",
+            "+    remote = 'git@github.com:o/r.git'",
+            "git@bitbucket.org:team/repo.git",
+            "  url = git@github.com-host-alias:souliane/teatree.git",
+        ],
+    )
+    def test_ssh_remote_not_flagged(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_real_email_next_to_ssh_remote_still_caught(self) -> None:
+        # Suppressing the SSH-remote prefix must not mask a genuine email
+        # elsewhere on the same line.
+        line = "git@github.com:o/r.git  # owner someone@gmail.com"  # privacy-scan:allow self-fixture
+        result = _run(line + "\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+
+class TestPrivateIpIsAFullDottedQuad:
+    """A version string is not a private address; a private address still is.
+
+    ``_IP_RE``'s ``10`` branch matched only ``10.<n>.<n>`` — three components,
+    one short of a dotted quad — so an ordinary three-part version string
+    (``10.15.7``, ``urllib3>=10.2.3``) was reported as ``private_ip`` and the
+    pre-push leak gate refused a legitimate push. The gate exists to stop a real
+    private address reaching a public surface, so both directions are asserted
+    here: the version strings must be CLEAN, and every genuine private address —
+    including the quad the cured ``macOS`` semver is one octet short of — must
+    still be FLAGGED.
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'requires = "urllib3>=10.2.3"',
+            'node_version = "10.24.1"',
+            "upgrade notes for macOS 10.15.7",
+            "bumped to 10.0.0 from 9.8.7",
+            "timeout 10.5.1 seconds",
+            # A quad sliced out of a longer dotted run is not an address either.
+            "the 1.10.20.30.40 build train",
+            # Four components, but an out-of-range octet — a build number.
+            "windows build 10.0.19045.1",
+        ],
+    )
+    def test_version_string_is_not_a_private_ip(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "ping 10.0.0.5",  # privacy-scan:allow self-fixture
+            "host lives at 10.15.7.1",  # privacy-scan:allow self-fixture
+            "gateway 192.168.1.1",  # privacy-scan:allow self-fixture
+            "bastion 172.16.0.10",  # privacy-scan:allow self-fixture
+            "edge 172.31.255.254",  # privacy-scan:allow self-fixture
+            "subnet 10.0.0.0/8",  # privacy-scan:allow self-fixture
+            "broadcast 10.255.255.255",  # privacy-scan:allow self-fixture
+            # Four components: ambiguous with a four-part version, and the gate
+            # must fail toward blocking rather than let an address through.
+            "four part 10.2.3.4",  # privacy-scan:allow self-fixture
+        ],
+    )
+    def test_genuine_private_ip_is_still_flagged(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "private_ip" in result.stdout
+
+    def test_address_ending_a_sentence_is_still_flagged(self) -> None:
+        # The trailing guard rejects a following ``.<digit>`` only — a sentence
+        # period must not hide an address.
+        line = "the box lives at 10.0.0.5."  # privacy-scan:allow self-fixture
+        result = _run(line + "\n")
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
+    def test_reported_match_is_the_whole_address(self) -> None:
+        # The three-octet pattern truncated its own finding to ``10.0.0``, which
+        # is not something an operator can grep for in the diff being refused.
+        line = "ping 10.0.0.5"  # privacy-scan:allow self-fixture
+        result = _run(line + "\n")
+        assert "private_ip: 10.0.0.5" in result.stdout, result.stdout  # privacy-scan:allow self-fixture
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "public 172.15.0.1",
+            "public 172.32.0.1",
+            "public 8.8.8.8",
+        ],
+    )
+    def test_public_address_is_not_flagged(self, line: str) -> None:
+        result = _run(line + "\n")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestPrivacyScanBannedTermsSource:
+    """The banned-terms source is DB-home ``banned_terms``.
+
+    The public-leak pre-push gate reads the SAME ``banned_terms`` list the
+    commit/posting gates do: ``T3_BANNED_TERMS`` env override → the
+    ``banned_terms`` ``ConfigSetting`` row → fail-closed (never a SILENT empty
+    ban list). All terms are SYNTHETIC, so this public test leaks nothing.
+    """
+
+    def _seed(self, tmp_path: Path, terms: list[str]) -> Path:
+        db = tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
+            (json.dumps(terms),),
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_db_configured_term_is_a_finding(self, tmp_path: Path) -> None:
+        # A configured brand term in the diff trips the pre-push leak gate.
+        db = self._seed(tmp_path, ["acmeterm"])
+        result = _run_env("a line mentioning acmeterm here\n", {"T3_CONFIG_DB": str(db)})
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "banned_term" in result.stdout
+        assert "acmeterm" in result.stdout
+
+    def test_db_configured_term_absent_from_input_is_clean(self, tmp_path: Path) -> None:
+        db = self._seed(tmp_path, ["acmeterm"])
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(db)})
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_env_var_overrides_the_db_source(self, tmp_path: Path) -> None:
+        db = self._seed(tmp_path, ["fromdb"])
+        result = _run_env(
+            "a line mentioning envterm here\n",
+            {"T3_CONFIG_DB": str(db), "T3_BANNED_TERMS": "envterm"},
+        )
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "envterm" in result.stdout
+
+    def test_unset_row_warns_loudly_and_never_silently_inert(self, tmp_path: Path) -> None:
+        # Anti-vacuity: a DB with no banned_terms row is a load-bug-shaped UNSET,
+        # so the banned-terms detector must SAY it is inert on stderr rather than
+        # silently degrade to an empty ban list. (The other detectors still run,
+        # so the pre-push gate is never wedged.)
+        empty_db = tmp_path / "empty.sqlite3"
+        conn = sqlite3.connect(str(empty_db))
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
+        conn.commit()
+        conn.close()
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(empty_db)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "banned-terms" in result.stderr.lower()
+        assert "inert" in result.stderr.lower()
+
+    def test_explicit_empty_list_is_a_silent_deliberate_no_op(self, tmp_path: Path) -> None:
+        db = self._seed(tmp_path, [])
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(db)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "inert" not in result.stderr.lower()
+
+    def test_unreadable_store_reports_could_not_be_read_not_present_but_unset(self, tmp_path: Path) -> None:
+        # A store that could not be READ (locked/corrupt/table-less) is a DISTINCT
+        # cause from a genuinely-unset row — the message must say so, not reuse the
+        # plain-unset wording, else an operator debugging a busy DB is told the
+        # wrong thing (#4008). Still INERT (not a hard failure): the sibling
+        # in-process fast_push core-gate scan covers the same push.
+        corrupt_db = tmp_path / "corrupt.sqlite3"
+        corrupt_db.write_bytes(b"this is not a sqlite database")
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(corrupt_db)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "could not be read" in result.stderr.lower()
+        assert "present-but-unset" not in result.stderr.lower()
+
+
+class TestPrivacyScanAllowlistFromRegistry:
+    """The company-identifier carve-out resolves through the registry ``allow`` class."""
+
+    def _seed_registry(self, tmp_path: Path, registry: dict[str, list[str]]) -> Path:
+        db = tmp_path / "registry.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps(registry),),
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    def test_registry_allow_class_carves_out_the_identifier(self, tmp_path: Path) -> None:
+        db = self._seed_registry(tmp_path, {"prose_collider": ["acme"], "allow": ["acme-product"]})
+        result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "banned_term" not in result.stdout
+
+    def test_without_allow_class_the_bare_slug_is_flagged(self, tmp_path: Path) -> None:
+        # Anti-vacuous control: drop the allow class and the same line flags the slug.
+        db = self._seed_registry(tmp_path, {"prose_collider": ["acme"]})
+        result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "banned_term" in result.stdout
+
+
+class TestPrivacyScanDiffAddedLineScoping:
+    """The per-line detectors scan ADDED diff lines only, not context/removed (#3681).
+
+    A context (`` ``) or removed (``-``) hunk line is already-public by
+    definition — it exists unchanged on the parent commit the push builds
+    onto — so a credential/PII finding on it is a false positive that blocks
+    a legitimate push (a synthetic-fixture refactor pulling the fixtures into
+    the diff as context/removed lines). Every genuinely-new secret still
+    appears as an added (``+``) line or in a commit-message body, so the
+    gate's teeth are preserved.
+    """
+
+    def test_removed_line_match_is_not_flagged(self) -> None:
+        # RED before fix: the removed line's home-path tripped the scanner.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            '-old = "/Users/someone/secret/path"\n'  # privacy-scan:allow self-fixture
+            '+new = "a clean replacement value"\n'
+        )
+        result = _run(diff)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_context_line_match_is_not_flagged(self) -> None:
+        # RED before fix: the unchanged context line's home-path tripped it.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,2 +1,2 @@\n"
+            ' ctx = "/home/carol/data/store"\n'  # privacy-scan:allow self-fixture
+            "-removed = 1\n"
+            "+added = 2\n"
+        )
+        result = _run(diff)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_added_line_match_still_flagged(self) -> None:
+        # Anti-vacuity: the SAME match on an added line keeps the gate's teeth.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,2 @@\n"
+            " ctx = 1\n"
+            '+leak = "/Users/someone/secret/path"\n'  # privacy-scan:allow self-fixture
+        )
+        result = _run(diff)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "home_path" in result.stdout
+
+    def test_commit_message_body_line_still_flagged(self) -> None:
+        # A non-hunk line on stdin (here a message body, the #703 Co-authored-by
+        # case) is new content and must still be scanned — the added-only
+        # scoping must not silence it.
+        blob = (
+            "Fix the thing\n"
+            "\n"
+            "Co-authored-by: someone@gmail.com\n"  # privacy-scan:allow (dummy example address, test input)
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-old = 1\n"
+            "+new = 2\n"
+        )
+        result = _run(blob)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "email" in result.stdout
+
+    def test_three_component_version_or_section_is_not_a_private_ip(self) -> None:
+        # A private IP has FOUR octets. The `10` branch of the matcher used to
+        # carry only three, so a doc section reference or a version string of
+        # the same shape was reported as a leaked address — and a real
+        # a real four-octet address matched only its first three octets. This
+        # blocked a real push over an unchanged doc section reference.
+        diff = (
+            "diff --git a/BLUEPRINT.md b/BLUEPRINT.md\n"
+            "--- a/BLUEPRINT.md\n"
+            "+++ b/BLUEPRINT.md\n"
+            "@@ -1,1 +1,2 @@\n"
+            " ctx = 1\n"
+            "+Config lives in appendix \u00a710.1.1, shipped since version 10.2.3.\n"  # privacy-scan:allow self-fixture
+        )
+        result = _run(diff)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "private_ip" not in result.stdout
+
+    def test_a_real_private_ip_is_still_flagged_whole(self) -> None:
+        # The counterpart to the test above: narrowing the matcher must not
+        # stop it catching an actual address, and it must report all four
+        # octets rather than a truncated prefix.
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "--- a/x.py\n"
+            "+++ b/x.py\n"
+            "@@ -1,1 +1,2 @@\n"
+            " ctx = 1\n"
+            '+HOST = "10.1.1.5"\n'  # privacy-scan:allow self-fixture
+        )
+        result = _run(diff)
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "private_ip" in result.stdout
+        assert "10.1.1.5" in result.stdout  # privacy-scan:allow self-fixture

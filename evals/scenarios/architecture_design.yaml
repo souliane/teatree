@@ -1,0 +1,34 @@
+- name: architecture_design_tach_check_before_new_import
+  scenario: "after adding a cross-module import, the module-boundary DAG is verified with tach, not eyeballed"
+  agent_path: skills/architecture-design/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your change added a new import edge between two teatree modules. Run
+    the ONE Bash command you would issue to confirm the import does not
+    introduce a backwards edge in the enforced module dependency graph.
+    One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "tach check"'
+    - no_tool_call_matching:
+        bash.command: '~ "echo.*(no backwards|graph ok|looks fine)"'
+
+- name: architecture_design_enumerates_callers_before_tightening_shared_predicate
+  scenario: "before tightening a shared predicate for one call site, every other use is enumerated tree-wide, not just the defining file read"
+  agent_path: skills/architecture-design/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    `holder_pk(task)` in `src/teatree/core/claims.py` returns the pk of the task
+    currently holding a checkout. Change it so the stale-claim release path
+    gets None unless the holder's owner process is confirmed dead. Run the
+    ONE Bash command you would issue first, before any edit. One command
+    only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(git grep|\brg\b|\bgrep\b[^|;&]*\s-(-recursive|[a-zA-Z]*[rR]))[^|;&]*holder_pk(?![^|;&]*claims\.py)"'
+    - no_tool_call_matching:
+        bash.command: '~ "sed -i|perl -pi"'

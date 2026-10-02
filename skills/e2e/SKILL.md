@@ -1,0 +1,452 @@
+---
+name: e2e
+description: End-to-end testing with Playwright — writing tests, running them, visual snapshots, writing the test plan into the e2e repo, and the pre-push visual QA gate. Use when user says "e2e", "playwright", "write e2e", "run e2e", "visual qa", "screenshot", "test plan", "post test plan", "post evidence", or is working with Playwright-based tests.
+compatibility: macOS/Linux, Playwright, Node.js, t3 CLI.
+requires:
+  - test
+  - workspace
+  - platforms
+metadata:
+  version: 0.0.1
+---
+
+# E2E Testing
+
+Playwright-based end-to-end testing for overlay target applications. Covers writing tests, running them, visual snapshots, writing the test plan into the e2e repo, and the pre-push visual QA gate.
+
+## Dependencies
+
+- **t3:test** (required) — general testing patterns and CI interaction.
+- **t3:workspace** (required) — worktree and dev server management.
+
+## Setup & Prerequisites
+
+**Full worktree per PR (Non-Negotiable):** Each PR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`.
+
+**This full-worktree rule is `--target local` ONLY — a `--target dev` run provisions NOTHING locally.** A remote/DEV run (`t3 <overlay> e2e run --target dev`, or the `external` runner) hits the already-deployed stack, so there is nothing to run on your machine: do NOT `t3 <overlay> worktree provision` or start backend+frontend+DB for it. The full local stack exists to test an **unmerged** change on a self-run stack — irrelevant when the change is already deployed where you're pointing. Over-provisioning a full stack for a remote run just burns ~20 min and reads as a stall; a `--target dev` run needs only the specs repo + Playwright + DEV creds. Provision locally only for `--target local` (an unmerged change with no deployed env to hit). A `--target stack` run likewise resolves no local worktree: its separate stack command owns the remote stack and tunnel.
+
+Always start dev servers via `t3 <overlay> worktree start` before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup. If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
+
+## Browser tool: chrome-devtools-mcp (default)
+
+Agentic browser work — driving a deployed page (navigate/click/fill/upload) and inspecting it (network / console / DOM / screenshots) — runs through **chrome-devtools-mcp**, teatree's default browser tool. It is Google's `chrome-devtools-mcp` server, driving its own Chrome over the DevTools Protocol. Crucially it needs **no claude.ai account and no browser-extension pairing** — the whole account-switch / extension-popup / "logged in ≠ connected" fragility of the old Claude-in-Chrome extension is gone. Deterministic E2E stays on **Playwright** (below); chrome-devtools-mcp is the agentic nav/interaction + diagnosis lane, never the perf/trace enforcement lane.
+
+**Always headless, never headed (non-negotiable).** Every browser teatree drives — chrome-devtools-mcp *and* Playwright — runs headless. A visible window on the user's desktop is never acceptable from a background/headless agent.
+
+- **chrome-devtools-mcp:** upstream's `--headless` option defaults to `false`, so a registration that omits the flag pops a visible Chrome window on **every** navigation. `chrome_devtools_add_command()` (`core/evidence/browser_diagnosis`) appends `--headless=true` off the default-on `chrome_devtools_headless` setting, so the line `t3 mcp browser-diagnosis` prints is headless unless an operator deliberately opts into a headed browser. Never turn that setting off, and re-register any server you find registered without the flag.
+- **Playwright:** `t3 <overlay> e2e run` is headless by default — never pass `--headed`, and never hand-roll a `npx playwright test --headed` / `--ui` / `headless: false` invocation. `--headed` exists for a human debugging at their own keyboard; an agent never selects it.
+
+The `t3 mcp browser-diagnosis` registration command, the exact `claude mcp add` line and the tools it surfaces, the `~/.claude/settings.json` pre-authorization entry, and the finding that MCP allow-rules carry no domain form are in [`skills/e2e/references/browser-tool-setup.md`](references/browser-tool-setup.md).
+
+## Running E2E Tests
+
+- Run headless with `CI=1`.
+- `t3 <overlay> e2e` — run E2E tests locally.
+- `t3 ci trigger-e2e` — trigger E2E tests on CI.
+
+**E2E for backend/API changes:** When backend or microservice changes affect data visible in the frontend (e.g., webhook payload fields, API serializer fields, new model fields exposed via API), E2E tests are still required even if there is no frontend PR. The frontend form already has the fields — E2E proves the end-to-end data flow. Do NOT skip E2E just because the change is "backend-only."
+
+## Dual-Env Testing (one spec, DEV or local)
+
+A single spec should run against either the deployed **dev** environment or the **local** stack, selected by one CLI argument. Determinism comes from code, never from a parsed file.
+
+**Target selection.** `t3 <overlay> e2e run --target dev|qa|local` applies to the `external` / `project` runners; the external runner additionally accepts `stack`:
+
+```bash
+# Run the suite against the deployed dev environment (do NOT export/edit BASE_URL by hand):
+t3 <overlay> e2e run <work-item> --target dev
+
+# Run the same spec against the local stack (always discovers the local frontend):
+t3 <overlay> e2e run <work-item> --target local
+
+# Run against the overlay-declared remote local stack through its held tunnel:
+t3 <overlay> e2e run <work-item> --target stack
+```
+
+- `dev` — a pre-set `BASE_URL` wins; unset, the overlay derives the deployed URL from the tenant (`env_extras`), and the run exits 1 when neither names one. No local port scan.
+- `qa` — the same, for the deployed QA environment.
+- `local` — always discover the local frontend, even if a stray `BASE_URL` is exported (so `--target local` can never silently hit a deployed env).
+- `stack` — use the overlay-declared frontend port on the container host without resolving a worktree; specs receive `local` mode, while durable run evidence remains truthfully labelled `stack`.
+- omitted — back-compat: infer `dev` if `BASE_URL` is set, else `local`.
+
+A `project` runner declares its suite in `get_e2e_config()`: `test_dir`, `settings_module` (passed as `--ds=`) and `pytest_args`.
+
+**Set the target with `--target`, never by hand-editing `BASE_URL` (Non-Negotiable).** Do this:
+
+1. Select the environment with the `--target dev|qa|local|stack` flag — that is the ONE knob.
+2. Let the runner resolve and export **`T3_E2E_TARGET`** for you; the spec branches on it — `const IS_DEV = process.env.T3_E2E_TARGET === 'dev'`.
+3. Never re-derive the target from a `BASE_URL` host regex, and never export or rewrite `BASE_URL` to point at a different env — a stray `BASE_URL` is exactly what `--target local` overrides so a local run can't silently hit deployed code.
+
+Test a deployed/merged change against `dev`; an unmerged change must still pass on `local` (the DoD gate below requires a green `local` run regardless).
+
+**Specs branch selection (`external` runner).** `t3 <overlay> e2e external --repo <name> --branch <name>` (alias `--ref`) runs the suite from a working branch of the external specs repo instead of the `[e2e_repos.<name>].branch` default. Use it while a specs-migration MR is still open — point at the MR's source branch so the team runs the new specs before they land. Omitted, the configured default ref is used unchanged. The branch must exist on the remote, or the run aborts with a clear message. (`--branch` overrides the ref of whichever clone is resolved — the `--repo` entry's, or the overlay's own.)
+
+**Recording DEV-vs-local discrepancies (typed sidecar, not prose).** When a spec must behave differently per target (different field labels in a regulated vs internal document, a DEV-only cross-check, a feature whose data only exists on one side), encode it in a **typed TypeScript sidecar the spec imports** (e.g. `<spec>.dualenv.ts` exporting a typed `DualEnvSpec`). `tsc` type-checks it; nothing parses Markdown/YAML to drive behavior. The sidecar is the durable, machine-enforced record of every known divergence and of any fixture provenance.
+
+**Replicating a DEV object to local.** To test a not-yet-deployed feature locally, anchor on a real reproducible DEV object (read it read-only — authorized) and ensure it exists in the local DB. The local DB must be a DEV dump (use DSLR; if the object is missing, ask the user for a fresh dump — agents must never set `T3_ALLOW_REMOTE_DUMP`). Provisioning is at most two `t3` CLI invocations (provision/refresh, then run); fold password reset and access seeding into the provision step (`t3 <overlay> db refresh` already resets passwords).
+
+**Documented limitation — some features are DEV-only on local.** DSLR snapshots legitimately lack certain data catalogs (e.g. the Excel-priced bandwidth product catalog). A feature that depends on such a catalog **cannot be reproduced on the local stack from DSLR**, regardless of snapshot age. This is not a bug to fix — record it in the spec's typed sidecar as a DEV-only divergence so the spec runs that feature against `dev` only and the limitation stays visible and enforced. Pin the run to the intended worktree's stack; cross-worktree container/DB drift causes silent mis-targeting.
+
+**The reproducible dual-env recipe (five reusable sub-patterns).** Getting one spec to run reliably on both `dev` and a restored-dump `local` stack converges on the same five moves every time. Apply them as a checklist rather than rediscovering each serially (data-completeness walls surface one at a time — each found only after clearing the previous, which is what turns a small fix into a multi-day detour):
+
+1. **Permission-scaffolding-as-sanctioned-setup.** A restored dump often lacks the relational links (user↔org/role rows the queryset filter traverses) that let any user *see* the target object — so the API returns empty for every user. Synthesizing the **minimal, idempotent, local-only visibility scaffolding** to make the test user reach the real object is sanctioned fixture setup, not faking: the data path stays real, the assertion is unchanged, permissions are not what's under test. Requires an explicit user ruling the first time; once ruled, encode it as an idempotent fixture auto-run by global-setup. **Hard boundary:** never synthesize or touch the thing under test (the asserted value, the priced data, the rendered output) — those must be produced by the real fixed code path.
+2. **Reuse, don't create.** Creating the domain object via its write API often hits a setup-only dependency the dump lacks (a required system user the create path looks up → HTTP 500). **Reuse a real pre-existing object from the dump** instead — it sidesteps the entire write path and its missing dependencies. Keep the `dev` target's create path unchanged; only `local` reuses.
+3. **Settle via the real flow.** A reused draft/object may carry **persisted stale values** even when the API recompute is correct — a downstream renderer reads the persisted items, not the live recompute, so it shows the pre-fix value despite a correct fix. Settle the object through the **real recompute-and-persist flow** (sanctioned setup) so the renderer sees fixed values; never inject the asserted value to "fix" the divergence.
+4. **Deterministic endpoint.** When the local stack fronts multiple backend processes (e.g. an nginx round-robin across two backends), API calls land non-deterministically and flake. Resolve the backend port deterministically and use the auth scheme the restored-dump stack expects (e.g. token auth), so every call hits a predictable target. For the **`local` target the runner exports `COMPOSE_PROJECT_NAME`** = the resolved worktree's teatree compose project, so a spec that resolves the backend / fetches an artifact via a bare `docker compose port web 8000` / `docker compose exec -T web` (run from the backend repo dir, no `-p`) deterministically hits the teatree-provisioned stack whose `web` container has the restored-Postgres `DATABASE_URL` injected — instead of defaulting to the directory basename and missing it. No spec change is needed: `docker compose` honours `COMPOSE_PROJECT_NAME` natively.
+5. **Target-aware assertions.** The same feature legitimately presents differently per environment (a DEV object may exhibit a single-variability case while the reused local object is a real combined-variability case; a regulated vs internal document uses different labels). The assertion must branch on `T3_E2E_TARGET` via the typed sidecar — never assume the two environments yield identical output.
+
+**Branch-currency precheck (make it prominent).** Before any local-FULL verdict, assert the fix is actually present — by CONTENT, never by sha: `git grep -n '<symbol the fix added>' HEAD -- <path>` (or `git log -1 -S'<symbol>' -- <path>` for the commit that introduced it). A worktree silently behind the default branch renders the *pre-fix* value, manufacturing a "fix incomplete" false alarm. Do NOT reach for `git merge-base --is-ancestor <fix-sha> HEAD`: a squash-merge rewrites the fix into a new sha, so that probe answers "absent" for a fix that landed — manufacturing the same false alarm it is meant to catch. This is a precondition of the verdict, not optional discipline — see workspace `references/troubleshooting.md` § "Verify-Before-Relay".
+
+**Deployed-branch check before asserting post-fix behaviour (Non-Negotiable).** Shared DEV and staging environments may run a long-lived release branch, not the default branch. A fix merged to `main` only is NOT observable on an environment that tracks a separate release branch. Before asserting "the fix is still broken on DEV" or "the fix works on DEV", verify which branch that environment actually runs and confirm the fix is present on it. The overlay skill's reference docs identify which environments track which branch. If unverified, gate or skip the assertion with a reason — never report "still broken" for what is actually "fix not yet on the deployed branch".
+
+## Writing Tests
+
+**FINAL BDD before customer E2E (Non-Negotiable):** Before writing or running a customer E2E spec or plan, confirm that the ticket's **FINAL BDD scenario set** exists. A missing, draft, PREFLIGHT or otherwise uncertified set stops E2E work: no spec and no plan. Ask the owner whether to finalise it with `/bdd-test-creation` (`AskUserQuestion`; headless: `t3 <overlay> questions record`), because PRD and scenario edits need the owner's approval. The customer plan declares the PRD page, BDD revision/date, `final` status and final scenario IDs only in one hidden `<!-- t3-bdd-source {…} -->` comment, never in reader-visible text; `t3 <overlay> e2e write-test-plan` refuses a plan without that declaration, with a visible source field, or with a trace outside the declared set, and `t3 <overlay> e2e verify-plan-captures` re-checks every plan whose captures are committed.
+
+**Build the test against the TICKET's acceptance criteria, never against the MR diff (Non-Negotiable).** An E2E test verifies a **ticket** holistically — and a ticket is frequently multi-repo (a backend MR, a frontend MR, a microservice change, translations, external config, all closing one ticket). Gather the whole ticket and **all** its linked MRs across every repo before designing the test, then enumerate the end-to-end user flow the ticket promises and test *that*. Reading the MR diff too closely is a trap: it biases you to assert *what the code does now* instead of *what the ticket requires* — a vacuous test that passes regardless of correctness. The diff is an input to understanding, not the unit of test. The reviewer-side statement of this principle is `/t3:e2e-review` § "Test the ticket, not the MR diff" — apply it as the author, don't restate it.
+
+**Test depth:** Don't just verify "page loads with 200". Once you know the ticket's required flow, read the source code to understand how the feature is built, then test specific behaviors: form fields, filters, CRUD operations, access control, edge cases.
+
+**Tighten value assertions to a VISIBLE field, not a value a default can satisfy (Non-Negotiable).** A value assertion must bind to a field that is actually **rendered and visible** in the UI. The trap: asserting a computed value through a getter/accessor that returns a *default* (`0`, `''`, `null`) when the field is **absent** — the assertion then passes whether the feature worked or the field never rendered at all (a false-pass that survives the very regression the test exists to catch). Assert that the labelled field is **visible first**, then assert its text — so an absent field fails the visibility check instead of silently satisfying the value check via a default.
+
+```ts
+const total = page.getByLabel('Default purchase costs');
+await expect(total).toBeVisible();            // an absent field fails HERE, not silently
+await expect(total).toHaveText('€ 1,250');    // and the value is read from the rendered field
+```
+
+Prefer `getByLabel`/`getByRole` (which resolve only a present element) over reading a number off a store/model getter that coerces a missing field to `0`. If the only available probe is a getter that defaults, add the visibility assertion alongside it so the "absent field" and "field shows the default value" cases can never be confused.
+
+**Choose the assertion standard the AC's truth-model actually supports — exact-value golden vs structural invariant.** When a ticket ships a reference/golden artifact (a worked example, an expected schedule, a reference PDF), match the assertion to whether the system can reproduce that reference *exactly* or only *approximately*:
+
+- **Exact-value golden** only when the reference is authoritative AND the code can reproduce it bit-for-bit. Then assert the precise values cell by cell.
+- **Structural invariants** when the system legitimately approximates the reference (a calculator that uses a different day-count basis, a renderer that rounds differently). Here a cell-by-cell euro golden can pass *only* by widening tolerance over the very values the fix changes — which re-encodes the bug behind a loosened bar. Assert the structural truths instead (no phantom row, balance is monotone, the step pattern holds, the discriminators between variants differ, the schedule is complete).
+
+Never pin the code-under-test's own unvalidated output as the "expected" baseline — that certifies whatever it currently does, including the defect. And when a reference/golden artifact exists, the coverage standard is the **full** reference (the whole table, every AC), not a one- or two-row spot-check. (This is the e2e expression of the same standard in `t3:review`; choose exact-where-reproducible, structural-where-approximating, and don't grade the code with its own output.)
+
+**Access-control / role-gated E2E (Non-Negotiable):** Before asserting behaviour on any access-controlled or role-gated page, resolve the test account's REAL identity — role and group memberships — from the app's own API (e.g. `/api/me/`) and assert the expected outcome FROM that identity. The exempt/restrict contract is derived from the guard source code (what the guard actually checks), not from a ticket description or relayed narrative about which role a user supposedly has. Precondition assertion before behaviour assertion makes the test non-vacuous: if the role check fails, the test fails at the precondition rather than silently passing on an unexpected identity.
+
+**Resolve E2E credentials from the project's documented credential map by role (Non-Negotiable).** The project's overlay skill carries a credential table keyed by ROLE (not email). Before declaring a missing-credential blocker, look up the account in that table by role — the username is often a code constant, and the password is resolved from the secret store using the documented key. Do NOT grep the secret store by account email and conclude "no credentials found" — the store entry is keyed by the documented role path, not the login email.
+
+**Credentials enter the spec via env with a throw-if-unset guard — never an inline literal (Non-Negotiable).** Once resolved, a credential is injected into the run as an environment variable and read by the spec through a guard that **throws if the variable is unset**, so a missing secret fails loud at startup instead of the spec silently running with `undefined` (which logs in as nobody, then mis-attributes the resulting failure to the feature). Never paste a literal login email or password into a spec — a literal credential in spec source is a leak and a maintenance trap, and an email literal often trips brand/secret scanners.
+
+```ts
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`${name} is required for this E2E run but was unset`);
+  return v;
+}
+const password = requireEnv('E2E_ACME_PASSWORD');   // throws if the secret wasn't injected
+```
+
+The username may be a published code constant; the password (and any tenant/host that is a secret) always comes from env via this guard. `t3 <overlay> e2e` injects the documented secret into the run env; a spec that hard-codes the value bypasses that path and the secret store entirely.
+
+**Component placement:** Before writing E2E tests for a UI component, check the **routing module** to find which page/route renders it. Components may only appear at specific wizard steps or behind navigation — not on the page you'd naively navigate to. Grep for the component selector in templates to find its host, then check the routing module for the URL path.
+
+**Seed prerequisite data through the API, drive only the behaviour-under-test through the browser (Non-Negotiable).** Do NOT click through a multi-step UI wizard to set up the entity a test needs (a loan request, an order, an account) — create it programmatically via API/fixture helpers, then open the browser **only** for the one page/interaction the test actually asserts. A heavy SPA can load its resource cache from 100+ endpoints sequentially (minutes per navigation on local Docker), so browser-driven setup turns a fast test into a multi-minute hang and a flake source — multiple sessions have burned hours clicking a wizard the API could have seeded in seconds. Setting up prerequisites this way is sanctioned fixture setup (§ "Dual-Env Testing" → sub-pattern 1), not faking: the data path stays real and the asserted UI behaviour is still produced by the real code path. Practical helpers for the API-seed approach:
+
+- **Make fixtures self-contained — never depend on the raw dump's incidental state** (a flag, a price catalog, an activation that a snapshot may or may not carry); seed exactly what the test needs so a re-run is reproducible.
+- **Wrap fixture creation that uses `select_for_update`-style row locks in a transaction** so the seed commits atomically.
+- **Assign seeded entities to the authenticated test user's own scope** (broker/org/role) — an entity owned by a different user is invisible to the API the spec calls and yields a misleading 404/empty result.
+- Bump the per-`describe` `timeout` for any flow that still must navigate to a slow detail page (the resource-cache cold-load is real even when setup is API-seeded).
+
+**Mocking — stub with the error status the failure-path expects, not `200`.** When stubbing an API call in an Angular/NgRx app to exercise the empty/failure path (e.g. a "no results" alert, a retry gate, a fall-through navigation), return the status the failure effect listens for — typically `404`, sometimes `500` — rather than `200 []`. A `200` dispatches the success Action and short-circuits the path under test (the success effect navigates away or stores the empty list as a successful result). Match the status to the effect: inspect the relevant `createEffect(...)` block, find which HTTP error the `catchError` branch maps to the failure Action, and stub that status.
+
+**Race a condition promise, never a fixed `waitForTimeout` (Non-Negotiable).** When an action triggers an async write the assertion depends on — a `PATCH`, a `POST /calculate`, a recompute — do **not** insert a fixed `page.waitForTimeout(...)` and hope it settled. Set up the response promise on the *real* request **before** the action that triggers it, then await it after, so the wait is keyed on the actual round-trip completing with a `200`, not on a guessed duration:
+
+```ts
+const saved = page.waitForResponse(
+  (r) => /\/api\/.*\/calculate/.test(r.url()) && r.request().method() === 'POST' && r.ok(),
+);
+await page.getByRole('button', { name: 'Recalculate' }).click();
+await saved;                                  // resolves exactly when the real call returns 200
+await expect(page.getByLabel('Total cost')).toHaveText('€ 12,300');
+```
+
+Set the promise up first (the await-after-click order), match the **real** endpoint + method + `r.ok()`, and prefer it over a `waitForLoadState('networkidle')` when one specific call is what the assertion depends on — `networkidle` waits on *all* traffic and still races a late XHR. A fixed sleep is slow on a fast machine and flaky on a slow one; the response promise is correct on both.
+
+**`storageState` in Playwright:** `test.use({ storageState: undefined })` means "use default" (inherits global setup state). For truly unauthenticated tests, use `test.use({ storageState: { cookies: [], origins: [] } })`.
+
+**Establish baseline before attributing failures (Non-Negotiable):** When running E2E tests to validate a change, first run the same test on the **default branch** (or the unmodified code) to confirm it passes without your changes. If the test already fails on the default branch, it is a pre-existing failure — do not waste time debugging it as if your changes caused it. Report it as pre-existing and move on.
+
+**Test integrity (Non-Negotiable):** Never weaken, simplify, or remove test cases to work around failures. If a test fails, fix the underlying issue (environment, selectors, timing) — don't dilute the test.
+
+**Clean baseline against stateful infra (Non-Negotiable):** When debugging a test against a stateful database (a restored dump, a shared dev DB, anything not freshly provisioned), establish **one clean baseline first**, then change exactly one thing per run. Never interleave fixture re-runs, password/credential resets, or data re-seeding with test runs while diagnosing — re-running a fixture that fires model signals can mutate *other* rows and manufacture failures that look like product bugs. If a fixture must be idempotent to be safe to re-run, make it idempotent before re-running it. One disciplined pass, observe, then diagnose — re-seeding mid-investigation invalidates every observation that follows.
+
+## Pixel-Stable Visual Snapshots
+
+When using visual snapshot plugins (`pytest-playwright-visual`, `assert_snapshot`), snapshot tests are only reproducible when every source of visual drift is pinned. Eliminate in this order before regenerating baselines:
+
+- **Dynamic data in seeded fixtures.** Freeze timestamps, pin any `now()` values. Signal handlers that run on model creation add fresh timestamps — update them after the signal fires.
+- **Animations and caret blink.** Playwright's `animations="disabled"` only handles CSS animations it knows about. Add a session-scoped `page.add_init_script` that injects `*{animation-duration:0s!important;transition-duration:0s!important;caret-color:transparent!important}`. Combine with `reduced_motion: "reduce"` in `browser_context_args`.
+- **Font antialiasing across architectures.** Apple Silicon Docker (arm64) and x86_64 CI render fonts at different heights. Force `platform: linux/amd64` on the e2e compose service so locally-regenerated baselines match CI.
+
+**Regenerate baselines inside the same Docker image CI uses.** Never regenerate on the host with `uv run pytest --update-snapshots` — macOS Chromium renders differently. Use `t3 <overlay> e2e --update-snapshots` (which runs in the pinned Docker image).
+
+**Recovering a baseline that was never committed.** Playwright fails with `A snapshot doesn't exist at ...`. Pull the `{name}-actual.png` from the failing job's artifacts and commit it as the baseline. Inspect the extracted PNG before committing — confirm it captures the intended deterministic state rather than a transient error page.
+
+## Pre-Push Browser Sanity Gate (Visual QA)
+
+The `mcp__teatree__pr_create` MCP tool — and its `t3 <overlay> pr create` CLI fallback, for a session whose MCP server isn't connected — runs a pre-push browser sanity gate as a side effect of the shipping flow. It loads the page(s) the branch diff touches, captures silent-render regressions (crashes, console errors, raw `app.*` keys, blocking 404s), and records the summary on `Ticket.extra['visual_qa']`. See `t3:ship` § "4c. Visual QA Gate" for the blocking behavior and bypass flags.
+
+This gate is **not a replacement for E2E evidence** — it only catches silent-render regressions before push.
+
+## DoD Local-E2E Gate (UI-visible tickets)
+
+**E2E evidence is part of "done", not an optional extra — record it BEFORE ship (Non-Negotiable).** A UI-visible ticket is not done until it has a green local E2E artifact, and the deployed-env proof follows once the change is live. The canonical sequence — prefer the `mcp__teatree__pr_create` MCP tool for step 2, which runs the same ship gate; fall back to the CLI below when the MCP server isn't connected (the `e2e` verbs have no MCP twin and stay CLI):
+
+```bash
+# 1. BEFORE ship — green local E2E run is mandatory; this records the gating artifact:
+t3 <overlay> e2e run <work-item> --target local
+
+# 2. Ship only after step 1 is green (Ticket.ship() refuses otherwise):
+t3 <overlay> pr create
+
+# 3. After merge + deploy — run E2E against the dev environment and update the plan file
+#    (the deployed-env run is the completing half of "done", not a nice-to-have):
+t3 <overlay> e2e run <work-item> --target dev
+t3 <overlay> e2e write-test-plan --manifest "$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json"
+```
+
+Do step 1 — never push a UI-visible ticket with no recorded E2E artifact. Then do step 3 — a deployed-env (`dev`) E2E run merged into the plan file is what closes the loop on a UI-visible ticket; merging without it leaves "done" half-proven. Step 3 lands in the SAME file step 1's local run wrote; the two envs accumulate, they never fork.
+
+The plan the gate expects is the **comprehensive ticket test plan**, not just proof a green local run happened: one workflow per affected UI surface with a red-boxed screenshot, plus an explicit `Actual: ✅ <result>` for every backend/API claim (a backend-only workflow renders as its steps + `Actual` line, not an empty Dev|Local table). A green local E2E artifact satisfies the ship gate; the comprehensive plan is what makes the recorded evidence trustworthy.
+
+`Ticket.ship()` refuses to ship a **UI-visible** ticket — one whose scope includes a repo in the active overlay's `frontend_repos` — until a **green local-stack E2E artifact** exists. The durable `Ticket.extra['e2e_recipe'].last_run` must be `result == "green"` AND `env == "local"`; a `dev` run records provenance but does NOT satisfy the gate. A dev-after-merge run is deliberately not enough — the whole point is to catch missing scope *before* the merge, not after. A green local run is recorded automatically by `t3 <overlay> e2e run <work-item>` (which resolves an on-disk workspace, so `env` defaults to `local`).
+
+The gate raises `DodLocalE2EError` (a transition refusal, like the dirty-worktree preflight) and the FSM stays put. Escape hatch for a genuinely non-UI or exempt ticket the heuristic mis-flags:
+
+```bash
+t3 <overlay> ticket dod-override <ticket-id> --reason "<why this is exempt>"
+```
+
+The override is recorded on `Ticket.extra['dod_e2e_override']` (audited; a blank reason is refused) so the bypass is explicit, not silent.
+
+## Private Test Suite
+
+Sometimes a **separate test repo** reduces friction — no conflicts with the QA team's tests, no build pipeline overhead, freedom to use different tooling or test data.
+
+- Register it as an `[e2e_repos.<name>]` entry (`url`, `branch`, `e2e_dir`) and run it with `--repo <name>`.
+- Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
+- Artifacts land under the out-of-repo root here too: `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/`. Copying them into the test repo and tracking them in git is a choice only a **private** test repo may make (there, the artifacts are the deliverable). It is never permitted in a product/customer repo — see the rule below.
+
+### Artifacts Are Never Committed to a Product Repo (Non-Negotiable)
+
+An artifact is a **recording of a run** — screenshots, videos, traces. It is reproducible from the spec plus a provisioned stack, so the plan **cites** it by its artifacts-root-relative path rather than carrying its bytes. Committing artifacts to a product/customer repo puts binaries in a source tree, bloats every clone, and makes reviewers page through a video diff. The artifacts root lives **outside every working tree** (§ "Artifact directory layout"), so a correctly-pathed run never touches the repo; keep `artifacts/` gitignored in product repos anyway as a backstop against a stray hard-coded path. The plan file is what the branch carries; the recordings stay out of it.
+
+The three-kind table (artifact / fixture / manifest) and their homes, where run provenance lives, what a private test repo may commit via `e2e tracked-manifest`, and the loose-seed-script smell are in [`skills/e2e/references/artifact-classification.md`](references/artifact-classification.md).
+
+## Test-Plan Authoring
+
+A test plan is for a human testing in a browser. Write it so the reviewer can skim and verify fast: terse steps, exact URLs and accounts, one expected result per step. A plan is not a report.
+
+**Modality — classify each AC before writing a single step.** The right modality depends on what the AC actually tests:
+
+- **Route-guard / RBAC / redirect / backend boundary** (e.g. "advisor is blocked from the admin portal"): the verification IS a URL to navigate + an expected redirect or HTTP status. Write a clickable URL and the expected response code or redirect destination. A screenshot adds nothing here — the URL and the curl transcript ARE the evidence. Do not over-screenshot.
+- **UI feature** (e.g. a dropdown appearing, a computed field, a generated document): the verification is **browser click steps** — open this page, click this, expect this visible result. Screenshots are the per-step compare-against reference. **Never substitute API checks for UI steps.** When the FE branch is not yet on the dev environment, write the steps against a local stack that has the FE branch, or mark the AC "⏳ blocked until deployed" — do not replace clicks with curl.
+- **Genuinely backend-only AC** (a webhook, a background job, a data migration): API/curl evidence is correct and sufficient. Keep it as a copy-pasteable code block, not a terminal screenshot.
+
+**Never put a terminal screenshot in a test plan.** A screenshot must show a browser UI. An API response belongs as a text code block (or a browser URL the tester opens), not an image of a terminal window.
+
+**Concise by construction, not trimmed to concise afterwards.** The same content reaches roughly three-quarters of the pages when four moves are applied from the first draft, so the pages a later cutting pass removes were an authoring default, never required content:
+
+- **A sentence that enumerates is a list.** Steps, conditions, observed values and per-scenario results go in bullets or a table; prose carries only what a list cannot.
+- **State a convention once, then rely on it.** A rounding rule, a date format, an environment name — one convention line the whole document reads against. Restated per scenario, it is length carrying no information.
+- **State a shared numeric-format convention once before the scenarios.** Then give each result's value without restating the rule. Never repeat the convention phrase in each scenario result: `Rates use six decimal places.` belongs once above the list; each item then reports only its expected and actual rate.
+- **No self-narration.** Nothing about the document, about the testing process, or about what the reader is about to see. A reader wants the result, not a tour of it.
+- **One term per concept, fixed before the first draft.** A term that collides with a verdict, a status, or another term costs a re-read at every occurrence, and a translated edition inherits the collision.
+
+**Page count is the metric, not word count.** The two move independently: converting prose to bullets removes words and adds lines, so a cutting pass can drop hundreds of words and gain a page. Render the document and read its page count — that is the artifact the reader holds. The reviewer states that number back (`/t3:e2e-review` § "E2E Confidence Rubric" → HARD GATE H7), so a document nobody rendered cannot be approved.
+
+**A plan describes the CURRENT state only (Non-Negotiable).** No "previously", no "used to", no note that a rule changed or that the document was rewritten. A reader opens the plan to learn what is tested now, so every sentence about a former state is one they must read and then discard. The single thing that is not history and must stay: where a recorded result was produced under conditions that no longer hold, say so as a property of **that result** — "recorded against a build that stores on fixing" — never as a story about the document changing. Why a scenario changed belongs in the MR; why the plan changed belongs in the commit message.
+
+**A plan names the behaviour, never the machinery that tests it (Non-Negotiable).** A customer reads this document, so no repository or file path, spec or fixture filename, branch name, ticket/work-item/MR number, internal tool name, or environment identifier beyond the agreed environment name belongs anywhere in it — header and summary lines included, since that is where one survives review. Name each covered behaviour in the customer's own domain language instead of naming the file that tests it, and a German-language plan names it in German. § "Writing the Test Plan" bounds *what* an outward plan reports; this bounds the vocabulary it reports in.
+
+**At most one version bump per merge request.** A plan issued outside the repo carries a revision history; while its MR is open the plan is still in flux, so a second edit revises that MR's row rather than adding another. A row exists to tell someone holding an older copy what changed — nobody outside holds a copy of an unmerged plan, so a row per edit only buries the change that matters.
+
+**An outward plan is one journey, in the order a tester walks it.** Scenarios follow the flow through the product rather than the order they were written, and a later one continues from an earlier one instead of rebuilding its setup — a tester who has to click back to the same starting point for every case spends the session on preparation. A scenario that genuinely starts elsewhere opens a new journey and says so, once.
+
+**An outward plan keeps every scenario and gets shorter by regrouping.** A scenario leaves only by merging into one that still asserts everything it asserted, or on the owner's explicit decision for that scenario. The automation layer decides how a case is automated, never whether the reader tests it. Reworking an issued plan regroups its recorded results and captures: no spec change and no new capture unless a re-run is asked for.
+
+**An outward plan states intent, never an obligation the reader can hold the team to.** No coverage ratio, no promised intervention, no "must". A wait names the real wait and, in parentheses, how the team shortened it in its own run — `wait 1 day (backdated manually)` — never an offer to the reader; an outward plan is the team's record of what it tested, carries no instruction to the reader and no slot for the reader's verdict. The change log names what changed in the reader's terms, never a removed scenario or a scenario count.
+
+**What the reader sees includes image alt text and excludes repository-only comments.** Alt text renders on a broken image and is read aloud, so it describes the picture, never its file. An HTML comment may carry traceability in the repository copy and is stripped before the plan is published.
+
+**Done is a recorded review verdict, not a green check.** An outward plan is reported done only when a review record taken against its current bytes answers what no check can read — or when its owner records an acceptance with the findings still listed. An overlay supplies the mechanical check and the record format.
+
+**Field-context evidence for generated documents.** When an AC requires verifying a term in a generated PDF, export, or rendered document, assert the term appears in its expected structured field or labelled row — not anywhere in the full text. Free-text fields (borrower name, address, test-fixture label) often contain the same token and produce a false "verified." The verification step must name the field being checked: "the Security row shows type X", not "the PDF contains X". Beware test-fixture names that embed the feature keyword — a borrower named "E2E FeatureName" defeats a naive full-text search for "FeatureName".
+
+The deterministic primitive for this rule is `teatree.core.evidence.doc_evidence` (#2296) — route doc-export evidence checks through it rather than hand-rolling a substring scan. Parse the document into a `StructuredDoc` (named `fields` + labelled table `rows`) and verify with `check_doc_evidence(doc, FieldClaim(term=…, field_label=…))` or `ColumnClaim(term=…, column_label=…)`. The probe binds the assertion to the field/column the AC constrains and **fails loud** (`DocEvidenceError`) when that anchor is absent — never falling back to an incidental free-text match. A bare page-wide substring is rejected outright (`reject_page_wide_substring`); it is not evidence. It is an available primitive, not a globally-enforced gate yet — wiring a specific call site (e.g. an overlay's doc-export verification step) into it is the follow-up.
+
+## Writing the Test Plan
+
+The test plan is a FILE IN THE E2E REPO, never a forge comment: `test-plans/<repo>-<gitlab-ticket>.md` at the repo root, a sibling of `e2e/`, in the ticket's checkout of the repo that owns the specs. It is reviewed and merged with the specs it describes. There is ONE canonical command — do not hand-craft a GitLab/GitHub note, do not hand-write the file, and do not explore for an alternative path:
+
+```bash
+t3 <overlay> e2e write-test-plan --manifest "$T3_E2E_ARTIFACTS_DIR/<TICKET>/manifest.json"
+```
+
+The path is derived, never passed: the repo from the overlay's declared e2e config, the filename from the ticket number. The manifest is the single input. Build it once, then run that command — re-running is always safe: each run merges its env over what the file already records and rewrites that one file, so a second run updates the plan instead of adding a second copy of it.
+
+On the first write, the manifest's top-level BDD key is exactly `scenario_source`, with `prd_page`, `bdd_revision`, `status: "final"` and `scenario_ids`. The hidden output comment is named `t3-bdd-source`; do not copy that name into the manifest as `bdd_source`, which the writer ignores.
+
+**A test plan that ships to a colleague-facing repo is evidence of real testing — never an admission of not testing (Non-Negotiable).** The plan merges into a colleague/product repo, so it MUST reflect testing actually performed on the real (deployed) environment with real evidence. **NEVER** write a plan containing "unable to test", "blocked", "DEV verification pending", "could not verify", "not automatable", or any equivalent — to the user's colleagues that reads as incompetence and is humiliating. The gate before any on-behalf post is one question: *did I actually verify this on the real env, with real evidence?* If no, do not post.
+
+- Hit a blocker (missing credential, unpinned object id, wrong tenant, a field not exposed)? **Fix the blocker so you CAN test** — resolve the credential (§ "Resolve E2E credentials…"), pin a real reproducible object id, run against the correct tenant, replicate the DEV object to local (§ "Replicating a DEV object to local") — then write a real plan.
+- If, after genuine effort, you truly cannot test, write **no plan at all**. Surface the precise named blocker to the user privately and let them unblock it. A "couldn't test" plan in the branch is strictly worse than no plan. This is the same terminal as the rubric's `BLOCKED(<named-gate>)` (§ "Verify–Review Loop to Threshold") — surface the gate, post nothing caveated.
+
+**A user directive to "just get the plan written in whatever state it's in" does NOT override this — do X, never Y (Non-Negotiable).** Under deadline pressure the recurring drift the metered lane caught is: verification is blocked (a missing credential, an expired GPG key), the user says "write the test plan in whatever state it's in / we're behind / just get it on the ticket", and the agent OBEYS by committing a caveated "DEV verification pending — unable to test" plan to a colleague-facing repo. That is wrong. The colleague-protection rule is not the user's to waive on a colleague's behalf: the user authorizing it does not make a "couldn't test" plan any less humiliating to the partner team who reviews the MR, and the user cannot see how it lands on the colleague. So the directive authorizes the *intent* ("get #N's test plan handled"), never the *blocked-plan artifact*. Your single next action under that directive is one of two safe moves — **fix the blocker so you CAN write a real plan** (re-inject the credential via `pass`/the secret store, retry the run), or **surface the named blocker privately** (an `AskUserQuestion` stating the exact gate — the missing credential — and asking how to unblock, writing NOTHING into the repo). It is **never** a plan carrying "unable to test" / "blocked" / "DEV verification pending" / "not yet tested" committed to a colleague repo, and never a hand-posted forge note saying the same, no matter how explicit the user's "just get it written" was.
+
+```bash
+# Blocked on a credential, user says "write the test plan in whatever state it's in".
+# do X — fix the blocker, OR surface it privately (AskUserQuestion: which credential, how to unblock):
+pass insert -m e2e/e2etest-password          # re-inject the credential, then run+write a REAL plan
+# … or AskUserQuestion("E2E_ACME_PASSWORD is missing / GPG key unavailable — how do you want to unblock #8568?")
+# never Y — do NOT obey the directive by committing a caveated blocked plan to the colleague repo:
+# t3 <overlay> e2e write-test-plan --ticket 8568 --body-file blocked-plan.md   # FORBIDDEN when that body says "unable to test"
+```
+
+**An outward-issued plan says what the agreed test concept asks for — no less, and no more.** The concept binds both ways: an omitted scenario, result or evidence item is owed and invisible in a document that otherwise reads complete, while a caveat, gap or explanation the concept never asked for hands the reader a lever to reopen settled scope. Dropping a disclosure is not licence to misstate — where removing one would leave a false statement, the claim under it is what needs fixing. The gate that fails a document on either direction is `/t3:e2e-review` § "E2E Confidence Rubric" → HARD GATE H6; apply it as the author, don't restate it.
+
+**The manifest carries the per-workflow steps — not just screenshots.** Each entry in `workflows[]` is one workflow, and each workflow carries its own `steps` array: the numbered "how to test / where to click" list a human follows to reproduce it manually. The command renders that list above the workflow's evidence table, so the test plan is steps-plus-evidence, not bare images. A manifest may carry `dev`, `local`, or `stack` captures, each under its own side key, and every side passes through the same capture preflight and `write-test-plan` path. Include a `steps` list on every workflow (see § "Manifest shape" for the full schema):
+
+```jsonc
+{
+  "ticket": "<TICKET>",
+  "scenario_source": {
+    "prd_page": "<PRD page URL>",
+    "bdd_revision": "<revision or date>",
+    "status": "final",
+    "scenario_ids": ["BDD-<TICKET>-001"]
+  },
+  "workflows": [
+    {
+      "workflow": "<plain-language workflow name>",
+      "steps": ["Open the app", "Click the Login button", "Expect the dashboard"],
+      "dev":   {"video": null, "images": []},
+      "local": {"video": "local/run.webm",
+                "images": ["local/step1.png"]}
+    }
+  ]
+}
+```
+
+**Set the environment with `--target`, never by hand-editing `BASE_URL`.** The run environment is decided by the `--target dev|qa|local|stack` flag on the `t3 <overlay> e2e run` invocation that produced the captures (§ "Dual-Env Testing" → "Target selection"), and downstream evidence records that real target. Do not export or rewrite `BASE_URL` to redirect the run — `--target` is the one knob; the runner exports `T3_E2E_TARGET` for you.
+
+**Local-vs-CI note.** The evidence-capture path (the videos and red-boxed screenshots the manifest cites) runs **locally behind the `--target` flag** — there is no CI parity for capturing or writing the plan. CI runs the suite for pass/fail, but it does **not** assemble or write a test plan; you produce the artifacts on your machine via `t3 <overlay> e2e run <work-item> --target dev|qa|local|stack`, then write the plan with the canonical command above. So the test plan is a local-run deliverable, gated by the flag — not something CI emits on your behalf.
+
+## Where the Plan Lives
+
+**`test-plans/<repo>-<gitlab-ticket>.md`, a sibling of `e2e/` in the repo that owns the specs.** ONE file per ticket, named after the ticket so writer and reader resolve the same path with no glob and no index — which is what makes a re-run update the plan in place. The repo half is not decoration: work-item numbers are allocated per repo, so the number alone cannot say which ticket it names. Nothing is configured: the repo comes from the overlay's declared e2e config and the checkout from the ticket's worktree for that repo, so a ticket with no worktree there fails loud rather than writing nowhere.
+
+The file carries a hidden state blob, so a run recovers the prior state, merges its own env over it, and rewrites the file. Each env's evidence carries three fields — `env`, `commits`, `ran_at` — so a reader never has to infer where a run happened, against which commit, or when.
+
+How the plan renders (header provenance, per-workflow steps, the `Dev | Local` table with `Stack` when present), the hidden state blob and its merge semantics, the flag table, and how to pick the manifest's `template` from the AC's modality are in [`skills/e2e/references/test-plan-file-and-manifest.md`](references/test-plan-file-and-manifest.md).
+
+### Manifest shape
+
+The manifest JSON schema and the per-field notes are in [`skills/e2e/references/test-plan-file-and-manifest.md`](references/test-plan-file-and-manifest.md).
+
+### Artifact directory layout (Non-Negotiable)
+
+The per-environment directory layout, the `T3_E2E_ARTIFACTS_DIR` contract, and the worked paths are in [`skills/e2e/references/test-plan-file-and-manifest.md`](references/test-plan-file-and-manifest.md).
+
+### Rules
+
+- **Cite whatever Playwright captured** — all screenshots for each test, plus its one video (omit the video when there is none) — from that env's `$T3_E2E_ARTIFACTS_DIR/<TICKET>/<env>/` directory. The plan records each one's artifacts-root-relative path; the bytes stay out of the repo.
+- **`--embed-captures` is the exception, and only for a plan issued OUTSIDE the repository.** Its reader has no access to the artifacts directory, so a citation into one is a dead reference; the flag copies that run's captures to `test-plans/evidence/<repo>-<ticket>/<env>/` and embeds them by relative link. Never reach for it on an internal plan — committing binaries a citation already covers bloats the repo for no reader.
+- **Never hand-place a capture in the evidence directory.** `write-test-plan` is the only sanctioned way one gets there, because it re-validates the set the repo would hold **after** the run — already-committed captures plus incoming ones — through the same red-box and duplicate preflight the cited path uses, before anything is copied or written. `--body-file` is gated identically: every `evidence/<repo>-<ticket>/<env>/<capture>` link the body carries must resolve — copied from `--artifacts-dir` under `--embed-captures`, else already committed — and passes the same red-box, duplicate, stills-only and pre-roll gates; a link nothing satisfies refuses the write. A capture dropped in by hand skips no gate at write time — it fails the next write, by name.
+- **Wire the standing gate into the repo that holds the plans.** `t3 <overlay> e2e verify-plan-captures --plans-dir <checkout>/test-plans` validates every ticket's committed captures, and **refuses when there is nothing to look at** rather than reporting success — a check that passes because it found nothing is the failure it exists to prevent. It belongs in that repo's pre-commit config or CI, since a capture can be committed without ever running a command.
+- **Always include a `steps` test plan per workflow.** Give each workflow a numbered "how to test / where to click" list so a human can reproduce it manually — this is a standard part of every teatree test plan, not optional. Write it in plain manual-testing language.
+- **One file per ticket, all environments.** The Dev|Local table accumulates: local now, dev added after deploy, same file.
+- Write the workflow names and title in plain language; evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
+- **Match evidence type to PR type.** UI screenshots for frontend PRs; backend evidence (test output, API diffs) for backend PRs.
+
+### Evidence Source Integrity (Non-Negotiable)
+
+Evidence a plan carries — cited or committed — MUST come from the **deployed environment** (dev/staging) or a teatree-managed local stack, never from stale local builds. Violation is grounds for termination — it exposes the team to compliance and trust failures.
+
+`t3 <overlay> e2e write-test-plan` **machine-enforces**, before it writes anything, that every referenced artifact exists and is the right media kind, that every still carries a red highlight box and is distinct from the others, and that the video has no excessive blank pre-roll.
+
+**Prohibited evidence sources:**
+
+- Golden test PDFs from `build/test-results/` or `src/test/resources/`
+- `pdftotext` output from locally-rendered documents
+- Screenshots of locally-served pages that aren't deployed
+- Side-by-side comparisons using git-extracted PDFs from different commits
+
+**Required evidence sources:**
+
+- Browser screenshots of the actual deployed application (dev/staging URL)
+- API responses from the deployed environment
+- Documents regenerated on the deployed environment after merge + deploy
+
+**Before a capture goes into a plan, verify:**
+
+1. The MR is merged and deployed to the target environment
+2. Screenshots show a real environment URL in the browser bar (not `localhost`)
+3. The document was rendered by the deployed code, not a local build
+
+Golden test PDFs serve ONE purpose: CI regression testing. They prove the XSL transform is internally consistent. They do NOT prove the deployed system works correctly — the data, config, and rendering pipeline in the real environment can differ.
+
+## Debugging E2E Failures
+
+### Browser Console First (Non-Negotiable)
+
+When an E2E test shows missing UI elements (empty form, blank section, component not rendering), **capture browser console errors before investigating component code.** Add `page.on('console', ...)` and `page.on('pageerror', ...)` listeners. Runtime errors like `"Undefined form configuration!"` reveal the root cause in seconds.
+
+### Screenshot Sanity Check (Non-Negotiable)
+
+**Condition-based settle before capture (Non-Negotiable).** Always wait for the target element to be visible AND the network to be idle before capturing a screenshot — never use a fixed `waitForTimeout` as the settle step. A screenshot captured before the page has settled either shows a blank page or the previous route's content (a transition frame); a blank-page or transition-frame capture is NOT evidence — fail the step rather than posting it.
+
+The settle-then-capture and red-box Playwright recipes, the saturated-red pixel-count gate and its three adjacent traps (hidden-state shots, md5 dedup, whole-side replacement), and the slow-DEV mitigation are in [`skills/e2e/references/evidence-capture-recipes.md`](references/evidence-capture-recipes.md).
+
+**A capture that a control run would reproduce is not evidence (Non-Negotiable).** Before posting an image, ask: *would navigating without the thing under test produce a visually identical shot?* If yes, the image proves nothing, however clean and well-boxed it is. This is the trap when the assertion is about a **URL, a parameter, a redirect, or a token** — none of those live in pixels, and a viewport screenshot has no address bar, so a page reached *with* the deep link and a page reached *without* it look the same. It bites hardest with a synthetic/fabricated probe value: nothing rendered can depend on a value the backend rejects, so the capture degenerates into "a page loaded". Two consequences:
+
+- Post such an AC as `link-api` (the URL trail + request/response transcript IS the evidence), not as a boxed screenshot.
+- Never repair the gap by **annotating** the image — no injected URL stamp, banner, caption, arrow, or any other synthetic overlay. An evidence capture must contain only real page content plus the sanctioned red outline; painting the missing proof onto the pixels misrepresents what the app rendered. If the claim is not visible in real page content, the modality is wrong.
+
+Also check what the box actually bounds: **a red outline on a full-bleed layout container frames the whole viewport and highlights nothing** (and still clears a naive pixel count, so the gate will not save you). Walk down from the layout container to the bounded child — the card/panel/field the AC is about — and assert its `getBoundingClientRect()` is materially narrower than the viewport before capturing. A red bounding box spanning the full image width means the wrong element was boxed.
+
+Before claiming E2E success or posting screenshots as evidence, **visually inspect every screenshot** for environment issues. Reject and fix if any of these are present:
+
+- **Missing translations:** Labels show raw keys instead of human-readable text.
+- **Missing static files:** Broken images, unstyled pages, 404s for assets.
+- **Console errors:** Check for blocking JS errors.
+- **Feature element not visible:** The screenshot must show the specific UI element being tested. Use `element.scrollIntoViewIfNeeded()` before screenshots.
+- **Blank or transition-frame page:** Indicates the settle wait was insufficient — fail the step, do not post.
+
+### Video Sanity Check (Non-Negotiable)
+
+The same evidence bar the "Screenshot Sanity Check" enforces on stills applies to the **recorded video** — and it is the one a recent failure slipped through: a test-plan video with ~40s of blank pre-roll (out of 69.7s) and an unclear final frame was posted to a customer ticket and neither the author nor the e2e-review gate caught it, because the post path machine-enforced screenshot quality but had **zero** check on the video.
+
+The captured recording must:
+
+- **Start the interaction promptly** — no significant blank/static pre-roll. Begin the recording right before the interaction starts; do **not** record dead setup time (waiting on a login, a cold-loading SPA, an idle page) and leave it at the head of the clip. A recording that opens on a frozen or black screen for many seconds reads as a broken capture, not evidence.
+- **End on a clearly-framed final state** showing the asserted outcome — hold the final frame on the result the test verifies (the rendered field, the confirmation screen, the computed value), settled and unambiguous, so the last thing a reviewer sees is the proof. Do not let the recording cut mid-transition or end on a navigation/blank frame.
+
+The `scripts/analyze_video.py --verify` command and how `write-test-plan` machine-enforces the pre-roll budget are in [`skills/e2e/references/evidence-capture-recipes.md`](references/evidence-capture-recipes.md).
+
+### Store Contamination Check
+
+E2E tests for features that load data via a state management store must verify the data is loaded **from the tested page**, not from prior navigation. Each test must start from a clean state — navigate directly to the page under test. Empty dropdowns/lists are a red flag.
+
+## Test Tracking Files
+
+Each test file can have a sibling `.md` with the same basename — a single source of truth for what has been tested per ticket.
+
+| Ticket | PR | Description | Plan |
+|--------|-----|-------------|------|
+| [PROJ-1234](url) | [#5678](url) | Initial: feature X | `test-plans/<repo>-1234.md` |
+
+## Verify–Review Loop to Threshold
+
+A single E2E pass is not self-driving: it can go green vacuously, miss an acceptance criterion, or be brittle in a way a static read of the green line never shows. The fix is to **iterate** `/t3:e2e` and `/t3:e2e-review` until the spec earns a rubric-scored confidence threshold — with a hard stop so it can never spin forever. This is the in-skill, iterative expression of the orchestrator's lifecycle chain: `/t3:e2e` is the `test`/e2e phase, `/t3:e2e-review` is the `e2e_reviewing` phase, and `/next` is the edge between them.
+
+> `/next` = the orchestrator advancing the FSM to the next phase and spawning that phase's sub-agent. The e2e ↔ e2e-review chaining IS this `/next` edge fired repeatedly: `e2e --/next--> e2e_reviewing`, and on HOLD, `e2e_reviewing --/next--> e2e` again.
+
+The five FSM edges (test → e2e_reviewing → VERIFIED / BLOCKED / HOLD), the three terminal states with their max-5-iteration stop, and the `e2e_confidence_threshold` setting are in [`skills/e2e/references/verify-review-loop.md`](references/verify-review-loop.md).
+
+## Re-Read Before Debugging
+
+When an E2E test fails or the environment misbehaves, **re-read this skill** before spending more than 2 minutes on ad-hoc debugging. Skill guidance loaded early in a session gets compressed out of context.

@@ -1,0 +1,807 @@
+"""Integration tests covering full workflows through the Django management commands and views.
+
+These are NOT end-to-end tests (no real servers/git). They exercise real code paths
+through the Django ORM, management commands, and test client, mocking only external
+dependencies (subprocess, filesystem, HTTP).
+"""
+
+import subprocess
+from collections.abc import Iterator
+from pathlib import Path
+from typing import cast
+from unittest.mock import MagicMock, patch
+
+import pytest
+from django.core.management import call_command
+from django.test import TestCase, override_settings
+
+import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
+import teatree.core.management.commands.workspace as workspace_mod
+import teatree.core.management.commands.worktree as worktree_mod
+import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.utils.run as utils_run_mod
+from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
+from teatree.core.models import DeferredQuestion, Session, Task, Ticket, Worktree
+from teatree.core.overlay import (
+    OverlayBase,
+    OverlayMetadata,
+    OverlayProvisioning,
+    OverlayRuntime,
+    ProvisionStep,
+    RunCommands,
+    ServiceSpec,
+    ToolCommand,
+)
+from teatree.core.overlay_loader import reset_overlay_cache
+from tests.factories import record_test_plan
+
+pytestmark = [
+    pytest.mark.filterwarnings(
+        "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
+    ),
+]
+
+
+def _popen_mock(returncode: int = 0) -> MagicMock:
+    """A ``Popen`` context-manager mock matching ``run_streamed``'s usage.
+
+    ``run backend`` launches docker compose through ``run_streamed``, which
+    now drives ``Popen`` (tee stderr, then ``wait()``). The mock records each
+    ``Popen(cmd, ...)`` call so a test can assert the docker invocation.
+    """
+    proc = MagicMock()
+    proc.stderr = iter(())
+    proc.wait.return_value = returncode
+    ctx = MagicMock()
+    ctx.__enter__.return_value = proc
+    ctx.__exit__.return_value = False
+    return MagicMock(return_value=ctx)
+
+
+class _WorkflowMetadata(OverlayMetadata):
+    def get_tool_commands(self) -> list[ToolCommand]:
+        return [
+            {"name": "check-translations", "help": "Check translations", "command": "check_translations"},
+        ]
+
+
+class _WorkflowOverlayProvisioning(OverlayProvisioning):
+    def post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return [ProvisionStep(name="seed-data", callable=lambda: None, description="Seed test data")]
+
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {
+            "DJANGO_SETTINGS_MODULE": "project.settings",
+            "POSTGRES_DB": worktree.db_name or "test_db",
+        }
+
+    def compose_file(self, worktree: "Worktree") -> str:
+        return "/fake/docker-compose.yml"
+
+    def services_config(self, worktree: Worktree) -> dict[str, ServiceSpec]:
+        return {
+            "postgres": {
+                "shared": True,
+                "start_command": ["docker", "compose", "up", "-d", "db"],
+            },
+            "redis": {
+                "shared": True,
+                "start_command": ["docker", "compose", "up", "-d", "redis"],
+            },
+        }
+
+    def reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
+        return ProvisionStep(name="reset-passwords", callable=lambda: None)
+
+
+class _WorkflowOverlayRuntime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {
+            "backend": ["python", "manage.py", "runserver"],
+            "frontend": ["npm", "run", "start"],
+            "build-frontend": ["npm", "run", "build"],
+        }
+
+    def test_command(self, worktree: Worktree) -> list[str]:
+        return ["pytest", "--rootdir", worktree.repo_path]
+
+
+class WorkflowOverlay(OverlayBase):
+    provisioning = _WorkflowOverlayProvisioning()
+    runtime = _WorkflowOverlayRuntime()
+    """Rich overlay that supports the full lifecycle for workflow tests."""
+
+    metadata = _WorkflowMetadata()
+
+    def get_repos(self) -> list[str]:
+        return ["backend", "frontend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        def _record_provision() -> None:
+            extra = cast("dict[str, object]", worktree.extra or {})
+            extra["provisioned_by_overlay"] = True
+            worktree.extra = extra
+            worktree.save(update_fields=["extra"])
+
+        return [
+            ProvisionStep(name="symlinks", callable=lambda: None, description="Link .venv"),
+            ProvisionStep(name="migrations", callable=_record_provision, description="Run migrations"),
+        ]
+
+    def get_workspace_repos(self) -> list[str]:
+        return ["backend", "frontend"]
+
+
+_MOCK_OVERLAY = {"test": WorkflowOverlay()}
+
+WORKFLOW_SETTINGS: dict[str, object] = {}
+
+
+def _plan_ticket(ticket: Ticket) -> None:
+    """Record a PlanArtifact and drive WORK_STARTED → PLAN_RECORDED so code() can run."""
+    record_test_plan(ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
+    ticket.plan()
+    ticket.save()
+
+
+def _patch_overlay():
+    return patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY)
+
+
+@pytest.fixture(autouse=True)
+def _clear_overlay() -> Iterator[None]:
+    reset_overlay_cache()
+    yield
+    reset_overlay_cache()
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle provisioning workflows
+# ---------------------------------------------------------------------------
+
+
+class TestLifecycleProvision(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def setUp(self) -> None:
+        super().setUp()
+        mock_sp = MagicMock()
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+        mock_sp.CompletedProcess = subprocess.CompletedProcess
+        self.enterContext(patch.object(utils_run_mod, "subprocess", mock_sp))
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _create_ticket_and_worktrees(self) -> tuple[Ticket, Worktree, Worktree, Path]:
+        ticket_dir = self._tmp_path / "ac-backend-42-ticket"
+        ticket_dir.mkdir()
+        (ticket_dir / "backend").mkdir()
+        (ticket_dir / "frontend").mkdir()
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.com/org/repo/-/issues/42",
+            variant="testclient",
+        )
+        ticket.scope(
+            issue_url="https://gitlab.com/org/repo/-/issues/42",
+            variant="testclient",
+            repos=["backend", "frontend"],
+        )
+        ticket.save()
+
+        wt_backend = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="ac-backend-42-ticket",
+            extra={"worktree_path": str(ticket_dir / "backend")},
+        )
+        wt_frontend = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="frontend",
+            branch="ac-backend-42-ticket",
+            extra={"worktree_path": str(ticket_dir / "frontend")},
+        )
+        return ticket, wt_backend, wt_frontend, ticket_dir
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_setup_provisions_worktrees_and_generates_env(self) -> None:
+        _ticket, wt_backend, wt_frontend, ticket_dir = self._create_ticket_and_worktrees()
+        backend_path = str(ticket_dir / "backend")
+        frontend_path = str(ticket_dir / "frontend")
+
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
+        ):
+            mock_sp.run.return_value = MagicMock(returncode=0)
+            backend_id = cast("int", call_command("worktree", "provision", path=backend_path))
+            frontend_id = cast("int", call_command("worktree", "provision", path=frontend_path))
+
+        assert backend_id == wt_backend.id
+        assert frontend_id == wt_frontend.id
+
+        wt_backend.refresh_from_db()
+        wt_frontend.refresh_from_db()
+        assert wt_backend.state == Worktree.State.PROVISIONED
+        assert wt_frontend.state == Worktree.State.PROVISIONED
+        # db_name is keyed on the unique Ticket pk, not the derived ticket_number.
+        assert wt_backend.db_name == f"wt_{wt_backend.ticket_id}_testclient"
+        assert wt_backend.extra.get("provisioned_by_overlay") is True
+        assert wt_frontend.extra.get("provisioned_by_overlay") is True
+
+        # Each repo gets its OWN cache under the out-of-repo .t3-cache/ sibling
+        # (#3097 follow-up) — provisioning the frontend second must not clobber
+        # the backend's cache.
+        backend_cache = ticket_dir / ".t3-cache" / "backend" / ".t3-env.cache"
+        frontend_cache = ticket_dir / ".t3-cache" / "frontend" / ".t3-env.cache"
+        assert backend_cache.is_file(), "backend env cache should be generated during setup"
+        assert frontend_cache.is_file(), "frontend env cache should be generated during setup"
+        backend_content = backend_cache.read_text()
+        assert "WT_VARIANT=testclient" in backend_content
+        assert f"WT_DB_NAME=wt_{wt_backend.ticket_id}_testclient" in backend_content
+        assert "DJANGO_SETTINGS_MODULE=" in backend_content
+        # Each repo's cache carries its OWN compose project, not the sibling's.
+        assert f"COMPOSE_PROJECT_NAME=backend-wt{wt_backend.ticket_id}" in backend_content
+        assert f"COMPOSE_PROJECT_NAME=frontend-wt{wt_frontend.ticket_id}" in frontend_cache.read_text()
+        # No copy lands inside any repo working tree (#3097) — the caches are
+        # the out-of-repo .t3-cache/ siblings.
+        assert not (ticket_dir / "backend" / ".t3-env.cache").exists()
+        assert not (ticket_dir / "frontend" / ".t3-env.cache").exists()
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_start_transitions_to_services_up(self) -> None:
+        _ticket, wt_backend, _wt_frontend, ticket_dir = self._create_ticket_and_worktrees()
+        backend_path = str(ticket_dir / "backend")
+
+        # Provision first
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
+        ):
+            mock_sp.run.return_value = MagicMock(returncode=0)
+            call_command("worktree", "provision", path=backend_path)
+
+        # Start
+        mock_config = MagicMock()
+        mock_config.user.workspace_dir = self._tmp_path
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "subprocess") as mock_start_sp,
+            patch(
+                "teatree.core.gates.local_stack_gate.check_provision_admission",
+                return_value=ProvisionAdmissionVerdict.allow(),
+            ),
+        ):
+            mock_start_sp.run.return_value = MagicMock(returncode=0)
+            call_command("worktree", "start", path=backend_path)
+
+        wt_backend.refresh_from_db()
+        assert wt_backend.state == Worktree.State.SERVICES_UP
+
+        with (
+            _patch_overlay(),
+            patch.object(worktree_mod, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
+        ):
+            status = cast("dict[str, str]", call_command("worktree", "status", path=backend_path))
+        assert status["state"] == Worktree.State.SERVICES_UP
+        assert status["repo_path"] == "backend"
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_teardown_resets_state(self) -> None:
+        _ticket, wt_backend, _wt_frontend, ticket_dir = self._create_ticket_and_worktrees()
+        backend_path = str(ticket_dir / "backend")
+
+        # Provision
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
+        ):
+            mock_sp.run.return_value = MagicMock(returncode=0)
+            call_command("worktree", "provision", path=backend_path)
+
+        # Teardown — needs overlay mock because cleanup_worktree now calls
+        # get_overlay_for_worktree(worktree) which reads worktree.overlay='test'
+        # and resolves it against the installed overlay registry (#295).
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "subprocess") as mock_td_sp,
+        ):
+            mock_td_sp.run.return_value = MagicMock(returncode=0)
+            call_command("worktree", "teardown", path=backend_path)
+
+        # Teardown folds the old `clean` step — the row is deleted, not reset
+        assert not Worktree.objects.filter(pk=wt_backend.pk).exists()
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_db_name_isolation_across_worktrees(self) -> None:
+        """Verify two worktrees get distinct DB names based on ticket number and variant."""
+        wt1_dir = self._tmp_path / "wt1"
+        wt2_dir = self._tmp_path / "wt2"
+        wt1_dir.mkdir()
+        wt2_dir.mkdir()
+
+        ticket1 = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/100", variant="alpha")
+        ticket2 = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/200", variant="beta")
+
+        wt1 = Worktree.objects.create(
+            ticket=ticket1,
+            overlay="test",
+            repo_path="backend",
+            branch="br-100",
+            extra={"worktree_path": str(wt1_dir)},
+        )
+        wt2 = Worktree.objects.create(
+            ticket=ticket2,
+            overlay="test",
+            repo_path="backend",
+            branch="br-200",
+            extra={"worktree_path": str(wt2_dir)},
+        )
+
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
+        ):
+            mock_sp.run.return_value = MagicMock(returncode=0)
+            call_command("worktree", "provision", path=str(wt1_dir))
+            call_command("worktree", "provision", path=str(wt2_dir))
+
+        wt1.refresh_from_db()
+        wt2.refresh_from_db()
+
+        # db_name keys on the unique Ticket pk, not the derived ticket_number.
+        assert wt1.db_name == f"wt_{wt1.ticket_id}_alpha"
+        assert wt2.db_name == f"wt_{wt2.ticket_id}_beta"
+        assert wt1.db_name != wt2.db_name
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_password_reset_runs_automatically(self) -> None:
+        """Verify worktree provision calls provisioning.reset_passwords_command and runs it."""
+        wt_dir = self._tmp_path / "backend"
+        wt_dir.mkdir()
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/60")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+        reset_called = False
+        original_overlay = WorkflowOverlay()
+
+        def _track_reset() -> None:
+            nonlocal reset_called
+            reset_called = True
+
+        original_overlay.provisioning = type(original_overlay.provisioning)()
+        self._monkeypatch.setattr(
+            original_overlay.provisioning,
+            "reset_passwords_command",
+            lambda wt: ProvisionStep(name="reset-passwords", callable=_track_reset),
+        )
+        with (
+            patch(
+                "teatree.core.overlay_loader._discover_overlays",
+                return_value={"test": original_overlay},
+            ),
+            patch.object(utils_run_mod, "subprocess"),
+        ):
+            call_command("worktree", "provision", path=str(wt_dir))
+
+        assert reset_called
+
+
+# ---------------------------------------------------------------------------
+# Overlay filtering (managers)
+# ---------------------------------------------------------------------------
+
+
+class TestOverlayFiltering(TestCase):
+    def test_ticket_for_overlay_filters_by_name(self) -> None:
+        Ticket.objects.create(overlay="alpha")
+        Ticket.objects.create(overlay="beta")
+
+        assert Ticket.objects.for_overlay("alpha").count() == 1
+        assert Ticket.objects.for_overlay(None).count() == 2
+
+    def test_task_claimable_filters_by_overlay(self) -> None:
+        ticket_a = Ticket.objects.create(overlay="alpha")
+        ticket_b = Ticket.objects.create(overlay="beta")
+        session_a = Session.objects.create(ticket=ticket_a, overlay="alpha", agent_id="a")
+        session_b = Session.objects.create(ticket=ticket_b, overlay="beta", agent_id="b")
+        Task.objects.create(ticket=ticket_a, session=session_a)
+        Task.objects.create(ticket=ticket_b, session=session_b)
+
+        assert Task.objects.claimable(overlay="alpha").count() == 1
+        assert Task.objects.claimable(overlay=None).count() == 2
+
+
+# ---------------------------------------------------------------------------
+# Task lifecycle workflows
+# ---------------------------------------------------------------------------
+
+
+class TestTaskWorkflow(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_claim_work_complete_advances_ticket(self) -> None:
+        """Test the full task lifecycle: create -> claim -> complete -> ticket advances."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/99")
+        ticket.scope(issue_url="https://example.com/issues/99", repos=["backend"])
+        ticket.save()
+        ticket.start()
+        ticket.save()
+        _plan_ticket(ticket)
+        ticket.code()
+        ticket.save()
+        assert ticket.state == Ticket.State.CODED
+
+        ticket.test(passed=True)
+        ticket.save()
+        assert ticket.state == Ticket.State.TESTED
+
+        repo_dir = self._tmp_path / "backend"
+        repo_dir.mkdir(parents=True)
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        for cmd in (
+            ["git", "init", "--initial-branch=main"],
+            ["git", "commit", "--allow-empty", "-m", "seed"],
+            ["git", "checkout", "-b", "feature/99"],
+            ["git", "commit", "--allow-empty", "-m", "feature work"],
+        ):
+            subprocess.run(cmd, cwd=repo_dir, check=True, env=env, capture_output=True)
+        Worktree.objects.create(ticket=ticket, repo_path=str(repo_dir), branch="feature/99")
+
+        # start()/code()/test() each auto-schedule a task; the worker picks them
+        # up FIFO. Drain the coding + testing tasks (the "work" already happened
+        # above) so claim() returns the reviewing task we want to verify.
+        ticket.tasks.filter(phase__in=["coding", "testing"], status=Task.Status.PENDING).delete()
+        review_task = Task.objects.get(ticket=ticket, phase="reviewing")
+        assert review_task.status == Task.Status.PENDING
+
+        # reviewing is loop-dispatched → INTERACTIVE (subscription-covered),
+        # so the in-session slot claims it from the interactive queue.
+        claimed_id = cast(
+            "int",
+            call_command("tasks", "claim", claimed_by="review-agent"),
+        )
+        assert claimed_id == review_task.id
+
+        review_task.refresh_from_db()
+        assert review_task.status == Task.Status.CLAIMED
+        assert review_task.claimed_by == "review-agent"
+
+        review_task.complete_with_attempt(artifact_path="/tmp/review.md", exit_code=0)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SELF_REVIEWED
+
+        ship_task = Task.objects.filter(ticket=ticket, phase="shipping").first()
+        assert ship_task is not None
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_rework_cancels_pending_tasks_and_resets_ticket(self) -> None:
+        """Test the rework flow: ticket is sent back, pending tasks are cancelled."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/88")
+        ticket.scope(repos=["backend"])
+        ticket.save()
+        ticket.start()
+        ticket.save()
+        _plan_ticket(ticket)
+        ticket.code()
+        ticket.save()
+
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
+        pending_task = Task.objects.create(ticket=ticket, session=session, status=Task.Status.PENDING)
+        claimed_task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.CLAIMED,
+            claimed_by="worker",
+        )
+        completed_task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.COMPLETED,
+        )
+
+        ticket.rework()
+        ticket.save()
+
+        assert ticket.state == Ticket.State.WORK_STARTED
+
+        pending_task.refresh_from_db()
+        claimed_task.refresh_from_db()
+        completed_task.refresh_from_db()
+
+        assert pending_task.status == Task.Status.FAILED
+        assert claimed_task.status == Task.Status.FAILED
+        assert completed_task.status == Task.Status.COMPLETED  # Already done, not affected
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_headless_needing_user_input_schedules_interactive_followup(self) -> None:
+        """When a headless task reports needs_user_input, an interactive followup is created."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
+        session = Session.objects.create(ticket=ticket, overlay="test", agent_id="headless-agent")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+        )
+        task.claim(claimed_by="worker-1")
+
+        task.complete_with_attempt(
+            exit_code=0,
+            result={"needs_user_input": True, "user_input_reason": "Need approval for DB migration"},
+        )
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+        question = DeferredQuestion.objects.get(parked_task=task)
+        assert "approval" in question.question.lower()
+
+
+# ---------------------------------------------------------------------------
+# Run backend workflows
+# ---------------------------------------------------------------------------
+
+
+class TestRunBackend(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_uses_overlay_env_and_starts_via_docker_compose(self) -> None:
+        """Test that run backend calls docker compose up -d web with overlay env."""
+        wt_dir = self._tmp_path / "backend"
+        wt_dir.mkdir()
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/50")
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
+        )
+
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "subprocess") as mock_sp,
+        ):
+            mock_sp.run.return_value = MagicMock(returncode=0)
+            call_command("worktree", "provision", path=str(wt_dir))
+
+        wt.refresh_from_db()
+
+        mock_config = MagicMock()
+        mock_config.user.workspace_dir = self._tmp_path
+        mock_popen = _popen_mock()
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "Popen", mock_popen),
+            patch("teatree.config.load_config", return_value=mock_config),
+        ):
+            result = cast("str", call_command("run", "backend", path=str(wt_dir)))
+
+        assert result == "Backend started via docker-compose."
+
+        # Should have called docker compose up -d web
+        docker_calls = [c for c in mock_popen.call_args_list if "docker" in str(c)]
+        assert len(docker_calls) >= 1
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_workspace_ticket_through_lifecycle_to_run(self) -> None:
+        """End-to-end workflow: workspace ticket -> worktree provision -> run backend.
+
+        Uses a real temp directory for the workspace. Mocks git worktree add
+        to create real directories. Verifies command output, DB state, and env
+        passthrough at each step.
+        """
+        workspace = self._tmp_path / "workspace"
+        workspace.mkdir()
+
+        for repo in ("backend", "frontend"):
+            repo_dir = workspace / repo
+            repo_dir.mkdir()
+            (repo_dir / ".git").mkdir()
+            (repo_dir / ".python-version").write_text("3.12.6")
+
+        def fake_subprocess_run(cmd, **kwargs):
+            """Simulate git worktree add by creating the directory."""
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            if isinstance(cmd, list) and "worktree" in cmd and "add" in cmd:
+                wt_path = Path(cmd[-1])
+                wt_path.mkdir(parents=True, exist_ok=True)
+                (wt_path / ".git").write_text("gitdir: /fake/worktree")
+            return result
+
+        # --- Step 1: workspace ticket ---
+        with (
+            _patch_overlay(),
+            patch.dict("os.environ", {"T3_WORKSPACE_DIR": str(workspace), "T3_BRANCH_PREFIX": "ac"}),
+            patch.object(
+                utils_run_mod.subprocess,
+                "run",
+                side_effect=fake_subprocess_run,
+            ),
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch("teatree.core.runners.provision.clone_root", return_value=workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=workspace),
+        ):
+            ticket_id = cast(
+                "int",
+                call_command(
+                    "workspace",
+                    "ticket",
+                    "https://gitlab.com/org/repo/-/issues/999",
+                    "--variant",
+                    "testclient",
+                ),
+            )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        # Stage 3 of #140: workspace ticket advances scope() then start() so the
+        # provisioning runner can materialise the worktrees in the same call.
+        assert ticket.state == Ticket.State.WORK_STARTED
+        assert ticket.variant == "testclient"
+        assert ticket.repos == ["backend", "frontend"]
+        assert ticket.issue_url == "https://gitlab.com/org/repo/-/issues/999"
+
+        worktrees = list(Worktree.objects.filter(ticket=ticket).order_by("repo_path"))
+        assert len(worktrees) == 2
+        assert worktrees[0].repo_path == "backend"
+        assert worktrees[1].repo_path == "frontend"
+        # #1323: branches follow the flat ``<number>-<slug>`` convention.
+        assert worktrees[0].branch == "999-ticket"
+
+        for wt in worktrees:
+            stored_path = (wt.extra or {}).get("worktree_path")
+            assert stored_path is not None
+            assert Path(stored_path).is_dir()
+
+        # --- Step 2: worktree provision ---
+        backend_wt = worktrees[0]
+        backend_wt_path = (backend_wt.extra or {}).get("worktree_path", "")
+        assert backend_wt.state == Worktree.State.CREATED
+
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "subprocess") as mock_lc_sp,
+        ):
+            mock_lc_sp.run.return_value = MagicMock(returncode=0)
+            setup_result = cast("int", call_command("worktree", "provision", path=backend_wt_path))
+
+        assert setup_result == backend_wt.id
+
+        backend_wt.refresh_from_db()
+        assert backend_wt.state == Worktree.State.PROVISIONED
+        assert backend_wt.db_name == f"wt_{backend_wt.ticket_id}_testclient"
+
+        # --- Step 3: run backend (docker compose) ---
+        mock_config = MagicMock()
+        mock_config.user.workspace_dir = self._tmp_path
+        mock_popen = _popen_mock()
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "Popen", mock_popen),
+            patch("teatree.config.load_config", return_value=mock_config),
+        ):
+            run_result = cast("str", call_command("run", "backend", path=backend_wt_path))
+
+        assert run_result == "Backend started via docker-compose."
+
+        # Docker compose was called
+        docker_calls = [c for c in mock_popen.call_args_list if "docker" in str(c)]
+        assert len(docker_calls) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Tool and clean commands
+# ---------------------------------------------------------------------------
+
+
+class TestToolAndCleanCommands(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        mock_sp = MagicMock()
+        mock_sp.run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_sp.TimeoutExpired = subprocess.TimeoutExpired
+        mock_sp.CompletedProcess = subprocess.CompletedProcess
+        self.enterContext(patch.object(utils_run_mod, "subprocess", mock_sp))
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_tool_list_and_run_dispatches_overlay_commands(self) -> None:
+        """Test the tool management command lists and runs overlay tools."""
+        with _patch_overlay():
+            result = cast("str", call_command("tool", "list"))
+        assert "check-translations" in result
+        assert "Check translations" in result
+
+        mock_popen = _popen_mock()
+        with (
+            _patch_overlay(),
+            patch.object(utils_run_mod, "Popen", mock_popen),
+        ):
+            result = cast("str", call_command("tool", "run", "check-translations"))
+
+        assert result == "Tool 'check-translations' completed."
+        mock_popen.assert_called_once()
+        assert "check_translations" in mock_popen.call_args.args[0]
+
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_clean_all_keeps_not_done_worktrees(self) -> None:
+        """clean-all no longer reaps non-done worktrees — only done+redundant ones are wiped.
+
+        Both worktrees belong to a not-done (NOT_STARTED) ticket, so the
+        consolidated done-reaper KEEPS them with a reported reason rather than
+        destroying a provisioned/abandoned row on a state guess. Done-worktree
+        reaping itself is covered against real git by ``test_worktree_done.py`` and
+        ``TestCleanAllReapsAndSurvivesForeignOverlay``.
+        """
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/30")
+
+        created_wt = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="stale", branch="old")
+        active_wt = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="active", branch="current")
+        active_wt.provision()
+        active_wt.save()
+
+        with (
+            _patch_overlay(),
+            patch.object(ws_clean_all_mod, "prune_branches", return_value=[]),
+            patch.object(ws_clean_all_mod, "drop_orphaned_stashes", return_value=[]),
+            patch.object(ws_clean_all_mod, "drop_orphan_databases", return_value=[]),
+            patch.object(ws_clean_all_mod, "reap_orphan_isolated_worktree_roots", return_value=[]),
+            patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", return_value=[]),
+        ):
+            result = cast("list[str]", call_command("workspace", "clean-all"))
+
+        assert any("KEPT" in line and "old" in line for line in result), result
+        assert any("KEPT" in line and "current" in line for line in result), result
+        assert Worktree.objects.filter(pk=created_wt.pk).count() == 1
+        assert Worktree.objects.filter(pk=active_wt.pk).count() == 1
+
+
+# ---------------------------------------------------------------------------
+# DB refresh
+# ---------------------------------------------------------------------------
+
+
+class TestDbRefresh(TestCase):
+    @override_settings(**WORKFLOW_SETTINGS)
+    def test_resets_services_up_to_provisioned(self) -> None:
+        """Verify db_refresh transition takes worktree from services_up back to provisioned."""
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/33")
+        wt = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="backend", branch="feature")
+
+        wt.provision()
+        wt.save()
+        wt.start_services(services=["backend"])
+        wt.save()
+        assert wt.state == Worktree.State.SERVICES_UP
+
+        wt.db_refresh()
+        wt.save()
+        assert wt.state == Worktree.State.PROVISIONED
+        assert "db_refreshed_at" in (wt.extra or {})

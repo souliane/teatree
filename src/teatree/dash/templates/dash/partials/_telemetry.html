@@ -1,0 +1,39 @@
+<section class="band" aria-labelledby="telemetry-heading">
+  <h2 id="telemetry-heading">Factory telemetry</h2>
+  {% if telemetry.error %}<div class="banner-red" role="alert">{{ telemetry.error }}</div>{% endif %}
+  <p class="muted small">Event recency is shown per source; an idle event stream does not prove the worker is down or healthy.</p>
+  {% if telemetry.sources %}
+    <ul>
+      {% for source in telemetry.sources %}
+        <li>{{ source.name }}:
+          {% if source.status == "unobserved" %}no event in the last 24 hours
+          {% elif source.status == "degraded" %}degraded (event stream unavailable or incomplete{% if source.last_seen %}; last valid event {{ source.last_seen_age }} ago{% endif %})
+          {% elif source.status == "stale" %}last event {{ source.last_seen_age }} ago (stale event stream)
+          {% else %}last event {{ source.last_seen_age }} ago{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+  {% if telemetry.incidents %}
+    <table class="dash">
+      <thead><tr><th>kind</th><th>cause</th><th>severity</th><th>observed for</th><th>last seen</th><th>last recorded action</th></tr></thead>
+      <tbody>
+        {% for incident in telemetry.incidents %}
+          <tr class="stalled">
+            <td>{{ incident.kind }}</td>
+            <td class="mono">{{ incident.cause }}</td>
+            <td>{{ incident.severity }}</td>
+            <td>{{ incident.observed_for }}</td>
+            <td>{{ incident.last_seen }}</td>
+            <td>
+              {{ incident.last_action }}{% if incident.action_at %} at {{ incident.action_at }}{% endif %}
+              {% if incident.action_ticket_id %}<a href="{% url 'dash:board' %}#card-{{ incident.action_ticket_id }}">open repair ticket</a>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">No unresolved incident appears in the bounded local OTel tail.</p>
+  {% endif %}
+</section>

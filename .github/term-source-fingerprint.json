@@ -1,0 +1,14 @@
+{
+  "gates": {
+    "overlay": {
+      "count": 51,
+      "digest": "sha256:6ef55a5a6a5c1e943136018507e20663e653a208e2d3c460e0fa7aed8423aa8b"
+    },
+    "tree": {
+      "count": 81,
+      "digest": "sha256:6d69ef0dfa4194032dd16841bf309788dc01d4ced95a056b19cfb940f4af4ebf"
+    }
+  },
+  "note": "Counts and salted digests only \u2014 never term values. Regenerate with `python scripts/term_source_drift.py sync --apply`, which updates the repository secrets and this file together.",
+  "version": 1
+}

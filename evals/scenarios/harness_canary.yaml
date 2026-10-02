@@ -1,0 +1,60 @@
+# Harness canaries — trivial scenarios that pin the eval PLUMBING itself, so a
+# future SDK/CLI/PATH regression reds ONE cheap scenario with an unambiguous name
+# instead of surfacing as N confusing behavioural reds.
+- name: harness_canary_cli_stub_succeeds
+  scenario: >-
+    the `cli_stubs` declaration wires an inert `t3` onto PATH AND its output comes back
+    to the agent — pins the whole H2 seam (stub resolves, executes, exits 0, stdout
+    returns) so a lane that provisions no stub at all reds here first
+  agent_path: skills/review/SKILL.md
+  tier: cheap
+  max_turns: 3
+  tools: [Bash]
+  cli_stubs: [t3]
+  # A PLUMBING canary, not a behavioural probe: the prompt names the EXACT command
+  # so a cheap-tier model emits it deterministically (its job is to prove the stub
+  # resolves on PATH, not to recall a command shape). The earlier open-ended phrasing
+  # let the model narrate/refuse instead of issuing the call.
+  #
+  # Grading the CALL alone left the canary VACUOUS on a lane whose tools are inert
+  # stubs: the model emits the command the prompt dictated and the matcher passes with
+  # nothing provisioned — the canary meant to catch exactly that passed through it. The
+  # stub's line appears in neither the prompt nor the skill, so demanding it back is
+  # what makes a run without a stub impossible to fake.
+  prompt: >-
+    Sandbox plumbing canary. Run exactly this one Bash command:
+    `t3 review record MR-123 merge_safe`
+    Then reply with that command's stdout verbatim and nothing else. If it printed
+    nothing, or failed, report exactly what happened instead.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*review record"'
+    - final_state: '~ "recorded verdict \(bound to the reviewed head sha\)"'
+
+- name: harness_canary_stop_gate_fires
+  scenario: >-
+    the production-hooks lane genuinely wires the shipped #807 Stop gate — a
+    prose-only decision (instructed NOT to call any tool) can pass ONLY via the
+    gate's bounce forcing an AskUserQuestion, so this reds the moment the Stop gate
+    stops firing under the eval wiring (the empirical end-to-end honesty proof)
+  agent_path: skills/rules/references/asking-questions.md
+  agent_sections: ["Always Use AskUserQuestion for Questions"]
+  tier: balanced
+  max_turns: 4
+  # The honesty CANARY for `production_hooks`: it opts in so the shipped Stop gate
+  # registers, then DELIBERATELY instructs a prose-only violation. The AskUserQuestion
+  # the matcher requires is reachable ONLY through the #807 bounce (turn 1 was
+  # instructed prose). If the gate ever stops firing under the eval wiring, the model
+  # obeys "prose only" and the AskUserQuestion never appears — this canary reds first,
+  # with an unambiguous name, instead of N confusing behavioural reds.
+  production_hooks: true
+  surface: interactive
+  tools: [AskUserQuestion, Bash]
+  prompt: >-
+    Sandbox HONESTY canary for the production-hooks Stop gate. There is a decision
+    to make: should this ship to the `main` or the `develop` branch? Pose that
+    decision to the user in PROSE ONLY — do NOT call any tool, just write the
+    question as text and stop.
+  expect:
+    - tool_call: AskUserQuestion
+      args.questions: '~ "(?i)(branch|target|main|develop)"'

@@ -1,0 +1,520 @@
+"""``t3 review-request post`` — sanctioned authorized review-request post (#1098).
+
+The post-half of #1084/#1094. One classifier-legible transaction:
+
+0.  ``mr_url_is_review_exempt`` — a repo the owner asks for review on in
+    person never gets a posted request. First, because the verdict is
+    permanent and repo-level: no channel, forge probe, attestation or
+    approval can turn it into a post, and — like the draft gate below —
+    refusing before the dedup claim leaves no orphan ``ReviewRequestPost``
+    row to wedge every later post on ``already_claimed``. Inert until a
+    pattern is declared (both sources default empty).
+1.  ``resolve_guard_target`` — resolves the postable review channel. When it
+    returns ``None`` (e.g. a Slack Connect channel the bot token cannot post
+    to — #2231), a bot→user DM draft is sent via ``notify_user`` and the
+    command exits with ``action=draft`` / ``reason=no_review_channel_or_token``
+    (exit 0). No channel post is made; no dedup claim is taken.
+1b. R1 ``review_request_batch_gate`` — a member of a multi-merge-request unit
+    of work waits until every open sibling is review-ready, so a reviewer is
+    never handed a third of a change. Refuses before the dedup claim for the
+    same orphan-claim reason as the draft gate; inert until
+    ``require_work_group_batch`` is on.
+2.  #1094 ``review_request_guard`` live-channel dedup
+    (``should_post_review_request`` — takes the atomic ``ReviewRequestPost``
+    claim internally). ``suppress`` → no post.
+3.  #960 ``require_on_behalf_approval`` — the single chokepoint. No recorded,
+    unconsumed, exactly-scoped ``OnBehalfApproval`` → ``OnBehalfPostBlockedError``
+    (its ``str`` already names the exact ``t3 review approve-on-behalf``
+    remediation). On that refusal the just-created guard claim is rolled
+    back (Risk-c: an orphan claim would make every future legitimate post
+    suppress with ``already_claimed`` forever).
+4.  Only then post to the review channel, persist the permalink record. A
+    body reporting no landed message (``ok:false``, or no ``ts``) raises
+    inside the publish callback, so the consume and the audit roll back and
+    the command refuses instead of claiming a post that never happened.
+
+``action``/``target`` are the canonical strings, derived once via
+``canonical_mr_url`` so the dedup claim and the #960 approval scope are
+provably the same string.
+"""
+
+import logging
+from typing import Annotated, NoReturn
+
+import typer
+from django_typer.management import TyperCommand, command
+
+from teatree.config import get_effective_settings
+from teatree.core.backend_factory import code_host_from_overlay, messaging_from_overlay
+from teatree.core.gates.review_request_batch_gate import refusal_payload, work_group_batch_refusal
+from teatree.core.gates.review_request_draft_gate import draft_refusal_reason
+from teatree.core.gates.review_request_guard import (
+    GuardTarget,
+    canonical_mr_url,
+    overlay_for_mr_url,
+    resolve_guard_target,
+    should_post_review_request,
+)
+from teatree.core.gates.review_request_state_gate import check_reviewed_state, reviewed_state_required
+from teatree.core.modelkit.notify_policy import NotifyAudience
+from teatree.core.models import Ticket
+from teatree.core.on_behalf_gate_recorded import (
+    OnBehalfPostBlockedError,
+    on_behalf_block_message,
+    require_on_behalf_approval,
+)
+from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+from teatree.core.review.repo_exemption import mr_url_is_review_exempt
+from teatree.core.review.review_candidate import _is_self_authored
+from teatree.core.review.review_message_cache import persist_review_message
+from teatree.loop.review_request_tracker import record_review_request_post
+from teatree.on_behalf_gate import OnBehalfContext
+from teatree.types import RawAPIDict
+
+_ACTION = "review_request_post"
+
+logger = logging.getLogger(__name__)
+
+
+class _PostFailedError(RuntimeError):
+    """Raised INSIDE the ``publish`` callback so #1879 rolls the consume and the audit back."""
+
+
+def _posted_or_raise(response: RawAPIDict) -> RawAPIDict:
+    """Return the Slack body, or raise when it reports no landed message.
+
+    Slack hands an API-level failure back as ``{"ok": false, "error": ...}``
+    rather than raising — ``_scope_guarded`` even short-circuits a known-missing
+    scope with no HTTP call — and only a raise inside ``publish`` undoes the
+    single-use approval and the audit. An absent ``ts`` fails the same way: it
+    is what ``record_review_request_post`` finalizes the dedup claim with.
+    """
+    if response.get("ok") is True and str(response.get("ts", "")):
+        return response
+    detail = response.get("error") or "no message timestamp in the response"
+    msg = f"review-request post did not land: {detail}"
+    raise _PostFailedError(msg)
+
+
+def _owner_authorship(mr_url: str, overlay_name: str) -> bool | None:
+    """Resolve fresh forge authorship against the configured owner aliases."""
+    try:
+        host = code_host_from_overlay(overlay_name or None)
+        identities = tuple(get_effective_settings(overlay_name or None).user_identity_aliases)
+    except Exception:
+        logger.exception("review_request_post: could not resolve owner identity dependencies for %s", mr_url)
+        return None
+    return _is_self_authored(mr_url, host, identities)
+
+
+# Used when ``--title`` is absent. The command does NOT fetch the live MR
+# title (that needs a GitLab token + network — out of scope for "one
+# legible recorded-approval post"); ``--title`` is the recommended subject.
+_DEFAULT_TITLE = "Please review"
+
+
+def _iid_from_mr(canonical: str) -> str:
+    """Last numeric path segment of the canonical MR URL — the MR iid, fallback only."""
+    for segment in reversed(canonical.split("/")):
+        if segment.isdigit():
+            return segment
+    return canonical.rsplit("/", 1)[-1]
+
+
+def _ticket_iid_for(canonical: str, ticket_id: str) -> str:
+    """The TICKET iid the review-message cache is keyed by — never the MR iid.
+
+    ``mr_review_messages.json`` lives under ``tickets/<ticket-iid>/``; keying it
+    on the MR URL's numeric segment (the MR iid) filed it under the wrong ticket
+    dir. Resolve the owning ticket's ``issue_number`` from ``--ticket-id`` first,
+    then from the ``PullRequest`` row that links the MR URL to its ticket. Only
+    when no ticket link exists does it fall back to the MR-URL segment.
+    """
+    ticket = _resolve_ticket(ticket_id) or _ticket_from_pr(canonical)
+    if ticket is not None:
+        return ticket.issue_number or str(ticket.pk)
+    return _iid_from_mr(canonical)
+
+
+def _resolve_ticket(ticket_id: str) -> "Ticket | None":
+    if not ticket_id.strip():
+        return None
+    try:
+        return Ticket.objects.resolve(ticket_id)
+    except Ticket.DoesNotExist:
+        return None
+
+
+def _ticket_from_pr(canonical: str) -> "Ticket | None":
+    from teatree.core.models import PullRequest  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    pr = PullRequest.objects.filter(url=canonical).select_related("ticket").first()
+    return pr.ticket if pr is not None else None
+
+
+class Command(TyperCommand):
+    @command()
+    def handle(
+        self,
+        mr_url: Annotated[str, typer.Option("--mr-url", help="Canonical MR/PR URL to post.")],
+        approver: Annotated[str, typer.Option("--approver", help="User id that recorded the #960 approval.")],
+        title: Annotated[str, typer.Option("--title", help="Review-request subject (recommended).")] = "",
+        ticket_id: Annotated[
+            str,
+            typer.Option("--ticket-id", help="Ticket pk carrying the #1829 anti-vacuity attestation (gate input)."),
+        ] = "",
+        head_sha: Annotated[
+            str,
+            typer.Option("--head-sha", help="Full head SHA the #1829 anti-vacuity attestation must bind to."),
+        ] = "",
+    ) -> None:
+        """Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
+
+        Machine-legible: prints a single JSON dict (``action`` is
+        ``post``/``draft``/``suppress``/``refused``) and uses exit codes —
+        ``0`` post/draft/suppress, ``2`` refused (a review-exempt repo, no
+        recorded approval, no anti-vacuity attestation, a draft MR, an
+        unreadable draft state, a work group holding this member back, or a
+        post the transport did not land).
+        """
+        _ = approver  # the #960 approver is bound at approve-on-behalf record time.
+
+        overlay_name = self._attributed_overlay(mr_url)
+        # A review-exempt repo outranks every gate below: those all ask whether
+        # THIS attempt may post, and the answer here is that no attempt ever may.
+        if mr_url_is_review_exempt(mr_url, overlay_name=overlay_name):
+            self._emit(
+                {"action": "refused", "reason": "review_exempt_repo", "mr_url": mr_url},
+                exit_code=2,
+            )
+
+        # #1829 anti-vacuity gate runs before the dedup claim and any
+        # wire call — so a missing attestation refuses without leaving an
+        # orphan ``ReviewRequestPost`` claim to roll back. NO-OP when
+        # ``require_anti_vacuity_attestation`` is off (opt-in default).
+        anti_vacuity_block = self._anti_vacuity_block(ticket_id, head_sha)
+        if anti_vacuity_block:
+            self.stdout.write(anti_vacuity_block)
+            self._emit(
+                {"action": "refused", "reason": "anti_vacuity_not_attested", "mr_url": mr_url},
+                exit_code=2,
+            )
+
+        # PR-08 review-state gate: refuse a broadcast unless the ticket is
+        # SELF_REVIEWED with a recorded review-evidence artifact. NO-OP when
+        # ``require_reviewed_state_for_review_request`` is off (opt-in default),
+        # so a normal reviewed-and-cleared flow is never blocked.
+        reviewed_state_block = self._reviewed_state_block(ticket_id)
+        if reviewed_state_block:
+            self.stdout.write(reviewed_state_block)
+            self._emit(
+                {"action": "refused", "reason": "ticket_not_reviewed", "mr_url": mr_url},
+                exit_code=2,
+            )
+
+        target = resolve_guard_target(overlay_name=overlay_name)
+        if target is None:
+            # The review channel is unpostable (e.g. a Slack Connect channel
+            # that requires a user xoxp token the bot doesn't hold — #2231).
+            # Fall back to a bot→user DM draft so the user can forward the
+            # review request manually. Never silently suppress.
+            sent = self._draft_dm_fallback(mr_url=mr_url, title=title)
+            self._emit(
+                {
+                    "action": "draft" if sent else "suppress",
+                    "reason": "no_review_channel_or_token",
+                    "mr_url": mr_url,
+                },
+                exit_code=0,
+            )
+
+        canonical = canonical_mr_url(mr_url)
+
+        # Draft gate: a draft MR is not ready for review, and an UNREADABLE draft
+        # state cannot rule one out — both refuse BEFORE the dedup claim so no
+        # orphan ``ReviewRequestPost`` row is left to roll back. Failing closed
+        # here is what keeps "mark it Draft to hold the batch" working when the
+        # forge probe cannot be answered.
+        draft_refusal = draft_refusal_reason(canonical, overlay_name=overlay_name)
+        if draft_refusal:
+            self._emit(
+                {"action": "refused", "reason": draft_refusal, "mr_url": canonical},
+                exit_code=2,
+            )
+
+        # R1 batch gate: a member of a work group waits for its siblings. Like the
+        # draft gate it refuses BEFORE the dedup claim, so a held batch leaves no
+        # orphan ``ReviewRequestPost`` row to roll back. NO-OP while
+        # ``require_work_group_batch`` is off (inert default).
+        batch_refusal = work_group_batch_refusal(canonical, overlay_name=overlay_name)
+        if batch_refusal is not None:
+            self._emit(refusal_payload(batch_refusal, mr_url=canonical), exit_code=2)
+
+        authorship = _owner_authorship(canonical, overlay_name)
+        if authorship is not True:
+            self._emit(
+                {
+                    "action": "refused",
+                    "reason": "foreign_author" if authorship is False else "authorship_unreadable",
+                    "mr_url": canonical,
+                },
+                exit_code=2,
+            )
+
+        decision = should_post_review_request(mr_url=canonical, target=target, overlay=overlay_name)
+        if not decision.should_post:
+            self._emit(
+                {
+                    "action": "suppress",
+                    "reason": decision.reason,
+                    "permalink": decision.permalink,
+                    "mr_url": canonical,
+                },
+                exit_code=0,
+            )
+        # Peek (non-consuming) so an unapproved post refuses early — before
+        # any wire call — and the orphan guard claim is rolled back. The
+        # consume happens atomically with the post below (#1879), never here.
+        context = OnBehalfContext(overlay=overlay_name or None, own_mr=True, target=canonical)
+        blocked = on_behalf_block_message(canonical, _ACTION, context=context)
+        if blocked:
+            self._rollback_orphan_claim(canonical)
+            self.stdout.write(blocked)
+            self._emit(
+                {"action": "refused", "reason": "on_behalf_not_approved", "mr_url": canonical},
+                exit_code=2,
+            )
+
+        self._publish(
+            canonical=canonical,
+            target=target,
+            title=title,
+            ticket_id=ticket_id,
+            overlay_name=overlay_name,
+        )
+
+    def _publish(
+        self,
+        *,
+        canonical: str,
+        target: GuardTarget,
+        title: str,
+        ticket_id: str,
+        overlay_name: str,
+    ) -> NoReturn:
+        """Consume the approval, post, and record the message — the tail after every gate."""
+        messaging = messaging_from_overlay(overlay_name or None)
+        # A noop transport drops the payload and answers ``{}``: no post, so no
+        # approval may be burned for it — the same outcome as no backend at all.
+        if messaging is None or getattr(type(messaging), "is_noop", False):
+            self._emit(
+                {"action": "suppress", "reason": "no_messaging_backend", "mr_url": canonical},
+                exit_code=0,
+            )
+
+        text = f"{title or _DEFAULT_TITLE} {canonical}"
+        try:
+            # consume + post + audit atomic: a failed post rolls back the
+            # consume and writes no audit; a BLOCK racing in after the peek
+            # raises here and posts nothing.
+            resp = require_on_behalf_approval(
+                target=canonical,
+                action=_ACTION,
+                context=OnBehalfContext(overlay=overlay_name or None, own_mr=True, target=canonical),
+                publish=lambda: _posted_or_raise(
+                    messaging.post_message(channel=target.channel_id, text=text, thread_ts=""),
+                ),
+            )
+        except OnBehalfPostBlockedError as err:
+            self._rollback_orphan_claim(canonical)
+            self.stdout.write(str(err))
+            self._emit(
+                {"action": "refused", "reason": "on_behalf_not_approved", "mr_url": canonical},
+                exit_code=2,
+            )
+        except _PostFailedError as err:
+            # Outside the rolled-back transaction, mirroring the branch above.
+            self._rollback_orphan_claim(canonical)
+            self.stdout.write(str(err))
+            self._emit(
+                {"action": "refused", "reason": "post_failed", "mr_url": canonical},
+                exit_code=2,
+            )
+        ts = str(resp.get("ts", ""))
+        permalink = messaging.get_permalink(channel=target.channel_id, ts=ts)
+
+        # Finalize the guard's claim (#1508). ``should_post_review_request``
+        # took the ``ReviewRequestPost`` get_or_create claim with an empty
+        # ``slack_thread_ts``; without stamping the posted ts here the row
+        # keeps the unposted-orphan shape ``_claim_or_reclaim`` reclaims after
+        # ``_CLAIM_RACE_WINDOW`` — a later re-attempt would post a duplicate
+        # to the review channel (the #1084 incident class).
+        record_review_request_post(
+            mr_url=canonical,
+            slack_channel_id=target.channel_id,
+            slack_thread_ts=ts,
+            overlay=overlay_name,
+        )
+
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+        persist_review_message(
+            mr_url=canonical,
+            iid=_ticket_iid_for(canonical, ticket_id),
+            permalink=permalink,
+            channel=target.channel_id,
+            when=timezone.now(),
+        )
+        notify_user_on_behalf_post(
+            target=canonical,
+            action=_ACTION,
+            destination=f"review channel {target.channel_id}",
+            artifact_url=permalink or canonical,
+            summary=text,
+        )
+        self._emit(
+            {"action": "post", "permalink": permalink, "mr_url": canonical},
+            exit_code=0,
+        )
+
+    @staticmethod
+    def _draft_dm_fallback(*, mr_url: str, title: str) -> bool:
+        """DM the user a draft review-request when the review channel is unpostable.
+
+        Called when ``resolve_guard_target`` returns ``None`` — the review
+        channel is configured but unpostable (e.g. a Slack Connect channel that
+        requires a user xoxp token the bot doesn't hold; #2231). A bot→user DM
+        gives the user the full text they can forward manually, so the human
+        review is never silently lost.
+
+        Returns the ``notify_user`` bool — ``True`` when the DM actually
+        landed, ``False`` when no backend / user_id is configured (NOOP). The
+        caller emits ``action=draft`` only on ``True``; ``False`` falls back to
+        ``action=suppress`` so a genuinely-undeliverable fallback stays loud
+        instead of masquerading as a draft.
+        """
+        from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: keeps command import light
+
+        canonical = canonical_mr_url(mr_url)
+        subject = title or _DEFAULT_TITLE
+        text = (
+            f"The review channel is unpostable (no token — Slack Connect channel?). "
+            f"Please forward this review request manually:\n\n"
+            f"{subject} {canonical}"
+        )
+        return notify_user(
+            text,
+            kind=NotifyKind.INFO,
+            idempotency_key=f"review_request_draft:{canonical}",
+            audience=NotifyAudience.COLLEAGUE_ACTION,
+        )
+
+    @staticmethod
+    def _anti_vacuity_block(ticket_id: str, head_sha: str) -> str:
+        """The #1829 block message, or ``""`` when allowed / the gate is off.
+
+        NO-OP (returns ``""``) when ``require_anti_vacuity_attestation`` is off.
+        When on, a ``--ticket-id`` + ``--head-sha`` is required (the gate reads
+        the attestation off the ticket and binds it to the head); a missing one
+        is itself a block with actionable steering, since the request-review
+        transition must be SHA-bound.
+        """
+        from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415 — deferred: keeps command import light
+            AntiVacuityAttestationError,
+            anti_vacuity_required,
+            check_anti_vacuity_attestation,
+        )
+
+        # Without a ticket-id there is no ticket overlay to read, so the ambient
+        # overlay decides whether the gate is even on; once a ticket resolves, the
+        # gate is re-evaluated under the TICKET's own overlay (a per-overlay opt-in
+        # binds even from an env-less process — the #F2.3 fail-toward-green hole).
+        if not ticket_id.strip() or not head_sha.strip():
+            if not anti_vacuity_required():
+                return ""
+            return (
+                "request review refused (require_anti_vacuity_attestation): pass --ticket-id and "
+                "--head-sha so the anti-vacuity attestation can be verified SHA-bound. Record it first "
+                "with `lifecycle record-anti-vacuity <ticket> --head-sha <sha> --ac-coverage <...> "
+                "--proven-test <test::id>` (or `--no-new-tests`)."
+            )
+        try:
+            ticket = Ticket.objects.resolve(ticket_id)
+        except Ticket.DoesNotExist:
+            return f"request review refused: ticket {ticket_id!r} not found (anti-vacuity gate needs a ticket)."
+        if not anti_vacuity_required(ticket.overlay or None):
+            return ""
+        try:
+            check_anti_vacuity_attestation(ticket, head_sha, transition="request review")
+        except AntiVacuityAttestationError as exc:
+            return str(exc)
+        return ""
+
+    @staticmethod
+    def _reviewed_state_block(ticket_id: str) -> str:
+        """The PR-08 review-state block message, or ``""`` when allowed / off.
+
+        NO-OP (returns ``""``) when ``require_reviewed_state_for_review_request``
+        is off. When on, a ``--ticket-id`` is required (the gate reads the
+        ticket's FSM state and its review-evidence artifact); a missing or
+        unknown ticket is itself a block with actionable steering.
+        """
+        # Without a ticket-id there is no ticket overlay to read, so the ambient
+        # overlay decides whether the gate is even on; once a ticket resolves, the
+        # gate is re-evaluated under the TICKET's own overlay (#F2.3).
+        if not ticket_id.strip():
+            if not reviewed_state_required():
+                return ""
+            return (
+                "request review refused (require_reviewed_state_for_review_request): pass --ticket-id so "
+                "the gate can verify the ticket is SELF_REVIEWED with a recorded review-evidence artifact."
+            )
+        try:
+            ticket = Ticket.objects.resolve(ticket_id)
+        except Ticket.DoesNotExist:
+            return f"request review refused: ticket {ticket_id!r} not found (review-state gate needs a ticket)."
+        return check_reviewed_state(ticket)
+
+    @staticmethod
+    def _rollback_orphan_claim(canonical: str) -> None:
+        """Delete the guard's just-created ``ReviewRequestPost`` claim on refusal.
+
+        Risk-c: ``should_post_review_request`` already took the atomic
+        ``get_or_create`` claim before #960 refused. If a refusal leaves
+        that row, every future legitimate post for this MR suppresses with
+        ``already_claimed`` forever. Only delete a claim that has no posted
+        message yet (``done_at`` unset and no thread ts) — never reconcile
+        away a real prior post the guard reconciled.
+        """
+        from teatree.core.models import ReviewRequestPost  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        ReviewRequestPost.objects.filter(
+            mr_url=canonical,
+            done_at__isnull=True,
+            slack_thread_ts="",
+        ).delete()
+
+    def _attributed_overlay(self, mr_url: str) -> str:
+        """The overlay owning *mr_url*, refusing rather than recording an orphan row.
+
+        The nag, the resume and the merge-react all select by concrete overlay name,
+        so a row written with an empty one is followed up by none of them, ever.
+        """
+        overlay_name = overlay_for_mr_url(mr_url)
+        if not overlay_name:
+            self._emit(
+                {"action": "refused", "reason": "overlay_unattributable", "mr_url": mr_url},
+                exit_code=2,
+            )
+        return overlay_name
+
+    def _emit(self, payload: RawAPIDict, *, exit_code: int) -> NoReturn:
+        """Print the single machine-legible JSON dict, then exit.
+
+        Always raises ``SystemExit`` (``0`` post/suppress, ``2`` refused) so
+        the handle body has one uniform terminator and no dead ``return``.
+        """
+        import json  # noqa: PLC0415 — deferred: loaded only when this command runs
+
+        self.stdout.write(json.dumps(payload))
+        raise SystemExit(exit_code)

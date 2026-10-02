@@ -1,0 +1,125 @@
+- id: subprocess-egress
+  name: Raw subprocess shell-out
+  concern: >
+    Every shell-out in src/teatree must go through the typed teatree.utils.run
+    wrapper (run_checked / run_allowed_to_fail / spawn) so silent failure is
+    impossible.
+  match_kind: module_attr
+  protected_symbol: subprocess
+  protected_attrs: [run, Popen, check_output, check_call, call]
+  allowed_modules:
+    - teatree.utils.run
+    # ram_probe's `compose-sizing` entry point is executed by deploy/deploy.sh as a
+    # bare `python3 ram_probe.py` on the HOST, where the teatree package is not
+    # importable at all — `from teatree.utils.run import ...` raises ImportError,
+    # deploy.sh suppresses stderr, and the worker silently keeps a compose default
+    # sized for a different box. The wrapper cannot reach this path. Both calls are
+    # stdlib-only by necessity and each degrades to 0 rather than raising, which is
+    # the same never-fail-silently property this gate exists to protect.
+    - teatree.utils.ram_probe
+  refs:
+    - souliane/teatree#128
+    - souliane/teatree#390
+    - souliane/teatree#3432
+
+- id: django-setup-bootstrap
+  name: Django bootstrap (django.setup)
+  concern: >
+    A Typer command body that touches the ORM must bootstrap Django through the
+    single teatree.utils.django_bootstrap.ensure_django helper, never an inline
+    django.setup() — one place owns the DJANGO_SETTINGS_MODULE default and the
+    idempotent setup call.
+  match_kind: module_attr
+  protected_symbol: django
+  protected_attrs: [setup]
+  allowed_modules:
+    - teatree.utils.django_bootstrap
+  refs:
+    - souliane/teatree#1986
+
+- id: on-behalf-routed-egress
+  name: Token-routed Slack egress (post_routed / react_routed)
+  concern: >
+    The #1750 token-routed Slack primitives funnel through the single
+    OnBehalfSlackEgress chokepoint so every colleague/self post is classified,
+    gated and audited in one place.
+  match_kind: method
+  protected_attrs: [post_routed, react_routed]
+  allowed_modules:
+    - teatree.core.on_behalf_egress
+  refs:
+    - souliane/teatree#128
+    - souliane/teatree#1750
+    - souliane/teatree#1877
+
+- id: on-behalf-colleague-primitives
+  name: Connect-routed Slack colleague primitives (react / post_message)
+  concern: >
+    A raw backend react / post_message reaches a colleague surface only at the
+    documented bot->user / self-ack / provisioning sinks; any new colleague
+    egress must route through OnBehalfSlackEgress (exempt_receivers), never a
+    raw backend call.
+  match_kind: method
+  protected_attrs: [react, post_message]
+  exempt_receivers: [egress, OnBehalfSlackEgress]
+  allowed_modules:
+    - teatree.backends.slack.bot
+    - teatree.core.notify
+    - teatree.core.reply_transport
+    - teatree.core.daily_digest
+    - teatree.core.speak
+    - teatree.messaging.notify_with_fallback
+    - teatree.loop.slack_answer.cycle
+    - teatree.loop.scanners.red_card
+    - teatree.loop.scanners.slack_self_ack
+    - teatree.loop.scanners.review_nag
+    - teatree.loop.scanners.incoming_events
+    - teatree.loop.self_improve.actions
+    - teatree.cli.slack.setup
+    - teatree.core.management.commands.review_request_post
+  refs:
+    - souliane/teatree#128
+    - souliane/teatree#1750
+    - souliane/teatree#1877
+
+- id: forge-comment-write-seam
+  name: Colleague-visible forge body write (issue/PR comment, issue create/close/update)
+  concern: >
+    Every colleague-visible forge body — a PR/MR comment, an issue
+    create/comment/close/update — must first pass through the shared scanned
+    seam (teatree.core.send_proxy.route_forge_write, which runs the public-repo
+    leak gate + the #117 send-proxy audit/allowlist/redaction) BEFORE the backend
+    call, so a customer codename bound for a public forge is refused and every
+    write is audited. A NEW forge writer that calls a raw backend forge-write
+    method without routing through the seam is a leak bypass (the CC-1 test-plan
+    poster and the CC-2 dead-issue closer both did exactly this). A module is
+    added to allowed_modules only after it is verified to scrub via
+    route_forge_write first (or, for the reply transport, the equivalent
+    _enforce_privacy + _route_reply twin); the backend client modules are the
+    primitive layer the seam sits above.
+  match_kind: method
+  protected_attrs:
+    - post_pr_comment
+    - update_pr_comment
+    - post_issue_comment
+    - update_issue_comment
+    - close_issue
+    - create_issue
+    - create_sub_issue
+    - update_issue
+  allowed_modules:
+    - teatree.backends.github.client
+    - teatree.backends.gitlab.client
+    - teatree.core.answering.work_item_filing
+    - teatree.core.reply_transport
+    - teatree.core.review.review_findings
+    - teatree.core.review.verdict_findings_publish
+    - teatree.core.management.commands.pr
+    - teatree.core.management.commands.ticket
+    - teatree.core.management.commands._test_plan.mr_post
+    - teatree.loop.mechanical
+    - teatree.loops.dream.promote_memory
+    - teatree.loops.dream.umbrella_ledger
+    - teatree.mcp.services_forge
+  refs:
+    - souliane/teatree#117

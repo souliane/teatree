@@ -1,0 +1,171 @@
+"""teatree.loops.off_live_tick_driver — the driver for the loops every other driver skips.
+
+``directive_loop`` / ``dream`` / ``outer_loop`` are ``off_live_tick``, so
+``build_loop_table_jobs`` skips them and ``timer_chain_loop_names`` builds them no chain;
+the "own low-frequency cron" their docstrings promised was never installed on any host.
+This chain is that driver, and it stays inside the worker's no-OS-scheduler contract.
+Integration-first against the real DB + ``django_tasks_db`` backend, with the deadlined
+subprocess runner stubbed so no real tick is spawned.
+"""
+
+import unittest.mock
+
+import django.test
+from django.tasks import TaskResultStatus
+from django.utils import timezone
+from django_tasks_db.models import DBTaskResult
+
+from teatree.loops import off_live_tick_driver
+from teatree.loops.deadlined_tick import TickOutcome, run_deadlined_argv
+from teatree.loops.dream.loop import DREAM_OFF_TICK_DEADLINE_SECONDS
+from teatree.loops.off_live_tick_driver import (
+    drive_off_live_tick_loops,
+    ensure_off_live_tick_driver_chain,
+    off_live_tick_commands,
+)
+
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loops", "cheap"]}}
+
+
+class _ExplodingTickError(RuntimeError):
+    """Raised by a fake tick runner to prove a body fault never orphans the chain."""
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestOffLiveTickDriver(django.test.TestCase):
+    """The driver for the loops the live fan-out excludes — they had no driver at all.
+
+    ``directive_loop`` / ``dream`` / ``outer_loop`` are ``off_live_tick``, so
+    ``build_loop_table_jobs`` skips them and ``timer_chain_loop_names`` builds them no
+    chain; the "own low-frequency cron" their docstrings promised was never installed on
+    any host. This chain is that driver, and it stays inside the worker's no-OS-scheduler
+    contract.
+    """
+
+    def setUp(self) -> None:
+        DBTaskResult.objects.all().delete()
+        self._ran: list[tuple[list[str], float]] = []
+
+    def _record(self, argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+        self._ran.append((argv, deadline))
+        return {"timed_out": False, "returncode": 0}
+
+    def test_fires_every_registered_off_live_tick_loops_own_tick_command(self) -> None:
+        with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", self._record):
+            result = off_live_tick_driver.drive_off_live_tick_loops.func()
+
+        driven = {tuple(argv[-2:]) for argv, _deadline in self._ran}
+        assert driven == {("directive", "tick"), ("dream", "tick"), ("outer", "tick")}
+        assert result["driven"] == 3
+        # Each runs as its own `python -m teatree <cmd> tick` subprocess, deadlined at
+        # the loop's OWN ceiling when it declares one and the shared default otherwise.
+        declared = {name: deadline for name, _argv, deadline in off_live_tick_commands()}
+        by_command = {tuple(argv[-2:]): deadline for argv, deadline in self._ran}
+        for argv, deadline in self._ran:
+            assert argv[1:3] == ["-m", "teatree"]
+            assert deadline in set(declared.values())
+        assert by_command["dream", "tick"] == DREAM_OFF_TICK_DEADLINE_SECONDS
+        assert by_command["outer", "tick"] == off_live_tick_driver.DEADLINE_SECONDS
+        assert by_command["directive", "tick"] == off_live_tick_driver.DEADLINE_SECONDS
+
+    def test_reschedules_itself_before_running_the_ticks(self) -> None:
+        def _explode(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+            raise _ExplodingTickError
+
+        with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _explode):
+            off_live_tick_driver.drive_off_live_tick_loops.func()
+
+        pending = DBTaskResult.objects.filter(
+            task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path, status=TaskResultStatus.READY
+        )
+        assert pending.count() == 1, "successor-first: a raising body must never orphan the chain"
+
+    def test_self_dedups_against_a_pending_fire(self) -> None:
+        off_live_tick_driver.drive_off_live_tick_loops.using(run_after=timezone.now()).enqueue()
+        with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", self._record):
+            result = off_live_tick_driver.drive_off_live_tick_loops.func()
+        assert result == {"deduped": 1}
+        assert self._ran == []
+
+    def test_a_fleet_admitting_nothing_halts_the_chain_without_driving_anything(self) -> None:
+        with (
+            unittest.mock.patch.object(off_live_tick_driver, "fleet_admits_work", return_value=False),
+            unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", self._record),
+        ):
+            result = off_live_tick_driver.drive_off_live_tick_loops.func()
+
+        assert result == {"halted": 1}
+        assert self._ran == []
+        assert not DBTaskResult.objects.filter(
+            task_path=off_live_tick_driver.drive_off_live_tick_loops.module_path, status=TaskResultStatus.READY
+        ).exists()
+
+    def test_counts_a_timed_out_tick_without_aborting_the_rest(self) -> None:
+        def _timeout(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+            return {"timed_out": True, "returncode": None}
+
+        with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _timeout):
+            result = off_live_tick_driver.drive_off_live_tick_loops.func()
+
+        assert result == {"driven": 3, "timed_out": 3, "failed": 0}
+
+    def test_counts_a_nonzero_exit_as_failed_rather_than_a_healthy_drive(self) -> None:
+        # These counts are the pass's only record, so a tick command that ran and exited
+        # nonzero must not be indistinguishable from one that did its work.
+        def _exit_one(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+            return {"timed_out": False, "returncode": 1}
+
+        with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _exit_one):
+            result = off_live_tick_driver.drive_off_live_tick_loops.func()
+
+        assert result == {"driven": 3, "timed_out": 0, "failed": 3}
+
+    def test_counts_a_runner_that_never_started_as_failed(self) -> None:
+        def _explode(argv: list[str], *, label: str, deadline: float) -> TickOutcome:
+            raise _ExplodingTickError(label)
+
+        with unittest.mock.patch.object(off_live_tick_driver, "run_deadlined_argv", _explode):
+            result = off_live_tick_driver.drive_off_live_tick_loops.func()
+
+        assert result == {"driven": 0, "timed_out": 0, "failed": 3}
+
+    def test_the_driver_is_the_real_deadlined_subprocess_runner(self) -> None:
+        # The production seam, unstubbed: the driver calls the shared deadlined runner.
+        assert off_live_tick_driver.run_deadlined_argv is run_deadlined_argv
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestDeclaredCommands(django.test.TestCase):
+    """Every off-live-tick loop declares the tick command the chain fires."""
+
+    def test_the_real_registry_declares_all_three_tick_commands(self) -> None:
+        assert {name: argv for name, argv, _deadline in off_live_tick_commands()} == {
+            "directive_loop": ("directive", "tick"),
+            "dream": ("dream", "tick"),
+            "outer_loop": ("outer", "tick"),
+        }
+
+    def test_only_dream_overrides_the_shared_deadline(self) -> None:
+        # The other two off-live-tick loops are UNCHANGED by the per-loop override:
+        # neither has ever reached the shared ceiling, and raising dream's must not
+        # quietly raise theirs (the driver runs all three serially on one executor slot).
+        deadlines = {name: deadline for name, _argv, deadline in off_live_tick_commands()}
+        assert deadlines == {
+            "directive_loop": off_live_tick_driver.DEADLINE_SECONDS,
+            "dream": DREAM_OFF_TICK_DEADLINE_SECONDS,
+            "outer_loop": off_live_tick_driver.DEADLINE_SECONDS,
+        }
+        assert DREAM_OFF_TICK_DEADLINE_SECONDS > off_live_tick_driver.DEADLINE_SECONDS
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestEnsureChain(django.test.TestCase):
+    """Seeding is idempotent, so a worker restart re-arms without duplicating."""
+
+    def setUp(self) -> None:
+        DBTaskResult.objects.all().delete()
+
+    def test_seeds_one_head_and_stays_idempotent(self) -> None:
+        ensure_off_live_tick_driver_chain()
+        ensure_off_live_tick_driver_chain()
+        assert DBTaskResult.objects.filter(task_path=drive_off_live_tick_loops.module_path).count() == 1

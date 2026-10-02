@@ -1,0 +1,21 @@
+# Snapshot of the state of every issue a deferral marker in this tree points at.
+#
+# The closed-issue sub-gate reads this file and never the network. A test that
+# calls a forge fails on an expired token, a rate limit, or an offline runner,
+# and a quality gate that flakes is worse than no gate -- so the network read is
+# a deliberate, reviewable act performed by a human running the refresh script,
+# and its result is committed here.
+#
+# Polarity: an issue absent from `closed` is treated as open, so the gate never
+# blocks on a number it has no evidence about. Staleness therefore costs recall,
+# never a wrong block. `open` is recorded alongside so a refresh diff shows an
+# issue that CHANGED state rather than one that merely appeared.
+#
+# Refresh (needs `gh` auth; rewrites this file from the live tree):
+# uv run python scripts/refresh_closed_issue_manifest.py
+#
+# repo = souliane/teatree
+# snapshot = 2026-07-27
+
+closed = [100, 2232, 2240, 2447, 3157]
+open = []

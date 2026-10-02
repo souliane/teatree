@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-no_ticket_conflation_under_load-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I would keep TKT-8101 (Northbank) and TKT-8102 (Westcoop) as separate tickets and not conflate the tenants."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

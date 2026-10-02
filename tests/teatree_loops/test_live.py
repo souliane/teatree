@@ -1,0 +1,513 @@
+"""``teatree.loops.live`` — the shared live loop-status snapshot (#1744).
+
+Unit coverage for the edge cases the management-command integration test does
+not exercise directly: the stall predicate when nothing has ever ticked, the
+PID-anchored owner liveness branches, and the entry-level age / overdue / due
+helpers. The clock is pinned so the derived numbers are deterministic.
+
+After the #2513 cutover the mini-loop rows come from the DB ``Loop`` table, so
+the tests that need a mini-loop present create real ``Loop`` rows (with a
+``demo-`` name prefix scoping their assertions away from the seeded production
+loops) instead of patching the removed code-cadence source (``iter_loops`` /
+the deleted cadence-marker ledger).
+"""
+
+import datetime as dt
+import os
+from unittest.mock import patch
+
+import django.test
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
+
+import teatree.core.loop_lease_liveness as liveness
+from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
+from teatree.core.models.loop_lease import LoopLease
+from teatree.loops.live import STALL_FACTOR, LoopKind, LoopStatusEntry, build_report, owned_per_loop_owners
+
+_LIVE_PID = os.getpid()
+_DEAD_PID = 2_000_000_000
+
+#: Two pid namespaces the deployment actually produces: the worker's container and a
+#: sibling's. The same integer names a different process — or none — in each.
+_SIBLING_NS = "pid:[4026532790]"
+_READER_NS = "pid:[4026532619]"
+
+
+def _prompt() -> Prompt:
+    prompt, _ = Prompt.objects.get_or_create(name="demo-live-unit", defaults={"body": "x"})
+    return prompt
+
+
+class TestEntryHelpers:
+    def _entry(self, *, last: dt.datetime | None, nxt: dt.datetime | None) -> LoopStatusEntry:
+        return LoopStatusEntry(
+            name="x",
+            kind=LoopKind.MINI,
+            enabled=True,
+            cadence_seconds=60,
+            last_fired_at=last,
+            next_fire_at=nxt,
+            admitted=True,
+        )
+
+    def test_never_fired_entry(self) -> None:
+        now = timezone.now()
+        entry = self._entry(last=None, nxt=None)
+        assert entry.never_fired is True
+        assert entry.age_seconds(now) is None
+        assert entry.overdue(now) is False
+        assert entry.due_seconds(now) is None
+
+    def test_overdue_when_next_fire_in_past(self) -> None:
+        now = timezone.now()
+        entry = self._entry(last=now - dt.timedelta(seconds=120), nxt=now - dt.timedelta(seconds=60))
+        assert entry.overdue(now) is True
+        assert entry.due_seconds(now) == -60
+        assert entry.age_seconds(now) == 120
+
+    def test_future_next_fire_not_overdue(self) -> None:
+        now = timezone.now()
+        entry = self._entry(last=now, nxt=now + dt.timedelta(seconds=30))
+        assert entry.overdue(now) is False
+        assert entry.due_seconds(now) == 30
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestStallPredicate(django.test.TestCase):
+    def test_stalled_when_no_tick_ever(self) -> None:
+        # No infra lease rows and every Loop row's ``last_run_at`` is None
+        # (the seeded loops are all never-run) ⇒ ``last_tick_at`` is None.
+        Loop.objects.update(last_run_at=None)
+        report = build_report()
+        assert report.last_tick_at is None
+        assert report.last_tick_age_seconds is None
+        assert report.stalled is True
+
+    def test_stalled_when_oldest_beyond_factor(self) -> None:
+        now = timezone.now()
+        cadence = 720
+        Loop.objects.update(last_run_at=None)
+        Loop.objects.create(
+            name="demo-stall-old",
+            delay_seconds=300,
+            prompt=_prompt(),
+            last_run_at=now - dt.timedelta(seconds=STALL_FACTOR * cadence + 5),
+        )
+        report = build_report(now=now)
+        assert report.stalled is True
+
+    def test_not_stalled_when_recent(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(
+            name="demo-stall-recent",
+            delay_seconds=300,
+            prompt=_prompt(),
+            last_run_at=now - dt.timedelta(seconds=10),
+        )
+        report = build_report(now=now)
+        assert report.stalled is False
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestOwnerLiveness(django.test.TestCase):
+    def test_alive_pid_is_live_even_past_ttl(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="busy",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        report = build_report(now=now)
+        assert report.owner.pid_is_alive is True
+        assert report.owner.is_live is True
+
+    def test_unexpired_ttl_is_live_even_with_dead_pid(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="fresh",
+            owner_pid=_DEAD_PID,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        report = build_report(now=now)
+        assert report.owner.pid_is_alive is False
+        assert report.owner.is_live is True
+
+    def test_dead_pid_and_expired_ttl_is_not_live(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="gone",
+            owner_pid=_DEAD_PID,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        report = build_report(now=now)
+        assert report.owner.is_live is False
+        assert report.owner.is_claimed is True
+
+    def test_null_pid_owner_decided_by_ttl(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="nopid",
+            owner_pid=None,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        report = build_report(now=now)
+        assert report.owner.pid_is_alive is False
+        assert report.owner.is_live is False
+
+    def test_no_lease_is_unclaimed(self) -> None:
+        report = build_report()
+        assert report.owner.is_claimed is False
+        assert report.owner.is_live is False
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestOwnerPidNamespace(django.test.TestCase):
+    """The health read surface must not probe a pid another namespace owns (#4253).
+
+    ``t3 loop list`` and the statusline render this report, so the same bare-integer probe
+    that took the gate dark misreads here too — and this is the surface an operator reads
+    while diagnosing it. Both directions are pinned: a colliding number must not prove
+    life, and the reader's own namespace must still decide as before.
+    """
+
+    def test_a_pid_from_another_namespace_is_no_evidence_of_life(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="gone",
+            owner_pid=_LIVE_PID,
+            owner_pid_namespace=_SIBLING_NS,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):
+            report = build_report(now=now)
+        assert report.owner.pid_is_alive is False
+        assert report.owner.is_live is False
+
+    def test_an_unattributable_pid_still_falls_through_to_the_ttl(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="worker",
+            owner_pid=_LIVE_PID,
+            owner_pid_namespace=_SIBLING_NS,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):
+            report = build_report(now=now)
+        assert report.owner.pid_is_alive is False
+        assert report.owner.is_live is True
+
+    def test_a_pid_recorded_in_the_readers_own_namespace_still_decides(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="t3-master",
+            session_id="busy",
+            owner_pid=_LIVE_PID,
+            owner_pid_namespace=_READER_NS,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):
+            report = build_report(now=now)
+        assert report.owner.pid_is_alive is True
+        assert report.owner.is_live is True
+
+    def test_a_per_loop_owner_is_read_the_same_way(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop:dispatch",
+            session_id="gone",
+            owner_pid=_LIVE_PID,
+            owner_pid_namespace=_SIBLING_NS,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        with patch.object(liveness, "reader_pid_namespace", return_value=_READER_NS):
+            report = build_report(now=now)
+        assert report.per_loop_owners[0].pid_is_alive is False
+        assert report.per_loop_owners[0].is_live is False
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestPerLoopOwners(django.test.TestCase):
+    """The additive per-loop owning-session health layer (#1834).
+
+    ``build_report`` surfaces one :class:`LoopOwnerStatus` per ``loop:<name>``
+    lease, disjoint from the global ``t3-master`` row, with the same
+    pid-anchored liveness. Empty under the single-owner default.
+    """
+
+    def test_no_per_loop_leases_means_empty(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(name="t3-master", session_id="global", owner_pid=_LIVE_PID, lease_expires_at=now)
+        report = build_report(now=now)
+        assert report.per_loop_owners == ()
+
+    def test_two_per_loop_owners_surfaced_sorted_by_slot(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop:review",
+            session_id="sess-review",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        LoopLease.objects.create(
+            name="loop:dispatch",
+            session_id="sess-dispatch",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        report = build_report(now=now)
+        assert [o.slot for o in report.per_loop_owners] == ["loop:dispatch", "loop:review"]
+        assert report.per_loop_owners[0].session_id == "sess-dispatch"
+        assert all(o.is_live for o in report.per_loop_owners)
+
+    def test_per_loop_owner_pid_liveness_is_anchored(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop:dispatch",
+            session_id="busy",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now - dt.timedelta(hours=1),
+        )
+        report = build_report(now=now)
+        owner = report.per_loop_owners[0]
+        assert owner.pid_is_alive is True
+        assert owner.is_live is True
+
+    def test_global_owner_row_is_not_a_per_loop_owner(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(name="t3-master", session_id="g", owner_pid=_LIVE_PID, lease_expires_at=now)
+        # The infra-slot leases use ``-`` not ``:`` so they are also excluded.
+        LoopLease.objects.create(name="loop-tick", owner="t", acquired_at=now)
+        report = build_report(now=now)
+        assert report.per_loop_owners == ()
+        assert report.owner.slot == "t3-master"
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestOwnedPerLoopOwners(django.test.TestCase):
+    """``owned_per_loop_owners`` scopes the per-loop layer to one session (#1834 WI-2).
+
+    The default ``t3 loop list`` / statusline view subtracts every per-loop
+    owner NOT owned by the current session; ``--all`` keeps the full
+    cross-session set. An empty ``session_id`` (cron / anonymous) fails open
+    to the full set so the default view is never blanked.
+    """
+
+    def _seed(self, now: dt.datetime) -> None:
+        LoopLease.objects.create(
+            name="loop:dispatch",
+            session_id="sess-A",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+        LoopLease.objects.create(
+            name="loop:review",
+            session_id="sess-B",
+            owner_pid=_LIVE_PID,
+            lease_expires_at=now + dt.timedelta(minutes=30),
+        )
+
+    def test_scopes_to_owning_session(self) -> None:
+        now = timezone.now()
+        self._seed(now)
+        report = build_report(now=now)
+        owned = owned_per_loop_owners(report, "sess-A")
+        assert [o.slot for o in owned] == ["loop:dispatch"]
+        assert owned[0].session_id == "sess-A"
+
+    def test_other_session_subtracted_but_present_in_full_set(self) -> None:
+        now = timezone.now()
+        self._seed(now)
+        report = build_report(now=now)
+        # The default view for session A excludes B's loop ...
+        assert [o.slot for o in owned_per_loop_owners(report, "sess-A")] == ["loop:dispatch"]
+        # ... yet B's loop genuinely exists in the unfiltered cross-session set.
+        assert {o.slot for o in report.per_loop_owners} == {"loop:dispatch", "loop:review"}
+
+    def test_empty_session_fails_open_to_full_set(self) -> None:
+        now = timezone.now()
+        self._seed(now)
+        report = build_report(now=now)
+        owned = owned_per_loop_owners(report, "")
+        assert {o.slot for o in owned} == {"loop:dispatch", "loop:review"}
+
+    def test_no_per_loop_rows_is_empty_for_any_session(self) -> None:
+        now = timezone.now()
+        report = build_report(now=now)
+        assert owned_per_loop_owners(report, "sess-A") == ()
+        assert owned_per_loop_owners(report, "") == ()
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestInfraEntries(django.test.TestCase):
+    def test_held_lease_marked_held(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop-tick",
+            owner="holder",
+            acquired_at=now,
+            lease_expires_at=now + dt.timedelta(minutes=2),
+        )
+        report = build_report(now=now)
+        tick = next(e for e in report.infra_slots if e.name == "loop-tick")
+        assert tick.held is True
+        assert tick.kind is LoopKind.INFRA
+        assert tick.next_fire_at is not None
+
+    def test_missing_lease_row_is_idle_never_fired(self) -> None:
+        report = build_report()
+        tick = next(e for e in report.infra_slots if e.name == "loop-tick")
+        assert tick.held is False
+        assert tick.never_fired is True
+
+    def test_released_slot_still_reports_last_fire_and_next_tick(self) -> None:
+        """A cleanly-released infra slot reports when it ran and when it is next due.
+
+        The measured failure: the reactive Slack-answer cycle demonstrably fired
+        (:eyes: + :hammer_and_wrench: on the owner's DM, an ``answering`` Task
+        dispatched) while ``t3 loop list`` showed ``last: — next: — idle``, because
+        the entry read the lease CLAIM (``acquired_at``), which the release nulls.
+        The owner read that as "this loop has never fired".
+        """
+        LoopLease.objects.acquire("loop-slack-answer", owner="worker-1")
+        LoopLease.objects.release("loop-slack-answer", owner="worker-1")
+
+        report = build_report()
+        slot = next(e for e in report.infra_slots if e.name == "loop-slack-answer")
+        assert slot.held is False
+        assert slot.never_fired is False, "a released slot that just ran is not never-fired"
+        assert slot.next_fire_at is not None, "a released slot still counts down to its next fire"
+
+    def test_held_lease_prefers_the_live_claim_as_last_fire(self) -> None:
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop-tick",
+            owner="holder",
+            acquired_at=now,
+            last_acquired_at=now - dt.timedelta(hours=1),
+            lease_expires_at=now + dt.timedelta(minutes=2),
+        )
+        tick = next(e for e in build_report(now=now).infra_slots if e.name == "loop-tick")
+        assert tick.last_fired_at == now
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestMiniEntriesHeldFromLoopState(django.test.TestCase):
+    """``_mini_entries`` routes ``held`` through the ``LoopState`` control tier (#1913).
+
+    The loop tick gates on ``loop_enabled`` (``Loop.enabled`` AND not
+    ``loop_held_in_db``). A PAUSED loop keeps ``Loop.enabled=True`` (pause does
+    not flip the row), so before this fix the snapshot showed it as
+    ``enabled=True, held=False`` with a live countdown — masking that the tick
+    will skip it. ``held`` must reflect the SAME authority the tick obeys.
+    """
+
+    def _loop(self, name: str, *, enabled: bool = True) -> Loop:
+        Loop.objects.filter(name=name).delete()
+        prompt, _ = Prompt.objects.get_or_create(name="demo-held", defaults={"body": "x"})
+        return Loop.objects.create(name=name, delay_seconds=120, prompt=prompt, enabled=enabled)
+
+    def test_paused_loop_is_held_but_row_stays_enabled(self) -> None:
+        now = timezone.now()
+        self._loop("demo-held-paused")
+        LoopState.objects.pause("demo-held-paused")
+        entry = next(e for e in build_report(now=now).mini_loops if e.name == "demo-held-paused")
+        assert entry.held is True
+        # The row flag is untouched by a pause — held is the ONLY signal here.
+        assert entry.enabled is True
+
+    def test_disabled_via_loop_state_is_held(self) -> None:
+        now = timezone.now()
+        self._loop("demo-held-disabled", enabled=False)
+        LoopState.objects.disable("demo-held-disabled")
+        entry = next(e for e in build_report(now=now).mini_loops if e.name == "demo-held-disabled")
+        assert entry.held is True
+
+    def test_unheld_enabled_loop_is_not_held(self) -> None:
+        now = timezone.now()
+        self._loop("demo-held-running")
+        entry = next(e for e in build_report(now=now).mini_loops if e.name == "demo-held-running")
+        assert entry.held is False
+        assert entry.enabled is True
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestMiniEntriesHeldResolvedInConstantQueries(django.test.TestCase):
+    """LP-9: the live report bulk-resolves held-state once, not per-loop.
+
+    #2584 removed the per-loop ``loop_held_in_db`` query from the tick, but the same
+    N+1 survived in ``_mini_entries`` — a per-loop hold query inside the row
+    comprehension. The report must resolve held-state in O(1) queries (a single bulk
+    ``held_loop_names`` read, exactly as the tick does), not O(loops).
+    """
+
+    def _make_loops(self, count: int, *, prefix: str) -> None:
+        prompt, _ = Prompt.objects.get_or_create(name="demo-n1", defaults={"body": "x"})
+        Loop.objects.bulk_create(
+            Loop(name=f"{prefix}-{index}", delay_seconds=60, prompt=prompt, enabled=True) for index in range(count)
+        )
+
+    def test_query_count_is_independent_of_loop_count(self) -> None:
+        self._make_loops(2, prefix="n1-small")
+        with CaptureQueriesContext(connection) as small:
+            build_report()
+        self._make_loops(8, prefix="n1-large")
+        with CaptureQueriesContext(connection) as large:
+            build_report()
+        # Eight extra loops must add ZERO queries — held-state is one bulk read, not
+        # one query per loop (before the fix, large carried 8 extra hold queries).
+        assert len(large.captured_queries) == len(small.captured_queries)
+
+
+@django.test.override_settings(USE_TZ=True, TIME_ZONE="UTC")
+class TestMiniEntriesAdmittedFoldsPresetMask(django.test.TestCase):
+    """``_mini_entries`` folds the #3159 preset mask into ``admitted`` (#3159).
+
+    ``admitted`` is the effective run verdict the tick gates on — NOT held, then
+    the preset mask over ``Loop.enabled``. Before this fix the entry carried only
+    ``enabled``/``held``, so a masked-off loop looked like a running loop and a
+    forced-on base-disabled loop looked dead.
+    """
+
+    def _loop(self, name: str, *, enabled: bool | None = None) -> Loop:
+        prompt, _ = Prompt.objects.get_or_create(name="demo-admit", defaults={"body": "x"})
+        reason = "" if enabled is None else "test override"
+        return Loop.objects.create(name=name, delay_seconds=120, prompt=prompt, enabled=enabled, override_reason=reason)
+
+    def _activate(self, preset_name: str, entries: dict[str, bool]) -> None:
+        Mode.objects.create(name=preset_name, entries=entries)
+        ModeOverride.objects.set_override(preset_name, reason="test override")
+
+    def test_a_loop_with_no_preset_at_all_is_admitted(self) -> None:
+        self._loop("demo-admit-base")
+        entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-base")
+        assert entry.admitted is True
+
+    def test_preset_masked_off_loop_is_not_admitted(self) -> None:
+        self._loop("demo-admit-masked")
+        self._activate("maintenance", {"demo-admit-masked": False})
+        entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-masked")
+        assert entry.admitted is False
+        assert entry.enabled is None
+
+    def test_a_preset_admitted_loop_is_admitted(self) -> None:
+        self._loop("demo-admit-forced")
+        self._activate("present", {"demo-admit-forced": True})
+        entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-forced")
+        assert entry.admitted is True
+        assert entry.enabled is None
+
+    def test_hold_wins_over_a_force_on_preset(self) -> None:
+        self._loop("demo-admit-held")
+        LoopState.objects.disable("demo-admit-held")
+        self._activate("present", {"demo-admit-held": True})
+        entry = next(e for e in build_report().mini_loops if e.name == "demo-admit-held")
+        assert entry.admitted is False
+        assert entry.held is True

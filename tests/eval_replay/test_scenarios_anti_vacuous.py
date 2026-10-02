@@ -1,0 +1,568 @@
+"""Run every shipped eval scenario against its fail/pass fixtures.
+
+A scenario is **anti-vacuous** when:
+
+*   against its ``<name>_fail.stream.jsonl`` fixture the scenario verdict
+    is FAIL (so a regressing agent would surface red), and
+*   against its ``<name>_pass.stream.jsonl`` fixture (when present) the
+    scenario verdict is PASS (so a compliant agent stays green).
+
+A scenario with only a ``_fail`` fixture is still validated for the FAIL
+direction.
+
+A **behavioral scenario with no fixtures at all FAILS LOUD** — it is never
+skipped. A behavioral scenario is graded by matchers (``spec.matchers``);
+a matcher set that is never exercised against a ``_fail`` fixture guards
+nothing, yet a skipped scenario reports as passed. That is the "skip
+counted as pass" / fake-green class (#2162): a scenario can ship with
+zero fixtures and the suite reads green while the matcher is toothless.
+The gate below (:func:`test_every_behavioral_scenario_ships_a_fail_fixture`)
+makes that state a hard RED instead of a silent skip.
+
+This is the canonical "would this scenario catch a regression?" test.
+A YAML that ships without an anti-vacuous fail fixture is silently
+toothless, so this test runs on every PR.
+"""
+
+import re
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
+
+import pytest
+
+from teatree.eval.api_runner import load_agent_definition
+from teatree.eval.backends import TranscriptRunner
+from teatree.eval.context_budget import HEADING_RE, MissingSectionError, extract_sections
+from teatree.eval.discovery import discover_specs, fixture_dir_for
+from teatree.eval.matcher_vacuity import negative_only_specs
+from teatree.eval.models import (
+    AnyOf,
+    AssistantTextMatcher,
+    EvalSpec,
+    FinalStateMatcher,
+    Matcher,
+    PlanBeforeToolMatcher,
+    SuccessfulToolCallMatcher,
+)
+from teatree.eval.report import evaluate
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+#: A synthetic transcript with NO tool calls — an agent that only "thought" and
+#: stopped. A matcher set that stays GREEN against this is satisfied by a no-op
+#: agent and therefore guards nothing (the vacuity class the ``_noop`` fixtures
+#: catch one scenario at a time). The catalog-wide gate
+#: (:func:`test_no_scenario_is_satisfied_by_a_noop_transcript`) drives EVERY spec
+#: against this so a scenario can never ship no-op-satisfiable without a fixture.
+_NOOP_TRANSCRIPT = (
+    '{"type": "system", "subtype": "init", "session_id": "vac-probe", "model": "haiku"}\n'
+    '{"type": "assistant", "message": {"role": "assistant", '
+    '"content": [{"type": "text", "text": "thinking, no tool call yet."}]}}\n'
+    '{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}'
+)
+
+
+def _is_behavioral(spec: EvalSpec) -> bool:
+    """A behavioral scenario is graded by matchers (vs. judge-only).
+
+    A matcher-graded scenario needs a ``_fail`` fixture to prove the
+    matchers actually catch the violating behaviour. A judge-only scenario
+    (no matchers, a ``judge`` block) is graded by an LLM and is exempt from
+    the fixture gate — there is no matcher to exercise against a transcript.
+    """
+    return bool(spec.matchers)
+
+
+def _fixtureless_behavioral_specs() -> list[EvalSpec]:
+    """Behavioral scenarios shipping NO ``_fail`` fixture — the gate's catch.
+
+    A behavioral scenario whose ``_fail`` fixture is absent is never
+    exercised against a violating transcript, so its matchers are
+    unverified — the "skip counted as pass" class. This returns the
+    offenders so the gate can fail loud naming each one.
+    """
+    return [
+        spec
+        for spec in discover_specs()
+        if _is_behavioral(spec) and not (fixture_dir_for(spec) / f"{spec.name}_fail.stream.jsonl").is_file()
+    ]
+
+
+def _run_against_fixture(spec: EvalSpec, fixture_text: str, tmp_path: Path) -> bool:
+    """Return ``True`` when the scenario passed against ``fixture_text``."""
+    (tmp_path / f"{spec.name}.jsonl").write_text(fixture_text, encoding="utf-8")
+    run = TranscriptRunner(transcript_dir=tmp_path).run(spec)
+    return evaluate(spec, run).passed
+
+
+def _specs_with_fixtures() -> list[tuple[EvalSpec, Path | None, Path | None]]:
+    rows: list[tuple[EvalSpec, Path | None, Path | None]] = []
+    for spec in discover_specs():
+        fixtures = fixture_dir_for(spec)
+        fail = fixtures / f"{spec.name}_fail.stream.jsonl"
+        pass_ = fixtures / f"{spec.name}_pass.stream.jsonl"
+        rows.append((spec, fail if fail.is_file() else None, pass_ if pass_.is_file() else None))
+    return rows
+
+
+def _specs_with_noop_fixtures() -> list[tuple[EvalSpec, Path]]:
+    """Scenarios that ship a ``_noop`` fixture proving non-vacuity.
+
+    A ``_noop`` fixture captures an agent transcript with no tool calls
+    at all — a positive matcher that is genuinely required (vs. an
+    only-negative vacuous matcher) must report RED against this fixture.
+    """
+    rows: list[tuple[EvalSpec, Path]] = []
+    for spec in discover_specs():
+        noop = fixture_dir_for(spec) / f"{spec.name}_noop.stream.jsonl"
+        if noop.is_file():
+            rows.append((spec, noop))
+    return rows
+
+
+def _passes_noop_transcript(spec: EvalSpec, tmp_path: Path) -> bool:
+    """Whether ``spec`` stays GREEN against a no-tool-call transcript.
+
+    The general vacuity predicate: a scenario graded ONLY by negative matchers
+    (``no_tool_call_matching``) is vacuously satisfied by an agent that made no
+    tool call at all. A positive (``tool_call`` / ``any_of``) matcher or a
+    final-state matcher requiring content forces the agent to *do* something, so
+    a non-vacuous scenario reports RED here. This delegates to the real grader,
+    so it measures actual gradeability, not a structural proxy.
+    """
+    return _run_against_fixture(spec, _NOOP_TRANSCRIPT, tmp_path)
+
+
+def _noop_satisfiable_specs(tmp_path: Path) -> list[EvalSpec]:
+    """Behavioral scenarios a no-op transcript silently satisfies — the catch.
+
+    Every such scenario is vacuous: an agent doing nothing passes it. This is
+    the class the per-scenario ``_noop`` fixture catches one at a time; this
+    predicate sweeps the whole catalog so a new only-negative scenario can never
+    ship no-op-satisfiable without being flagged.
+    """
+    return [spec for spec in discover_specs() if _is_behavioral(spec) and _passes_noop_transcript(spec, tmp_path)]
+
+
+@pytest.mark.parametrize(
+    ("spec", "fail_fixture", "pass_fixture"),
+    _specs_with_fixtures(),
+    ids=lambda v: v.name if isinstance(v, EvalSpec) else (v.name if isinstance(v, Path) else "none"),
+)
+class TestScenarioFixtures:
+    def test_fail_fixture_drives_scenario_red(
+        self,
+        spec: EvalSpec,
+        fail_fixture: Path | None,
+        pass_fixture: Path | None,
+        tmp_path: Path,
+    ) -> None:
+        _ = pass_fixture
+        if fail_fixture is None:
+            pytest.skip(f"no fail fixture for {spec.name}")
+        passed = _run_against_fixture(spec, fail_fixture.read_text(encoding="utf-8"), tmp_path)
+        assert passed is False, (
+            f"scenario {spec.name!r} stayed GREEN against {fail_fixture.name} — "
+            "the matchers are toothless. Either tighten the matcher or strengthen the fixture."
+        )
+
+    def test_pass_fixture_drives_scenario_green(
+        self,
+        spec: EvalSpec,
+        fail_fixture: Path | None,
+        pass_fixture: Path | None,
+        tmp_path: Path,
+    ) -> None:
+        _ = fail_fixture
+        if pass_fixture is None:
+            pytest.skip(f"no pass fixture for {spec.name}")
+        passed = _run_against_fixture(spec, pass_fixture.read_text(encoding="utf-8"), tmp_path)
+        assert passed is True, (
+            f"scenario {spec.name!r} went RED against {pass_fixture.name} — "
+            "either the fixture violates the rule or the matchers over-fit."
+        )
+
+
+@pytest.mark.parametrize(
+    ("spec", "noop_fixture"),
+    _specs_with_noop_fixtures(),
+    ids=lambda v: v.name if isinstance(v, EvalSpec) else (v.name if isinstance(v, Path) else "none"),
+)
+def test_noop_transcript_drives_scenario_red(spec: EvalSpec, noop_fixture: Path, tmp_path: Path) -> None:
+    """A scenario must FAIL against an empty-tool-call transcript.
+
+    Scenarios composed only of negative matchers (``no_tool_call_matching``)
+    are vacuously satisfied by a no-op agent transcript. Adding a positive
+    matcher closes that hole. This test asserts the positive matcher is
+    actually wired up — if it is omitted, the no-op transcript goes
+    silently green and the scenario is toothless.
+    """
+    passed = _run_against_fixture(spec, noop_fixture.read_text(encoding="utf-8"), tmp_path)
+    assert passed is False, (
+        f"scenario {spec.name!r} stayed GREEN against {noop_fixture.name} (no tool calls) — "
+        "the scenario is satisfied by a no-op agent and therefore vacuous. "
+        "Add a positive matcher that requires the expected tool call."
+    )
+
+
+def test_every_behavioral_scenario_ships_a_fail_fixture() -> None:
+    """The hardened gate: a behavioral scenario with no ``_fail`` fixture is RED.
+
+    This is the #2162 enforcement. A behavioral (matcher-graded) scenario
+    whose ``_fail`` fixture is absent is never exercised against a violating
+    transcript — its matchers are unverified and could be toothless. The old
+    behaviour SKIPPED such a scenario, and a skip reports as passed, so a
+    fixtureless scenario read green while guarding nothing (the "skip counted
+    as pass" / fake-green class).
+
+    The fix is to FAIL LOUD here instead of skipping: a fixtureless behavioral
+    scenario fails this assertion (exit non-zero), so it can never reach the
+    suite green without a ``_fail`` fixture that proves the matchers catch the
+    violation.
+    """
+    offenders = _fixtureless_behavioral_specs()
+    assert not offenders, (
+        "behavioral scenario(s) ship no `_fail` fixture, so their matchers are never "
+        "exercised against a violating transcript — a fixtureless behavioral scenario "
+        "would SKIP (counted as pass) and guard nothing. Backfill an anti-vacuous "
+        "`<name>_fail.stream.jsonl` (drives the scenario RED) for each:\n"
+        + "\n".join(f"  - {spec.name} ({spec.source_path.name})" for spec in offenders)
+    )
+
+
+def test_fixtureless_behavioral_scenario_is_caught_by_the_gate(tmp_path: Path) -> None:
+    """Anti-vacuity proof for the hardened gate (#2162).
+
+    Constructs a synthetic behavioral scenario that ships NO fixtures and
+    asserts the gate predicate flags it. This proves the gate is not
+    vacuous: a fixtureless behavioral scenario IS caught (the predicate
+    returns it as an offender). If the gate's guard were reverted — e.g.
+    by skipping fixtureless scenarios instead of catching them — this
+    synthetic scenario would slip through and the proof would fail.
+
+    The predicate keys on ``spec.matchers`` (behavioral) and the absence of
+    a ``<name>_fail.stream.jsonl`` on disk, so a fabricated spec with a
+    matcher and a name with no on-disk fixture must be flagged. A judge-only
+    scenario (no matchers) is correctly NOT flagged — exercised here too so
+    the gate does not over-fire on the exempt class.
+    """
+    _ = tmp_path
+    fixtureless_behavioral = _fake_spec(
+        name="__synthetic_fixtureless_behavioral__",
+        matchers=(_TRIVIAL_MATCHER,),
+    )
+    judge_only = _fake_spec(name="__synthetic_judge_only__", matchers=())
+
+    assert _is_behavioral(fixtureless_behavioral) is True
+    assert _gate_flags(fixtureless_behavioral) is True, (
+        "the hardened gate must FLAG a behavioral scenario with no `_fail` fixture; "
+        "it did not — the guard is reverted and the fake-green class is back."
+    )
+
+    assert _is_behavioral(judge_only) is False
+    assert _gate_flags(judge_only) is False, (
+        "the gate must NOT flag a judge-only (matcherless) scenario — it is exempt "
+        "from the fixture requirement (graded by an LLM, no matcher to exercise)."
+    )
+
+
+def test_no_scenario_is_satisfied_by_a_noop_transcript(tmp_path: Path) -> None:
+    """Catalog-wide gate: NO behavioral scenario may pass a no-op transcript.
+
+    The per-scenario ``_noop`` fixture catches the vacuity class one scenario at
+    a time — but only for scenarios that happen to ship a ``_noop`` fixture. A
+    scenario graded ONLY by negative matchers (``no_tool_call_matching``) that
+    ships no ``_noop`` fixture slips the net: a no-op agent (zero tool calls)
+    trivially satisfies "no forbidden tool call" and the scenario reads green
+    while guarding nothing. (Its companion LLM ``judge`` would catch the no-op,
+    but the judge runs only in the metered lane — the on-disk replay grades by
+    matchers alone, so the scenario is vacuous in the free lane.)
+
+    This gate sweeps EVERY behavioral spec against a synthetic no-op transcript
+    and fails loud on any that stay green, so the hole cannot recur: a new
+    only-negative scenario must add a positive (``tool_call`` / ``any_of``)
+    matcher that requires the expected action.
+    """
+    offenders = _noop_satisfiable_specs(tmp_path)
+    assert not offenders, (
+        "behavioral scenario(s) stay GREEN against a no-op transcript (zero tool calls), "
+        "so a do-nothing agent satisfies them — they are vacuous. Add a positive "
+        "`tool_call`/`any_of` matcher that requires the expected action for each:\n"
+        + "\n".join(f"  - {spec.name} ({spec.source_path.name})" for spec in offenders)
+    )
+
+
+def test_noop_gate_flags_an_only_negative_scenario(tmp_path: Path) -> None:
+    """Anti-vacuity proof for the catalog-wide no-op gate.
+
+    A synthetic scenario whose sole matcher is NEGATIVE is satisfied by the
+    no-op transcript, so the gate predicate must flag it. A scenario carrying a
+    positive matcher (which the no-op cannot satisfy) must NOT be flagged. If the
+    gate were weakened to ``return []`` or to a structural proxy that missed the
+    only-negative case, the first assertion would fail.
+    """
+    only_negative = _fake_spec(
+        name="__synthetic_only_negative__",
+        matchers=(Matcher(kind="negative", tool="Bash", arg_path="command", operator="~", value="forbidden"),),
+    )
+    requires_action = _fake_spec(name="__synthetic_requires_action__", matchers=(_TRIVIAL_MATCHER,))
+
+    with patch(f"{__name__}.discover_specs", return_value=[only_negative]):
+        assert only_negative in _noop_satisfiable_specs(tmp_path), (
+            "the no-op gate must FLAG an only-negative scenario (a no-op agent satisfies it); "
+            "it did not — the vacuity guard is weakened."
+        )
+    with patch(f"{__name__}.discover_specs", return_value=[requires_action]):
+        assert requires_action not in _noop_satisfiable_specs(tmp_path), (
+            "the no-op gate must NOT flag a scenario with a positive matcher — a no-op "
+            "transcript cannot satisfy a required tool call, so it is non-vacuous."
+        )
+
+
+def test_no_scenario_has_a_negative_matcher_without_a_positive_anchor() -> None:
+    """Structural gate: a negative matcher must be paired with a positive anchor (#2441).
+
+    A scenario graded ONLY by negative matchers (``no_tool_call_matching``) is
+    vacuously satisfied by a no-op agent — a do-nothing run trivially never makes
+    the forbidden tool call, so the scenario reads green while guarding nothing.
+    The runtime ``_noop`` gate above
+    (:func:`test_no_scenario_is_satisfied_by_a_noop_transcript`) already catches
+    this by replaying every spec against a no-op transcript; this is the
+    *structural* sibling that makes the vacuous shape a fast, fixture-free RED.
+
+    A negative matcher is non-vacuous only when paired with a positive anchor — a
+    positive ``tool_call``/``any_of`` matcher or a ``final_state`` matcher that
+    forces the agent to *do* something the no-op cannot. The gate fails loud,
+    naming each offender, so the negative-only shape can never reach the suite
+    green.
+    """
+    offenders = negative_only_specs(discover_specs())
+    assert not offenders, (
+        "behavioral scenario(s) carry a negative matcher (`no_tool_call_matching`) but no "
+        "positive anchor, so a no-op agent satisfies them — they are vacuous. Pair each "
+        "negative matcher with a positive `tool_call`/`any_of`/`final_state` matcher that "
+        "requires the expected action for each:\n"
+        + "\n".join(f"  - {spec.name} ({spec.source_path.name})" for spec in offenders)
+    )
+
+
+def test_negative_only_gate_flags_an_only_negative_scenario() -> None:
+    """Anti-vacuity proof for the structural negative-pairing gate (#2441).
+
+    A synthetic scenario whose only matchers are NEGATIVE must be flagged by the
+    gate predicate; a scenario that pairs a negative with a positive anchor (and a
+    judge-only scenario carrying no matcher at all) must NOT. If the gate were
+    weakened — e.g. predicate reverted to ``return []`` — the first assertion
+    fails, so the proof exercises the real predicate, not a re-implementation.
+    """
+    negative = Matcher(kind="negative", tool="Bash", arg_path="command", operator="~", value="forbidden")
+    positive = Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value="git push")
+
+    only_negative = _fake_spec(name="__synthetic_negative_only__", matchers=(negative,))
+    paired_with_positive = _fake_spec(name="__synthetic_paired_positive__", matchers=(positive, negative))
+    paired_with_any_of = _fake_spec(
+        name="__synthetic_paired_any_of__", matchers=(AnyOf(alternatives=(positive,)), negative)
+    )
+    paired_with_final = _fake_spec(
+        name="__synthetic_paired_final__", matchers=(FinalStateMatcher(operator="~", value="(?i)done"), negative)
+    )
+    judge_only = _fake_spec(name="__synthetic_judge_only_vac__", matchers=())
+
+    flagged = negative_only_specs(
+        [only_negative, paired_with_positive, paired_with_any_of, paired_with_final, judge_only]
+    )
+    assert only_negative in flagged, (
+        "the negative-pairing gate must FLAG an only-negative scenario (a no-op agent satisfies it); "
+        "it did not — the vacuity guard is weakened."
+    )
+    assert paired_with_positive not in flagged, "a negative paired with a positive matcher must NOT be flagged."
+    assert paired_with_any_of not in flagged, "a negative paired with an any_of anchor must NOT be flagged."
+    assert paired_with_final not in flagged, "a negative paired with a final_state anchor must NOT be flagged."
+    assert judge_only not in flagged, "a judge-only (matcherless) scenario carries no negative matcher to pair."
+
+
+def test_every_scenario_agent_definition_resolves() -> None:
+    """Every scenario's ``agent_path`` must LOAD, resolved exactly as the runner resolves it.
+
+    An unresolvable agent path raises inside the metered run, so the scenario reports
+    FAIL having executed zero model turns — a red indistinguishable from a behavioural
+    regression, paid for at full price. Nothing else read ``agent_path`` at load time:
+    the two ``agent_sections`` gates below skip every scenario that declares none, which
+    is most of them, so a whole overlay catalog went vacuously red for a full run.
+    """
+    offenders: list[str] = []
+    for spec in discover_specs():
+        try:
+            load_agent_definition(spec.agent_path, spec_dir=spec.source_path.parent)
+        except (FileNotFoundError, ValueError) as exc:
+            offenders.append(f"  - {spec.name} ({spec.source_path.name}): {exc}")
+    assert not offenders, (
+        "scenario(s) name an agent_path that does not resolve to a readable, non-empty "
+        "SKILL.md. Each would run to a runner error at metered time — zero turns "
+        "executed, reported as a plain FAIL:\n" + "\n".join(offenders)
+    )
+
+
+def test_every_declared_agent_section_resolves_against_its_skill() -> None:
+    """A scenario's ``agent_sections`` must name real ``## `` sections of its skill.
+
+    The token-cost lever sends only the named sections as the system prompt. A
+    typo'd / renamed section would, at metered-run time, raise MissingSectionError
+    — but only when the metered lane runs (weekly). This load-time guard turns a
+    bad anchor into a RED on every PR: it resolves each declared section against
+    the real on-disk SKILL.md the same way the runner does, so a drifted heading
+    fails here, not silently months later.
+    """
+    offenders: list[str] = []
+    for spec in discover_specs():
+        if not spec.agent_sections:
+            continue
+        text = load_agent_definition(spec.agent_path, spec_dir=spec.source_path.parent)
+        try:
+            extract_sections(text, spec.agent_sections)
+        except MissingSectionError as exc:
+            offenders.append(f"  - {spec.name} ({spec.source_path.name}): {exc}")
+    assert not offenders, (
+        "scenario(s) declare agent_sections that do not match any `## ` heading in "
+        "their agent_path SKILL.md (a drifted/typo'd anchor would send an empty rule "
+        "prompt and make the scenario vacuous at metered-run time):\n" + "\n".join(offenders)
+    )
+
+
+def _expected_section_body(text: str, name: str) -> str | None:
+    """The named heading's body through the next SAME-OR-SHALLOWER heading.
+
+    The independent oracle the completeness gate grades against: it walks the
+    headings itself rather than calling the extractor under test, so a regression
+    in the extractor cannot move the expectation with it.
+    """
+    headings = list(HEADING_RE.finditer(text))
+    for index, match in enumerate(headings):
+        if match.group(2) != name:
+            continue
+        depth = len(match.group(1))
+        end = next(
+            (later.start() for later in headings[index + 1 :] if len(later.group(1)) <= depth),
+            len(text),
+        )
+        return text[match.start() : end].rstrip()
+    return None
+
+
+def test_every_declared_agent_section_extracts_completely() -> None:
+    """A resolved anchor must also send the section's WHOLE body, subsections included.
+
+    The sibling gate above proves the anchor RESOLVES; it says nothing about how much
+    of the section came back. A section delimited by the next heading of any depth
+    stops at its own first subsection, so a rule whose carve-outs, worked examples, and
+    ``(do X, never Y)`` blocks live under ``### `` headings reaches the grader stripped
+    of them — the scenario is then graded against a rule the skill does not state, and
+    every matcher still passes, so nothing goes red.
+    """
+    offenders: list[str] = []
+    for spec in discover_specs():
+        if not spec.agent_sections:
+            continue
+        text = load_agent_definition(spec.agent_path, spec_dir=spec.source_path.parent)
+        extracted = extract_sections(text, spec.agent_sections)
+        for name in spec.agent_sections:
+            expected = _expected_section_body(text, name)
+            if expected is not None and expected not in extracted:
+                lost = len(expected.encode()) - len(extracted.encode())
+                offenders.append(f"  - {spec.name} ({spec.source_path.name}): {name!r} short by ~{lost} B")
+    assert not offenders, (
+        "scenario(s) declare agent_sections whose extracted span stops before the next "
+        "same-or-shallower heading, so the graded system prompt is missing part of the "
+        "rule under test:\n" + "\n".join(offenders)
+    )
+
+
+def _gate_flags(spec: EvalSpec) -> bool:
+    """Whether the REAL gate predicate flags ``spec`` as an offender.
+
+    This delegates to the production predicate
+    :func:`_fixtureless_behavioral_specs` — the same function the gate
+    (:func:`test_every_behavioral_scenario_ships_a_fail_fixture`) consumes —
+    rather than re-implementing it. There is therefore ONE source of truth:
+    the anti-vacuity proof exercises the real gate, so reverting the gate
+    predicate (e.g. to ``return []``) turns the proof RED too.
+
+    The synthetic spec is injected as the sole member of the discovered
+    catalog (``discover_specs`` is the predicate's only input), so the proof
+    stays independent of the live catalog's contents while still running the
+    production code path.
+    """
+    with patch(f"{__name__}.discover_specs", return_value=[spec]):
+        return spec in _fixtureless_behavioral_specs()
+
+
+_TRIVIAL_MATCHER = Matcher(kind="positive", tool="Bash", arg_path="command", operator="~", value=".")
+
+
+def _fake_spec(*, name: str, matchers: tuple[Any, ...]) -> EvalSpec:
+    return EvalSpec(
+        name=name,
+        scenario="synthetic",
+        agent_path="skills/rules/SKILL.md",
+        prompt="synthetic",
+        matchers=matchers,
+        source_path=Path("synthetic.yaml"),
+    )
+
+
+#: A backslash-escaped backslash in front of a regex-class letter. The loader lifts a
+#: matcher's value VERBATIM from between the `op "..."` quotes (``loader._OP_PATTERN``
+#: group 2) — those quotes are teatree's own delimiters inside a YAML PLAIN scalar, not
+#: YAML quoting, so nothing unescapes them. ``\\s`` therefore reaches ``re`` as a literal
+#: backslash followed by ``s``, and the matcher can never match the whitespace its author
+#: meant. Silent: a positive that can never fire reds a compliant agent, and one inside an
+#: ``any_of`` is simply carried by a sibling alternative and guards nothing forever.
+_OVER_ESCAPED_RE = re.compile(r"\\\\[sSbBdDwWAZ]")
+
+
+def _matcher_regexes(spec: EvalSpec) -> "Iterator[tuple[str, str]]":
+    """Every regex-operator value in *spec*, paired with the field that carries it."""
+    for item in spec.matchers:
+        alternatives = item.alternatives if isinstance(item, AnyOf) else (item,)
+        for matcher in alternatives:
+            if isinstance(matcher, FinalStateMatcher):
+                yield "final_state", matcher.value
+                continue
+            if isinstance(matcher, AssistantTextMatcher):
+                yield "assistant_text", matcher.value
+                continue
+            if isinstance(matcher, PlanBeforeToolMatcher):
+                yield from (("assistant_text.before_first_tool", pattern) for pattern in matcher.patterns)
+                continue
+            if isinstance(matcher, SuccessfulToolCallMatcher):
+                yield f"{matcher.tool}.{matcher.arg_path}", matcher.value
+                yield "result", matcher.result_value
+                yield f"{matcher.before_tool}.{matcher.before_arg_path} (before)", matcher.before_value
+                continue
+            yield f"{matcher.tool}.{matcher.arg_path}", matcher.value
+            if matcher.guard_value:
+                yield f"{matcher.tool}.{matcher.guard_arg_path} (guard)", matcher.guard_value
+            if matcher.unless_value:
+                yield f"{matcher.tool}.{matcher.unless_arg_path} (unless)", matcher.unless_value
+
+
+def test_no_matcher_regex_is_over_escaped() -> None:
+    r"""No matcher may double-escape a regex class — the loader never unescapes it.
+
+    Observed: ``background_long_operations_full_suite`` shipped
+    ``^\\s*(...pytest\\b...)``, which reds an agent that correctly armed a Monitor on
+    ``pytest``, because the pattern demanded a literal backslash. Write ``\s`` / ``\b``.
+    """
+    offenders = [
+        f"  - {spec.name} ({spec.source_path.name}) {field}: {value}"
+        for spec in discover_specs()
+        for field, value in _matcher_regexes(spec)
+        if _OVER_ESCAPED_RE.search(value)
+    ]
+    assert not offenders, (
+        "matcher regex(es) double-escape a character class. The loader takes the value "
+        "between the operator's quotes VERBATIM, so `\\\\s` matches a literal backslash and "
+        "the matcher can never fire. Write a single backslash:\n" + "\n".join(offenders)
+    )

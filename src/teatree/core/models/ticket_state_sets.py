@@ -1,0 +1,186 @@
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, ClassVar
+
+from django.db import transaction
+from django_fsm import TransitionNotAllowed
+
+from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.ticket_data import TicketFacet
+
+if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
+
+
+@dataclass(frozen=True, slots=True)
+class AdvanceResult:
+    """Outcome of one :meth:`TicketStateSetsModel.advance_to_delivered` walk.
+
+    ``from_state`` is the pre-walk state; ``to_state`` is where the ticket
+    actually landed. Each step commits in its own ``atomic()``, so a mid-chain
+    refusal leaves the earlier steps persisted — ``to_state`` reflects that
+    partial progress, not the starting state. ``error`` carries the FSM/gate
+    refusal message when the walk stopped short, else ``None``.
+    """
+
+    from_state: str
+    to_state: str
+    error: str | None = None
+
+    @property
+    def refused(self) -> bool:
+        return self.error is not None
+
+    @property
+    def advanced(self) -> bool:
+        return self.to_state != self.from_state
+
+
+class TicketStateSetsModel(TicketFacet):
+    """The completion facet — the canonical post-ship state-sets and the walk over them.
+
+    Every scanner, manager, and sweep that needs "which states count as done /
+    in-flight / completable / merged" reads the classmethods here instead of
+    re-hand-rolling the set (the raw-string drift class behind #798/#799/#808).
+    Each returns an immutable ``frozenset`` of ``State`` values; membership is
+    pinned by ``tests/teatree_core/models/test_ticket.py::TestTicketStateSets``.
+
+    ``advance_to_delivered`` is the single transactional walk over
+    ``completable_states()`` toward DELIVERED, shared by the ``sync-completions``
+    sweep and the loop's mechanical ``complete_ticket`` so both get identical
+    atomic-per-step + refusal-safe semantics.
+    """
+
+    class Meta:
+        abstract = True
+
+    # The post-ship walk as ``(guard_state, transition_name)`` steps.
+    # request_review: PR_OPENED → REVIEW_REQUESTED; mark_merged: REVIEW_REQUESTED → MERGED;
+    # retrospect: MERGED → RETRO_RECORDED (the retro worker then drives mark_delivered).
+    _ADVANCE_STEPS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("pr_opened", "request_review"),
+        ("review_requested", "mark_merged"),
+        ("merged", "retrospect"),
+    )
+
+    def advance_to_delivered(self: "Ticket") -> AdvanceResult:
+        """Walk the ticket through the remaining post-ship FSM transitions.
+
+        Each step runs in its own ``transaction.atomic()``: a successful step
+        commits, a refused step rolls back only itself and stops the walk. A
+        django-fsm ``TransitionNotAllowed`` or a gate's ``InvalidTransitionError``
+        (e.g. the merge-evidence gate on ``mark_merged``) is captured in the
+        returned :class:`AdvanceResult`, never raised — so the whole-table sweep
+        keeps going and the loop tick never wedges on a partial commit.
+        """
+        from_state = self.state
+        for guard_state, transition_name in self._ADVANCE_STEPS:
+            if self.state != guard_state:
+                continue
+            try:
+                with transaction.atomic():
+                    getattr(self, transition_name)()
+                    self.save()
+            except (TransitionNotAllowed, InvalidTransitionError) as exc:
+                return AdvanceResult(from_state=from_state, to_state=self.state, error=str(exc))
+        return AdvanceResult(from_state=from_state, to_state=self.state)
+
+    @classmethod
+    def state_index(cls, state: str) -> int:
+        """Position of *state* in the ``State`` declaration order."""
+        return [s.value for s in cls.State].index(state)
+
+    @classmethod
+    def state_advances(cls, current: str, candidate: str) -> bool:
+        """True iff writing *candidate* over *current* moves the ticket forward.
+
+        The single ordering every external-sync writer compares against. A
+        tracker/board tells us where IT thinks the ticket is; that is an
+        advance-only signal, never a rewind — a board column or an inferred PR
+        state that reads behind the ticket's own FSM would otherwise reset live
+        work (an in-review ticket back to not-started) and re-arm the loop's
+        scanners against already-delivered work.
+        """
+        return cls.state_index(candidate) > cls.state_index(current)
+
+    @classmethod
+    def marker_release_states(cls) -> frozenset[str]:
+        """Terminal-done states that free markers and trigger worktree teardown.
+
+        ``_SETTLED_STATES`` minus PR_OPENED (its PR is still open). Shared by the
+        teardown/marker signal and the #3275 reconciler; REVIEW_DELIVERED is the
+        reviewer terminal (marker release is a no-op for reviewer tickets).
+        """
+        return frozenset({cls.State.MERGED, cls.State.DELIVERED, cls.State.REVIEW_DELIVERED, cls.State.IGNORED})
+
+    @classmethod
+    def in_flight_excluded_states(cls) -> frozenset[str]:
+        """States that drop a ticket OUT of the in-flight working set.
+
+        ``marker_release_states()`` minus MERGED: a merged-but-not-yet-delivered
+        ticket's PR has landed, but the ticket is still in flight (retro/delivery
+        pending) so it stays on the board. The in-flight queryset, the dashboard
+        worktrees panel, and both active-ticket scanners (primary ORM + external
+        SQLite) ``exclude(state__in=...)`` on exactly this set.
+        """
+        return frozenset({cls.State.DELIVERED, cls.State.REVIEW_DELIVERED, cls.State.IGNORED})
+
+    @classmethod
+    def completable_states(cls) -> frozenset[str]:
+        """Post-ship states a completion sweep may advance toward DELIVERED.
+
+        PR_OPENED (PR open), REVIEW_REQUESTED (review requested), MERGED (PR landed) — the
+        states worth polling ``is_issue_done()`` on before driving the ticket to
+        delivered. Read by the completion scanner and the ``sync-completions`` sweep.
+        """
+        return frozenset({cls.State.PR_OPENED, cls.State.REVIEW_REQUESTED, cls.State.MERGED})
+
+    @classmethod
+    def pre_ship_states(cls) -> frozenset[str]:
+        """States in which NOTHING has shipped yet — the board janitor's rule-F candidates.
+
+        Derived as the complement of the post-ship walk, the merged-or-past lifecycle and
+        the two terminals, so a state added later cannot escape both this set and
+        ``completable_states()`` unnoticed. A ticket here whose own issue the forge closed
+        never shipped anything, which is why rule F retires it to IGNORED rather than
+        walking it to DELIVERED — that walk would claim a delivery that never happened
+        (#4711).
+
+        The disposition scanner (#2663) reads it too, under its own name no longer:
+        every state here is exactly what a hand-written list previously enumerated as
+        "dispositionable" and separately omitted PLAN_RECORDED from — deriving both callers off
+        one method means a state added later can't drift the two out of sync again.
+        """
+        return (
+            frozenset(cls.State.values)
+            - cls.completable_states()
+            - cls.merged_states()
+            - {cls.State.REVIEW_DELIVERED, cls.State.IGNORED}
+        )
+
+    @classmethod
+    def issue_owning_states(cls) -> frozenset[str]:
+        """States in which a ticket OWNS its issue URL, so intake must not re-admit it.
+
+        Derived as the complement of IGNORED rather than enumerated: the hand-written
+        list this replaces silently omitted PLAN_RECORDED and DELIVERED, and the persistence
+        handler reuses the existing row and returns early for anything past
+        NOT_STARTED — so each re-admission scheduled no work, claimed an
+        ``ImplementedIssueMarker``, held an intake budget slot until the dead grace
+        abandoned it, and re-admitted on the next tick (#4133).
+
+        IGNORED is the one release valve: it is how an abandoned or dead ticket hands
+        its issue back to intake, so no issue can be wedged by a stale row.
+        """
+        return frozenset(cls.State.values) - {cls.State.IGNORED}
+
+    @classmethod
+    def merged_states(cls) -> frozenset[str]:
+        """States that mean the ticket's PR has landed (merged-or-past).
+
+        MERGED (just landed) plus the RETRO_RECORDED/DELIVERED post-merge lifecycle.
+        The outer- and directive-loop liveness guards and the issue-disposition
+        dedup read this to tell a landed ticket from one whose PR is still open.
+        Narrower than an "after-merge trigger" set that excludes RETRO_RECORDED —
+        that lives at its own call site on purpose.
+        """
+        return frozenset({cls.State.MERGED, cls.State.RETRO_RECORDED, cls.State.DELIVERED})

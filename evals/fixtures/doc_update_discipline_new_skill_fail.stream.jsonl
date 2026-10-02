@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-doc-skill-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Ship the skill; the README catalogue auto-regenerates."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "gh pr create --title 'feat(skills): add doc-discipline skill' --body 'New skill at skills/doc-discipline/SKILL.md.'", "description": "open PR"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "PR #101 opened"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

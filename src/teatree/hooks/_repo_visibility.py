@@ -1,0 +1,577 @@
+"""Repo-visibility / privacy resolution for the publish-surface carve-out.
+
+Split out of :mod:`teatree.hooks.publish_surface` to keep that module under
+the project's per-file LOC ceiling. This module owns the "is this repo
+private?" question and nothing about command classification:
+
+- the DB-home ``private_repos`` slug-namespace allowlist (the reliable,
+    network-free, recommended mechanism), read from the canonical
+    ``ConfigSetting`` store via the Django-free :mod:`teatree.config.cold_reader`,
+- the cached ``gh``/``glab`` live-visibility probe (best-effort fallback; the
+    binary is resolved against an augmented PATH so it works inside the
+    restricted PreToolUse subprocess). The cache TTL is asymmetric by risk
+    (:func:`_verdict_ttl`): a PUBLIC verdict is held for a day, a non-public one
+    for minutes, since only a stale non-public verdict can skip the scan on a
+    now-public surface.
+- the slug resolution from a repo ``cwd``.
+
+Detection is conservative and offline-first; an unknown/unresolvable repo is
+treated as NOT private so a detection failure never weakens the gate.
+"""
+
+import json
+import os
+import shutil
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Final, TypedDict
+
+from teatree.config import cold_reader
+from teatree.hooks import git_config_offline
+from teatree.hooks._forge_tool import FORGE_TOOL, GITHUB, GITLAB, forge_and_repo_path
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
+
+
+class _VisibilityEntry(TypedDict):
+    """One cached repo-visibility verdict with its capture timestamp."""
+
+    ts: float
+    visibility: str
+
+
+# A slug must have at least ``owner/repo`` (host-prefixed slugs add more).
+_MIN_SLUG_PARTS: Final[int] = 2
+
+# How long a cached PUBLIC verdict stays fresh. Repo visibility changes rarely;
+# a day-long cache keeps the offline path fast. Staleness in this direction is
+# harmless -- a repo that went private is merely scanned as if it were still
+# public, which over-scans and never leaks.
+_PUBLIC_VERDICT: Final[str] = "PUBLIC"
+_PUBLIC_TTL_S: Final[int] = 24 * 60 * 60
+
+# How long a cached NON-PUBLIC verdict (PRIVATE, INTERNAL, ...) stays fresh.
+# Far shorter, because this is the only dangerous staleness direction: a
+# non-public verdict makes every leak gate SKIP the scan for that slug, so once
+# the operator flips the repo public, each minute the stale verdict survives is
+# a minute of unscanned public egress.
+_NON_PUBLIC_TTL_S: Final[int] = 15 * 60
+
+# Sentinel + TTL for a NEGATIVE cache entry: a probe that RAN but could not
+# resolve visibility (tool absent, auth differs, slug unrecognised). Without it,
+# every unresolved slug re-probes at the full 5s budget PER segment on every
+# publish, stacking toward the 30s hook ceiling. The negative entry is short-
+# lived (distinct from the 24h PUBLIC TTL) because an unresolvable repo may
+# become resolvable soon (auth fixed, tool installed).
+_UNKNOWN_VERDICT: Final[str] = "UNKNOWN"
+_UNKNOWN_TTL_S: Final[int] = 5 * 60
+
+# Visibility probe budget -- a hook that hangs blocks the user, so the
+# network call gets a tight timeout and any failure falls back to "unknown".
+_PROBE_TIMEOUT_S: Final[int] = 5
+
+# The PreToolUse hook subprocess inherits a restricted PATH, so a bare
+# ``gh``/``glab`` may not resolve even though it is installed. The probe
+# augments PATH with the common install locations before resolving the tool,
+# so the live-visibility fallback works in-hook instead of silently failing
+# to "unknown" and over-blocking the user's own private repo.
+_PROBE_PATH_EXTRA: Final[tuple[str, ...]] = (
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    str(Path.home() / ".local" / "bin"),
+)
+
+# Why a forge-CLI probe produced no stdout. Kept apart because they have
+# DIFFERENT remedies: a timeout says nothing about the credential, so a refusal
+# that reports one as the other sends the operator to `auth status` on a CLI
+# that is authenticated and would have answered.
+PROBE_ABSENT: Final[str] = "tool-absent"
+PROBE_UNRUNNABLE: Final[str] = "exec-failed"
+PROBE_TIMED_OUT: Final[str] = "timeout"
+PROBE_FAILED: Final[str] = "exit-nonzero"
+
+
+@dataclass(frozen=True, slots=True)
+class ForgeProbe:
+    """One forge-CLI invocation's stdout, or the CAUSE there is none.
+
+    ``unresolved`` is empty exactly when ``stdout`` is present; it carries one
+    of the ``PROBE_*`` tokens otherwise (the timeout one suffixed with the
+    budget it exceeded, so the observation names its own number).
+    """
+
+    stdout: str | None
+    unresolved: str = ""
+
+
+def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
+    """Return the DB-home ``private_repos`` slug-namespace allowlist.
+
+    Each entry is matched as a case-insensitive path-segment prefix against the
+    repo's host-stripped ``owner/repo`` slug (see
+    :func:`slug_namespace_matches`), so a single organisation-namespace entry
+    covers every repo under that namespace. Entries may be written bare
+    (``owner/repo``) or host-qualified (``host/owner/repo`` -- the form a repo
+    URL carries); the match is host-qualification-symmetric, so either form
+    covers the commit surface (host-qualified cwd slug) and the pr-create
+    surface (bare ``--repo`` slug) alike. Reads the canonical ``ConfigSetting``
+    store via the Django-free :mod:`teatree.config.cold_reader`; *config_path*
+    overrides the DB path (else the canonical DB / ``T3_CONFIG_DB``), which is
+    how a test points it at a seeded temp DB. Set the list with
+    ``t3 <overlay> config_setting set private_repos '["owner/repo"]'``.
+    """
+    raw = cold_reader.list_setting("private_repos", default=[], db_path=config_path)
+    return [str(e).strip().lower() for e in raw if str(e).strip()]
+
+
+def slug_for_cwd(cwd: Path) -> str:
+    """Return the ``origin`` slug (``host/owner/repo``) for ``cwd``, or ``""``.
+
+    Resolves ``cwd``'s ``origin`` URL OFFLINE-FIRST (:func:`_origin_remote_url`):
+    parsing ``.git/config`` directly needs no ``git`` binary, so the slug resolves
+    inside the restricted PreToolUse hook subprocess where a bare ``git`` is
+    unresolvable. Normalization is :func:`slug_for_remote_url`. An empty slug fails
+    SAFE -- the destination then resolves PUBLIC and the gate stays hard-blocking.
+    """
+    return slug_for_remote_url(_origin_remote_url(cwd))
+
+
+def slug_for_remote_url(url: str) -> str:
+    """Return the canonical ``host/owner/repo`` slug for a git remote *url*, or ``""``.
+
+    The full slug (including host) is used so an organisation-namespace allowlist
+    entry matches a GitLab remote and the host-keyed :func:`probe_visibility` routes
+    to the right forge tool. Host-STRIPPING a remote here would send every GitLab
+    remote to the GitHub probe, which can never confirm it.
+
+    Remote forms normalize to a canonical slug:
+
+    - ``https://host/owner/repo`` -> ``host/owner/repo`` (host kept),
+    - ``user@host:owner/repo`` (SCP-style SSH) -> ``host/owner/repo`` ONLY when
+        ``host`` is a CANONICAL hostname (it contains a dot, e.g.
+        ``git@gitlab.com:org/repo`` -> ``gitlab.com/org/repo``). When ``host`` is
+        a dotless SSH CONFIG ALIAS (``git@gh-acct:owner/repo``, the ``Host
+        gh-acct`` form from ``~/.ssh/config`` that maps to a real ``HostName``),
+        the ``user@<alias>`` prefix is DROPPED -> ``owner/repo``: the alias is a
+        LOCAL name with no canonical identity, so keeping it glued ``gh-acct`` in
+        as the leading slug segment, where the dot-keyed host-strip / visibility
+        probe could not recognise it and a private own-repo failed to downgrade
+        (#1415). A dotted alias (``github.com-acct``) is kept as the host
+        segment but the downstream :func:`_strip_host_prefix` / probe already
+        strip a dotted leading segment, so it resolves correctly either way.
+    - ``alias:owner/repo`` (SSH config ``Host alias``, no ``user@``) ->
+        ``owner/repo`` -- same rationale: a local alias with no canonical
+        identity is DROPPED. Keeping it (the old verbatim return) glued the alias
+        into the slug, and an alias whose name contained an allowlist entry then
+        tripped the substring matcher and falsely downgraded a PUBLIC repo
+        (#1953).
+
+    An empty/unparsable *url* yields ``""``, which fails SAFE -- the caller then
+    treats visibility as unresolved and the gate stays enforcing.
+    """
+    if not url:
+        return ""
+    cleaned = url.strip().rstrip("/").removesuffix(".git")
+    if "://" in cleaned:
+        return cleaned.split("://", 1)[1]
+    if ":" in cleaned and "/" not in cleaned.partition(":")[0]:
+        host, _, path = cleaned.partition(":")
+        real_host = host.rsplit("@", 1)[-1] if "@" in host else host
+        # A canonical hostname carries a dot (a TLD or a sub-domain); a dotless
+        # token is an SSH config Host ALIAS with no canonical identity, so drop
+        # it and keep only the canonical ``owner/repo`` key. This holds whether
+        # or not the remote carried a ``user@`` -- a ``user@gh-acct`` alias is no
+        # more canonical than a bare ``gh-acct`` one.
+        if _is_canonical_host(real_host):
+            return f"{real_host}/{path}"
+        return path
+    return cleaned
+
+
+def _origin_remote_url(cwd: Path) -> str:
+    """Resolve ``cwd``'s ``origin`` URL, OFFLINE-FIRST.
+
+    The offline ``.git/config`` parse (:func:`git_config_offline.origin_url`)
+    spawns no process, so it resolves the remote inside the restricted
+    PreToolUse hook subprocess where a bare ``git`` is unresolvable -- the bug
+    that left a flagless ``glab mr create`` / ``gh pr create`` to the user's
+    OWN private repo with no slug to match the offline ``private_repos``
+    allowlist, over-blocking it. The PATH-augmented subprocess is the fallback
+    for the rare configs an offline parse cannot read (e.g. an
+    ``[include]``-redirected url).
+    """
+    offline = git_config_offline.origin_url(cwd)
+    if offline:
+        return offline
+    return _origin_url_via_git(cwd)
+
+
+def _origin_url_via_git(cwd: Path) -> str:
+    """Resolve ``origin`` via ``git remote get-url`` against the augmented PATH.
+
+    The PreToolUse hook subprocess inherits a restricted PATH where a bare
+    ``git`` may not resolve; resolving the binary against the augmented probe
+    PATH (the same one the visibility probe uses) keeps this fallback working
+    in-hook. Any failure (binary absent, not a repo) fails SAFE to ``""``.
+    """
+    binary = shutil.which("git", path=_probe_search_path())
+    if binary is None:
+        return ""
+    try:
+        result = run_allowed_to_fail(
+            [binary, "-C", str(cwd), "remote", "get-url", "origin"],
+            expected_codes=(0,),
+            env=_probe_env(),
+            timeout=_PROBE_TIMEOUT_S,
+        )
+    except (CommandFailedError, OSError, TimeoutExpired):
+        return ""
+    return result.stdout.strip()
+
+
+def _is_canonical_host(host: str) -> bool:
+    """Return True iff ``host`` is a canonical hostname rather than an SSH alias.
+
+    A canonical hostname carries a dot (a registrable domain / sub-domain, e.g.
+    ``gitlab.com``, ``github.com``) or is the reserved ``localhost``. A dotless
+    token (``gh-acct``, ``work-github``) is an SSH config ``Host`` ALIAS -- a
+    local ``~/.ssh/config`` name with no canonical identity -- which must be
+    dropped from the slug so the dot-keyed host-strip / visibility probe key on
+    the real ``owner/repo`` instead of an unrecognisable alias segment (#1415).
+    """
+    return "." in host or host == "localhost"
+
+
+def _cache_root() -> Path:
+    """Resolve a writable cache dir for the visibility verdict cache.
+
+    HOST-WIDE (:func:`teatree.hooks._hook_state.shared_hook_state_root`), not the per-worktree
+    data dir the rest of the hook state uses: the cached fact belongs to the remote
+    repo, so every checkout on this host must read the same answer. If the chosen
+    root already exists as a non-directory, fall back to a sibling so the write
+    still succeeds.
+    """
+    from teatree.hooks._hook_state import shared_hook_state_root  # noqa: PLC0415 — deferred: cold-hook top
+
+    root = shared_hook_state_root()
+    if root.exists() and not root.is_dir():
+        return Path.home() / ".teatree-data"
+    return root
+
+
+def _visibility_cache_path() -> Path:
+    return _cache_root() / "repo-visibility-cache.json"
+
+
+def _read_visibility_cache(slug: str) -> str | None:
+    """Return a fresh cached visibility verdict for ``slug``, or ``None``."""
+    path = _visibility_cache_path()
+    if not path.is_file():
+        return None
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    entry = cache.get(slug) if isinstance(cache, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    ts = entry.get("ts")
+    verdict = entry.get("visibility")
+    if not isinstance(ts, (int, float)) or not isinstance(verdict, str):
+        return None
+    if time.time() - ts > _verdict_ttl(verdict):
+        return None
+    return verdict
+
+
+def _verdict_ttl(verdict: str) -> int:
+    """How long a cached ``verdict`` stays fresh, per its staleness risk."""
+    if verdict == _UNKNOWN_VERDICT:
+        return _UNKNOWN_TTL_S
+    return _PUBLIC_TTL_S if verdict == _PUBLIC_VERDICT else _NON_PUBLIC_TTL_S
+
+
+def _write_visibility_cache(slug: str, verdict: str) -> None:
+    """Persist a visibility verdict for ``slug`` (best-effort)."""
+    path = _visibility_cache_path()
+    cache: dict[str, _VisibilityEntry] = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                cache = loaded
+        except (OSError, ValueError):
+            cache = {}
+    cache[slug] = _VisibilityEntry(ts=time.time(), visibility=verdict)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache), encoding="utf-8")
+    except OSError:
+        return
+
+
+def _probe_search_path() -> str:
+    """Return ``$PATH`` augmented with the common ``gh``/``glab`` install dirs."""
+    return os.pathsep.join([os.environ.get("PATH", ""), *_PROBE_PATH_EXTRA])
+
+
+def _resolve_probe_tool(tool: str) -> str | None:
+    """Resolve ``tool`` against the augmented probe PATH, or ``None``.
+
+    The PreToolUse hook subprocess inherits a restricted PATH where a bare
+    ``gh``/``glab`` may not resolve; resolving against the augmented path lets
+    the live-visibility fallback work in-hook instead of over-blocking.
+    """
+    return shutil.which(tool, path=_probe_search_path())
+
+
+def _probe_env() -> dict[str, str]:
+    """Return the process environment with the augmented probe PATH."""
+    return {**os.environ, "PATH": _probe_search_path()}
+
+
+def run_forge_tool(tool: str, args: list[str]) -> ForgeProbe:
+    """Run ``tool`` with *args* against the augmented probe PATH.
+
+    An absent :attr:`ForgeProbe.stdout` means the question went unasked, and
+    :attr:`ForgeProbe.unresolved` says WHICH way — the four outcomes are kept
+    apart because a caller that REFUSES on the answer has to name the cause it
+    observed instead of asserting one. Shared with the foreign-open-MR guard
+    (:mod:`teatree.hooks.foreign_mr_cli`) so both forge probes resolve their
+    binary and their environment identically.
+    """
+    binary = _resolve_probe_tool(tool)
+    if binary is None:
+        return ForgeProbe(stdout=None, unresolved=PROBE_ABSENT)
+    try:
+        result = run_allowed_to_fail(
+            [binary, *args],
+            expected_codes=(0,),
+            env=_probe_env(),
+            timeout=_PROBE_TIMEOUT_S,
+        )
+    except TimeoutExpired:
+        return ForgeProbe(stdout=None, unresolved=f"{PROBE_TIMED_OUT}={_PROBE_TIMEOUT_S}s")
+    except CommandFailedError:
+        return ForgeProbe(stdout=None, unresolved=PROBE_FAILED)
+    except OSError:
+        return ForgeProbe(stdout=None, unresolved=PROBE_UNRUNNABLE)
+    return ForgeProbe(stdout=result.stdout)
+
+
+def _probe_gh(repo_path: str) -> str | None:
+    stdout = run_forge_tool(
+        FORGE_TOOL[GITHUB],
+        ["repo", "view", repo_path, "--json", "visibility", "--jq", ".visibility"],
+    ).stdout
+    if stdout is None:
+        return None
+    verdict = stdout.strip().upper()
+    return verdict or None
+
+
+def _probe_glab(repo_path: str) -> str | None:
+    # ``glab api`` has no ``--jq`` flag (unlike ``gh``), so the verdict is
+    # parsed from the full project JSON in Python. Passing ``--jq`` makes glab
+    # exit non-zero with "Unknown flag", silently defeating the carve-out for
+    # every GitLab repo.
+    stdout = run_forge_tool(FORGE_TOOL[GITLAB], ["api", f"projects/{repo_path.replace('/', '%2F')}"]).stdout
+    if stdout is None:
+        return None
+    try:
+        project = json.loads(stdout)
+    except ValueError:
+        return None
+    visibility = project.get("visibility") if isinstance(project, dict) else None
+    if not isinstance(visibility, str):
+        return None
+    return visibility.strip().upper() or None
+
+
+def probe_visibility(slug: str) -> str | None:
+    """Probe repo visibility via ``gh`` (GitHub) or ``glab`` (GitLab).
+
+    Returns ``"PRIVATE"`` / ``"PUBLIC"`` (upper-cased) or ``None`` when the
+    tool is unavailable, the slug is unrecognised, or the probe errors.
+    ``None`` is the fail-safe "unknown" -- the caller then treats the repo as
+    NOT private and the gate stays hard-blocking.
+
+    The forge is resolved from the slug's host segment by the shared
+    :func:`_forge_tool.forge_and_repo_path`, so this probe and the foreign-MR
+    guard route identically. A BARE ``owner/repo`` slug carries no host, so
+    callers that know the forge from the publish tool qualify the slug UP to its
+    canonical host form first (:func:`forge_qualified_slug`) -- a ``glab`` post
+    therefore probes via ``glab`` instead of being mis-routed to the GitHub
+    default.
+    """
+    forge, repo_path = forge_and_repo_path(slug)
+    if forge == GITLAB:
+        return _probe_glab(repo_path)
+    if forge == GITHUB:
+        return _probe_gh(repo_path)
+    return None
+
+
+# Canonical host for each forge, used to qualify a BARE ``owner/repo`` slug UP
+# to its host-prefixed form so the host-keyed probe routes to the right tool.
+_FORGE_CANONICAL_HOST: Final[dict[str, str]] = {GITHUB: "github.com", GITLAB: "gitlab.com"}
+
+
+def forge_qualified_slug(slug: str, forge: str) -> str:
+    """Return ``slug`` host-qualified with ``forge``'s canonical host, if it is bare.
+
+    A bare ``owner/repo`` slug (no leading dotted host segment) carries no forge
+    of its own, so the host-keyed :func:`probe_visibility` defaults it to the
+    GitHub probe -- which can never confirm a GitLab repo private. When the
+    publish TOOL pins the forge (``glab`` -> ``gitlab``, ``gh`` -> ``github``),
+    qualifying the slug UP to ``<host>/owner/repo`` routes the probe to the right
+    tool. An already host-qualified slug, an unknown forge, or an empty slug is
+    returned unchanged -- the host segment then governs the route, and the
+    allowlist match is host-qualification-symmetric so qualifying never changes
+    an allowlist verdict.
+    """
+    canonical_host = _FORGE_CANONICAL_HOST.get(forge)
+    if not canonical_host or not slug:
+        return slug
+    head = slug.split("/", 1)[0]
+    if "." in head:
+        return slug
+    return f"{canonical_host}/{slug}"
+
+
+def slug_visibility(slug: str) -> str | None:
+    """Resolve ``slug``'s visibility verdict (upper-cased), or ``None`` (cache -> probe -> cache).
+
+    ``None`` is the fail-safe unknown -- an absent probe tool, an unrecognised
+    slug, or a probe error. Callers read a ``"PRIVATE"`` verdict (the carve-out)
+    or a ``"PUBLIC"`` one (the affirmative-public leak-gate scope in
+    :mod:`teatree.hooks.public_visibility`); every other verdict, and ``None``,
+    is neither.
+
+    A negative (``None``) probe result is short-TTL cached under the
+    :data:`_UNKNOWN_VERDICT` sentinel so an unresolvable slug is not re-probed at
+    the full 5s budget on every publish -- the read maps that sentinel back to
+    ``None`` for callers.
+    """
+    cached = _read_visibility_cache(slug)
+    if cached is not None:
+        return None if cached == _UNKNOWN_VERDICT else cached
+    verdict = probe_visibility(slug)
+    _write_visibility_cache(slug, verdict if verdict is not None else _UNKNOWN_VERDICT)
+    return verdict
+
+
+def slug_is_private(slug: str) -> bool:
+    """Return True iff ``slug``'s visibility verdict is ``"PRIVATE"``."""
+    return slug_visibility(slug) == "PRIVATE"
+
+
+def _strip_host_prefix(slug: str) -> str:
+    """Drop a leading ``host/`` segment (a first part containing a ``.``).
+
+    A repo identity has two equivalent forms: host-qualified
+    (``host/owner/repo``, the origin-remote / ``slug_for_cwd`` / config-doc
+    form) and bare (``owner/repo``, the ``gh pr create --repo`` form). The
+    host segment is the only difference, and it is recognised the same way the
+    visibility probe recognises it -- a first ``/``-segment containing a dot.
+    Stripping it yields the form-independent ``owner/repo`` key.
+    """
+    head, sep, rest = slug.partition("/")
+    if sep and "." in head:
+        return rest
+    return slug
+
+
+def slug_namespace_matches(entry: str, slug: str) -> bool:
+    """Return True iff allowlist ``entry`` matches ``slug`` on path-segment boundaries.
+
+    The canonical key is the host-stripped ``owner/repo`` path. ``entry`` matches
+    when, host-stripped, it equals the host-stripped slug OR is a leading run of
+    its ``/``-separated segments: ``a`` and ``a/b`` match ``a/b`` and ``a/b/c``,
+    but ``a`` does NOT match ``ab/c`` (a substring of a segment) and ``a/b`` does
+    NOT match ``a/bc`` (a superset segment). The host segment never participates,
+    so an SSH-alias host (``gitlab-<entry>``) or an https host can never satisfy
+    the match.
+
+    The match is HOST-QUALIFICATION-SYMMETRIC: both sides are host-stripped first
+    (a leading ``/``-segment containing a dot), so a host-qualified entry matches
+    a bare ``gh pr create --repo`` slug, a bare entry matches a host-qualified cwd
+    slug, and a bare-org entry keeps matching both (#2067).
+
+    This replaces the old case-insensitive SUBSTRING containment, which falsely
+    matched an entry appearing anywhere in the slug -- inside an SSH-alias host
+    (``gitlab-<entry>:org/public``) or a superset owner (``<entry>-fork/repo``,
+    ``open<entry>/repo``) -- and so downgraded a PUBLIC repo to private,
+    relaxing the banned-terms gate on a public surface (#1953).
+    """
+    entry_key = _strip_host_prefix(entry.strip().lower())
+    slug_key = _strip_host_prefix(slug.strip().lower())
+    if not entry_key or not slug_key:
+        return False
+    if entry_key == slug_key:
+        return True
+    entry_parts = entry_key.split("/")
+    slug_parts = slug_key.split("/")
+    return len(entry_parts) < len(slug_parts) and slug_parts[: len(entry_parts)] == entry_parts
+
+
+def slug_segment_depth(entry: str) -> int:
+    """How many host-stripped path segments *entry* pins — a pattern's SPECIFICITY.
+
+    ``org`` is 1 and ``org/sub/repo`` is 3, host-qualified or not, so two patterns
+    written in different forms compare on the same axis
+    :func:`slug_namespace_matches` matches on. A blank or host-root-only entry is 0,
+    below every real pattern.
+    """
+    key = _strip_host_prefix(entry.strip().lower())
+    return len([segment for segment in key.split("/") if segment])
+
+
+def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
+    """Return True iff ``slug`` matches the DB-home ``private_repos`` allowlist.
+
+    Each entry is matched against the slug's host-stripped ``owner/repo`` path
+    segments via :func:`slug_namespace_matches` -- a leading-segment-prefix
+    match, NOT a substring. An organisation-namespace entry (``acme-engineering``)
+    covers every repo under it (``acme-engineering/secret``, host-qualified or
+    bare) while an unrelated superset owner (``acme-engineering-fork``) and an
+    SSH-alias host carrying the entry as a substring no longer match.
+
+    The classifier is fail-safe for the leak direction: a True DOWNGRADES the
+    banned-terms gate (and makes a publish destination skip the leak scan), so an
+    over-match is the dangerous direction. A non-matching, ambiguous, or
+    host-root-only entry yields False, which keeps enforcement hard-blocking.
+    """
+    return any(slug_namespace_matches(entry, slug) for entry in _private_repo_allowlist(config_path))
+
+
+def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
+    """Return True iff ``term`` is (a token-run of) a ``private_repos`` entry.
+
+    A configured ``private_repos`` entry is, by definition, a private repo's
+    OWN org/repo slug substring (a neutral example: ``acme-engineering``). When
+    such an entry is the banned term a commit message tripped on, the match is
+    the repo naming ITSELF -- the work-item URL ``host/<org>/<repo>/...`` -- not
+    a foreign customer leak, so it is downgrade-eligible on that repo's own
+    commits.
+
+    The match is token-CONTAINMENT: the term's tokens must appear as a
+    CONTIGUOUS run within an allowlist entry's tokens. A term equal to the entry
+    qualifies (``acme-engineering``), AND so does a token-run of it -- the org
+    prefix ``acme`` of ``acme-engineering`` (#1958). A work-item URL
+    ``host/acme-engineering/.../-/issues/N`` tokenizes that prefix out of the
+    repo's OWN identity, so the banned-terms scanner reports the prefix token,
+    not the whole slug; the prefix is still the repo naming itself, not a foreign
+    leak. A FOREIGN term is not a run of any entry, and a SUPERSET term (a longer
+    slug that merely starts with the entry, e.g. ``acme-engineering-services``)
+    is longer than the entry's token run and so is NOT contained -- both stay
+    blocked.
+    """
+    from teatree.hooks.term_match import _contains_run, tokens  # noqa: PLC0415 — deferred: call-time import, kept lazy
+
+    term_tokens = tokens(term)
+    if not term_tokens:
+        return False
+    return any(_contains_run(tokens(entry), term_tokens) for entry in _private_repo_allowlist(config_path))

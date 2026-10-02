@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-merge_burst_health_checks_main_after_burst-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Burst done."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

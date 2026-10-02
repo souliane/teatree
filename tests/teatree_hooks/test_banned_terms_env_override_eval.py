@@ -1,0 +1,198 @@
+"""Eval matrix for the banned-terms egress-wrapper escape hatch (#1415, #126).
+
+The gate-over-deny lockout this guards against: the documented
+``--allow-banned-term`` / ``ALLOW_BANNED_TERM=1`` override did NOT
+propagate through the wrapper. The override check read ONLY
+``tool_input["env"]``, but the Claude Code PreToolUse payload for a
+``Bash`` tool carries no ``env`` block — the agent's
+``ALLOW_BANNED_TERM=1`` process env var (inherited by the hook
+subprocess via ``os.environ``) never reached the gate, forcing
+numeric-id + paraphrase workarounds all session.
+
+Scenario matrix:
+
+* the ``ALLOW_BANNED_TERM=1`` override in the process env → ALLOW;
+* no override + a banned term in a POST → BLOCK;
+* fails OPEN on a broken env (no config / unreadable env).
+"""
+
+import json
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+
+import pytest
+
+from hooks.scripts.hook_router import handle_banned_terms_pretool
+from teatree.hooks import _repo_visibility, banned_terms_scanner
+from teatree.hooks.banned_terms_scanner import has_override, scan_text
+
+
+def _seed_banned_terms(db_path: Path, terms: list[str]) -> None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
+            (json.dumps(terms),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def _term_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Seed a one-term banned-list config DB so the shell scanner has something to flag."""
+    db = tmp_path / "config.sqlite3"
+    _seed_banned_terms(db, ["acmecorp"])
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    return db
+
+
+def _bash(command: str) -> dict[str, object]:
+    return {"tool_name": "Bash", "tool_input": {"command": command}}
+
+
+class TestAllowBannedTermEnvReachesWrapper:
+    """``ALLOW_BANNED_TERM=1`` in the process env bypasses the gate."""
+
+    def test_process_env_override_is_honoured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ALLOW_BANNED_TERM", "1")
+        cmd = 'gh issue create --title t --body "mention of acmecorp here"'
+        assert has_override("Bash", {"command": cmd}) is True
+
+    def test_env_sourced_override_emits_visible_note(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # An inherited-env override silently disables every publish scan — the
+        # NOTE makes that standing disable visible (finding 7).
+        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("ALLOW_BANNED_TERM", "1")
+        assert has_override("Bash", {"command": "gh issue create --body x"}) is True
+        assert "ALLOW_BANNED_TERM=1 is set in the process environment" in capsys.readouterr().err
+
+    def test_process_env_override_zero_does_not_bypass(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ALLOW_BANNED_TERM", "0")
+        cmd = 'gh issue create --title t --body "mention of acmecorp here"'
+        assert has_override("Bash", {"command": cmd}) is False
+
+    def test_tool_input_env_still_honoured(self) -> None:
+        cmd = 'gh issue create --title t --body "acmecorp"'
+        assert has_override("Bash", {"command": cmd, "env": {"ALLOW_BANNED_TERM": "1"}}) is True
+
+    def test_flag_in_first_segment_still_honoured(self) -> None:
+        cmd = 'gh issue create --title t --body "acmecorp" --allow-banned-term'
+        assert has_override("Bash", {"command": cmd}) is True
+
+    def test_inline_env_behind_cd_prefix_is_honoured(self) -> None:
+        # The common sub-agent shape: cd into the worktree, then commit with the
+        # override leading the publish segment.
+        cmd = 'cd /work/ticket && ALLOW_BANNED_TERM=1 git commit -m "acmecorp"'
+        assert has_override("Bash", {"command": cmd}) is True
+
+    @pytest.mark.usefixtures("_term_config")
+    def test_process_env_override_bypasses_block_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("ALLOW_BANNED_TERM", "1")
+        data = _bash('gh issue create --title t --body "acmecorp ships next week"')
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.usefixtures("_term_config")
+    def test_inline_env_behind_cd_prefix_bypasses_block_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
+        data = _bash('cd /tmp && ALLOW_BANNED_TERM=1 gh issue create --title t --body "acmecorp ships"')
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+
+class TestBannedTermGenuineGuardIntact:
+    """The override must not weaken the real block on a genuine violation."""
+
+    @pytest.mark.usefixtures("_term_config")
+    def test_banned_term_in_post_without_override_is_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
+        # The leak gate enforces ONLY on an affirmatively-public target (#1415), so
+        # the genuine-violation guard posts to the public teatree repo with the
+        # probe confirming it public.
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash('gh issue create -R souliane/teatree --title t --body "acmecorp ships next week"')
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+        assert "acmecorp" in out["permissionDecisionReason"]
+
+    def test_clean_body_is_allowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
+        cmd = 'gh issue create --title t --body "acmecorp"'
+        # No override env, no flag → no bypass (the block decision is then
+        # made by the scanner against the config).
+        assert has_override("Bash", {"command": cmd}) is False
+
+    @pytest.mark.usefixtures("_term_config")
+    def test_override_on_decoy_segment_does_not_bypass_chained_publish(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The override leads a harmless echo; bash scopes it to that command, so
+        # it must NOT vouch for the banned-term publish chained after it. The
+        # publish targets the affirmatively-public teatree repo so the leak gate
+        # fires (#1415) and the missing override on that segment blocks.
+        monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash(
+            'ALLOW_BANNED_TERM=1 echo hi && gh issue create -R souliane/teatree --title t --body "acmecorp ships"'
+        )
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+class TestBannedTermAbsentStoreNoOpsAndErroredStoreFailsClosed:
+    """An ABSENT store has nothing to vouch for; a store that ERRORED cannot vouch at all."""
+
+    @pytest.fixture(autouse=True)
+    def _no_required_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
+
+    def test_no_config_no_ops(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "does-not-exist.sqlite3"))
+        assert scan_text("acmecorp leak") is None
+
+    def test_no_config_fails_closed_once_the_deployment_says_it_must_scrub(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "does-not-exist.sqlite3"))
+        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
+        assert scan_text("acmecorp leak") == banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER
+
+    def test_an_errored_store_fails_closed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The other direction: no-opping on every store would pass the first assertion above."""
+        corrupt = tmp_path / "corrupt.sqlite3"
+        corrupt.write_bytes(b"this is not a sqlite database")
+        monkeypatch.setenv("T3_CONFIG_DB", str(corrupt))
+        assert scan_text("acmecorp leak") == banned_terms_scanner.STORE_UNREADABLE_MARKER
+
+    def test_a_readable_store_with_no_terms_still_no_ops(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "empty.sqlite3"
+        with closing(sqlite3.connect(str(db))) as con:
+            con.execute(
+                "CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, key TEXT, value TEXT, scope TEXT)"
+            )
+            con.commit()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        assert scan_text("acmecorp leak") is None

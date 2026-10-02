@@ -1,0 +1,180 @@
+"""Wiring tests for the resource-pressure scanner (#128).
+
+Covers the dispatch routing (``resource.*`` → the right action kind/zone),
+the config knobs + their defaults, and the ``build_default_jobs`` global
+registration + kill-switch.
+"""
+
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+
+from teatree.config import UserSettings
+from teatree.loop.dispatch import dispatch
+from teatree.loop.global_scanner_factories import _resource_pressure_scanner
+from teatree.loop.scanners.base import ScanSignal
+
+
+class DispatchRoutingTests(TestCase):
+    """``resource.*`` signals route to the mechanical handler or the statusline."""
+
+    def test_cleanup_needed_routes_to_free_resources_mechanical(self) -> None:
+        signal = ScanSignal(kind="resource.cleanup_needed", summary="disk crit", payload={"resource": "disk"})
+        actions = dispatch([signal])
+        assert len(actions) == 1
+        assert actions[0].kind == "mechanical"
+        assert actions[0].zone == "free_resources"
+
+    def test_pressure_warn_routes_to_action_needed_statusline_only(self) -> None:
+        signal = ScanSignal(kind="resource.pressure_warn", summary="disk warn", payload={"resource": "disk"})
+        actions = dispatch([signal])
+        assert len(actions) == 1
+        assert actions[0].kind == "statusline"
+        assert actions[0].zone == "action_needed"
+
+    def test_cleanup_failed_routes_to_action_needed_statusline(self) -> None:
+        signal = ScanSignal(kind="resource.cleanup_failed", summary="purge failed", payload={})
+        actions = dispatch([signal])
+        assert len(actions) == 1
+        assert actions[0].kind == "statusline"
+        assert actions[0].zone == "action_needed"
+
+    def test_probe_inert_routes_to_action_needed_statusline(self) -> None:
+        """#4104 — an inert probe is an operator problem: it means the ladder is not protecting the box."""
+        signal = ScanSignal(kind="resource.probe_inert", summary="ram probe inert", payload={"resource": "ram"})
+        actions = dispatch([signal])
+        assert len(actions) == 1
+        assert actions[0].kind == "statusline"
+        assert actions[0].zone == "action_needed", "an unprotected box must not render as routine in_flight noise"
+
+    def test_ram_kill_candidate_is_statusline_only_never_agent(self) -> None:
+        signal = ScanSignal(kind="resource.ram_kill_candidate", summary="kill candidate", payload={})
+        actions = dispatch([signal])
+        assert len(actions) == 1
+        assert actions[0].kind == "statusline", "a flagged process-kill must never be an autonomous agent action"
+
+
+class ConfigDefaultsTests(TestCase):
+    """The config knobs ship with the spec's safe defaults."""
+
+    def _settings(self) -> object:
+        from teatree.config import UserSettings  # noqa: PLC0415
+
+        return UserSettings()
+
+    def test_destructive_flags_default_off(self) -> None:
+        settings = self._settings()
+        assert settings.allow_destructive_disk is False
+        assert settings.allow_destructive_ram is False
+
+    def test_threshold_defaults(self) -> None:
+        settings = self._settings()
+        assert settings.disk_warn_free_gb == pytest.approx(25.0)
+        assert settings.disk_crit_free_gb == pytest.approx(10.0)
+        assert settings.ram_warn_avail_gb == pytest.approx(3.0)
+        assert settings.ram_crit_avail_gb == pytest.approx(1.5)
+
+    def test_default_cache_allowlist_excludes_prek_and_projects(self) -> None:
+        allowlist = self._settings().disk_cache_allowlist
+        assert "~/.cache/pre-commit" in allowlist
+        assert "~/.cache/codex-runtimes" in allowlist
+        assert "~/.cache/go-build" in allowlist
+        assert "~/.cache/prek" not in allowlist, "prek has unknown rebuild semantics — never default-purged"
+        assert "~/.cache/uv" not in allowlist, "the ladder's own `uv cache prune` is the safe uv reclaim"
+        assert "~/.claude/projects" not in allowlist, "session memory is never an auto-purge target"
+
+    def test_ram_kill_allowlist_defaults_empty(self) -> None:
+        assert self._settings().ram_kill_allowlist == []
+
+    def test_worktree_stale_days_default(self) -> None:
+        settings = self._settings()
+        assert settings.worktree_stale_days == 30
+
+
+class ConfigParsingTests(TestCase):
+    """The DB-home knobs (#1775) resolve from the ``ConfigSetting`` store.
+
+    The resource-pressure thresholds / flags / allowlists are DB-home, so the
+    resolver reads them from the ``ConfigSetting`` store (+ ``T3_*`` env), NOT
+    the ``[teatree]`` TOML table (which is ignored on read for a DB-home key).
+    """
+
+    def test_db_overrides_resolve_thresholds_and_flags(self) -> None:
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("disk_crit_free_gb", 5.0)
+        ConfigSetting.objects.set_value("ram_crit_avail_gb", 0.5)
+        ConfigSetting.objects.set_value("allow_destructive_disk", value=True)
+        ConfigSetting.objects.set_value("ram_kill_allowlist", ["Brave.*Renderer", "Slack Helper"])
+        settings = get_effective_settings()
+        assert settings.disk_crit_free_gb == pytest.approx(5.0)
+        assert settings.ram_crit_avail_gb == pytest.approx(0.5)
+        assert settings.allow_destructive_disk is True
+        assert settings.ram_kill_allowlist == ["Brave.*Renderer", "Slack Helper"]
+
+    def test_explicit_empty_allowlist_is_honoured(self) -> None:
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        ConfigSetting.objects.set_value("disk_cache_allowlist", [])
+        settings = get_effective_settings()
+        assert settings.disk_cache_allowlist == []
+
+    def test_missing_allowlist_uses_regenerable_default(self) -> None:
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+
+        settings = get_effective_settings()
+        assert "~/.cache/pre-commit" in settings.disk_cache_allowlist
+
+    def test_the_thresholds_are_overlay_overridable(self) -> None:
+        from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS  # noqa: PLC0415
+
+        assert "allow_destructive_disk" in OVERLAY_OVERRIDABLE_SETTINGS
+        assert "disk_crit_free_gb" in OVERLAY_OVERRIDABLE_SETTINGS
+
+
+class BuilderTests(TestCase):
+    """``_resource_pressure_scanner`` threads every threshold through to the scanner."""
+
+    def test_builds_scanner_from_the_resolved_settings(self) -> None:
+        settings = UserSettings(disk_crit_free_gb=8.0, scratch_retention_days=11)
+        with patch("teatree.loop.global_scanner_factories.get_effective_settings", return_value=settings):
+            scanner = _resource_pressure_scanner()
+        assert scanner is not None
+        assert scanner.disk_crit_free_gb == pytest.approx(8.0)
+        assert scanner.scratch_retention_days == 11
+
+    def test_a_stored_destructive_lever_does_not_reach_the_scanner(self) -> None:
+        """The deliberate hold: repairing the resolver read must not ARM a deleter.
+
+        No stored row has ever reached this scanner, so honouring these two here would
+        start deleting on a box that set either flag at any point and has never seen a
+        deletion. Whether to arm them is the owner's decision, and until it is taken the
+        levers stay at their shipped value.
+        """
+        settings = UserSettings(allow_destructive_disk=True, allow_destructive_ram=True)
+        with patch("teatree.loop.global_scanner_factories.get_effective_settings", return_value=settings):
+            scanner = _resource_pressure_scanner()
+        assert scanner is not None
+        assert scanner.allow_destructive_disk is False
+        assert scanner.allow_destructive_ram is False
+        assert UserSettings().allow_destructive_disk is False, "the shipped value is what the hold pins to"
+
+    def test_build_default_jobs_wires_global_scanner(self) -> None:
+        from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415
+        from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415
+
+        fake = ResourcePressureScanner()
+        with patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=fake):
+            jobs = build_default_jobs()
+        assert any(j.scanner is fake and j.overlay == "" for j in jobs)
+
+    def test_build_default_jobs_omits_scanner_when_disabled(self) -> None:
+        from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415
+        from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415
+
+        with patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=None):
+            jobs = build_default_jobs()
+        assert not any(isinstance(j.scanner, ResourcePressureScanner) for j in jobs)

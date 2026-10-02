@@ -1,0 +1,497 @@
+"""Mechanical action handlers — inline ticket transitions executed during a tick.
+
+Each handler receives an ``ActionPayload`` dict and mutates the DB directly.
+Called by ``tick._execute_mechanical`` after dispatch, before statusline render.
+"""
+
+import logging
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, cast
+
+from django.db import transaction
+from django_fsm import can_proceed
+
+from teatree.core.models.errors import LeaseLostError
+from teatree.core.review.author_trust import classify_author
+from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
+from teatree.loop.dispatch import ActionPayload
+from teatree.loop.mechanical_artifacts import sweep_artifacts
+from teatree.loop.mechanical_ci_eval_heal import advance_ci_eval_heal
+from teatree.loop.mechanical_db_backup import run_db_backup
+from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
+from teatree.loop.mechanical_ratchet_staleness import report_ratchet_staleness
+from teatree.loop.mechanical_resources import free_resources
+from teatree.loop.mechanical_snapshot_warmer import refresh_snapshot
+from teatree.utils.url_slug import pr_ref_from_url
+
+if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
+    from teatree.core.backend_protocols import CodeHostBackend
+    from teatree.core.models.task import Task
+    from teatree.core.models.ticket import Ticket
+
+logger = logging.getLogger(__name__)
+
+
+def payload_author_untrusted_public(payload: ActionPayload) -> bool:
+    """True iff the payload's ``url`` + ``author`` is an untrusted PUBLIC-repo author (#1773).
+
+    The shared author-trust classifier a mechanical handler consults before
+    treating a non-self-authored signal as benign. Reuses the SAME
+    :func:`classify_author` the keystone and the three reviewing scanners use,
+    so the four cannot drift. Returns False when the payload carries no explicit
+    author or no resolvable PR url — the legacy signals that omit the author
+    were already verified self-authored by the emitting scanner, so the belt
+    only acts on an EXPLICIT author it can independently classify.
+    """
+    author = str(payload.get("author") or "")
+    if not author:
+        return False
+    ref = pr_ref_from_url(str(payload.get("url") or payload.get("mr_url") or ""))
+    if ref is None:
+        return False
+    return classify_author(ref.slug, author, host_kind=ref.host_kind).untrusted
+
+
+def ignore_disposed_ticket(payload: ActionPayload) -> None:
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is None:
+        return
+    ticket = ticket_model.objects.get(pk=ticket_id)
+    # #1087: the disposition signal re-emits every tick while the ticket
+    # stays IGNORED (its PR keystone-merged, issue auto-closed). Driving
+    # ``ignore`` from ``ignored`` is not a valid FSM transition — guard so
+    # the already-satisfied desired state is a silent no-op, not every-tick
+    # ``TransitionNotAllowed`` noise.
+    if not can_proceed(ticket.ignore):
+        return
+    ticket.ignore()
+    ticket.save()
+    logger.info("Auto-ignored ticket %s (reason: %s)", ticket_id, payload.get("reason", "?"))
+
+
+def complete_ticket(payload: ActionPayload) -> None:
+    """Transition a ticket from its current post-ship state toward delivered.
+
+    FSM path: shipped → request_review → mark_merged → retrospect. Delegates to
+    ``Ticket.advance_to_delivered`` so this loop path shares the CLI's
+    atomic-per-step + refusal-safe semantics: a mid-chain gate refusal (e.g. the
+    merge-evidence gate on ``mark_merged``) stops the walk gracefully instead of
+    escaping as an exception after a partial commit — the every-tick error the
+    ungated cascade used to raise.
+    """
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is None:
+        return
+    ticket = ticket_model.objects.get(pk=ticket_id)
+
+    result = ticket.advance_to_delivered()
+    if result.refused:
+        logger.info(
+            "complete_ticket: ticket %s advance stopped at %s (%s → %s): %s",
+            ticket_id,
+            result.to_state,
+            result.from_state,
+            result.to_state,
+            result.error,
+        )
+
+
+def reopen_ticket(payload: ActionPayload) -> None:
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is None:
+        return
+    ticket = ticket_model.objects.get(pk=ticket_id)
+    # #1087: same re-emit hazard as ``ignore_disposed_ticket`` — a reopen
+    # signal that persists across ticks would drive ``reopen`` from the
+    # already-WORK_STARTED target state, raising every-tick ``TransitionNotAllowed``.
+    if not can_proceed(ticket.reopen):
+        return
+    ticket.reopen()
+    ticket.save()
+    logger.info("Auto-reopened ticket %s (was %s, draft MRs detected)", ticket_id, payload.get("ticket_state", "?"))
+
+
+def reviewer_task_orphaned(payload: ActionPayload) -> None:
+    """Close every PENDING reviewing task on a reviewer ticket no review is owed on (#998, #4901).
+
+    The scanner emits this signal on either of two proofs, never on mere
+    absence from the reviewer-assignment scan: ``host.get_pr_open_state``
+    confirmed the PR is genuinely MERGED or CLOSED (#1074), or the ticket sits
+    in a settled state that admits no review (#1431). Without this sweep the
+    PENDING task lingers forever, surfacing on every ``pending-spawn`` and
+    dispatching a reviewer sub-agent for nothing.
+
+    The two grounds are NOT interchangeable in a log (#3910): a local reap on a
+    still-OPEN PR is correct, so crediting it to the forge-state proof reads as
+    a forge bug and sends the operator hunting a phantom. The signal carries
+    the ground it actually used in ``payload["reason"]``.
+
+    The handler is intentionally narrow: it operates by ticket id and only
+    completes PENDING tasks in ``phase=reviewing``. A CLAIMED task is a run in
+    flight and belongs to the claim sweeps (#4901). Other tasks on the same
+    ticket (or other phases) are untouched. Best-effort — a missing ticket or
+    already-completed tasks no-op silently.
+    """
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is None:
+        return
+    try:
+        ticket = ticket_model.objects.get(pk=ticket_id)
+    except ticket_model.DoesNotExist:
+        return
+    reason = payload.get("reason", "no reason given")
+    completed = _complete_tasks(_pending_reviewing_tasks(ticket), skip_reason=f"no review is owed ({reason})")
+    if completed:
+        logger.info(
+            "Closed %d reviewing task(s) on ticket %s, no review owed (%s: %s)",
+            completed,
+            ticket_id,
+            payload.get("url", "?"),
+            reason,
+        )
+
+
+def reviewer_task_self_authored(payload: ActionPayload) -> None:
+    """Complete every open reviewing task on a SELF-AUTHORED MR's reviewer ticket (#1321).
+
+    The scanner emits this signal when ``list_review_requested_prs``
+    surfaces an MR the user authored (under any of their configured
+    identities). Own MRs route to coder/debugger + a colleague
+    review-request — never a ``t3:reviewer`` sub-agent. Without this sweep
+    a reviewing task created for a self-authored OPEN MR (the orphan sweep
+    only reaps MERGED/CLOSED PRs) lingers forever and re-dispatches a
+    self-review every ``pending-spawn``.
+
+    Narrow and best-effort: by ticket id, only ``phase=reviewing``
+    non-terminal tasks, CLAIMED included (:func:`reviewer_task_orphaned`
+    closes PENDING only); a missing ticket no-ops silently.
+
+    Narrower than :func:`reviewer_task_orphaned` in one way (#3910): a task the
+    #68 auto-review dispatch armed is skipped. That premise — own MR means a
+    colleague review-request — does not hold on a solo overlay, where the agent
+    cold-reviewer IS the checker and the armed task is the only route to a
+    merge. :func:`reviewer_task_orphaned` reaps it regardless, because a
+    merged/closed PR makes even an armed review dead work.
+    """
+    from django.apps import apps  # noqa: PLC0415 — deferred: app registry read at call time
+
+    ticket_model = cast("type[Ticket]", apps.get_model("core", "Ticket"))
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is None:
+        return
+    if payload_author_untrusted_public(payload):
+        # #1773: a self-authored signal must never silently close the reviewing
+        # task when the author is an untrusted identity on a PUBLIC repo — that
+        # PR needs an adversarial review, not a "no self-review" skip. Refuse
+        # the auto-complete (the keystone refuses the merge too — invariant 8).
+        logger.warning(
+            "reviewer_task_self_authored: refusing to auto-close reviewing task on ticket %s — "
+            "untrusted author on a public repo (%s) must get an adversarial review",
+            ticket_id,
+            payload.get("url", "?"),
+        )
+        return
+    try:
+        ticket = ticket_model.objects.get(pk=ticket_id)
+    except ticket_model.DoesNotExist:
+        return
+    completed = _complete_tasks(
+        _open_reviewing_tasks(ticket).not_auto_review_armed(),
+        skip_reason="the MR is self-authored, so no self-review ran",
+    )
+    if completed:
+        logger.info(
+            "Auto-completed %d reviewing task(s) on ticket %s (self-authored MR %s — no self-review)",
+            completed,
+            ticket_id,
+            payload.get("url", "?"),
+        )
+
+
+def _open_reviewing_tasks(ticket: object) -> "QuerySet":
+    """Every non-terminal ``phase=reviewing`` task on *ticket*."""
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    return Task.objects.pending_in_phase("reviewing").filter(ticket=ticket)
+
+
+def _pending_reviewing_tasks(ticket: object) -> "QuerySet":
+    """The PENDING ``phase=reviewing`` tasks on *ticket* — the ones no run holds."""
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+    return _open_reviewing_tasks(ticket).filter(status=Task.Status.PENDING)
+
+
+def _complete_tasks(tasks: "Iterable[Task]", *, skip_reason: str) -> int:
+    """Complete each task, recording the attempt that says no review ran (#4308).
+
+    A bare ``complete()`` leaves a reviewing row with ZERO attempts, which reads exactly
+    like a review that ran and recorded nothing — so a PR held by a stale verdict looked
+    reviewed every time this skip fired. The attempt is exit-0 because the skip is
+    deliberate (the PR is dead, or self-authored on a lane with no self-review): failing it
+    would feed the auto-repair sweep a "re-do this" signal for work nobody owes.
+
+    A task claimed after it was read fails the claim-generation check and is skipped with
+    its attempt rolled back, so the run that took it keeps it (#4901).
+    """
+    completed = 0
+    for task in tasks:
+        try:
+            with transaction.atomic():
+                task.complete_with_attempt(result={"summary": f"no verdict reached: {skip_reason}"})
+        except LeaseLostError:
+            logger.info("Left reviewing task %s to the run that claimed it after the read", task.pk)
+            continue
+        completed += 1
+    return completed
+
+
+def task_completion(payload: ActionPayload) -> None:
+    """Complete a swept teatree task whose artifact is terminal — RE-checking first (#129).
+
+    The ``task_sweep`` scanner emits ``task.completion_detected`` after
+    ``is_issue_done`` returned True for the task's issue. Because dispatch runs
+    after every scanner and the artifact could (in principle) re-open between
+    the scan and this handler, the handler re-verifies the terminal state
+    against the live code host before advancing the FSM — never auto-complete
+    on a stale read. Best-effort and idempotent: a missing task, an
+    already-terminal task, or a host that can no longer confirm the issue is
+    done all no-op silently rather than crash the tick.
+    """
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM import needs the app registry
+    from teatree.utils.url_slug import is_synthetic_loop_umbrella_url  # noqa: PLC0415 — deferred: tick-time import
+
+    task_id = payload.get("task_id")
+    if task_id is None:
+        return
+    try:
+        task = Task.objects.select_related("ticket").get(pk=task_id)
+    except Task.DoesNotExist:
+        return
+    if task.status in Task.Status.terminal():
+        return
+    # Defence in depth (#3706): a synthetic loop ticket anchors on the shared umbrella
+    # issue, whose upstream closed state says nothing about whether the loop work is done.
+    # The sweep already excludes these, so this signal should never carry one — never
+    # artifact-complete it if one slips through.
+    if is_synthetic_loop_umbrella_url(task.ticket.issue_url):
+        return
+    if not _artifact_still_terminal(task):
+        logger.info("task_completion: task %s artifact no longer terminal — skipping completion", task_id)
+        return
+    task.complete()
+    logger.info("Auto-completed task %s (artifact confirmed terminal: %s)", task_id, payload.get("issue_url", "?"))
+
+
+def _artifact_still_terminal(task: "Task") -> bool:
+    """Re-verify the task's issue is done via the live code host (fail-CLOSED).
+
+    Returns True only when the overlay's ``is_issue_done`` confirms the issue
+    on a fresh fetch. Any uncertainty — no host, fetch error, error payload —
+    returns False so the handler does NOT complete the task (the opposite of
+    the scanner's fail-OPEN-to-orphaned: at the *completion* gate, uncertainty
+    must block the irreversible action, not permit it).
+    """
+    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    issue_url = task.ticket.issue_url
+    if not issue_url:
+        return False
+    try:
+        overlay = get_overlay(task.ticket.overlay or None)
+        host = get_code_host_for_url(overlay, issue_url)
+    except Exception:
+        logger.exception("task_completion: could not resolve code host for %s", issue_url)
+        return False
+    if host is None:
+        return False
+    try:
+        issue_data = host.get_issue(issue_url)
+    except Exception:  # noqa: BLE001 — any host error fails CLOSED (no completion), never crashes the tick.
+        logger.warning("task_completion: re-check fetch failed for %s", issue_url)
+        return False
+    if not isinstance(issue_data, dict) or "error" in issue_data:
+        return False
+    return bool(overlay.is_issue_done(issue_data))
+
+
+def assign_gitlab_reviewer(payload: ActionPayload) -> None:
+    """Append the user as reviewer on the MR carried by *payload* (#1295 cap B).
+
+    Reads ``url`` and ``reviewer_username`` from the payload, resolves
+    the active overlay's GitLab host, and calls
+    :meth:`GitLabCodeHost.assign_reviewer` which preserves the existing
+    reviewer list. A forge with no host or no ``assign_reviewer`` is a
+    logged no-op; a failure raises into ``_execute_mechanical``, which
+    records it in the tick's errors.
+    """
+    from teatree.backends.loader import get_code_host  # noqa: PLC0415 — deferred: loaded at tick time, not import
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    pr_url = str(payload.get("url") or payload.get("mr_url") or "")
+    reviewer_username = str(payload.get("reviewer_username", ""))
+    if not pr_url or not reviewer_username:
+        return
+    host = get_code_host(get_overlay(str(payload.get("overlay") or "") or None))
+    if host is None:
+        logger.info("No code host resolved for cap-B assignment of %s", pr_url)
+        return
+    assign = getattr(host, "assign_reviewer", None)
+    if assign is None or not callable(assign):
+        logger.info("Code host has no assign_reviewer support for %s — skipping cap-B", pr_url)
+        return
+    if assign(pr_url=pr_url, username=reviewer_username):
+        logger.info("Assigned %s as reviewer on %s via Slack-mention pickup", reviewer_username, pr_url)
+    else:
+        logger.warning("assign_reviewer returned False for %s on %s", reviewer_username, pr_url)
+
+
+_DISPOSITION_AUDIT_REASONS: dict[str, str] = {
+    "already_shipped": "already shipped — a delivered ticket exists for this issue",
+    "exact_duplicate": "exact duplicate of another open issue with the same title",
+    "obsolete": "obsolete — every file path it references is gone from the repo",
+}
+
+
+def _scrub_disposition_close_comment(host: "CodeHostBackend", issue_url: str, comment: str) -> str | None:
+    """Return the close comment to post after the scanned forge-write seam, or ``None`` to skip.
+
+    Matches the MCP ``<forge>_issue_close`` twin: the public-repo leak gate + the
+    #117 send-proxy run BEFORE the backend close, so this loop-driven close never
+    posts to a public forge on a laxer path than the MCP surface. A leak/blocked
+    verdict — or any scrub failure — returns ``None`` (skip the close: never
+    raise, never post unscanned) rather than wedging the tick.
+    """
+    try:
+        return route_forge_write(
+            forge=forge_from_url(issue_url),
+            repo=host.repo_for_issue_url(issue_url),
+            text=comment,
+            action="issue_disposition_close",
+            target=issue_url,
+        )
+    except OutboundBlockedError:
+        logger.warning("close_dead_issue: close comment refused by the forge-write seam for %s — skipping", issue_url)
+        return None
+    except Exception:
+        logger.exception("close_dead_issue: could not scrub the close comment for %s", issue_url)
+        return None
+
+
+def _survivor_confirmed_open(host: "CodeHostBackend", issue_url: str, survivor_url: str) -> bool:
+    """Whether *survivor_url* is a same-repo, still-open issue — unreadable is neither."""
+    if not survivor_url or not _same_repo(host, issue_url, survivor_url):
+        return False
+    try:
+        issue = host.get_issue(survivor_url)
+    except Exception:
+        logger.warning("close_dead_issue: could not read survivor %s", survivor_url, exc_info=True)
+        return False
+    state = issue.get("state") if isinstance(issue, dict) and "error" not in issue else None
+    return isinstance(state, str) and state.lower() in {"open", "opened"}
+
+
+def _same_repo(host: "CodeHostBackend", issue_url: str, survivor_url: str) -> bool:
+    """Whether both URLs resolve to ONE repo — an unresolvable side is not a match.
+
+    Two repos can carry the same issue title with no relationship at all, so a
+    duplicate pairing that crosses a repo boundary is not evidence of anything.
+    """
+    try:
+        repo, survivor_repo = host.repo_for_issue_url(issue_url), host.repo_for_issue_url(survivor_url)
+    except Exception:
+        logger.warning("close_dead_issue: could not attribute %s / %s", issue_url, survivor_url, exc_info=True)
+        return False
+    if repo and repo == survivor_repo:
+        return True
+    logger.info("close_dead_issue: %s and survivor %s are not one repo — keeping it open", issue_url, survivor_url)
+    return False
+
+
+def _disposition_close_comment(host: "CodeHostBackend", issue_url: str, payload: ActionPayload) -> str | None:
+    """The scrubbed audit comment to close *issue_url* with, or ``None`` when it must stay open."""
+    reason = str(payload.get("reason", ""))
+    survivor = str(payload.get("duplicate_of") or "")
+    if reason == "exact_duplicate" and not _survivor_confirmed_open(host, issue_url, survivor):
+        logger.info("close_dead_issue: no confirmed-open survivor for duplicate %s — keeping it open", issue_url)
+        return None
+    audit = _DISPOSITION_AUDIT_REASONS.get(reason, reason or "machine-detected dead evidence")
+    return _scrub_disposition_close_comment(host, issue_url, f"Auto-closed by the issue-disposition scanner: {audit}.")
+
+
+def close_dead_issue(payload: ActionPayload) -> None:
+    """Close a high-confidence DEAD issue with an audit-trail comment (#2122).
+
+    The ``IssueDispositionScanner`` emits ``issue_disposition.close_candidate``
+    only for issues carrying machine-checkable dead evidence; this handler
+    resolves the code host for the issue URL and closes it. Idempotent: the
+    backend ``close_issue`` is a no-op on an already-closed issue, so a re-tick
+    on the same candidate does no harm. A missing URL or host is a logged
+    no-op; a raise reaches ``_execute_mechanical``, which records it in the
+    tick's errors. The handler labels/closes only; it creates no Task or claim.
+    """
+    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415 — deferred: loaded at tick time
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: loaded at tick time, not import
+
+    issue_url = str(payload.get("url") or payload.get("issue_url") or "")
+    if not issue_url:
+        return
+    reason = str(payload.get("reason", ""))
+    host = get_code_host_for_url(get_overlay(str(payload.get("overlay") or "") or None), issue_url)
+    if host is None:
+        logger.info("close_dead_issue: no code host resolved for %s", issue_url)
+        return
+    comment = _disposition_close_comment(host, issue_url, payload)
+    if comment is None:
+        return
+    result = host.close_issue(issue_url=issue_url, comment=comment)
+    if isinstance(result, dict) and "error" in result:
+        logger.warning("close_dead_issue: backend refused to close %s (%s)", issue_url, result["error"])
+        return
+    logger.info("Auto-closed DEAD issue %s (reason: %s)", issue_url, reason or "?")
+
+
+HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
+    "ticket_disposition": ignore_disposed_ticket,
+    "ticket_completion": complete_ticket,
+    "ticket_reopen": reopen_ticket,
+    "reviewer_task_orphaned": reviewer_task_orphaned,
+    "reviewer_task_self_authored": reviewer_task_self_authored,
+    "assign_gitlab_reviewer": assign_gitlab_reviewer,
+    "free_resources": free_resources,
+    "sweep_artifacts": sweep_artifacts,
+    "task_completion": task_completion,
+    "close_dead_issue": close_dead_issue,
+    # #2190 idle-stack reaper + acquisition-queue drainer. The scanners only
+    # flag candidates; the actual ``stop_services`` / ``start_services`` runs
+    # here (re-verifying live state first, never an agent).
+    "reap_idle_stack": reap_idle_stack,
+    "drain_stack_queue_item": drain_stack_queue_item,
+    # souliane/teatree#2949 snapshot warmer — restore+migrate+snapshot a
+    # stale reference DB out-of-band from any ticket-critical-path provision.
+    "refresh_snapshot": refresh_snapshot,
+    # Directive #2 daily control-DB backup — snapshot the live control DB +
+    # prune past the keep-last-N-days retention, off the tick.
+    "run_db_backup": run_db_backup,
+    # #3201 PR-3a CI-eval self-healing loop — advance every open heal session one
+    # FSM step (dispatch / poll / GREEN / HALT+escalate). Observe-only, never a fix.
+    "advance_ci_eval_heal": advance_ci_eval_heal,
+    # #4451 reference-ratchet staleness — surface the core clone's stale pins and the
+    # one-command repair. Observe-only: it writes nothing, opens nothing.
+    "report_ratchet_staleness": report_ratchet_staleness,
+}

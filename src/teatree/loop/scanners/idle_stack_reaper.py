@@ -1,0 +1,87 @@
+"""Idle-stack reaper scanner — frees an idle stack's slot + RAM (souliane/teatree#2190, #2227).
+
+A global (``overlay=""``) mechanical scanner. Each cadence window it asks
+:func:`teatree.core.gates.idle_stack.classify_running_worktrees` for every
+running worktree of its overlay paired with its preserve reason, emits one
+``local_stack.reap_idle`` signal per reapable candidate, and LOGS each
+preserved (KEPT) worktree with its reason so a reap is never silent (#2227 —
+the reaper previously tore down a stack that was the live target of in-flight
+E2E evidence work). The paired mechanical handler (``reap_idle_stack``)
+re-verifies the live state and fires ``Worktree.stop_services`` (REVERSIBLE —
+DB + worktree preserved). The maker/checker boundary is irrelevant here: the
+scanner only flags candidates, it never stops anything itself.
+
+Cadence-gated by :class:`LocalStackReaperMarker` so a sub-minute tick does not
+re-scan + re-shell ``docker ps`` every tick (mirrors
+:class:`ResourcePressureScanner`). Best-effort: a marker/DB error logs and
+returns an empty signal list rather than crashing the tick.
+"""
+
+import logging
+from dataclasses import dataclass
+
+from django.utils import timezone
+
+from teatree.core.gates.idle_stack import classify_running_worktrees
+from teatree.core.models import Worktree
+from teatree.loop.scanners.base import ScanSignal
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class IdleStackReaperScanner:
+    """Emit ``local_stack.reap_idle`` for each idle running worktree of *overlay*."""
+
+    overlay: str
+    idle_minutes: int = 30
+    cadence_minutes: int = 5
+    name: str = "idle_stack_reaper"
+
+    def scan(self) -> list[ScanSignal]:
+        from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker  # noqa: PLC0415 — lazy ORM
+
+        marker = LocalStackReaperMarker.load()
+        if self._cadence_blocks(marker):
+            return []
+        classified = list(classify_running_worktrees(overlay=self.overlay, idle_minutes=self.idle_minutes))
+        try:
+            marker.stamp_run()
+        except Exception:
+            logger.exception("idle_stack_reaper: failed to stamp marker run")
+        return [_reap_signal(wt, self.overlay) for wt, reason in classified if _decide_reap(wt, reason)]
+
+    def _cadence_blocks(self, marker: object) -> bool:
+        """True iff the reaper cadence has not yet elapsed since ``last_run_at``."""
+        last_run = getattr(marker, "last_run_at", None)
+        if last_run is None:
+            return False
+        elapsed_minutes = (timezone.now() - last_run).total_seconds() / 60.0
+        return elapsed_minutes < self.cadence_minutes
+
+
+def _decide_reap(worktree: Worktree, reason: str | None) -> bool:
+    """Log the preserve-vs-reap decision (#2227); return whether to emit a reap signal."""
+    if reason is not None:
+        logger.info("idle_stack_reaper: preserving %s (%s) — %s", worktree.repo_path, worktree.branch, reason)
+        return False
+    logger.info(
+        "idle_stack_reaper: reaping idle %s (%s) — stopping to free a slot", worktree.repo_path, worktree.branch
+    )
+    return True
+
+
+def _reap_signal(worktree: Worktree, overlay: str) -> ScanSignal:
+    return ScanSignal(
+        kind="local_stack.reap_idle",
+        summary=f"idle stack {worktree.repo_path} ({worktree.branch}) — stopping to free a slot",
+        payload={
+            "worktree_id": worktree.pk,
+            "overlay": overlay,
+            "repo_path": worktree.repo_path,
+            "branch": worktree.branch,
+        },
+    )
+
+
+__all__ = ["IdleStackReaperScanner"]

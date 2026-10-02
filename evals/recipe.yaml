@@ -1,0 +1,39 @@
+# The committed factory-score recipe — the metric-to-beat the T4 outer loop reads.
+#
+# It names the SIG-PR-1 SIGNALS registry ids and assigns each a `weight` (the
+# five sum to 1.0), an optional `red_when` hard floor (in the signal's natural
+# unit), and — for the two magnitude signals whose readings are NOT a 0..1 rate
+# (`merge_latency` in hours, `repair_burn` in mean iterations) — a `cap` that
+# normalises the reading to 0..1. The rate signals (`first_try_green`,
+# `defect_escape`, `review_catch`) are already 0..1 and carry no cap; an
+# out-of-range rate is scored RED, never silently clamped.
+#
+# Git is the audit log: every weight/floor/cap change is reviewed in a diff, and
+# `load_recipe()` fails loud (RecipeError) on drift from the SIGNALS registry —
+# an unknown id, a missing id, weights that do not sum to 1.0, or a missing/forbidden
+# cap. A recipe edit changes the recipe_sha, and a scored read stamps
+# recipe_approved=false until a human runs `t3 <overlay> recipe approve`.
+
+version: 1
+
+# The minimum fraction of the five signals that must produce a trustworthy `ok`
+# reading before the aggregate is a number at all. Below it the score is None +
+# RED — an untrustworthy score is never a fabricated figure.
+coverage_floor: 0.6
+
+signals:
+  first_try_green:
+    weight: 0.25
+    red_when: 0.5
+  defect_escape:
+    weight: 0.25
+    red_when: 0.5
+  review_catch:
+    weight: 0.20
+    red_when: 0.0
+  merge_latency:
+    weight: 0.15
+    cap: 48.0
+  repair_burn:
+    weight: 0.15
+    cap: 5.0

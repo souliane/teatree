@@ -1,0 +1,498 @@
+"""Persistence, judging, and regression-gating helpers for ``t3 eval run``.
+
+The ``run`` command in :mod:`teatree.cli.eval.app` orchestrates three execution
+shapes (single-trial, pass@k, model-matrix). This module holds the pieces those
+shapes share that are not themselves the runner loop: the LLM-judge grader
+closure, the three persistence entry points (single / pass@k / matrix), and the
+baseline regression gate. Keeping them here keeps the command module focused on
+the typer surface and the runner loop.
+"""
+
+import dataclasses
+from collections.abc import Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import typer
+
+from teatree.eval.harness_failure import measured_nothing
+from teatree.eval.judge import ClaudeJudge, JudgeBudget
+from teatree.eval.matrix import MatrixRow
+from teatree.eval.models import EvalRun, EvalSpec
+from teatree.eval.pass_at_k import PassAtKResult
+from teatree.eval.report import JudgeGrader, JudgeOutcome, ScenarioResult
+from teatree.eval.skip_guard import (
+    MEASURED_NOTHING_EXIT_CODE,
+    AllSkippedError,
+    EmptyFreshRunError,
+    HooksNotRegisteredError,
+    UnmeteredApiRunError,
+    UnmeteredJudgeError,
+    assert_api_run_was_metered,
+    assert_executed_when_required,
+    assert_fresh_run_produced_output,
+    assert_judge_was_metered,
+    assert_production_hooks_registered,
+    graded_nothing,
+)
+from teatree.eval.surface import is_advisory
+
+if TYPE_CHECKING:
+    from teatree.core.models import EvalRunRecord
+
+#: The three result shapes a lane hands the harness-failure guard. Each carries the
+#: signal differently — a run's ``terminal_reason``, a fold over the per-trial results,
+#: an explicit cell flag — which is why :func:`_unmeasured_scenarios` dispatches on type
+#: rather than every lane spelling the extraction itself.
+GuardedResult = ScenarioResult | PassAtKResult | MatrixRow
+
+
+def _unmeasured_scenarios(results: Sequence[GuardedResult]) -> list[str]:
+    """The name of every scenario in *results* whose run measured NOTHING."""
+    return [_name(result) for result in results if _measured_nothing(result)]
+
+
+def _name(result: GuardedResult) -> str:
+    if isinstance(result, PassAtKResult):
+        return result.spec_name
+    if isinstance(result, MatrixRow):
+        return result.scenario
+    return result.spec.name
+
+
+def _measured_nothing(result: GuardedResult) -> bool:
+    if isinstance(result, ScenarioResult):
+        return measured_nothing(result.run.terminal_reason)
+    return result.harness_failed
+
+
+class RunGuards:
+    """Translate the no-coverage :mod:`teatree.eval.skip_guard` assertions into a CLI exit.
+
+    Each guard turns a run that proved nothing RED at the ``t3 eval run`` boundary: an
+    all-skipped required run, an api run that executed scenarios but metered $0, a
+    ``--judge`` run whose judge graded none of its oracles, and a hooked run whose
+    plugin never registered.
+    """
+
+    @staticmethod
+    def executed(*, executed: int, collected: int, required: bool) -> None:
+        try:
+            assert_executed_when_required(collected=collected, executed=executed, required=required)
+        except AllSkippedError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+
+    @staticmethod
+    def declined_is_not_a_pass(*, executed: int, collected: int) -> None:
+        """Exit 75 when a TOLERATED lane collected scenarios and graded none of them.
+
+        The sibling of :meth:`executed`, for the one lane where the all-skip is
+        legitimate: the transcript backend before any transcript exists. That
+        legitimacy is a reason not to go RED — it was never a reason to report GREEN,
+        and exiting 0 made "declined to run" and "ran and passed" the same observable.
+        Five consecutive weekly local runs recorded ``0 passed, 0 failed, 273 skipped``
+        and succeeded, so nothing downstream could see that the suite had measured
+        nothing since it last found real failures.
+
+        75 is the eval lanes' existing tolerated-status code — already what
+        ``allow_failure: exit_codes:`` scopes to — so a declined lane renders orange,
+        a graded lane still renders green, and ``--require-executed`` still escalates
+        the same state to a hard 1 for the lanes that must never tolerate it.
+
+        Called AFTER persistence: a declined run that vanishes from the run-history
+        ledger is the same blindness pointing the other way.
+        """
+        if not graded_nothing(collected=collected, executed=executed):
+            return
+        typer.echo(
+            f"eval run collected {collected} scenario(s) and graded 0 — this run MEASURED NOTHING. "
+            "It is not a pass: nothing was proved about any scenario. Exiting "
+            f"{MEASURED_NOTHING_EXIT_CODE} (tolerated, never green). Produce the missing "
+            "transcripts, or run a fresh-run backend, before reading this as coverage.",
+            err=True,
+        )
+        raise typer.Exit(code=MEASURED_NOTHING_EXIT_CODE)
+
+    @staticmethod
+    def hooks_registered(results: Sequence[GuardedResult]) -> None:
+        """Fail-loud when a ``production_hooks`` scenario captured zero hook events.
+
+        The guard runs BESIDE each lane's verdict, never inside it, and takes no
+        surface argument — so the advisory exemption cannot reach it. That separation
+        is the fix: the reason used to ride a terminal :class:`EvalRun`, i.e. a failing
+        verdict, and every hooked scenario on the nightly shard is advisory, so the
+        fail-loud could never gate (souliane/teatree#3922).
+        """
+        try:
+            assert_production_hooks_registered(unmeasured=_unmeasured_scenarios(results))
+        except HooksNotRegisteredError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+
+    @staticmethod
+    def api_metered(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
+        RunGuards.api_metered_total(
+            backend=backend, executed=executed, total_cost_usd=sum(r.run.cost_usd for r in results)
+        )
+        RunGuards.fresh_run_produced_output(backend=backend, executed=executed, results=results)
+
+    @staticmethod
+    def fresh_run_produced_output(*, backend: str, executed: int, results: list[ScenarioResult]) -> None:
+        """Fail-loud when an UNMETERED fresh run executed but every trajectory was empty.
+
+        The $0-cost guard cannot see an ``anthropic_api`` or ``pydantic_ai`` run (neither
+        meters ``cost_usd``), so the backend-appropriate vacuous-green check there is an
+        empty trajectory — see :func:`assert_fresh_run_produced_output`.
+        """
+        produced = sum(1 for r in results if not r.skipped and (r.run.tool_calls or r.run.text_blocks))
+        try:
+            assert_fresh_run_produced_output(backend=backend, executed=executed, produced=produced)
+        except EmptyFreshRunError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+
+    @staticmethod
+    def judge_metered(*, judge_requested: bool, results: list[ScenarioResult]) -> None:
+        """Fail-loud when ``--judge`` graded zero of its judge-oracle scenarios.
+
+        ``r.judge`` is set only for a scenario carrying a judge block (the eligible
+        set); a non-skipped :class:`JudgeOutcome` means the judge actually graded.
+        So a judge-oracle scenario that executed but whose judge skipped is the
+        fake-green this turns RED — see :func:`assert_judge_was_metered`.
+        """
+        eligible = sum(1 for r in results if not r.skipped and r.judge is not None)
+        calls = sum(1 for r in results if r.judge is not None and not r.judge.skipped)
+        try:
+            assert_judge_was_metered(judge_requested=judge_requested, judge_eligible=eligible, judge_calls=calls)
+        except UnmeteredJudgeError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+
+    @staticmethod
+    def api_metered_total(*, backend: str, executed: int, total_cost_usd: float) -> None:
+        """Fail-loud the unmetered-$0 guard from a precomputed cost total.
+
+        The single-run lane sums ``ScenarioResult.run.cost_usd``; the benchmark /
+        matrix lane works in ``MatrixRow`` and sums ``cost_usd`` itself. Both share
+        this one ``UnmeteredApiRunError`` → ``typer.Exit`` translation so a
+        fake-green $0 metered run turns RED identically wherever it is detected.
+        """
+        try:
+            assert_api_run_was_metered(backend=backend, executed=executed, total_cost_usd=total_cost_usd)
+        except UnmeteredApiRunError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=1) from None
+
+
+def run_model_label(specs: list[EvalSpec]) -> str:
+    models = sorted({spec.model for spec in specs})
+    return ",".join(models)
+
+
+def with_model(spec: EvalSpec, model: str) -> EvalSpec:
+    return dataclasses.replace(spec, model=model)
+
+
+def make_grader(*, enabled: bool, judge_budget: int) -> JudgeGrader | None:
+    """Return an LLM-judge grader closure when ``--judge`` is set, else ``None``."""
+    if not enabled:
+        return None
+    claude_judge = ClaudeJudge(budget=JudgeBudget(max_calls=judge_budget))
+
+    def _grade(spec: EvalSpec, run: EvalRun) -> JudgeOutcome:
+        verdict = claude_judge.grade(spec, run)
+        return JudgeOutcome(passed=verdict.passed, skipped=verdict.skipped, rationale=verdict.rationale)
+
+    return _grade
+
+
+def persist_single(
+    results: list[ScenarioResult],
+    *,
+    specs: list[EvalSpec],
+    max_turns: int | None,
+    baseline: bool,
+) -> "EvalRunRecord":
+    from teatree.eval.persistence import persist_run  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    record = persist_run(results, model=run_model_label(specs), max_turns_override=max_turns)
+    if baseline:
+        record.mark_baseline()
+    return record
+
+
+def persist_pass_at_k_run(
+    results: list[PassAtKResult],
+    *,
+    model: str,
+    max_turns: int | None,
+    baseline: bool,
+) -> "EvalRunRecord":
+    from teatree.eval.persistence import persist_pass_at_k  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    record = persist_pass_at_k(results, model=model, max_turns_override=max_turns)
+    if baseline:
+        record.mark_baseline()
+    return record
+
+
+def persist_matrix_run(
+    rows: list[MatrixRow],
+    *,
+    models: list[str],
+    max_turns: int | None,
+    baseline: bool,
+) -> "EvalRunRecord":
+    from teatree.eval.persistence import persist_matrix  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    record = persist_matrix(rows, models=models, max_turns_override=max_turns)
+    if baseline:
+        record.mark_baseline()
+    return record
+
+
+#: Default relative cost-drift a scenario may rise before ``--gate-cost-regression`` fails it
+#: (0.20 = +20% vs the baseline run's per-scenario cost). Tune with ``--cost-regression-tolerance``.
+DEFAULT_COST_REGRESSION_TOLERANCE = 0.20
+
+
+def require_persist_for_history_gates(
+    *,
+    persist: bool,
+    baseline: bool,
+    gate_regressions: bool,
+    gate_cost_regression: bool,
+    gate_cost_bounds: bool,
+) -> None:
+    if persist:
+        return
+    enabled = [
+        flag
+        for flag, active in (
+            ("--baseline", baseline),
+            ("--gate-regressions", gate_regressions),
+            ("--gate-cost-regression", gate_cost_regression),
+            ("--gate-cost-bounds", gate_cost_bounds),
+        )
+        if active
+    ]
+    if not enabled:
+        return
+    typer.echo(f"{enabled[0]} requires --persist; remove --no-persist or drop {enabled[0]}.", err=True)
+    raise typer.Exit(code=2)
+
+
+class RegressionGates:
+    """Per-model baseline diffs that turn a regressed run RED at the CLI boundary.
+
+    Both gates diff the just-persisted *record* against each model's current
+    baseline run (excluding itself) and print the per-scenario drops; each
+    returns ``True`` when the caller should exit non-zero. Shared by all three
+    run shapes (single-trial, pass@k, matrix), so a cost blow-up fails loud in
+    every lane, not only the single-trial one.
+
+    A gate the caller EXPLICITLY enabled and could not evaluate returns ``True``.
+    The control DB is a docker volume recreated on a rebuild, so "no baseline for
+    any model" is the state right after every reset — and reporting a requested
+    gate that compared zero scenarios as PASS is the "I cannot tell" → "nothing
+    regressed" collapse. Record a baseline (``--baseline``) before gating on one.
+    """
+
+    @staticmethod
+    def scores(record: "EvalRunRecord", *, enabled: bool) -> bool:
+        """Diff *record* against each model's baseline; print drops; True if any regressed.
+
+        An UNMEASURED scenario — one the candidate recorded but graded nothing for,
+        the all-errored weekly-lane shape — is reported under its own headline and
+        still fails the gate, because a requested gate that could not compare a
+        scenario cannot report a green for it. What it is NOT is a behavioral
+        regression, which is what defaulting the missing rate to ``0.0`` printed.
+        """
+        if not enabled:
+            return False
+        from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        any_regressed = False
+        any_baseline = False
+        for model in record.models:
+            baseline_run = EvalRunRecord.objects.for_model(model).baselines().exclude(pk=record.pk).first()
+            if baseline_run is None:
+                continue
+            any_baseline = True
+            for entry in EvalRunRecord.regression_diff(baseline=baseline_run, candidate=record, model=model):
+                if entry.unmeasured:
+                    any_regressed = True
+                    typer.echo(
+                        f"UNMEASURED {entry.scenario_name} [{entry.model}]: baseline "
+                        f"{entry.baseline_pass_rate:.2f}, candidate graded no trial (all errored or skipped)"
+                    )
+                elif entry.regressed:
+                    any_regressed = True
+                    typer.echo(
+                        f"REGRESSED {entry.scenario_name} [{entry.model}]: "
+                        f"{entry.baseline_pass_rate:.2f} -> {entry.candidate_pass_rate:.2f}"
+                    )
+                elif entry.improved:
+                    typer.echo(
+                        f"IMPROVED {entry.scenario_name} [{entry.model}]: "
+                        f"{entry.baseline_pass_rate:.2f} -> {entry.candidate_pass_rate:.2f}"
+                    )
+        if not any_baseline:
+            typer.echo(
+                "baseline: no baseline recorded for these models — --gate-regressions was requested "
+                "but compared zero scenarios, so it cannot report a green. Record one with --baseline.",
+                err=True,
+            )
+            return True
+        return any_regressed
+
+    @staticmethod
+    def costs(record: "EvalRunRecord", *, enabled: bool, tolerance: float) -> bool:
+        """Diff *record*'s per-scenario cost against each model's baseline cost.
+
+        Returns ``True`` (caller exits non-zero) when any scenario's cost rose by
+        more than *tolerance* (relative drift) versus the baseline run. A scenario
+        whose baseline cost is ``0.0`` (subscription baseline — no metered
+        reference) has an undefined relative drift, so it is skipped, never flagged
+        and never a divide-by-zero. When that leaves no scenario compared — no
+        baseline at all, or an all-$0 one — it fails rather than reporting an unearned green.
+        """
+        if not enabled:
+            return False
+        from teatree.core.models import EvalRunRecord  # noqa: PLC0415 — deferred: ORM import needs the app registry
+
+        any_regressed = False
+        compared = 0
+        for model in record.models:
+            baseline_run = EvalRunRecord.objects.for_model(model).baselines().exclude(pk=record.pk).first()
+            if baseline_run is None:
+                continue
+            for entry in EvalRunRecord.cost_regression_diff(baseline=baseline_run, candidate=record, model=model):
+                if entry.pct_increase is None:
+                    continue
+                compared += 1
+                if entry.pct_increase > tolerance:
+                    any_regressed = True
+                    typer.echo(
+                        f"COST REGRESSED {entry.scenario_name} [{entry.model}]: "
+                        f"${entry.baseline_cost_usd:.4f} -> ${entry.candidate_cost_usd:.4f} "
+                        f"(+{entry.pct_increase:.0%}, tolerance {tolerance:.0%})"
+                    )
+        if not compared:
+            typer.echo(
+                "cost: no metered cost baseline for these models (none recorded, or every baseline scenario "
+                "cost $0) — --gate-cost-regression was requested but compared zero scenarios, so it cannot "
+                "report a green. Record a metered one with --baseline.",
+                err=True,
+            )
+            return True
+        return any_regressed
+
+
+class CostBoundsGate:
+    """The declarative absolute-ceiling cost gate, distinct from :class:`RegressionGates`.
+
+    ``RegressionGates.costs`` diffs a run against a *mutable DB baseline run* and
+    no-ops a zero-cost scenario. This gate checks the just-persisted run's
+    per-scenario cost against the CHECKED-IN ``evals/cost_bounds.yaml`` ceilings:
+    a scenario over ``bound_usd * (1 + margin)`` is RED, and a *configured*
+    scenario the run recorded no cost for is RED too (fail-loud, never
+    skip-as-pass). The ceiling survives a DB reset because it lives in the diff.
+
+    An EMPTY ceiling set fails the same way a missing file does. ``load_cost_bounds``
+    makes an absent file a hard error precisely because "no ceilings" would make the
+    gate vacuously green; a committed file pinning zero scenarios is that same
+    vacuity through a different door, so a requested gate with nothing to gate is a
+    refusal, not a pass. That verdict is carried by
+    :attr:`~teatree.eval.cost_bounds.CostBoundsResult.vacuous`.
+    """
+
+    @staticmethod
+    def check(record: "EvalRunRecord", *, enabled: bool) -> bool:
+        """Check *record*'s per-scenario cost against the ceilings; print failures; True if RED."""
+        if not enabled:
+            return False
+        from teatree.eval.cost_bounds import check_cost_bounds, load_cost_bounds  # noqa: PLC0415 — lazy CLI import
+
+        result = check_cost_bounds(record.costs_by_scenario(), load_cost_bounds())
+        for line in result.render_failures():
+            typer.echo(line)
+        return result.failed
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` flag through the persist+gate tail.
+    results: list[ScenarioResult],
+    *,
+    specs: list[EvalSpec],
+    max_turns: int | None,
+    persist: bool,
+    baseline: bool,
+    gate_regressions: bool,
+    gate_cost_regression: bool,
+    cost_regression_tolerance: float,
+    gate_cost_bounds: bool = False,
+) -> bool:
+    """Persist a single-trial run and run the score + cost baseline + cost-bounds gates.
+
+    Returns ``True`` when the process should exit non-zero: any BLOCKING scenario
+    failed, OR a score regression, OR a cost regression beyond tolerance, OR a
+    declarative cost-bounds violation (over ceiling / configured-but-uncosted).
+    With ``--no-persist`` durable-history gates are rejected before this point:
+    silently skipping them would turn a requested gate into a no-op.
+
+    ``trials=1`` with no ``--models`` is the DEFAULT ``t3 eval run`` shape and the
+    one every metered CI leg drives, so the interactive-surface exemption has to hold
+    here too (#3855). This is ONE of the verdict points named in
+    :data:`teatree.eval.surface.ADVISORY_EXEMPT_VERDICT_POINTS` — the canonical list,
+    enumerated by name rather than counted, because counting it went stale twice.
+    """
+    require_persist_for_history_gates(
+        persist=persist,
+        baseline=baseline,
+        gate_regressions=gate_regressions,
+        gate_cost_regression=gate_cost_regression,
+        gate_cost_bounds=gate_cost_bounds,
+    )
+    regressed = False
+    cost_regressed = False
+    cost_bounds_failed = False
+    if persist:
+        record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
+        regressed = RegressionGates.scores(record, enabled=gate_regressions)
+        cost_regressed = RegressionGates.costs(
+            record, enabled=gate_cost_regression, tolerance=cost_regression_tolerance
+        )
+        cost_bounds_failed = CostBoundsGate.check(record, enabled=gate_cost_bounds)
+    # Every failing scenario reds the run. The ONE exception is the interactive
+    # surface, whose verdict rides a bundled claude CLI's AskUserQuestion rendering
+    # rather than the question contract teatree owns — reported, never gating (#3855).
+    failed = any(r.verdict == "fail" and not is_advisory(r.spec) for r in results)
+    return failed or regressed or cost_regressed or cost_bounds_failed
+
+
+def build_transcript_manifest(specs: list[EvalSpec], target_dir: Path) -> list[dict[str, str]]:
+    return [
+        {
+            "scenario": spec.name,
+            "agent_path": spec.agent_path,
+            "model": spec.model,
+            "prompt": spec.prompt,
+            "transcript_path": str(target_dir / f"{spec.name}.jsonl"),
+        }
+        for spec in specs
+    ]
+
+
+def render_transcript_text(manifest: list[dict[str, str]]) -> str:
+    blocks = [
+        (
+            f"scenario: {entry['scenario']}  (model {entry['model']})\n"
+            f"  agent:        {entry['agent_path']}\n"
+            f"  capture to:   {entry['transcript_path']}\n"
+            f"  prompt:       {entry['prompt']}\n"
+        )
+        for entry in manifest
+    ]
+    return "\n".join(blocks)

@@ -1,0 +1,1395 @@
+"""Phase 6 — decay/archive stale memories with a NON-VACUOUS retention guard (#1933 § 6).
+
+Fixture-only with a FIXED clock: every test writes ``*.md`` into a tmp dir, sets
+mtimes explicitly, and passes ``now=`` — never the real ``~/.claude``, never the
+wall clock. The anti-vacuity contract is proven in both directions:
+
+*   a FRESH memory is RETAINED (skipped) — freshness alone keeps it,
+*   a LINKED/referenced memory is RETAINED even when old — the reference guard,
+*   a memory that is old AND unreferenced AND has NO confirmed durable home in
+    the ledger is RETAINED — the transfer-before-prune rail (#2546),
+*   only a memory that is BOTH old AND unreferenced AND has a confirmed durable
+    home is ARCHIVED (moved, never deleted, with provenance),
+
+and the guard has TEETH: the same fresh/linked/un-homed memory IS archived once
+the guard is bypassed (``test_guard_disabled_probe_archives_protected_memory``,
+``test_transfer_rail_has_teeth_un_homed_archived_when_rail_off``), so a vacuous
+guard that retained nothing — or archived everything — would be caught.
+
+The file-side mechanics (freshness + reference guard) are exercised with an
+``always_home`` resolver so they stay independent of the ledger; the
+transfer-before-prune rail (the DB-backed default resolver) has its own
+``TestCase`` block that exercises the real ``ConsolidatedMemory`` ledger.
+"""
+
+import hashlib
+import os
+import re
+import tempfile
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
+
+from django.test import SimpleTestCase, TestCase
+
+from teatree.core.models import ConsolidatedMemory
+from teatree.loops.dream import acceptance, decay, decay_corpus, decay_signal, gates, reindex
+from teatree.loops.dream.decay import BudgetTier, DecayPolicy, decay_memories, ledger_durable_home_resolver
+from teatree.loops.dream.decay_corpus import MemoryFile
+from teatree.loops.dream.decay_signal import is_settled_ticket_record, under_drain_target
+
+_NOW = datetime(2026, 6, 16, 12, tzinfo=UTC)
+
+#: A long descriptive slug tail (kept within the real ~86-char filename max) so the
+#: COMPACT bare-pointer index reaches the ~24 KB byte budget at a few-hundred-file
+#: corpus: filenames, not per-line summaries, are what fill the re-indexed hot index
+#: (#2755), so the budget-tier fixtures reach budget through realistic filename length.
+_BUDGET_SLUG = "with_a_realistic_fairly_long_low_signal_descriptive_tag"
+
+#: Em-dash (U+2014) padding — 40 chars but 120 bytes — so a char-counting budget check
+#: would UNDERCOUNT a padded filename; the tier must measure ENCODED bytes (#2755).
+_MB_PAD = "—" * 40
+
+
+def _budget_name(prefix: str, i: int) -> str:
+    return f"{prefix}_{_BUDGET_SLUG}_{i:04d}"
+
+
+def _mb_name(prefix: str, i: int) -> str:
+    return f"{prefix}_{_MB_PAD}_{i:04d}"
+
+
+def _policy(*, retention_days: int = 30, budget_tier: bool = False) -> DecayPolicy:
+    """Build a DecayPolicy from the legacy retention/budget-tier kwargs the tests use."""
+    return DecayPolicy(retention_days=retention_days, budget_tier=BudgetTier() if budget_tier else None)
+
+
+def _always_home(_: MemoryFile) -> bool:
+    """A resolver that asserts every memory has a durable home — isolates the file-side guard."""
+    return True
+
+
+class DecayTestCase(SimpleTestCase):
+    """File-side guard (freshness + reference) with a home-asserting resolver.
+
+    These tests cover the mtime / wiki-link mechanics, NOT the ledger rail, so
+    they inject ``_always_home`` to neutralise the transfer-before-prune guard
+    and keep running without a database.
+    """
+
+    home_resolver: Callable[[MemoryFile], bool] = staticmethod(_always_home)
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _decay(self, *, retention_days: int = 30, dry_run: bool = False) -> decay.DecayResult:
+        return decay_memories(
+            self.dir,
+            now=_NOW,
+            dry_run=dry_run,
+            has_durable_home=self.home_resolver,
+            policy=_policy(retention_days=retention_days),
+        )
+
+    def _write(self, name: str, body: str, *, age_days: int) -> Path:
+        path = self.dir / f"{name}.md"
+        path.write_text(f"name: {name}\n{body}\n", encoding="utf-8")
+        ts = (_NOW - timedelta(days=age_days)).timestamp()
+        os.utime(path, (ts, ts))
+        return path
+
+    def _index(self, *links: str) -> None:
+        body = "".join(f"- [[{link}]]\n" for link in links)
+        (self.dir / "MEMORY.md").write_text(f"# index\n{body}", encoding="utf-8")
+
+    # ── the retention guard, both directions ────────────────────────────────
+
+    def test_fresh_memory_is_retained(self) -> None:
+        fresh = self._write("mem_fresh", "a recent lesson", age_days=1)
+        result = self._decay(retention_days=30)
+        assert result.archived_count == 0
+        assert fresh.exists()
+
+    def test_old_unreferenced_homed_memory_is_archived(self) -> None:
+        stale = self._write("mem_stale", "an old unreferenced lesson", age_days=90)
+        result = self._decay(retention_days=30)
+        assert result.archived_count == 1
+        assert result.archived[0].name == "mem_stale"
+        assert not stale.exists()
+        assert (self.dir / "archive" / "mem_stale.md").is_file()
+
+    def test_old_but_linked_memory_is_retained(self) -> None:
+        # mem_target is OLD but another live memory links it -> the REFERENCE
+        # guard (not freshness) must retain it.
+        target = self._write("mem_target", "old but referenced", age_days=90)
+        self._write("mem_other", "see [[mem_target]] for the lease detail", age_days=1)
+        result = self._decay(retention_days=30)
+        assert "mem_target" not in {a.name for a in result.archived}
+        assert target.exists()
+
+    def test_old_but_index_referenced_memory_is_retained(self) -> None:
+        target = self._write("mem_indexed", "old but listed in the index", age_days=90)
+        self._index("mem_indexed")
+        result = self._decay(retention_days=30)
+        assert "mem_indexed" not in {a.name for a in result.archived}
+        assert target.exists()
+
+    def test_archive_carries_provenance_and_never_deletes(self) -> None:
+        self._write("mem_stale", "the original body to preserve", age_days=120)
+        self._decay(retention_days=30)
+        archived = (self.dir / "archive" / "mem_stale.md").read_text(encoding="utf-8")
+        assert "archived by dream decay" in archived
+        assert "the original body to preserve" in archived  # content preserved, not lost
+
+    # ── anti-vacuity: the guard has TEETH ───────────────────────────────────
+
+    def test_guard_disabled_probe_archives_protected_memory(self) -> None:
+        # The "guard-disabled probe": with the retention guard removed (archive
+        # every memory regardless of age/reference), the SAME fresh + linked
+        # memories ARE archived. This proves the real guard is what retains them —
+        # a vacuous guard would behave identically with or without the bypass.
+        fresh = self._write("mem_fresh", "a recent lesson", age_days=1)
+        linked_target = self._write("mem_target", "old but referenced", age_days=90)
+        self._write("mem_other", "see [[mem_target]]", age_days=1)
+
+        # Sanity: the real guard retains both.
+        guarded = self._decay(retention_days=30)
+        retained_names = {fresh.stem, linked_target.stem}
+        archived_names = {a.name for a in guarded.archived}
+        assert not (retained_names & archived_names), "real guard must retain fresh + linked"
+
+        # Guard-disabled probe: retention=0 days makes nothing 'fresh', and we
+        # bypass the reference check by treating every loaded file as unreferenced.
+        with patch.object(decay, "is_referenced", return_value=False):
+            probed = self._decay(retention_days=0)
+        probed_names = {a.name for a in probed.archived}
+        # With the guard bypassed, the protected memories ARE archived -> teeth.
+        assert "mem_fresh" in probed_names
+        assert "mem_target" in probed_names
+
+    def test_dry_run_archives_nothing_on_disk(self) -> None:
+        stale = self._write("mem_stale", "old unreferenced", age_days=90)
+        result = self._decay(retention_days=30, dry_run=True)
+        assert result.archived_count == 1  # decision computed
+        assert stale.exists()  # but nothing moved
+        assert not (self.dir / "archive").exists()
+
+    def test_archiving_a_name_that_already_exists_never_clobbers_the_prior_body(self) -> None:
+        # A memory with the SAME filename was archived a prior pass; archiving a fresh
+        # same-named memory must NOT blind-overwrite the earlier archived body — the
+        # "never blind delete" invariant. The collision is uniquified instead.
+        archive = self.dir / "archive"
+        archive.mkdir()
+        prior = archive / "mem_stale.md"
+        prior.write_text("the PRIOR archived lesson body\n", encoding="utf-8")
+
+        self._write("mem_stale", "the NEW lesson body to archive", age_days=90)
+        result = self._decay(retention_days=30)
+
+        assert result.archived_count == 1
+        assert prior.read_text(encoding="utf-8") == "the PRIOR archived lesson body\n"  # untouched
+        new_body = (archive / "mem_stale.1.md").read_text(encoding="utf-8")
+        assert "the NEW lesson body to archive" in new_body
+
+    def test_stale_by_lesson_updated_is_archived_even_when_mtime_is_fresh(self) -> None:
+        # Cross-link / re-index rewrote the file (bumping st_mtime to now) without
+        # touching the lesson. The freshness guard ages by the LOGICAL lesson_updated
+        # clock, so an old lesson is still a decay candidate — otherwise a linked
+        # memory stays perpetually "fresh" and transfer-before-prune never fires.
+        path = self.dir / "mem_touched.md"
+        path.write_text(
+            "name: mem_touched\nlesson_updated: 2020-01-01\nan old lesson last meaningfully touched in 2020\n",
+            encoding="utf-8",
+        )  # st_mtime is NOW (just written) but lesson_updated is years old
+        result = self._decay(retention_days=30)
+        assert result.archived_count == 1
+        assert result.archived[0].name == "mem_touched"
+        assert not path.exists()
+
+    def test_missing_dir_is_noop(self) -> None:
+        result = decay_memories(self.dir / "absent", now=_NOW, has_durable_home=self.home_resolver)
+        assert result.seen == 0
+        assert result.archived_count == 0
+
+    def test_unreadable_file_is_skipped_not_fatal(self) -> None:
+        self._write("mem_stale", "old unreferenced", age_days=90)
+        (self.dir / "broken.md").mkdir()  # makes read_text raise OSError -> skipped
+        result = self._decay(retention_days=30)
+        assert result.seen == 1  # only the readable memory counted
+
+
+class TransferBeforePruneRailTestCase(TestCase):
+    """The phase-6 transfer-before-prune rail (#2546 / #1933 § 2).
+
+    A stale + unreferenced memory is archived ONLY when its lesson has a
+    confirmed durable home in the ``ConsolidatedMemory`` ledger — a terminal
+    (promoted/superseded/expired) row with a recorded ``durable_destination``
+    that maps to the memory (its path is a member of ``source_files`` OR its
+    name appears in ``durable_destination``). Without such a home, even an
+    old + unreferenced memory is RETAINED — never pruned without transfer.
+
+    The default resolver (``ledger_durable_home_resolver``) is the production
+    seam; these tests drive ``decay_memories`` through it (no injected
+    resolver), so the DB ledger is what decides.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _write_stale(self, name: str) -> Path:
+        path = self.dir / f"{name}.md"
+        path.write_text(f"name: {name}\nan old unreferenced lesson\n", encoding="utf-8")
+        ts = (_NOW - timedelta(days=90)).timestamp()
+        os.utime(path, (ts, ts))
+        return path
+
+    def _promoted_row(self, *, cluster: str, source_files: list[object], destination: str) -> ConsolidatedMemory:
+        row = ConsolidatedMemory.record_cluster(
+            cluster_key=hashlib.sha256(cluster.encode("utf-8")).hexdigest(),
+            rule="A consolidated lesson with a durable home.",
+            source_files=source_files,
+            member_count=len(source_files) or 1,
+            max_member_weight=90,
+            is_binding=False,
+        )
+        row.mark_verified("an old unreferenced lesson")
+        row.mark_promoted(destination)
+        return row
+
+    def test_stale_unreferenced_without_ledger_home_is_retained(self) -> None:
+        # The rail: no ledger row homes this memory -> retained despite old+unreferenced.
+        stale = self._write_stale("mem_unhomed")
+        result = decay_memories(self.dir, now=_NOW)
+        assert result.archived_count == 0
+        assert stale.exists()
+
+    def test_stale_unreferenced_homed_by_source_files_is_archived(self) -> None:
+        stale = self._write_stale("mem_homed")
+        self._promoted_row(
+            cluster="homed-by-source",
+            source_files=[str(stale)],
+            destination="skills/rules/SKILL.md",
+        )
+        result = decay_memories(self.dir, now=_NOW)
+        assert {a.name for a in result.archived} == {"mem_homed"}
+        assert not stale.exists()
+
+    def test_stale_unreferenced_homed_by_destination_name_is_archived(self) -> None:
+        stale = self._write_stale("mem_named_home")
+        self._promoted_row(
+            cluster="homed-by-destination",
+            source_files=["some/other/transcript.jsonl"],
+            destination="mem_named_home.md",
+        )
+        result = decay_memories(self.dir, now=_NOW)
+        assert {a.name for a in result.archived} == {"mem_named_home"}
+        assert not stale.exists()
+
+    def test_non_terminal_row_does_not_count_as_a_home(self) -> None:
+        # A VERIFIED row (no terminal status, no durable_destination) is NOT a
+        # confirmed home -> the memory must be retained.
+        stale = self._write_stale("mem_candidate")
+        row = ConsolidatedMemory.record_cluster(
+            cluster_key=hashlib.sha256(b"candidate-only").hexdigest(),
+            rule="A lesson still in verified state.",
+            source_files=[str(stale)],
+            member_count=1,
+            max_member_weight=90,
+            is_binding=False,
+        )
+        row.mark_verified("an old unreferenced lesson")  # VERIFIED, not terminal/promoted
+        result = decay_memories(self.dir, now=_NOW)
+        assert result.archived_count == 0
+        assert stale.exists()
+
+    def test_a_gap_retired_by_its_merged_fix_homes_its_memory(self) -> None:
+        # The PRODUCTION writer: Pass 2 retires the row when the gap's fix merges, which
+        # is what makes the rail non-empty at all — no test-only mark_promoted involved.
+        stale = self._write_stale("mem_gap")
+        row = ConsolidatedMemory.record_cluster(
+            cluster_key=hashlib.sha256(b"retired-gap").hexdigest(),
+            rule="A gate must fail loud, never skip as pass.",
+            source_files=[str(stale)],
+            member_count=1,
+            max_member_weight=90,
+            is_binding=False,
+            durable_destination="src/teatree/core/gates/rubric_gate.py",
+            verified_citation="an old unreferenced lesson",
+        )
+        row.classify_core_gap()
+        row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+        row.retire(archive_path="https://github.com/souliane/teatree/issues/42")
+
+        result = decay_memories(self.dir, now=_NOW)
+
+        assert {a.name for a in result.archived} == {"mem_gap"}
+        assert not stale.exists()
+
+    def test_a_superseded_row_does_not_home_its_memory(self) -> None:
+        # Supersession replaces a cluster; it transfers nothing. Until the replacement
+        # lands, the memory it covers keeps its place in the hot corpus.
+        stale = self._write_stale("mem_superseded")
+        narrow = ConsolidatedMemory.record_cluster(
+            cluster_key=hashlib.sha256(b"narrow").hexdigest(),
+            rule="Run the gate before pushing.",
+            source_files=[str(stale)],
+            member_count=1,
+            max_member_weight=90,
+            is_binding=False,
+            durable_destination="mem_superseded.md",
+            verified_citation="an old unreferenced lesson",
+        )
+        wide = ConsolidatedMemory.record_cluster(
+            cluster_key=hashlib.sha256(b"wide").hexdigest(),
+            rule="Run the gate before pushing.",
+            source_files=[str(stale), "another/transcript.jsonl"],
+            member_count=2,
+            max_member_weight=90,
+            is_binding=False,
+            verified_citation="an old unreferenced lesson",
+        )
+        ConsolidatedMemory.objects.supersede_covered_by(wide)
+        narrow.refresh_from_db()
+        assert narrow.status == ConsolidatedMemory.Status.SUPERSEDED
+
+        result = decay_memories(self.dir, now=_NOW)
+
+        assert result.archived_count == 0
+        assert stale.exists()
+
+    def test_transfer_rail_has_teeth_un_homed_archived_when_rail_off(self) -> None:
+        # Teeth: with the rail bypassed (every memory treated as homed), the SAME
+        # un-homed memory the real rail retains IS archived. A vacuous rail that
+        # archived regardless would behave identically with or without the bypass.
+        stale = self._write_stale("mem_unhomed")
+
+        guarded = decay_memories(self.dir, now=_NOW)
+        assert guarded.archived_count == 0, "real rail must retain the un-homed memory"
+
+        bypassed = decay_memories(self.dir, now=_NOW, has_durable_home=_always_home)
+        assert {a.name for a in bypassed.archived} == {"mem_unhomed"}
+        assert not stale.exists()
+
+    def test_default_resolver_consults_prunable_ledger(self) -> None:
+        # The default resolver helper is the production seam; exercise it directly.
+        stale = self._write_stale("mem_probe")
+        probe = MemoryFile(path=stale, name="mem_probe", text="", mtime=_NOW)
+        assert ledger_durable_home_resolver()(probe) is False
+        self._promoted_row(cluster="probe", source_files=[str(stale)], destination="skills/rules/SKILL.md")
+        # A fresh resolver re-reads the ledger.
+        assert ledger_durable_home_resolver()(probe) is True
+
+
+class BudgetDecayTierTestCase(SimpleTestCase):
+    """The SCORED budget-tier RETIRE, INDEPENDENT of the empty ledger home-rail (#2723).
+
+    The ledger home-rail (``prunable()``) is structurally empty for the hand-authored
+    corpus (0 rows reference on-disk memories), so it can never archive the bloating
+    files. This tier fires only when ``MEMORY.md`` is over the session-load budget and
+    then archives the LOWEST-:func:`~decay_signal.signal_score` files first — just enough to
+    bring the projected hot index back under budget. A user / BINDING entry scores
+    highest and is archived only if the budget forces it. A referenced file is NOT
+    hard-retained by this tier (#2753) — the +40-per-inbound-link signal ranks it higher
+    so it is archived LAST, but it IS archived when the budget genuinely forces it (the
+    cross-link phase references most of the corpus, so a hard skip could never converge);
+    every archived entry keeps its full signature in the cold ``MEMORY_ARCHIVE.md``
+    (restorable). Exercised DB-free with a no-ledger-home resolver.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _decay(self, *, budget_tier: bool = True, retention_days: int = 30) -> decay.DecayResult:
+        # Inject a no-ledger-home resolver so the budget tier is exercised in
+        # isolation from the (DB-backed) ledger home-rail — this stays DB-free.
+        return decay_memories(
+            self.dir,
+            now=_NOW,
+            has_durable_home=lambda _m: False,
+            policy=_policy(retention_days=retention_days, budget_tier=budget_tier),
+        )
+
+    def _write(
+        self, name: str, body: str, *, age_days: int = 120, mtype: str = "feedback", lesson_updated: str | None = None
+    ) -> Path:
+        # A BINDING fixture just prepends "BINDING " to *body* (no separate kwarg).
+        path = self.dir / f"{name}.md"
+        front = f"---\nname: {name}\n"
+        if lesson_updated is not None:
+            front += f"lesson_updated: {lesson_updated}\n"
+        front += f"metadata:\n  type: {mtype}\n---\n"
+        path.write_text(f"{front}\n{body}\n", encoding="utf-8")
+        ts = (_NOW - timedelta(days=age_days)).timestamp()
+        os.utime(path, (ts, ts))
+        return path
+
+    def _seed_low_signal(self, count: int, *, age_days: int = 120) -> None:
+        """Seed *count* genuinely-UNIQUE, unreferenced, stale, low-signal feedback files.
+
+        The bodies carry per-file keyword tokens so no two are near-duplicates — the
+        OLD captured-elsewhere rail would retain every one (RED), the NEW signal-scored
+        tier archives the lowest until under budget (GREEN). Filenames are long and
+        realistic so a few-hundred-file corpus reaches the ~24 KB budget in the compact
+        bare-pointer index (#2755).
+        """
+        for i in range(count):
+            self._write(
+                _budget_name("feedback_filler", i),
+                f"lesson keyword{i:04d}alpha keyword{i:04d}beta about a niche low-signal note",
+                age_days=age_days,
+            )
+
+    def _seed_index(self) -> None:
+        """Write MEMORY.md as the real rendered index of the current files (over budget when many)."""
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+
+    def _rendered_line_count(self) -> int:
+        return sum(1 for line in reindex.render_index(self.dir).splitlines() if line.strip())
+
+    def _rendered_byte_size(self) -> int:
+        return len(reindex.render_index(self.dir).encode("utf-8"))
+
+    @staticmethod
+    def _archived_sources(result: decay.DecayResult) -> set[str]:
+        return {a.source.name for a in result.archived}
+
+    def test_over_budget_archives_lowest_signal_unique_entries_until_under_budget(self) -> None:
+        # M unique low-signal feedback files older than the retention window + an
+        # over-budget MEMORY.md: the budget tier archives the lowest-signal ones until
+        # the projected survivor index is back under the BYTE budget. (RED before the
+        # fix — captured-elsewhere retained every unique file.)
+        self._seed_low_signal(360)
+        self._seed_index()  # ~360-line index -> over the ~24 KB byte budget
+        result = self._decay(budget_tier=True)
+        assert result.archived_count > 0
+        assert self._rendered_byte_size() <= gates.INDEX_BYTE_BUDGET
+        for archived in result.archived:
+            assert (self.dir / "archive" / archived.source.name).is_file()  # moved, not deleted
+            assert not (self.dir / archived.source.name).exists()
+
+    def test_binding_and_user_entries_are_archived_last(self) -> None:
+        # A mix of BINDING / user with low-signal stale, over budget: only the
+        # low-signal filler is archived; the BINDING + user entries survive.
+        self._seed_low_signal(360)
+        keep_binding = self._write("feedback_binding_doctrine", "BINDING the load-bearing doctrine")
+        keep_user = self._write("user_editor_preference", "the user's own editor preference", mtype="user")
+        self._seed_index()
+        result = self._decay(budget_tier=True)
+        archived = self._archived_sources(result)
+        assert keep_binding.name not in archived
+        assert keep_user.name not in archived
+        assert keep_binding.exists()
+        assert keep_user.exists()
+        assert any(name.startswith("feedback_filler") for name in archived)
+
+    def test_archived_entry_is_restorable_with_provenance(self) -> None:
+        self._seed_low_signal(360)
+        self._seed_index()
+        result = self._decay(budget_tier=True)
+        assert result.archived
+        for archived in result.archived:
+            assert archived.destination.is_file()
+            text = archived.destination.read_text(encoding="utf-8")
+            assert "archived by dream decay" in text  # provenance header
+            assert not archived.source.exists()  # original gone (moved, not copied)
+
+    def test_unique_lowest_signal_lesson_is_archived_when_over_budget_with_signature_preserved(self) -> None:
+        # The OLD captured-elsewhere rail RETAINED a unique lesson with no twin; the NEW
+        # universal rail ARCHIVES it (over budget, lowest signal) because its full
+        # signature survives in the cold MEMORY_ARCHIVE.md — a stronger durable home.
+        self._seed_low_signal(359)
+        unique = self._write(
+            "feedback_unique_lowsig", "a genuinely unique low-signal lesson with no twin anywhere", age_days=200
+        )
+        self._seed_index()
+        result = self._decay(budget_tier=True)
+        assert unique.name in self._archived_sources(result)
+        assert not unique.exists()
+        cold = (self.dir / "MEMORY_ARCHIVE.md").read_text(encoding="utf-8")
+        assert "feedback_unique_lowsig.md" in cold
+        assert "a genuinely unique low-signal lesson with no twin anywhere" in cold
+
+    def test_cold_index_signature_is_uncapped(self) -> None:
+        # The cold MEMORY_ARCHIVE.md keeps the FULL signature (uncapped) — retention
+        # needs the verbatim line — unlike the hot index's bare `- name.md` pointers.
+        long_sig = "a long unique low-signal lesson that exceeds any per-line cap " + "x" * 200
+        self._seed_low_signal(359)
+        long_file = self._write("feedback_long_signature", long_sig, age_days=300)
+        self._seed_index()
+        result = self._decay(budget_tier=True)
+        assert long_file.name in self._archived_sources(result)
+        cold = (self.dir / "MEMORY_ARCHIVE.md").read_text(encoding="utf-8")
+        cold_line = next(line for line in cold.splitlines() if line.startswith("- feedback_long_signature.md"))
+        assert long_sig in cold_line  # verbatim, uncapped
+
+    def test_nothing_archived_while_under_budget(self) -> None:
+        # A handful of files + a small index: the tier does not fire (no pressure).
+        self._seed_low_signal(3)
+        self._seed_index()
+        result = self._decay(budget_tier=True)
+        assert result.archived_count == 0
+
+    def test_short_lines_use_byte_headroom_archiving_fewer_than_a_line_cap_would(self) -> None:
+        # #2755's win, preserved under the two-dimensional budget: a corpus that fits BOTH
+        # real loader limits is archived NOT AT ALL, where the retired 150-line proxy cap
+        # would have archived (count - 150) files for nothing. The headroom between the
+        # retired cap and the real limits is USED. Anti-vacuous: reintroduce a 150-line cap
+        # and archived_count goes > 0.
+        count = 190  # > the retired 150-line cap, yet under BOTH real budgets
+        self._seed_low_signal(count)
+        self._seed_index()
+        assert self._rendered_line_count() > 150  # a 150-line cap would breach
+        assert self._rendered_byte_size() <= gates.INDEX_BYTE_BUDGET  # ... yet it fits the byte budget
+        assert len(reindex.render_index(self.dir).splitlines()) <= gates.INDEX_LINE_BUDGET  # ... and the line budget
+        result = self._decay(budget_tier=True)
+        assert result.archived_count == 0  # nothing archived; a 150-line cap would archive 40
+
+    def test_budget_tier_off_by_default_archives_nothing(self) -> None:
+        # Without budget_tier the new tier never fires (no behaviour change to the
+        # existing ledger-home decay path).
+        self._seed_low_signal(360)
+        self._seed_index()
+        result = self._decay(budget_tier=False)
+        assert result.archived_count == 0
+
+    def test_recently_touched_lesson_is_retained_even_over_budget(self) -> None:
+        # The recency signal reads the logical lesson_updated clock, not st_mtime: an
+        # old-mtime file whose lesson was just updated scores high -> archived last.
+        self._seed_low_signal(360)
+        recent = (_NOW - timedelta(days=5)).date().isoformat()
+        fresh = self._write("feedback_fresh_lesson", "a freshly updated lesson", age_days=300, lesson_updated=recent)
+        self._seed_index()
+        result = self._decay(budget_tier=True)
+        assert fresh.name not in self._archived_sources(result)
+        assert fresh.exists()
+
+    def test_referenced_file_is_archived_when_budget_forces_it(self) -> None:
+        # #2753: a [[link]]ed file is no longer HARD-retained by the budget tier — the +40
+        # inbound-link signal ranks it higher (archived last), but it IS archived when the
+        # budget genuinely forces it. Here the referenced target is the OLDEST (recency
+        # floored to 0), so even with its inbound link it is the lowest signal and is
+        # archived first — its full signature survives in the cold MEMORY_ARCHIVE.md.
+        self._seed_low_signal(360)
+        target = self._write("feedback_referenced", "an old but referenced lesson", age_days=400)
+        self._write("feedback_linker", "see [[feedback_referenced]] for the detail", age_days=1)
+        self._seed_index()
+        result = self._decay(budget_tier=True)
+        assert target.name in self._archived_sources(result)
+        assert not target.exists()
+        assert self._rendered_byte_size() <= gates.INDEX_BYTE_BUDGET  # converged under budget
+        cold = (self.dir / "MEMORY_ARCHIVE.md").read_text(encoding="utf-8")
+        assert "feedback_referenced.md" in cold
+        assert "an old but referenced lesson" in cold
+
+    def test_malformed_lesson_updated_falls_back_to_mtime(self) -> None:
+        # A garbage lesson_updated value falls back to st_mtime -> low recency -> archivable.
+        self._seed_low_signal(360)
+        bad = self._write(
+            "feedback_bad_date", "a lesson with a garbage clock", age_days=300, lesson_updated="not-a-date"
+        )
+        self._seed_index()
+        result = self._decay(budget_tier=True)
+        assert bad.name in self._archived_sources(result)
+
+    def test_budget_tier_has_teeth(self) -> None:
+        # Teeth: the SAME over-budget corpus archives nothing with the tier off and
+        # something with it on — a vacuous tier would behave identically.
+        self._seed_low_signal(360)
+        self._seed_index()
+        off = self._decay(budget_tier=False)
+        assert off.archived_count == 0, "tier off must archive nothing"
+        on = self._decay(budget_tier=True)
+        assert on.archived_count > 0, "tier on must archive the lowest-signal files"
+
+    def _seed_dense_multibyte(self, count: int, *, age_days: int = 120) -> None:
+        """Seed *count* stale low-signal files with DENSE multibyte FILENAMES.
+
+        A bare pointer carries only the filename, so the multibyte bytes now live in the
+        name (``—`` = 3 bytes/char): each pointer line is ≈145 bytes but only ≈63 chars.
+        A char-counting tier would mis-size the index; the tier must measure ENCODED
+        bytes (#2755), so this exercises the byte-exact path of the two-axis budget.
+        """
+        for i in range(count):
+            self._write(_mb_name("feedback_mb", i), f"a niche low-signal note {i:04d}", age_days=age_days)
+
+    def test_multibyte_index_archives_until_under_byte_budget(self) -> None:
+        # #2755: a dense multibyte index over the BYTE budget is archived down until its
+        # ENCODED size is back under 24 KB — proving the tier counts bytes, not chars.
+        self._seed_dense_multibyte(180)
+        self._seed_index()
+        before_bytes = len(reindex.render_index(self.dir).encode("utf-8"))
+        assert before_bytes > gates.INDEX_BYTE_BUDGET, "the BYTE budget must be exceeded"
+
+        result = self._decay(budget_tier=True)
+        assert result.archived_count > 0
+
+        # Re-render the survivor index the way the re-index phase will write it.
+        after = reindex.render_index(self.dir)
+        assert len(after.encode("utf-8")) <= gates.INDEX_BYTE_BUDGET, "must archive until under the byte budget"
+        after_snapshot = gates.MemorySnapshot.build(memories={}, index_text=after)
+        assert gates.Gate.index_budget(after_snapshot).passed
+
+    def _seed_short_named(self, count: int, *, age_days: int = 120) -> None:
+        """Seed *count* stale low-signal files under SHORT filenames — line pressure, no byte pressure.
+
+        The mirror of :meth:`_seed_dense_multibyte`: there the filename length drives the
+        index over the BYTE budget with few entries; here it stays so compact that the
+        pointer COUNT runs past the loader's line-truncation point while bytes stay
+        comfortable (#4057). Terser entries lower bytes without lowering lines, so the two
+        measures diverge exactly as decay does its job.
+        """
+        for i in range(count):
+            self._write(f"feedback_s{i:04d}", f"a niche low-signal note {i:04d}", age_days=age_days)
+
+    def test_line_pressure_archives_until_under_the_line_budget(self) -> None:
+        # #4057: the measured shape — 306 short pointer lines at 69% of the byte budget.
+        # Pre-fix the tier never fired (bytes comfortable) so the index kept growing while
+        # every entry past line 200 was dropped at load.
+        self._seed_short_named(306)
+        self._seed_index()
+        before = reindex.render_index(self.dir)
+        assert len(before.encode("utf-8")) < gates.INDEX_BYTE_BUDGET, "the byte budget must NOT be what bites"
+        assert len(before.splitlines()) > gates.INDEX_LINE_BUDGET, "the LINE budget is what is exceeded"
+
+        result = self._decay(budget_tier=True)
+        assert result.archived_count > 0
+
+        after = reindex.render_index(self.dir)
+        assert len(after.splitlines()) <= gates.INDEX_LINE_BUDGET, "must archive until under the line budget"
+        assert gates.Gate.index_budget(gates.MemorySnapshot.build(memories={}, index_text=after)).passed
+        for archived in result.archived:
+            assert (self.dir / "archive" / archived.source.name).is_file()  # moved, not deleted
+
+    def test_referenced_files_are_archived_to_converge_when_every_entry_is_linked(self) -> None:
+        # #2753 regression: a hub links every filler, so EVERY filler is referenced. Pre-fix
+        # the budget tier hard-skipped referenced files and could NEVER converge (the real
+        # corpus bug). The fix archives referenced low-signal files too — just enough to
+        # bring the index back under budget — so the tier always converges.
+        self._seed_low_signal(360)
+        links = " ".join(f"[[{_budget_name('feedback_filler', i)}]]" for i in range(360))
+        self._write("feedback_hub", f"a hub that links everything {links}", age_days=400)
+        self._seed_index()
+        result = self._decay(budget_tier=True)
+        archived = self._archived_sources(result)
+        assert result.archived_count > 0
+        assert any(name.startswith("feedback_filler") for name in archived)  # referenced fillers ARE archived now
+        assert self._rendered_byte_size() <= gates.INDEX_BYTE_BUDGET  # converged (RED pre-fix: stayed over)
+
+    def _seed_cross_linked_corpus(self) -> tuple[Path, Path, Path, Path]:
+        """Seed an over-byte-budget corpus where MOST entries are [[ ]]-cross-link-referenced.
+
+        180 feedback fillers with DENSE multibyte FILENAMES form a reference RING (each
+        links the next, the last links the first) so EVERY filler is referenced; the first
+        30 also link a hub, so the hub is the MOST-LINKED entry. The multibyte filenames
+        make each pointer line ~3x the ASCII size, so ~180 entries blow the ~24 KB byte
+        budget while the ages still map to STRICTLY-DECREASING recency (no floor, no ties)
+        — making the OLDEST ring filler the uniquely lowest signal. A user memory and a
+        BINDING memory are the highest-signal entries (unreferenced — to make the pre-fix
+        bug stark: the old budget tier could only archive the unreferenced high-signal
+        entries, the exact wrong ones, and still never converge). Returns
+        ``(user, binding, hub, oldest_filler)``.
+        """
+        n = 180
+        for i in range(n):
+            nxt = (i + 1) % n
+            hub_link = " [[feedback_popular_hub]]" if i < 30 else ""
+            self._write(
+                _mb_name("feedback_chain", i),
+                f"see [[{_mb_name('feedback_chain', nxt)}]]{hub_link}",
+                age_days=31 + i,  # ages 31..210 -> recency 199..20, strictly decreasing (no ties)
+            )
+        user = self._write("user_special_preference", "the user's own durable editor preference", mtype="user")
+        binding = self._write("feedback_binding_doctrine", "BINDING the load-bearing doctrine")
+        hub = self._write("feedback_popular_hub", "a popular hub many memories point at", age_days=300)
+        oldest = self.dir / f"{_mb_name('feedback_chain', n - 1)}.md"
+        self._seed_index()
+        return user, binding, hub, oldest
+
+    def test_over_budget_archives_referenced_entries_until_under_budget(self) -> None:
+        # #2753 regression (the real-corpus convergence bug): with MOST entries
+        # cross-link-referenced, the pre-fix budget tier hard-skipped them and the index
+        # stayed PERMANENTLY over budget (it could only archive the few UNREFERENCED
+        # high-signal entries — the user + BINDING ones — and still never reached budget).
+        # The fix archives the lowest-signal REFERENCED entries until the index fits, while
+        # the highest-signal entries (user / BINDING / most-linked hub) survive.
+        #
+        # RED before the fix: referenced entries skipped -> the survivor index stays over
+        # budget AND the user + BINDING entries are wrongly archived. GREEN after: the index
+        # converges <= 24 KB bytes and the high-signal entries survive.
+        user, binding, hub, oldest = self._seed_cross_linked_corpus()
+        result = self._decay(budget_tier=True)
+
+        rendered = reindex.render_index(self.dir)
+        assert len(rendered.encode("utf-8")) <= gates.INDEX_BYTE_BUDGET  # DID archive referenced entries to fit
+
+        archived = self._archived_sources(result)
+        assert oldest.name in archived  # the lowest-signal REFERENCED filler is archived
+        assert any(name.startswith("feedback_chain") for name in archived)  # referenced entries archived
+        # the highest-signal entries survive — archived LAST, only under genuine pressure.
+        assert user.exists()
+        assert binding.exists()
+        assert hub.exists()
+        assert user.name not in archived
+        assert binding.name not in archived
+        assert hub.name not in archived
+
+    def _projected_header_lines(self) -> int:
+        return len(reindex.render_index_lines([], reindex.read_priority_preamble(self.dir)).splitlines())
+
+    def test_budget_drain_leaves_headroom_below_the_line_ceiling(self) -> None:
+        # #4385: the tier drained to the CEILING and stopped there, so the index came back
+        # sitting exactly on 200 lines with zero headroom and the very next memory written
+        # truncated the tail — and stayed truncated until the next nightly pass. The drain
+        # must land on a target strictly BELOW the gate-(d) budget so a day of writes fits.
+        #
+        # RED before the fix: the walk breaks at `not over_budget(...)`, satisfied the
+        # instant the projection hits exactly INDEX_LINE_BUDGET -> 200 <= 140 is False.
+        self._seed_short_named(306)  # the #4057 shape: line pressure, byte headroom
+        self._seed_index()
+        assert gates.INDEX_LINE_DRAIN_TARGET < gates.INDEX_LINE_BUDGET  # AV-5: a target, not the ceiling
+
+        result = self._decay(budget_tier=True)
+
+        after = reindex.render_index(self.dir)
+        assert len(after.splitlines()) <= gates.INDEX_LINE_DRAIN_TARGET  # headroom, not the ceiling
+        assert len(after.encode("utf-8")) <= gates.INDEX_BYTE_DRAIN_TARGET
+        # AV-1: the tier still archives, and archives EXACTLY the count the target implies —
+        # a "fix" that raises the target to a no-op breaches the bound above, one that empties
+        # the corpus breaches this equality. Both directions pinned.
+        expected_survivors = gates.INDEX_LINE_DRAIN_TARGET - self._projected_header_lines()
+        assert result.archived_count == 306 - expected_survivors
+        assert len([line for line in after.splitlines() if line.startswith("- ")]) == expected_survivors
+
+    def _seed_settled_and_standing(self, *, settled: int, standing: int) -> tuple[list[str], list[str]]:
+        """Seed the measured live inversion: a citing CLIQUE of settled per-ticket records + uncited standing rules.
+
+        Every file is EQUALLY fresh (inside the retention window) so freshness cannot be the
+        discriminator. Each settled record carries the ``Related:`` block phase 4 writes,
+        citing 30 siblings — the cross-link phase has no fan-out cap, so the near-identical
+        per-ticket prose becomes a mutually-citing clique and every member collects +40 x 30
+        of inbound-link signal. The standing rules are cited by nobody. Two
+        ``ticket-plan-*`` decoys are standing rules whose names START with ``ticket-`` but
+        carry no ticket NUMBER; they must survive, which is what forces the settled-record
+        predicate to require digits rather than matching the bare prefix.
+        """
+        settled_names = [f"ticket-{4000 + i}-reviewed-merge-safe" for i in range(settled)]
+        for i, name in enumerate(settled_names):
+            related = " ".join(f"[[{settled_names[(i + k) % settled]}]]" for k in range(1, 31))
+            self._write(
+                name, f"the resolved verdict for this ticket\n\nRelated: {related}", age_days=5, mtype="project"
+            )
+        standing_names = [f"standing-rule-{i:03d}-the-durable-operational-lesson" for i in range(standing)]
+        standing_names += ["ticket-plan-precedes-implementation", "ticket-plans-are-not-re-derived-by-the-maker"]
+        for name in standing_names:
+            self._write(name, f"the durable standing rule {name} nothing else cites", age_days=5)
+        self._seed_index()
+        return settled_names, standing_names
+
+    def test_settled_ticket_records_are_archived_before_standing_rules(self) -> None:
+        # #4385: the +40-per-inbound-link signal INVERTS the ranking on the real corpus. The
+        # settled per-ticket records cite each other in a clique (~1200 link points each)
+        # while a durable standing rule nobody cites sits ~1200 below — so the lowest-first
+        # walk archived the standing rules and left the settled history hot. Settled records
+        # must be archived FIRST, ordered among themselves by signal.
+        #
+        # RED before the fix: the archive set is the standing rules, not the ticket records.
+        settled_names, standing_names = self._seed_settled_and_standing(settled=200, standing=30)
+        result = self._decay(budget_tier=True)
+
+        archived = self._archived_sources(result)
+        assert archived, "the tier must fire"
+        assert all(re.match(r"^ticket-\d+[-.]", name) for name in archived), sorted(archived)[:5]
+        # AV-2: the positive control — only satisfiable by cutting into the settled records.
+        # Force is_settled_ticket_record to True and the standing rules come back into the
+        # cut; force it to False and the live inversion re-reproduces. Teeth both ways.
+        for name in standing_names:
+            assert f"{name}.md" not in archived
+            assert (self.dir / f"{name}.md").exists()
+        assert len(archived) < len(settled_names), "only the excess is archived, not the whole settled tier"
+        # AV-4: nothing is stranded in NEITHER index — the body is restorable from archive/
+        # and the signature is recall-able from the cold MEMORY_ARCHIVE.md, which is the only
+        # automatic path a memory dropped from the hot index has left.
+        cold = (self.dir / "MEMORY_ARCHIVE.md").read_text(encoding="utf-8").splitlines()
+        for name in archived:
+            assert (self.dir / "archive" / name).is_file()
+            assert any(line.startswith(f"- {name} — ") for line in cold), name
+
+    def _seed_clique_and_uncited_rules(self, *, clique: int, rules: int, rule_type: str = "feedback") -> list[str]:
+        """Seed a citing clique of project notes plus *rules* fresh rules nobody cites.
+
+        Every file is EQUALLY fresh, so recency cannot be the discriminator; the clique
+        members each collect +40 x 12 of inbound-link signal while the rules collect none.
+        That is the measured live shape — vocabulary overlap makes the cross-link phase
+        wire near-identical notes into a mutually-citing block, and the type floor alone
+        left an owner-stated rule less than two cross-links clear of one.
+        """
+        clique_names = [f"project-note-{i:04d}-{_BUDGET_SLUG}" for i in range(clique)]
+        for i, name in enumerate(clique_names):
+            related = " ".join(f"[[{clique_names[(i + k) % clique]}]]" for k in range(1, 13))
+            self._write(name, f"an ordinary working note\n\nRelated: {related}", age_days=5, mtype="project")
+        rule_names = [f"owner-rule-{i:03d}-{_BUDGET_SLUG}" for i in range(rules)]
+        for name in rule_names:
+            self._write(name, f"the durable rule {name} that nothing cites", age_days=5, mtype=rule_type)
+        self._seed_index()
+        return rule_names
+
+    def test_owner_feedback_is_archived_after_a_well_connected_project_note(self) -> None:
+        # The owner's own doctrine ranked BELOW vocabulary overlap: the type floor put
+        # `feedback` 90 points over `project` — less than two of the +40 cross-links the
+        # link phase hands out freely — so an uncited rule the owner stated lost its hot
+        # slot to any note wired into a clique. `do-not-hand-run-t3-loops` was evicted
+        # that way twice, and each eviction was followed by the rule being broken again,
+        # because a session only ever reads the LIVE index.
+        #
+        # RED before the fix: the archive set is exactly the owner rules.
+        rule_names = self._seed_clique_and_uncited_rules(clique=200, rules=30)
+        archived = self._archived_sources(self._decay(budget_tier=True))
+
+        assert archived, "the tier must fire"
+        assert all(name.startswith("project-note-") for name in archived), sorted(archived)[:5]
+        for name in rule_names:
+            assert f"{name}.md" not in archived
+            assert (self.dir / f"{name}.md").exists()
+
+    def test_without_the_feedback_weight_the_clique_evicts_the_rules(self) -> None:
+        # AV: the positive control. Revert the weight alone and the live inversion
+        # re-reproduces — so the assertion above is satisfiable only BY that weight,
+        # not by freshness, by the settled-record ordering, or by the drain target.
+        rule_names = self._seed_clique_and_uncited_rules(clique=200, rules=30)
+        with patch.object(decay_signal, "_SIGNAL_FEEDBACK", 0):
+            archived = self._archived_sources(self._decay(budget_tier=True))
+
+        assert {f"{name}.md" for name in rule_names} <= archived
+
+    def _seed_with_archive_twin(self, name: str, banner: str) -> None:
+        archive = self.dir / "archive"
+        archive.mkdir(exist_ok=True)
+        (archive / f"{name}.md").write_text(f"<!-- {banner} -->\n\nthe evicted body\n", encoding="utf-8")
+
+    def test_a_name_already_evicted_once_survives_the_second_pass(self) -> None:
+        # A memory decay archived and the corpus then RE-LEARNED is a recurrence the
+        # corpus recorded about itself: the lesson cost something to learn twice, so
+        # evicting it a third time is the expensive mistake. The signal reads `archive/`
+        # rather than the prose, so it needs no cooperation from whoever wrote the file.
+        #
+        # RED before the fix: `relearned.md` is in the cut like any other uncited note.
+        self._seed_clique_and_uncited_rules(clique=200, rules=0)
+        self._write("relearned-the-hard-way", "learned again after decay dropped it", age_days=5, mtype="project")
+        self._seed_with_archive_twin(
+            "relearned-the-hard-way.1", "archived by dream decay 2026-08-21: over-budget, lowest-signal"
+        )
+        self._seed_index()
+
+        archived = self._archived_sources(self._decay(budget_tier=True))
+        assert "relearned-the-hard-way.md" not in archived
+        assert (self.dir / "relearned-the-hard-way.md").exists()
+
+    def test_the_same_note_without_an_archive_twin_is_cut(self) -> None:
+        # AV: the negative control — identical file, identical corpus, no twin. It is cut,
+        # so the survival above comes from the twin and from nothing else.
+        self._seed_clique_and_uncited_rules(clique=200, rules=0)
+        self._write("relearned-the-hard-way", "learned again after decay dropped it", age_days=5, mtype="project")
+        self._seed_index()
+
+        assert "relearned-the-hard-way.md" in self._archived_sources(self._decay(budget_tier=True))
+
+
+class BudgetProjectionWithAPreambleTestCase(SimpleTestCase):
+    """The projection must model the header the re-index ACTUALLY writes (#4193).
+
+    ``render_index`` REPLACES the generated ~180-byte header with the human-owned
+    ``MEMORY_PRIORITY.md`` block whenever one exists. The tier projected the generated
+    header regardless, so on any box carrying a preamble it under-counted the index by
+    the preamble's entire size: it read the very first survivor set as already fitting,
+    archived ZERO files, and left gate (d) failing every night with nothing naming why.
+
+    No test covered a preamble before this one — which is exactly how a projection that
+    models a file nobody writes stayed green.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _write_preamble(self, byte_size: int) -> None:
+        """A human-owned priority block big enough that ignoring it hides the overrun."""
+        filler = "\n".join(f"> priority note {i:04d} — a hand-curated line that must stay hot" for i in range(400))
+        (self.dir / "MEMORY_PRIORITY.md").write_text(
+            f"# Auto Memory — Priority\n\n{filler}\n"[:byte_size], encoding="utf-8"
+        )
+
+    def _seed(self, count: int) -> None:
+        for i in range(count):
+            path = self.dir / f"{_budget_name('feedback_filler', i)}.md"
+            path.write_text(
+                f"---\nname: filler{i}\nmetadata:\n  type: feedback\n---\n\nlesson keyword{i:04d} niche note\n",
+                encoding="utf-8",
+            )
+            ts = (_NOW - timedelta(days=120)).timestamp()
+            os.utime(path, (ts, ts))
+
+    def _decay(self) -> decay.DecayResult:
+        return decay_memories(
+            self.dir,
+            now=_NOW,
+            has_durable_home=lambda _m: False,
+            policy=_policy(budget_tier=True),
+        )
+
+    def test_a_preamble_pushing_the_index_over_budget_is_archived_back_under(self) -> None:
+        """RED before the fix: the small-header projection fits immediately, so 0 files move."""
+        self._write_preamble(20 * 1024)
+        self._seed(120)
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+        assert len(reindex.render_index(self.dir).encode("utf-8")) > gates.INDEX_BYTE_BUDGET
+
+        result = self._decay()
+
+        assert result.archived_count > 0, "the preamble's bytes were projected away, so nothing was archived"
+        assert len(reindex.render_index(self.dir).encode("utf-8")) <= gates.INDEX_BYTE_BUDGET
+
+    def test_the_preamble_itself_is_never_archived(self) -> None:
+        self._write_preamble(20 * 1024)
+        self._seed(120)
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+
+        self._decay()
+
+        assert (self.dir / "MEMORY_PRIORITY.md").is_file()
+
+    def test_without_a_preamble_the_generated_header_is_still_projected(self) -> None:
+        """The no-preamble path must be byte-identical to before — the header still counts."""
+        self._seed(400)
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+        assert len(reindex.render_index(self.dir).encode("utf-8")) > gates.INDEX_BYTE_BUDGET
+
+        result = self._decay()
+
+        assert result.archived_count > 0
+        assert len(reindex.render_index(self.dir).encode("utf-8")) <= gates.INDEX_BYTE_BUDGET
+
+
+class InboundReferenceSignalTestCase(SimpleTestCase):
+    """Inbound references must survive the filename/frontmatter-name split.
+
+    A production memory names itself twice: the FILE is ``feedback_x_y.md`` while its
+    frontmatter says ``name: x-y`` (hyphenated, prefix dropped), and every citing body
+    writes ``[[feedback_x_y]]`` — the filename form. Counting inbound links under the
+    frontmatter name resolved to zero for such a file, so the budget tier scored the
+    most-cited rule in the corpus as lowest-signal and archived it while six live files
+    still cited it. The canonical identity is the FILENAME; every alias resolves up to it.
+
+    The curated index cites by markdown link (``[Title](name.md)``) and by bare
+    comma-separated filename, neither of which is a ``[[wikilink]]`` — so being listed in
+    the index carried no signal either. Both forms count; the GENERATED index's lone
+    ``- name.md`` pointer does not, since re-index rewrites it for every file and it can
+    never dangle.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _write(self, filename: str, body: str, *, frontmatter_name: str | None = None, age_days: int = 120) -> Path:
+        path = self.dir / f"{filename}.md"
+        name = frontmatter_name if frontmatter_name is not None else filename
+        path.write_text(f"---\nname: {name}\nmetadata:\n  type: feedback\n---\n\n{body}\n", encoding="utf-8")
+        ts = (_NOW - timedelta(days=age_days)).timestamp()
+        os.utime(path, (ts, ts))
+        return path
+
+    def _seed_pressure(self, count: int = 360) -> None:
+        for i in range(count):
+            self._write(_budget_name("feedback_filler", i), f"a niche low-signal note {i:04d}")
+
+    def _seed_index(self, *curated_lines: str) -> None:
+        generated = reindex.render_index(self.dir)
+        extra = "".join(f"{line}\n" for line in curated_lines)
+        (self.dir / "MEMORY.md").write_text(generated + extra, encoding="utf-8")
+
+    def _budget_decay(self) -> decay.DecayResult:
+        return decay_memories(self.dir, now=_NOW, has_durable_home=lambda _m: False, policy=_policy(budget_tier=True))
+
+    @staticmethod
+    def _archived_sources(result: decay.DecayResult) -> set[str]:
+        return {a.source.name for a in result.archived}
+
+    def test_wikilink_under_a_slug_frontmatter_name_still_counts(self) -> None:
+        # The production shape that lost the meta-rule: the file declares a hyphenated,
+        # prefix-stripped frontmatter name while six live bodies cite it by FILENAME.
+        self._seed_pressure()
+        cited = self._write(
+            "feedback_aaa_meta_rule_escalate_to_enforcement",
+            "a rule that failed again needs a gate, not another memory",
+            frontmatter_name="meta-rule-escalate-to-enforcement",
+        )
+        uncited_twin = self._write(
+            "feedback_aab_uncited_peer_rule", "an equally old note nobody cites", frontmatter_name="uncited-peer-rule"
+        )
+        for i in range(6):
+            self._write(f"feedback_citer_{i:02d}", "per [[feedback_aaa_meta_rule_escalate_to_enforcement]], escalate")
+        self._seed_index()
+        archived = self._archived_sources(self._budget_decay())
+        assert uncited_twin.name in archived, "teeth: the uncited peer of identical age/type IS archived"
+        assert cited.name not in archived
+        assert cited.exists()
+
+    def test_curated_index_markdown_link_counts_as_inbound(self) -> None:
+        self._seed_pressure()
+        cited = self._write("feedback_aaa_curated_link_target", "a lesson the curated index links")
+        uncited_twin = self._write("feedback_aab_unlinked_peer", "a lesson the index does not link")
+        self._seed_index("- [A load-bearing rule](feedback_aaa_curated_link_target.md)")
+        archived = self._archived_sources(self._budget_decay())
+        assert uncited_twin.name in archived, "teeth: the unlinked peer IS archived"
+        assert cited.name not in archived
+
+    def test_curated_index_bare_filename_mention_counts_as_inbound(self) -> None:
+        # The grouped index lines cite by bare comma-separated filename, not by link.
+        self._seed_pressure()
+        cited = self._write("feedback_aaa_grouped_mention_target", "a lesson listed in a grouped index line")
+        uncited_twin = self._write("feedback_aab_ungrouped_peer", "a lesson in no group")
+        self._seed_index("- Verification: feedback_aaa_grouped_mention_target.md,feedback_other_thing.md")
+        archived = self._archived_sources(self._budget_decay())
+        assert uncited_twin.name in archived, "teeth: the peer in no grouped line IS archived"
+        assert cited.name not in archived
+
+    def test_generated_pointer_line_alone_is_not_an_inbound_reference(self) -> None:
+        # Every file gets a lone `- name.md` pointer from re-index, so counting it would
+        # make the whole corpus permanently "referenced" and strand the stale tier.
+        self._seed_pressure()
+        self._seed_index()
+        assert self._budget_decay().archived_count > 0
+
+    def test_archiving_a_cited_memory_names_the_citers_it_breaks(self) -> None:
+        # The budget can still force a cited file out — but never SILENTLY.
+        self._seed_pressure()
+        doomed = self._write(
+            "feedback_aaa_doomed_but_cited",
+            "an old but cited lesson",
+            frontmatter_name="doomed-but-cited",
+            age_days=400,
+        )
+        self._write("feedback_citer_of_doomed", "per [[feedback_aaa_doomed_but_cited]] we escalate")
+        self._seed_index()
+        result = self._budget_decay()
+        entry = next(a for a in result.archived if a.source.name == doomed.name)
+        assert entry.broken_inbound == ("feedback_citer_of_doomed.md",)
+        uncited = next(a for a in result.archived if a.source.name.startswith("feedback_filler"))
+        assert uncited.broken_inbound == (), "teeth: an uncited archival breaks nothing and says so"
+
+    def test_stale_tier_retains_a_memory_cited_by_filename_under_a_slug_name(self) -> None:
+        # The conservative ledger tier keeps its hard reference skip — but only if it
+        # resolves the citation, which the frontmatter-name key never did.
+        target = self._write(
+            "feedback_slug_named_target", "old but cited", frontmatter_name="slug-named-target", age_days=90
+        )
+        self._write("feedback_citer", "see [[feedback_slug_named_target]] for the detail", age_days=1)
+        result = decay_memories(self.dir, now=_NOW, has_durable_home=_always_home, policy=_policy())
+        assert result.archived_count == 0
+        assert target.exists()
+
+    def test_an_alias_two_memories_claim_resolves_to_neither(self) -> None:
+        # Conflating two distinct files is worse than missing one reference, so an
+        # ambiguous alias is dropped rather than attributed to an arbitrary owner.
+        first = self._write("feedback_alpha_rule", "the first rule", frontmatter_name="shared-alias")
+        second = self._write("feedback_beta_rule", "the second rule", frontmatter_name="shared-alias")
+        files = decay_corpus.load_memory_files(self.dir)
+        aliases = decay_corpus.canonical_by_alias(files)
+        assert "shared-alias" not in aliases
+        assert aliases["feedback_alpha_rule"] == first.name
+        assert aliases["feedback_beta_rule"] == second.name
+
+
+class SignalScoreTestCase(SimpleTestCase):
+    """Unit coverage of the pure signal-score / cold-index helpers (#2723) — DB-free."""
+
+    @staticmethod
+    def _mem(name: str, text: str, *, age_days: int = 0) -> MemoryFile:
+        return MemoryFile(path=Path(f"{name}.md"), name=name, text=text, mtime=_NOW - timedelta(days=age_days))
+
+    def test_user_memory_by_filename_and_by_frontmatter_type(self) -> None:
+        assert decay_signal._is_user_memory(self._mem("user_pref", "a pref"))  # filename prefix
+        assert decay_signal._is_user_memory(
+            self._mem("misc_note", "---\nmetadata:\n  type: user\n---\nx")
+        )  # frontmatter
+        assert not decay_signal._is_user_memory(self._mem("feedback_x", "---\nmetadata:\n  type: feedback\n---\nx"))
+
+    def test_resolved_type_frontmatter_then_prefix_then_other(self) -> None:
+        assert (
+            decay_signal._resolved_type(self._mem("anything", "---\nmetadata:\n  type: reference\n---\nx"))
+            == "reference"
+        )
+        # an unrecognised frontmatter type falls back to the filename prefix
+        assert decay_signal._resolved_type(self._mem("project_x", "---\nmetadata:\n  type: bogus\n---\nx")) == "project"
+        # no recognised type, unknown prefix -> other
+        assert decay_signal._resolved_type(self._mem("random_note", "a body")) == "other"
+        # node_type is never read as type
+        assert decay_signal._resolved_type(self._mem("misc", "metadata:\n  node_type: memory\n")) == "other"
+
+    def test_binding_detection_matches_binding_and_non_negotiable(self) -> None:
+        # The binding heuristic now lives once in the shared leaf (F6.11); decay's
+        # signal score reads it through the import.
+        from teatree.loops.dream._shared import is_binding_text  # noqa: PLC0415
+
+        assert is_binding_text("this is a BINDING rule")
+        assert is_binding_text("a Non-Negotiable directive")
+        assert not is_binding_text("an ordinary lesson")
+
+    def test_recency_within_window_is_max_then_decays_to_floor(self) -> None:
+        retention = timedelta(days=30)
+        assert (
+            decay_signal._recency_score(self._mem("m", "x", age_days=5), _NOW, retention) == decay_signal._SIGNAL_RECENT
+        )
+        assert (
+            decay_signal._recency_score(self._mem("m", "x", age_days=60), _NOW, retention)
+            == decay_signal._SIGNAL_RECENT - 30
+        )
+        assert decay_signal._recency_score(self._mem("m", "x", age_days=900), _NOW, retention) == 0  # floored
+
+    def test_signal_score_composes_additively(self) -> None:
+        user_binding = self._mem("user_rule", "BINDING the rule", age_days=1)
+        score = decay_signal.signal_score(user_binding, inbound_links=2, now=_NOW, retention=timedelta(days=30))
+        assert score == 1000 + 500 + (2 * 40) + 200 + 10  # user + binding + inbound + recency + user type weight
+
+    def test_inbound_citers_index_self_skip_and_cross_link(self) -> None:
+        a = self._mem("mem_a", "see [[mem_b]] and [[mem_a]] (a self link is ignored)")
+        b = self._mem("mem_b", "no links here")
+        citers = decay_corpus.inbound_citers([a, b], "- index line [[mem_b]]")
+        assert citers["mem_b.md"] == ("MEMORY.md", "mem_a.md")
+        assert citers.get("mem_a.md", ()) == ()  # self-link does not count as inbound
+
+    def test_over_budget_on_either_dimension(self) -> None:
+        # #4057: the loader truncates on BYTES and on LINES, so either alone is over budget.
+        assert decay_signal.over_budget(gates.INDEX_BYTE_BUDGET + 1, 1)  # over by bytes alone
+        assert decay_signal.over_budget(1, gates.INDEX_LINE_BUDGET + 1)  # over by lines alone
+        assert not decay_signal.over_budget(gates.INDEX_BYTE_BUDGET, gates.INDEX_LINE_BUDGET)  # exactly at both is fine
+        assert not decay_signal.over_budget(1, 1)  # under
+
+    def test_under_drain_target_needs_both_axes_and_is_stricter_than_the_budget(self) -> None:
+        # #4385: the drain target is where the tier STOPS, strictly below the ceiling
+        # over_budget grades. Sitting exactly ON the budget is emphatically NOT drained —
+        # that is the zero-headroom landing the issue reported.
+        assert under_drain_target(gates.INDEX_BYTE_DRAIN_TARGET, gates.INDEX_LINE_DRAIN_TARGET)  # exactly at both
+        assert not under_drain_target(gates.INDEX_BYTE_DRAIN_TARGET + 1, 1)  # bytes alone hold it back
+        assert not under_drain_target(1, gates.INDEX_LINE_DRAIN_TARGET + 1)  # lines alone hold it back
+        assert not under_drain_target(gates.INDEX_BYTE_BUDGET, gates.INDEX_LINE_BUDGET)  # on the ceiling is not drained
+        assert not decay_signal.over_budget(gates.INDEX_BYTE_BUDGET, gates.INDEX_LINE_BUDGET)  # ... yet not over it
+
+    def test_settled_ticket_record_requires_a_ticket_number(self) -> None:
+        # #4385: the predicate that puts settled history at the front of the archive queue.
+        # The NUMBER is what makes it a record of a ticket rather than a rule about tickets.
+        assert is_settled_ticket_record(self._mem("ticket-4242-reviewed-merge-safe", "x"))
+        assert is_settled_ticket_record(self._mem("ticket-3320-done", "x"))
+        assert is_settled_ticket_record(self._mem("ticket-991.notes", "x"))  # a dot separator counts too
+        # Fails CLOSED toward retention: a standing rule ABOUT ticket plans is NOT settled
+        # history, and neither is anything else the pattern cannot positively classify.
+        assert not is_settled_ticket_record(self._mem("ticket-plan-precedes-implementation", "x"))
+        assert not is_settled_ticket_record(self._mem("ticket-plans-are-not-re-derived", "x"))
+        assert not is_settled_ticket_record(self._mem("tickets-are-not-the-unit-of-memory", "x"))
+        assert not is_settled_ticket_record(self._mem("a-durable-operational-lesson", "x"))
+        assert not is_settled_ticket_record(self._mem("user_editor_preference", "x"))
+
+    def test_strip_provenance_with_without_and_malformed(self) -> None:
+        prov = "<!-- archived by dream decay 2026-06-16: x; original mtime 2026-01-01 -->\nthe body\n"
+        assert decay._strip_provenance(prov) == "the body\n"
+        assert decay._strip_provenance("no provenance here\n") == "no provenance here\n"
+        assert decay._strip_provenance("<!-- unterminated") == "<!-- unterminated"  # no closing marker -> left intact
+
+    def test_cold_index_line_handles_unreadable_and_signatureless(self) -> None:
+        d = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        broken = d / "broken.md"
+        broken.mkdir()
+        assert decay._cold_index_line(broken) == ""  # unreadable -> empty
+        headings_only = d / "feedback_headings.md"
+        headings_only.write_text(
+            "<!-- archived by dream decay 2026-06-16: x; original mtime 2026-01-01 -->\n# Only A Heading\n",
+            encoding="utf-8",
+        )
+        assert decay._cold_index_line(headings_only) == "- feedback_headings.md"  # no prose -> pointer only
+
+    def test_cold_index_line_carries_frontmatter_description_not_node_type(self) -> None:
+        # #2746 nit-4: an archived node-typed memory's cold-index signature is its
+        # real frontmatter description, NOT the body ``node_type: memory`` line.
+        d = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        archived = d / "feedback_kind_marker.md"
+        archived.write_text(
+            "<!-- archived by dream decay 2026-06-16: over-budget; original mtime 2026-01-01 -->\n"
+            "---\nname: feedback_kind_marker\n"
+            "description: the lease guard rejects an empty owner address\n"
+            "metadata:\n  type: feedback\n---\n"
+            "node_type: memory\ntrailing body\n",
+            encoding="utf-8",
+        )
+        line = decay._cold_index_line(archived)
+        assert line == "- feedback_kind_marker.md — the lease guard rejects an empty owner address"
+        assert "node_type" not in line
+
+    def test_rebuild_cold_index_noop_when_archive_absent_or_yields_no_lines(self) -> None:
+        d = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        decay._rebuild_cold_index(d, d / "archive")  # absent
+        assert not (d / "MEMORY_ARCHIVE.md").exists()
+        archive = d / "archive"
+        archive.mkdir()
+        (archive / "broken.md").mkdir()  # unreadable -> no usable line
+        decay._rebuild_cold_index(d, archive)
+        assert not (d / "MEMORY_ARCHIVE.md").exists()
+
+
+class OverBudgetDecayEndToEndTestCase(TestCase):
+    """#2723 end-to-end: an over-budget hot index FAILS gate (d), then ONE pass fixes it.
+
+    The budget-tier decay + re-index brings the index under budget while retention /
+    no-loss / consolidation stay GREEN, and a second pass over the now-stable corpus
+    archives nothing (monotonic).
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _write(self, name: str, body: str, *, age_days: int, mtype: str = "feedback", binding: bool = False) -> Path:
+        path = self.dir / f"{name}.md"
+        marker = "BINDING " if binding else ""
+        path.write_text(f"---\nname: {name}\nmetadata:\n  type: {mtype}\n---\n\n{marker}{body}\n", encoding="utf-8")
+        ts = (_NOW - timedelta(days=age_days)).timestamp()
+        os.utime(path, (ts, ts))
+        return path
+
+    def _decay(self) -> decay.DecayResult:
+        return decay_memories(
+            self.dir, now=_NOW, has_durable_home=lambda _m: False, policy=DecayPolicy(budget_tier=BudgetTier())
+        )
+
+    def _run_gates(
+        self,
+        before: gates.MemorySnapshot,
+        after: gates.MemorySnapshot,
+        archived: Sequence[decay.ArchivedMemory],
+    ) -> gates.DreamQaReport:
+        return acceptance.run_acceptance_pass(
+            before,
+            after,
+            overlay="acme",
+            archived=archived,
+            schema_before=0,
+            schema_after=0,
+            maintenance_performed=True,
+            persist=False,
+        )
+
+    def test_over_budget_index_fails_gate_then_decays_under_budget_next_pass(self) -> None:
+        for i in range(360):
+            self._write(
+                _budget_name("feedback_low", i),
+                f"lesson keyword{i:04d}gamma keyword{i:04d}delta a niche low-signal note",
+                age_days=120 + (i % 90),
+            )
+        self._write("feedback_binding_rule", "the load-bearing binding doctrine", age_days=80, binding=True)
+        self._write(
+            "reference_stale_note", "an old reference note nobody links to anymore", age_days=500, mtype="reference"
+        )
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+
+        before = gates.snapshot_memory_dir(self.dir)
+        assert not gates.Gate.index_budget(before).passed  # over budget -> gate (d) FAILS
+
+        result = self._decay()
+        assert result.archived_count > 0
+        reindex.reindex_memory(self.dir)  # final re-index drops the archived pointers
+
+        after = gates.snapshot_memory_dir(self.dir)
+        assert gates.Gate.index_budget(after).passed  # now under budget
+        assert after.index_byte_size <= gates.INDEX_BYTE_BUDGET
+
+        report = self._run_gates(before, after, result.archived)
+        failed = {g.name for g in report.gate_results if not g.passed}
+        assert report.passed, [g.detail for g in report.gate_results if not g.passed]
+        assert {"retention", "no_loss_audit", "consolidation"}.isdisjoint(failed)
+
+        # The BINDING entry survives (highest signal) OR its signature is in the cold index.
+        cold_path = self.dir / "MEMORY_ARCHIVE.md"
+        cold = cold_path.read_text(encoding="utf-8") if cold_path.exists() else ""
+        assert (self.dir / "feedback_binding_rule.md").exists() or "feedback_binding_rule.md" in cold
+
+        # Pass 2: the corpus is now under budget -> nothing archived (monotonic).
+        before2 = gates.snapshot_memory_dir(self.dir)
+        result2 = self._decay()
+        assert result2.archived_count == 0
+        reindex.reindex_memory(self.dir)
+        after2 = gates.snapshot_memory_dir(self.dir)
+        report2 = self._run_gates(before2, after2, result2.archived)
+        mono = next(g for g in report2.gate_results if g.name == "monotonicity")
+        assert mono.passed
+
+    def test_over_budget_cross_linked_corpus_archives_referenced_and_all_gates_pass(self) -> None:
+        # #2753 end-to-end: MOST entries are cross-link-referenced (a ring), so the pre-fix
+        # budget tier could never converge. The fix archives REFERENCED low-signal entries;
+        # after re-index the index_budget gate PASSES and retention / consolidation /
+        # no_loss_audit stay GREEN — the archived referenced entries' pruned index lines are
+        # homed via the archived-names path in gates.py, and their signatures live in the
+        # cold MEMORY_ARCHIVE.md (so retention can still answer them).
+        n = 360
+        for i in range(n):
+            nxt = (i + 1) % n
+            self._write(
+                _budget_name("feedback_ring", i),
+                f"lesson token{i:04d} a niche low-signal ring note see [[{_budget_name('feedback_ring', nxt)}]]",
+                age_days=31 + i,  # older entries score lower -> archived first under pressure
+            )
+        self._write("feedback_binding_rule", "the load-bearing binding doctrine", age_days=80, binding=True)
+        self._write("user_durable_pref", "the user's own durable preference", age_days=120, mtype="user")
+        (self.dir / "MEMORY.md").write_text(reindex.render_index(self.dir), encoding="utf-8")
+
+        before = gates.snapshot_memory_dir(self.dir)
+        assert not gates.Gate.index_budget(before).passed  # over budget -> gate (d) FAILS
+
+        # Which entries are referenced BEFORE the pass — to prove the fix archived some.
+        files = decay_corpus.load_memory_files(self.dir)
+        index_text = (self.dir / "MEMORY.md").read_text(encoding="utf-8")
+        citers_before = decay_corpus.inbound_citers(files, index_text)
+        referenced_before = {f.name for f in files if decay_corpus.is_referenced(f, citers_before)}
+        assert len(referenced_before) >= n  # every ring entry is referenced — MOST of the corpus
+
+        result = self._decay()
+        assert result.archived_count > 0
+        archived_names = {a.name for a in result.archived}
+        assert archived_names & referenced_before  # referenced entries WERE archived (the #2753 fix)
+
+        reindex.reindex_memory(self.dir)  # final re-index drops the archived pointers
+        after = gates.snapshot_memory_dir(self.dir)
+        assert gates.Gate.index_budget(after).passed  # now under budget
+        assert after.index_byte_size <= gates.INDEX_BYTE_BUDGET
+
+        report = self._run_gates(before, after, result.archived)
+        failed = {g.name for g in report.gate_results if not g.passed}
+        assert {"index_budget", "retention", "consolidation", "no_loss_audit"}.isdisjoint(failed), [
+            g.detail for g in report.gate_results if not g.passed
+        ]
+        assert report.passed
+
+        # The high-signal entries survive; the user/BINDING signatures stay answerable.
+        assert (self.dir / "feedback_binding_rule.md").exists()
+        assert (self.dir / "user_durable_pref.md").exists()
+
+
+class ReArchivedNamesReadOnlyEvictionBannersTestCase(SimpleTestCase):
+    """Only an over-budget EVICTION confers the re-archival signal (`decay_signal`)."""
+
+    def setUp(self) -> None:
+        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def _archive(self, filename: str, banner: str) -> None:
+        archive = self.dir / "archive"
+        archive.mkdir(exist_ok=True)
+        (archive / filename).write_text(f"<!-- {banner} -->\n\nbody\n", encoding="utf-8")
+
+    def test_an_eviction_banner_counts_and_the_collision_suffix_is_normalised(self) -> None:
+        self._archive("rule.1.md", "archived by dream decay 2026-08-21: over-budget, lowest-signal")
+        assert decay_signal.re_archived_names(self.dir) == frozenset({"rule.md"})
+
+    def test_a_merge_banner_does_not_count(self) -> None:
+        # Consolidation is not eviction: a memory folded into another was not lost, so
+        # re-learning it says nothing about decay having made a mistake.
+        self._archive("folded.md", "archived by dream decay 2026-08-21: merged into other.md")
+        assert decay_signal.re_archived_names(self.dir) == frozenset()
+
+    def test_no_archive_directory_is_empty_not_an_error(self) -> None:
+        assert decay_signal.re_archived_names(self.dir) == frozenset()

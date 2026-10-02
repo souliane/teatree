@@ -1,0 +1,538 @@
+"""Forge transport resolution + CI/pipeline verdict classification (GitHub + GitLab).
+
+The lowest layer of the ``core/merge`` package: ``_code_host_for`` resolves the
+merge-transport backend via ``core.backend_registry`` (core never imports
+``teatree.backends`` — the §17.6.2 ``core ↛ backends`` edge), and the three thin
+``fetch_*`` delegators plus the rollup/pipeline classifiers live here so that
+both ``pr_slug_resolution`` (which probes live head SHAs) and ``execution``
+(which re-checks CI at merge time) depend DOWN on this module — the §1993 cut
+that keeps the intra-package DAG acyclic under ``forbid_circular_dependencies``.
+"""
+
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
+
+from teatree.core.backend_protocols import (
+    DraftState,
+    PrMergeState,
+    changed_paths_unavailable,
+    plan_restricted_no_protection,
+    rollup_query_failed,
+)
+from teatree.core.backend_registry import get_backend_provider
+from teatree.core.merge.ci_rollup_dedupe import _dedupe_newest_per_name
+from teatree.core.merge.gitlab_pipeline import _gitlab_pipeline_verdict
+from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, LiveHeadRead
+from teatree.core.models import MergeClear
+from teatree.core.review.head_workflow_runs import WorkflowRun, classify_workflow_runs, newest_run_per_workflow
+from teatree.forge_credentials import ForgeTokenState, resolve_slug_token
+from teatree.utils.pr_ref import PrRef
+from teatree.utils.throttled_log import warn_throttled
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import CodeHostBackend
+    from teatree.core.merge.ci_rollup_dedupe import _RollupEntry
+    from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
+
+
+def _code_host_for(host_kind: str, slug: str) -> "CodeHostBackend":
+    """The merge-transport backend for *host_kind*, resolved via the registry.
+
+    Core never imports ``teatree.backends`` (the §17.6.2 ``core ↛ backends``
+    edge); it reaches a built backend ONLY through
+    :func:`core.backend_registry.get_backend_provider`. GitHub authentication
+    is resolved from the overlay owning *slug* and never from ambient CLI state.
+    The GitLab HTTP transport retains its existing resolution path. When the
+    backends app is not installed the provider is the fail-safe
+    ``_UnconfiguredProvider``, whose ``build_*`` RAISE a clear ``RuntimeError``
+    (loud-failure: a merge in an unconfigured context fails visibly rather than
+    silently shelling out).
+    """
+    provider = get_backend_provider()
+    if host_kind == "gitlab":
+        return provider.build_gitlab_host(token="", base_url="")
+    resolution = resolve_slug_token(slug, forge="github", credential="github_token")
+    token = resolution.token if resolution.state is ForgeTokenState.TOKEN else ""
+    return provider.build_github_host(token=token)
+
+
+@dataclass(frozen=True, slots=True)
+class CodeHostQuery:
+    """Every §17.4.3 live-forge read for ONE PR/MR, bound to a resolved backend.
+
+    Holds the :class:`PrRef` (slug + pr_id + host_kind) and the registry-resolved
+    :class:`CodeHostBackend` so a caller that makes several reads about the same
+    PR — the keystone re-checks the head SHA, draft state, and required checks in
+    one pass — resolves the transport ONCE instead of re-calling
+    :func:`_code_host_for` per read. Build with :meth:`for_ref`; the classifier
+    functions (:func:`classify_required_rollup`, :func:`failing_required_names`)
+    stay module-level because they are pure over already-fetched rollup data.
+    """
+
+    ref: PrRef
+    backend: "CodeHostBackend"
+
+    @classmethod
+    def for_ref(cls, ref: PrRef) -> "CodeHostQuery":
+        """Bind a query for *ref*, resolving the merge-transport backend once."""
+        return cls(ref=ref, backend=_code_host_for(ref.host_kind, ref.slug))
+
+    def rebound_to(self, slug: str) -> "CodeHostQuery":
+        """A sibling query for the same PR number on a different repo *slug*.
+
+        Reuses the already-resolved backend (same ``host_kind``) — the #1335
+        cross-repo probe re-reads ``pulls/<N>`` on each candidate repo without
+        re-resolving the transport per candidate.
+        """
+        rebound = PrRef(slug=slug, pr_id=self.ref.pr_id, host_kind=self.ref.host_kind)
+        return CodeHostQuery(ref=rebound, backend=self.backend)
+
+    def live_head_read(self) -> LiveHeadRead:
+        """The step-2 head read, with UNREADABLE kept distinct from an empty answer.
+
+        An unreadable forge named no head AT ALL — a different fact from a head that
+        moved, and the one a reporting caller must tell apart before it cries "stale".
+        """
+        return LiveHeadRead.of(self.backend.fetch_live_head_sha(slug=self.ref.slug, pr_id=self.ref.pr_id))
+
+    def live_head_sha(self) -> str:
+        """The PR/MR's current head SHA from the forge (never a branch ref) — §17.4.3 step 2.
+
+        ``""`` for an UNREADABLE read as well as an empty one, so every fail-closed gate
+        keeps refusing on a falsy sha and the sentinel never arrives as a truthy oid.
+        """
+        return self.live_head_read().sha
+
+    def pr_merge_state(self) -> PrMergeState:
+        """Whether the PR/MR is already merged, and at which commit — §928 reconciliation.
+
+        A lost post-hook (process kill / DB lock / rollback between
+        :func:`execute_bound_merge` and :func:`record_merge_and_advance`) leaves
+        the PR merged on the forge while the CLEAR is still unconsumed and the FSM
+        has not advanced. The retry must detect "already merged by us" and run the
+        post hook idempotently rather than re-issuing the irreversible merge (which
+        both forges refuse — GitHub 405, GitLab 405 / 406 — a permanent brick) or
+        failing the SHA precondition forever. The backend returns an empty state on
+        any forge error so the caller falls through to the normal (fail-closed)
+        precondition path, and normalises both forges' state to the uppercase
+        ``"MERGED"`` ``PrMergeState.is_merged`` reads.
+        """
+        return self.backend.fetch_pr_merge_state(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def pr_draft_state(self) -> DraftState:
+        """Tri-state draft flag — §17.4.3 step 4.
+
+        GitLab reads ``draft``/``work_in_progress`` and GitHub ``isDraft`` inside
+        the backend. ``UNKNOWN`` when the forge did not answer; the step-4 gate
+        holds the merge on it, like every other indeterminate keystone input.
+        """
+        return self.backend.fetch_pr_draft_state(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def pr_author(self) -> str:
+        """The PR/MR author handle — the §17.4.3 author-gate input (#1773).
+
+        GitHub reads ``author.login`` and GitLab ``.author.username`` inside the
+        backend. Returns ``""`` on any forge error so the keystone's author gate
+        fails closed.
+        """
+        return self.backend.fetch_pr_author(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def pr_same_repo(self) -> bool | None:
+        """Tri-state head-branch provenance — the §17.4.3 fork gate input (#3244).
+
+        GitHub reads ``isCrossRepository`` and GitLab compares source/target project
+        ids inside the backend. ``True`` = same-repo head (trusted), ``False`` =
+        fork / cross-repo (holds for human approval), ``None`` = the forge did not
+        report it so the provenance gate fails closed to the author check.
+        """
+        return self.backend.fetch_pr_same_repo(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def pr_changed_paths(self) -> list[str]:
+        """The PR/MR's changed file paths — feeds the path-based substrate detector.
+
+        GitHub reads ``gh pr view --json files``; GitLab the MR ``diffs`` API. A
+        forge error degrades to an empty list — the path detector is an ADD-ON to
+        the recorded ``blast_class`` label (it can only widen substrate, never
+        narrow it), so a missing diff never weakens the existing label-based gate.
+        """
+        return self.backend.fetch_pr_changed_paths(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def required_context_names(self) -> set[str] | None:
+        """Live branch-protection required context names for the PR/MR base (the sweep's source).
+
+        ``None`` when the required set is indeterminate (fail CLOSED); an EMPTY set
+        when the base branch has no required-status-check gate (no gate → green).
+        The same required set :meth:`required_checks_status` scopes its keystone
+        verdict to, so ``pr_sweep`` reads the identical set instead of hardcoding
+        ``test (3.13)`` (#12).
+        """
+        return _required_context_names(self.backend, slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def is_plan_restricted(self) -> bool:
+        """True iff the base repo's plan cannot answer branch protection at all (#4844).
+
+        :meth:`required_context_names` folds this into the same fail-closed ``None``
+        a genuine transport failure returns (by design — see its docstring); the
+        sweep calls this separately to tell the two apart and pick the Actions-API
+        fallback instead of blocking forever on a plan-restricted repo.
+        """
+        required = self.backend.fetch_required_status_check_contexts(slug=self.ref.slug, pr_id=self.ref.pr_id)
+        return plan_restricted_no_protection(required)
+
+    def plan_restricted_actions_verdict(self) -> str:
+        """GitHub Actions-API CI verdict for a plan-restricted repo (#4844).
+
+        The same fallback :meth:`required_checks_status` takes internally
+        (:func:`_github_actions_runs_verdict`), exposed so ``pr_sweep`` can classify
+        a plan-restricted PR without the branch-protection required-context set
+        :func:`classify_required_rollup` needs (there isn't one to read).
+        """
+        return _github_actions_runs_verdict(self.backend, slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def required_checks_status(self) -> str:
+        """Live required-checks verdict for the PR/MR head — §17.4.3 step 3.
+
+        Evaluated against the forge's live state at merge time (the authoritative
+        set), NOT the ``gh_verify_result`` snapshot saved on the CLEAR. Returns
+        ``"green"`` only when every branch-protection-REQUIRED context concluded
+        successfully; ``"pending"`` while a required context is still running or has not
+        reported; ``"unreadable"`` when the forge could not be read at all; else ``"failed"``.
+
+        The backend returns the RAW rollup (GitHub ``statusCheckRollup`` entries,
+        GitLab pipeline entries); core does the verdict classification here so the
+        §17.4.3 ``green``/``pending``/``failed`` semantics stay in one place. A rollup
+        query failure surfaces as the :data:`ROLLUP_QUERY_FAILED` sentinel →
+        ``unreadable``, refused at every gate exactly as ``failed`` is
+        (:data:`REFUSING_CHECK_VERDICTS`) — same posture, a word an operator can act on.
+
+        **GitHub — the required set is branch protection, not the whole rollup.**
+        Only a check whose name is in the branch-protection ``required_status_checks``
+        contexts can block the merge; a non-required check NEVER blocks. If the
+        required set cannot be fetched the merge fails CLOSED (``unreadable``). An empty
+        required set means no gate → ``green``. The rollup is first deduped to the
+        newest check-run per ``(typename, name)`` so a stale/cancelled FAILURE
+        superseded by a newer SUCCESS for the same name does not false-block.
+
+        **GitLab** gates on the head pipeline's overall status (which aggregates the
+        required jobs server-side); it needs the head SHA to pick the right
+        (non-merge-train) pipeline, fetched via :meth:`live_head_sha`.
+        """
+        rollup = self.backend.fetch_required_checks_rollup(slug=self.ref.slug, pr_id=self.ref.pr_id)
+        if rollup_query_failed(rollup):
+            return CHECKS_UNREADABLE
+        if self.ref.host_kind == "gitlab":
+            return _gitlab_pipeline_verdict(self.backend, rollup, slug=self.ref.slug, pr_id=self.ref.pr_id)
+        return _github_required_checks_verdict(self.backend, rollup, slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+
+def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
+    """Populate ``clear.touched_paths`` from the forge's live changed-file list.
+
+    A non-``MergeClear`` *clear* (the gate handles that refusal) is a no-op. When the
+    changed-path list cannot be read to completion — a forge error (exception), the
+    ``CHANGED_PATHS_UNAVAILABLE`` sentinel from a truncated/paginated diff, or an EMPTY
+    list — the diff can no longer be PROVEN non-substrate, so
+    ``substrate_paths_indeterminate`` is set and ``is_substrate()`` fails CLOSED (holds
+    the merge). A complete list populates ``touched_paths`` for the path detector and
+    clears the indeterminate flag.
+
+    An empty list is a read failure, not a confirmed non-substrate diff: a real open PR
+    always changes at least one file, so ``[]`` means the fetch returned nothing usable
+    (a rate-limited 200 with an empty array, a response-shape change, a token whose
+    scope yields no files). The solo sibling
+    (:func:`~teatree.loop.scanners.pr_sweep_substrate.pr_diff_is_substrate`) already
+    holds on it; both paths read the same rule so they cannot disagree on one diff.
+    """
+    if not isinstance(clear, MergeClear):
+        return
+    try:
+        paths = query.pr_changed_paths()
+    except Exception:  # noqa: BLE001 — a diff-fetch failure must never wedge the merge gate.
+        logger.warning(
+            "ci_rollup: changed-paths fetch failed for %s#%s — holding as substrate (fail closed)",
+            query.ref.slug,
+            query.ref.pr_id,
+        )
+        clear.substrate_paths_indeterminate = True
+        return
+    if not paths or changed_paths_unavailable(paths):
+        logger.warning(
+            "ci_rollup: empty/truncated changed-paths list for %s#%s — holding as substrate (fail closed)",
+            query.ref.slug,
+            query.ref.pr_id,
+        )
+        clear.substrate_paths_indeterminate = True
+        return
+    clear.touched_paths = tuple(paths)
+    clear.substrate_paths_indeterminate = False
+
+
+def _classify_check(check: object) -> str:
+    """Map one rollup entry to ``green`` / ``pending`` / ``failed``.
+
+    CheckRun entries use ``conclusion`` + ``status``; legacy StatusContext
+    entries use ``state``. A non-dict entry is ignored by the caller.
+    """
+    if not isinstance(check, dict):
+        return ""
+    entry = cast("_RollupEntry", check)
+    conclusion = str(entry.get("conclusion") or "").upper()
+    status = str(entry.get("status") or "").upper()
+    state = str(entry.get("state") or "").upper()
+    if status and status != "COMPLETED":
+        return "pending"
+    if conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"} or state == "SUCCESS":
+        return "green"
+    if state == "PENDING":
+        return "pending"
+    return "failed"
+
+
+def _rollup_verdict(statuses: list[str]) -> str:
+    if "failed" in statuses:
+        return "failed"
+    if "pending" in statuses:
+        return "pending"
+    return "green"
+
+
+def _check_name(entry: object) -> str:
+    """The NAME used to match a rollup entry against a required-status-check context.
+
+    A CheckRun carries ``name``; a legacy StatusContext carries ``context``. The
+    branch-protection required contexts are keyed by this name.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    typed = cast("_RollupEntry", entry)
+    return str(typed.get("name") or typed.get("context") or "")
+
+
+def _required_verdicts_by_name(deduped: "list[RawAPIDict]", required_names: set[str]) -> dict[str, str]:
+    """The worst deduped verdict per required context that actually reported.
+
+    Keyed by name over ONLY *required_names*; a required context with no
+    reporting check at all is absent from the map (the caller treats missing as
+    pending). A non-required check (``eval``, advisory lanes) is dropped entirely
+    — it can never influence the verdict. When several rollup entries share a
+    required name the WORST verdict wins.
+    """
+    verdicts_by_name: dict[str, list[str]] = {}
+    for check in deduped:
+        name = _check_name(check)
+        if name not in required_names:
+            continue
+        if verdict := _classify_check(check):
+            verdicts_by_name.setdefault(name, []).append(verdict)
+    return {name: _rollup_verdict(verdicts) for name, verdicts in verdicts_by_name.items()}
+
+
+def _required_contexts_verdict(deduped: "list[RawAPIDict]", required_names: set[str]) -> str:
+    """Verdict over ONLY the branch-protection-required contexts (§17.4.3 step 3).
+
+    The authoritative required set is *required_names* (the repo's branch-
+    protection ``required_status_checks`` contexts). Each required context must
+    have a reporting check that is green; a required context that is failing →
+    ``failed``, one still pending OR with no reporting check at all (missing) →
+    ``pending`` (both refuse the merge, fail closed). When several rollup entries
+    share a required name the WORST verdict wins.
+    """
+    reported = _required_verdicts_by_name(deduped, required_names)
+    # A required context with no reporting check at all is "pending" (missing → refuse).
+    return _rollup_verdict([reported.get(name, "pending") for name in required_names])
+
+
+def classify_required_rollup(rollup: "list[RawAPIDict]", required_names: set[str]) -> str:
+    """The SINGLE §17.4.3-step-3 verdict both the keystone and the PR-sweep route through.
+
+    Green/pending/failed over ONLY the branch-protection-``required_names`` set,
+    after deduping the rollup to the newest check-run per ``(typename, name)`` — a
+    stale/cancelled FAILURE superseded by a newer SUCCESS for the same name does
+    NOT block (parity with GitHub branch protection, which keys newest-per-context;
+    the #2583/#2580 incident). An empty *required_names* means the base branch has
+    no required-status-check gate → nothing to satisfy → ``green``.
+
+    Both consumers — :meth:`CodeHostQuery.required_checks_status` (the keystone
+    merge gate) and ``pr_sweep`` ``_ci_gate`` (the sweep pre-merge filter) — classify through
+    this one function so the two can never re-diverge (the #12 sibling-classifier
+    bug: the sweep hardcoded ``test (3.13)`` and blocked on non-required checks).
+    """
+    if not required_names:
+        return "green"
+    return _required_contexts_verdict(_dedupe_newest_per_name(rollup), required_names)
+
+
+def failing_required_names(rollup: "list[RawAPIDict]", required_names: set[str]) -> set[str]:
+    """The subset of *required_names* whose newest deduped check-run is failing.
+
+    Present-and-failed only — a required context that is missing or still pending
+    is NOT here. The PR-sweep reads this to tell its two special cases apart from a
+    plain red: the uv-audit fallback (the ONLY failing required check is
+    ``uv-audit``) and the repo-state remedy (every failing required check is a
+    base-diffing repo-state check). Deduped identically to
+    :func:`classify_required_rollup` so the failing set and the verdict agree.
+    """
+    reported = _required_verdicts_by_name(_dedupe_newest_per_name(rollup), required_names)
+    return {name for name, verdict in reported.items() if verdict == "failed"}
+
+
+def _extract_required_names(required: "list[RawAPIDict]") -> set[str]:
+    """The ``{"context": <name>}`` entries' names — the shared parse both callers share."""
+    return {str(entry["context"]) for entry in required if isinstance(entry, dict) and entry.get("context")}
+
+
+def _required_context_names(backend: "CodeHostBackend", *, slug: str, pr_id: int) -> set[str] | None:
+    """The branch-protection required context names, or ``None`` when indeterminate.
+
+    ``None`` is the fail-CLOSED signal — either the required-status-check endpoint
+    could not be read, OR the repo is on a plan that cannot answer branch protection
+    at all (:func:`plan_restricted_no_protection`): the SWEEP's CI gate has no
+    Actions-API fallback (only the keystone's :func:`_github_required_checks_verdict`
+    does, reading the sentinel itself before it reaches here), so this extractor
+    keeps folding that state into the same fail-closed ``None`` it already returns
+    for a genuine transport failure — the sweep's behaviour is unchanged. An EMPTY
+    set is the determinate "no required gate configured". Both the keystone verdict
+    and the sweep gate read the required set through this one extractor so they
+    share the same fail-closed / no-gate semantics.
+    """
+    required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+    if rollup_query_failed(required) or plan_restricted_no_protection(required):
+        return None
+    return _extract_required_names(required)
+
+
+def _expected_required_contexts_floor() -> set[str] | None:
+    """The operator-configured required-context floor, or ``None`` when it could not be read.
+
+    A DETERMINATE-EMPTY set is "no floor configured"; a non-empty set is the
+    configured floor; ``None`` is the fail-CLOSED signal that the setting could
+    not be read AT ALL (Django not set up, a config-store error). The caller must
+    NOT collapse an unreadable floor to "no floor" — doing so would let a
+    removed-branch-protection repo (empty required set) classify GREEN on a
+    transient config failure. An unresolvable floor is indeterminate → fail closed.
+    """
+    try:
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keep core.merge import-light
+
+        return {name.strip() for name in get_effective_settings(None).expected_required_contexts if name.strip()}
+    except Exception:  # noqa: BLE001 — a config-read failure is INDETERMINATE (None), never silently "no floor".
+        warn_throttled(
+            logger,
+            "ci_rollup:floor-unreadable",
+            "ci_rollup: expected_required_contexts floor could not be read — treating as indeterminate (fail closed)",
+            exc_info=True,
+        )
+        return None
+
+
+def _github_required_checks_verdict(
+    backend: "CodeHostBackend",
+    rollup: "list[RawAPIDict]",
+    *,
+    slug: str,
+    pr_id: int,
+) -> str:
+    """GitHub §17.4.3 verdict: scope the rollup to the branch-protection required contexts.
+
+    Fail CLOSED as ``unreadable`` when the required set is indeterminate — the endpoint
+    did not answer, which is not the same fact as a red check. When the required set is a
+    DETERMINATE-EMPTY set (branch protection removed/never configured), fail CLOSED
+    too if the operator configured an ``expected_required_contexts`` floor OR if the
+    floor itself could not be read (``None`` — indeterminate) — a removed
+    branch-protection gate, and an unresolvable floor over one, must not classify as
+    green. Only a determinate-EMPTY floor over an empty required set is genuinely
+    "no gate" → the shared :func:`classify_required_rollup` verdict runs (an empty
+    required set → ``green``, a non-required check never blocks).
+
+    Fetches the raw required-contexts list directly (rather than through
+    :func:`_required_context_names`) so it can see the
+    :func:`~teatree.core.backend_protocols.plan_restricted_no_protection` sentinel
+    BEFORE that extractor folds it into the same ``None`` a genuine transport
+    failure produces — a repo on GitHub Free with no way to answer branch
+    protection at all falls back to :func:`_github_actions_runs_verdict` instead of
+    refusing forever (issue #4844).
+    """
+    raw_required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+    if plan_restricted_no_protection(raw_required):
+        return _github_actions_runs_verdict(backend, slug=slug, pr_id=pr_id)
+    if rollup_query_failed(raw_required):
+        # Fail CLOSED, and say WHY: the branch-protection required set could not be
+        # read, so no verdict about the checks exists. Refused on the same terms as a
+        # red (``REFUSING_CHECK_VERDICTS``) — only the word the operator sees differs.
+        return CHECKS_UNREADABLE
+    required_names = _extract_required_names(raw_required)
+    if not required_names:
+        floor = _expected_required_contexts_floor()
+        if floor is None:
+            logger.warning(
+                "ci_rollup: %s#%s reports NO required checks and the expected_required_contexts floor "
+                "could not be read — failing closed (indeterminate)",
+                slug,
+                pr_id,
+            )
+            return "failed"
+        if floor:
+            logger.warning(
+                "ci_rollup: %s#%s reports NO required checks but a floor is configured — failing closed",
+                slug,
+                pr_id,
+            )
+            return "failed"
+    return classify_required_rollup(rollup, required_names)
+
+
+def _github_actions_runs_verdict(backend: "CodeHostBackend", *, slug: str, pr_id: int) -> str:
+    """GitHub §17.4.3 verdict via the Actions API — the GitHub-Free plan-restriction fallback.
+
+    ``repos/<slug>/rules/branches/<base>`` and the legacy protection endpoint both
+    403 with GitHub's plan-restriction body on GitHub Free — there is no
+    branch-protection required set to scope a rollup to, so this reads whether
+    anything reported at the live head SHA at all, via ``actions/runs?head_sha=``,
+    the same live-CI surface #4554 built for the cold-review flow (its PURE
+    classification helpers are reused as-is; see
+    ``core.review.head_workflow_runs``'s own docstring for why the module's
+    ``live_checks_at`` entry point itself is NOT reused here — it answers a
+    different question, at the reviewed SHA, with ambient ``gh`` auth).
+
+    Never fails open: no runs at the head is UNREADABLE (eventual-consistency lag
+    is not proof nothing is required), and a green Actions read still respects the
+    ``expected_required_contexts`` floor — an unreadable floor fails closed, and a
+    floor-named workflow that never ran is UNREADABLE (its absence is not proof it
+    passed). Matched against the Actions API's own workflow ``name`` field here
+    (e.g. ``"CI"``), NOT the branch-protection check names
+    :func:`_github_required_checks_verdict` matches the same floor against — the two
+    forge surfaces name CI differently (a workflow vs. a job/check), and this
+    fallback only has the workflow-run surface to read (#4844).
+    """
+    head = LiveHeadRead.of(backend.fetch_live_head_sha(slug=slug, pr_id=pr_id))
+    if head.unreadable:
+        return CHECKS_UNREADABLE
+    raw_runs = backend.fetch_workflow_runs_at_head(slug=slug, head_sha=head.sha)
+    if rollup_query_failed(raw_runs):
+        return CHECKS_UNREADABLE
+    runs = cast("list[WorkflowRun]", raw_runs)
+    read = classify_workflow_runs(runs)
+    if read.status != MergeClear.VerifyResult.GREEN.value:
+        return read.status
+    floor = _expected_required_contexts_floor()
+    if floor is None:
+        logger.warning(
+            "ci_rollup: %s#%s is plan-restricted and the expected_required_contexts floor "
+            "could not be read — failing closed (indeterminate)",
+            slug,
+            pr_id,
+        )
+        return "failed"
+    if floor:
+        ran_names = {str(run.get("name") or "") for run in newest_run_per_workflow(runs)}
+        if not floor <= ran_names:
+            logger.warning(
+                "ci_rollup: %s#%s is plan-restricted and a floor-required workflow never ran at the head",
+                slug,
+                pr_id,
+            )
+            return CHECKS_UNREADABLE
+    return read.status

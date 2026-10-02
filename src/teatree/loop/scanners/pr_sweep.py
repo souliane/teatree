@@ -1,0 +1,603 @@
+"""Auto-merge-green-PRs scanner (#1248).
+
+For each open PR on a configured repo, the scanner checks the BLUEPRINT
+§17.4.3 pre-conditions deterministically and — when they all pass —
+invokes the sanctioned ``t3 <overlay> ticket merge <clear_id>``
+transition. The orchestrator no longer has to wake up every time a PR
+turns green; the loop closes itself.
+
+Decision ladder per open PR:
+
+1. ``mergeable == CONFLICTING`` / ``mergeStateStatus == DIRTY``
+    → flag (``pr_sweep.flag_conflict``) — flag only, never an
+    auto-rebase (#78)
+2. ``draft: true`` → skip
+3. open ``CHANGES_REQUESTED`` review → skip
+4. no actionable ``MergeClear`` row for ``(slug, pr_id, head_sha)``
+    → skip (collaborative-overlay default) OR the solo-overlay
+    carve-out (#1309 — see ``solo_overlay`` on :class:`PrSweepScanner`):
+    merge via the SHA-bound ``merge_pr_squash_bound`` (#1985) ONLY when a
+    recorded independent cold-review (``merge_safe`` ``ReviewVerdict`` at the
+    head, ``reviewer != maker``) exists, else flag (``pr_sweep.flag_no_review``,
+    #68). A CLEAR that EXISTS but cannot authorise the live head is named
+    (``clear_present_unusable``) and DM'd, never folded into that verdict (#4249)
+5. CI ``test(3.13)`` not green AND red checks include something
+    other than ``uv-audit`` → skip, EXCEPT when the branch is BEHIND main:
+    that red judged a base the branch has fallen behind, so the verdict is
+    UNKNOWN and the sweep merge-updates the branch (#4063, generalising
+    #2045's repo-state-only rule). BEHIND is computed from the two commits
+    (``Ref.compare`` behind-by, #4526) — ``mergeStateStatus`` names only the
+    highest-precedence blocker, so it never says BEHIND when this rung fires.
+6. only red check is ``uv-audit`` AND ``main`` is also red on
+    ``uv-audit`` → ``--fallback-uv-audit``
+7. all required checks green → merge through the keystone
+
+Step 6's ``--fallback-uv-audit`` switch documents the scanner's standing
+authorisation to escalate to the SHA-bound ``merge_pr_squash_bound`` when the
+keystone transition refuses on the same fallback path (a pre-existing-on-``main``
+failing audit job is a deterministic gate, not an ad-hoc judgement —
+exactly the case §17.4.3 step 7 reserves for the scanner).
+
+Step 5's merge-update is applied through the SHA-bound ``update_pr_branch`` API
+call — no local checkout needed — under the bounds in
+:mod:`teatree.loop.scanners.pr_sweep_branch_update` (one attempt per head, a
+per-tick cap, own PRs only). Any refusal degrades to a flag-level
+``needs_branch_update`` signal, so a declined remedy is surfaced, never dropped.
+
+The scanner posts a Slack DM only on actual merges (acceptance gate) and
+on a flag-level signal; ordinary skips log to the periodic-task log but
+never DM, to keep the DM channel quiet.
+"""
+
+import logging
+from dataclasses import dataclass, field
+
+from teatree.core.models.merge_clear import MergeClear
+from teatree.loop.scanners import pr_sweep_branch_update as branch_update
+from teatree.loop.scanners import pr_sweep_substrate as substrate
+from teatree.loop.scanners.base import ScannerError, ScanSignal
+from teatree.loop.scanners.pr_sweep_ci_classify import ci_gate_verdict
+from teatree.loop.scanners.pr_sweep_clear_lookup import look_up_clear_for_head
+from teatree.loop.scanners.pr_sweep_decision import (
+    has_independent_cold_review,
+    head_review_state,
+    own_or_same_repo,
+    record_mergeable_notified,
+    red_required_at_stale_base,
+    untrusted_merge_provenance,
+    with_ci_context,
+)
+from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, MergeNotifier, PrApiClient, ReviewDispatcher
+from teatree.loop.scanners.pr_sweep_review_gate import ReviewArmContext, arm_cold_review, held_head_attempt
+from teatree.loop.scanners.pr_sweep_types import (
+    CLEAR_PRESENT_UNUSABLE_REASON,
+    CONTESTED_HOLD_REASON,
+    GH_CONFLICT_MERGE_STATE,
+    GH_CONFLICT_MERGEABLE,
+    GREEN_TERMINAL_CONCLUSIONS,
+    HOLD_AT_HEAD_REASON,
+    MERGEABLE_AWAITING_REVIEW_REASON,
+    REQUIRED_CHECK_NAME,
+    UV_AUDIT_CHECK_NAME,
+    MergeAttempt,
+    PrSummary,
+    blocked_merge_attempt,
+)
+
+__all__ = [
+    "CLEAR_PRESENT_UNUSABLE_REASON",
+    "CONTESTED_HOLD_REASON",
+    "GH_CONFLICT_MERGEABLE",
+    "GH_CONFLICT_MERGE_STATE",
+    "GREEN_TERMINAL_CONCLUSIONS",
+    "HOLD_AT_HEAD_REASON",
+    "MERGEABLE_AWAITING_REVIEW_REASON",
+    "REQUIRED_CHECK_NAME",
+    "UV_AUDIT_CHECK_NAME",
+    "MergeAttempt",
+    "PrSummary",
+    "PrSweepScanner",
+]
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class PrSweepScanner:
+    """Sweep open PRs on configured repos; merge the green-and-cleared ones (#1248).
+
+    *repos* is the ordered list of GitHub ``owner/repo`` slugs the scanner
+    sweeps every tick. *api* fetches PR state through ``gh``; *keystone*
+    executes the sanctioned merge transition; *notifier* posts the
+    post-merge DM (no DM on skips — that's the noise the spec rules out).
+    *overlay* tags emitted signals so a multi-overlay loop can attribute
+    merges to the right overlay (private-overlay PRs run under a
+    different code-host token).
+
+    *solo_overlay* opts the scanner into the dogfood-overlay bypass (#1309).
+    A solo overlay is a single-author repo whose user has explicitly opted
+    in via ``mode = "auto"`` + ``require_human_approval_to_merge = false``.
+    On such an overlay the maker / reviewer is the same human identity, and
+    :meth:`MergeClear.issue` mechanically refuses a self-attested CLEAR
+    (``is_independent_reviewer_identity`` guard) — no orchestrator can ever issue a
+    CLEAR for that PR. Without this bypass the sweep silently no-ops every
+    green+mergeable+clean PR on the dogfood overlay with reason
+    ``no_clear_for_head``, which is exactly the failure mode #1309
+    reports. When ``solo_overlay=True`` AND no actionable CLEAR exists for
+    the head, the scanner runs the same precondition checks (draft,
+    changes-requested, CI verdict) and — only if every gate is green —
+    falls back to the SHA-bound merge via
+    :meth:`PrApiClient.merge_pr_squash_bound`. The CLEAR contract is left
+    untouched for every overlay that did NOT explicitly opt in; this is
+    the conservative side of the two options on the table because it
+    keeps the cold-reviewer attestation as the default and only relaxes
+    it for the overlay configuration the user has already declared
+    "trust the agent end-to-end".
+
+    Even on a solo overlay the bypass is gated on a recorded INDEPENDENT
+    cold-review: a :class:`teatree.core.models.review_verdict.ReviewVerdict`
+    that is ``merge_safe``, bound to the live head SHA, and whose reviewer
+    is not the maker/coding-agent/loop (the ``ReviewVerdict.record`` factory
+    refuses a self-attested verdict via ``is_independent_reviewer_identity``). With no
+    such record the scanner does NOT auto-merge — it emits a flag-level
+    signal (``decision=flag_no_review``) so a maker can never self-merge by
+    being the only identity on the repo.
+
+    A conflicted open PR (GitHub ``mergeable == CONFLICTING`` or
+    ``mergeStateStatus == DIRTY``) is surfaced as a flag-level signal
+    (``decision=flag_conflict``) — FLAG ONLY, never an auto-rebase. The
+    scanner reads the conflict state from the same ``gh pr list --json``
+    call that already drives the merge decision.
+    """
+
+    repos: tuple[str, ...]
+    api: PrApiClient
+    keystone: MergeKeystone
+    notifier: MergeNotifier
+    overlay: str = ""
+    solo_overlay: bool = False
+    #: #68: on ``flag_no_review`` for an own CI-green PR, enqueue ONE claimable
+    #: reviewing task so the loop dispatches the cold review whose recorded
+    #: verdict the next sweep merges on. Only meaningful on the solo-overlay
+    #: path (full autonomy + ``require_human_approval_to_merge=false``) — set
+    #: by ``scanner_factories`` exactly there; a human-approval overlay never enters
+    #: ``_evaluate_solo_overlay`` so it is never armed here in practice.
+    auto_review_dispatch: bool = False
+    review_dispatcher: "ReviewDispatcher | None" = None
+    #: #2210: the operator's own forge identities. The review-arm is scoped to
+    #: PRs authored by one of these — ``list_open_prs`` returns colleagues' PRs
+    #: too, and a colleague's PR must never be auto-scheduled for review. Empty
+    #: means no PR is confirmable as ours, so nothing is armed (fail closed).
+    self_identities: tuple[str, ...] = ()
+    #: Bot→user DM seam for a HELD substrate merge (ping-and-hold). ``None`` keeps
+    #: the legacy log-only behaviour; ``scanner_factories`` wires the production
+    #: ``notify_with_fallback`` adapter so the owner is pinged ONCE per held
+    #: substrate diff (deduped via the BotPing ledger on the per-diff key).
+    substrate_pinger: "substrate.SubstratePinger | None" = None
+    #: #3413: the owner id the headless sweep re-presents as ``--human-authorized``
+    #: for a ``blast_class=substrate`` CLEAR, sourced from
+    #: ``substrate_auto_merge_authorized_by``. Empty (the default) preserves the
+    #: hold-for-owner behaviour verbatim — a substrate CLEAR is never auto-merged;
+    #: the keystone refuses and the sweep pings-and-holds. When set, the sweep
+    #: presents it and (only if EVERY gate passes and the keystone confirms the id
+    #: still equals the configured value) the substrate PR auto-merges + notifies.
+    #: #3648: the solo-overlay bypass reads the same id through
+    #: ``solo_overlay_substrate_authorized``, so both merge paths honour the
+    #: delegation identically.
+    substrate_standing_authorizer: str = ""
+    #: #4063: the per-pass merge-update allowance, reset by :meth:`scan` so a base
+    #: that moves under a whole open-PR set mints a bounded number of CI runs.
+    branch_update_budget: branch_update.TickBudget = field(default_factory=branch_update.TickBudget)
+    name: str = "pr_sweep"
+
+    def scan(self) -> list[ScanSignal]:
+        self.branch_update_budget.reset()
+        signals: list[ScanSignal] = []
+        errors: list[ScannerError] = []
+        for slug in self.repos:
+            try:
+                prs = self._safe_list(slug)
+            except ScannerError as exc:
+                # F5.8: record-and-continue rather than re-raise mid-pass. A
+                # later repo's auth/rate-limit failure must not discard the
+                # merge signals a preceding repo already produced (those merges
+                # have side effects the tick report must surface).
+                errors.append(exc)
+                continue
+            for pr in prs:
+                try:
+                    attempt = self._evaluate(pr)
+                except ScannerError as exc:
+                    errors.append(exc)
+                    continue
+                except Exception:
+                    logger.exception("pr_sweep failed to evaluate %s#%s", slug, getattr(pr, "number", "?"))
+                    continue
+                self._log_attempt(attempt)
+                signals.append(_signal_from_attempt(attempt, overlay=self.overlay))
+        if errors and not signals:
+            # Nothing was produced this pass — surface the first recoverable error
+            # to the dispatcher (#1287) so a sustained auth/rate-limit failure is
+            # recorded and DM'd, exactly as before. When signals DID accumulate we
+            # keep them (F5.8) and log the errors instead of discarding the pass.
+            raise errors[0]
+        if errors:
+            logger.warning(
+                "pr_sweep: %d recoverable error(s) during pass, preserving %d accumulated signal(s): %s",
+                len(errors),
+                len(signals),
+                "; ".join(str(exc) for exc in errors),
+            )
+        return signals
+
+    def evaluate_one(self, *, slug: str, pr_id: int) -> MergeAttempt | None:
+        """Run the same decision ladder for a single open PR, on demand (#2026).
+
+        The event-driven complement to the periodic :meth:`scan`: when a
+        ``merge_safe`` :class:`ReviewVerdict` is recorded for a PR the sweep
+        is waiting on, the merge must not idle a full tick cadence (a parallel
+        human merge wins that race). Fetches the one PR through the same
+        ``list_open_prs`` adapter and runs the identical :meth:`_evaluate`, so
+        the on-demand path and the periodic sweep can never drift. Returns the
+        :class:`MergeAttempt` (``None`` when the PR is no longer open, so a
+        merged / closed PR is a quiet no-op rather than an error).
+        """
+        pr = next((candidate for candidate in self._safe_list(slug) if candidate.number == pr_id), None)
+        if pr is None:
+            return None
+        attempt = self._evaluate(pr)
+        self._log_attempt(attempt)
+        return attempt
+
+    @staticmethod
+    def _log_attempt(attempt: MergeAttempt) -> None:
+        logger.info(
+            "pr_sweep %s#%d decision=%s reason=%s merged=%s",
+            attempt.slug,
+            attempt.pr_id,
+            attempt.decision,
+            attempt.reason,
+            attempt.merged,
+        )
+
+    def _safe_list(self, slug: str) -> list[PrSummary]:
+        try:
+            return self.api.list_open_prs(slug=slug)
+        except ScannerError:
+            # Auth / rate-limit / missing-scope: propagate to the dispatcher
+            # so this scanner is recorded in ``report.errors`` and skipped for
+            # one tick (#1287). Silently swallowing would mask the failure.
+            raise
+        except Exception:
+            logger.exception("pr_sweep failed to list PRs for %s", slug)
+            return []
+
+    def _evaluate(self, pr: PrSummary) -> MergeAttempt:
+        if pr.is_conflicted:
+            return self._flag_conflict(pr)
+        skip_reason = _precondition_skip_reason(pr)
+        if skip_reason is not None:
+            return _skip(pr, reason=skip_reason)
+        lookup = look_up_clear_for_head(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
+        if lookup.clear is None:
+            unusable = lookup.unusable is not None
+            if unusable:
+                self._flag(slug=pr.slug, pr_id=pr.number, reason=CLEAR_PRESENT_UNUSABLE_REASON, url=pr.url)
+            if self.solo_overlay:
+                return self._evaluate_solo_overlay(pr, unusable_clear=unusable)
+            return self._evaluate_no_clear_collaborative(pr)
+        return self._evaluate_with_clear(pr, lookup.clear)
+
+    def _evaluate_with_clear(self, pr: PrSummary, clear: MergeClear) -> MergeAttempt:
+        ci_skip, fallback, failing = self._ci_gate(pr)
+        if ci_skip is not None:
+            return self._ci_block(pr, reason=ci_skip, failing=failing)
+        return self._merge(pr=pr, clear=clear, fallback=fallback)
+
+    #: CI-red skip reasons a merge-update can resolve. ``ci_pending`` (still
+    #: running) and ``required_checks_indeterminate`` (fails closed) are absent.
+    _STALE_BASE_BLOCK_REASONS = frozenset({"ci_red", "uv_audit_red_but_clean_on_main"})
+
+    def _ci_block(self, pr: PrSummary, *, reason: str, failing: set[str]) -> MergeAttempt:
+        """Merge-update a CI-red block whose verdict judged a STALE base (#4063).
+
+        A required check that went red on a branch BEHIND main judged a base the
+        branch has since fallen behind, so its verdict is UNKNOWN: the fix may
+        already be on main, and ``gh run rerun --failed`` re-tests the run's
+        pinned OLD base, which clears neither a repo-state check nor a test. A
+        red on an already-up-to-date branch is the branch's own verdict and stays
+        a plain skip — that is what keeps a broken PR from being update-looped.
+        """
+        if reason not in self._STALE_BASE_BLOCK_REASONS or not red_required_at_stale_base(
+            failing, behind_main=pr.behind_main, conflicted=pr.is_conflicted
+        ):
+            return with_ci_context(_skip(pr, reason=reason), pr=pr, failing=failing)
+        remedy = branch_update.remedy_stale_base(pr, ctx=self._remedy_ctx(), budget=self.branch_update_budget)
+        return with_ci_context(remedy, pr=pr, failing=failing)
+
+    def _remedy_ctx(self) -> branch_update.RemedyContext:
+        return branch_update.RemedyContext(
+            api=self.api, flag=self._flag, self_identities=self.self_identities, overlay=self.overlay
+        )
+
+    def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool, set[str]]:
+        """Delegate to :func:`ci_gate_verdict`. Shared by the CLEAR path and the solo-overlay bypass."""
+        return ci_gate_verdict(pr, main_uv_audit_red=lambda: self._main_uv_audit_red(slug=pr.slug))
+
+    def _evaluate_solo_overlay(self, pr: PrSummary, *, unusable_clear: bool = False) -> MergeAttempt:
+        """Merge a green+clean+cold-reviewed PR on a solo overlay without a CLEAR (#1309).
+
+        Runs the same CI verdict gate as the CLEAR path so a red or pending
+        check still blocks. A green-only-but-uv-audit-red PR escalates the
+        same way (``main`` must also be red on uv-audit). The solo bypass
+        skips only the per-diff CLEAR — it still requires a recorded
+        INDEPENDENT cold-review (a ``merge_safe`` :class:`ReviewVerdict` at
+        the live head whose reviewer is not the maker). Without that record
+        the scanner refuses to merge and emits a flag-level signal so the
+        only-identity-on-the-repo maker can never self-merge. Once both the
+        CI gate and the cold-review gate pass, calls
+        :meth:`PrApiClient.merge_pr_squash_bound` — the bound merge runs the
+        §17.4.3 SHA-bind AND (since #18) the not-draft + FAILED-live-CI
+        re-checks inside ``execute_bound_merge`` itself, so a force-push OR a
+        green→red / open→draft flip in the TOCTOU window between this snapshot
+        and the PUT can no longer slip an unreviewed / broken head through this
+        bypass (the keystone CLEAR path can't be used here because it needs a
+        CLEAR row, but the SHA-bind + re-check floor applies without one —
+        #1985, #18).
+
+        A substrate diff HOLDS unless a standing owner opt-in authorizes it
+        (#3648) — read through the keystone's own
+        :func:`~teatree.core.merge.authorization.substrate_standing_authorization`,
+        so this path and the CLEAR path reach one policy decision for the same
+        PR. The cold-review gate above is unaffected: substrate is a
+        blast-radius sign-off, never a quality gate. *unusable_clear* only re-labels
+        the no-review refusal (#4249) — a recorded cold review still merges.
+        """
+        ci_skip, fallback, failing = self._ci_gate(pr)
+        if ci_skip is not None:
+            return self._ci_block(pr, reason=ci_skip, failing=failing)
+        review = head_review_state(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
+        if review.held_verdicts:
+            self._flag(slug=pr.slug, pr_id=pr.number, reason=review.hold_reason, url=pr.url, detail=review.hold_detail)
+            return held_head_attempt(pr, review=review)
+        if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
+            return self._flag_no_review(pr, unusable_clear=unusable_clear)
+        if substrate.pr_diff_is_substrate(pr) and not substrate.solo_overlay_substrate_authorized(
+            pr=pr,
+            overlay=self.overlay,
+            presented_authorizer=self.substrate_standing_authorizer,
+        ):
+            return substrate.hold_solo_overlay_substrate(self.substrate_pinger, pr=pr)
+        authorizing = review.authorizing_verdict
+        result = self.api.merge_pr_squash_bound(
+            slug=pr.slug,
+            pr_id=pr.number,
+            expected_head_oid=pr.head_sha,
+        )
+        if not result.merged:
+            return blocked_merge_attempt(pr, reason_prefix="solo_overlay_merge_refused", refusal=result.refusal)
+        self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=result.merged_sha, fallback=fallback)
+        reason = "solo_overlay_no_clear_uv_audit" if fallback else "solo_overlay_no_clear"
+        logger.info("pr_sweep merged %s#%d at %s on verdict %s", pr.slug, pr.number, result.merged_sha, authorizing)
+        return MergeAttempt(
+            slug=pr.slug,
+            pr_id=pr.number,
+            decision="merged",
+            merged=True,
+            merged_sha=result.merged_sha,
+            reason=reason,
+            authorizing_verdict=authorizing,
+        )
+
+    def _evaluate_no_clear_collaborative(self, pr: PrSummary) -> MergeAttempt:
+        """Flag a colleague-facing own PR that is green+clean+up-to-date but uncleared.
+
+        The COLLABORATIVE-overlay complement of :meth:`_evaluate_solo_overlay`:
+        on a non-solo overlay the sweep cannot auto-merge an uncleared PR — a
+        colleague review is the gate (and #2568's chokepoint already disables an
+        auto review-REQUEST). But a silent ``no_clear_for_head`` skip leaves the
+        user unaware their own PR turned green. When the PR is authored by the
+        operator (``self_identities``), CI-green, and NOT behind main (draft /
+        conflict / changes-requested are already filtered upstream), DM the user
+        the MR link + "mergeable, ready to request review" — exactly ONCE per
+        head via the :class:`MergeableNotified` ledger (a re-tick on the same
+        head / a ledger error degrades to the quiet ``no_clear_for_head`` skip),
+        re-firing only on a new commit. Notify-only: the sweep never requests
+        review and never merges. Every other case (colleague author, behind
+        main, red/pending CI) falls through to the existing skip.
+
+        Unreachable under ``solo_overlay=True``; a quiet :class:`MergeableNotified` row is not solo coverage (#4250).
+        """
+        ci_skip, _fallback, failing = self._ci_gate(pr)
+        if ci_skip is not None:
+            return self._ci_block(pr, reason=ci_skip, failing=failing)
+        if not own_or_same_repo(pr, self_identities=self.self_identities) or pr.behind_main:
+            return _skip(pr, reason="no_clear_for_head")
+        if not record_mergeable_notified(pr=pr, overlay=self.overlay):
+            return _skip(pr, reason="no_clear_for_head")
+        self._flag(slug=pr.slug, pr_id=pr.number, reason=MERGEABLE_AWAITING_REVIEW_REASON, url=pr.url)
+        return MergeAttempt(
+            slug=pr.slug,
+            pr_id=pr.number,
+            decision="flag_mergeable",
+            reason=MERGEABLE_AWAITING_REVIEW_REASON,
+            url=pr.url,
+        )
+
+    def _flag_conflict(self, pr: PrSummary) -> MergeAttempt:
+        """Surface a conflicted open PR — flag only, never an auto-rebase (#78)."""
+        self._flag(slug=pr.slug, pr_id=pr.number, reason="conflict", url=pr.url)
+        return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="flag_conflict", reason="conflict", url=pr.url)
+
+    def _flag_no_review(self, pr: PrSummary, *, unusable_clear: bool = False) -> MergeAttempt:
+        """Refuse a solo-overlay auto-merge with no recorded cold-review, then arm the review (#68).
+
+        The maker≠checker boundary still forbids a self-merge — that part is
+        flag-only. What changes (#68) is the loop no longer just logs: when
+        ``auto_review_dispatch`` is on it enqueues ONE claimable reviewing task
+        (deduped per head) whose recorded ``merge_safe`` verdict the NEXT sweep
+        merges on. Draft / red-CI / conflict never reach here (the sweep skips
+        them upstream), so an armed task only ever covers a green+clean own PR.
+
+        The reason names the CLEAR when an unusable one covers this PR (#4249):
+        ``solo_overlay_no_review`` is a definite verdict about review, and emitting it
+        for a PR whose CLEAR merely missed the live head pointed readers at the wrong
+        cause. The review is armed either way — a fresh verdict unblocks both.
+
+        A head carrying a standing HOLD never reaches here — :func:`head_review_state`
+        refuses first (#4380). A reviewer who looked and said no is not "no independent
+        review", and arming another over a held head is how the newer verdict came to be.
+        """
+        self._flag(slug=pr.slug, pr_id=pr.number, reason="no_independent_review", url=pr.url)
+        return MergeAttempt(
+            slug=pr.slug,
+            pr_id=pr.number,
+            decision="flag_no_review",
+            reason=CLEAR_PRESENT_UNUSABLE_REASON if unusable_clear else "solo_overlay_no_review",
+            url=pr.url,
+            review_dispatched=self._enqueue_review(pr),
+        )
+
+    def _enqueue_review(self, pr: PrSummary) -> bool:
+        return arm_cold_review(
+            pr,
+            ctx=ReviewArmContext(
+                dispatcher=self.review_dispatcher,
+                enabled=self.auto_review_dispatch,
+                self_identities=self.self_identities,
+                overlay=self.overlay,
+            ),
+        )
+
+    def _flag(self, *, slug: str, pr_id: int, reason: str, url: str, detail: str = "") -> None:
+        try:
+            self.notifier.flag(slug=slug, pr_id=pr_id, reason=reason, url=url, detail=detail)
+        except Exception:
+            logger.exception("pr_sweep failed to post flag notification for %s#%d", slug, pr_id)
+
+    def _main_uv_audit_red(self, *, slug: str) -> bool:
+        try:
+            return self.api.main_check_failed(slug=slug, check_name=UV_AUDIT_CHECK_NAME)
+        except Exception:
+            logger.exception("pr_sweep failed to fetch main uv-audit status for %s", slug)
+            return False
+
+    def _merge(self, *, pr: PrSummary, clear: MergeClear, fallback: bool) -> MergeAttempt:
+        # #3413: for a substrate-labeled CLEAR, re-present the owner's standing
+        # delegation as ``--human-authorized`` (sourced from config, empty by
+        # default). Presented ONLY for substrate so the interactive non-substrate
+        # refusal guard is never tripped; the keystone still runs every gate and
+        # only authorizes when the presented id equals the configured value. A
+        # non-substrate CLEAR (or an empty config) presents nothing — byte-identical
+        # to the prior loop-driven merge.
+        standing_authorizer = (
+            self.substrate_standing_authorizer
+            if self.substrate_standing_authorizer and clear.blast_class == MergeClear.BlastClass.SUBSTRATE
+            else ""
+        )
+        merged, merged_sha, error, escalation_kind, standing_delegation_by = self.keystone.merge_clear(
+            clear_id=int(clear.pk), human_authorized=standing_authorizer
+        )
+        if merged:
+            self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
+            if standing_delegation_by:
+                # "Informed, not asked": the config-sourced standing delegation
+                # auto-merged a substrate PR — DM the owner (PR #, title, blast_class,
+                # CLEAR id, merge SHA, authorizer) once via the BotPing ledger.
+                substrate.ping_substrate_auto_merged(
+                    self.substrate_pinger,
+                    pr=pr,
+                    clear=clear,
+                    authorizer=standing_delegation_by,
+                    merged_sha=merged_sha,
+                )
+            return MergeAttempt(
+                slug=pr.slug,
+                pr_id=pr.number,
+                decision="merged",
+                merged=True,
+                merged_sha=merged_sha,
+                reason="fallback_uv_audit" if fallback else "all_green",
+            )
+        # Finding 1 (fail-open): the uv-audit-fallback raw-merge must NOT fire for a
+        # substrate CLEAR. A substrate change that lands on the fallback path (the
+        # only red check is uv-audit, red on main too) would otherwise raw-merge
+        # here BEFORE the substrate-ping check below, silently bypassing the keystone
+        # hold. Gate the escalation on the CLEAR not being substrate; a substrate
+        # CLEAR falls through to ping-and-hold instead.
+        fallback_refusal = ""
+        if fallback and not clear.is_substrate():
+            result = self.api.merge_pr_squash_bound(
+                slug=pr.slug,
+                pr_id=pr.number,
+                expected_head_oid=pr.head_sha,
+            )
+            if result.merged:
+                self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=result.merged_sha, fallback=True)
+                return MergeAttempt(
+                    slug=pr.slug,
+                    pr_id=pr.number,
+                    decision="merged",
+                    merged=True,
+                    merged_sha=result.merged_sha,
+                    reason="fallback_uv_audit_gh",
+                )
+            fallback_refusal = result.refusal
+        if escalation_kind == "substrate" or clear.is_substrate():
+            substrate.ping_substrate_hold(self.substrate_pinger, pr=pr, reviewed_sha=clear.reviewed_sha, error=error)
+        # A fallback attempt's own refusal is the CURRENT cause and wins over ``error``,
+        # which is the earlier keystone refusal captured above (#4856) — reporting the
+        # stale keystone reason here would name the wrong precondition.
+        return blocked_merge_attempt(
+            pr,
+            reason_prefix="fallback_uv_audit_gh_refused",
+            refusal=fallback_refusal,
+            default_reason=error or "keystone_refused",
+        )
+
+    def _announce_merge(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
+        try:
+            self.notifier.announce(slug=slug, pr_id=pr_id, merged_sha=merged_sha, fallback=fallback)
+        except Exception:
+            logger.exception("pr_sweep failed to post merge notification for %s#%d", slug, pr_id)
+
+
+def _skip(pr: PrSummary, *, reason: str) -> MergeAttempt:
+    return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="skip", reason=reason, url=pr.url)
+
+
+def _precondition_skip_reason(pr: PrSummary) -> str | None:
+    if pr.is_draft:
+        return "draft"
+    if pr.has_changes_requested:
+        return "changes_requested"
+    # #3244: a FORK / cross-repo PR always holds for a human, even from a trusted
+    # author; unreported provenance fails closed to the identity+visibility author
+    # check. This rung fires AHEAD of the CLEAR lookup and the solo-overlay
+    # ``merge_pr_squash_bound`` fallback (which would otherwise auto-merge OUTSIDE
+    # the keystone provenance gate). The keystone refuses this same merge too.
+    if untrusted_merge_provenance(pr):
+        return "fork_requires_human_approval" if pr.same_repo is False else "untrusted_author_public_repo"
+    return None
+
+
+def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
+    return ScanSignal(
+        kind="pr_sweep.merged" if attempt.merged else f"pr_sweep.{attempt.decision}",
+        summary=f"{attempt.slug}#{attempt.pr_id} {attempt.decision} ({attempt.reason})",
+        payload={
+            "slug": attempt.slug,
+            "pr_id": attempt.pr_id,
+            "decision": attempt.decision,
+            "reason": attempt.reason,
+            "merged": attempt.merged,
+            "merged_sha": attempt.merged_sha,
+            "overlay": overlay,
+            "url": attempt.url,
+            "review_dispatched": attempt.review_dispatched,
+            "failing_required": list(attempt.failing_required),
+            "base_current": attempt.base_current,
+            "held_verdicts": [list(ref) for ref in attempt.held_verdicts],
+            "authorizing_verdict": None if attempt.authorizing_verdict is None else list(attempt.authorizing_verdict),
+        },
+    )

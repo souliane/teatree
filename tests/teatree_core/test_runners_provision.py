@@ -1,0 +1,1505 @@
+"""Tests for WorktreeProvisioner — composed runner for the start transition.
+
+Stage 3 of #140: ``Ticket.start()`` becomes a thin transition that enqueues
+the heavy I/O (git worktree creation, Worktree DB rows) onto a ``@task``
+worker. The worker runs ``WorktreeProvisioner`` and on success schedules
+the coding task.
+"""
+
+import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+
+from teatree.core.models import Session, Ticket, Worktree
+from teatree.core.runners import WorktreeProvisioner
+from teatree.core.runners.provision import _recorded_checkout_is_live
+from teatree.utils import git
+from tests._git_repo import make_git_repo
+from tests.teatree_core.conftest import CommandOverlay
+
+_MOCK_OVERLAY = {"test": CommandOverlay()}
+
+
+class TestWorktreeProvisioner(TestCase):
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _scoped_ticket(self, repos: list[str], *, branch: str = "ac-repo-77-x") -> Ticket:
+        return Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/77",
+            repos=repos,
+            extra={"branch": branch, "description": "x"},
+        )
+
+    @contextmanager
+    def _patch_workspace_dir(self) -> Iterator[None]:
+        """Point both #regroup roots at the one test workspace.
+
+        Clone discovery and worktree creation use separate resolvers after the
+        split; here both resolve to the same dir, as they did before the split.
+        """
+        with (
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+        ):
+            yield
+
+    def test_returns_failure_when_no_repos(self) -> None:
+        ticket = self._scoped_ticket(repos=[])
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is False
+        assert "no repos" in result.detail.lower()
+
+    def test_creates_worktree_rows_and_git_worktrees(self) -> None:
+        repo_dir = self.workspace / "repo-a"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=["repo-a"], branch="ac-repo-a-77-x")
+
+        created_paths: list[str] = []
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del repo, branch, create_branch
+            Path(path).mkdir(parents=True, exist_ok=True)
+            created_paths.append(path)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True
+        wt_path = self.workspace / "ac-repo-a-77-x" / "repo-a"
+        assert str(wt_path) in created_paths
+
+        worktrees = list(Worktree.objects.filter(ticket=ticket))
+        assert len(worktrees) == 1
+        assert worktrees[0].repo_path == "repo-a"
+        assert worktrees[0].branch == "ac-repo-a-77-x"
+        assert (worktrees[0].extra or {}).get("worktree_path") == str(wt_path)
+
+    def test_recorded_path_with_no_checkout_reprovisions_onto_the_same_row(self) -> None:
+        repo_dir = self.workspace / "repo-a"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=["repo-a"], branch="ac-repo-a-77-x")
+        ticket_dir = self.workspace / "ac-repo-a-77-x"
+        ticket_dir.mkdir()
+        existing_path = ticket_dir / "repo-a"
+        existing_path.mkdir()
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="repo-a",
+            branch="ac-repo-a-77-x",
+            extra={"worktree_path": str(existing_path)},
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", return_value=True) as worktree_add,
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True
+        worktree_add.assert_called_once()
+        assert Worktree.objects.filter(ticket=ticket).count() == 1, "the re-provision must reuse the existing row"
+
+    def test_returns_failure_when_worktree_add_fails(self) -> None:
+        repo_dir = self.workspace / "repo-a"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=["repo-a"], branch="ac-repo-a-77-x")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", return_value=False),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is False
+        assert "repo-a" in result.detail
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 0
+
+    def test_reused_row_survives_when_worktree_add_fails(self) -> None:
+        # A prior partial provision left a Worktree row with NO worktree_path.
+        # A subsequent failed `git worktree add` must NOT delete that reused row
+        # — only a JUST-created row is rolled back (the docstring contract).
+        repo_dir = self.workspace / "repo-a"
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=["repo-a"], branch="ac-repo-a-77-x")
+        reused = Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="repo-a",
+            branch="ac-repo-a-77-x",
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", return_value=False),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is False
+        assert "repo-a" in result.detail
+        assert Worktree.objects.filter(pk=reused.pk).exists()
+
+    def test_returns_failure_when_no_clone_found_anywhere(self) -> None:
+        not_a_repo = self.workspace / "no-git"
+        not_a_repo.mkdir()
+        ticket = self._scoped_ticket(repos=["no-git"], branch="ac-no-git-77-x")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add") as worktree_add,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is False
+        assert "no-git" in result.detail
+        worktree_add.assert_not_called()
+        assert Worktree.objects.filter(ticket=ticket, repo_path="no-git").count() == 0
+
+    def test_finds_clone_under_namespaced_subdir(self) -> None:
+        namespaced = self.workspace / "souliane" / "teatree"
+        namespaced.mkdir(parents=True)
+        (namespaced / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=["teatree"], branch="ac-teatree-491-x")
+
+        captured: dict[str, str] = {}
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del branch, create_branch
+            captured["source"] = repo
+            captured["dest"] = path
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True
+        assert captured["source"] == str(namespaced)
+        assert captured["dest"] == str(self.workspace / "ac-teatree-491-x" / "teatree")
+        wt = Worktree.objects.get(ticket=ticket, repo_path="teatree")
+        assert (wt.extra or {}).get("worktree_path") == captured["dest"]
+        assert (wt.extra or {}).get("clone_path") == str(namespaced)
+
+    def test_warns_when_multiple_clones_match_basename(self) -> None:
+        first = self.workspace / "alpha" / "teatree"
+        second = self.workspace / "zeta" / "teatree"
+        for clone in (first, second):
+            clone.mkdir(parents=True)
+            (clone / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=["teatree"], branch="ac-teatree-491-multi")
+
+        captured: dict[str, str] = {}
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del branch, create_branch
+            captured["source"] = repo
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING") as cm,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True
+        assert captured["source"] == str(first)
+        assert any("Multiple clones match" in msg for msg in cm.output)
+
+    def test_returns_failure_when_branch_missing_from_extra(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/79",
+            repos=["repo-a"],
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is False
+        assert "branch" in result.detail.lower()
+
+
+class TestWorktreeProvisionerPerRepoBranches(TestCase):
+    """#33: a ticket whose repos live on DIFFERENT branches.
+
+    A ``ticket.extra['branches']`` map (repo → branch) lets each repo
+    provision on its own branch while all repos still land as SIBLINGS in
+    the ONE ticket dir (``extra['branch']``). Repos not listed in the map
+    fall back to ``extra['branch']``. Single-branch tickets (no map) are
+    unchanged. This unblocks composing split per-repo branches into one
+    e2e/workspace-ticket stack.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    @contextmanager
+    def _patch_workspace_dir(self) -> Iterator[None]:
+        """Point both #regroup roots at the one test workspace.
+
+        Clone discovery and worktree creation use separate resolvers after the
+        split; here both resolve to the same dir, as they did before the split.
+        """
+        with (
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+        ):
+            yield
+
+    def _make_clones(self, *repos: str) -> None:
+        for repo in repos:
+            repo_dir = self.workspace / repo
+            repo_dir.mkdir()
+            (repo_dir / ".git").mkdir()
+
+    def _run_capturing_branches(self, ticket: Ticket) -> tuple[Any, dict[str, str], list[str]]:
+        """Run the provisioner, capturing the branch passed to each ``git worktree add``."""
+        branch_by_dest: dict[str, str] = {}
+        created_paths: list[str] = []
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del repo, create_branch
+            branch_by_dest[path] = branch
+            created_paths.append(path)
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+        return result, branch_by_dest, created_paths
+
+    def test_multi_branch_repos_provision_as_siblings_on_their_branches(self) -> None:
+        # The #8099 shape: two repos on two different fix branches, composed
+        # into ONE ticket dir as siblings.
+        self._make_clones("repo-a", "repo-b")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/8099",
+            repos=["repo-a", "repo-b"],
+            extra={
+                "branch": "8099-child-allowance",
+                "branches": {
+                    "repo-a": "fix/8099-child-allowance-resource",
+                    "repo-b": "fix/8099-child-allowance-document-translations",
+                },
+                "description": "x",
+            },
+        )
+
+        result, branch_by_dest, _ = self._run_capturing_branches(ticket)
+
+        assert result.ok is True, result.detail
+
+        ticket_dir = self.workspace / "8099-child-allowance"
+        path_a = str(ticket_dir / "repo-a")
+        path_b = str(ticket_dir / "repo-b")
+
+        # Both repos land as SIBLINGS in the ONE ticket dir.
+        assert Path(path_a).parent == ticket_dir
+        assert Path(path_b).parent == ticket_dir
+
+        # Each repo is provisioned on ITS OWN branch from the map.
+        assert branch_by_dest[path_a] == "fix/8099-child-allowance-resource"
+        assert branch_by_dest[path_b] == "fix/8099-child-allowance-document-translations"
+
+        # The Worktree rows record the per-repo branch, not the ticket-dir name.
+        wt_a = Worktree.objects.get(ticket=ticket, repo_path="repo-a")
+        wt_b = Worktree.objects.get(ticket=ticket, repo_path="repo-b")
+        assert wt_a.branch == "fix/8099-child-allowance-resource"
+        assert wt_b.branch == "fix/8099-child-allowance-document-translations"
+        assert (wt_a.extra or {}).get("worktree_path") == path_a
+        assert (wt_b.extra or {}).get("worktree_path") == path_b
+
+    def test_repo_absent_from_map_falls_back_to_ticket_branch(self) -> None:
+        # The #1038 shape: one repo on a feature branch, a sibling not listed
+        # in the map falls back to the shared ticket branch.
+        self._make_clones("repo-a", "repo-b")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/1038",
+            repos=["repo-a", "repo-b"],
+            extra={
+                "branch": "1038-multi-repo",
+                "branches": {"repo-a": "fix/1038-special"},
+                "description": "x",
+            },
+        )
+
+        result, branch_by_dest, _ = self._run_capturing_branches(ticket)
+
+        assert result.ok is True, result.detail
+        ticket_dir = self.workspace / "1038-multi-repo"
+        path_a = str(ticket_dir / "repo-a")
+        path_b = str(ticket_dir / "repo-b")
+
+        assert branch_by_dest[path_a] == "fix/1038-special"
+        assert branch_by_dest[path_b] == "1038-multi-repo"
+
+        wt_b = Worktree.objects.get(ticket=ticket, repo_path="repo-b")
+        assert wt_b.branch == "1038-multi-repo"
+
+    def test_single_branch_ticket_unchanged(self) -> None:
+        # No ``branches`` map → every repo uses ``extra['branch']`` exactly
+        # as before (the unchanged single-branch path).
+        self._make_clones("repo-a", "repo-b")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/77",
+            repos=["repo-a", "repo-b"],
+            extra={"branch": "77-feature", "description": "x"},
+        )
+
+        result, branch_by_dest, _ = self._run_capturing_branches(ticket)
+
+        assert result.ok is True, result.detail
+        ticket_dir = self.workspace / "77-feature"
+        assert branch_by_dest[str(ticket_dir / "repo-a")] == "77-feature"
+        assert branch_by_dest[str(ticket_dir / "repo-b")] == "77-feature"
+
+        for repo in ("repo-a", "repo-b"):
+            wt = Worktree.objects.get(ticket=ticket, repo_path=repo)
+            assert wt.branch == "77-feature"
+
+
+class TestWorktreeProvisionerCoLocatesAddedRepo(TestCase):
+    """A repo ADDED to an in-flight ticket co-locates with the existing worktrees.
+
+    ``workspace ticket --repos`` over a ticket that already has materialised
+    worktrees merges the new repo into ``ticket.repos`` for the next provision.
+    The added repo must land as a SIBLING of the existing worktrees, even when
+    ``extra['branch']`` has drifted from the original ticket-dir name — the
+    ``auto:<branch>`` ticket case, where a later ``scope()`` reset
+    ``extra['branch']`` to a ``<pk>-ticket`` pk-default. The dir is taken from
+    the existing worktrees' shared parent, not blindly from ``extra['branch']``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    @contextmanager
+    def _patch_workspace_dir(self) -> Iterator[None]:
+        """Point both #regroup roots at the one test workspace.
+
+        Clone discovery and worktree creation use separate resolvers after the
+        split; here both resolve to the same dir, as they did before the split.
+        """
+        with (
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+        ):
+            yield
+
+    def _make_clone(self, repo: str) -> None:
+        repo_dir = self.workspace / repo
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+
+    def _run_capturing_dests(self, ticket: Ticket) -> tuple[Any, list[str]]:
+        created_paths: list[str] = []
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del repo, branch, create_branch
+            Path(path).mkdir(parents=True, exist_ok=True)
+            created_paths.append(path)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            self._patch_workspace_dir(),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+        return result, created_paths
+
+    def test_added_repo_co_locates_with_existing_worktree_despite_drifted_branch(self) -> None:
+        # The exact #8648 footgun: the backend worktree lives in the
+        # original branch-named dir, but a later scope() drifted
+        # ``extra['branch']`` to a pk-default. Adding the FE must NOT split
+        # it into ``<workspace>/<pk>-ticket/``.
+        self._make_clone("backend-repo")
+        self._make_clone("frontend-repo")
+        original_dir = self.workspace / "8648-store-signed-docs"
+        backend_wt = original_dir / "backend-repo"
+        backend_wt.mkdir(parents=True)
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="auto:8648-store-signed-docs",
+            repos=["backend-repo", "frontend-repo"],
+            extra={"branch": "23-ticket", "description": "x"},  # drifted pk-default
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="backend-repo",
+            branch="8648-store-signed-docs",
+            extra={"worktree_path": str(backend_wt)},
+        )
+
+        result, created_paths = self._run_capturing_dests(ticket)
+
+        assert result.ok is True, result.detail
+        # The FE co-located as a SIBLING of the existing backend worktree …
+        expected_fe = original_dir / "frontend-repo"
+        assert str(expected_fe) in created_paths
+        # … and was NOT split into the drifted pk-default dir.
+        split_fe = self.workspace / "23-ticket" / "frontend-repo"
+        assert str(split_fe) not in created_paths
+        assert not (self.workspace / "23-ticket").exists()
+
+        fe_wt = Worktree.objects.get(ticket=ticket, repo_path="frontend-repo")
+        assert (fe_wt.extra or {}).get("worktree_path") == str(expected_fe)
+
+    def test_first_provision_with_no_existing_worktree_uses_branch_dir(self) -> None:
+        # No materialised worktree yet → the normal ``workspace / branch``
+        # path is unchanged (the helper returns None, default in force).
+        self._make_clone("repo-a")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/900",
+            repos=["repo-a"],
+            extra={"branch": "900-feature", "description": "x"},
+        )
+
+        result, created_paths = self._run_capturing_dests(ticket)
+
+        assert result.ok is True, result.detail
+        assert str(self.workspace / "900-feature" / "repo-a") in created_paths
+
+
+class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
+    """#762 source-fix: public souliane/* worktrees get a local noreply identity.
+
+    A worktree created off a PUBLIC souliane/* clone must get a
+    worktree-local noreply git identity (so no path can author with the
+    inherited identity). Non-github / private clones must NOT be stamped
+    — their legitimate real-identity attribution is untouched.
+
+    #2655: the gate sees the FULL remote URL (host intact), not the
+    host-stripped slug, so a GitLab clone whose bare ``owner/repo`` might
+    collide with a public github.com repo is never queried — nor stamped
+    — as github. The provisioner now passes ``git.remote_url``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _scoped_ticket(self, repos: list[str], *, branch: str) -> Ticket:
+        return Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/77",
+            repos=repos,
+            extra={"branch": branch, "description": "x"},
+        )
+
+    def _run(
+        self, repo: str, branch: str, remote_url: str, *, visibility: str = "PUBLIC"
+    ) -> list[tuple[str, str, str]]:
+        repo_dir = self.workspace / repo
+        repo_dir.mkdir()
+        (repo_dir / ".git").mkdir()
+        ticket = self._scoped_ticket(repos=[repo], branch=branch)
+        stamped: list[tuple[str, str, str]] = []
+
+        def fake_worktree_add(r: str, path: str, b: str, *, create_branch: bool = True) -> bool:
+            del r, b, create_branch
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        def fake_set_local_identity(repo_path: str) -> None:
+            from teatree.core.public_identity import canonical_noreply_identity  # noqa: PLC0415
+
+            name, email = canonical_noreply_identity()
+            stamped.append((repo_path, name, email))
+
+        # #785: the proactive identity gate is now visibility-based
+        # (`gh repo view --json visibility`), not owner-hardcoded — mock
+        # the only unstoppable external (the gh subprocess).
+        def fake_gh_visibility(cmd: list[str], **_kw: object) -> object:
+            del cmd
+            return type("R", (), {"stdout": visibility + "\n", "returncode": 0})()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            # #2655: the call site now reads the FULL remote URL (host
+            # intact); the gate refuses a non-github host before any gh call.
+            patch("teatree.core.runners.provision.git.remote_url", return_value=remote_url),
+            patch("teatree.core.public_identity.forge_url_cli_env", return_value={"GH_TOKEN": "routed"}),
+            patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=fake_gh_visibility),
+            patch(
+                "teatree.core.runners.provision.set_local_noreply_identity",
+                side_effect=fake_set_local_identity,
+            ),
+        ):
+            WorktreeProvisioner(ticket).run()
+        return stamped
+
+    def test_public_souliane_clone_worktree_is_stamped_noreply(self) -> None:
+        from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
+
+        stamped = self._run("teatree", "ac-teatree-77-x", "git@github.com:souliane/teatree.git", visibility="PUBLIC")
+
+        assert len(stamped) == 1, "public souliane worktree was not identity-stamped (#762 source-fix)"
+        wt_path, name, email = stamped[0]
+        assert "ac-teatree-77-x" in wt_path
+        assert name
+        assert is_noreply_email(email), email
+
+    def test_public_non_souliane_clone_worktree_is_stamped_noreply(self) -> None:
+        # #785: the exact bug — a PUBLIC repo owned by a non-souliane
+        # account must now be stamped (the owner-hardcoded gate missed
+        # it, then the reactive hook hard-failed at push).
+        from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
+
+        stamped = self._run(
+            "sample-repo",
+            "ac-sample-repo-77-x",
+            "git@github.com:octo-contrib/sample-repo.git",
+            visibility="PUBLIC",
+        )
+
+        assert len(stamped) == 1, "public non-souliane worktree was not identity-stamped (#785)"
+        _, _, email = stamped[0]
+        assert is_noreply_email(email), email
+
+    def test_github_ssh_alias_host_worktree_is_stamped_noreply(self) -> None:
+        # #2655: the souliane/teatree clone on this machine uses an
+        # ssh-alias host (``github.com-work``) so the github identity is
+        # still recognised and the public souliane noreply is stamped.
+        from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
+
+        stamped = self._run(
+            "teatree",
+            "ac-teatree-alias-x",
+            "git@github.com-work:souliane/teatree.git",
+            visibility="PUBLIC",
+        )
+
+        assert len(stamped) == 1, "ssh-alias github host worktree was not stamped (#2655)"
+        _, _, email = stamped[0]
+        assert is_noreply_email(email), email
+
+    def test_private_clone_worktree_is_not_stamped(self) -> None:
+        stamped = self._run(
+            "internal-svc",
+            "ac-internal-svc-77-x",
+            "git@github.com:acme-private/internal-svc.git",
+            visibility="PRIVATE",
+        )
+
+        assert stamped == [], "private clone must NOT be identity-stamped — visibility scope error (#785)"
+
+    def test_gitlab_clone_worktree_keeps_inherited_identity(self) -> None:
+        # #2655 — the reported bug class: a GitLab clone
+        # (``gitlab.com/<owner>/*``) must NEVER be stamped with the github
+        # noreply identity, EVEN IF a public github.com repo happened to
+        # exist at the same host-stripped ``owner/repo`` slug. The gh mock
+        # answers PUBLIC, but the non-github host short-circuits the gate
+        # to False BEFORE any gh call, so the GitLab worktree keeps its
+        # inherited (real, deliverable-domain) identity.
+        stamped = self._run(
+            "widget",
+            "2655-widget",
+            "git@gitlab.com:acme-eng/widget.git",
+            visibility="PUBLIC",
+        )
+
+        assert stamped == [], (
+            "GitLab worktree was stamped with the github identity — "
+            "host-blind slug footgun (#2655). It must keep the inherited "
+            "real-domain identity."
+        )
+
+
+class TestWorktreeProvisionerAdopt(TestCase):
+    """#2275: adopt an EXISTING on-disk worktree — record its path, never re-create it.
+
+    ``workspace ticket --adopt`` records ``extra['adopt'] = {repo: worktree_path}``.
+    The provisioner must record that path verbatim on the ``Worktree`` row, never
+    call ``git worktree add`` (git would refuse the already-checked-out branch and
+    it would create a second dir), and derive the backing clone from the checkout's
+    own shared git dir when it lives OUTSIDE the discovered clone root. Real git
+    under ``tmp_path``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _outside_clone_and_worktree(self, branch: str) -> tuple[Path, Path]:
+        """A real clone + a real worktree on *branch*, both OUTSIDE the clone root."""
+        clone = self.tmp / "outside" / "myrepo"
+        clone.mkdir(parents=True)
+        git.run_strict(repo=str(clone), args=["init", "-q"])
+        git.run_strict(repo=str(clone), args=["config", "user.email", "t@example.com"])
+        git.run_strict(repo=str(clone), args=["config", "user.name", "t"])
+        (clone / "README.md").write_text("x\n", encoding="utf-8")
+        git.run_strict(repo=str(clone), args=["add", "-A"])
+        git.run_strict(repo=str(clone), args=["commit", "-q", "-m", "init"])
+        worktree = self.tmp / "outside-wt"
+        git.run_strict(repo=str(clone), args=["worktree", "add", "-q", "-b", branch, str(worktree)])
+        return clone, worktree
+
+    def test_adopt_records_existing_worktree_without_git_worktree_add(self) -> None:
+        clone, worktree = self._outside_clone_and_worktree("feature-x")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/2275",
+            repos=["myrepo"],
+            extra={"branch": "feature-x", "adopt": {"myrepo": str(worktree)}, "description": "x"},
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            # An EMPTY clone root → find_clone_path returns None → clone derives
+            # from the worktree's own git-common-dir.
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.worktree_add") as worktree_add,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True, result.detail
+        worktree_add.assert_not_called()
+
+        wt = Worktree.objects.get(ticket=ticket, repo_path="myrepo")
+        assert (wt.extra or {}).get("worktree_path") == str(worktree)
+        assert Path((wt.extra or {})["clone_path"]).resolve() == clone.resolve()
+
+        # No second worktree dir was created under the worktree root.
+        assert not (self.workspace / "feature-x").exists()
+
+    def test_clone_dir_from_worktree_resolves_linked_and_main(self) -> None:
+        from teatree.core.runners.provision import _clone_dir_from_worktree  # noqa: PLC0415
+
+        clone, worktree = self._outside_clone_and_worktree("feature-z")
+
+        # A linked worktree resolves back to its main clone (absolute git-common-dir).
+        assert _clone_dir_from_worktree(str(worktree)).resolve() == clone.resolve()
+        # The main clone itself resolves to itself (relative ``.git`` git-common-dir).
+        assert _clone_dir_from_worktree(str(clone)).resolve() == clone.resolve()
+
+    def test_clone_dir_from_worktree_returns_none_for_non_git(self) -> None:
+        from teatree.core.runners.provision import _clone_dir_from_worktree  # noqa: PLC0415
+
+        plain = self.tmp / "not-git"
+        plain.mkdir()
+        assert _clone_dir_from_worktree(str(plain)) is None
+
+    def test_adopt_prefers_discovered_clone_when_present(self) -> None:
+        # When the repo's clone IS under the clone root, that discovered clone
+        # backs the row (the worktree path is still recorded verbatim).
+        _, worktree = self._outside_clone_and_worktree("feature-y")
+        discovered = self.workspace / "myrepo"
+        discovered.mkdir()
+        (discovered / ".git").mkdir()
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/2276",
+            repos=["myrepo"],
+            extra={"branch": "feature-y", "adopt": {"myrepo": str(worktree)}, "description": "x"},
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.worktree_add") as worktree_add,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True, result.detail
+        worktree_add.assert_not_called()
+        wt = Worktree.objects.get(ticket=ticket, repo_path="myrepo")
+        assert (wt.extra or {}).get("worktree_path") == str(worktree)
+        assert (wt.extra or {}).get("clone_path") == str(discovered)
+
+
+class TestWorktreeProvisionerIsIdempotent(TestCase):
+    """souliane/teatree#3234: a leftover worktree must never strand the ticket forever.
+
+    A prior provision that died downstream leaves the git worktree and/or the
+    branch behind. ``git worktree add`` then REFUSES both the path (it exists) and
+    the branch (it is "already checked out"), so ``_create`` logged "Failed to
+    create worktree" and every retry failed identically — the ticket sat at
+    ``work_started`` forever with no way out but a manual ``git worktree remove``.
+
+    Provisioning is now idempotent: a healthy leftover for the scope is ADOPTED, a
+    broken one (registered-but-missing dir, wrong branch, non-git partial) is
+    cleaned up and recreated, and a leftover carrying work that exists on NO remote
+    is NEVER destroyed — nor adopted unless it sits in the scope's own slot. Real git
+    under ``tmp_path``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _clone(self, repo: str = "repo-a") -> Path:
+        """A real clone with one commit on ``main``, PUSHED to a real ``origin``.
+
+        The origin is load-bearing, not scenery: the teardown guard asks whether a
+        leftover's commits are absent from every remote, so a remote-less fixture
+        would make even the base commit look like unpushed work and every leftover
+        would be protected. A real clone always has an origin; so does this one.
+        """
+        origin = self.tmp / "origin" / f"{repo}.git"
+        git.run_strict(repo=str(self.tmp), args=["init", "-q", "--bare", "-b", "main", str(origin)])
+
+        clone = self.workspace / repo
+        clone.mkdir(parents=True)
+        git.run_strict(repo=str(clone), args=["init", "-q", "-b", "main"])
+        git.run_strict(repo=str(clone), args=["config", "user.email", "t@example.com"])
+        git.run_strict(repo=str(clone), args=["config", "user.name", "t"])
+        git.run_strict(repo=str(clone), args=["remote", "add", "origin", str(origin)])
+        (clone / "README.md").write_text("x\n", encoding="utf-8")
+        git.run_strict(repo=str(clone), args=["add", "-A"])
+        git.run_strict(repo=str(clone), args=["commit", "-q", "-m", "init"])
+        git.run_strict(repo=str(clone), args=["push", "-q", "-u", "origin", "main"])
+        return clone
+
+    def _add_worktree(self, clone: Path, path: Path, branch: str) -> Path:
+        git.run_strict(repo=str(clone), args=["worktree", "add", "-q", "-b", branch, str(path)])
+        return path
+
+    @staticmethod
+    def _commit(worktree: Path, name: str, body: str) -> None:
+        (worktree / name).write_text(body, encoding="utf-8")
+        git.run_strict(repo=str(worktree), args=["add", "-A"])
+        git.run_strict(repo=str(worktree), args=["commit", "-q", "-m", f"add {name}"])
+
+    def _provision(
+        self,
+        branch: str,
+        *,
+        repo: str = "repo-a",
+        public_remote: bool = False,
+        recorded_path: str = "",
+    ) -> tuple[Any, Ticket]:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/3234",
+            repos=[repo],
+            extra={"branch": branch, "description": "x"},
+        )
+        if recorded_path:
+            Worktree.objects.create(
+                ticket=ticket,
+                overlay="test",
+                repo_path=repo,
+                branch=branch,
+                extra={"worktree_path": recorded_path},
+            )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            # The venue's owned root decides whether a missing registration may be
+            # pruned at all (#4287), so it must name the same workspace as above.
+            patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
+            # The clones have no remote: pin the two network-adjacent seams so the
+            # test exercises the worktree lifecycle, not git's remote plumbing.
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=public_remote),
+        ):
+            return WorktreeProvisioner(ticket).run(), ticket
+
+    def _recorded_path(self, ticket: Ticket) -> str:
+        wt = Worktree.objects.get(ticket=ticket, repo_path="repo-a")
+        return str((wt.extra or {}).get("worktree_path") or "")
+
+    def test_registered_worktree_whose_dir_is_gone_is_pruned_and_recreated(self) -> None:
+        # The reported strand (#3205 / #1308): the leftover worktree's DIRECTORY was
+        # removed but git still has it registered, so the branch reads as "already
+        # checked out at <missing path>" and BOTH `worktree add` attempts are refused.
+        clone = self._clone()
+        branch = "3234-stale-registration"
+        wt_path = self.workspace / branch / "repo-a"
+        self._add_worktree(clone, wt_path, branch)
+        shutil.rmtree(wt_path)
+
+        result, ticket = self._provision(branch)
+
+        assert result.ok is True, result.detail
+        assert (wt_path / ".git").exists(), "the worktree was not recreated after the stale registration"
+        assert git.current_branch(str(wt_path)) == branch
+        assert self._recorded_path(ticket) == str(wt_path)
+
+    def test_leftover_worktree_holding_the_branch_elsewhere_is_cleaned_and_recreated(self) -> None:
+        # The scope's branch is checked out at some OTHER path (a prior attempt under
+        # a different ticket dir). git refuses to check the branch out twice, so the
+        # add at the expected path was refused. The work-free leftover is reaped.
+        clone = self._clone()
+        branch = "3234-elsewhere"
+        stale = self._add_worktree(clone, self.tmp / "old-location", branch)
+
+        result, ticket = self._provision(branch)
+
+        assert result.ok is True, result.detail
+        wt_path = self.workspace / branch / "repo-a"
+        assert (wt_path / ".git").exists(), "the worktree was not recreated at the expected path"
+        assert git.current_branch(str(wt_path)) == branch
+        assert not stale.exists(), "the work-free leftover worktree was not cleaned up"
+        assert self._recorded_path(ticket) == str(wt_path)
+
+    def test_worktree_at_the_expected_path_on_the_wrong_branch_is_recreated(self) -> None:
+        # A partial prior attempt left a checkout of the WRONG branch exactly where
+        # this scope's worktree belongs. It used to be adopted blindly on the strength
+        # of the path existing, so the ticket coded on someone else's branch.
+        clone = self._clone()
+        branch = "3234-right-branch"
+        wt_path = self.workspace / branch / "repo-a"
+        self._add_worktree(clone, wt_path, "3234-wrong-branch")
+
+        result, ticket = self._provision(branch)
+
+        assert result.ok is True, result.detail
+        assert git.current_branch(str(wt_path)) == branch, "provisioned onto the WRONG branch"
+        assert self._recorded_path(ticket) == str(wt_path)
+
+    def test_healthy_matching_worktree_is_adopted_untouched(self) -> None:
+        # The plain idempotency case: the scope's worktree is already there, on the
+        # right branch. Adopt it — never re-create it, and never lose its commits.
+        clone = self._clone()
+        branch = "3234-adopt"
+        wt_path = self.workspace / branch / "repo-a"
+        self._add_worktree(clone, wt_path, branch)
+        self._commit(wt_path, "work.txt", "in progress\n")
+
+        result, ticket = self._provision(branch)
+
+        assert result.ok is True, result.detail
+        assert (wt_path / "work.txt").read_text(encoding="utf-8") == "in progress\n"
+        assert git.current_branch(str(wt_path)) == branch
+        assert self._recorded_path(ticket) == str(wt_path)
+
+    def test_leftover_elsewhere_carrying_unpushed_work_is_refused_never_adopted_nor_destroyed(self) -> None:
+        # The same branch checked out OUTSIDE this ticket's slot is not a checkout this
+        # ticket owns, so recovery must not adopt it — and its commits exist on no
+        # remote, so it must not be reaped either (#706). Only an explicit adopt claims it.
+        clone = self._clone()
+        branch = "3234-precious"
+        stale = self._add_worktree(clone, self.tmp / "old-location", branch)
+        self._commit(stale, "work.txt", "precious\n")
+
+        result, ticket = self._provision(branch)
+
+        assert result.ok is False, "a same-branch checkout outside the ticket's slot was adopted"
+        assert stale.is_dir(), "a leftover with unpushed commits was DESTROYED"
+        assert (stale / "work.txt").read_text(encoding="utf-8") == "precious\n"
+        assert not (self.workspace / branch / "repo-a").exists()
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 0
+
+    def test_row_recording_a_checkout_that_is_gone_is_reprovisioned(self) -> None:
+        # souliane/teatree#3943: the row records a path whose checkout no longer
+        # exists. Handing that path back makes provisioning a permanent no-op — the
+        # checkout can never be re-materialised and every later step walks into a
+        # directory that is not there.
+        self._clone()
+        branch = "3943-vanished"
+        vanished = self.tmp / "a-root-that-is-gone" / "repo-a"
+
+        result, ticket = self._provision(branch, recorded_path=str(vanished))
+
+        assert result.ok is True, result.detail
+        wt_path = self.workspace / branch / "repo-a"
+        assert self._recorded_path(ticket) == str(wt_path), "the dead path was handed back instead of re-provisioned"
+        assert git.current_branch(str(wt_path)) == branch
+
+    def test_row_recording_a_directory_that_is_not_a_checkout_is_reprovisioned(self) -> None:
+        # The dir survives but holds no checkout, so every git-driven step over it
+        # no-ops. A recorded path is not evidence; a live checkout is.
+        self._clone()
+        branch = "3943-hollow"
+        hollow = self.tmp / "hollow" / "repo-a"
+        hollow.mkdir(parents=True)
+
+        result, ticket = self._provision(branch, recorded_path=str(hollow))
+
+        assert result.ok is True, result.detail
+        recorded = Path(self._recorded_path(ticket))
+        assert (recorded / ".git").exists(), "a hollow directory was accepted as a checkout"
+        assert git.current_branch(str(recorded)) == branch
+
+    def test_live_recorded_checkout_short_circuits_provisioning(self) -> None:
+        # The other half of the contract: a checkout that IS there earns the no-op,
+        # so provisioning never enters the create path at all and the work standing
+        # in that checkout is never at risk.
+        clone = self._clone()
+        branch = "3943-live"
+        recorded = self._add_worktree(clone, self.tmp / "elsewhere" / "repo-a", branch)
+        self._commit(recorded, "work.txt", "in progress\n")
+
+        with patch.object(WorktreeProvisioner, "_create") as create:
+            result, ticket = self._provision(branch, recorded_path=str(recorded))
+
+        create.assert_not_called()
+        assert result.ok is True, result.detail
+        assert self._recorded_path(ticket) == str(recorded)
+        assert (recorded / "work.txt").read_text(encoding="utf-8") == "in progress\n"
+
+    def test_checkout_whose_admin_dir_is_scoped_to_another_context_counts_as_live(self) -> None:
+        # The vantage-point trap: a checkout records its admin dir as an absolute
+        # path written by whatever context created it, so from HERE git answers
+        # "not a git repository" for a checkout that is perfectly alive. The clone's
+        # own admin entry is what proves it live, so the short-circuit must consult
+        # the clone rather than trusting git's refusal in the checkout.
+        clone = self._clone()
+        branch = "3943-other-context"
+        recorded = self._add_worktree(clone, self.workspace / branch / "repo-a", branch)
+        (recorded / ".git").write_text(
+            f"gitdir: /a-root-this-context-cannot-reach/repo-a/.git/worktrees/{recorded.name}\n", encoding="utf-8"
+        )
+
+        assert git.run(repo=str(recorded), args=["rev-parse", "--git-dir"]) == "", "fixture: git must refuse here"
+        assert _recorded_checkout_is_live(str(recorded), clone=clone) is True
+
+    def test_checkout_no_clone_vouches_for_is_not_taken_as_live(self) -> None:
+        # The same unreadable pointer with no clone to resolve it against is exactly
+        # what a dead checkout looks like. Unproven is not dead — it just does not
+        # earn the short-circuit, and re-provisioning removes nothing.
+        clone = self._clone()
+        branch = "3943-unvouched"
+        recorded = self._add_worktree(clone, self.workspace / branch / "repo-a", branch)
+        (recorded / ".git").write_text("gitdir: /a-root-this-context-cannot-reach/wt\n", encoding="utf-8")
+
+        assert _recorded_checkout_is_live(str(recorded), clone=None) is False
+
+    def test_failed_step_after_creation_leaves_no_stranded_worktree(self) -> None:
+        # A provision STEP that fails after `git worktree add` succeeded must tear the
+        # just-created worktree down, so the retry starts from a clean slate instead of
+        # tripping over its own leftover. The worktree is provably work-free — it was
+        # created moments ago — so the teardown can never lose anything.
+        clone = self._clone()
+        branch = "3234-step-failure"
+        wt_path = self.workspace / branch / "repo-a"
+
+        with patch(
+            "teatree.core.runners.provision.set_local_noreply_identity",
+            side_effect=RuntimeError("identity step blew up"),
+        ):
+            result, ticket = self._provision(branch, public_remote=True)
+
+        assert result.ok is False, "a failed provision step must fail the provision, not pass silently"
+        assert not wt_path.exists(), "the failed provision stranded its worktree on disk"
+        registered = git.run(repo=str(clone), args=["worktree", "list", "--porcelain"])
+        assert str(wt_path) not in registered, "the failed provision stranded a git worktree registration"
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-a").count() == 0
+
+    def test_a_leftover_adopted_elsewhere_is_refused_not_persisted_as_a_split(self) -> None:
+        # Recovery once adopted a same-branch checkout ELSEWHERE, persisting a row that split the workspace.
+        self._clone("repo-a")
+        clone_b = self._clone("repo-b")
+        branch = "3234-recovery-bypass"
+        stale_b = self._add_worktree(clone_b, self.tmp / "old-location-b", branch)
+        self._commit(stale_b, "work.txt", "precious\n")
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/3234-recovery-bypass",
+            repos=["repo-a", "repo-b"],
+            extra={"branch": branch, "description": "x"},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is False, "an alternate checkout outside the ticket workspace must never be silently split"
+        assert stale_b.is_dir(), "the alternate checkout carrying unpushed work must survive the refusal"
+        assert (stale_b / "work.txt").read_text(encoding="utf-8") == "precious\n"
+        assert Worktree.objects.filter(ticket=ticket, repo_path="repo-b").count() == 0, "no split row persisted"
+        recorded_a = Worktree.objects.get(ticket=ticket, repo_path="repo-a")
+        assert Path((recorded_a.extra or {})["worktree_path"]).parent == self.workspace / branch
+
+
+class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
+    """#2276: provisioning a worktree against the WRONG repo must fail loud.
+
+    When ``ticket.repos`` carries an ``owner/repo`` slug, the source clone
+    the resolver lands on must actually be that repo. The clone resolver
+    matches by basename, so a SIBLING git repo of the same basename — a
+    different ``origin`` — would otherwise be cut silently. The guard
+    compares the resolved clone's ``origin`` slug against the expected
+    slug before ``git worktree add`` and refuses on a mismatch. Real git
+    under ``tmp_path`` (no mock of the slug read).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _init_clone(self, path: Path, remote_url: str) -> None:
+        # ``make_git_repo`` (not a hand-rolled ``git init``): the provisioner runs a
+        # real ``git worktree add``, which needs a HEAD it can resolve. A repo with no
+        # commits only works from git 2.44 on — on the older git in a slim CI image it
+        # is `fatal: invalid reference: HEAD`, and the guard under test never runs.
+        make_git_repo(path)
+        git.run_strict(repo=str(path), args=["remote", "add", "origin", remote_url])
+
+    def _scoped_ticket(self, repos: list[str], *, branch: str) -> Ticket:
+        return Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/77",
+            repos=repos,
+            extra={"branch": branch, "description": "x"},
+        )
+
+    def _run(self, repos: list[str], branch: str) -> Any:
+        ticket = self._scoped_ticket(repos=repos, branch=branch)
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            return WorktreeProvisioner(ticket).run()
+
+    def test_matching_slug_proceeds(self) -> None:
+        clone = self.workspace / "souliane" / "teatree"
+        self._init_clone(clone, "git@github.com:souliane/teatree.git")
+
+        result = self._run(["souliane/teatree"], "ac-teatree-2276-ok")
+
+        assert result.ok is True, result.detail
+        wt_path = self.workspace / "ac-teatree-2276-ok" / "teatree"
+        assert (wt_path / ".git").exists()
+        wt = Worktree.objects.get(ticket__repos=["souliane/teatree"], repo_path="souliane/teatree")
+        assert (wt.extra or {}).get("worktree_path") == str(wt_path)
+
+    def test_sibling_repo_with_wrong_origin_raises_loud(self) -> None:
+        # The wrong-repo footgun: a SIBLING clone of the same basename whose
+        # ``origin`` is a different repo. ``ticket.repos`` says the worktree
+        # is for ``souliane/teatree`` but the only ``teatree`` clone on disk
+        # points at ``someone-else/teatree``.
+        sibling = self.workspace / "someone-else" / "teatree"
+        self._init_clone(sibling, "git@github.com:someone-else/teatree.git")
+
+        with pytest.raises(ValueError, match="souliane/teatree") as exc:
+            self._run(["souliane/teatree"], "ac-teatree-2276-wrong")
+
+        message = str(exc.value)
+        assert "someone-else/teatree" in message
+        no_worktree = self.workspace / "ac-teatree-2276-wrong" / "teatree"
+        assert not no_worktree.exists()
+
+    def test_a_multi_segment_path_with_a_wrong_origin_flat_clone_raises_loud(self) -> None:
+        # The rung added for the container's FLAT clone root resolves
+        # ``workspace/<basename>`` for a full GitLab namespace path. ``is_github_slug`` (the pre-#151 predicate)
+        # answered False for any path with more than one "/", so the #2276 origin guard
+        # never ran for exactly the shape that rung serves.
+        self._init_clone(self.workspace / "tools", "git@gitlab.com:other-group/tools.git")
+
+        with pytest.raises(ValueError, match="group-a/sub-x/tools") as exc:
+            self._run(["group-a/sub-x/tools"], "ac-multi-seg-wrong")
+
+        assert "other-group/tools" in str(exc.value)
+        assert not (self.workspace / "ac-multi-seg-wrong" / "tools").exists()
+        assert Worktree.objects.filter(repo_path="group-a/sub-x/tools").count() == 0
+
+    def test_a_multi_segment_path_with_the_matching_origin_proceeds(self) -> None:
+        # The other direction: the guard must not refuse the legitimate flat-clone case
+        # the rung exists for, or it would be a removal of the rung by another name.
+        self._init_clone(self.workspace / "tools", "git@gitlab.com:group-a/sub-x/tools.git")
+
+        result = self._run(["group-a/sub-x/tools"], "ac-multi-seg-ok")
+
+        assert result.ok is True, result.detail
+        assert (self.workspace / "ac-multi-seg-ok" / "tools" / ".git").exists()
+
+    def test_bare_repo_name_is_not_guarded(self) -> None:
+        # A bare basename carries no canonical slug to compare against, so
+        # the guard must not fire — the legitimate ``--repos teatree`` flow
+        # (resolver scans for the clone) keeps working regardless of origin.
+        clone = self.workspace / "souliane" / "teatree"
+        self._init_clone(clone, "git@github.com:anyone/teatree.git")
+
+        result = self._run(["teatree"], "ac-teatree-2276-bare")
+
+        assert result.ok is True, result.detail
+        assert (self.workspace / "ac-teatree-2276-bare" / "teatree" / ".git").exists()
+
+
+class TestWorktreeProvisionerRefusesASecondBranch(TestCase):
+    """A repo declared SINGLE-BRANCH admits no worktree on any other branch.
+
+    The `t3 <overlay> worktree provision` half of the single-branch rule. The Bash
+    half (raw ``git worktree add`` / ``checkout -b``) is a PreToolUse gate over the
+    same decision core; this pins that the CLI path refuses too, because prose
+    saying "one branch" was already tried and produced 31 worktrees.
+
+    The refusal has to land BEFORE the ``Worktree`` row is created, or a blocked
+    provision leaves a half-provisioned repo on the ticket for the next run to
+    trip over.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _ticket(self, branch: str) -> Ticket:
+        return Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/91",
+            repos=["widget-core"],
+            extra={"branch": branch, "description": "x"},
+        )
+
+    @contextmanager
+    def _declared(self, *, enabled: bool = True, entries: list[str] | None = None) -> Iterator[None]:
+        declared = ["group/widget-core=chore/fork-bootstrap"]
+
+        class _Settings:
+            single_branch_repos = entries if entries is not None else declared
+
+        with (
+            patch("teatree.core.runners.provision.get_effective_settings", return_value=_Settings()),
+            patch("teatree.core.runners.provision.cold_reader.bool_setting", return_value=enabled),
+        ):
+            yield
+
+    def _run(self, branch: str, *, enabled: bool = True, entries: list[str] | None = None) -> Any:
+        repo_dir = self.workspace / "widget-core"
+        repo_dir.mkdir(exist_ok=True)
+        (repo_dir / ".git").mkdir(exist_ok=True)
+        ticket = self._ticket(branch)
+
+        def fake_worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
+            del repo, branch, create_branch
+            Path(path).mkdir(parents=True, exist_ok=True)
+            return True
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            self._declared(enabled=enabled, entries=entries),
+        ):
+            return WorktreeProvisioner(ticket).run(), ticket
+
+    def test_a_second_branch_is_refused(self) -> None:
+        result, _ticket = self._run("feat/side-quest")
+
+        assert result.ok is False
+        assert "widget-core" in result.detail
+
+    def test_the_refusal_leaves_no_worktree_row_behind(self) -> None:
+        """No DB row and no checkout — the two things a later run would trip over.
+
+        ``run()`` pre-creates the (empty) ticket DIR before reaching the per-repo
+        call, so that dir's existence is not evidence of a half-provision; the
+        repo checkout inside it is.
+        """
+        _result, ticket = self._run("feat/side-quest")
+
+        assert not Worktree.objects.filter(ticket=ticket).exists()
+        assert not (self.workspace / "feat/side-quest" / "widget-core").exists()
+        assert not (ticket.extra or {}).get("provision")
+
+    def test_the_refusal_names_the_rule_in_the_log(self) -> None:
+        with self.assertLogs("teatree.core.runners.provision", level="ERROR") as logs:
+            self._run("feat/side-quest")
+
+        blocked = "\n".join(logs.output)
+        assert "SINGLE-BRANCH" in blocked
+        assert "chore/fork-bootstrap" in blocked
+        assert "single_branch_repos" in blocked
+
+    def test_the_pinned_branch_still_provisions(self) -> None:
+        result, ticket = self._run("chore/fork-bootstrap")
+
+        assert result.ok is True, result.detail
+        assert Worktree.objects.filter(ticket=ticket).count() == 1
+
+    def test_an_undeclared_repo_still_provisions(self) -> None:
+        result, _ticket = self._run("feat/side-quest", entries=[])
+
+        assert result.ok is True, result.detail
+
+    def test_the_kill_switch_lets_it_through(self) -> None:
+        result, _ticket = self._run("feat/side-quest", enabled=False)
+
+        assert result.ok is True, result.detail
+
+
+class TestWorktreeProvisionerRefusesUnprovenDisposal(TestCase):
+    """souliane/teatree#3967: a live checkout is never re-created underneath its writer.
+
+    The reconcile step used to clear its worktree slot on an INFERENCE — a directory
+    the acting clone had no registration for was "a partial leftover", so it was
+    removed before ``git worktree add``. A checkout records its admin dir as an
+    absolute path written by whatever context CREATED it, so a checkout created
+    elsewhere is unregistered here and reads exactly like that partial leftover. A
+    container-view actor resolved a host directory that way, removed the tree and
+    re-checked it out against its own gitdir, destroying a running agent's work.
+
+    Disposal now demands positive proof. Real git under ``tmp_path``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _clone(self, at: Path) -> Path:
+        """A real clone with one commit on ``main``, pushed to a real bare origin.
+
+        The origin is load-bearing: the teardown guard asks whether a leftover's
+        commits are absent from every remote, so a remote-less fixture would make
+        even the base commit look like unpushed work. Each clone gets its OWN origin —
+        two clones sharing one would make the second's push a non-fast-forward.
+        """
+        origin = self.tmp / "origin" / f"{at.parent.name}-{at.name}.git"
+        git.run_strict(repo=str(self.tmp), args=["init", "-q", "--bare", "-b", "main", str(origin)])
+        at.mkdir(parents=True)
+        git.run_strict(repo=str(at), args=["init", "-q", "-b", "main"])
+        git.run_strict(repo=str(at), args=["config", "user.email", "t@example.com"])
+        git.run_strict(repo=str(at), args=["config", "user.name", "t"])
+        git.run_strict(repo=str(at), args=["remote", "add", "origin", str(origin)])
+        (at / "README.md").write_text("x\n", encoding="utf-8")
+        git.run_strict(repo=str(at), args=["add", "-A"])
+        git.run_strict(repo=str(at), args=["commit", "-q", "-m", "init"])
+        git.run_strict(repo=str(at), args=["push", "-q", "-u", "origin", "main"])
+        return at
+
+    def _provision(self, branch: str) -> tuple[Any, Ticket]:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/3967",
+            repos=["repo-a"],
+            extra={"branch": branch, "description": "x"},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            return WorktreeProvisioner(ticket).run(), ticket
+
+    def test_a_checkout_registered_in_another_clone_is_not_destroyed(self) -> None:
+        # The incident's shape: the checkout standing in the scope's slot belongs to a
+        # clone this context is not acting for, so the acting clone's registration
+        # survey does not see it. Absence from that survey is not evidence of death.
+        self._clone(self.workspace / "repo-a")
+        foreign_clone = self._clone(self.tmp / "another-context" / "repo-a")
+        branch = "3967-foreign-clone"
+        wt_path = self.workspace / branch / "repo-a"
+        git.run_strict(repo=str(foreign_clone), args=["worktree", "add", "-q", "-b", branch, str(wt_path)])
+        (wt_path / "unstaged.txt").write_text("the writer's work\n", encoding="utf-8")
+
+        result, _ticket = self._provision(branch)
+
+        assert (wt_path / "unstaged.txt").read_text(encoding="utf-8") == "the writer's work\n", (
+            "a live checkout registered in another clone was destroyed"
+        )
+        assert result.ok is False, "provisioning over an undisposable checkout must fail loudly"
+
+    def test_a_gitdir_naming_a_root_absent_here_is_refused_and_reported(self) -> None:
+        # The reported failure verbatim: the checkout's admin pointer names a root
+        # that exists only in the context that wrote it. git answers "not a git
+        # repository" here in the same words it uses for a directory that never held
+        # one, so the refusal must key on the pointer, not on git's wording.
+        self._clone(self.workspace / "repo-a")
+        branch = "3967-foreign-view"
+        wt_path = self.workspace / branch / "repo-a"
+        wt_path.mkdir(parents=True)
+        (wt_path / ".git").write_text("gitdir: /a-root-this-context-cannot-reach/.git/worktrees/repo-a\n")
+        (wt_path / "unstaged.txt").write_text("the writer's work\n", encoding="utf-8")
+
+        with self.assertLogs("teatree.core.runners.provision", level="ERROR") as logs:
+            result, _ticket = self._provision(branch)
+
+        assert (wt_path / "unstaged.txt").read_text(encoding="utf-8") == "the writer's work\n", (
+            "a checkout whose gitdir names a foreign root was destroyed"
+        )
+        assert result.ok is False
+        reported = "\n".join(logs.output)
+        assert "/a-root-this-context-cannot-reach" in reported, "the refusal must name the unreachable root"
+        assert "VIEW MISMATCH" in reported
+
+    def test_a_directory_a_busy_ticket_holds_is_refused(self) -> None:
+        # Occupancy is independent of every git question: the directory here carries
+        # no checkout at all, and is still not disposable while another ticket has a
+        # live session standing in it.
+        self._clone(self.workspace / "repo-a")
+        branch = "3967-occupied"
+        wt_path = self.workspace / branch / "repo-a"
+        wt_path.mkdir(parents=True)
+        (wt_path / "unstaged.txt").write_text("the writer's work\n", encoding="utf-8")
+        occupant = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3952", repos=["repo-a"])
+        Worktree.objects.create(
+            ticket=occupant, overlay="test", repo_path="repo-a", branch=branch, extra={"worktree_path": str(wt_path)}
+        )
+        Session.objects.create(ticket=occupant, overlay="test")
+
+        result, _ticket = self._provision(branch)
+
+        assert (wt_path / "unstaged.txt").read_text(encoding="utf-8") == "the writer's work\n", (
+            "a directory a busy ticket holds was destroyed"
+        )
+        assert result.ok is False
+
+    def test_a_partial_non_checkout_directory_is_still_cleared(self) -> None:
+        # The preserved case the refusal must not swallow: a directory that never
+        # claimed to be a checkout is the one thing a single context CAN prove
+        # disposable, and clearing it is what makes provisioning idempotent.
+        self._clone(self.workspace / "repo-a")
+        branch = "3967-partial"
+        wt_path = self.workspace / branch / "repo-a"
+        wt_path.mkdir(parents=True)
+        (wt_path / "half-written.txt").write_text("from a died-mid-checkout attempt\n", encoding="utf-8")
+
+        result, _ticket = self._provision(branch)
+
+        assert result.ok is True, result.detail
+        assert (wt_path / ".git").exists(), "the worktree was not created over the partial directory"
+        assert git.current_branch(str(wt_path)) == branch
+        assert not (wt_path / "half-written.txt").exists()
+
+
+class TestWorktreeProvisionerKeepsUnreadableRegistrations(TestCase):
+    """souliane/teatree#4287: a checkout mounted elsewhere is not deregistered from here.
+
+    Reconcile answered two questions with a filesystem probe taken in the READING
+    venue. ``git worktree prune`` dropped every registration whose directory it
+    could not stat, and the #706 work guard reported "no work" for the same
+    paths — so a container-side provision deregistered host checkouts (86 of
+    them, once) and deleted the branch refs that were their last reference.
+
+    Real git under ``tmp_path``: the assertions read the clone's own admin dir
+    and branch list, never a decision object.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _clone(self, at: Path) -> Path:
+        at.mkdir(parents=True)
+        git.run_strict(repo=str(at), args=["init", "-q", "-b", "main"])
+        git.run_strict(repo=str(at), args=["config", "user.email", "t@example.com"])
+        git.run_strict(repo=str(at), args=["config", "user.name", "t"])
+        (at / "README.md").write_text("x\n", encoding="utf-8")
+        git.run_strict(repo=str(at), args=["add", "-A"])
+        git.run_strict(repo=str(at), args=["commit", "-q", "-m", "init"])
+        return at
+
+    def _provision(self, branch: str) -> Any:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/4287",
+            repos=["repo-a"],
+            extra={"branch": branch, "description": "x"},
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.worktree.venue_safe_registry.canonical_worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+            patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
+        ):
+            return WorktreeProvisioner(ticket).run()
+
+    def _admin_entries(self, clone: Path) -> set[str]:
+        admin = clone / ".git" / "worktrees"
+        return {entry.name for entry in admin.iterdir()} if admin.is_dir() else set()
+
+    def test_a_registration_this_venue_cannot_stat_keeps_its_admin_dir_and_its_branch(self) -> None:
+        # The incident's shape: the branch this ticket wants is held by a checkout
+        # that lives in a subtree this process never had mounted. Unstattable is not
+        # deleted, so neither the registration nor the branch ref may be dropped.
+        clone = self._clone(self.workspace / "repo-a")
+        branch = "4287-mounted-elsewhere"
+        elsewhere = self.tmp / "never-mounted-here" / "repo-a"
+        elsewhere.parent.mkdir()
+        git.run_strict(repo=str(clone), args=["worktree", "add", "-q", "-b", branch, str(elsewhere)])
+        shutil.rmtree(elsewhere.parent)
+
+        with self.assertLogs("teatree.core.runners.provision", level="ERROR") as logs:
+            result = self._provision(branch)
+
+        assert result.ok is False, "provisioning over an unreadable checkout must fail loudly"
+        assert self._admin_entries(clone) == {"repo-a"}, "the registration was pruned on a venue-local reading"
+        assert branch in git.run_strict(repo=str(clone), args=["branch", "--list", branch])
+        assert "unreadable in this execution context" in "\n".join(logs.output)

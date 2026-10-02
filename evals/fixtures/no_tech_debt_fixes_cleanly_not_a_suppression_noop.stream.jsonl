@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-debt-noop-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I will just think about how to fix the linter complaint, but make no tool call."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

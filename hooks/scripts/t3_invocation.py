@@ -1,0 +1,221 @@
+"""The one seam every hook uses to invoke the ``t3`` CLI.
+
+A hook is a bare ``python3`` subprocess the harness starts in the SESSION's
+working directory, and the containerized ``t3`` entry point REFUSES to run when
+that directory is a checkout it cannot see from inside the container. A hook that
+shells out with an inherited cwd therefore gets a non-zero exit that says nothing
+about what it asked — and a gate that fails CLOSED reads that exit as a DENY and
+blocks legitimate work. The failure mode is "correct work is refused", not
+"something looks odd", so nothing downstream reports it.
+
+Two gates rediscovered that bug independently and one of them fixed it inline, at
+its own call site. Two independent rediscoveries of one bug is the signal that the
+abstraction is missing rather than that another fix is needed, so this module is
+the abstraction: every ``t3`` shell-out in ``hooks/scripts`` resolves its argv
+through :func:`t3_argv` and runs it through :func:`run_t3` or
+:func:`spawn_t3_detached`, which pin a directory the container can always see —
+the checkout this hook package was installed from, derived from this module's own
+location and verified against the tree rather than trusted as a constant depth.
+
+Not using the seam is the visible anomaly:
+``tests/conformance/test_hook_t3_invocation_seam.py`` fails on a hook that resolves
+or spawns ``t3`` on its own, so a hook added tomorrow cannot reintroduce the bug by
+omission.
+
+The pinned cwd is safe for every caller because none of them resolve their SUBJECT
+from the cwd: each passes it explicitly (``--repo``, a title, a body on stdin). A
+caller whose subject genuinely IS a directory passes ``cwd=`` and keeps it.
+
+An unresolvable checkout fails LOUD, never closed and never silent: one stderr line
+names the layout that did not hold, and the call proceeds with the inherited
+directory rather than being blocked. A gate that cannot locate its own tree must
+not become a gate that refuses everything.
+
+Pinning that directory is only half the guarantee: the entry point translates a
+host cwd against a fixed table of worktree roots, and this package's own checkout
+is absent from that table even when the container mounts it 1:1 — so the pin lands
+on a directory the entry point then refuses, and the gate fails closed anyway.
+:func:`t3_invocation_env` closes that half by handing over
+``TEATREE_INVOCATION_CWD``, the escape the refusal itself documents, for a
+directory :mod:`hooks.scripts.container_visibility` can PROVE the container reaches.
+A directory it cannot vouch for is declared to nothing and stays refused, which is
+the leak guard doing its job rather than a gap in it.
+
+Cold-import safe: the live hook is a bare ``python3`` subprocess with no guarantee
+``teatree`` is importable, so the module top imports only stdlib plus the
+stdlib-only ``container_visibility`` sibling.
+"""
+
+import os
+import shutil
+import subprocess  # noqa: S404 — stdlib subprocess for the trusted internal `t3` CLI
+import sys
+from pathlib import Path
+
+from hooks.scripts.container_visibility import container_path
+
+# Alias the bare and ``hooks.scripts.`` identities so a module importing one and a
+# test patching the other operate on ONE module object.
+sys.modules.setdefault("t3_invocation", sys.modules[__name__])
+sys.modules.setdefault("hooks.scripts.t3_invocation", sys.modules[__name__])
+
+#: The CLI this seam exists to invoke. The one place the name is written.
+T3_BINARY = "t3"
+
+#: Where this module sits inside the checkout: ``<root>/hooks/scripts/<name>.py``.
+_PACKAGE_SEGMENTS = ("hooks", "scripts")
+
+
+def hook_checkout_root() -> Path | None:
+    """The checkout this hook package was installed from, or ``None``.
+
+    Derived from this module's own resolved location and then CHECKED against the
+    tree — the candidate root must lead back to this exact file — so the depth is
+    verified rather than copied. ``None`` means the layout does not hold and no
+    container-visible directory can be named.
+    """
+    module = Path(__file__).resolve()
+    root = module.parents[len(_PACKAGE_SEGMENTS)]
+    return root if root.joinpath(*_PACKAGE_SEGMENTS, module.name) == module else None
+
+
+def t3_invocation_cwd() -> str | None:
+    """A directory the containerized ``t3`` can always see, or ``None`` — announced.
+
+    ``None`` degrades to the inherited session directory, which is what the
+    containerized entry point may refuse; the stderr line is what keeps that
+    degradation from being silent.
+    """
+    root = hook_checkout_root()
+    if root is not None:
+        return str(root)
+    sys.stderr.write(
+        "NOTE: the t3 hook seam could not locate its own checkout from "
+        f"{Path(__file__).resolve()} — a `t3` shell-out will inherit the session "
+        "directory, which the containerized entry point refuses when that directory "
+        "is not visible inside the container. Reinstall the hooks from a checkout "
+        "laid out as <root>/hooks/scripts/.\n"
+    )
+    return None
+
+
+def t3_invocation_env(cwd: str | None) -> dict[str, str] | None:
+    """The environment a ``t3`` shell-out from *cwd* needs, or ``None`` to inherit.
+
+    The containerized entry point refuses a working directory absent from its
+    translation table, so a hook whose checkout is not a worktree root is refused
+    for a reason unrelated to what it asked. ``TEATREE_INVOCATION_CWD`` is the
+    escape that entry point documents, and it is set only for a directory a bind
+    mount proves the container reaches — never asserted, because asserting it is
+    how a ``t3`` call silently operates on a tree nobody meant.
+
+    ``None`` leaves the environment inherited, which keeps the refusal.
+    """
+    if cwd is None:
+        return None
+    reachable = container_path(Path(cwd))
+    if reachable is None:
+        return None
+    return {**os.environ, "TEATREE_INVOCATION_CWD": reachable}
+
+
+def t3_available() -> bool:
+    """Whether the ``t3`` CLI is on this hook's (restricted) PATH."""
+    return shutil.which(T3_BINARY) is not None
+
+
+def t3_argv(*args: str) -> list[str] | None:
+    """The argv for ``t3 <args>``, or ``None`` when ``t3`` is not on PATH.
+
+    The single resolver: no other hook module looks ``t3`` up itself, which is what
+    lets the conformance test find a call site that skipped the seam.
+    """
+    binary = shutil.which(T3_BINARY)
+    return [binary, *args] if binary else None
+
+
+def run_t3(
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd: str | Path | None = None,
+    stdin_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run *argv* to completion from a container-visible directory.
+
+    The house posture for a hook shell-out, fixed here so it cannot drift per call
+    site: captured text output, no ``check`` (the caller reads the exit code and
+    classifies it), and a mandatory *timeout* so no hook outlives its budget.
+
+    *cwd* overrides the pinned default for a caller whose subject IS a directory.
+    Omitting it is what makes the session directory unreachable.
+    """
+    resolved = str(cwd) if cwd is not None else t3_invocation_cwd()
+    return subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
+        argv,
+        input=stdin_text,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+        cwd=resolved,
+        env=t3_invocation_env(resolved),
+    )
+
+
+#: The shell's own codes for "the command could not be executed AT ALL" — 126 found but
+#: not executable, 127 not found. A structural fact with a POSIX contract behind it, not
+#: a substring of somebody's error text, which is what makes it safe for a security gate
+#: to fail OPEN on: widening a content matcher narrows what the gate still covers, while
+#: this names a process that never started and therefore never scanned anything.
+_COULD_NOT_EXEC_CODES = frozenset({126, 127})
+
+
+#: Tracebacks a ``t3`` whose CLI import chain loads Django models before setup emits
+#: BEFORE the requested command runs — the hook env carries no ``DJANGO_SETTINGS_MODULE``.
+#: A traceback has no exit code of its own, so this half is unavoidably textual; it is
+#: deliberately NOT widened, because a gate treating more error TEXT as "never ran" is a
+#: gate covering less.
+_BOOTSTRAP_CRASH_MARKERS = (
+    "AppRegistryNotReady",
+    "ImproperlyConfigured",
+    "ModuleNotFoundError",
+    "Apps aren't loaded yet",
+)
+
+
+def t3_never_started(result: subprocess.CompletedProcess[str]) -> bool:
+    """Whether the ``t3`` invocation never STARTED, so it produced no verdict at all.
+
+    The case this exists for is a broken ``t3`` on ``PATH``: the managed launcher is a
+    bash script that ``exec``s a checkout's ``deploy/t3``, so a launcher naming a path
+    this venue cannot reach runs, fails to exec, and exits 126 — with no output from the
+    command anyone asked for. A gate reading only "nonzero" calls that a scanner error
+    and refuses every commit on the box.
+
+    ``FileNotFoundError`` covers the argv-not-found case before a process exists at all;
+    this covers the shell layer between that and the real command, plus the bootstrap
+    crash that reaches the interpreter and dies before the command.
+    """
+    if result.returncode in _COULD_NOT_EXEC_CODES:
+        return True
+    return any(marker in (result.stderr or "") for marker in _BOOTSTRAP_CRASH_MARKERS)
+
+
+def spawn_t3_detached(argv: list[str]) -> None:
+    """Fire *argv* and forget it — a detached, best-effort ``t3`` call.
+
+    Its own session and null streams, so slow work never holds the hook open. The
+    cwd is pinned for the same reason as :func:`run_t3`: an inherited session
+    directory turns the spawn into a refusal nobody ever sees.
+    """
+    cwd = t3_invocation_cwd()
+    subprocess.Popen(  # noqa: S603 — detached, fire-and-forget; trusted internal CLI
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        cwd=cwd,
+        env=t3_invocation_env(cwd),
+    )

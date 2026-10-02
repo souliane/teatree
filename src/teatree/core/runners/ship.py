@@ -1,0 +1,625 @@
+import logging
+import re
+from collections.abc import Iterable, Mapping
+from typing import TYPE_CHECKING, NamedTuple, cast
+
+from teatree.config import get_effective_settings
+from teatree.core.authoring_credential import authorized_pr_host
+from teatree.core.backend_factory import code_host_for_repo_from_overlay
+from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
+from teatree.core.forge_push import push_branch
+from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
+from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
+from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing, warn_if_owner_ratification_unbacked
+from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
+from teatree.core.intake.close_trailer_scanner import apply_publish_gate
+from teatree.core.merge.pr_assignee import resolve_pr_assignee
+from teatree.core.merge.pr_create_verify import verify_pr_exists
+from teatree.core.merge.pr_url_record import record_pr_url
+from teatree.core.overlay_loader import get_overlay_for_ticket
+from teatree.core.review.mr_metadata import ensure_standard_body
+from teatree.core.runners.base import RunnerBase, RunnerResult
+from teatree.core.runners.ship_branch import resolve_and_reconcile_branch
+from teatree.core.worktree.branch_currency import sha_conflicts_with_target
+from teatree.core.worktree.branch_verdict import branch_is_landed
+from teatree.core.worktree.target_branch import resolve_pr_target_branch, resolve_target_branch
+from teatree.core.worktree.worktree_paths import paths_match
+from teatree.quality.gate_receipt import append_gate_notice
+from teatree.utils import git
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import CodeHostBackend
+    from teatree.core.models.ticket import Ticket
+    from teatree.core.models.types import TicketExtra
+    from teatree.core.models.worktree import Worktree
+    from teatree.core.overlay import OverlayBase
+
+logger = logging.getLogger(__name__)
+
+# Single source of truth for close-keyword detection, shared with the
+# pre-push gate (``_close_keyword_gate.py``) so the gate and the auto-rewrite
+# stay in lockstep (#1090). The ``(?::\s*|\s+)`` separator matches the colon
+# form GitLab's default ``issue_closing_pattern`` accepts — ``Closes: #N``
+# auto-closes the issue on merge — while leaving ``Closes : #N`` (a space
+# BEFORE the colon, which GitLab's real ``(:?) +`` grammar does not auto-close)
+# unmatched. The verb set is the past-tense-inclusive superset
+# (``close[sd]?|fix(?:e[sd])?|resolve[sd]?``) GitHub/GitLab both recognise.
+CLOSE_KEYWORD_RE = re.compile(
+    r"\b(?P<kw>close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?::\s*|\s+)"
+    r"(?P<ref>(?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)",
+    re.IGNORECASE,
+)
+
+
+def sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
+    """Replace ``Closes/Fixes/Resolves #N`` with ``Relates to`` when not closing."""
+    if close_ticket:
+        return description
+    return CLOSE_KEYWORD_RE.sub(r"Relates to \g<ref>", description)
+
+
+def get_overlay_publish_gates(overlay_name: str = "") -> list[str]:
+    """Return ``ban_close_trailers_on_namespaces`` — DB-home (#1775).
+
+    Empty list when no row exists. Resolved fresh on each ``pr create`` via the
+    effective-settings tier so a ``config_setting set`` takes effect on the next
+    invocation without restarting the process. The key is per-overlay
+    overridable, so the shipping ticket's overlay scopes it — a blank name is
+    the ambient single-overlay default.
+    """
+    return list(get_effective_settings(overlay_name or None).ban_close_trailers_on_namespaces)
+
+
+def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: bool) -> bool:
+    """Resolve the close-on-merge disposition from the pre-computed ``extra['more_prs_coming']`` flag.
+
+    Close-on-merge is the default: a merged PR keeps its ``Closes/Fixes #N``
+    keywords when the overlay's auto-close setting is enabled. This reads the
+    single ``extra['more_prs_coming']`` boolean and suppresses the close when
+    it is set — the caller is what detects a declared partial PR or a still-open
+    umbrella issue and records the flag
+    (``feedback_partial_pr_never_closes_umbrella_issue``).
+
+    Returns ``True`` when the ``Closes/Fixes #N`` keywords must be kept so the
+    platform auto-closes the issue on merge; ``False`` when they must be
+    rewritten to ``Relates to`` (setting disabled, or ``more_prs_coming`` set).
+    """
+    if not setting_enabled:
+        return False
+    more_prs_coming = bool(extra and extra.get("more_prs_coming"))
+    return not more_prs_coming
+
+
+class PrTitleInputs(NamedTuple):
+    """The commit/worktree-derived inputs an overlay PRODUCES a title from.
+
+    Grouped so ``resolve_pr_title`` keeps a small signature and both call sites
+    (the ship and the preview) assemble the same shape.
+    """
+
+    branch: str
+    subject: str
+    body: str
+    title_override: str = ""
+
+
+def resolve_pr_title(ticket: "Ticket", extra: Mapping[str, object] | None, inputs: PrTitleInputs) -> str:
+    """Resolve the title a PR will SHIP with — the single source of truth.
+
+    Both ``ShipExecutor._build_pr_spec`` (the actual ship) and ``ship_preview``
+    (the ``pr create`` preflight) call this, so the title the preflight
+    validates is always the title that will actually ship — they can no longer
+    drift. Precedence: an explicit ``--title`` (``inputs.title_override``) wins;
+    then a title pinned on ``extra['pr_title_override']``; then the
+    overlay-PRODUCED title (``metadata.build_pr_title``, which returns the
+    subject unchanged by default); then the ``Resolve <issue_url>`` fallback.
+
+    The returned title is NOT yet close-keyword-sanitized — each caller applies
+    ``sanitize_close_keywords`` so the description's first line is built from the
+    same sanitized string (the title/description divergence guard).
+    """
+    pinned = inputs.title_override or str((extra or {}).get("pr_title_override") or "")
+    if pinned:
+        return pinned
+    generated = get_overlay_for_ticket(ticket).metadata.build_pr_title(
+        branch=inputs.branch,
+        subject=inputs.subject,
+        body=inputs.body or "",
+        issue_url=ticket.issue_url or "",
+    )
+    return generated or f"Resolve {ticket.issue_url}"
+
+
+def _config_str_list(raw: object) -> list[str]:
+    if isinstance(raw, str):
+        values: Iterable[str] = raw.split(",")
+    elif isinstance(raw, Iterable):
+        values = [str(value) for value in raw]
+    else:
+        return []
+    return [value.strip() for value in values if value.strip()]
+
+
+def overlay_pr_labels(overlay: "OverlayBase") -> list[str]:
+    return _config_str_list(overlay.config.pr_auto_labels)
+
+
+def overlay_pr_reviewers(overlay: "OverlayBase") -> list[str]:
+    """The overlay's standing reviewer policy, unscoped — the raw config read."""
+    return _config_str_list(overlay.config.pr_auto_reviewers)
+
+
+def pr_reviewers_for_remote(overlay: "OverlayBase", remote: str) -> list[str]:
+    """The reviewer policy as it applies to *remote* — empty where the owner is the AUTHOR.
+
+    ``pr_auto_reviewers`` exists to make the owner an independent CHECKER of an MR
+    a bot opened. A repo written under the overlay-wide credential is authored by
+    the owner himself, so applying the policy there would set him as reviewer of
+    his own MR — colleague-visible, and the exact assignment
+    ``handle_block_self_reviewer_assign`` refuses. Every PR-create path resolves
+    its reviewers through here so a third one cannot reintroduce the hole.
+    """
+    return overlay_pr_reviewers(overlay) if overlay.config.acts_as_distinct_identity_on(remote) else []
+
+
+class ShipWorktreeAmbiguousError(RuntimeError):
+    """Raised when a multi-repo ticket cannot say WHICH worktree the operator meant."""
+
+
+def _unmatched_reason(invoking_path: str, invoking_branch: str) -> str:
+    """Why no row could be identified — the actionable half of the refusal."""
+    if invoking_path:
+        return f"no recorded worktree is at the invoking path {invoking_path!r}"
+    if invoking_branch:
+        return f"no single repo holds the invoking branch {invoking_branch!r}"
+    return "no invoking worktree could be identified"
+
+
+def _ambiguity_message(ticket: "Ticket", rows: "list[Worktree]", repos: list[str], unmatched: str) -> str:
+    """Name the ambiguity and how to resolve it — never a silently-picked row."""
+    listing = "\n".join(
+        f"  - {row.repo_path} on {row.branch!r} at {(row.extra or {}).get('worktree_path', '') or row.repo_path}"
+        for row in rows
+    )
+    return (
+        f"Refusing to ship ticket {ticket.ticket_number}: it spans {len(repos)} repos "
+        f"({', '.join(repos)}) — {unmatched}, so picking one would ship a repo you did "
+        f"not name.\n"
+        f"candidates:\n{listing}\n"
+        "Run `pr create` from the worktree you mean. Under the containerized `t3` the "
+        "host cwd crosses as TEATREE_INVOCATION_CWD, which deploy/t3 sets only for a cwd "
+        "under a mounted worktree root — export it to the container-side path when your "
+        "checkout lives elsewhere."
+    )
+
+
+def _row_at_invoking_path(rows: "list[Worktree]", invoking_path: str) -> "Worktree | None":
+    """The row whose on-disk worktree IS the invoking cwd, symlink-tolerant."""
+    if not invoking_path:
+        return None
+    return next(
+        (row for row in rows if row.worktree_path and paths_match(row.worktree_path, invoking_path)),
+        None,
+    )
+
+
+def _row_on_invoking_branch(rows: "list[Worktree]", invoking_branch: str) -> "Worktree | None":
+    """The row on the invoking branch — only while ONE repo carries that name.
+
+    ``workspace ticket`` mints ``Worktree.branch`` as ``<N>-ticket`` for every
+    repo of a ticket, so the name is routinely shared across repos and cannot
+    identify one; matching it there would pick the earliest row, which is the
+    silent wrong-repo ship the refusal exists to prevent.
+    """
+    if not invoking_branch:
+        return None
+    matched = [row for row in rows if row.branch == invoking_branch]
+    if len({row.repo_path for row in matched}) != 1:
+        return None
+    return matched[0]
+
+
+def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree | None":
+    """The worktree to act on — the INVOKING one, not the earliest.
+
+    #776: ``worktrees.first()`` returns the earliest (often already-merged) row,
+    so a reused ticket spanning N workstreams acted on a stale branch. ``pr
+    create`` records where the operator stood — ``extra['ship_invoking_path']``,
+    the checkout root, and ``extra['ship_invoking_branch']``, its git branch.
+
+    The PATH is the identity and is tried first: it survives the ``<N>-ticket`` →
+    ``<N>-<type>-<desc>`` rename :func:`resolve_and_reconcile_branch` performs
+    mid-ship, and it tells apart the two repos the canonical
+    ``<workspace>/<branch>/<repo-leaf>`` layout puts on the SAME branch name. The
+    branch is the fallback, and only while one repo carries it.
+
+    Falls back to the earliest row only when nothing identifies the invoking one
+    and every row is the SAME repo. A ticket spanning several repos raises
+    :class:`ShipWorktreeAmbiguousError` instead — ``first()`` there is routinely a
+    different repo than the operator is standing in, and shipping it reports "0
+    commits ahead" against a branch they never named.
+    """
+    rows = list(ticket.worktrees.order_by("pk"))
+    invoking_path = str(extra.get("ship_invoking_path") or "")
+    invoking_branch = str(extra.get("ship_invoking_branch") or "")
+    matched = _row_at_invoking_path(rows, invoking_path) or _row_on_invoking_branch(rows, invoking_branch)
+    if matched is not None:
+        return matched
+    repos = sorted({row.repo_path for row in rows})
+    if len(repos) > 1:
+        raise ShipWorktreeAmbiguousError(
+            _ambiguity_message(ticket, rows, repos, _unmatched_reason(invoking_path, invoking_branch))
+        )
+    return rows[0] if rows else None
+
+
+class ShipExecutor(RunnerBase):
+    """Push the worktree branch and open the pull request.
+
+    Runs inside ``execute_ship`` after the FSM advances to ``PR_OPENED``. The
+    worker calls ``request_review()`` on success to advance to ``REVIEW_REQUESTED``.
+    """
+
+    def __init__(self, ticket: "Ticket") -> None:
+        self.ticket = ticket
+
+    def run(self) -> RunnerResult:
+        ticket = self.ticket
+        extra = cast("TicketExtra", ticket.extra or {})
+
+        try:
+            worktree = resolve_ship_worktree(ticket, extra)
+        except ShipWorktreeAmbiguousError as exc:
+            return RunnerResult(ok=False, detail=str(exc))
+        if worktree is None:
+            return RunnerResult(ok=False, detail="no worktree on ticket")
+
+        repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
+
+        host = self._resolve_host(repo_path)
+        if isinstance(host, RunnerResult):
+            return host
+
+        # #1519: the DB-recorded branch is minted as ``<N>-ticket`` at
+        # ``workspace ticket`` time; agents then rename the git branch to the
+        # ``<N>-<type>-<desc>`` convention. Ship the worktree's ACTUAL current
+        # git branch — that is what exists in the worktree — and reconcile the
+        # stale DB rows so the worktree↔branch mapping stops desyncing.
+        # (Minting the convention name upfront — option 1 — is a separate
+        # design decision deliberately left out of this fix.)
+        branch = resolve_and_reconcile_branch(ticket, worktree, repo_path)
+
+        # #1263: short-circuit only when THIS branch already has a PR.
+        # The legacy truthiness check fired on any prior ``pr_urls`` entry,
+        # so on a reused-ticket multi-workstream flow a stale URL from an
+        # earlier workstream silently advanced the FSM without pushing or
+        # opening a PR for the current branch. ``pr_url_by_branch`` is the
+        # per-branch index; fall back to ``pr_urls[-1]`` only when no
+        # ``ship_invoking_branch`` hint is recorded (single-PR async-worker
+        # path with no multi-workstream context).
+        recorded_url = self._recorded_url_for_branch(extra, branch)
+        if recorded_url:
+            return RunnerResult(ok=True, detail=recorded_url)
+
+        # #776: a ticket can span multiple PRs (one branch per workstream).
+        # Refuse to re-open a PR for a branch already landed on base — that is
+        # the stale-row symptom (a junk duplicate of merged work). #4070: judged
+        # by the three-layer CONTENT classifier, not the ancestor test alone; a
+        # squash-merge rewrites the branch's shas, so the branch is no ancestor
+        # of base and the ancestor test let the duplicate through. Inconclusive
+        # stays NOT-landed and ship proceeds — a wrongly-refused PR strands
+        # work, while a wrongly-opened one is a visible duplicate. Same reason
+        # the content must still be PRESENT on base: a revert, or a re-edit of
+        # the same region, ships rather than refuses.
+        if branch_is_landed(repo_path, branch):
+            self._clear_invoking_branch(ticket, extra)
+            return RunnerResult(
+                ok=False, detail=f"branch {branch!r} is already merged into base — refusing duplicate PR"
+            )
+
+        return self._push_and_open(ticket, extra, host, repo_path, branch)
+
+    def _push_and_open(
+        self,
+        ticket: "Ticket",
+        extra: "TicketExtra",
+        host: "CodeHostBackend",
+        repo_path: str,
+        branch: str,
+    ) -> RunnerResult:
+        """Every refusal first, then the two fenced outward writes (push, PR-open).
+
+        Split out of ``run`` so each half stays within the return-count gate. The
+        fleet-claim fence (:meth:`_fleet_claim_lost`) is re-verified immediately
+        before EACH outward write — the push and the create are distinct writes and
+        the claim can be lost in between.
+        """
+        # #940 defense-in-depth: re-check branch currency before pushing. The
+        # `pr create` gate already auto-merged the target, but ``execute_ship``
+        # may run in an async worker after a window where ``origin/<target>``
+        # advanced again. Abort only when the branch now *conflicts* with target.
+        currency_error = self._check_branch_currency(ticket, repo_path, branch)
+        if currency_error is not None:
+            return RunnerResult(ok=False, detail=currency_error)
+
+        refusal = self._refusal_before_outward_write(ticket, host, repo_path)
+        if refusal is not None:
+            return refusal
+
+        fence = self._fleet_claim_lost(repo_path)
+        if fence is not None:
+            return fence
+
+        pushed = push_branch(repo=repo_path, remote="origin", branch=branch)
+        if not pushed.ok:
+            return RunnerResult(ok=False, detail=f"push refused ({pushed.failure}): {pushed.detail}")
+        # Re-fence immediately after the push, before ANY PR-open work — the push and
+        # the create are two distinct outward writes and the claim can be lost between.
+        fence = self._fleet_claim_lost(repo_path)
+        if fence is not None:
+            return fence
+        spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
+        return self._open_pr_and_record(ticket, host, spec)
+
+    @staticmethod
+    def _refusal_before_outward_write(
+        ticket: "Ticket",
+        host: "CodeHostBackend",
+        repo_path: str,
+    ) -> "RunnerResult | None":
+        """The PR-budget / debt-delta refusals, reached BEFORE any outward write (#4151).
+
+        THE chokepoint both the interactive ``pr create`` async worker and the
+        autonomous loop's task-driven ship converge on — the loop route reaches
+        ``execute_ship`` without ``_run_ship_gates``, so without this the branch would
+        ship un-gated. Both are inert at their neutral/DARK defaults.
+
+        The ORDERING is the contract, not an optimisation. Run after the push, these
+        refusals answered "refused" for a ship whose PR already existed: the push fires
+        the pre-push ``ensure-pr`` hook, which opens a PR for the branch, so the caller
+        both retried into an "already exists" collision and stopped tracking a live PR.
+
+        Stage 3: ``host`` is the repo's resolved code host, so the budget check sees a
+        sibling fleet instance's live forge PR too.
+        """
+        expected_slug = git.remote_slug(repo=repo_path)
+        if expected_slug:
+            try:
+                check_pr_budget(ticket, expected_slug, host=host)
+            except PrBudgetExceededError as exc:
+                return RunnerResult(ok=False, detail=str(exc))
+        debt_error = evaluate_debt_delta(ticket, repo_path)
+        if debt_error is not None:
+            return RunnerResult(ok=False, detail=debt_error)
+        return None
+
+    def _fleet_claim_lost(self, repo_path: str) -> "RunnerResult | None":
+        """Refuse the outward write when this instance no longer holds the fleet claim.
+
+        Re-verified immediately before BOTH the branch push and the PR-open (the two
+        outward writes ``execute_ship`` makes), because the claim can be stolen in
+        the async gap after the sync pre-ship gate. Inert when the kill-switch is off
+        or the ticket carries no fleet claim; a lost/unconfirmable claim fails CLOSED
+        (another instance is doing this work — a rare self-heartbeat race just retries).
+        """
+        from teatree.core.fleet import wire  # noqa: PLC0415 — leaf import kept out of app-load cycle
+
+        if wire.ticket_claim_is_lost(self.ticket, repo_path):
+            ref = self.ticket.ticket_number or self.ticket.pk
+            return RunnerResult(
+                ok=False,
+                detail=(
+                    f"fleet claim for ticket {ref} is no longer held by this instance — aborting ship "
+                    f"(stolen by another instance, or the ref infra is unreachable so ownership is unconfirmable)"
+                ),
+            )
+        return None
+
+    @staticmethod
+    def _resolve_host(repo_path: str) -> "CodeHostBackend | RunnerResult":
+        """Resolve the forge from *repo_path*'s actual origin host (#2025), or refuse structurally.
+
+        Token-presence precedence picked GitHub for a GitLab-hosted repo on an overlay carrying
+        both PATs, so ship ran ``gh`` against a GitLab remote. Deriving the forge from the repo's
+        origin fixes that; an absent credential — and an author the forge would bar from approving
+        its own MR — surface here, before any raw ``gh``/``glab`` GraphQL error.
+        """
+        try:
+            host = code_host_for_repo_from_overlay(repo_path)
+        except BackendResolutionError as exc:
+            return RunnerResult(ok=False, detail=str(exc))
+        checked = authorized_pr_host(host, repo_path)
+        return RunnerResult(ok=False, detail=checked) if isinstance(checked, str) else checked
+
+    def _open_pr_and_record(
+        self,
+        ticket: "Ticket",
+        host: "CodeHostBackend",
+        spec: PullRequestSpec,
+    ) -> RunnerResult:
+        """Open the PR, verify the URL is present, and record it on the ticket.
+
+        Reached only once every refusal has concluded
+        (:meth:`_refusal_before_outward_write`), so nothing here can turn into a
+        "refused" verdict for a PR that exists.
+
+        #1222 / #1226 verify-by-re-read: a backend that returns a payload
+        without a URL (or with the wrong field name) MUST surface as
+        ``ok=False`` — otherwise the FSM advances to PR_OPENED with an empty
+        ``pr_urls`` entry and downstream gates think no PR exists.
+        ``web_url`` is the cross-host canonical key; ``html_url`` is kept
+        for raw GitHub API payloads piped through other producers.
+        """
+        expected_slug = git.remote_slug(repo=spec.repo)
+        pr = host.create_pr(spec)
+        url = str(pr.get("web_url") or pr.get("html_url") or "")
+        if not url.startswith(("http://", "https://")):
+            return RunnerResult(
+                ok=False,
+                detail=(f"host.create_pr returned no PR url (got {url!r}; payload keys={sorted(pr.keys())!r})"),
+            )
+        # #1120 (a): verify the PR URL targets the expected repo.  A valid URL
+        # for the *wrong* repo (e.g. a cross-project CI mirror mis-resolved by
+        # the overlay) must not silently advance the FSM to ``review_requested``. The
+        # slug is matched on ``/``-delimited boundaries — a bare substring test
+        # accepted a ``<slug>-mirror`` repo's URL — and both forges put a route
+        # segment after the repo (``/pull/N``, ``/-/merge_requests/N``), so the
+        # trailing slash is always there to anchor against.
+        if expected_slug and f"/{expected_slug}/" not in url:
+            return RunnerResult(
+                ok=False,
+                detail=(
+                    f"host.create_pr returned a PR url for the wrong repo "
+                    f"(expected slug {expected_slug!r} not found in {url!r})"
+                ),
+            )
+        # #1194 verify-by-re-read: a well-formed URL for the right repo is still
+        # not proof the PR is live — re-read it before advancing the FSM. A
+        # re-read that 404s means the create silently no-op'd; report failure
+        # so no phantom URL is recorded.
+        verified = verify_pr_exists(host, url)
+        if not verified.confirmed:
+            return RunnerResult(
+                ok=False,
+                detail=f"host.create_pr URL {url!r} failed verify-by-re-read: {verified.reason}",
+            )
+        self._record_pr_url(ticket, url, spec.branch)
+        logger.info("Ship executor pushed %s and opened PR %s", spec.branch, url)
+        return RunnerResult(ok=True, detail=url)
+
+    @staticmethod
+    def _check_branch_currency(
+        ticket: "Ticket",
+        repo_path: str,
+        branch: str,
+    ) -> str | None:
+        """#940 defense-in-depth: refuse to push only on a real conflict.
+
+        The ``pr create`` gate ran auto-merge before the async-worker
+        window opened. If ``origin/<target>`` advanced again since AND
+        the branch now *conflicts* with it, the loop escalates via a
+        durable backlog entry (the worker cannot re-derive consent to
+        mutate the working tree to resolve conflicts). A branch that is
+        merely behind but conflict-free pushes fine — being behind is
+        not a push blocker. ``sha_conflicts_with_target`` predicts the
+        merge via ``git merge-tree`` without mutating the worktree, so
+        this stays a non-mutating defense gate.
+
+        The target is resolved through the shared
+        :func:`~teatree.core.worktree.target_branch.resolve_target_branch` seam,
+        so this re-check predicts against exactly the branch ``pr create``'s
+        gate merged in and the PR will be opened against.
+        """
+        target = resolve_target_branch(ticket, repo_path, branch=branch)
+        conflict = sha_conflicts_with_target(repo_path, branch, target)
+        if conflict is None:
+            return None
+        # Record on the ticket so the orchestrator's backlog scanner
+        # can pick this up — durable signal, not an ephemeral log.
+        ticket.merge_extra(
+            set_keys={
+                "ship_branch_currency_blocker": {
+                    "branch": branch,
+                    "target": target,
+                    "behind": conflict.behind_count,
+                    "conflicting_paths": list(conflict.conflicting_paths),
+                }
+            },
+        )
+        paths_str = ", ".join(conflict.conflicting_paths) if conflict.conflicting_paths else "(see git status)"
+        return (
+            f"refusing to push: {branch!r} conflicts with {target} in: {paths_str} — "
+            f"merge {target} into the branch, resolve the conflicts, then re-run `pr create`."
+        )
+
+    @staticmethod
+    def _clear_invoking_branch(ticket: "Ticket", extra: "TicketExtra") -> None:
+        if "ship_invoking_branch" in extra:
+            # #800 N3: canonical locked RMW (was an unlocked extra save).
+            ticket.merge_extra(pop_keys=["ship_invoking_branch"])
+
+    @staticmethod
+    def _recorded_url_for_branch(extra: "TicketExtra", branch: str) -> str:
+        """The PR URL recorded for ``branch``, or ``""`` if none.
+
+        #1263: short-circuit only when the *current* branch already has a
+        PR. ``pr_url_by_branch`` is the per-branch index populated by
+        ``_record_pr_url`` on each successful ship; it tells us reliably
+        whether the invoking branch's PR exists. The legacy single-PR
+        fallback (``pr_urls[-1]`` when no ``ship_invoking_branch`` hint
+        is set) preserves async-worker idempotency for tickets that
+        pre-date the per-branch index.
+        """
+        by_branch = extra.get("pr_url_by_branch")
+        if isinstance(by_branch, Mapping):
+            recorded = by_branch.get(branch)
+            if isinstance(recorded, str) and recorded:
+                return recorded
+        invoking = str(extra.get("ship_invoking_branch") or "")
+        if invoking:
+            return ""
+        legacy_urls = list(extra.get("pr_urls") or [])
+        return legacy_urls[-1] if legacy_urls else ""
+
+    @staticmethod
+    def _build_pr_spec(
+        ticket: "Ticket",
+        host: "CodeHostBackend",
+        repo_path: str,
+        branch: str,
+        extra: "TicketExtra",
+    ) -> PullRequestSpec:
+        subject, body = git.last_commit_message(repo=repo_path, skip_merges=True)
+        overlay = get_overlay_for_ticket(ticket)
+        # PRODUCE the title via the shared resolver so the ship and the
+        # ``ship_preview`` preflight agree on what will ship: a pinned
+        # ``--title`` / ``extra['pr_title_override']`` wins, else the
+        # overlay-produced title, else the ``Resolve <url>`` fallback.
+        title = resolve_pr_title(
+            ticket,
+            extra,
+            PrTitleInputs(branch=branch, subject=subject, body=body or ""),
+        )
+        close_ticket = should_close_ticket(
+            extra,
+            setting_enabled=overlay.config.mr_close_ticket,
+        )
+        # Build the description's FIRST LINE from the (sanitized) title, not the
+        # raw subject — otherwise a canonical generated title diverges from the
+        # raw-subject first line, the exact title/description divergence that
+        # blocks the release-notes pipeline.
+        sanitized_title = sanitize_close_keywords(title, close_ticket=close_ticket)
+        title = sanitized_title
+        sanitized_body = sanitize_close_keywords(body, close_ticket=close_ticket) if body else ""
+        description = f"{sanitized_title}\n\n{sanitized_body}" if sanitized_body else sanitized_title
+        description = ensure_standard_body(
+            description,
+            required_sections=overlay.metadata.get_required_description_sections(),
+            section_defaults=overlay.metadata.get_description_section_defaults(),
+        )
+        description = apply_publish_gate(
+            description,
+            repo=git.remote_slug(repo=repo_path),
+            patterns=get_overlay_publish_gates(ticket.overlay),
+        )
+        description = append_gate_notice(description, repo_path)
+        warn_if_open_questions_missing(description)
+        warn_if_owner_ratification_unbacked(description)
+        warn_if_precheck_incomplete(description)
+        assignee = resolve_pr_assignee(host, repo=repo_path)
+        return PullRequestSpec(
+            repo=repo_path,
+            branch=branch,
+            title=title,
+            description=description,
+            target_branch=resolve_pr_target_branch(ticket, repo_slug=git.remote_slug(repo=repo_path), branch=branch),
+            labels=overlay_pr_labels(overlay),
+            assignee=assignee,
+            reviewers=pr_reviewers_for_remote(overlay, git.remote_url(repo=repo_path)),
+        )
+
+    @staticmethod
+    def _record_pr_url(ticket: "Ticket", url: str, branch: str) -> None:
+        # The ship's single-run hints are ship-owned, so they are cleared here
+        # rather than in the shared writer the pre-push hook also calls (#4305).
+        record_pr_url(ticket, url, branch, pop_keys=("pr_title_override", "ship_invoking_branch"))

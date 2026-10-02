@@ -1,0 +1,88 @@
+from pathlib import Path
+
+import teatree
+
+SECRET_KEY = "teatree-tests"
+USE_TZ = True
+# Django's own default is ``America/Chicago``, so omitting this ran every date-boundary
+# assertion against a local midnight at 05:00/06:00 UTC — inside the window this repo's
+# CI actually runs in — while production resolves the same dates in UTC (#3996).
+TIME_ZONE = "UTC"
+ROOT_URLCONF = "teatree.urls"
+STATIC_URL = "/static/"
+
+# The project templates dir (holds the /admin/ re-skin's base_site.html). Mirrors
+# ``teatree.settings`` so the admin snapshot renders identically here and in the
+# generate-dashboard-snapshot hook.
+_PROJECT_TEMPLATES = Path(teatree.__file__).resolve().parent / "templates"
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": ":memory:",
+    },
+}
+
+INSTALLED_APPS = [
+    "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
+    "django.contrib.messages",
+    "django.contrib.sessions",
+    # First app listed wins a duplicated command: this one shadows `makemigrations` with db-free checks.
+    "teatree.core",
+    "django_linear_migrations",
+    "django_rich",
+    "django_tasks_db",
+    "teatree.agents",
+    "teatree.backends",
+    "teatree.dash",
+    "teatree.contrib.t3_teatree",
+]
+
+MIDDLEWARE = [
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # Carried over from the project settings so the dashboard query-count pins
+    # measure the plan production actually runs, memo included.
+    "teatree.core.middleware.RequestScopedReadCacheMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+]
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [str(_PROJECT_TEMPLATES)],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ],
+        },
+    },
+]
+
+TASKS = {
+    "default": {
+        "BACKEND": "django.tasks.backends.dummy.DummyBackend",
+        # Mirror the production ``teatree.settings`` allowlist: "loops" is the
+        # dedicated queue the self-rescheduling loop-timer chains ride (parity-tested).
+        "QUEUES": ["default", "loops", "cheap"],
+    },
+}
+
+TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"
+TEATREE_AGENT_HANDOVER = [
+    {
+        "runtime": "claude-code",
+        "telemetry": {
+            "provider": "claude-statusline",
+            "switch_away_at_percent": 95,
+            "switch_back_at_percent": 80,
+        },
+    },
+]

@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-id_namespace_task_id_not_resolved_as_issue-noop", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

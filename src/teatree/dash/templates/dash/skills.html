@@ -1,0 +1,100 @@
+{% extends "dash/base.html" %}
+{% block title %}Skills{% endblock %}
+{% block heading %}Skills{% endblock %}
+{% block content %}
+  {% if operation_error %}<div class="banner-red" role="alert">{{ operation_error }}</div>{% endif %}
+  {% if inventory.collision_count %}
+    <div class="banner-red" role="alert"><strong>{{ inventory.collision_count }} same-name collision{{ inventory.collision_count|pluralize }}</strong> across TeaTree and harness-installed skills. Both identities are shown below; only the harness duplicate can be removed.</div>
+  {% endif %}
+  {% if inventory.receipt.error %}<div class="banner-amber" role="status">{{ inventory.receipt.error }}</div>{% endif %}
+
+  <section class="skill-summary" aria-label="Skills inventory summary">
+    <div class="skill-summary-card"><strong>{{ inventory.teatree_skills|length }}</strong><span>TeaTree declarations</span></div>
+    <div class="skill-summary-card"><strong>{{ inventory.required_external|length }}</strong><span>Required external</span></div>
+    <div class="skill-summary-card{% if inventory.collision_count %} danger{% endif %}"><strong>{{ inventory.collision_count }}</strong><span>Collision pairs</span></div>
+    <div class="skill-summary-card"><strong>{% if inventory.receipt.stale %}Stale{% else %}Current{% endif %}</strong><span>{% if inventory.receipt.generated_at %}{{ inventory.receipt.generated_at|date:"Y-m-d H:i:s T" }}{% else %}Never refreshed{% endif %}</span></div>
+  </section>
+
+  <section class="band" id="attempt-skill-assurance">
+    <h2>Recent attempt skill assurance</h2>
+    <p class="muted">Recorded resolution and injection are distinct from application. “Agent-declared application” means the agent supplied a receipt; it is not independent proof.</p>
+    <table class="dash">
+      <thead><tr><th>attempt</th><th>recorded assurance</th></tr></thead>
+      <tbody>
+        {% for attempt_id, assurance in recent_assurance %}
+          <tr><td class="mono">#{{ attempt_id }}</td><td>{% include "dash/partials/_skill_assurance.html" with assurance=assurance %}</td></tr>
+        {% empty %}
+          <tr class="empty-row"><td colspan="2">No recent attempt has a skill assurance receipt.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="band">
+    <div class="band-head">
+      <div>
+        <h2>Cached harness inventory</h2>
+        <p class="muted">This page performs no network or subprocess work. Refresh explicitly to run skills {{ inventory.receipt.cli_version|default:"CLI" }} and compare linked checkouts with the fetched origin default branch.</p>
+      </div>
+      <form method="post" action="{% url 'dash:skills_refresh' %}">{% csrf_token %}<button class="dash-btn primary" type="submit">Refresh inventory</button></form>
+    </div>
+    <form class="dash-filters" method="get" aria-label="Skill filters">
+      <label>Filter <input type="search" name="q" value="{{ skill_query }}" placeholder="name or source"></label>
+      <label>Status <select name="status"><option value="">All</option><option value="collision"{% if skill_status == "collision" %} selected{% endif %}>Collision</option><option value="required"{% if skill_status == "required" %} selected{% endif %}>Required</option><option value="update"{% if skill_status == "update" %} selected{% endif %}>Update available</option></select></label>
+      <button class="dash-btn" type="submit">Apply</button>
+    </form>
+  </section>
+
+  <section class="band" id="teatree-skills">
+    <div class="band-head"><div><h2>TeaTree <span class="chip state">Read only</span></h2><p class="muted">First-party workflow skills are prompt declarations, not harness installs. Direct declarations, companion declarations, and resolved embedded closures are separate facts.</p></div></div>
+    <table class="dash">
+      <thead><tr><th scope="col">Canonical skill</th><th scope="col">Dependencies</th><th scope="col">Declared by</th><th scope="col">Actually embedded</th><th scope="col">Control</th></tr></thead>
+      <tbody>
+        {% for skill in inventory.teatree_skills %}
+          <tr class="skill-row{% if skill.danger %} danger{% endif %}">
+            <td><strong class="mono">{{ skill.identity }}</strong><br><small class="mono">{{ skill.source_path }}</small>{% for collision in skill.collisions %}<br><span class="chip warn">collides with {{ collision }}</span>{% endfor %}</td>
+            <td>{% for dependency in skill.direct_requires %}<span class="chip state">direct {{ dependency }}</span>{% endfor %}{% for dependency in skill.transitive_requires %}<span class="chip">closure {{ dependency }}</span>{% empty %}{% if not skill.direct_requires %}<span class="muted">None</span>{% endif %}{% endfor %}</td>
+            <td>{% for agent in skill.direct_agents %}<span class="chip state">agent {{ agent }}</span>{% endfor %}{% for agent in skill.companion_agents %}<span class="chip">companion {{ agent }}</span>{% endfor %}{% if not skill.direct_agents and not skill.companion_agents %}<span class="muted">Not directly declared</span>{% endif %}</td>
+            <td>{% for agent in skill.embedded_agents %}<span class="chip">agent {{ agent }}</span>{% endfor %}{% for phase in skill.embedded_phases %}<span class="chip state">phase {{ phase }}</span>{% endfor %}{% if not skill.embedded_agents and not skill.embedded_phases %}<span class="muted">Not embedded</span>{% endif %}</td>
+            <td><button class="dash-btn" type="button" disabled title="TeaTree workflow skills are read only">Read only</button></td>
+          </tr>
+        {% empty %}<tr><td colspan="5" class="muted">No TeaTree declarations were found.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="band" id="required-skills">
+    <h2>Required external context <span class="chip state">Read only</span></h2>
+    <p class="muted">These names come from unresolved skill references, enumerable apm.yml dependencies, or active runtime settings. Harness copies are protected only when this independent demand exists.</p>
+    <table class="dash">
+      <thead><tr><th scope="col">Skill</th><th scope="col">Required by</th><th scope="col">Control</th></tr></thead>
+      <tbody>{% for skill in inventory.required_external %}<tr><td class="mono">{{ skill.name }}</td><td>{% for source in skill.sources %}<span class="chip state">{{ source }}</span>{% endfor %}</td><td><button class="dash-btn" type="button" disabled>Read only</button></td></tr>{% empty %}<tr><td colspan="3" class="muted">No external context is currently required.</td></tr>{% endfor %}</tbody>
+    </table>
+  </section>
+
+  <nav class="tabs" aria-label="Harness inventories">{% for harness in inventory.harnesses %}<a href="#harness-{{ harness.harness.value }}">{{ harness.label }}</a>{% endfor %}</nav>
+  {% for harness in inventory.harnesses %}
+    <section class="band" id="harness-{{ harness.harness.value }}">
+      <h2>{{ harness.label }}</h2>
+      <table class="dash">
+        <thead><tr><th scope="col">Canonical skill</th><th scope="col">Manager source</th><th scope="col">Front door</th><th scope="col">Git provenance at refresh</th><th scope="col">Policy</th><th scope="col">Control</th></tr></thead>
+        <tbody>
+          {% for skill in harness.skills %}
+            <tr class="skill-row{% if skill.danger %} danger{% endif %}">
+              <td><strong class="mono">{{ skill.canonical_identity }}</strong>{% for collision in skill.collisions %}<br><span class="chip warn">collides with {{ collision }}</span>{% endfor %}</td>
+              <td><span class="mono">{{ skill.manager_path }}</span><br>{{ skill.source|default:"Unknown source" }}{% if skill.source_url %}<br><small>{{ skill.source_url }}</small>{% endif %}</td>
+              <td>{% if skill.installation %}<span class="chip state">{{ skill.installation.kind.value }}</span><br><span class="mono">{{ skill.installation.front_door_path }}</span>{% if skill.installation.link_target %}<br><small class="mono">→ {{ skill.installation.link_target }}</small>{% endif %}{% else %}<span class="chip warn">Unknown</span>{% endif %}</td>
+              <td>{% if skill.installation.git %}{% if skill.installation.git.state.value == "known" %}<span class="mono">{{ skill.installation.git.branch|default:"detached" }}</span><br><span class="mono">{{ skill.installation.git.local_sha }}</span><br>origin/{{ skill.installation.git.default_branch }} <span class="mono">{{ skill.installation.git.default_sha }}</span><br><span class="chip{% if skill.installation.git.newer_on_default %} warn{% endif %}">ahead {{ skill.installation.git.ahead }} / behind {{ skill.installation.git.behind }}</span>{% else %}<span class="chip warn">Unknown</span><br>{{ skill.installation.git.diagnostic }}{% endif %}{% else %}<span class="muted">Not a linked git checkout</span>{% endif %}</td>
+              <td>{% if skill.required %}<span class="chip state">Required</span><br>{{ skill.removal_reason }}{% else %}<span class="chip">Optional</span>{% endif %}{% if skill.excluded %}<br><span class="chip warn">Excluded from setup</span>{% endif %}</td>
+              <td>{% if skill.removable %}<form method="post" action="{% url 'dash:skills_remove' harness.harness.value skill.name %}">{% csrf_token %}<button class="dash-btn danger" type="submit" onclick="return confirm('Remove {{ skill.name|escapejs }} from {{ harness.label|escapejs }}? It will stay excluded from future setup runs.')">Remove</button></form>{% else %}<button class="dash-btn" type="button" disabled>Read only</button>{% endif %}</td>
+            </tr>
+          {% empty %}<tr><td colspan="6" class="muted">No cached skills are installed for this harness. Refresh inventory to verify.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endfor %}
+
+  {% if inventory.diagnostics or inventory.cycles %}
+    <section class="band"><h2>Dependency diagnostics</h2>{% for diagnostic in inventory.diagnostics %}<div class="banner-amber">{{ diagnostic }}</div>{% endfor %}{% for cycle in inventory.cycles %}<div class="banner-red">Cycle: {% for identity in cycle %}<span class="mono">{{ identity }}</span>{% if not forloop.last %} → {% endif %}{% endfor %}</div>{% endfor %}</section>
+  {% endif %}
+{% endblock %}

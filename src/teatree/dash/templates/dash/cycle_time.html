@@ -1,0 +1,127 @@
+{% extends "dash/base.html" %}
+{% block title %}Cycle time{% endblock %}
+{% block heading %}Cycle time{% endblock %}
+{% block content %}
+  <form class="toolbar" method="get" action="{% url 'dash:cycle_time' %}">
+    <span class="field-group">
+      <label for="days">Window (days)</label>
+      <input id="days" type="number" name="days" min="1" max="90" value="{{ view.window_days }}">
+      <button class="dash-btn" type="submit">Apply</button>
+    </span>
+  </form>
+
+  <section class="band">
+    <h2>Per transition</h2>
+    <p class="muted">Median and p90 of every FSM edge since {{ view.since }}, slowest first. The median
+      says what a typical move costs; the p90 is the tail that blocks a delivery day.</p>
+    {% if view.edges %}
+      <table class="dash">
+        <thead><tr><th>transition</th><th class="num">samples</th><th class="num">median</th><th class="num">p90</th></tr></thead>
+        <tbody>
+          {% for edge in view.edges %}
+            <tr data-group="{{ edge.tone }}">
+              <td><span class="mono">{{ edge.from_state }} → {{ edge.to_state }}</span></td>
+              <td class="num">{{ edge.samples }}</td>
+              <td class="num">{{ edge.median }}</td>
+              <td class="num">{{ edge.p90 }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No ticket completed a transition in this window.</p>
+    {% endif %}
+  </section>
+
+  <section class="band">
+    <h2>Trend</h2>
+    <p class="muted">The slowest transitions bucketed over the window, all on one scale
+      (peak {{ view.trend_peak }}) — a line climbing is the factory getting slower at that edge.</p>
+    {% if view.trend %}
+      <svg class="chart-trend" viewBox="0 0 1000 260" preserveAspectRatio="none" role="img"
+        aria-label="Median duration per transition over time">
+        {% for series in view.trend %}
+          <g data-group="{{ series.tone }}">
+            <polyline class="trend-line" points="{{ series.polyline }}" fill="none"/>
+            {% for point in series.points %}
+              <circle class="trend-dot" cx="{{ point.x }}" cy="{{ point.y }}" r="4">
+                <title>{{ series.label }} — {{ point.label }}</title>
+              </circle>
+            {% endfor %}
+          </g>
+        {% endfor %}
+      </svg>
+      <div class="chart-axis">
+        {% for bucket in view.trend_buckets %}<span class="mono">{{ bucket }}</span>{% endfor %}
+      </div>
+      <ul class="chart-legend">
+        {% for series in view.trend %}
+          <li data-group="{{ series.tone }}"><span class="swatch"></span>{{ series.label }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">Not enough completed transitions in this window to plot a trend.</p>
+    {% endif %}
+  </section>
+
+  <section class="band">
+    <h2>Per ticket</h2>
+    <p class="muted">One bar per recently active ticket, all on the same scale (longest {{ view.bar_scale }}).
+      Each phase contributes a faint block for the time it sat waiting and a solid one for the time an
+      agent held it — composition, not chronology within a phase.</p>
+    <ul class="chart-legend">
+      <li data-group="building"><span class="swatch muted"></span>waiting</li>
+      <li data-group="building"><span class="swatch"></span>an agent working</li>
+      <li data-group="ignored"><span class="swatch"></span>split unmeasured — no admission stamp recorded</li>
+    </ul>
+    {% if view.tickets %}
+      <table class="dash">
+        <thead>
+          <tr>
+            <th>ticket</th><th>state</th><th>phase composition</th>
+            <th class="num">lead</th><th class="num">waiting</th><th class="num">working</th><th class="num">cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in view.tickets %}
+            <tr>
+              <td><a href="{{ row.bar.href }}" hx-get="{{ row.bar.href }}" hx-target="#drawer" hx-swap="innerHTML">#{{ row.number }}</a></td>
+              <td><span class="mono">{{ row.state }}</span></td>
+              <td>
+                <svg class="chart-bar" viewBox="0 0 1000 24" preserveAspectRatio="none" role="img"
+                  aria-label="Phase composition of ticket {{ row.number }}">
+                  {% for piece in row.bar.pieces %}
+                    <rect data-group="{{ piece.tone }}" class="bar-piece{% if piece.muted %} muted{% endif %}"
+                      x="{{ piece.x }}" y="0" width="{{ piece.width }}" height="24">
+                      <title>{{ piece.label }}</title>
+                    </rect>
+                  {% endfor %}
+                </svg>
+              </td>
+              <td class="num">{{ row.lead_time }}</td>
+              {% if row.work_measured %}
+                <td class="num">{{ row.queue_time }}</td>
+                <td class="num">{{ row.work_time }}</td>
+              {% else %}
+                <td class="num muted" colspan="2" title="a phase this ticket walked recorded no admission stamp, so its split is unknown — not zero">unmeasured</td>
+              {% endif %}
+              <td class="num">
+                {% if row.cost_usd %}
+                  <span class="mono">${{ row.cost_usd }}</span>
+                  {% if row.cost_is_wholly_estimated %}
+                    <span class="cost-estimated" title="priced from the token counts, not a reported figure">est.</span>
+                  {% elif row.cost_estimated_usd %}
+                    <span class="cost-estimated" title="${{ row.cost_estimated_usd }} of this is priced from token counts">part est.</span>
+                  {% endif %}
+                {% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No ticket moved in this window.</p>
+    {% endif %}
+  </section>
+  <aside id="drawer" aria-label="Ticket detail"></aside>
+{% endblock %}

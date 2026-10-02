@@ -1,0 +1,666 @@
+"""The global operational-health aggregator (PR-17, M6).
+
+Distinct from ``teatree.core.worktree.health`` (per-worktree readiness). This module
+computes the green/yellow/red factory-health verdict from deterministic durable
+signals and persists them as ``KnownIssue`` rows.
+"""
+
+import os
+from datetime import timedelta
+from unittest.mock import patch
+
+import pytest
+from django.apps import apps
+from django.db import OperationalError
+from django.utils import timezone
+
+from teatree.core.admission_governor import MachineSignal, QuotaSignal
+from teatree.core.cleanup.reclaim_pressure import ZERO_YIELD_ALARM_PASSES
+from teatree.core.factory import operational_health
+from teatree.core.factory.operational_health import (
+    HealthReport,
+    HealthSignal,
+    HealthStatus,
+    SignalCollection,
+    _admission_pressure_signals,
+    _consecutive_harness_crash_signals,
+    _dream_staleness_signals,
+    _failed_task_signals,
+    _harness_provider_consistency_signals,
+    _overlay_health_signals,
+    _reclaim_stall_signals,
+    _stale_tick_signals,
+    _stalled_backlog_signals,
+    _status_from_issues,
+    collect_signals,
+    read_health,
+    reconcile_health,
+)
+from teatree.core.factory.stalled_backlog import STALLED_BACKLOG_THRESHOLD
+from teatree.core.modelkit.task_failure_taxonomy import FailureKind
+from teatree.core.models import ConfigSetting, Loop, LoopState, Prompt, Session, Task, Ticket
+from teatree.core.models.config_setting import GLOBAL_SCOPE
+from teatree.core.models.dream_run_marker import CRITICAL_STALE_MULTIPLE, STALE_THRESHOLD_HOURS, DreamRunMarker
+from teatree.core.models.known_issue import KnownIssue
+from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
+from teatree.utils.throttled_log import reset_throttle
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = pytest.mark.django_db
+
+_OVERLAY_ON_FIRE = "overlay is on fire"
+
+
+_DB_LOCKED = "database is locked"
+_WEEK = 7 * 24 * 3600
+_GOVERNOR = "teatree.core.admission_governor"
+
+
+def _issue(severity: str) -> KnownIssue:
+    return KnownIssue(fingerprint=f"x:{severity}:{timezone.now().timestamp()}", severity=severity, summary="s")
+
+
+class TestStatusThresholds:
+    def test_no_issues_is_green(self) -> None:
+        assert _status_from_issues([]) is HealthStatus.GREEN
+
+    def test_one_warning_is_yellow(self) -> None:
+        assert _status_from_issues([_issue(KnownIssue.Severity.WARNING)]) is HealthStatus.YELLOW
+
+    def test_three_warnings_is_red(self) -> None:
+        warnings = [_issue(KnownIssue.Severity.WARNING) for _ in range(3)]
+        assert _status_from_issues(warnings) is HealthStatus.RED
+
+    def test_two_warnings_stays_yellow(self) -> None:
+        warnings = [_issue(KnownIssue.Severity.WARNING) for _ in range(2)]
+        assert _status_from_issues(warnings) is HealthStatus.YELLOW
+
+    def test_any_critical_is_red(self) -> None:
+        assert _status_from_issues([_issue(KnownIssue.Severity.CRITICAL)]) is HealthStatus.RED
+
+
+class TestReadHealth:
+    def test_reads_open_issues_only(self) -> None:
+        KnownIssue.objects.record_signal(HealthSignal("a", KnownIssue.Severity.WARNING, "a"))
+        row_b = KnownIssue.objects.record_signal(HealthSignal("b", KnownIssue.Severity.WARNING, "b"))
+        KnownIssue.objects.dismiss(row_b.pk)
+        report = read_health()
+        assert report.status is HealthStatus.YELLOW
+        assert report.open_count == 1
+
+
+class TestTheVerdictCarriesWhenItWasMeasured:
+    """A verdict with no measurement time on it is read as current.
+
+    That is how a five-hour-old finding circulated as current across four sessions
+    in one day. The report dates itself so no consumer has to guess.
+    """
+
+    def test_an_empty_registry_dates_nothing_rather_than_now(self) -> None:
+        """Anti-vacuity: never round an unknown age down to fresh."""
+        assert read_health().measured_at is None
+
+    def test_a_clean_verdict_is_dated_from_the_last_reconcile(self) -> None:
+        """Green is the verdict whose age matters most — it has no open issue to date it."""
+        row = KnownIssue.objects.record_signal(HealthSignal("gone", KnownIssue.Severity.WARNING, "cleared"))
+        KnownIssue.objects.dismiss(row.pk)
+
+        report = read_health()
+
+        assert report.open_count == 0
+        assert report.measured_at is not None, "a resolved row still dates the last reconcile"
+        assert report.measured_at >= row.last_seen
+
+    def test_the_stamp_tracks_the_freshest_row_not_the_oldest(self) -> None:
+        old = KnownIssue.objects.record_signal(HealthSignal("old", KnownIssue.Severity.WARNING, "old"))
+        KnownIssue.objects.filter(pk=old.pk).update(last_seen=timezone.now() - timedelta(days=3))
+        recent = KnownIssue.objects.record_signal(HealthSignal("new", KnownIssue.Severity.WARNING, "new"))
+
+        assert read_health().measured_at == recent.last_seen
+
+    def test_a_broken_read_dates_nothing(self) -> None:
+        with patch.object(KnownIssue, "objects") as objects:
+            objects.open.side_effect = OperationalError(_DB_LOCKED)
+            report = read_health()
+
+        assert report.status is HealthStatus.GREEN
+        assert report.measured_at is None
+
+
+class TestAdmissionPressureClustersByCauseNotVolume:
+    """#4508 — "telemetry volume is not incident volume".
+
+    A saturated factory refuses on every admission decision, which on a busy box is
+    hundreds of identical observations an hour. They are ONE incident, and the registry
+    already knows how to say so: the fingerprint names the dominant CAUSE, so repeat
+    sightings refresh one row instead of piling up.
+    """
+
+    def _collect(self, *, weekly: float = 0.1, load1: float = 1.0) -> SignalCollection:
+        quota = QuotaSignal(
+            fresh=True,
+            all_accounts_exhausted=False,
+            weekly_utilization=weekly,
+            short_utilization=0.1,
+            seconds_to_weekly_reset=_WEEK * 0.02,
+        )
+        machine = MachineSignal(cores=8, load1=load1, ram_available_gb=20.0)
+        with (
+            patch(f"{_GOVERNOR}.read_quota_signal", return_value=quota),
+            patch(f"{_GOVERNOR}.read_machine_signal", return_value=machine),
+        ):
+            return _admission_pressure_signals()
+
+    def test_a_healthy_factory_emits_nothing(self) -> None:
+        assert self._collect().signals == ()
+
+    def test_the_shed_band_is_a_warning_naming_its_cause(self) -> None:
+        (signal,) = self._collect(weekly=0.92).signals
+        assert signal.fingerprint == "admission-pressure:weekly-quota"
+        assert signal.severity == KnownIssue.Severity.WARNING
+
+    def test_the_halt_band_is_critical(self) -> None:
+        (signal,) = self._collect(weekly=1.0).signals
+        assert signal.severity == KnownIssue.Severity.CRITICAL
+
+    def test_many_observations_of_one_cause_are_one_row(self) -> None:
+        for _ in range(50):
+            with patch.object(operational_health, "collect_signals", return_value=self._collect(weekly=1.0)):
+                reconcile_health()
+        rows = KnownIssue.objects.open().filter(kind="admission_pressure")
+        assert rows.count() == 1
+        assert rows.get().first_seen < rows.get().last_seen
+
+    def test_the_row_auto_resolves_when_the_pressure_falls(self) -> None:
+        with patch.object(operational_health, "collect_signals", return_value=self._collect(weekly=1.0)):
+            reconcile_health()
+        with patch.object(operational_health, "collect_signals", return_value=self._collect()):
+            reconcile_health()
+        assert not KnownIssue.objects.open().filter(kind="admission_pressure").exists()
+
+    def test_an_unreadable_probe_names_itself_unread_and_resolves_nothing(self) -> None:
+        with patch(f"{_GOVERNOR}.read_quota_signal", side_effect=OperationalError(_DB_LOCKED)):
+            collection = _admission_pressure_signals()
+        assert collection.signals == ()
+        assert collection.unread == ("_admission_pressure_signals",)
+
+
+class TestReconcileHealth:
+    def test_reconcile_persists_and_resolves(self) -> None:
+        signals = SignalCollection(
+            (
+                HealthSignal("sig-a", KnownIssue.Severity.WARNING, "a"),
+                HealthSignal("sig-b", KnownIssue.Severity.CRITICAL, "b"),
+            )
+        )
+        with patch("teatree.core.factory.operational_health.collect_signals", return_value=signals):
+            report = reconcile_health()
+        assert report.status is HealthStatus.RED
+        assert report.open_count == 2
+        # Next reconcile with sig-a gone auto-resolves it, leaves the critical.
+        without_a = SignalCollection(signals.signals[1:])
+        with patch("teatree.core.factory.operational_health.collect_signals", return_value=without_a):
+            report2 = reconcile_health()
+        assert report2.open_count == 1
+        assert set(KnownIssue.objects.open().values_list("fingerprint", flat=True)) == {"sig-b"}
+
+    def test_reconcile_failure_falls_open_to_read(self) -> None:
+        KnownIssue.objects.record_signal(HealthSignal("live", KnownIssue.Severity.WARNING, "s"))
+        with patch("teatree.core.factory.operational_health.collect_signals", side_effect=RuntimeError("boom")):
+            report = reconcile_health()
+        # The pre-existing open row survives; the crash never resolves it.
+        assert report.open_count == 1
+
+
+class TestStaleTickCollector:
+    def test_overrun_lease_yields_warning(self) -> None:
+        LoopLease = apps.get_model("core", "LoopLease")
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop-wedged",
+            acquired_at=now - timedelta(hours=3),
+            lease_expires_at=now + timedelta(minutes=5),
+        )
+        with patch("teatree.config.cadence_seconds", return_value=60):
+            signals = _stale_tick_signals().signals
+        assert [s.fingerprint for s in signals] == ["stale-tick:loop-wedged"]
+        assert signals[0].severity == KnownIssue.Severity.WARNING
+
+    def test_fresh_lease_yields_nothing(self) -> None:
+        LoopLease = apps.get_model("core", "LoopLease")
+        now = timezone.now()
+        LoopLease.objects.create(
+            name="loop-fresh",
+            acquired_at=now - timedelta(seconds=10),
+            lease_expires_at=now + timedelta(minutes=5),
+        )
+        with patch("teatree.config.cadence_seconds", return_value=60):
+            assert _stale_tick_signals().signals == ()
+
+
+class TestStaleTickExclusions:
+    """Ownership tokens + transient mutexes excluded; each lease judged against its OWN cadence/TTL."""
+
+    def _lease(self, name: str, *, acquired_ago: timedelta, **kw: object) -> None:
+        lease_model = apps.get_model("core", "LoopLease")
+        now = timezone.now()
+        lease_model.objects.create(
+            name=name,
+            acquired_at=now - acquired_ago,
+            lease_expires_at=now + timedelta(minutes=5),
+            **kw,
+        )
+
+    def test_busy_t3_master_within_ttl_is_not_stale(self) -> None:
+        # A busy t3-master: acquired_at aged past the tick cutoff but still within
+        # its 1800s owner TTL (lease live) with the owner process alive. It is a
+        # pid-anchored ownership token (busy != dead, #1073/#1604), never a wedged
+        # tick — flagging it would redden the health chip on a healthy factory.
+        self._lease("t3-master", acquired_ago=timedelta(minutes=25), owner_pid=os.getpid(), session_id="sess-busy")
+        with patch("teatree.config.cadence_seconds", return_value=60):
+            assert _stale_tick_signals().signals == ()
+
+    def test_exclusion_is_targeted_a_wedged_work_loop_still_signals(self) -> None:
+        # Same aged window across three leases: the ownership token and the
+        # transient per-loop mutex are excluded, but a genuinely-overdue WORK
+        # loop DOES still signal — the exclusion is targeted, not a blanket
+        # neutering of the detector.
+        self._lease("t3-master", acquired_ago=timedelta(minutes=25), owner_pid=os.getpid(), session_id="sess")
+        self._lease("loop-tick:dispatch", acquired_ago=timedelta(minutes=25))
+        self._lease("loop-tick", acquired_ago=timedelta(hours=3))
+        with patch("teatree.config.cadence_seconds", return_value=60):
+            fingerprints = {s.fingerprint for s in _stale_tick_signals().signals}
+        assert fingerprints == {"stale-tick:loop-tick"}
+
+    def test_reactive_lease_judged_against_its_own_cadence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A self-improve lease aged 25min is stale against the 720s tick cadence
+        # (2x = 1440s) but fresh against its own 1800s cadence (2x = 3600s).
+        monkeypatch.setenv("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800")
+        self._lease("loop-self-improve", acquired_ago=timedelta(minutes=25))
+        with patch("teatree.config.cadence_seconds", return_value=720):
+            assert _stale_tick_signals().signals == ()
+
+
+class TestFailedTaskCollector:
+    def _ticket_session(self, issue_url: str) -> tuple[Ticket, Session]:
+        ticket = Ticket.objects.create(issue_url=issue_url, state=Ticket.State.WORK_STARTED)
+        return ticket, Session.objects.create(overlay="test", ticket=ticket)
+
+    def test_failed_task_in_window_yields_signal(self) -> None:
+        ticket, session = self._ticket_session("https://example.com/issues/1")
+        Task.objects.create(ticket=ticket, session=session, status=Task.Status.FAILED)
+        signals = _failed_task_signals().signals
+        assert [s.fingerprint for s in signals] == ["failed-tasks"]
+        assert signals[0].severity == KnownIssue.Severity.WARNING
+
+    def test_non_failed_task_yields_nothing(self) -> None:
+        ticket, session = self._ticket_session("https://example.com/issues/2")
+        Task.objects.create(ticket=ticket, session=session, status=Task.Status.COMPLETED)
+        assert _failed_task_signals().signals == ()
+
+
+class TestConsecutiveHarnessCrashCollector:
+    """A factory that dispatches and completes nothing must never read healthy.
+
+    ``_failed_task_signals`` collapses ANY number of failures into one WARNING, and the
+    verdict needs three concurrent warnings to redden — so before this collector, 53 of 60
+    tasks dying in the harness rendered as a single yellow line for days.
+    """
+
+    def _ticket_session(self, issue_url: str) -> tuple[Ticket, Session]:
+        ticket = Ticket.objects.create(issue_url=issue_url, state=Ticket.State.WORK_STARTED)
+        return ticket, Session.objects.create(overlay="test", ticket=ticket)
+
+    def _tasks(self, *outcomes: tuple[str, str]) -> None:
+        ticket, session = self._ticket_session(f"https://example.com/issues/{Ticket.objects.count() + 100}")
+        for status, kind in outcomes:
+            Task.objects.create(ticket=ticket, session=session, status=status, failure_kind=kind)
+
+    def test_a_run_of_harness_deaths_is_critical(self) -> None:
+        self._tasks(*[(Task.Status.FAILED, FailureKind.HARNESS_CONTROL_TIMEOUT)] * 3)
+
+        signals = _consecutive_harness_crash_signals().signals
+
+        assert [s.fingerprint for s in signals] == ["consecutive-harness-crashes"]
+        assert signals[0].severity == KnownIssue.Severity.CRITICAL
+        assert FailureKind.HARNESS_CONTROL_TIMEOUT in signals[0].summary
+
+    def test_a_run_of_harness_deaths_reddens_the_chip(self) -> None:
+        self._tasks(*[(Task.Status.FAILED, FailureKind.HARNESS_CRASH)] * 3)
+
+        assert reconcile_health().status == HealthStatus.RED
+
+    def test_one_completion_inside_the_run_clears_it(self) -> None:
+        """Consecutive is the whole claim — some tasks failing is not a dead harness."""
+        self._tasks(
+            (Task.Status.FAILED, FailureKind.HARNESS_CRASH),
+            (Task.Status.COMPLETED, ""),
+            (Task.Status.FAILED, FailureKind.HARNESS_CRASH),
+        )
+
+        assert _consecutive_harness_crash_signals().signals == ()
+
+    def test_a_run_of_ordinary_defects_is_not_a_harness_fault(self) -> None:
+        self._tasks(*[(Task.Status.FAILED, FailureKind.EVIDENCE_MISSING)] * 3)
+
+        assert _consecutive_harness_crash_signals().signals == ()
+
+    def test_below_the_threshold_yields_nothing(self) -> None:
+        self._tasks(*[(Task.Status.FAILED, FailureKind.HARNESS_CRASH)] * 2)
+
+        assert _consecutive_harness_crash_signals().signals == ()
+
+    def test_a_still_running_task_does_not_break_the_run(self) -> None:
+        """The run is over TERMINAL tasks; a task claimed after the crashes has no outcome yet."""
+        self._tasks(
+            *[(Task.Status.FAILED, FailureKind.HARNESS_CRASH)] * 3,
+            (Task.Status.CLAIMED, ""),
+        )
+
+        assert [s.fingerprint for s in _consecutive_harness_crash_signals().signals] == ["consecutive-harness-crashes"]
+
+
+class TestStalledBacklogCollector:
+    """Folding the stranded count into a signal; the predicate is tested beside its module."""
+
+    def test_at_the_threshold_it_raises_a_named_critical(self) -> None:
+        with patch.object(operational_health, "stranded_ticket_count", return_value=STALLED_BACKLOG_THRESHOLD):
+            signals = _stalled_backlog_signals().signals
+        assert [s.fingerprint for s in signals] == ["stalled-backlog"]
+        assert signals[0].severity == KnownIssue.Severity.CRITICAL
+        assert str(STALLED_BACKLOG_THRESHOLD) in signals[0].summary
+
+    def test_below_the_threshold_is_churn_not_a_signal(self) -> None:
+        with patch.object(operational_health, "stranded_ticket_count", return_value=STALLED_BACKLOG_THRESHOLD - 1):
+            assert _stalled_backlog_signals().signals == ()
+
+    def test_an_unreadable_source_names_itself_rather_than_reporting_clear(self) -> None:
+        with patch.object(operational_health, "stranded_ticket_count", side_effect=OperationalError("no such table")):
+            assert _stalled_backlog_signals() == SignalCollection(unread=("_stalled_backlog_signals",))
+
+
+class TestOverlaySignalCollector:
+    def test_folds_every_overlay_signal_fail_open(self) -> None:
+        class _Good:
+            def get_health_signals(self) -> list[HealthSignal]:
+                return [HealthSignal("ov:x", KnownIssue.Severity.WARNING, "overlay problem", overlay="acme")]
+
+        class _Broken:
+            def get_health_signals(self) -> list[HealthSignal]:
+                raise RuntimeError(_OVERLAY_ON_FIRE)
+
+        with patch(
+            "teatree.core.factory.operational_health.get_all_overlays",
+            return_value={"acme": _Good(), "broken": _Broken()},
+        ):
+            signals = _overlay_health_signals().signals
+        assert [s.fingerprint for s in signals] == ["ov:x"]
+
+    def test_broken_overlay_surfaces_a_warning_not_a_silent_debug(self, caplog: pytest.LogCaptureFixture) -> None:
+        # 3e#3: a persistently-failing overlay health read must redden into the log
+        # (throttled warning), not be swallowed at debug where the chip silently
+        # blanks on a real recurring fault.
+        reset_throttle()
+
+        class _Broken:
+            def get_health_signals(self) -> list[HealthSignal]:
+                raise RuntimeError(_OVERLAY_ON_FIRE)
+
+        logger_name = "teatree.core.factory.operational_health"
+        with (
+            patch("teatree.core.factory.operational_health.get_all_overlays", return_value={"broken": _Broken()}),
+            caplog.at_level("DEBUG", logger=logger_name),
+        ):
+            _overlay_health_signals()
+        warnings = [r for r in caplog.records if r.name == logger_name and r.levelname == "WARNING"]
+        assert warnings, "expected a throttled WARNING for the broken overlay health read"
+        assert "broken" in warnings[0].getMessage()
+
+
+class TestHarnessProviderConsistencyCollector:
+    """The loop-admission / health guard for the coupled harness/provider pair (#3688).
+
+    A pair set before the write-time guard existed (or via an uncovered path)
+    surfaces as ONE loud CRITICAL health-red, not a per-task repair-halt flood.
+    Rows are created directly via the ORM to model that pre-existing state — the
+    write-time guard would refuse the inconsistent ``set_value``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_consistent_effective_pair_yields_nothing(self) -> None:
+        with patch("teatree.core.factory.harness_provider_consistency.get_all_overlays", return_value={}):
+            assert _harness_provider_consistency_signals().signals == ()
+
+    def test_preexisting_inconsistent_pair_yields_a_critical_signal(self) -> None:
+        ConfigSetting.objects.create(scope=GLOBAL_SCOPE, key="agent_harness_provider", value="openai_compatible")
+        with patch("teatree.core.factory.harness_provider_consistency.get_all_overlays", return_value={}):
+            signals = _harness_provider_consistency_signals().signals
+        assert len(signals) == 1
+        assert signals[0].severity == KnownIssue.Severity.CRITICAL
+        assert signals[0].kind == "config_pair_drift"
+
+    def test_inconsistent_pair_reddens_the_chip_via_reconcile(self) -> None:
+        ConfigSetting.objects.create(scope=GLOBAL_SCOPE, key="agent_harness_provider", value="openai_compatible")
+        with (
+            patch("teatree.core.factory.operational_health.get_all_overlays", return_value={}),
+            patch("teatree.core.factory.harness_provider_consistency.get_all_overlays", return_value={}),
+        ):
+            report = reconcile_health()
+        assert report.status is HealthStatus.RED
+
+
+class _BrokenOverlay:
+    def get_health_signals(self) -> list[HealthSignal]:
+        raise RuntimeError(_OVERLAY_ON_FIRE)
+
+
+class TestUnreadCollectorNeverAutoResolves:
+    """A collector that could not READ must not retire the issue it can no longer see (#4354).
+
+    An unread collector and a collector reporting "all clear" produced the identical
+    empty slice, so ``reconcile`` read absence as RESOLUTION: a CRITICAL retired itself
+    the first tick its own reader hiccupped, and the chip went green on an unchanged
+    fault.
+    """
+
+    def test_raising_collector_neither_resolves_the_row_nor_greens_the_chip(self) -> None:
+        KnownIssue.objects.record_signal(HealthSignal("failed-tasks", KnownIssue.Severity.CRITICAL, "3 failed"))
+
+        def _cannot_read() -> SignalCollection:
+            raise OperationalError(_DB_LOCKED)
+
+        with patch.object(operational_health, "_COLLECTORS", (_cannot_read,)):
+            report = reconcile_health()
+
+        open_fingerprints = set(KnownIssue.objects.open().values_list("fingerprint", flat=True))
+        assert "failed-tasks" in open_fingerprints
+        assert "health-collector-failed:_cannot_read" in open_fingerprints
+        assert report.status is HealthStatus.RED
+
+    def test_broken_overlay_does_not_retire_the_row_the_working_collectors_kept(self) -> None:
+        KnownIssue.objects.record_signal(HealthSignal("stale-tick:loop-a", KnownIssue.Severity.WARNING, "wedged"))
+
+        with (
+            patch.object(operational_health, "_COLLECTORS", (_overlay_health_signals,)),
+            patch(
+                "teatree.core.factory.operational_health.get_all_overlays",
+                return_value={"broken": _BrokenOverlay()},
+            ),
+        ):
+            report = reconcile_health()
+
+        open_fingerprints = set(KnownIssue.objects.open().values_list("fingerprint", flat=True))
+        assert "stale-tick:loop-a" in open_fingerprints
+        assert "health-collector-failed:overlay:broken" in open_fingerprints
+        assert report.status is HealthStatus.RED
+
+    def test_a_complete_observation_still_auto_resolves(self) -> None:
+        """The control: when every collector ANSWERED, a cleared signal still retires."""
+        KnownIssue.objects.record_signal(HealthSignal("gone", KnownIssue.Severity.WARNING, "cleared"))
+
+        def _all_clear() -> SignalCollection:
+            return SignalCollection()
+
+        with patch.object(operational_health, "_COLLECTORS", (_all_clear,)):
+            report = reconcile_health()
+
+        assert KnownIssue.objects.open().count() == 0
+        assert report.status is HealthStatus.GREEN
+
+    def test_collect_signals_names_the_collector_that_could_not_read(self) -> None:
+        def _cannot_read() -> SignalCollection:
+            raise OperationalError(_DB_LOCKED)
+
+        with patch.object(operational_health, "_COLLECTORS", (_cannot_read,)):
+            collection = collect_signals()
+
+        assert collection.unread == ("_cannot_read",)
+        assert collection.complete is False
+
+
+class TestReclaimStallRaisesANamedCritical:
+    """#4644 — a reclaim that frees nothing on a full disk must SAY so, not tick silently.
+
+    The box that produced this issue ticked 23 times taking 0 actions and reached
+    100% full with nothing red anywhere, because a pass that reclaims nothing and
+    a pass that never ran look identical from outside.
+    """
+
+    def _marker(self, *, streak: int, free_gb: float | None) -> None:
+        marker = ResourcePressureMarker.load()
+        marker.zero_yield_passes = streak
+        marker.last_disk_free_gb = free_gb
+        marker.save(update_fields=["zero_yield_passes", "last_disk_free_gb"])
+
+    def _reconcile(self) -> HealthReport:
+        with patch.object(operational_health, "_COLLECTORS", (_reclaim_stall_signals,)):
+            return reconcile_health()
+
+    def test_three_zero_yield_passes_below_the_floor_are_one_critical_row(self) -> None:
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES, free_gb=0.2)
+
+        for _ in range(3):
+            report = self._reconcile()
+
+        assert report.status is HealthStatus.RED
+        rows = KnownIssue.objects.open().filter(kind="reclaim_stalled")
+        assert [row.fingerprint for row in rows] == ["reclaim-stalled:disk"]
+        assert rows.get().severity == KnownIssue.Severity.CRITICAL
+
+    def test_the_row_auto_resolves_when_free_space_recovers(self) -> None:
+        """Gating on the live reading, not the streak — the streak never resets once the pass stops."""
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES, free_gb=0.2)
+        self._reconcile()
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES, free_gb=200.0)
+
+        report = self._reconcile()
+
+        assert not KnownIssue.objects.open().filter(kind="reclaim_stalled").exists()
+        assert report.status is HealthStatus.GREEN
+
+    def test_a_streak_below_the_threshold_emits_nothing(self) -> None:
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES - 1, free_gb=0.2)
+
+        assert _reclaim_stall_signals().signals == ()
+
+    def test_an_unmeasurable_disk_emits_nothing(self) -> None:
+        self._marker(streak=ZERO_YIELD_ALARM_PASSES, free_gb=None)
+
+        assert _reclaim_stall_signals().signals == ()
+
+    def test_an_unreadable_marker_names_itself_unread(self) -> None:
+        with patch.object(ResourcePressureMarker, "load", side_effect=OperationalError(_DB_LOCKED)):
+            collection = _reclaim_stall_signals()
+
+        assert collection.signals == ()
+        assert collection.unread == ("_reclaim_stall_signals",)
+
+
+class TestDreamStalenessSignals:
+    """#1933, #3993, #4726 — the aggregator's half: severity mapping, fail-open, wiring.
+
+    What counts as a reportable stall (and which deliberate offs are suppressed) is
+    ``dream_fallen_behind``'s own contract, pinned in
+    ``tests/teatree_core/factory/test_dream_staleness.py``. Here the collector is judged on
+    what it does with that verdict.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _admitted_dream_loop(self) -> None:
+        prompt, _ = Prompt.objects.get_or_create(name="dream", defaults={"body": "consolidate"})
+        Loop.objects.update_or_create(
+            name=DreamRunMarker.NAME,
+            defaults={"prompt": prompt, "script": "", "delay_seconds": 86400, "enabled": True},
+        )
+
+    def test_nothing_to_report_emits_nothing(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(timezone.now())
+
+        assert _dream_staleness_signals().signals == ()
+
+    def test_a_deliberate_off_emits_nothing(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(
+            timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS * CRITICAL_STALE_MULTIPLE + 1)
+        )
+        LoopState.objects.pause(DreamRunMarker.NAME)
+
+        assert _dream_staleness_signals().signals == ()
+
+    def test_past_the_staleness_window_is_a_warning(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS + 1))
+
+        collection = _dream_staleness_signals()
+
+        assert [s.severity for s in collection.signals] == [KnownIssue.Severity.WARNING]
+        assert collection.signals[0].fingerprint == "dream-consolidation-stale"
+        assert collection.signals[0].kind == "dream_staleness"
+
+    def test_past_the_critical_multiple_escalates_to_critical(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(
+            timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS * CRITICAL_STALE_MULTIPLE + 1)
+        )
+
+        collection = _dream_staleness_signals()
+
+        assert [s.severity for s in collection.signals] == [KnownIssue.Severity.CRITICAL]
+
+    def test_an_unreadable_marker_names_itself_unread(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS + 1))
+
+        with patch.object(DreamRunMarker.objects, "is_stale", side_effect=OperationalError(_DB_LOCKED)):
+            collection = _dream_staleness_signals()
+
+        assert collection.signals == ()
+        assert collection.unread == ("_dream_staleness_signals",)
+
+    def test_reddens_the_chip_and_auto_resolves_on_a_fresh_success(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(
+            timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS * CRITICAL_STALE_MULTIPLE + 1)
+        )
+        with patch.object(operational_health, "_COLLECTORS", (_dream_staleness_signals,)):
+            report = reconcile_health()
+            assert report.status is HealthStatus.RED
+
+            DreamRunMarker.objects.mark_succeeded(timezone.now())
+            report = reconcile_health()
+
+        assert report.status is HealthStatus.GREEN
+        assert not KnownIssue.objects.open().filter(kind="dream_staleness").exists()
+
+    def test_the_collector_is_registered(self) -> None:
+        """Unpatched: every sibling test substitutes ``_COLLECTORS``, so nothing else pins this."""
+        assert _dream_staleness_signals in operational_health._COLLECTORS
+
+    def test_a_stale_admitted_dream_reddens_the_real_aggregator(self) -> None:
+        DreamRunMarker.objects.mark_succeeded(
+            timezone.now() - timedelta(hours=STALE_THRESHOLD_HOURS * CRITICAL_STALE_MULTIPLE + 1)
+        )
+
+        reconcile_health()
+
+        assert KnownIssue.objects.open().filter(kind="dream_staleness").exists()

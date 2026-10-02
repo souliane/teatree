@@ -1,0 +1,52 @@
+"""Overlay-specific tool commands dispatched via ``t3 <overlay> tool``."""
+
+import os
+import shlex
+
+import typer
+from django_typer.management import TyperCommand, command
+
+from teatree.core.overlay_loader import get_overlay
+from teatree.utils.run import run_streamed
+
+
+class Command(TyperCommand):
+    @command(
+        context_settings={"allow_extra_args": True, "allow_interspersed_args": False},
+    )
+    def run(self, ctx: typer.Context, name: str) -> str:
+        """Run an overlay tool command by name.
+
+        Extra arguments after the tool name are forwarded to the command.
+        """
+        extra: list[str] = ctx.args
+
+        overlay = get_overlay()
+        for tool_cmd in overlay.metadata.get_tool_commands():
+            if tool_cmd.get("name") == name:
+                mgmt_cmd = tool_cmd.get("command", "")
+                if not mgmt_cmd:
+                    self.stderr.write(f"Tool '{name}' has no command defined.")
+                    raise SystemExit(1)
+                argv = [*shlex.split(mgmt_cmd), *extra]
+                env: dict[str, str] = {**os.environ}
+                env.pop("VIRTUAL_ENV", None)
+                run_streamed(argv, env=env)
+                return f"Tool '{name}' completed."
+        available = [t.get("name", "?") for t in overlay.metadata.get_tool_commands()]
+        self.stderr.write(f"Unknown tool: {name}. Available: {', '.join(available) or 'none'}")
+        raise SystemExit(1)
+
+    @command(name="list")
+    def list_tools(self) -> str:
+        """List available overlay tool commands."""
+        overlay = get_overlay()
+        tools = overlay.metadata.get_tool_commands()
+        if not tools:
+            return "No tool commands configured in the overlay."
+        lines = []
+        for t in tools:
+            name = t.get("name", "?")
+            help_text = t.get("help", "")
+            lines.append(f"  {name}: {help_text}" if help_text else f"  {name}")
+        return "\n".join(lines)

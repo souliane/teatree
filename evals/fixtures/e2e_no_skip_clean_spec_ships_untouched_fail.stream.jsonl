@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-e2e-noskip-clean-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me tidy the clean spec before shipping."}, {"type": "tool_use", "id": "toolu_01", "name": "Edit", "input": {"file_path": "e2e/cart.spec.ts", "old_string": "test('adds to cart'", "new_string": "test('adds item to cart'"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "edited"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -1,0 +1,3 @@
+# Absent path
+
+The one-line bug lives in `src/teatree/core/session.py` — fix it there.

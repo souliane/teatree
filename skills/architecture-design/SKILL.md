@@ -1,0 +1,199 @@
+---
+name: architecture-design
+description: Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability — BEFORE any code is written.
+compatibility: macOS/Linux, any teatree-managed repo.
+requires:
+  - writing-plans
+metadata:
+  version: 0.0.1
+---
+
+# Architecture-Design Companion
+
+## Why this loads automatically
+
+This is a companion gate. Implementation skills (`t3:code`, `t3:ticket` for new features, `t3:retro` when a retro touches skills) declare `requires: [architecture-design]` so it loads BEFORE coding starts. The flywheel (BLUEPRINT § 17.1 invariant 2) is enforcement encoded as structure, not prose vigilance — this companion is the structure for the "design first, then code" step.
+
+Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the ten-check architecture pass below, plus the template the implementer fills in before touching `src/` — worktree-local as `ARCHITECTURE.md` (gitignored scratch) and surfaced to the reviewer as a `## Architecture pre-check` section in the PR body.
+
+## Scope, and the OPTIONAL vendor architecture skill
+
+This skill is scoped to **THIS repo's conventions** — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, dependency direction. It answers "does this change fit teatree's architecture", not "how do you structure agent work at all".
+
+The layer beneath that — provider-level agent-architecture decision-trees (single call vs workflow vs agent, tool-surface orchestration, agent tiering, resiliency patterns) — is covered by the agent-platform vendor's `claude-api` skill. That skill is **Anthropic-specific**: its guidance is load-bearing on Claude/Anthropic API primitives (adaptive thinking, effort, programmatic tool calling, context editing, prompt-caching breakpoints, the Managed Agents API), and its own frontmatter directs the reader to SKIP it for non-Claude providers. So teatree does **not** install it by default — it is an OPTIONAL recommendation (`t3 doctor check` surfaces it as an INFO when absent) that an operator running on Claude may install with `apm install anthropics/skills/skills/claude-api#<pin>`. There is no scope overlap to reconcile: local = repo conventions; vendor = provider-level agent architecture. The recommendation datum (source pin, caveat, boundary) lives in `src/teatree/provisioning/recommended.py`.
+
+## When the gate fires
+
+The ten checks apply when the work meets any of:
+
+- touches `src/teatree/cli/`, `src/teatree/core/`, `src/teatree/loop/scanners/`, `src/teatree/agents/`, `OverlayBase`, scanner registration, or any `*Backend` Protocol
+- crosses an FSM phase boundary (introduces or moves a `Ticket.State` transition)
+- introduces a new module under `src/teatree/`
+- changes a Protocol surface or an entry-point contract
+- changes BLUEPRINT.md or any `docs/blueprint/*.md` appendix
+
+Tactical fixes (typo, narrow string change, single-call-site bug) skip the gate — the implementer notes that in the PR body.
+
+### Making an existing function stricter — search its callers first (Non-Negotiable)
+
+A new liveness/strictness gate or a new `None`/`False` return on an existing function changes every caller, so it is "single-call-site" only once a search proves it. Your first command is the tree-wide search: it prints the definition and every caller in one pass, so opening the defining file first saves nothing. Then apply check 9 to each caller it finds.
+
+```bash
+git grep -n "<name>("               # do X first: the definition plus every caller, tree-wide
+grep -n "<name>" <defining-file>    # never Y first: one file cannot show who else calls it
+```
+
+## The ten checks
+
+### 1. BLUEPRINT § alignment
+
+Cite the BLUEPRINT section the work touches (e.g. `§5.6 Loop Topology`, `§6 Overlay System`, `§17.4 Orchestrator-decides / loop-executes`). If no section is a clean fit, the work likely belongs to a new section — draft it in the same PR.
+
+If the work contradicts the cited section, the BLUEPRINT change is part of the same PR (per CLAUDE.md "Documentation alignment"). Never let code and BLUEPRINT drift.
+
+### 2. FSM phase boundaries
+
+If the change involves `Ticket.State` or `Worktree.State` transitions, list the phases the work crosses (e.g. `coding → testing`, `reviewing → shipping`). For each crossing, name the transition method and the FSM condition it depends on.
+
+If the change adds a new phase, it touches §4 (Domain Models) and §17.1 invariant 8 (FSM transitions via `t3` CLI) — both go in the BLUEPRINT update.
+
+### 3. Extension-point contracts
+
+If the change touches `OverlayBase`, a scanner registration, a hook surface, or a `*Backend` Protocol, list every overlay/scanner/hook that consumes the contract. Use `git grep -l 'OverlayBase\|register_scanner\|hook_router\|MessagingBackend\|CodeHostBackend'` as the floor, not the ceiling.
+
+A Protocol/ABC change without a corresponding overlay-contract regression test is incomplete — the test surface check (#6) catches that.
+
+### 4. Component boundaries
+
+Justify the module choice. The recurring categories:
+
+- `src/teatree/cli/` — typer commands, argparse, no business logic
+- `src/teatree/core/` — Django models, managers, signals, transitions, services
+- `src/teatree/loop/` — tick body, scanners, dispatcher
+- `src/teatree/agents/` — sub-agent dispatch, skill bundles, prompt building
+- `src/teatree/backends/` — Protocol implementations (Slack, GitHub, GitLab)
+- `hooks/scripts/` — Claude Code hook handlers (PreToolUse / UserPromptSubmit / Stop / SessionStart)
+
+If the new code straddles two categories, split it.
+
+### 5. Dependency direction
+
+Read the auto-generated dependency graph in [docs/dependency-graph.md](../../docs/dependency-graph.md) (linked from `BLUEPRINT.md` "Module Dependency Graph") before adding any import. The graph encodes the DAG enforced by tach.
+
+A lower-level module (e.g. `teatree.utils`, `teatree.config`) MUST NOT import from a higher-level one (e.g. `teatree.cli`, `teatree.core.management`). A backwards edge is a refactor first, an implementation second — surface it on the PR and propose the inversion (callback, registration, Protocol) that breaks the edge.
+
+After adding any new cross-module import, **verify the boundary DAG with `tach`, never by eyeballing it** — run `uv run tach check` to confirm the import introduced no backwards edge. `uv run tach check` reproduces the enforced gate locally; do not substitute an `echo "looks fine"` for the real check.
+
+### 6. Test surface
+
+For each behaviour the change introduces, name the test file and the assertion that would fail if the behaviour regressed. A design that has no test surface is a design with no observable contract — restructure for observability before coding.
+
+For FSM transitions, the test asserts the post-transition state plus the queued follow-up task (BLUEPRINT §4 invariant: state change + `transaction.on_commit(enqueue)` is atomic).
+
+For scanners, the test calls `scan()` against a fixture and asserts the emitted events.
+
+For hook handlers, the test calls the handler with a hook payload and asserts the decision (`allow` / `deny` / `additional_context`).
+
+### 7. Resilience invariants (#1192)
+
+For any external write (Slack post, GitHub PR mutation, GitLab MR update, DB row outside the request cycle, fs write under a watched path), verify the five invariants from #1192:
+
+- **verify-by-re-read** — after the write, fetch the live state and confirm the mutation landed
+- **fallback-transport** — when the primary channel is unavailable, the change has a sanctioned secondary path (durable DB row, snapshot, deferred task)
+- **idempotency** — repeated invocation with the same input is a no-op, not a duplicate
+- **heartbeat** — long-running work emits progress so a watchdog can distinguish "stuck" from "still working"
+- **sub-agent return contract** — sub-agent results are structured (`StructuredResult`), not free-form prose; the orchestrator can route on them
+
+If even one is missing, the design is incomplete — adding it later is a tech-debt commitment, not a follow-up.
+
+### 8. Identity and key normalization
+
+When a logical identity has both a bare and a qualified form (namespace:name, scope/path, prefix+id, fully-qualified name), the **fully-qualified form is the canonical key**.
+
+- **One source-of-truth function** normalizes every reference UP to the fully-qualified form at every boundary — read, write, compare, dedup, cache lookup, registry lookup.
+- Stripping a qualifier to make two things match discards qualifying information and conflates genuinely distinct entities (e.g. `t3:review` vs `overlay-a:review`), creating silent collisions that produce wrong results with no error.
+- **Normalization smell to challenge at review:** any `split(":")[-1]`, `rsplit("/", 1)[-1]`, `removeprefix(...)`, or `lstrip(prefix)` whose sole purpose is to make a comparison succeed. The under-qualified side should be canonicalized UP instead. A transformation that can only ever lose information is almost always the wrong seam.
+
+_Example: skill name lookups in the registry. The registered key is `namespace:skill-name`. A lookup arriving as bare `skill-name` should be qualified to `namespace:skill-name` at the boundary, not matched by stripping the namespace off the registered key._
+
+### 9. Behavior preservation / capability deletion
+
+The other eight checks cover behavior the change INTRODUCES. This one covers behavior it REMOVES — the high-deletion "replace an existing implementation" class where regressions hide.
+
+For any change that replaces or rewrites an existing implementation, **enumerate every behavior/case the old code handled and justify each one you drop**. Use `git show <base>:<path>` to read the pre-change behavior; do not rely on memory.
+
+- A narrowing of a **privacy / leak / security matcher** — or of the gate's coverage in general — requires explicit user sign-off. A unilateral "documented trade-off" that weakens a public-repo privacy gate is a BLOCKER, not a self-approve.
+- **Never invert an existing must-block regression test to must-not-block** (e.g. `returncode == 1` → `== 0`) to make a weaker matcher pass. Deleting or inverting the test that pinned the old behavior is the tell that coverage was dropped without preservation.
+- **Tightening a shared predicate changes every caller, not only the one you wrote it for.** For each caller the tree-wide search finds, name the decision it makes. A release/commit caller may need the strict read; a park/defer caller does not, and inherits a wrong verdict when you tighten in place. When requirements differ, add a strict variant for the caller that needs it, leave the shared one as it was, and pin the untouched caller with a test (#4880: a release-path liveness gate turned a park into a HALT).
+- If a behavior genuinely must be dropped, the removal is its own reviewed decision: list it here, justify it, and (for safety gates) get sign-off — preserve-or-STOP, never silently narrow.
+
+### 10. Removability / harness-vs-data
+
+Two questions every new component must answer.
+
+- **Removability.** Can this component be deleted later without a cascade? State the blast radius of its removal — a self-contained module reverting to the prior behavior is removable; one whose deletion forces edits across N call sites is not. A component that cannot be cleanly removed is a component you cannot cheaply revert when it proves wrong; prefer the shape that can be pulled out.
+- **Harness vs data.** Does this belong in the harness (code/gate/FSM logic) or in data/config (a table, a setting, a registry row)? A per-item policy that a table can express does not belong hard-coded in the harness — put the varying part in data and keep the harness the generic mechanism that reads it. **A setting is not the free answer to this question.** "In data" means a table or registry row keyed by a real domain entity; a new toggle is surface paid again at every reader, and one whose correct value is computable from something already known is a bug with a knob on it. `ac-reviewing-codebase` § 3.17 "Minimal Configurable & Pluggable Surface" asks the same question at review time — answer it here so the two passes agree. Justify the side you chose.
+
+The deterministic validator `teatree.quality.architecture_precheck` fires a warning on PR creation — `core.gates.architecture_precheck_gate` runs it against the PR body at both PR-creation chokepoints (alongside the open-questions gate) — when the body carries a pre-check section that leaves this check absent or a bare placeholder. The pre-check is incomplete until it carries a real answer.
+
+## Anti-pattern catalog
+
+The ten checks above are the curated, narrative core. Their machine-checked superset is the anti-pattern catalog at [docs/generated/antipattern-catalog.md](../../docs/generated/antipattern-catalog.md) — generated from `src/teatree/quality/antipatterns.yaml`, the single source of truth. Each entry carries a detection tier (`greppable` or `judgement`) feeding the three review tiers: this design-time pass, the per-PR deterministic linter (`scripts/hooks/check_antipatterns.py`, manual stage), and the periodic holistic review in `ac-reviewing-codebase` — a REQUIRED `apm` install declared in `apm.yml`, not a skill in this repo's `skills/` tree. A reviewer skimming a design can use the catalog as the checklist the nine prose checks summarize.
+
+## Architecture pre-check template
+
+The implementer fills the template BEFORE touching `src/`, drafting it in a worktree-local `ARCHITECTURE.md` (gitignored scratch — it is never committed, so it can never thrash a PR with per-ticket conflicts). The reviewer-facing deliverable is a `## Architecture pre-check` section carrying the same ten-check summary **in the PR body**, where it is visible in the PR with no tracked file to conflict. A missing or empty pre-check section in the PR body is a review gap.
+
+```markdown
+## Architecture pre-check — <ticket-ref>
+
+## 1. BLUEPRINT § alignment
+<cite section, paste the one-line claim the work makes>
+
+## 2. FSM phase boundaries
+<phases crossed, transition methods, FSM conditions; "n/a" if no transition>
+
+## 3. Extension-point contracts
+<every OverlayBase / scanner / hook / Protocol consumer affected>
+
+## 4. Component boundaries
+<module chosen + justification; if straddling, the split>
+
+## 5. Dependency direction
+<imports added; confirm no backwards edge; `uv run tach check` output>
+
+## 6. Test surface
+<test file + assertion per behaviour; FSM/scanner/hook specifics>
+
+## 7. Resilience invariants
+<per external write: verify-by-re-read, fallback-transport, idempotency, heartbeat, sub-agent return contract>
+
+## 8. Identity and key normalization
+<identities with bare vs qualified forms; canonical form chosen; one normalization function at every boundary; any strip/split whose purpose is to make a comparison succeed — justify or remove>
+
+## 9. Behavior preservation / capability deletion
+<for a change that replaces/rewrites existing code: enumerate every behavior the old code handled, mark each preserved or dropped; flag any narrowing of a privacy/leak/security matcher as requiring user sign-off; confirm no must-block test was inverted to must-not-block; for a tightened shared predicate: every caller and its decision, split strict/lenient where they differ; "n/a — purely additive" if nothing is removed>
+
+## 10. Removability / harness-vs-data
+<is the component removable — the blast radius of deleting it; does it belong in the harness (code/gate/FSM) or in data/config (table/setting/registry)? justify the side chosen>
+```
+
+## Workflow
+
+1. Read `BLUEPRINT.md` and the appendix for the touched section.
+2. Run the ten checks against the proposed change.
+3. Draft the pre-check in the worktree-local `ARCHITECTURE.md` (gitignored), then carry the summary into the PR body's `## Architecture pre-check` section when you open the PR.
+4. Hand off to the implementation skill (`t3:code`) — it picks up from here with TDD.
+
+## Delegation
+
+- `obra/superpowers/writing-plans` — generic planning methodology (problem framing, alternatives considered, rollback path)
+- `t3:code` — implementation phase, picks up after the pre-check is written
+- `t3:ticket` § "Plan First" — the ticket-intake pre-check that triggers this companion
+- `t3:review` § "North-Star Rubric — Seven Quality Attributes" — the clean / robust / maintainable / coherent / reliable / proactive / scoped lens the resulting design is reviewed against (coherence covers the cross-repo and dependency-direction checks above; scoped is where a design that stages itself into phases, or that answers more than was asked, is caught before it is built)
+
+## Scope discipline
+
+This skill ships with the ten checks above. If a check is missing from the PR body's `## Architecture pre-check` section, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed. The removability check (#10) additionally has a deterministic backstop: `core.gates.architecture_precheck_gate` warns on PR creation (warn-only, mirroring the open-questions gate) when the pre-check section leaves a required check unanswered.
+
+The companion does not block implementation skills from loading — it loads alongside them. The discipline is that the implementer reads it first; the PR review enforces that the pre-check (the `## Architecture pre-check` section in the PR body) was produced.

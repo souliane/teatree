@@ -1,0 +1,472 @@
+# Claude Code Internals — Patterns Relevant to TeaTree
+
+Source analysis from the `Kuberwastaken/claurst` spec extraction (14 markdown
+files documenting the full TypeScript + Rust architecture), cross-referenced
+with `instructkr/claw-code` reference data and the v2.1.89 NPM bundle from
+`Onewon/claude-code`. The `claurst` spec is the most authoritative source.
+
+---
+
+## 1. Skill Frontmatter — Complete Field Reference
+
+Source: `claurst/spec/11_special_systems.md` § 4.4 (loadSkillsDir.ts)
+
+The frontmatter parser recognizes these fields in `SKILL.md`:
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `name` | `string` | directory name | Display name. Falls back to parent dir name |
+| `description` | `string` | first heading | Short summary (max 100 chars) shown in skill listing |
+| `when-to-use` | `string` | — | Free-text shown after description in listing. The model reads this to decide when to invoke the skill |
+| `user-invocable` | `bool` | `true` | If `false`, hidden from Skill tool listing |
+| `disable-model-invocation` | `bool` | `false` | If `true`, excluded from listing — model can't auto-invoke, only manual `/skill` |
+| `disableNonInteractive` | `bool` | `false` | Disables the skill in non-interactive (headless) mode |
+| `model` | `string` | — | Override model for this skill. `"inherit"` = use parent |
+| `effort` | `string \| int` | — | Override reasoning effort level |
+| `allowed-tools` | `string \| string[]` | `[]` | Tools granted. `"*"` wildcard, brace expansion (`mcp__{a,b}__*`) |
+| `argument-hint` | `string` | — | Hint shown in typeahead |
+| `arguments` | `string \| string[]` | `[]` | Named arguments |
+| `context` | `"inline" \| "fork"` | `"inline"` | `"fork"` = run as sub-agent in isolated context |
+| `agent` | `string` | — | Associate with agent-based execution |
+| `shell` | `"bash" \| "powershell"` | — | Shell for embedded commands |
+| `hooks` | `object` | — | **Inline hooks** — skill registers its own hooks for any event |
+| `paths` | `string \| string[]` | — | **Conditional activation** — glob patterns; skill stays dormant until a file op matches |
+| `version` | any | — | Stored, not validated |
+
+### BundledSkillDefinition TypeScript type
+
+Source: `claurst/spec/11_special_systems.md` § 4.2
+
+```typescript
+type BundledSkillDefinition = {
+  name: string
+  description: string
+  aliases?: string[]
+  whenToUse?: string
+  argumentHint?: string
+  allowedTools?: string[]
+  model?: string
+  disableModelInvocation?: boolean
+  userInvocable?: boolean
+  isEnabled?: () => boolean
+  hooks?: HooksSettings
+  context?: 'inline' | 'fork'
+  agent?: string
+  files?: Record<string, string>  // extracted to disk on first use
+  getPromptForCommand: (args, context) => Promise<ContentBlockParam[]>
+}
+```
+
+### What TeaTree Invented (Not in Claude Code)
+
+These are teatree-specific extensions:
+
+- `requires` — the transitive skill-dependency chain (topo-sorted, cycle-checked)
+
+Skill loading is explicit: slash commands, `t3 agent --phase/--skill`, ticket
+status, the `requires` chain, and cwd/overlay context. There is no free-text
+scan of the prompt.
+
+### How Claude Code Does Skill Matching
+
+Claude Code has **no trigger/keyword system**. Skill discovery is model-driven:
+
+1. Skills listed in a `<system-reminder>` as: `"- {name}: {description} - {when-to-use}"`
+2. The model reads this listing and decides which to invoke
+3. Conditional `paths` skills only appear after a matching file is touched
+4. Budget-aware listing prevents context overflow from too many skills
+
+---
+
+## 2. Skill Loading Architecture
+
+Source: `claurst/spec/11_special_systems.md` § 4.1–4.4
+
+### Loading Sources (priority order)
+
+1. **Managed/policy** (`~/.claude/skills/` managed dir)
+2. **User settings** (`~/.claude/skills/`)
+3. **Project settings** (`.claude/skills/` walking up to workspace root)
+4. **Additional dirs** (`--add-dir`)
+5. **Legacy commands** (`.claude/commands/`)
+6. **Plugin skills** (symlink in `~/.claude/plugins/`)
+7. **Bundled skills** (compiled into binary)
+8. **MCP skills** (generated from MCP tool definitions)
+
+### Content Template Variables
+
+- `${CLAUDE_SKILL_DIR}` → actual skill base directory path
+- `${CLAUDE_SESSION_ID}` → current session ID
+- `$ARGUMENTS` → user-provided arguments
+- `$ARG_NAME` → named arguments from `arguments` frontmatter
+- Embedded shell: `` ```! cmd ``` `` or `` !`cmd` `` executed and output substituted
+
+### File Extraction (`files` field)
+
+Bundled skills with `files` get extracted to a per-process temp directory
+(mode 0o600) on first use. Prompt is prefixed with
+`"Base directory for this skill: <dir>"`.
+
+---
+
+## 3. Hook System — Complete Event List
+
+Source: `claurst/spec/01_core_entry_query.md` (HOOK_EVENTS constant)
+
+```typescript
+const HOOK_EVENTS = [
+  'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'Notification',
+  'UserPromptSubmit', 'SessionStart', 'SessionEnd', 'Stop', 'StopFailure',
+  'SubagentStart', 'SubagentStop', 'PreCompact', 'PostCompact',
+  'PermissionRequest', 'PermissionDenied', 'Setup', 'TeammateIdle',
+  'TaskCreated', 'TaskCompleted', 'Elicitation', 'ElicitationResult',
+  'ConfigChange', 'WorktreeCreate', 'WorktreeRemove', 'InstructionsLoaded',
+  'CwdChanged', 'FileChanged',
+] as const  // 27 events
+```
+
+### Hook Response Schema
+
+Source: `claurst/spec/12_constants_types.md` § 24.4
+
+Hook JSON output supports event-specific fields:
+
+| Event | `hookSpecificOutput` fields |
+|-------|---------------------------|
+| `PreToolUse` | `permissionDecision`, `permissionDecisionReason`, `updatedInput`, `additionalContext` |
+| `UserPromptSubmit` | `additionalContext` |
+| `SessionStart` | `additionalContext`, `initialUserMessage`, `watchPaths` |
+| `PostToolUse` | `additionalContext`, `updatedMCPToolOutput` |
+| `PermissionRequest` | `decision` (allow w/ `updatedInput`/`updatedPermissions`, or deny) |
+| `PermissionDenied` | `retry` |
+| `CwdChanged`/`FileChanged` | `watchPaths` |
+| `WorktreeCreate` | `worktreePath` |
+| `Elicitation`/`ElicitationResult` | `action` (`accept`/`decline`/`cancel`), `content` |
+
+> **#845 — `PostCompact` has no `hookSpecificOutput` entry.** A `PostCompact`
+> hook cannot inject `additionalContext`; the harness discards its output.
+> Post-compaction state recovery therefore runs on the `SessionStart` hook
+> with `source == "compact"` (the documented sources are `startup`,
+> `resume`, `clear`, `compact`), which **does** support `additionalContext`.
+> Teatree writes the durable snapshot in the `PreCompact` hook and re-injects
+> it from `handle_session_start_bootstrap` when `source == "compact"`.
+>
+> **#1452 — SessionStart `additionalContext` MUST be nested under `hookSpecificOutput`.**
+> The harness silently drops the legacy flat top-level form
+> `{"additionalContext": "…"}` for `SessionStart`; only the nested envelope
+> `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "…"}}`
+> is accepted (matches the Agent SDK `SessionStartHookSpecificOutput` typed dict).
+> The flat form parses as valid JSON, so the hook exits 0 and the JSONL records
+> the stdout — but the recovered text never reaches the model. Symptom in the
+> session JSONL: the hook record has `content: ""` while `stdout` contains the
+> JSON payload. PostToolUse-style raw-text stdout still works; SessionStart
+> does not. Symptom in the session JSONL: the hook record has `content: ""`
+> while `stdout` carries the payload.
+
+### Skills Can Define Their Own Hooks
+
+The `hooks` frontmatter field lets a skill register hooks for ANY event.
+This makes skills self-contained — no separate `settings.json` configuration.
+
+---
+
+## 4. Context Compaction — Three Layers
+
+Source: `claurst/spec/06_services_context_state.md` §§ compact, microCompact, autoCompact
+
+### Layer 1: Microcompaction (lightweight)
+
+Clears old tool result content without conversation summarization.
+
+**Compactable tools:**
+
+```typescript
+const COMPACTABLE_TOOLS = new Set([
+  FileRead, Shell, Grep, Glob,
+  WebSearch, WebFetch, FileEdit, FileWrite
+])
+```
+
+**The `Skill` tool is NOT in this set.** Skill content loaded via the Skill
+tool cannot be microcompacted — it stays in context until full auto-compact.
+
+Two paths:
+
+- **Cached MC**: via API `cache_edits` — registers tool results, queues deletions
+- **Time-based MC**: direct content mutation to `'[Old tool result content cleared]'`
+  when idle gap exceeds threshold
+
+### Layer 2: Auto-compact (full summarization)
+
+- Triggers at ~90% of context window (configurable threshold)
+- Calls full `compact()` — LLM summarizes the conversation
+- Posts `CompactBoundaryMessage` as a marker
+- `PreCompact` and `PostCompact` hooks fire before/after (but only
+  `PreCompact` can act usefully — `PostCompact` has no `hookSpecificOutput`
+  entry, so post-compaction recovery uses `SessionStart`/`source=compact`
+  instead; see the #845 note in §3)
+
+### Layer 3: Reactive compact (emergency)
+
+- Feature-gated (`REACTIVE_COMPACT`)
+- Fires when prompt is too long for API
+- Last resort before returning `blocking_limit` error
+
+### Corrected Understanding
+
+**The "5K tokens per skill" claim from the original tickets is not
+substantiated.** Compaction replaces the entire conversation with a summary.
+Skills are NOT individually truncated to 5K tokens. The correct concern is:
+
+1. Skill content loaded via the Skill tool is **not microcompactable**
+2. After full auto-compact, skill content is lost (replaced by summary)
+3. The system prompt and `--append-system-prompt` survive compaction
+4. Reference files loaded via Read **are** microcompactable
+
+---
+
+## 5. System Prompt Construction
+
+Source: `claurst/spec/01_core_entry_query.md`, `claurst/spec/06_services_context_state.md`
+
+### Layered Assembly
+
+1. **Static CLI prefix**: `"You are Claude Code, Anthropic's official CLI"`
+2. **Main instruction block**: tools, conventions, git, PR, security
+3. **Environment info**: working dir, git status, platform, date, model
+4. **Context blocks** (`<context name="key">value</context>`):
+   - `directoryStructure`, `gitStatus`, `codeStyle` (CLAUDE.md files),
+     `claudeFiles`, `readme`, user-set context
+5. **System-reminder attachments**: skill listing, memory, etc.
+
+### Prompt Caching
+
+- System prompt split into 2 blocks with `cache_control: { type: 'ephemeral' }`
+- Last 3 messages get cache breakpoints
+- Any change in the prefix invalidates the cache
+
+### Token Budget Tracking
+
+```typescript
+export function getCurrentTurnTokenBudget(): number | null
+export function getBudgetContinuationCount(): number
+```
+
+Task-level token budgets are configurable via the `task-budgets-2026-03-13` beta header.
+
+---
+
+## 6. Headless / Print Mode
+
+### `claude -p <prompt>`
+
+- Non-interactive single-shot execution
+- No permission UI — tools must be pre-approved
+- `--dangerously-skip-permissions` only works in Docker without internet
+
+### `--output-format json`
+
+Structured JSON envelope on stdout.
+
+### `--resume <session-id>`
+
+Loads full conversation history for multi-phase workflows.
+
+### `--append-system-prompt <text>`
+
+Appended after main system prompt. Part of cached prefix.
+
+---
+
+## 7. Agent / Sub-Agent Patterns
+
+Source: `claurst/spec/03_tools.md` (AgentTool), `claurst/spec/05_components_agents_permissions_design.md`
+
+- No recursive agents (AgentTool filtered from sub-agent tools)
+- Read-only by default unless `dangerouslySkipPermissions`
+- Stateless — fresh context per invocation
+- Sidechain logging to separate files
+- `SubagentStart` and `SubagentStop` hooks fire
+- Read-only tools run concurrently (up to 10)
+
+---
+
+## 8. Rust Codebase
+
+Source: `claurst/spec/13_rust_codebase.md`
+
+Claude Code includes a Rust crate (`cc-core`) that mirrors TypeScript types:
+
+- `HookEvent` enum: `PreToolUse`, `PostToolUse`, `Stop`, `UserPromptSubmit`, `Notification`
+- `run_hooks(hooks, event, context, working_dir) -> HookOutcome` (async)
+- Tool execution: `PreToolUse` hooks fire → if `Blocked` → `ToolResult::error`
+- `Skill` tool in Rust: reads `.md` files, strips YAML frontmatter, substitutes `$ARGUMENTS`
+
+---
+
+## 9. Task System (TaskCreate / TaskUpdate)
+
+Source: Claude Code v2.1.16+ changelog, `deepwiki` docs, `claudefa.st` guide
+
+### Migration from TodoWrite
+
+Anthropic replaced `TodoWrite`/`TodoRead` with a four-tool Tasks API (v2.1.19 default, Jan 2025):
+
+| Aspect | TodoWrite (legacy) | TaskCreate (current) |
+|--------|-------------------|---------------------|
+| Storage | Ephemeral (context window only) | Persistent disk (`~/.claude/tasks/`) |
+| Session survival | No — lost on restart | Yes |
+| Dependencies | None | Full graph (`addBlockedBy`/`addBlocks`) |
+| Multi-session | Impossible | Yes (shared via `CLAUDE_CODE_TASK_LIST_ID`) |
+| Tools | 2 (`TodoWrite`, `TodoRead`) | 4 (`TaskCreate`, `TaskGet`, `TaskUpdate`, `TaskList`) |
+| Revert | Set `CLAUDE_CODE_ENABLE_TASKS=false` | N/A |
+
+### Task Tool API
+
+- **TaskCreate**: `subject` (imperative), `description`, optional `activeForm` (present continuous for spinner)
+- **TaskUpdate**: change `status` (pending → in_progress → completed), `addBlockedBy`/`addBlocks`
+- **TaskGet**: full task details including dependency graph
+- **TaskList**: summaries with id, subject, status, owner, blockedBy
+
+### Persistence
+
+- Default: session-scoped
+- With `CLAUDE_CODE_TASK_LIST_ID` env var: persists to `~/.claude/tasks/<task-list-id>/` as JSON files
+- Same ID across terminal sessions = shared task list (caution: use repo-specific IDs to avoid contamination)
+
+### Task Hook Events
+
+| Event | Fires | Exit 2 effect | Stdin fields |
+|-------|-------|---------------|-------------|
+| `TaskCreated` | AFTER the task row is written | **DELETES the task** — see below | `task_id`, `task_subject`, `task_description`, `teammate_name`, `team_name` |
+| `TaskCompleted` | Before marking complete | Prevents completion | Same |
+
+Neither event supports matchers — they fire on every occurrence.
+
+`{"continue": false, "stopReason": "..."}` in hook output sets `preventContinuation` — which the task-creation consumer never reads (see "The block reason does NOT ride `stopReason`" below).
+
+`task_description`, `teammate_name` and `team_name` are all **optional** on both events.
+
+**`TaskCreated` has exactly ONE producer: the `TaskCreate` tool body ([#4216](https://github.com/souliane/teatree/issues/4216)).** It therefore fires only for an entry a session adds to its OWN task list — an `Agent`/`Task`/Workflow sub-agent fan-out never reaches it, and no field on the payload marks a dispatch. `teammate_name`/`team_name` are the CREATING session's own ambient agent identity (the async-context store's `agentName`/`teamName`, falling back to the process's), so they answer *which session added this entry*, never *what the entry dispatches*. Re-check on any harness upgrade: `grep -a -o -P '.{200}hook_event_name:"TaskCreated".{200}'` over `/usr/lib/node_modules/@anthropic-ai/claude-code/node_modules/@anthropic-ai/claude-code-linux-x64/claude` names the emitter, and a word-boundary grep for that emitter's minified name yields its definition plus its call sites (verified on 2.1.220: one call site, inside the `TaskCreate` tool's `call`).
+
+**The block reason does NOT ride `stopReason` (#4216).** The harness's task-creation consumer reads one field — the `blockingError` its hook runner derives. `continue: false` becomes `preventContinuation`, which that consumer never looks at, so an exit-2 deny carrying only the teammate-stop envelope falls through to the runner's fallback `[<command>]: <stderr or "No stderr output">` and surfaces as an empty failure. The documented per-event contract is: exit 0 — stdout/stderr not shown; exit 2 — **stderr** shown to the model and the task creation prevented; other codes — stderr shown to the user only. `decision: "block"` is the one stdout key the runner turns into a `blockingError` carrying the hook's own text.
+
+> **The single-producer fact BOUNDS what any teatree gate on this seam can reach ([#4216](https://github.com/souliane/teatree/issues/4216)).** A gate here observes task-list entries only, so a demand that the entry's own description name the creating session's skills is unsatisfiable by construction — nothing reads a todo as a prompt — and a demand that a todo be admitted against the agent ceiling charges a seat for an agent that does not exist. Both were retired; the one arm that remains, `handle_dispatch_prompt_quote_scanner_on_task_create`, scans the entry's own text for a HIGH verbatim quote, which is a property of the text rather than of a dispatch. A `PreToolUse` bypass a sub-agent dispatch enjoys is NOT closable here — the `Agent` matcher is its only interception point. See BLUEPRINT.md §17.6.4 and `hooks/CLAUDE.md`.
+
+### Known Limitations
+
+- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite. This is the task-LIST tool family (`TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`), which is why they carry their own `TaskCreated`/`TaskCompleted` events; do NOT read it as covering the `Agent`/`Task` sub-agent dispatch tool, which does reach `PreToolUse` (matcher `Agent`). TeaTree enforces skill-loading on the `PreToolUse` `Agent` matcher (#1488).
+- **VSCode extension**: tasks completely disabled due to `isTTY` check on `process.stdout.isTTY`
+- **Task UI freezes during auto-compact** — no status updates on completed tasks
+
+### Enforcement Patterns
+
+**Stop hook** (best mechanism): fires when Claude finishes a response. Return `"decision": "block"` to prevent stopping. Must check `stop_hook_active` flag to prevent infinite loops:
+
+```json
+{"stop_hook_active": false, "decision": "block", "reason": "Tasks not complete"}
+```
+
+**UserPromptSubmit**: inject `additionalContext` reminding the agent to create tasks. Lightweight but advisory-only.
+
+**TaskCompleted hook**: exit 2 to block completion until validation passes (e.g., tests must be green).
+
+---
+
+## 10. AskUserQuestion & Elicitation
+
+### AskUserQuestion Tool
+
+Purpose: structured user input when the agent needs clarification. Renders as multiple-choice UI.
+
+```typescript
+{
+  questions: [{                    // 1–4 questions per call
+    question: string,              // the question text
+    header: string,                // short chip label (max 12 chars)
+    options: [{                    // 2–4 options per question
+      label: string,               // display text
+      description: string,         // explanation
+      preview?: string,            // optional markdown preview (single-select only)
+    }],
+    multiSelect: boolean,
+  }]
+}
+```
+
+Response: `answers` mapping question text → selected option label.
+
+**Constraints:**
+
+- Not available in sub-agents (Agent tool)
+- Does NOT trigger `PreToolUse`/`PostToolUse` hooks (as of v2.1.90)
+- "Other" option is always auto-added for free-text input
+
+### Elicitation Hooks (MCP, v2.1.76+)
+
+MCP servers can request structured user input mid-task. Two hooks intercept this lifecycle:
+
+| Hook | Fires | `hookSpecificOutput` |
+|------|-------|---------------------|
+| `Elicitation` | When MCP requests input, before UI shown | `action` (accept/decline/cancel), `content` (pre-fill) |
+| `ElicitationResult` | After user responds, before sent to MCP | `action`, `content` (modified values) |
+
+`elicitation_id` tracks each elicitation through its lifecycle. Exit code 2 on `ElicitationResult` converts action to "decline".
+
+### Enforcement
+
+No built-in setting forces use of `AskUserQuestion`. Enforcement options:
+
+- **Instructions** (CLAUDE.md / skills): most effective — tell the agent to always use `AskUserQuestion` instead of inline questions
+- **UserPromptSubmit hook**: inject reminder text as `additionalContext`
+- **Stop hook**: could theoretically check if questions were asked inline vs. via tool, but fragile
+
+---
+
+## 11. Key Corrections to Original Ticket Assumptions
+
+| Original Claim | Reality (from claurst spec) |
+|---|---|
+| "Skills truncated to 5K tokens after compaction" | No per-skill truncation. Full compaction replaces entire conversation with summary. Skill content simply disappears. |
+| "Skill frontmatter carries free-text keyword-matching fields" | Removed with explicit skill loading. Skills load via slash commands / phase / requires-chain / cwd-overlay context; Claude Code itself uses `when-to-use` free-text for model-driven discovery. |
+| "Claude Code's `readFileState` cache tracks which files were read" | Confirmed: the Read tool requires prior reading before writes. Sub-agents get a cloned cache. |
+| "Auto-compact triggers at contextWindow - 13,000 tokens" | Auto-compact triggers at ~90% of context window (configurable). The 13K figure is not confirmed. |
+| "Hooks receive JSON on stdin with session_id, tool_name, tool_input" | Confirmed. Hook-specific output fields vary by event type (documented above). |
+| "Prompt cache requires stable ordering" | Confirmed. System prompt split into 2 cached blocks. |
+| "Skill tool content is not microcompactable" | **Confirmed.** `COMPACTABLE_TOOLS` does not include the Skill tool. |
+
+---
+
+## 12. Patterns TeaTree Should Adopt
+
+### High Priority (directly applicable)
+
+| Pattern | Source | Action |
+|---------|--------|--------|
+| `when-to-use` field | loadSkillsDir.ts | Add to teatree skills — model-driven discovery |
+| `paths` conditional activation | loadSkillsDir.ts | Skills activate only when matching files touched |
+| `hooks` in frontmatter | loadSkillsDir.ts | Skills carry their own hooks — self-contained |
+| `allowed-tools` | loadSkillsDir.ts | Skills declare needed tools |
+| Microcompact awareness | microCompact.ts | Route reference content through Read (compactable) not Skill (not compactable) |
+| `PreCompact` hook + `SessionStart`/`source=compact` | HOOK_EVENTS | `PreCompact` persists state before compaction; recovery runs on the post-compaction `SessionStart` (`source=="compact"`) — **not** `PostCompact`, which has no `hookSpecificOutput` entry (#845) |
+
+### Medium Priority
+
+| Pattern | Source | Action |
+|---------|--------|--------|
+| `context: "fork"` | BundledSkillDefinition | Isolated skill execution |
+| `model`/`effort` overrides | BundledSkillDefinition | Per-skill model selection |
+| `disable-model-invocation` | BundledSkillDefinition | Control auto-discovery |
+| `FileChanged`/`CwdChanged` hooks | HOOK_EVENTS | React to file changes |
+| `SubagentStart`/`SubagentStop` hooks | HOOK_EVENTS | Track sub-agent lifecycle |
+| `WorktreeCreate`/`WorktreeRemove` hooks | HOOK_EVENTS | Worktree lifecycle |
+| `PermissionRequest` hook with `updatedInput` | Hook response schema | Modify tool input before execution |
+
+### Low Priority (future consideration)
+
+| Pattern | Source | Action |
+|---------|--------|--------|
+| MCP skills (from tool definitions) | LoadedFrom type | Generate skills from MCP tools |
+| Plugin system | builtinPlugins.ts | Package teatree features as plugins |
+| `files` extraction | BundledSkillDefinition | Ship reference files with skills |
+| Time-based microcompact | microCompact.ts | Clear old results after idle gap |

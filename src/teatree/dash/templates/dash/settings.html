@@ -1,0 +1,64 @@
+{% extends "dash/base.html" %}
+{% block title %}Settings{% endblock %}
+{% block heading %}Settings{% endblock %}
+{% block content %}
+  <section class="band">
+    <h2>Settings</h2>
+    <p class="muted">Everything this box is configured to do: the resolved model / credential / self-repair readouts below, then every config key from the schema. Sections are on the left, the selected section's grid on the right — one section is fetched at a time, so the page stays small. One row per setting, with the shipped default and then every scope side by side: <span class="mono">global</span> first, then one column per overlay. A cell reads green while it still equals the default and brown once someone has changed it; the count beside each section in the nav is how many of its settings have been changed, counting each setting once however many scopes override it.</p>
+    <p class="muted">Editing is in place and there is no save button — pick a value or type one and it is written as
+      you leave the cell. Emptying a cell deletes that scope's row, so the setting resolves its default again.
+      An invalid value is refused and the cell says why rather than keeping the text that failed. Hover a
+      setting's name for what it does, and a cell for which tier of the resolution chain supplied it
+      (env &rarr; DB overlay scope &rarr; DB global scope &rarr; overlay code default &rarr; shipped file).
+      A secret value is never shown (<span class="mono">***</span>) and its input is write-only.</p>
+    <p class="muted"><a href="{% url 'dash:settings_compare' %}">Compare instances</a> puts this box beside every peer
+      in the <span class="mono">peer_instances</span> registry — and beside any snapshot file loaded there — and shows
+      what actually differs. <a href="{% url 'dash:settings_snapshot' %}?download=1">Download this box's snapshot</a>
+      to keep today's capture as a record, or to carry it to a box no tunnel reaches; it carries no raw secret.
+      The same comparison reads in a terminal as <span class="mono">t3 settings compare</span>.</p>
+  </section>
+
+  <div id="settings-readouts"
+    hx-get="{% url 'dash:settings_readouts' %}"
+    hx-trigger="every 15s"
+    hx-sync="this:drop"
+    hx-swap="morph:innerHTML">
+    {% include "dash/partials/_settings_readouts.html" %}
+  </div>
+
+  {% if editor.error %}<div class="banner-red">{{ editor.error }}</div>{% endif %}
+
+  <div class="settings-layout">
+    <nav class="settings-nav band" aria-label="Settings sections">
+      <h2>Sections</h2>
+      <ul>
+        {% for section in editor.sections %}
+          <li>
+            <button type="button"
+              class="settings-nav-item{% if section.slug == editor.group.section.slug %} active{% endif %}"
+              aria-current="{% if section.slug == editor.group.section.slug %}true{% else %}false{% endif %}"
+              hx-get="{% url 'dash:settings_group' section.slug %}"
+              hx-target="#settings-pane" hx-swap="innerHTML">
+              <span class="settings-nav-label">{{ section.label }}</span>
+              {% if section.parent_label %}<span class="settings-nav-parent">{{ section.parent_label }}</span>{% endif %}
+              <span class="settings-nav-count">{{ section.key_count }}</span>
+              {% if section.drift_count %}
+                <span class="settings-nav-drift" title="{{ section.drift_count }} setting(s) here differ from their default">{{ section.drift_count }}</span>
+              {% endif %}
+            </button>
+          </li>
+        {% endfor %}
+      </ul>
+    </nav>
+    <div id="settings-pane" class="settings-detail">
+      {% include "dash/partials/_settings_group.html" with group=editor.group %}
+    </div>
+  </div>
+
+  <section class="band">
+    <h2>Import / export</h2>
+    <p class="muted">Transferring this box's configuration lives on its own page:
+      <a href="{% url 'dash:interchange' %}">Import / export</a>. A dump is wider than this page — it carries the
+      loops, presets and schedules too, so importing one can change which loops run.</p>
+  </section>
+{% endblock %}

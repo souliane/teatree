@@ -1,0 +1,4 @@
+def setup(repo):
+    _git(repo, "init", "-q")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    _git(repo, "push", "origin", "main")

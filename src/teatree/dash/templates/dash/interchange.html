@@ -1,0 +1,92 @@
+{% extends "dash/base.html" %}
+{% block title %}Import / export{% endblock %}
+{% block heading %}Import / export{% endblock %}
+{% block content %}
+  <section class="band">
+    <h2>What a dump covers</h2>
+    <p class="muted">Wider than the settings page: a dump carries the settings store <em>and</em> the loops,
+      presets and schedules. Importing one writes them back — it can change which loops run and when — so read
+      the preview before you apply.</p>
+    <table class="dash">
+      <thead><tr><th>Section</th><th>TOML table</th><th>What it holds</th></tr></thead>
+      <tbody>
+        {% for section in sections %}
+          <tr>
+            <td>{{ section.label }}</td>
+            <td class="mono">[{{ section.table }}]</td>
+            <td class="muted">{{ section.covers }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="muted">Secrets and personal identifiers are withheld from an export. A complete backup including
+      them is <span class="mono">t3 &lt;overlay&gt; config_setting export --include-private</span>, restored with
+      <span class="mono">config_setting import --restore-private</span>.</p>
+  </section>
+
+  <section class="band">
+    <h2>Export</h2>
+    <form class="toolbar" method="get" action="{% url 'dash:interchange_export' %}">
+      <label><input type="checkbox" name="default_keys_only" value="1"> Export default keys only</label>
+      <label><input type="checkbox" name="include_defaults" value="1"> Include values that are the same as default</label>
+      <button class="dash-btn" type="submit">Export (secrets withheld)</button>
+    </form>
+    <p class="muted">Both unticked is the delta dump: only what this box overrides. <em>Default keys only</em>
+      restricts it to the keys <span class="mono">config/defaults.toml</span> ships, dropping registries, secrets,
+      personal identifiers and overlay scopes. <em>Include values that are the same as default</em> also emits the
+      keys with no DB row, at their resolved effective value. Tick BOTH and the download is a complete drop-in
+      replacement for <span class="mono">config/defaults.toml</span>, header and seed tables included.</p>
+  </section>
+
+  <section class="band">
+    <h2>Import</h2>
+    <form method="post" action="{% url 'dash:interchange_import' %}" enctype="multipart/form-data">
+      {% csrf_token %}
+      <input type="file" name="toml_file" accept=".toml,text/plain" aria-label="TOML file to import" required>
+      <p class="toolbar">
+        <input type="text" name="confirm" placeholder="confirm: {{ confirm_phrase }}" autocomplete="off"
+          aria-label="safety-posture confirm phrase">
+        <button type="submit" name="apply" value="">Preview (dry-run)</button>
+        <button type="submit" name="apply" value="1">Apply</button>
+      </p>
+      <p class="muted">Upload a dump exported above (or by <span class="mono">config_setting export</span>). A file
+        carrying a safety-posture key needs the confirm phrase, exactly as editing one on the settings page does.
+        Each row lands in the scope its own table names.</p>
+    </form>
+    {% if import_error %}<p class="banner-red">{{ import_error }}</p>{% endif %}
+    {% if import_result %}
+      <div class="import-result">
+        <h3>{% if import_applied %}Imported{% else %}Import preview — dry-run, nothing written{% endif %}</h3>
+        {% if import_result.rejected %}
+          <p class="banner-red">{{ import_result.rejected|length }} row(s) rejected — the whole import was refused, nothing was written.</p>
+          {% if import_result.private_backup %}
+            <p class="banner-red">That file is an <span class="mono">--include-private</span> personal backup. Restore it from the CLI:
+              <span class="mono">t3 &lt;overlay&gt; config_setting import --input &lt;file&gt; --restore-private</span>.</p>
+          {% endif %}
+          <ul>
+            {% for r in import_result.rejected %}
+              <li class="mono">{{ r.key }} [{{ r.scope|default:"global" }}] — {{ r.reason }}</li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p>{{ import_result.written|length }} row(s) {% if import_applied %}written{% else %}would be written{% endif %}; {{ import_result.unchanged|length }} already at that value; {{ import_result.skipped_default|length }} equal the shipped default (no row).</p>
+          {% if changed_sections %}
+            <p>{% if import_applied %}Changed{% else %}Would change{% endif %} —
+              {% for change in changed_sections %}{{ change.section.label }} ({{ change.count }}){% if not forloop.last %}, {% endif %}{% endfor %}.</p>
+          {% endif %}
+          {% if import_result.safety_posture_keys and not import_applied %}
+            <p class="banner-red">{{ import_result.safety_posture_keys|length }} safety-posture row(s) —
+              <span class="mono">{{ import_result.safety_posture_keys|join:", " }}</span>.
+              Applying needs the confirm phrase <span class="mono">{{ confirm_phrase }}</span>.</p>
+          {% endif %}
+          <ul>
+            {% for row in import_result.written %}
+              <li class="mono">{{ row.key }} = {{ row.toml_value }} [{{ row.scope|default:"global" }}]{% if row.is_safety_posture %} <span class="banner-red">safety-posture</span>{% endif %}</li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+        {% for old, new in import_result.folded %}<p class="muted">folded retired alias {{ old }} → {{ new }}</p>{% endfor %}
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

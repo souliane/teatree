@@ -1,0 +1,32 @@
+id: lenient-git-run-dead-except
+language: python
+severity: error
+message: >-
+  A `try` whose body calls the LENIENT `git.run(...)` (utils/git_run.py: it
+  wraps run_allowed_to_fail with expected_codes=None and NEVER raises) guarded by
+  `except CommandFailedError` is DEAD code: the probe cannot raise, so the
+  handler never runs and a real git failure silently degrades to "" — which the
+  code downstream reads as a VERDICT (a stash dropped, an unscanned branch pushed
+  to a public PR, a live ticket abandoned). Use `git.run_strict(...)` for any
+  decision-bearing probe so the failure actually raises and the handler routes
+  the uncertainty to the conservative keep/refuse outcome. See
+  branch_classification._branch_captured_upstream and
+  cleanup_salvage._unique_content_texts.
+files:
+  - "src/teatree/core/worktree/branch_classification.py"
+  - "src/teatree/core/worktree/worktree_done.py"
+  - "src/teatree/core/cleanup/cleanup_liveness.py"
+  - "src/teatree/core/cleanup/cleanup_salvage.py"
+  - "src/teatree/core/management/commands/_workspace/stash.py"
+rule:
+  kind: try_statement
+  all:
+    - has:
+        pattern: git.run($$$ARGS)
+        stopBy: end
+    - has:
+        kind: except_clause
+        stopBy: end
+        has:
+          pattern: CommandFailedError
+          stopBy: end

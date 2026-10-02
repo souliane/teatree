@@ -1,0 +1,209 @@
+"""The regression-corpus predicate bodies, exercised in isolation.
+
+Mirrors ``src/teatree/eval/regression_corpus_predicates.py``. Each ``_check_*``
+calls the REAL gate/checker code on a must-block and a must-allow input and
+returns ``True`` only when both directions hold; ``run_regression_corpus`` wires
+them into its check table (covered in ``tests/eval_replay/test_regression_corpus.py``).
+Here each predicate is called directly so a regression in the predicate logic
+itself (not just the corpus orchestration) is observable, plus an anti-vacuity
+proof: breaking the underlying real function flips a predicate to ``False``.
+"""
+
+from unittest.mock import patch
+
+import pytest
+from django.db import transaction
+from django.test import TestCase
+
+from teatree.config.resolution import get_effective_settings
+from teatree.config.settings import Autonomy
+from teatree.core.models import ConfigSetting, LoopLease
+from teatree.core.overlay_loader import infer_overlay_for_url
+from teatree.eval import regression_corpus_predicates as predicates
+
+
+class _BoomError(Exception):
+    """An exception no predicate catches — the probe for an uncaught mid-block failure."""
+
+
+class TestNonDbPredicatesHoldOnRealCode(TestCase):
+    """The predicates that need no ORM call the real code path and return True."""
+
+    def test_branch_currency_conflict_only(self) -> None:
+        assert predicates._check_branch_currency_conflict_only() is True
+
+    def test_account_switch_detect_and_recover(self) -> None:
+        assert predicates._check_account_switch_detect_and_recover() is True
+
+    def test_private_repo_allowlist_path_segment_match(self) -> None:
+        assert predicates._check_private_repo_allowlist_path_segment_match() is True
+
+    def test_banned_terms_scanner_fails_closed_on_crash(self) -> None:
+        assert predicates._check_banned_terms_scanner_fails_closed_on_crash() is True
+
+    def test_forge_resolves_by_host_not_token(self) -> None:
+        assert predicates._check_forge_resolves_by_host_not_token() is True
+
+    def test_mr_description_first_line_validated(self) -> None:
+        assert predicates._check_mr_description_first_line_validated() is True
+
+    def test_causeless_failure_does_not_trip_the_stall(self) -> None:
+        assert predicates._check_causeless_failure_does_not_trip_the_stall() is True
+
+    def test_causeless_kind_is_dropped_from_the_kind_stall(self) -> None:
+        assert predicates._check_causeless_kind_is_dropped_from_the_kind_stall() is True
+
+
+class TestDbBackedPredicatesHoldOnRealCode(TestCase):
+    """The ORM-backed predicates hold against the migrated test DB."""
+
+    def test_substrate_human_authorize_floor(self) -> None:
+        assert predicates._check_merge_precondition_substrate_human_authorize() is True
+
+    def test_substrate_full_autonomy_holds(self) -> None:
+        assert predicates._check_merge_precondition_substrate_full_autonomy_holds() is True
+
+    def test_maker_is_not_checker(self) -> None:
+        assert predicates._check_merge_precondition_maker_is_not_checker() is True
+
+    def test_loop_owner_lease_pid_anchored(self) -> None:
+        assert predicates._check_loop_owner_lease_pid_anchored() is True
+
+    def test_ship_branch_reconcile_renamed(self) -> None:
+        assert predicates._check_ship_branch_reconcile_renamed() is True
+
+
+class TestPredicatesAreAntiVacuous(TestCase):
+    """Breaking the underlying real function flips the predicate to False.
+
+    A predicate that returned True regardless of the code path would guard
+    nothing; these prove each direction is actually consulted.
+    """
+
+    def test_forge_predicate_red_when_host_classifier_lies(self) -> None:
+        with patch("teatree.utils.forge.forge_from_remote", return_value="github"):
+            # gitlab/unknown remotes now also resolve to "github" → must-allow legs fail.
+            assert predicates._check_forge_resolves_by_host_not_token() is False
+
+    def test_first_line_predicate_red_when_validator_accepts_everything(self) -> None:
+        with patch("teatree.core.review.mr_metadata.validate_mr_metadata", return_value=[]):
+            # A validator that never rejects → the must-reject leg fails.
+            assert predicates._check_mr_description_first_line_validated() is False
+
+    def test_causeless_predicates_red_when_the_causeless_drop_is_removed(self) -> None:
+        with patch("teatree.core.modelkit.task_failure_taxonomy.is_causeless", return_value=False):
+            # Both mechanisms consult it: the fingerprint filter keeps the constant
+            # reason's self-collision, the kind filter keeps the two ceiling kinds.
+            assert predicates._check_causeless_failure_does_not_trip_the_stall() is False
+            assert predicates._check_causeless_kind_is_dropped_from_the_kind_stall() is False
+
+    def test_kind_predicate_red_when_normalization_collapses_the_breach(self) -> None:
+        with patch("teatree.core.repair_loop.normalize_terminal_reason", return_value="collapsed"):
+            # The discrimination leg: a normalizer that masks the second count makes the
+            # two ceiling reasons fingerprint identically, which is the silent change the
+            # corrected prose depends on not happening.
+            assert predicates._check_causeless_kind_is_dropped_from_the_kind_stall() is False
+
+    def test_allowlist_predicate_red_when_matcher_substring_matches(self) -> None:
+        with patch("teatree.hooks._repo_visibility.slug_is_allowlisted_private", return_value=True):
+            # A matcher that flags the public alias-glued slug → must-not-match leg fails.
+            assert predicates._check_private_repo_allowlist_path_segment_match() is False
+
+
+class TestStagedAutonomyHermeticAgainstDbTier(TestCase):
+    """The substrate-floor helper pins autonomy regardless of a live DB override (#1775 host leak).
+
+    ``autonomy`` is DB-home under the #1775 partition: it resolves solely from
+    the ``ConfigSetting`` store, so a host carrying a per-overlay ``autonomy``
+    row would silently override whatever the floor check stages. The helper
+    stages autonomy through that same DB-home seam (the per-overlay row reader)
+    and neutralises the global DB scope and the env tier, so the staged value is
+    authoritative regardless of any live host row. Both tests go RED on a helper
+    that fails to neutralise the loaders (the seeded ``full`` row leaks past the
+    staged ``babysit``).
+    """
+
+    def _pin_overlay_autonomy_full_in_db(self) -> str:
+        overlay_name = infer_overlay_for_url("souliane/teatree") or "t3-teatree"
+        ConfigSetting.objects.set_value("autonomy", Autonomy.FULL.value, scope=overlay_name)
+        return overlay_name
+
+    def test_staged_babysit_wins_over_db_full_override(self) -> None:
+        overlay_name = self._pin_overlay_autonomy_full_in_db()
+        with predicates._staged_overlay_autonomy(overlay_name, "babysit"):
+            resolved = get_effective_settings(overlay_name).autonomy
+        assert resolved is Autonomy.BABYSIT
+
+    def test_substrate_floor_holds_with_live_full_db_override(self) -> None:
+        self._pin_overlay_autonomy_full_in_db()
+        # The below-full floor must still BLOCK a human-less substrate CLEAR even
+        # though the host DB pins this overlay to full.
+        assert predicates._check_merge_precondition_substrate_human_authorize() is True
+
+
+class TestPredicatesLeaveNoDurableRows(TestCase):
+    """The corpus runs against the live control DB, so a predicate cleans up what it wrote.
+
+    A leaked ``MergeClear`` is a durable merge authorisation for a real repo slug
+    sitting in the operator's store, written by a check that only wanted to
+    exercise a guard.
+    """
+
+    def _clear_pks(self) -> set[int]:
+        from teatree.core.models import MergeClear  # noqa: PLC0415 — deferred: ORM needs the app registry
+
+        return set(MergeClear.objects.values_list("pk", flat=True))
+
+    def test_substrate_human_authorize_leaves_no_clear(self) -> None:
+        before = self._clear_pks()
+        assert predicates._check_merge_precondition_substrate_human_authorize() is True
+        assert self._clear_pks() == before
+
+    def test_substrate_full_autonomy_leaves_no_clear(self) -> None:
+        before = self._clear_pks()
+        assert predicates._check_merge_precondition_substrate_full_autonomy_holds() is True
+        assert self._clear_pks() == before
+
+    def test_maker_is_not_checker_leaves_no_clear(self) -> None:
+        before = self._clear_pks()
+        assert predicates._check_merge_precondition_maker_is_not_checker() is True
+        assert self._clear_pks() == before
+
+
+class TestEphemeralRowNeverCommits(TestCase):
+    """``_ephemeral_row`` cleans up by never committing, not by an explicit delete.
+
+    A prior shape (``create()`` in autocommit, then ``finally: row.delete()``)
+    left the row durable the instant it was created — correct on any ordinary
+    exit, but a hard kill between the two (a timeout wrapper, an OOM, a crashed
+    eval run) skips the ``finally`` and the row survives permanently. Measured:
+    258 orphaned ``MergeClear`` rows this way over a month, false-tripping the S4
+    ``merge_latency`` factory signal RED. These prove the replacement's actual
+    guarantee — nothing the block writes is ever visible to a later reader,
+    regardless of how the block ends — which a "still returns True" test alone
+    cannot show.
+    """
+
+    _NAME = "ephemeral-row-probe"
+
+    def test_runs_inside_an_open_transaction(self) -> None:
+        with predicates._ephemeral_row():
+            assert transaction.get_connection().in_atomic_block
+
+    def test_a_write_is_visible_inside_the_block_but_gone_after_ordinary_exit(self) -> None:
+        with predicates._ephemeral_row():
+            LoopLease.objects.create(name=self._NAME)
+            # Uncommitted, but this same connection reads its own write.
+            assert LoopLease.objects.filter(name=self._NAME).exists()
+
+        assert not LoopLease.objects.filter(name=self._NAME).exists()
+
+    def test_a_write_is_gone_even_when_the_block_raises_an_exception_the_caller_never_catches(self) -> None:
+        def _create_then_raise() -> None:
+            LoopLease.objects.create(name=self._NAME)
+            raise _BoomError
+
+        with pytest.raises(_BoomError), predicates._ephemeral_row():
+            _create_then_raise()
+
+        assert not LoopLease.objects.filter(name=self._NAME).exists()

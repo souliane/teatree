@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-comment_density_no_restating_docstring_or_inline-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Names carry the intent; no docstring echo, no restating comments."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "src/myapp/migrations/0002_add_flag.py", "content": "FLAG = \"platform_messages\"\n\n\ndef add_feature_flag(apps, schema_editor):\n    model = apps.get_model(\"myapp\", \"FeatureFlag\")\n    model.objects.get_or_create(definition=FLAG, defaults={\"value\": False})\n    model.objects.filter(definition=FLAG).update(**metadata())\n"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

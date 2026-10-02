@@ -1,0 +1,438 @@
+"""Integration tests for the Django-free stdlib cold reader (config-unify PR1).
+
+Every test builds a REAL sqlite database with the `teatree_config_setting`
+schema via stdlib `sqlite3` (Django's JSONField stores each value as
+JSON-encoded text), then reads it back through `cold_reader` — no mocks, so the
+fail-open and locking behaviour is exercised against actual sqlite, not a stub.
+"""
+
+import json
+import sqlite3
+from collections.abc import Iterable
+from pathlib import Path
+
+import pytest
+
+from teatree.config import cold_reader
+from teatree.config.host_projection import ProjectionPublisher
+
+Row = tuple[str, str, object]
+
+# The publisher projects the loop/mode tables alongside settings, so a source database it
+# is pointed at has to carry them. Empty is honest: these tests are about the settings tier.
+_PROJECTION_SOURCE_TABLES = (
+    "CREATE TABLE IF NOT EXISTS teatree_loop_state (name TEXT, status TEXT)",
+    (
+        "CREATE TABLE IF NOT EXISTS teatree_loop_preset "
+        "(name TEXT, defers_questions INT, pauses_self_pump INT, presence_sensitive INT)"
+    ),
+    "CREATE TABLE IF NOT EXISTS teatree_loop_preset_override (preset_name TEXT, until TEXT, set_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS teatree_loop_schedule (name TEXT, id INT, timezone TEXT)",
+    (
+        "CREATE TABLE IF NOT EXISTS teatree_loop_schedule_slot "
+        "(schedule_id INT, days TEXT, start_time TEXT, preset_name TEXT)"
+    ),
+)
+
+
+def _make_db(path: Path, rows: Iterable[Row], *, wal: bool = False) -> None:
+    """Build a real `teatree_config_setting` DB matching the Django migration."""
+    conn = sqlite3.connect(path)
+    try:
+        if wal:
+            conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            [(scope, key, json.dumps(value)) for scope, key, value in rows],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _remove_wal_sidecars(db: Path) -> None:
+    """Delete the ``-wal``/``-shm`` sidecar files of `db`.
+
+    The realistic quiescent cold state (no teatree process holding the DB),
+    where a WAL-format file has no live sidecars.
+    """
+    for suffix in ("-wal", "-shm"):
+        db.with_name(db.name + suffix).unlink(missing_ok=True)
+
+
+class TestReadSettingFailsOpen:
+    def test_missing_db_file_returns_none(self, tmp_path: Path) -> None:
+        assert cold_reader.read_setting("mode", db_path=tmp_path / "nope.sqlite3") is None
+
+    def test_missing_table_returns_none(self, tmp_path: Path) -> None:
+        db = tmp_path / "fresh.sqlite3"
+        sqlite3.connect(db).close()  # exists but has no teatree_config_setting table
+        assert cold_reader.read_setting("mode", db_path=db) is None
+
+    def test_missing_row_returns_none(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        assert cold_reader.read_setting("absent_key", db_path=db) is None
+
+    def test_invalid_json_returns_none(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
+        conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'mode', '{not json')")
+        conn.commit()
+        conn.close()
+        assert cold_reader.read_setting("mode", db_path=db) is None
+
+    def test_non_text_value_returns_none(self, tmp_path: Path) -> None:
+        # sqlite is dynamically typed: an int can land in the TEXT value column.
+        # A non-str/bytes raw value is not decodable JSON → fail open to None.
+        db = tmp_path / "db.sqlite3"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value)")
+        conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'num', 42)")
+        conn.commit()
+        conn.close()
+        assert cold_reader.read_setting("num", db_path=db) is None
+
+    def test_unopenable_path_returns_none(self, tmp_path: Path) -> None:
+        # A directory exists() but cannot be opened as a RO sqlite DB → fail open.
+        a_dir = tmp_path / "a_dir"
+        a_dir.mkdir()
+        assert cold_reader.read_setting("mode", db_path=a_dir) is None
+
+    def test_locked_db_fails_open_within_busy_timeout(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        writer = sqlite3.connect(db)
+        writer.isolation_level = None
+        writer.execute("BEGIN EXCLUSIVE")  # blocks the RO reader's SHARED lock
+        try:
+            assert cold_reader.read_setting("mode", db_path=db) is None
+        finally:
+            writer.rollback()
+            writer.close()
+
+
+class TestReadSettingConfirmed:
+    """`read_setting_confirmed` separates an ABSENT value from an UNREADABLE store (#4008).
+
+    `read_setting` collapses both to `None`, which is right for a caller that fails open — and
+    exactly wrong for a security gate, which read "no banned_terms row" out of a DB that was
+    merely locked and opened itself.
+    """
+
+    def test_present_value_is_readable(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        read = cold_reader.read_setting_confirmed("mode", db_path=db)
+        assert (read.value, read.readable) == ("auto", True)
+
+    def test_missing_db_file_is_readable_absence(self, tmp_path: Path) -> None:
+        # Nothing to read is CONFIRMED absence (a fresh/solo box), not a read failure.
+        read = cold_reader.read_setting_confirmed("mode", db_path=tmp_path / "nope.sqlite3")
+        assert (read.value, read.readable) == (None, True)
+
+    def test_missing_row_is_readable_absence(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        read = cold_reader.read_setting_confirmed("absent_key", db_path=db)
+        assert (read.value, read.readable) == (None, True)
+
+    def test_invalid_json_is_readable_absence(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
+        conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'mode', '{not json')")
+        conn.commit()
+        conn.close()
+        read = cold_reader.read_setting_confirmed("mode", db_path=db)
+        assert (read.value, read.readable) == (None, True)
+
+    def test_missing_table_is_unreadable(self, tmp_path: Path) -> None:
+        db = tmp_path / "fresh.sqlite3"
+        sqlite3.connect(db).close()  # exists but has no teatree_config_setting table
+        assert cold_reader.read_setting_confirmed("mode", db_path=db).readable is False
+
+    def test_corrupt_file_is_unreadable(self, tmp_path: Path) -> None:
+        db = tmp_path / "corrupt.sqlite3"
+        db.write_bytes(b"this is not a sqlite database")
+        assert cold_reader.read_setting_confirmed("mode", db_path=db).readable is False
+
+    def test_locked_db_is_unreadable(self, tmp_path: Path) -> None:
+        # The #4008 field report: a busy writer makes a CONFIGURED list read as absent.
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "banned_terms", ["acme"])])
+        writer = sqlite3.connect(db)
+        writer.isolation_level = None
+        writer.execute("BEGIN EXCLUSIVE")
+        try:
+            read = cold_reader.read_setting_confirmed("banned_terms", db_path=db)
+            assert (read.value, read.readable) == (None, False)
+        finally:
+            writer.rollback()
+            writer.close()
+
+
+class TestAnUnreadableCanonicalDbFallsThroughToTheProjection:
+    """The projection answers for a store that is PRESENT but unreadable, not only an absent one (#4205).
+
+    The fall-through was keyed on `not db.exists()`, so the 0-byte stub the control-DB
+    migration left at the old host path — a file that exists and holds no table — never
+    reached the projection published for exactly that host. The shell tier gained this
+    fall-through in #4197; the asymmetry is what made aligning the two path resolvers
+    hazardous. An unreadable store with NO projection is still unreadable: the point is to
+    answer where an answer exists, never to launder a read fault into a confident value.
+    """
+
+    @pytest.fixture(autouse=True)
+    def stub_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        db = tmp_path / "stub.sqlite3"
+        db.touch()  # the migration leftover: present, 0 bytes, no table
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+        monkeypatch.delenv("T3_DATA_DIR", raising=False)
+        return db
+
+    def _publish(self, tmp_path: Path, rows: Iterable[Row]) -> None:
+        """Write the projection the way production does — through the real publisher."""
+        source = tmp_path / "source.sqlite3"
+        _make_db(source, rows)
+        conn = sqlite3.connect(source)
+        try:
+            for ddl in _PROJECTION_SOURCE_TABLES:
+                conn.execute(ddl)
+            conn.commit()
+        finally:
+            conn.close()
+        data_dir = tmp_path / "xdg" / "teatree"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        ProjectionPublisher(source, data_dir).publish()
+
+    def test_a_published_value_answers_for_the_stub(self, tmp_path: Path) -> None:
+        self._publish(tmp_path, [("", "autoload", True)])
+        read = cold_reader.read_setting_confirmed("autoload")
+        assert (read.value, read.readable) == (True, True)
+
+    def test_no_projection_keeps_the_store_unreadable(self) -> None:
+        # Anti-vacuous foil: a fall-through that always reported readable would pass the
+        # test above and hide exactly the conflation this whole ticket is about.
+        read = cold_reader.read_setting_confirmed("autoload")
+        assert (read.value, read.readable) == (None, False)
+
+    def test_an_explicit_db_path_never_substitutes_the_projection(self, tmp_path: Path) -> None:
+        # A caller that NAMED a file means that file; answering from a projection would
+        # answer a different question — the banned-terms readers depend on this.
+        self._publish(tmp_path, [("", "autoload", True)])
+        read = cold_reader.read_setting_confirmed("autoload", db_path=tmp_path / "stub.sqlite3")
+        assert (read.value, read.readable) == (None, False)
+
+    def test_a_projection_with_no_row_for_the_key_stays_unreadable(self, tmp_path: Path) -> None:
+        """A trustworthy projection missing THIS key is not a confirmed unset (#4205).
+
+        `trustworthy` is generation-monotonic, not recency-checked: a projection whose
+        publish failed after the corrupt store's last write is still FRESH, so a missing
+        key here is evidence the projection never saw it, not that the operator left it
+        unset. Reporting ``readable=True`` for that gap reopened #4008: the corrupt DB
+        that gates ``resolve_banned_terms`` would silently collapse to "not configured"
+        instead of raising ``BannedTermsUnreadableError``.
+        """
+        self._publish(tmp_path, [("", "some_other_key", True)])  # answers, but not for "autoload"
+        read = cold_reader.read_setting_confirmed("autoload")
+        assert (read.value, read.readable) == (None, False)
+
+
+class TestTypedWrappers:
+    @pytest.fixture
+    def db(self, tmp_path: Path) -> Path:
+        path = tmp_path / "db.sqlite3"
+        _make_db(
+            path,
+            [
+                ("", "flag_on", True),
+                ("", "flag_off", False),
+                ("", "flag_quoted", "false"),
+                ("", "budget", 5),
+                ("", "budget_bool", True),
+                ("", "label", "hello"),
+                ("", "label_int", 7),
+                ("", "items", ["a", "b"]),
+                ("", "nested", {"x": [1, 2], "y": {"z": 3}}),
+            ],
+        )
+        return path
+
+    def test_read_setting_round_trips_every_shape(self, db: Path) -> None:
+        assert cold_reader.read_setting("flag_on", db_path=db) is True
+        assert cold_reader.read_setting("flag_off", db_path=db) is False
+        assert cold_reader.read_setting("budget", db_path=db) == 5
+        assert cold_reader.read_setting("label", db_path=db) == "hello"
+        assert cold_reader.read_setting("items", db_path=db) == ["a", "b"]
+        assert cold_reader.read_setting("nested", db_path=db) == {"x": [1, 2], "y": {"z": 3}}
+
+    def test_bool_setting_strict(self, db: Path) -> None:
+        assert cold_reader.bool_setting("flag_on", default=False, db_path=db) is True
+        assert cold_reader.bool_setting("flag_off", default=True, db_path=db) is False
+        # A quoted "false" is a str, not a bool → default stands (mirrors
+        # teatree_settings). default=False makes this anti-vacuous: a naive
+        # bool("false") would be truthy and return True, not the default.
+        assert cold_reader.bool_setting("flag_quoted", default=False, db_path=db) is False
+        assert cold_reader.bool_setting("absent", default=True, db_path=db) is True
+
+    def test_int_setting_strict(self, db: Path) -> None:
+        assert cold_reader.int_setting("budget", default=1, db_path=db) == 5
+        # A bool is a subclass of int but must be rejected → default. default=99
+        # makes this anti-vacuous: a naive int(True) would be 1, not the default.
+        assert cold_reader.int_setting("budget_bool", default=99, db_path=db) == 99
+        # below minimum → default.
+        assert cold_reader.int_setting("budget", default=99, minimum=10, db_path=db) == 99
+        assert cold_reader.int_setting("budget", default=99, minimum=5, db_path=db) == 5
+        # non-int stored value → default.
+        assert cold_reader.int_setting("label", default=42, db_path=db) == 42
+        assert cold_reader.int_setting("absent", default=3, db_path=db) == 3
+
+    def test_str_setting_strict(self, db: Path) -> None:
+        assert cold_reader.str_setting("label", default="x", db_path=db) == "hello"
+        assert cold_reader.str_setting("label_int", default="x", db_path=db) == "x"
+        assert cold_reader.str_setting("absent", default="x", db_path=db) == "x"
+
+    def test_list_setting_strict(self, db: Path) -> None:
+        assert cold_reader.list_setting("items", default=[], db_path=db) == ["a", "b"]
+        assert cold_reader.list_setting("nested", default=["d"], db_path=db) == ["d"]
+        assert cold_reader.list_setting("absent", default=["d"], db_path=db) == ["d"]
+
+    def test_mapping_setting_strict(self, db: Path) -> None:
+        assert cold_reader.mapping_setting("nested", db_path=db) == {"x": [1, 2], "y": {"z": 3}}
+        # A non-dict stored value (a str) → empty dict, not the raw value.
+        assert cold_reader.mapping_setting("label", db_path=db) == {}
+        assert cold_reader.mapping_setting("absent", db_path=db) == {}
+
+    def test_wrappers_fail_open_on_missing_db(self, tmp_path: Path) -> None:
+        missing = tmp_path / "nope.sqlite3"
+        assert cold_reader.bool_setting("x", default=True, db_path=missing) is True
+        assert cold_reader.int_setting("x", default=7, db_path=missing) == 7
+        assert cold_reader.str_setting("x", default="d", db_path=missing) == "d"
+        assert cold_reader.list_setting("x", default=["d"], db_path=missing) == ["d"]
+
+
+class TestWalNonBlocking:
+    def test_committed_value_readable_under_concurrent_writer(self, tmp_path: Path) -> None:
+        db = tmp_path / "wal.sqlite3"
+        _make_db(db, [("", "mode", "auto")], wal=True)
+        writer = sqlite3.connect(db)
+        writer.isolation_level = None
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'pending', '\"x\"')")
+        try:
+            # WAL readers see the last committed snapshot without blocking on the writer.
+            assert cold_reader.read_setting("mode", db_path=db) == "auto"
+            assert cold_reader.read_setting("pending", db_path=db) is None
+        finally:
+            writer.rollback()
+            writer.close()
+
+
+class TestWalSidecarsAbsent:
+    """The quiescent cold state: a WAL-format DB with NO live writer.
+
+    Its ``-wal``/``-shm`` sidecars are absent, so a ``mode=ro``-only open CANNOT
+    read it (it would need to recreate the ``-shm`` → ``SQLITE_CANTOPEN``); the
+    ``immutable=1`` fallback returns the last-checkpointed value. Distinct from
+    ``TestWalNonBlocking``, which holds a writer open and so materializes the
+    sidecars — that case passes even on a ``mode=ro``-only reader, masking this
+    bug.
+    """
+
+    def test_committed_value_readable_with_sidecars_removed(self, tmp_path: Path) -> None:
+        db = tmp_path / "wal.sqlite3"
+        _make_db(db, [("", "mode", "auto")], wal=True)
+        _remove_wal_sidecars(db)
+        # Precondition: the realistic cold state — no live sidecars.
+        assert not db.with_name(db.name + "-wal").exists()
+        assert not db.with_name(db.name + "-shm").exists()
+        # mode=ro alone raises SQLITE_CANTOPEN here and the read silently fails
+        # open to None; the immutable=1 fallback returns the stored value.
+        assert cold_reader.read_setting("mode", db_path=db) == "auto"
+
+    def test_typed_wrappers_do_not_revert_to_default_when_quiescent(self, tmp_path: Path) -> None:
+        db = tmp_path / "wal.sqlite3"
+        _make_db(db, [("", "budget", 5), ("", "flag", True)], wal=True)
+        _remove_wal_sidecars(db)
+        # A safety-gate caller's stored kill-switch must NOT revert to its
+        # in-code default just because the DB is quiescent. Anti-vacuous: each
+        # default differs from the stored value.
+        assert cold_reader.int_setting("budget", default=99, db_path=db) == 5
+        assert cold_reader.bool_setting("flag", default=False, db_path=db) is True
+
+
+class TestUriRobustness:
+    """An exotic ``T3_CONFIG_DB`` path must not malform the ``file:`` URI.
+
+    A raw ``file:{db}?mode=ro`` f-string breaks on a path containing
+    ``%``/``?``/``#`` (it decodes ``%41``→'A' and points at the wrong file →
+    silent fail-open); building the URI via ``Path.as_uri()`` percent-encodes
+    them.
+    """
+
+    def test_reads_value_from_path_with_uri_special_chars(self, tmp_path: Path) -> None:
+        # A space AND a literal percent sequence: the raw f-string decodes
+        # `%41`→'A' → wrong path → CANTOPEN; as_uri encodes it correctly.
+        exotic_dir = tmp_path / "cfg dir %41x"
+        exotic_dir.mkdir()
+        db = exotic_dir / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        assert cold_reader.read_setting("mode", db_path=db) == "auto"
+
+    def test_reads_via_t3_config_db_env_with_special_chars(self, tmp_path: Path) -> None:
+        # Same, resolved through the env hook the cold path actually uses.
+        exotic_dir = tmp_path / "x %41 y"
+        exotic_dir.mkdir()
+        db = exotic_dir / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        env = {"T3_CONFIG_DB": str(db)}
+        assert cold_reader.read_setting("mode", env=env) == "auto"
+
+
+class TestOverlayThenGlobal:
+    def test_overlay_shadows_global(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "interactive"), ("myoverlay", "mode", "auto")])
+        assert cold_reader.overlay_then_global("mode", "myoverlay", db_path=db) == "auto"
+
+    def test_falls_back_to_global_when_overlay_absent(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "interactive")])
+        assert cold_reader.overlay_then_global("mode", "myoverlay", db_path=db) == "interactive"
+
+    def test_default_when_neither_present(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "other", "x")])
+        assert cold_reader.overlay_then_global("mode", "myoverlay", default="fallback", db_path=db) == "fallback"
+
+
+class TestMainEntry:
+    @pytest.fixture(autouse=True)
+    def _canonical_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto"), ("", "budget", 5)])
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+
+    def test_prints_str_value_raw(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert cold_reader.main(["mode"]) == 0
+        assert capsys.readouterr().out == "auto\n"
+
+    def test_prints_non_str_value_as_json(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert cold_reader.main(["budget"]) == 0
+        assert capsys.readouterr().out == "5\n"
+
+    def test_absent_key_prints_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert cold_reader.main(["absent"]) == 0
+        assert capsys.readouterr().out == ""
+
+    def test_no_args_prints_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert cold_reader.main([]) == 0
+        assert capsys.readouterr().out == ""

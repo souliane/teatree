@@ -1,0 +1,412 @@
+#!/usr/bin/env bash
+# Pre-push hook: public-repo privacy gate (#685, #730).
+#
+# Refuses `git push` when the `origin` remote resolves to a PUBLIC
+# repository and the patch OR the message of any commit in the push
+# range fails `t3 tool privacy-scan` (a planted secret, an internal
+# `/Users/`-`/home/` path, a private IP, an API token, an internal
+# hostname, or a configured banned term). Commit messages and trailers reach
+# public history just like file content, so they are scanned too (#703).
+#
+# It ALSO refuses (#730) when any commit in the push range has an author
+# OR committer email that is not a GitHub noreply address. A real /
+# deliverable address (e.g. a customer/personal-domain address
+# inherited from local git config) in PUBLIC history is a permanent PII
+# leak that GitHub's own "block pushes that expose my email" does not
+# catch for third-party domains. The accepted shape is the GitHub
+# noreply pattern `([0-9]+\+)?<login>@users.noreply.github.com`, which
+# covers every GitHub identity (souliane and any other login)
+# without hardcoding one specific login.
+#
+# Pushes to a private remote, and clean pushes to a public remote, pass
+# through.
+#
+# This is the deterministic enforcement home for the contribute-mode
+# rule "no customer/internal identifier reaches a public repo": the
+# skill prose states the policy, this hook blocks the action.
+#
+# Git invokes a pre-push hook as:  hook <remote-name> <remote-url>
+# and feeds ref updates on stdin, one per line:
+#   <local-ref> <local-sha> <remote-ref> <remote-sha>
+# A deleted ref has local-sha all-zeros (skip it). The scanned set is the
+# commits the remote does NOT already have — `<local-sha> --not
+# --remotes=<remote>` — never a single linear `<remote-sha>..<local-sha>`
+# range (a merge-forward inflates it with the whole of `main`, #3523) and
+# never `--not <origin/default>` alone (on a fork whose default branch is
+# thousands of commits behind, that re-scans the entire already-public
+# history on every push and turns the gate into an outage).
+#
+# Visibility is resolved by `teatree.hooks.repo_visibility_cli`, which routes
+# the probe by the remote's HOST (`gh` for GitHub, `glab` for GitLab) and
+# day-caches the verdict per slug. The gate SKIPS the scan only when the
+# remote is KNOWN to be private/internal. Every undetermined case — an
+# unparsable remote, no forge CLI for that host, a probe error, or an
+# unrecognised answer — fails CLOSED and the diff is scanned anyway, so a
+# leak never rides out on a tool-less machine or an unparsable remote
+# (§3f #14; was fail-open). "Fail closed" here means "scan anyway", NOT
+# "block anyway": the scan still fails OPEN on a scanner crash and blocks
+# ONLY on a real finding, so a clean push on a machine without a forge CLI
+# is unaffected.
+#
+# Wired via prek in `.pre-commit-config.yaml` (stages: [push]) so it
+# ships with the repo and needs no per-machine bootstrap.
+set -euo pipefail
+
+ZERO="0000000000000000000000000000000000000000"
+remote_name="${PRE_COMMIT_REMOTE_NAME:-${1:-origin}}"
+remote_url="${PRE_COMMIT_REMOTE_URL:-${2:-}}"
+
+if [ -z "${remote_url}" ]; then
+  remote_url=$(git remote get-url "${remote_name}" 2>/dev/null || true)
+fi
+[ -n "${remote_url}" ] || exit 0  # no remote URL — nothing to gate
+
+# Human-readable repo label for the messages only — NOT the probe key (the
+# ssh-shape example below carries the inline allow-annotation so this hook's
+# own header does not self-trip the privacy gate it powers):
+#   https://github.com/owner/repo(.git)
+#   git@github.com:owner/repo(.git)  # privacy-scan:allow doc example
+slug=$(printf '%s' "${remote_url}" \
+  | sed -E 's#^[^:]+://[^/]+/##; s#^git@[^:]+:##; s#\.git$##')
+
+# Resolve the repo root from this script's own location
+# (scripts/hooks/<this>.sh -> repo root) so the visibility CLI runs against
+# THIS clone's teatree regardless of the caller's cwd.
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
+
+# The FULL remote URL is passed (never the host-stripped `slug`) because the
+# host segment is what selects the forge tool. Shelling `gh repo view` here
+# hard-coded ONE forge: a gitlab.com remote errored on every push, so
+# visibility was permanently undetermined and this gate re-scanned a PRIVATE
+# repo forever.
+#
+# The interpreter fallback offers core's package root in BOTH supported layouts —
+# `<root>/src/teatree` in a standalone checkout, `<root>/vendor/teatree/src/teatree`
+# in a fork that vendors core — and tries version-explicit interpreters before a
+# bare `python3`, which on a stock Mac is the Command Line Tools 3.9 stub and
+# cannot import core (requires-python >=3.13) whatever PYTHONPATH says.
+#
+# A probe failure is REPORTED, never swallowed. Discarding it is precisely how a
+# PRIVATE repo gets silently downgraded to "assume public" and re-scanned on
+# every push: the verdict is undetermined, the gate says only "could not
+# confirm", and the REASON it could not confirm is invisible forever.
+_resolve_visibility() {
+  local err py probe_path rc=1
+  err=$(mktemp "${TMPDIR:-/tmp}/t3-visibility-probe.XXXXXX")
+  probe_path="${repo_root}/src:${repo_root}/vendor/teatree/src${PYTHONPATH:+:${PYTHONPATH}}"
+
+  if command -v uv >/dev/null 2>&1; then
+    if uv run --project "${repo_root}" --no-sync \
+        python -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"; then
+      rc=0
+    fi
+  fi
+
+  if [ "${rc}" -ne 0 ]; then
+    for py in python3.13 python3.14 python3; do
+      command -v "${py}" >/dev/null 2>&1 || continue
+      if PYTHONPATH="${probe_path}" \
+          "${py}" -m teatree.hooks.repo_visibility_cli "${remote_url}" 2>>"${err}"; then
+        rc=0
+        break
+      fi
+    done
+  fi
+
+  if [ "${rc}" -ne 0 ] && [ -s "${err}" ]; then
+    echo "⚠ push privacy gate: visibility probe failed — diagnostics below." >&2
+    sed 's/^/    /' "${err}" >&2 2>/dev/null || true
+  fi
+  rm -f "${err}"
+  return "${rc}"
+}
+
+# Overridable for testing, mirroring T3_PRIVACY_SCAN_CMD.
+visibility=$(
+  if [ -n "${T3_REPO_VISIBILITY_CMD:-}" ]; then
+    ${T3_REPO_VISIBILITY_CMD} "${remote_url}" 2>/dev/null || true
+  else
+    _resolve_visibility || true
+  fi
+)
+# Normalise (PUBLIC/PRIVATE/INTERNAL/UNKNOWN); anything else is undetermined.
+visibility=$(printf '%s' "${visibility}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+
+case "${visibility}" in
+  PRIVATE | INTERNAL)
+    exit 0  # KNOWN non-public remote — nothing reaches public history
+    ;;
+  PUBLIC)
+    target="PUBLIC repo '${slug}'"
+    confirm_hint=""
+    ;;
+  *)
+    # Undetermined visibility (unparsable remote, no forge CLI for that host,
+    # a probe error, or an unrecognised answer). Fail CLOSED: scan anyway. The
+    # scan itself still fails OPEN on a scanner crash and blocks ONLY on a real
+    # finding, so a clean push on a tool-less machine still passes — only an
+    # actual leak is stopped. Warn loudly so the undetermined path shows.
+    echo "⚠ push privacy gate: could not confirm '${slug:-<remote>}' visibility (no forge CLI for this host, or an unrecognised answer) — scanning anyway (fail closed, §3f #14)." >&2
+    target="repo '${slug:-<remote>}' (visibility could not be confirmed — treated as public)"
+    confirm_hint="  To confirm visibility: authenticate this host's forge CLI (gh auth login / glab auth login), or declare the repo private with: t3 <overlay> config_setting set private_repos '[\"${slug:-<owner>/<repo>}\"]'"
+    ;;
+esac
+
+scan_cmd=${T3_PRIVACY_SCAN_CMD:-t3 tool privacy-scan}
+
+# Dedicated "findings present" exit code from scripts/privacy_scan.py
+# (PRIVACY_FINDINGS_EXIT_CODE). The gate blocks ONLY on this code and fails
+# OPEN on any other non-zero (a scanner crash, a missing script, an argparse
+# usage error). Conflating "findings" with "crash" wedged every push closed
+# whenever the scanner itself failed (#126 gap 3). Overridable for testing.
+findings_code=${T3_PRIVACY_FINDINGS_EXIT_CODE:-3}
+
+# Ref updates arrive on stdin under git's native pre-push protocol. But when the
+# hook runs through prek/pre-commit (the `.pre-commit-config.yaml` wiring), the
+# runner CONSUMES stdin itself and exposes the push range via PRE_COMMIT_* env
+# vars — the hook then reads an EMPTY stdin and silently passes every push (the
+# gate is inert). Capture stdin; when empty but PRE_COMMIT_TO_REF is set,
+# synthesize the one ref-update line from the env so the loop below enforces
+# under BOTH invocation paths (souliane/teatree: prek does not forward pre-push
+# stdin to `language: system` hooks).
+refs_input=$(cat)
+synthesized=0
+if [ -z "${refs_input//[[:space:]]/}" ] && [ -n "${PRE_COMMIT_TO_REF:-}" ]; then
+  synthesized=1
+  refs_input=$(printf '%s %s %s %s\n' \
+    "${PRE_COMMIT_LOCAL_BRANCH:-HEAD}" "${PRE_COMMIT_TO_REF}" \
+    "${PRE_COMMIT_REMOTE_BRANCH:-HEAD}" "${PRE_COMMIT_FROM_REF:-$ZERO}")
+fi
+
+# Every remote-tracking ref of the pushed-to remote, as a single `--not`
+# argument, or empty when the remote has none locally. This is the whole
+# "what does the remote already have?" answer: `--remotes=<remote>` is the
+# same set prek/pre-commit itself uses to derive PRE_COMMIT_FROM_REF, so the
+# hook and its runner agree on what is new.
+_remote_exclusion() {
+  local first
+  first=$(git for-each-ref --count=1 --format='%(refname)' \
+    "refs/remotes/${remote_name}" 2>/dev/null || true)
+  [ -n "${first}" ] || return 1
+  printf '%s' "--remotes=${remote_name}"
+}
+
+# Messages of the commits named by the `git log` args, scanned apart from any patch.
+# A message is published verbatim, never a diff, so the file path selects whole-text mode.
+# Stdin is closed: every caller sits in a `while read` loop the scanner would otherwise drain.
+_scan_messages_as_text() {
+  local msg rc=0
+  msg=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-msg.XXXXXX")
+  git log --format='%B' "$@" >"${msg}" 2>/dev/null || true
+  if grep -q '[^[:space:]]' "${msg}"; then
+    ${scan_cmd} "${msg}" </dev/null || rc=$?
+  fi
+  rm -f "${msg}"
+  return "${rc}"
+}
+
+# On a blocked push, re-scan the newly-public commits ONE AT A TIME — and each
+# changed file within a commit — so the refusal names the exact commit + file a
+# finding lives in. Without this the finding's line number is only an offset into
+# a concatenated multi-commit blob, unlocatable in public history; an operator who
+# cannot find the reported finding learns to distrust (and bypass) the gate. Only
+# the RARE blocked path pays this per-commit cost: a clean push is decided by the
+# whole-range message and patch scans and never enters here. Args are the pushed tip commit, then
+# the `<sha> --not <public-tips>` range; uses the globals ${scan_cmd}/${findings_code}.
+# Returns 0 if it attributed at least one finding, 1 if none (caller then prints the raw report).
+_attribute_findings() {
+  local tip="$1"
+  shift
+  local printed=1
+  local sha where f sub sub_rc
+  while read -r sha; do
+    [ -n "${sha}" ] || continue
+    where="commit ${sha}"
+    # A fix-up at the tip leaves this commit's finding in public history all the same.
+    if [ -n "${tip}" ] && [ "${sha}" != "${tip}" ]; then
+      where="${where} (earlier than the pushed tip)"
+    fi
+    # A finding that lives only in the commit MESSAGE (a Co-authored-by line, a
+    # banned term in the subject) has no file, so scan the message on its own.
+    sub=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-msg.XXXXXX")
+    sub_rc=0
+    _scan_messages_as_text -1 "${sha}" >"${sub}" 2>&1 || sub_rc=$?
+    if [ "${sub_rc}" -eq "${findings_code}" ]; then
+      echo "  ${where} (commit message):"
+      sed 's/^/    /' "${sub}"
+      printed=0
+    fi
+    rm -f "${sub}"
+    # Then each changed file's patch in this commit, named individually.
+    while read -r f; do
+      [ -n "${f}" ] || continue
+      sub=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-file.XXXXXX")
+      sub_rc=0
+      git show --format= --patch --cc "${sha}" -- "${f}" | ${scan_cmd} - >"${sub}" 2>&1 || sub_rc=$?
+      if [ "${sub_rc}" -eq "${findings_code}" ]; then
+        echo "  ${where} file ${f}:"
+        sed 's/^/    /' "${sub}"
+        printed=0
+      fi
+      rm -f "${sub}"
+    done < <(git show --no-commit-id --name-only --format= "${sha}" 2>/dev/null)
+  done < <(git rev-list --reverse "$@" 2>/dev/null)
+  return "${printed}"
+}
+
+# The pushed ref's REMOTE name is published the moment the push lands, and a
+# forge keeps it under refs/pull/* after the branch is deleted, so it is scanned
+# like content. The local name is never sent, so it is not judged.
+_scan_ref_name() {
+  local published="$1" name_report name_rc=0
+  published="${published#refs/heads/}"
+  published="${published#refs/tags/}"
+  [ -n "${published}" ] || return 0
+  name_report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-ref.XXXXXX")
+  printf '%s\n' "${published}" | ${scan_cmd} - >"${name_report}" 2>&1 || name_rc=$?
+  if [ "${name_rc}" -eq "${findings_code}" ]; then
+    echo "✗ refuse: push to ${target} publishes the ref name '${published}', which carries privacy findings."
+    sed 's/^/    /' "${name_report}" 2>/dev/null || true
+    echo "  A pushed ref name is permanent: the forge keeps it under refs/pull/* even after the branch is deleted."
+    echo "  Push under a clean remote name instead: git push <remote> HEAD:refs/heads/<clean-name>"
+    [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
+    rm -f "${name_report}"
+    return 1
+  elif [ "${name_rc}" -ne 0 ]; then
+    echo "⚠ ref-name privacy scan could not run (exit ${name_rc}) on '${published}' — failing OPEN (push allowed)." >&2
+  fi
+  rm -f "${name_report}"
+  return 0
+}
+
+blocked=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_sha:-}" ] || continue
+  [ "${local_sha}" != "${ZERO}" ] || continue  # branch deletion — skip
+
+  _scan_ref_name "${remote_ref:-${local_ref}}" || blocked=1
+
+  # The push newly exposes the commits reachable from the pushed sha but from
+  # NO ref the remote already has — i.e. `--not --remotes=<remote>`, EVERY
+  # remote-tracking ref of that remote.
+  #
+  # READ THIS BEFORE "improving" it back to `--not origin/<default>`. That
+  # looks more thorough and is not: it is the MERGE-REQUEST range, not the
+  # PUSH range. They are different questions. An MR's range is legitimately
+  # everything the branch adds to the default branch — on a vendored fork's
+  # import branch that is thousands of commits, and reviewing them is the
+  # MR's job. A PUSH only ever exposes what the remote does not already
+  # have. Using the MR range as the push range re-scans the whole MR on
+  # every push, so a 3-commit push scans 2276 commits: minutes of CPU, and —
+  # worse — it can never pass, because somewhere in a history that large the
+  # scanner always finds something, and every one of those hits is in
+  # already-pushed, immutable, already-remote content that this push is not
+  # exposing. A gate that cannot pass is not a strict gate; it is an outage,
+  # and the leak it lets through is the one in the commit nobody could push
+  # (#3523).
+  #
+  # A branch with no upstream yet (a first push) needs no special case: the
+  # remote's OTHER refs are still subtracted, so a new branch off an
+  # already-pushed base scans only its own new commits, not all of history.
+  public_tips=()
+  remote_exclusion=$(_remote_exclusion || true)
+  if [ -n "${remote_exclusion}" ]; then
+    public_tips+=("${remote_exclusion}")
+  fi
+  # Git's NATIVE pre-push protocol reports the true remote-side tip, which is
+  # fresher than our tracking refs when the remote has advanced; it narrows
+  # the range further. On the prek synthesized path the value is a DERIVED
+  # `PRE_COMMIT_FROM_REF` (prek computes it from `--not --remotes=<remote>`
+  # itself), so it adds nothing there and is not trusted as a base.
+  if [ "${synthesized}" != "1" ] && [ "${remote_sha}" != "${ZERO}" ] && [ -n "${remote_sha}" ]; then
+    remote_tip=$(git rev-parse --verify --quiet "${remote_sha}^{commit}" 2>/dev/null || true)
+    if [ -n "${remote_tip}" ]; then
+      public_tips+=("${remote_tip}")
+    fi
+  fi
+
+  # No resolvable remote ref at all (brand-new repo, shallow clone): fail
+  # CLOSED by subtracting nothing, so the whole history reachable from the
+  # pushed sha is scanned — wider, never narrower.
+  new_commits=("${local_sha}")
+  if [ ${#public_tips[@]} -gt 0 ]; then
+    new_commits+=("--not" "${public_tips[@]}")
+  fi
+
+  # The patches alone, with no commit header, so the author/committer emails
+  # below are judged only by the noreply guard and never by the scanner's
+  # generic email matcher. Messages are scanned apart: git puts no separator
+  # between one commit's last hunk and the next commit's subject. `--cc` keeps a
+  # merge's conflict resolutions — content in neither parent — in scope while
+  # leaving the already-public content the merge carried over out of it.
+  patches=$(git log --format= --patch --cc "${new_commits[@]}" 2>/dev/null || true)
+
+  # Author / committer email is metadata `git diff` and `%B` never show,
+  # yet it lands in public history forever. On a PUBLIC remote every
+  # commit's author AND committer email must be a GitHub noreply address
+  # (`([0-9]+\+)?<login>@users.noreply.github.com`); anything else — a
+  # real/deliverable address such as a customer-domain email inherited
+  # from local git config — is blocked (#730).
+  noreply_re='^([0-9]+\+)?[A-Za-z0-9-]+@users\.noreply\.github\.com$'
+  bad_idents=$(git log --format='%ae%n%ce' "${new_commits[@]}" 2>/dev/null \
+    | grep -v -E "${noreply_re}" | sort -u || true)
+  if [ -n "${bad_idents}" ]; then
+    echo "✗ refuse: push to ${target} has a non-noreply commit identity on '${local_ref}'."
+    echo "  A real/deliverable email in public git history is a permanent PII leak."
+    echo "  Offending author/committer email(s):"
+    printf '%s\n' "${bad_idents}" | sed 's/^/    /'
+    echo "  Allowed shape: <id>+<login>@users.noreply.github.com (GitHub noreply)."
+    echo "  Nothing was published. Cut a new branch from the remote's tip, re-create these commits on it"
+    echo "  under the repo's GitHub noreply identity, and push that new branch for review."
+    echo "  (public-repo privacy gate #730 — see /t3:rules § public-repo commit author identity)"
+    [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
+    blocked=1
+  fi
+
+  # Commit messages and trailers reach public history exactly like file
+  # content does (a `Co-authored-by:` line carrying an internal/customer
+  # address is the canonical case), so they are scanned as well as the
+  # patches rather than excluded the way `git diff` excludes them (#703).
+  report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-gate.XXXXXX")
+  message_rc=0
+  _scan_messages_as_text "${new_commits[@]}" >>"${report}" 2>&1 || message_rc=$?
+  patch_rc=0
+  if [ -n "${patches}" ]; then
+    printf '%s\n' "${patches}" | ${scan_cmd} - >>"${report}" 2>&1 || patch_rc=$?
+  fi
+  scan_rc=$((message_rc != 0 ? message_rc : patch_rc))
+  if [ "${message_rc}" -eq "${findings_code}" ] || [ "${patch_rc}" -eq "${findings_code}" ]; then
+    echo "✗ refuse: push to ${target} carries privacy findings on '${local_ref}'."
+    echo "  Findings by commit + file (locate each in the pushed history and scrub it):"
+    # Attribute each finding to its commit + file so the operator can find it.
+    # Fall back to the whole-range report (a deterministic per-line summary the
+    # scanner writes to stdout, captured via 2>&1) only if attribution found
+    # nothing to pin — e.g. a merge combined-diff finding — so a finding is
+    # never hidden behind an empty locatable list.
+    pushed_tip=$(git rev-parse --verify --quiet "${local_sha}^{commit}" 2>/dev/null || true)
+    if ! _attribute_findings "${pushed_tip}" "${new_commits[@]}"; then
+      sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
+    fi
+    echo "  Every commit this push publishes is scanned on its own — patch and message — never just the tip"
+    echo "  or the net diff, so a later commit that deletes or annotates a flagged line does not clear it."
+    echo "  Nothing was published. Cut a new branch from the remote's tip, re-create the unpushed commits on it"
+    echo "  with generic placeholders so the flagged value is in none of them, and push that branch."
+    echo "  A deliberate fake value (a test-fixture email) instead carries an inline 'privacy-scan:allow <reason>'"
+    echo "  marker on that same line, in the commit that introduces it."
+    echo "  (public-repo privacy gate — see /t3:rules § Verify Repo Visibility Before Filing External Issues)"
+    [ -z "${confirm_hint}" ] || echo "${confirm_hint}"
+    blocked=1
+  elif [ "${scan_rc}" -ne 0 ]; then
+    # Any other non-zero is a scanner failure (crash, missing script,
+    # argparse error), NOT a finding. Fail OPEN — the gate is a safety net
+    # layered on top of the retro/contribute privacy scan, and blocking
+    # every push because the scanner itself broke is the over-deny lockout
+    # this gate must not be (#126 gap 3). Warn so the failure is visible.
+    echo "⚠ privacy scan could not run (exit ${scan_rc}) on '${local_ref}' — failing OPEN (push allowed)." >&2
+    sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
+  fi
+  rm -f "${report}"
+done <<< "${refs_input}"
+
+exit "${blocked}"

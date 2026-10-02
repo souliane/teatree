@@ -1,0 +1,23 @@
+{
+  "name": "t3",
+  "version": "0.0.1",
+  "description": "Personal code factory for multi-repo projects",
+  "author": {
+    "name": "souliane",
+    "url": "https://github.com/souliane"
+  },
+  "homepage": "https://github.com/souliane/teatree",
+  "repository": "https://github.com/souliane/teatree",
+  "license": "MIT",
+  "keywords": ["development", "lifecycle", "worktree", "multi-repo", "tdd"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "TeaTree",
+    "shortDescription": "Personal code factory for multi-repo projects",
+    "developerName": "souliane",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/souliane/teatree"
+  }
+}

@@ -1,0 +1,335 @@
+"""The terminal-``ResultMessage`` failure taxonomy the headless driver folds through.
+
+Two pure classifiers with one job each: decide whether a run was stopped by a
+model-access limit (:func:`limit_match`), and otherwise describe a run that did
+not complete cleanly so it is recorded rather than laundered into a completion
+(:func:`error_result_reason`). Both are pure functions of the SDK message, so a
+verdict is reproducible without a task, a harness, or a database.
+"""
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from claude_agent_sdk import ResultMessage
+from claude_agent_sdk.types import RateLimitInfo
+
+from teatree.agents.runner_failure_taxonomy import (
+    RESULT_ERROR_PREFIX,
+    TURN_CEILING_SUBTYPE,
+    cli_too_old_fallback,
+    cli_too_old_reason,
+    context_exhaustion_reason,
+    error_result_reason,
+    is_context_exhaustion,
+    is_refused_resume,
+    limit_match,
+    refused_resume_reason,
+)
+from teatree.core.modelkit.task_failure_taxonomy import (
+    FailureKind,
+    RecoveryStrategy,
+    classify_failure,
+    exhausted_the_conversation,
+    recovery_strategy,
+)
+from teatree.llm.anthropic_limits import (
+    RECOVERABLE_EXHAUSTION_CAUSES,
+    LimitCause,
+    LimitMatch,
+    recoverable_exhaustion_cause,
+    window_horizon,
+)
+
+
+def _result(
+    *,
+    is_error: bool = False,
+    subtype: str = "success",
+    result: str = "",
+    errors=None,
+    api_error_status: int | None = None,
+) -> ResultMessage:
+    return ResultMessage(
+        subtype=subtype,
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=is_error,
+        num_turns=1,
+        session_id="s1",
+        result=result or None,
+        errors=errors,
+        api_error_status=api_error_status,
+    )
+
+
+def _http_error(status: int, body: str) -> ResultMessage:
+    return _result(
+        is_error=True,
+        subtype="error_during_execution",
+        result=f"status_code: {status}, model_name: m, body: {body}",
+        api_error_status=status,
+    )
+
+
+_CYCLE_STOP = "{'error': {'message': 'token cycle spend limit reached, resets at 2026-10-01T00:00:00Z'}}"
+
+
+class TestLimitMatchByHttpStatus:
+    """A metered router's refusal is classified by its status, not only by prose it may not carry."""
+
+    @staticmethod
+    def _metered(message: ResultMessage) -> LimitMatch | None:
+        return limit_match(message, metered_transport=True)
+
+    def test_a_402_is_a_provider_budget_even_without_any_phrase(self) -> None:
+        match = self._metered(_http_error(402, "{'error': {'message': 'payment required'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_BUDGET
+
+    def test_a_403_cycle_stop_is_a_provider_budget_carrying_its_stated_reset(self) -> None:
+        match = self._metered(_http_error(403, _CYCLE_STOP))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_BUDGET
+        assert match.stated_reset == datetime(2026, 10, 1, tzinfo=UTC)
+
+    def test_a_bare_403_is_an_access_denial_not_a_budget(self) -> None:
+        match = self._metered(_http_error(403, "{'error': {'message': 'model not in this key allow-list'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_ACCESS_DENIED
+
+    def test_the_cycle_stop_body_without_its_phrase_is_an_access_denial(self) -> None:
+        match = self._metered(_http_error(403, "{'error': {'message': 'access denied, resets at 2026-10-01'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_ACCESS_DENIED
+
+    def test_a_429_with_no_rate_limit_wording_is_a_rate_limit(self) -> None:
+        match = self._metered(_http_error(429, "{'error': {'message': 'slow down'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.RATE_LIMIT
+
+    def test_a_429_naming_a_budget_keeps_the_more_specific_budget_cause(self) -> None:
+        match = self._metered(_http_error(429, "{'error': {'message': 'monthly budget reached for this member'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_BUDGET
+
+    def test_a_status_on_a_healthy_result_is_never_a_limit(self) -> None:
+        assert self._metered(_result(result="done", api_error_status=429)) is None
+
+
+class TestAClaudeSdkStatusIsNeverAMeteredLimit:
+    """The status-only fallback is the metered router's; a claude_sdk result is classified by type and prose alone."""
+
+    def test_a_bare_402_on_claude_sdk_is_no_limit(self) -> None:
+        assert limit_match(_http_error(402, "{'error': {'message': 'payment required'}}")) is None
+
+    def test_a_wording_less_429_on_claude_sdk_is_no_limit(self) -> None:
+        assert limit_match(_http_error(429, "{'error': {'message': 'slow down'}}")) is None
+
+    def test_prose_still_classifies_on_claude_sdk(self) -> None:
+        match = limit_match(_http_error(429, "{'error': {'type': 'rate_limit_error'}}"))
+        assert match is not None
+        assert match.cause is LimitCause.RATE_LIMIT
+
+
+class TestErrorResultReason:
+    def test_a_clean_run_has_no_failure_reason(self) -> None:
+        assert error_result_reason(_result()) is None
+
+    def test_a_missing_terminal_message_is_a_failure(self) -> None:
+        reason = error_result_reason(None)
+        assert reason is not None
+        assert reason.startswith(RESULT_ERROR_PREFIX)
+
+    def test_the_reason_carries_the_cli_s_own_diagnosis(self) -> None:
+        reason = error_result_reason(_result(is_error=True, subtype="error_during_execution", result="boom"))
+        assert reason is not None
+        assert "subtype=error_during_execution" in reason
+        assert "boom" in reason
+
+    def test_the_errors_list_stands_in_when_there_is_no_result_text(self) -> None:
+        reason = error_result_reason(_result(is_error=True, subtype="error", errors=["first", "second"]))
+        assert reason is not None
+        assert "first; second" in reason
+
+
+class TestLimitMatch:
+    def test_a_healthy_result_is_never_a_limit(self) -> None:
+        # A run that merely DISCUSSES limits in its text is not a limit hit.
+        assert limit_match(_result(result="we should watch the 5-hour limit")) is None
+        assert limit_match(None) is None
+
+    def test_a_rejected_typed_window_wins_over_the_prose(self) -> None:
+        # Structured data beats prose-grep: a seven-day window is the WEEKLY cause
+        # however the agent's own final text happens to read.
+        info = RateLimitInfo(status="rejected", rate_limit_type="seven_day")
+        match = limit_match(_result(is_error=True, result="five hour limit reached"), info)
+        assert match is not None
+        assert match.cause is LimitCause.SUBSCRIPTION_WEEKLY
+
+    def test_the_result_text_is_classified_when_no_window_was_rejected(self) -> None:
+        match = limit_match(_result(is_error=True, result="Claude AI usage limit reached"), None)
+        assert match is not None
+
+
+class TestContextExhaustion:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Prompt is too long",
+            "prompt is too long: 1048577 tokens > 1048576 maximum",
+            "input is too long for requested model",
+            "input length and `max_tokens` exceed context limit: 990000 + 64000 > 1000000",
+        ],
+    )
+    def test_a_full_context_window_is_recognised(self, text: str) -> None:
+        assert is_context_exhaustion(_result(is_error=True, result=text, api_error_status=400))
+
+    def test_the_errors_list_is_read_when_there_is_no_result_text(self) -> None:
+        assert is_context_exhaustion(
+            _result(is_error=True, subtype="error_during_execution", errors=["Prompt is too long"])
+        )
+
+    def test_a_healthy_result_that_mentions_it_is_not_exhaustion(self) -> None:
+        assert not is_context_exhaustion(_result(result="the prompt is too long to paste here"))
+        assert not is_context_exhaustion(None)
+
+    def test_an_ordinary_error_is_not_exhaustion(self) -> None:
+        assert not is_context_exhaustion(_result(is_error=True, result="boom"))
+
+    def test_the_reason_names_it_and_re_dispatches_a_fresh_session(self) -> None:
+        reason = context_exhaustion_reason(_result(is_error=True, result="Prompt is too long", api_error_status=400))
+
+        assert reason.startswith(f"{RESULT_ERROR_PREFIX}context_exhausted")
+        assert "Prompt is too long" in reason
+        assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.RETRY
+
+
+#: The ``model_fallback`` event the bundled CLI 2.1.277 streamed for every Opus 5.5 request on the
+#: worker (souliane/teatree#4874), as the SDK hands it over: snake_case, the 400 body in ``content``.
+_CLI_TOO_OLD_FALLBACK = {
+    "type": "system",
+    "subtype": "model_fallback",
+    "trigger": "last_resort",
+    "original_model": "claude-opus-5-5",
+    "fallback_model": "claude-sonnet-5",
+    "content": (
+        "Switched to Sonnet 5 because claude-opus-5-5 returned an error that could not be retried (400 "
+        '{"type":"error","error":{"type":"invalid_request_error","message":"Claude Code 2.1.277 does not '
+        "support this model; version 2.1.280 or newer is required. Run 'claude update', or update the Claude "
+        'desktop app, then try again.","details":{"error_code":"claude_code_version_too_old"}}})'
+    ),
+}
+_OVERLOAD_FALLBACK = {
+    "type": "system",
+    "subtype": "model_fallback",
+    "trigger": "overloaded",
+    "original_model": "claude-opus-5-5",
+    "fallback_model": "claude-sonnet-5",
+    "content": "Switched to Sonnet 5 because claude-opus-5-5 is overloaded (529)",
+}
+
+
+class TestACliTooOldForTheModelIsNeverASilentDowngrade:
+    def test_the_fallback_forced_by_an_outdated_cli_is_picked_out(self) -> None:
+        assert cli_too_old_fallback([_OVERLOAD_FALLBACK, _CLI_TOO_OLD_FALLBACK]) is _CLI_TOO_OLD_FALLBACK
+
+    def test_a_capacity_fallback_is_what_fallback_model_is_for(self) -> None:
+        assert cli_too_old_fallback([_OVERLOAD_FALLBACK]) is None
+        assert cli_too_old_fallback([]) is None
+
+    def test_the_reason_names_both_models_and_its_own_kind(self) -> None:
+        reason = cli_too_old_reason(_CLI_TOO_OLD_FALLBACK)
+
+        assert "claude-opus-5-5" in reason
+        assert "claude-sonnet-5" in reason
+        assert "claude_code_version_too_old" in reason
+        assert classify_failure(reason) == FailureKind.CLI_TOO_OLD_FOR_MODEL
+
+
+class TestAResumeTheCliDeclinedIsAnExhaustedConversation:
+    """Task 4973's first resume: ``is_error=False``, zero turns, no text — recorded ``no_result_envelope``."""
+
+    _DECLINED = ResultMessage(
+        subtype="success", duration_ms=0, duration_api_ms=0, is_error=False, num_turns=0, session_id="s1", result=""
+    )
+
+    def test_a_zero_turn_clean_ending_is_a_declined_resume(self) -> None:
+        assert is_refused_resume(self._DECLINED)
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            None,
+            _result(),
+            ResultMessage(
+                subtype="success", duration_ms=0, duration_api_ms=0, is_error=True, num_turns=0, session_id="s1"
+            ),
+        ],
+    )
+    def test_a_run_that_took_a_turn_or_already_failed_is_not(self, message: ResultMessage | None) -> None:
+        assert not is_refused_resume(message)
+
+    def test_the_reason_sends_the_retry_to_a_fresh_conversation(self) -> None:
+        reason = refused_resume_reason(self._DECLINED)
+
+        assert exhausted_the_conversation(reason)
+        assert recovery_strategy(classify_failure(reason)) is RecoveryStrategy.RETRY
+
+
+class TestProviderAccessDenied:
+    """A hard 401/403 is a provider REFUSAL, and no Anthropic prose names it (#4816).
+
+    The measured shape: 307 tasks each recorded their own FAILED attempt against
+    ``403 access_denied: token cycle spend limit reached`` because the phrase table is
+    Anthropic vocabulary and the status was never read.
+    """
+
+    def test_a_403_is_a_provider_refusal(self) -> None:
+        match = limit_match(
+            _result(is_error=True, subtype="error_during_execution", result="access_denied", api_error_status=403)
+        )
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_ACCESS_DENIED
+        assert "403" in match.phrase
+
+    def test_a_403_naming_a_spend_stop_keeps_the_more_specific_budget_cause(self) -> None:
+        match = limit_match(
+            _result(
+                is_error=True,
+                subtype="error_during_execution",
+                result="access_denied: token cycle spend limit reached, resets at 2026-09-21T00:00:00Z",
+                api_error_status=403,
+            )
+        )
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_BUDGET
+
+    def test_a_401_is_the_same_refusal(self) -> None:
+        match = limit_match(_result(is_error=True, result="invalid api key", api_error_status=401))
+        assert match is not None
+        assert match.cause is LimitCause.PROVIDER_ACCESS_DENIED
+
+    def test_a_429_still_classifies_as_the_transient_rate_limit(self) -> None:
+        match = limit_match(_result(is_error=True, result="rate_limit_error", api_error_status=429))
+        assert match is not None
+        assert match.cause is LimitCause.RATE_LIMIT
+
+    def test_a_self_imposed_turn_ceiling_is_never_a_provider_window(self) -> None:
+        assert limit_match(_result(is_error=True, subtype=TURN_CEILING_SUBTYPE, api_error_status=403)) is None
+
+    def test_a_healthy_result_carrying_the_status_is_not_a_limit(self) -> None:
+        assert limit_match(_result(result="all good", api_error_status=403)) is None
+
+    def test_the_window_auto_clears_rather_than_wedging_the_lane(self) -> None:
+        # A horizonless cause (the API_CREDIT shape) would never re-arm, so a transient
+        # 403 would park the lane forever. One re-probe an hour is the safe direction.
+        assert window_horizon(LimitCause.PROVIDER_ACCESS_DENIED) == timedelta(hours=1)
+        assert LimitCause.PROVIDER_ACCESS_DENIED in RECOVERABLE_EXHAUSTION_CAUSES
+
+    def test_a_task_that_landed_failed_under_the_old_shape_is_recoverable(self) -> None:
+        reason = LimitMatch(phrase="http 403", cause=LimitCause.PROVIDER_ACCESS_DENIED).as_reason()
+        assert recoverable_exhaustion_cause(reason) is LimitCause.PROVIDER_ACCESS_DENIED
+
+    def test_the_remediation_names_the_provider_console(self) -> None:
+        remediation = LimitMatch(phrase="http 403", cause=LimitCause.PROVIDER_ACCESS_DENIED).remediation
+        assert "console" in remediation.casefold()

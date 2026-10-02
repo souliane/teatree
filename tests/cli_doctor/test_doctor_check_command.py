@@ -1,0 +1,468 @@
+"""``t3 doctor check`` — end-to-end CLI dispatch via ``CliRunner``.
+
+Lifted verbatim from the former monolithic ``tests/test_cli_doctor.py``
+(souliane/teatree#443). No behavior change: same assertions and helpers,
+only relocated under a focused package by concern. The module-level
+``runner = CliRunner()`` from the old module is instantiated here since
+this is now its only consumer.
+"""
+
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from django.test import TestCase
+from typer.testing import CliRunner
+
+import teatree.cli.doctor.checks_bootstrap as teatree_doctor_bootstrap
+import teatree.cli.doctor.run_checks as teatree_cli_doctor
+import teatree.cli.update as teatree_cli_update
+import teatree.core.overlay_loader as teatree_overlay_loader
+import teatree.paths as teatree_paths
+from teatree.cli import app
+from teatree.cli.doctor import IntrospectionHelpers
+from teatree.provisioning.declared import project_root_for_running_code, skills_declared_in_apm_manifest
+
+from ._shared import _stage_home
+
+runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_environment_dependent_gates(monkeypatch, tmp_path_factory):
+    """Pin the doctor gates that depend on the runner's real on-disk location.
+
+    Two gates read the environment the test runner happens to live in and would
+    otherwise make the doctor smoke tests non-deterministic. The clone-currency
+    gate (#948) shells out to real ``git fetch`` / ``rev-list`` against whatever
+    clone the runner lives in (a lagging checkout surfaces a real FAIL), and the
+    entrypoint-is-primary-clone gate (#1507) FAILs when the runner executes from
+    a worktree (``paths.DATA_DIR_AUTO_ISOLATED`` is True) — exactly the case
+    here. Both are exercised end-to-end in their own dedicated modules
+    (``test_clone_guard.py`` and ``test_entrypoint_primary_clone.py``); here we
+    only assert that ``t3 doctor check`` aggregates results, so pinning each to
+    its primary-clone boundary is correct.
+
+    Every gate added to ``t3 doctor check`` that reads the host belongs here.
+    These tests assert the exit code and the "All checks passed" summary, so a
+    new host-reading gate that FAILs off-box silently re-couples them to the box
+    they run on — which is how they turned red on a fresh CI clone before the
+    git-hooks gate was pinned below.
+    """
+    monkeypatch.setattr(teatree_cli_update, "_collect_repos", list)
+    monkeypatch.setattr(teatree_paths, "DATA_DIR_AUTO_ISOLATED", False)
+    # The H24 self-heal detectors read live host state (`docker ps` of the
+    # `teatree` compose project, the loop ORM, the box's runtime clone); they
+    # are exercised in tests/teatree_cli/doctor/test_self_heal.py and pinned to
+    # a pass here so this command-aggregation smoke test stays deterministic.
+    monkeypatch.setattr("teatree.cli.doctor.self_heal.run_self_heal_checks", lambda: True)
+    # The configured-review-skill check (#3352) resolves review_skill /
+    # architectural_review_skill against the runner's real skill-install state
+    # (``ac-reviewing-codebase`` is an external apm skill absent on CI runners),
+    # so it FAILs deterministically off-box. It is exercised end-to-end in
+    # tests/cli_doctor/test_configured_review_skills_check.py; pin it to a pass
+    # here so this aggregation smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_configured_review_skills", lambda: True)
+    # The git-hooks gate probes the checkouts the runner really lives in — on a CI
+    # runner (and any fresh clone) `.git/hooks` holds only samples, so it FAILs
+    # deterministically off-box. It is exercised end-to-end in
+    # tests/teatree_cli/doctor/test_bootstrap_checks.py against staged checkouts;
+    # pin it to a pass here so this aggregation smoke test stays deterministic.
+    monkeypatch.setattr(
+        "teatree.cli.doctor.checks_bootstrap._check_git_hooks_installed",
+        lambda: True,
+    )
+    # The root-filesystem headroom gate (#3852) measures the box's real ``/``: it
+    # WARNs past 85% used and FAILs past 95%, so on a full runner it turns this
+    # aggregation test red for a reason that has nothing to do with the doctor's
+    # dispatch. Its bands are exercised against a stubbed ``statvfs`` in
+    # tests/teatree_cli/doctor/test_root_disk_headroom_check.py; pin it to a pass
+    # here so this smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_root_disk_headroom", lambda: True)
+    # The dream-pass staleness escalation gate (#3993) reads the real DreamRunMarker
+    # row — on this runner's own control DB it is genuinely stale, so it FAILs
+    # deterministically off-box for a reason unrelated to the doctor's dispatch under
+    # test. Its bands are exercised against a seeded marker in
+    # tests/teatree_cli/doctor/test_dream_blocked_check.py; pin it to a pass here so
+    # this aggregation smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_dream_consolidation_blocked", lambda: True)
+    # The control-DB writers gate reads the live descriptor table, where a SIBLING xdist
+    # worker holding the control DB is indistinguishable from the rogue host writer it
+    # hunts — so it FAILs on how many workers pytest happened to spawn, not on the code.
+    # Pinned at the OS READ, never the check: the classification and its FAIL text still
+    # run, and are exercised both ways in
+    # tests/teatree_cli/doctor/test_checks_db_integrity.py.
+    monkeypatch.setattr("teatree.cli.doctor.checks_db_integrity._control_db_writers", list)
+    # The config-tier health gate (#3873) reports whether a ConfigSetting override read
+    # recently FAILED, reading a marker file beside the box's REAL control DB — a path
+    # outside this test's DB isolation, so a genuine unrelated degradation recorded by
+    # another process on the same runner would FAIL this aggregation test for a reason
+    # that has nothing to do with the dispatch under test. Its real behaviour is
+    # exercised in tests/teatree_cli/doctor/test_config_tier_health_check.py; pin it to
+    # a pass here so this smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_config_override_tier_healthy", lambda: True)
+    # These checks read the live t3 installation, PATH, worker role and checkout
+    # remotes. Their dedicated modules exercise those probes against staged state;
+    # this command-aggregation smoke test must not inherit the deployed box's state.
+    monkeypatch.setattr(teatree_cli_doctor, "_check_t3_shim_receipt", lambda *, repair=False: True)
+    monkeypatch.setattr(teatree_cli_doctor, "_check_stale_path_t3", lambda: True)
+    monkeypatch.setattr(teatree_cli_doctor, "_run_worker_gates", lambda: True)
+    monkeypatch.setattr(teatree_doctor_bootstrap, "_check_github_remotes_are_https", lambda: True)
+    # The loop/intent gates (#3978/#4140/#4253/#4250/#4466 — intent freshness, intake
+    # budget/pass, schedule liveness, the t3-master lease, unconsumed merge clears) read
+    # this runner's REAL loop/ticket state. A pytest-django TestCase's fresh DB carries
+    # the shipped loop-preset SEED rows (created by data migrations) but nothing has ever
+    # ticked them, so schedule-liveness genuinely (and correctly, for that DB) reports
+    # every seeded loop as never-scheduled — an artefact of the harness never having run a
+    # worker, not of the doctor dispatch under test. Each gate is exercised end-to-end
+    # against deliberately-staged state in its own dedicated module (e.g.
+    # tests/teatree_cli/doctor/test_schedule_liveness_check.py); pin the whole group to a
+    # pass here so this aggregation smoke test stays deterministic.
+    monkeypatch.setattr(teatree_cli_doctor, "_run_loop_intent_gates", lambda: True)
+    # The general provisioning gate (#3652) resolves the manifest-declared skills
+    # against the runner's real skill-install state, where the external apm skills
+    # are absent — the very gap it exists to catch, and a deterministic off-box FAIL
+    # here. Point its skill search at a staged dir carrying them so the BINARY and
+    # INTEGRATION surfaces of the same gate stay live in this aggregation test; the
+    # skill surface is exercised in tests/teatree_cli/doctor/test_provisioning_gate_check.py.
+    monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_stage_declared_skills(tmp_path_factory)))
+
+
+def _stage_declared_skills(tmp_path_factory) -> Path:
+    """A skills dir carrying every manifest-declared skill, so they resolve as installed."""
+    staged = tmp_path_factory.mktemp("declared-skills")
+    root = project_root_for_running_code()
+    for dependency in skills_declared_in_apm_manifest(root / "apm.yml") if root else []:
+        skill = staged / dependency.name
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(f"---\nname: {dependency.name}\n---\n", encoding="utf-8")
+    return staged
+
+
+class TestDoctorCheckCommand(TestCase):
+    """End-to-end ``t3 doctor check`` dispatch via ``CliRunner``.
+
+    The command's sanity check runs live against the DB-home config store
+    (``contribute`` defaults to false with no row); ``editable_info`` +
+    ``shutil.which`` stay mocked because they touch the real site-packages and PATH.
+    Real DB access (via ``TestCase``, not a bare ``django_db`` marker per this
+    repo's ``ac-django`` lint rule) is load-bearing: souliane/teatree#4357 made a
+    blocked-DB read produce a DIFFERENT, honest UNVERIFIED message rather than a
+    masked default, so a harness that cannot read the store no longer exercises
+    the live-store behaviour this class's docstring already promised.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_entrypoint_guard_runs_before_editable_autorepair(self):
+        """The entrypoint guard must fire before editable auto-repair (#1507).
+
+        Under ``contribute=true`` the editable-sanity check can auto-make the
+        cwd worktree editable — the exact stale anchor the guard catches. If it
+        ran first it would create the bad install before the guard fails.
+        """
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        order: list[str] = []
+
+        def _entry() -> bool:
+            order.append("entrypoint")
+            return True
+
+        def _editable() -> bool:
+            order.append("editable")
+            return True
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(teatree_cli_doctor, "_check_entrypoint_is_primary_clone", side_effect=_entry),
+            patch.object(teatree_cli_doctor, "_check_editable_sanity", side_effect=_editable),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+        ):
+            runner.invoke(app, ["doctor", "check"])
+
+        assert order.index("entrypoint") < order.index("editable")
+
+    def test_reports_all_checks_passed(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0
+        assert "All checks passed" in result.output
+
+    def test_aggregates_the_shard_durations_checks_against_the_staged_repo(self):
+        """Both #4048 checks run end to end here, not stubbed (#4113 review).
+
+        A measurement stubbed to ``None`` in the shared stager silences its check
+        with no line of output, so this aggregation test would keep passing with
+        either check removed. Naming the coverage verdict of the staged tree keeps
+        that surface live.
+        """
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0, result.output
+        assert "OK    Test-shard durations cover 100.0% of the test files" in result.output
+
+    def test_reports_warning_when_editable_state_mismatches(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+        # contribute=false but teatree is editable → WARN
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        # The editable/contribute mismatch is an advisory WARN — it must NOT
+        # redden the run now that the exit code is real (#3313).
+        assert result.exit_code == 0, result.output
+        # Assert THIS gate's own line, not a bare "WARN": the doctor emits many
+        # advisory WARNs unrelated to the editable state (host-reading advisories,
+        # reconciliation reads), so a substring check for "WARN" alone passes with
+        # the editable/contribute warning removed entirely — it would guard nothing.
+        assert "teatree is editable but contribute=false in the DB config" in result.output
+
+    def test_fails_when_required_tool_missing(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        with (
+            patch("shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        # The Critical exit-code contract (#3313): a hard FAIL must exit non-zero
+        # so `t3 doctor check && …` in CI/hooks does not get silent success.
+        # #3652: required tools are declared in pyproject's [tool.teatree.provisioning]
+        # table, so the general declared-dependency check is what names the gap.
+        assert result.exit_code == 1
+        assert "FAIL  Declared dependency not provisioned: binary 'direnv'" in result.output
+        assert "pyproject.toml" in result.output
+
+    def test_validates_skills_in_claude_dir(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+        claude_skills = self.tmp_path / ".claude" / "skills"
+        (claude_skills / "ok-skill").mkdir(parents=True)
+        (claude_skills / "ok-skill" / "SKILL.md").write_text("---\nname: ok-skill\ndescription: d\n---\n")
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0
+        assert "1 skill(s) validated" in result.output
+
+    def test_reports_skill_validation_errors(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+        bad = self.tmp_path / ".claude" / "skills" / "bad-skill"
+        bad.mkdir(parents=True)
+        (bad / "SKILL.md").write_text("no frontmatter here")
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert "FAIL" in result.output
+
+    def test_reports_skill_validation_warnings(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+        skill = self.tmp_path / ".claude" / "skills" / "warn-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: warn-skill\ndescription: d\nunknown-field: x\n---\n")
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert "WARN" in result.output
+
+    def test_configures_django_before_self_db_inspection(self):
+        """``t3 doctor check`` must configure Django before inspecting the self-DB.
+
+        Regression (#126): ``check()`` is a plain Typer command in a
+        Django-free group, so without an explicit ``django.setup()`` the
+        self-DB schema inspection hit ``ImproperlyConfigured: DJANGO_
+        SETTINGS_MODULE not set`` and silently WARNed — masking a real stale
+        runtime self-DB that would have locked out the merge path. The check
+        must run the canonical ``ensure_django`` step (``django.setup`` +
+        ``DJANGO_SETTINGS_MODULE``) before reaching the schema guard, so it
+        reports the REAL pending-migration state.
+        """
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        order: list[str] = []
+
+        def _record_setup() -> None:
+            order.append("ensure_django")
+
+        def _record_check(*_args, **_kwargs) -> bool:
+            order.append("self_db_check")
+            return True
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch.object(teatree_cli_doctor, "ensure_django", side_effect=_record_setup),
+            patch(
+                "teatree.core.gates.schema_guard.doctor_check_self_db_migrations",
+                side_effect=_record_check,
+            ),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0, result.output
+        # Django must be configured BEFORE the self-DB schema inspection runs.
+        assert "ensure_django" in order, "doctor check must call ensure_django (#126)"
+        assert order.index("ensure_django") < order.index("self_db_check")
+        assert "Could not inspect self-DB migrations: ImproperlyConfigured" not in result.output
+
+    def test_configures_django_before_editable_sanity(self):
+        """Django must be configured before the editable-vs-contribute check (#3213).
+
+        The editable-sanity check reads the DB-home ``contribute`` setting via
+        ``get_effective_settings()``. That read reaches the ``ConfigSetting``
+        store through Django's app registry — which fails safe to ``{}`` (→ the
+        ``False`` dataclass default) when Django is not yet configured. Running
+        the check before ``ensure_django`` therefore resolved ``contribute`` as
+        ``False`` even with a stored ``contribute=true`` row, so every editable
+        install saw the spurious "editable but contribute=false" WARN. The
+        canonical ``ensure_django`` step must run first.
+        """
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        order: list[str] = []
+
+        def _record_setup() -> None:
+            order.append("ensure_django")
+
+        def _record_editable() -> bool:
+            order.append("editable_sanity")
+            return True
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch.object(teatree_cli_doctor, "ensure_django", side_effect=_record_setup),
+            patch.object(teatree_cli_doctor, "_check_editable_sanity", side_effect=_record_editable),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0, result.output
+        assert "ensure_django" in order, "doctor check must call ensure_django (#3213)"
+        assert order.index("ensure_django") < order.index("editable_sanity")
+
+    def test_fails_on_import_error(self):
+        import builtins  # noqa: PLC0415
+
+        real_import = builtins.__import__
+
+        def fail_import(name, *args, **kwargs):
+            if name == "teatree.core":
+                raise ImportError(name)
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fail_import):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert "FAIL" in result.output
+
+
+class TestBareDoctorRunsChecks(TestCase):
+    """Bare ``t3 doctor`` aliases to ``t3 doctor check`` (souliane/teatree#2065).
+
+    ``no_args_is_help=True`` made bare ``t3 doctor`` print the usage banner and
+    run no verification — a fresh user's verify step silently did nothing. The
+    group callback must run ``check`` when no subcommand is given, while leaving
+    the ``check`` and ``authorizations`` subcommands intact. ``TestCase`` for the
+    same reason as ``TestDoctorCheckCommand`` above — this dispatches through the
+    same live DB-home config store.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_bare_doctor_runs_checks_not_help(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 0, result.output
+        assert "All checks passed" in result.output
+        assert "Usage:" not in result.output
+
+    def test_bare_doctor_propagates_failure_exit_code(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        with (
+            patch("shutil.which", side_effect=lambda t: None if t == "direnv" else f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+        ):
+            result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 1
+        assert "FAIL  Declared dependency not provisioned: binary 'direnv'" in result.output
+
+    def test_check_subcommand_still_dispatches(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        with (
+            patch("shutil.which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.gates.schema_guard.pending_migrations", return_value=[]),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0, result.output
+        assert "All checks passed" in result.output
+
+    def test_authorizations_subcommand_still_dispatches(self):
+        _stage_home(self.tmp_path, self.monkeypatch)
+
+        result = runner.invoke(app, ["doctor", "authorizations", "--help"])
+
+        assert result.exit_code == 0, result.output
+        assert "authorizations" in result.output

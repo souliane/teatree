@@ -1,0 +1,243 @@
+"""SKILL.md frontmatter schema validation.
+
+Validates required fields, the requires dependency chain, and cross-references.
+Can be used as a CLI tool: ``uv run python -m teatree.skill_support.schema <paths>``.
+
+Teatree frontmatter is a superset of APM's SKILL.md format:
+- APM requires: ``name``, ``description``
+- Teatree adds: ``requires``, ``metadata``, ``compatibility``
+
+Unknown fields produce warnings (not errors) to preserve APM compatibility —
+APM or other tools may add fields teatree doesn't know about. The free-text
+intent-trigger fields (``triggers``, ``search_hints``) were removed with
+explicit skill loading; a stale one fails validation loud so a skill file never
+silently carries a dead mechanism. ``companions`` is distinct and recognised: an
+optional SOFT suggestion list (complementary-not-mandatory), the counterpart to
+the hard, transitive ``requires`` dependency edge.
+
+Both list fields resolve against BOTH provisioning sources — the apm-installed agent
+skills dir and the teatree plugin's own ``skills/`` tree (see
+:func:`installed_skill_names`) — so a plugin-provided target is not mistaken for a typo.
+"""
+
+import sys
+from pathlib import Path
+
+import typer
+
+from teatree.skill_support.ref_validator import canonical_skill_names, default_search_dirs
+
+_KNOWN_TOP_LEVEL = frozenset(
+    {
+        "name",
+        "description",
+        "version",
+        "requires",
+        "companions",
+        "metadata",
+        "compatibility",
+        "eval_exempt",
+    }
+)
+
+# Fields the explicit-skill-loading cutover removed. A skill file still
+# carrying one is a stale reference to a deleted mechanism — an ERROR, not a
+# tolerated APM extension.
+_REMOVED_TOP_LEVEL = frozenset(
+    {
+        "triggers",
+        "search_hints",
+    }
+)
+
+# External methodology / framework skills a ``requires:`` may name that have no
+# SKILL.md in this repo. They install separately (obra/superpowers via APM, the
+# ac-* language skills), so the transitive resolver warns-and-continues rather
+# than failing — the schema check treats them as valid targets, not typos.
+_EXTERNAL_REQUIRES = frozenset(
+    {
+        "test-driven-development",
+        "verification-before-completion",
+        "systematic-debugging",
+        "writing-plans",
+        "requesting-code-review",
+        "receiving-code-review",
+        "finishing-a-development-branch",
+        "ac-python",
+        "ac-django",
+        "fastapi",
+    }
+)
+
+
+def validate_skill_md(path: Path, *, known_skills: set[str] | None = None) -> tuple[list[str], list[str]]:
+    """Validate a SKILL.md file's frontmatter.
+
+    Returns (errors, warnings). Errors are blocking (pre-commit fails),
+    warnings are informational.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not path.is_file():
+        return [f"{path}: file not found"], []
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"{path}: {exc}"], []
+
+    if not text.startswith("---"):
+        errors.append(f"{path}: missing YAML frontmatter (must start with ---)")
+        return errors, warnings
+
+    try:
+        end = text.index("---", 3)
+    except ValueError:
+        errors.append(f"{path}: unclosed frontmatter (missing closing ---)")
+        return errors, warnings
+
+    frontmatter = text[3:end]
+    fields = _extract_top_level_fields(frontmatter)
+
+    # Required fields.
+    if "name" not in fields:
+        errors.append(f"{path}: missing required field 'name'")
+    if "description" not in fields:
+        errors.append(f"{path}: missing required field 'description'")
+
+    # Removed fields fail loud; other unknown fields warn (APM compatibility).
+    errors.extend(
+        f"{path}: field '{key}' was removed with explicit skill loading — delete it"
+        for key in fields
+        if key in _REMOVED_TOP_LEVEL
+    )
+    warnings.extend(
+        f"{path}: unknown field '{key}' (APM extension?)"
+        for key in fields
+        if key not in _KNOWN_TOP_LEVEL and key not in _REMOVED_TOP_LEVEL
+    )
+
+    if "eval_exempt" in fields:
+        _validate_eval_exempt(path, frontmatter, errors)
+
+    # Validate requires + companions references (both name skills).
+    if known_skills is not None:
+        resolvable = known_skills | installed_skill_names()
+        _validate_list_field_refs(path, frontmatter, "requires", resolvable, errors)
+        _validate_list_field_refs(path, frontmatter, "companions", resolvable, errors)
+
+    return errors, warnings
+
+
+def installed_skill_names() -> set[str]:
+    """Every skill name installed on this machine, across BOTH provisioning sources.
+
+    A ``requires:``/``companions:`` target resolves whether it was apm-installed into the
+    agent skills dir or ships with the teatree plugin's own ``skills/`` tree; a validator
+    whose known set is only the directory it happens to be walking calls the
+    plugin-provided half broken. Enumerated through the same canonical seam the
+    skill-loading hook and the dangling-reference validator read
+    (:func:`~teatree.skill_support.ref_validator.canonical_skill_names`), so the three can
+    never disagree about which skills exist.
+    """
+    return canonical_skill_names(default_search_dirs())
+
+
+def _extract_top_level_fields(frontmatter: str) -> set[str]:
+    fields: set[str] = set()
+    for line in frontmatter.splitlines():
+        if not line.startswith((" ", "\t")) and ":" in line:
+            key = line.split(":")[0].strip()
+            if key:
+                fields.add(key)
+    return fields
+
+
+def _validate_eval_exempt(path: Path, frontmatter: str, errors: list[str]) -> None:
+    for line in frontmatter.splitlines():
+        if line.startswith((" ", "\t")) or not line.startswith("eval_exempt:"):
+            continue
+        reason = line.removeprefix("eval_exempt:").strip().strip("'\"")
+        if not reason:
+            errors.append(f"{path}: eval_exempt must be a non-empty reason string")
+        return
+
+
+def _validate_list_field_refs(
+    path: Path,
+    frontmatter: str,
+    field_name: str,
+    known_skills: set[str],
+    errors: list[str],
+) -> None:
+    """Validate that every skill named under *field_name* (``requires``/``companions``) resolves.
+
+    An inline value (``requires: a`` / ``requires: [a, b]``) is an ERROR rather than a
+    parse variant: :mod:`teatree.skill_support.requires_parser` reads only the block
+    sequence, so an inline one loads as NO dependencies at all — silently, and with the
+    references this gate exists to check never looked at.
+    """
+    in_field = False
+    for line in frontmatter.splitlines():
+        stripped = line.strip()
+        if not line.startswith((" ", "\t")) and ":" in stripped:
+            key, _, inline = stripped.partition(":")
+            in_field = key.strip() == field_name
+            if in_field and inline.strip():
+                errors.append(f"{path}: {field_name} must be a block list ('- name' lines), not {inline.strip()!r}")
+            continue
+        if in_field and stripped.startswith("- "):
+            ref = stripped.removeprefix("- ").strip().strip("'\"")
+            if ref and ref not in known_skills and ref not in _EXTERNAL_REQUIRES:
+                errors.append(f"{path}: {field_name} unknown skill '{ref}'")
+
+
+def validate_directory(root: Path) -> tuple[list[str], list[str]]:
+    """Validate all SKILL.md files under *root*."""
+    skill_dirs = sorted(d for d in root.iterdir() if d.is_dir() and (d / "SKILL.md").is_file())
+    known_skills = {d.name for d in skill_dirs}
+
+    all_errors: list[str] = []
+    all_warnings: list[str] = []
+
+    for skill_dir in skill_dirs:
+        errs, warns = validate_skill_md(skill_dir / "SKILL.md", known_skills=known_skills)
+        all_errors.extend(errs)
+        all_warnings.extend(warns)
+
+    return all_errors, all_warnings
+
+
+def main() -> None:  # pragma: no cover — pre-commit entry point (orchestrates tested helpers)
+    """CLI entry point for pre-commit and manual validation."""
+    paths = [Path(p) for p in sys.argv[1:]]
+    if not paths:
+        typer.echo("Usage: python -m teatree.skill_support.schema <SKILL.md ...>", err=True)
+        sys.exit(1)
+
+    all_errors: list[str] = []
+    all_warnings: list[str] = []
+
+    for path in paths:
+        if path.is_dir():
+            errs, warns = validate_directory(path)
+        else:
+            errs, warns = validate_skill_md(path)
+        all_errors.extend(errs)
+        all_warnings.extend(warns)
+
+    for warning in all_warnings:
+        typer.echo(f"WARN: {warning}")
+    for error in all_errors:
+        typer.echo(f"ERROR: {error}")
+
+    if all_errors:
+        typer.echo(f"\nFAIL — {len(all_errors)} error(s)")
+        sys.exit(1)
+    else:
+        typer.echo("PASS")
+
+
+if __name__ == "__main__":
+    main()

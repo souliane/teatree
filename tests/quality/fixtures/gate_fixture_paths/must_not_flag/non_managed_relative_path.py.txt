@@ -1,0 +1,3 @@
+def test_bare_filename_is_outside_any_managed_tree():
+    payload = {"tool_name": "Read", "tool_input": {"file_path": "x.py"}}
+    run(payload)

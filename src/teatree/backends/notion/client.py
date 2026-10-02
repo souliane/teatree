@@ -1,0 +1,402 @@
+"""Headless Notion access over the public API with an integration token.
+
+The claude.ai Notion connector is interactively authenticated and simply absent
+from a cron/headless run, so a factory driving it can read no PRD and write no
+section once nobody is watching. This client is the headless replacement: a
+Notion **internal integration** token, resolved from the ``pass`` store through
+the same :class:`~teatree.llm.credentials.Credential` machinery every other
+teatree service token uses, against the documented public API.
+
+The setup an integration token implies, and that no code can do for the
+operator: the integration must be **explicitly shared onto each page and
+database** it touches. Until that grant exists Notion answers 404, which
+:class:`~teatree.backends.notion.errors.NotionErrorClassifier` reports as
+:class:`~teatree.backends.notion.errors.NotionNotSharedError` rather than as a
+missing page.
+
+Reads run under the shared bounded-retry transport
+(:class:`~teatree.backends.http_retry.SimpleRetryTransport`, knobs from
+``T3_NOTION_HTTP_*``); every mutation is non-idempotent and is retried only on a
+CONNECT-phase failure, never replayed once the request reached Notion.
+"""
+
+from collections.abc import Callable
+from typing import cast
+
+import httpx
+
+from teatree.backends.http_retry import SimpleRetryTransport
+from teatree.backends.notion.errors import NotionBadTokenError, NotionError, NotionErrorClassifier
+from teatree.backends.notion.liveness import LivenessVerdict, PageLivenessProbe
+from teatree.backends.notion.write_guard import WriteGuard, WriteScope
+from teatree.llm.credentials import Credential, CredentialSpec
+from teatree.types import RawAPIDict
+
+#: Notion refuses an append carrying more than this many blocks in one request.
+APPEND_BATCH_SIZE = 100
+
+#: The pinned API version. ``2022-06-28`` is the long-stable contract the page,
+#: block, comment and database endpoints below are written against.
+DEFAULT_API_VERSION = "2022-06-28"
+
+#: ``/v1/data_sources/{id}/query`` exists only from this version onward; the
+#: request that needs it carries this header instead of the pinned default.
+DATA_SOURCE_API_VERSION = "2025-09-03"
+
+type PagedRequest = Callable[[httpx.Client, str | None], httpx.Response]
+
+
+class NotionTokenCredential(Credential):
+    """The Notion internal-integration token — env first, then the venue's routed ``pass`` entry.
+
+    Routes through the provider-neutral :class:`~teatree.llm.credentials.Credential`
+    machinery (identical to ``FigmaTokenCredential``) so a rotated ``NOTION_TOKEN``
+    always beats a stale ``pass`` entry, the value never reaches argv, and an
+    absent credential fails loud naming the fix instead of authenticating as
+    nothing. There is no default entry: the caller injects ``pass_path_override``
+    from the ``notion_token_pass_key`` setting.
+    """
+
+    spec = CredentialSpec(env_var="NOTION_TOKEN", conflicting_vars=(), routing_setting="notion_token_pass_key")
+
+
+def option_name(prop: object) -> str | None:
+    """Read the option name from a Notion ``status``- or ``select``-typed property."""
+    if not isinstance(prop, dict):
+        return None
+    typed = cast("RawAPIDict", prop)
+    for key in ("status", "select"):
+        value = typed.get(key)
+        if isinstance(value, dict):
+            name = cast("RawAPIDict", value).get("name")
+            if isinstance(name, str):
+                return name
+    return None
+
+
+class NotionClient:
+    """Notion API client — pages, blocks, comments, databases, status writes."""
+
+    _BASE = "https://api.notion.com/v1"
+
+    def __init__(self, *, token: str, version: str = DEFAULT_API_VERSION, overlay: str | None = None) -> None:
+        self.token = token
+        self.version = version
+        self._transport = SimpleRetryTransport(env_prefix="T3_NOTION_HTTP")
+        self._errors = NotionErrorClassifier(self.describe_identity)
+        self._write_guard = WriteGuard(parent_of=self._parent_of, scope=lambda: WriteScope.for_overlay(overlay))
+
+    def _client(self) -> httpx.Client:
+        return httpx.Client(
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Notion-Version": self.version,
+            },
+            timeout=10.0,
+        )
+
+    # ── identity ────────────────────────────────────────────────────────
+
+    def whoami(self) -> RawAPIDict:
+        """Return the bot user this token authenticates as (``GET /users/me``)."""
+        with self._client() as client:
+            response = self._transport.run(lambda: client.get(f"{self._BASE}/users/me"), idempotent=True)
+            self._raise_identity_error(response)
+            return cast("RawAPIDict", response.json())
+
+    def describe_identity(self) -> str:
+        """A one-line human description of the integration, for a 404 diagnostic."""
+        body = self.whoami()
+        name = str(body.get("name") or "unnamed integration")
+        workspace = self._workspace_name(body)
+        suffix = f", workspace {workspace!r}" if workspace else ""
+        return f"integration {name!r} (bot id {body.get('id', '?')}{suffix})"
+
+    @staticmethod
+    def _workspace_name(body: RawAPIDict) -> str:
+        bot = body.get("bot")
+        if not isinstance(bot, dict):
+            return ""
+        return str(cast("RawAPIDict", bot).get("workspace_name") or "")
+
+    @staticmethod
+    def _raise_identity_error(response: httpx.Response) -> None:
+        """Classify a ``/users/me`` failure WITHOUT re-entering the identity probe.
+
+        The classifier's 404 branch calls back into the identity probe, so the
+        probe itself must never route through it. Only 401 is meaningful here —
+        anything else is an ordinary HTTP failure the caller re-raises.
+        """
+        if not response.is_error:
+            return
+        if response.status_code == httpx.codes.UNAUTHORIZED:
+            msg = (
+                "Notion rejected the integration token (HTTP 401). It is invalid, revoked, "
+                "or belongs to a deleted integration — issue a new internal integration "
+                "secret and store it again."
+            )
+            raise NotionBadTokenError(msg)
+        response.raise_for_status()
+
+    def any_object_shared(self) -> bool:
+        """Whether ANY page or database has been shared with this integration.
+
+        ``POST /v1/search`` returns only granted objects, so an empty result is the
+        precise "the token authenticates but was never shared onto anything" state —
+        which every later read reports indistinguishably as a 404 on one page.
+        """
+        with self._client() as client:
+            response = self._transport.run(
+                lambda: client.post(f"{self._BASE}/search", json={"page_size": 1}), idempotent=True
+            )
+            self._errors.raise_for(response, target="the integration's shared objects")
+            return bool(cast("RawAPIDict", response.json()).get("results"))
+
+    def search_shared_objects(self) -> list[RawAPIDict]:
+        """Return every page/database the integration can discover, following pagination."""
+
+        def request(client: httpx.Client, cursor: str | None) -> httpx.Response:
+            payload: RawAPIDict = {"page_size": 100}
+            if cursor:
+                payload["start_cursor"] = cursor
+            return client.post(f"{self._BASE}/search", json=payload)
+
+        return self._paginate(request, target="the integration's shared objects")
+
+    # ── page + database reads ───────────────────────────────────────────
+
+    def get_page(self, page_id: str) -> RawAPIDict:
+        with self._client() as client:
+            response = self._transport.run(lambda: client.get(f"{self._BASE}/pages/{page_id}"), idempotent=True)
+            self._errors.raise_for(response, target=f"page {page_id}")
+            return cast("RawAPIDict", response.json())
+
+    def get_database(self, database_id: str) -> RawAPIDict:
+        with self._client() as client:
+            response = self._transport.run(lambda: client.get(f"{self._BASE}/databases/{database_id}"), idempotent=True)
+            self._errors.raise_for(response, target=f"database {database_id}")
+            return cast("RawAPIDict", response.json())
+
+    def get_block(self, block_id: str) -> RawAPIDict:
+        with self._client() as client:
+            response = self._transport.run(lambda: client.get(f"{self._BASE}/blocks/{block_id}"), idempotent=True)
+            self._errors.raise_for(response, target=f"block {block_id}")
+            return cast("RawAPIDict", response.json())
+
+    def get_page_status(self, page_id: str, *, property_name: str = "Status") -> str | None:
+        properties = self.get_page(page_id).get("properties")
+        if not isinstance(properties, dict):
+            return None
+        return option_name(cast("RawAPIDict", properties).get(property_name))
+
+    # ── liveness ────────────────────────────────────────────────────────
+
+    def page_liveness(self, page_id: str) -> LivenessVerdict:
+        """Whether *page_id* is still the LIVE version of itself.
+
+        The primitives above stay raw — the probe itself needs an ungated
+        ``get_page``, and so does an audit read. Every surface that hands an
+        ANSWER to a human or an agent gates on this instead.
+        """
+        return PageLivenessProbe(self).verdict(page_id)
+
+    def page_is_live(self, page_id: str) -> bool:
+        """The boolean :class:`~teatree.core.backend_registry.NotionPageClient` exposes to core.
+
+        UNKNOWN answers ``False``: a liveness this surface could not establish is
+        not a liveness it may act on.
+        """
+        return self.page_liveness(page_id).readable
+
+    def query_database(
+        self, database_id: str, *, db_filter: RawAPIDict | None = None, page_size: int = 100
+    ) -> list[RawAPIDict]:
+        return self._query(f"databases/{database_id}/query", db_filter=db_filter, page_size=page_size, version="")
+
+    def query_data_source(
+        self, data_source_id: str, *, db_filter: RawAPIDict | None = None, page_size: int = 100
+    ) -> list[RawAPIDict]:
+        """Query a data source — the multi-source successor to a database query.
+
+        Sends :data:`DATA_SOURCE_API_VERSION` on this request alone, because the
+        endpoint does not exist under the pinned default and a caller holding a
+        ``collection://`` data-source id has nothing else to point at.
+        """
+        return self._query(
+            f"data_sources/{data_source_id}/query",
+            db_filter=db_filter,
+            page_size=page_size,
+            version=DATA_SOURCE_API_VERSION,
+        )
+
+    def _paginate(self, request: PagedRequest, *, target: str) -> list[RawAPIDict]:
+        """Follow ``next_cursor`` to the end of *request*, one page at a time.
+
+        A cursor Notion hands back a second time means the walk has stopped
+        advancing; the read fails loud rather than spinning forever inside an
+        unattended run.
+        """
+        results: list[RawAPIDict] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        with self._client() as client:
+            while True:
+                response = self._transport.run(lambda c=cursor: request(client, c), idempotent=True)
+                self._errors.raise_for(response, target=target)
+                body = response.json()
+                results.extend(body.get("results", []))
+                cursor = body.get("next_cursor")
+                if not body.get("has_more") or not cursor:
+                    return results
+                if cursor in seen:
+                    msg = (
+                        f"Notion repeated the pagination cursor {cursor!r} while reading {target}; "
+                        "the walk is not advancing, so the read is abandoned rather than looped forever."
+                    )
+                    raise NotionError(msg)
+                seen.add(cursor)
+
+    def _query(self, path: str, *, db_filter: RawAPIDict | None, page_size: int, version: str) -> list[RawAPIDict]:
+        headers = {"Notion-Version": version} if version else None
+
+        def request(client: httpx.Client, cursor: str | None) -> httpx.Response:
+            payload: RawAPIDict = {"page_size": page_size}
+            if db_filter is not None:
+                payload["filter"] = db_filter
+            if cursor:
+                payload["start_cursor"] = cursor
+            return client.post(f"{self._BASE}/{path}", json=payload, headers=headers)
+
+        return self._paginate(request, target=path)
+
+    # ── block reads ─────────────────────────────────────────────────────
+
+    def list_block_children(self, block_id: str) -> list[RawAPIDict]:
+        """Return every direct child block of *block_id*, following pagination."""
+
+        def request(client: httpx.Client, cursor: str | None) -> httpx.Response:
+            params: dict[str, str] = {"page_size": "100"}
+            if cursor:
+                params["start_cursor"] = cursor
+            return client.get(f"{self._BASE}/blocks/{block_id}/children", params=params)
+
+        return self._paginate(request, target=f"block {block_id}")
+
+    def list_comments(self, block_id: str) -> list[RawAPIDict]:
+        """Return the open (unresolved) comments attached to *block_id*.
+
+        Notion exposes only unresolved discussions on this endpoint and requires
+        the integration's read-comment capability — an integration without it
+        gets HTTP 403, reported as
+        :class:`~teatree.backends.notion.errors.NotionCapabilityDeniedError` rather
+        than as an empty comment list.
+        """
+
+        def request(client: httpx.Client, cursor: str | None) -> httpx.Response:
+            params: dict[str, str] = {"block_id": block_id, "page_size": "100"}
+            if cursor:
+                params["start_cursor"] = cursor
+            return client.get(f"{self._BASE}/comments", params=params)
+
+        return self._paginate(request, target=f"comments on {block_id}")
+
+    # ── block writes ────────────────────────────────────────────────────
+
+    # ── guarded writes ──────────────────────────────────────────────────
+
+    def _write(self, target: str, send: Callable[[httpx.Client], httpx.Response], *, described: str) -> RawAPIDict:
+        """The one path a mutating request takes, so no write reaches Notion without the guard's verdict."""
+        self._write_guard.check(target)
+        with self._client() as client:
+            response = self._transport.run(lambda: send(client), idempotent=False)
+            self._errors.raise_for(response, target=described)
+            return cast("RawAPIDict", response.json())
+
+    def _parent_of(self, object_id: str) -> str | None:
+        with self._client() as client:
+            response = self._transport.run(lambda: client.get(f"{self._BASE}/blocks/{object_id}"), idempotent=True)
+            self._errors.raise_for(response, target=f"block {object_id}")
+            parent = cast("RawAPIDict", response.json().get("parent") or {})
+        kind = parent.get("type")
+        if kind == "workspace":
+            return None
+        linked = parent.get("database_id" if kind == "data_source_id" else str(kind))
+        if not isinstance(linked, str) or not linked:
+            msg = f"block {object_id} names no parent the write guard can follow ({kind!r})"
+            raise NotionError(msg)
+        return linked
+
+    def append_block_children(self, block_id: str, children: list[RawAPIDict], *, after: str = "") -> list[RawAPIDict]:
+        """Append *children* under *block_id*, batched to Notion's per-call cap.
+
+        ``after`` inserts immediately following that sibling block instead of at
+        the end — the primitive that lets a section body be rewritten under its
+        own heading without disturbing anything below it. Each batch chains onto
+        the last block the previous batch created, so a body longer than
+        :data:`APPEND_BATCH_SIZE` still lands in order.
+        """
+        appended: list[RawAPIDict] = []
+        anchor = after
+        for start in range(0, len(children), APPEND_BATCH_SIZE):
+            batch = children[start : start + APPEND_BATCH_SIZE]
+            created = self._append_batch(block_id, batch, after=anchor)
+            appended.extend(created)
+            anchor = str(created[-1].get("id", "")) if created else anchor
+        return appended
+
+    def _append_batch(self, block_id: str, children: list[RawAPIDict], *, after: str) -> list[RawAPIDict]:
+        payload: RawAPIDict = {"children": children}
+        if after:
+            payload["after"] = after
+        body = self._write(
+            block_id,
+            lambda client: client.patch(f"{self._BASE}/blocks/{block_id}/children", json=payload),
+            described=f"block {block_id}",
+        )
+        return cast("list[RawAPIDict]", body.get("results", []))
+
+    def update_block(self, block_id: str, payload: RawAPIDict) -> RawAPIDict:
+        """Patch one block in place, preserving its id and its discussions."""
+        return self._write(
+            block_id,
+            lambda client: client.patch(f"{self._BASE}/blocks/{block_id}", json=payload),
+            described=f"block {block_id}",
+        )
+
+    def delete_block(self, block_id: str) -> RawAPIDict:
+        """Archive one block (Notion's ``DELETE`` is a move to trash, not a purge)."""
+        return self._write(
+            block_id,
+            lambda client: client.delete(f"{self._BASE}/blocks/{block_id}"),
+            described=f"block {block_id}",
+        )
+
+    def update_page_properties(self, page_id: str, properties: RawAPIDict) -> RawAPIDict:
+        """Patch named page properties — needs the integration's update-content capability."""
+        return self._write(
+            page_id,
+            lambda client: client.patch(f"{self._BASE}/pages/{page_id}", json={"properties": properties}),
+            described=f"page {page_id}",
+        )
+
+    def update_page_status(self, page_id: str, *, property_name: str, value: str) -> RawAPIDict:
+        return self.update_page_properties(page_id, {property_name: {"status": {"name": value}}})
+
+    # ── comment writes ──────────────────────────────────────────────────
+
+    def create_comment(self, page_id: str, comment_rich_text: list[RawAPIDict]) -> RawAPIDict:
+        """Open a new discussion on *page_id* — needs the insert-comment capability.
+
+        Page-scoped on purpose. Notion exposes unresolved comments per BLOCK, so
+        a reply into a discussion anchored on a child block could not be read
+        back from the page — and a write this surface cannot re-read is a write
+        it cannot verify.
+        """
+        return self._write(
+            page_id,
+            lambda client: client.post(
+                f"{self._BASE}/comments",
+                json={"parent": {"page_id": page_id}, "rich_text": comment_rich_text},
+            ),
+            described=f"comments on page {page_id}",
+        )

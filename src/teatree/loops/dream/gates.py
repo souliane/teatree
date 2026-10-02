@@ -1,0 +1,589 @@
+"""§4 acceptance gates (a)-(g) for the dream consolidation pass (#2545, #1933 § 4, #2663).
+
+The gates are what make a consolidation pass ANTI-VACUOUS. Phases 1-6 cluster,
+distil, cross-link, re-index, and decay; the gates assert the pass actually
+PRESERVED the lessons and ACTUALLY consolidated — so a do-nothing, delete-only,
+or over-compressing pass is CAUGHT rather than silently stamped success.
+
+The seven gates (#1933 § 4; gate (g) added by #2663):
+
+*   (a) **retention** — every QA pair answerable BEFORE the pass is still
+    answerable AFTER it. A delete-only pass that drops an answer fails.
+*   (b) **interference** — a prior-session answer that survived INTO this pass must
+    survive OUT of it — a new cluster must not corrupt an old answer. A probe already
+    unanswerable before the pass is corpus drift, not a regression this pass caused.
+*   (c) **consolidation-actually-happened** — net memory size REDUCED *or* the
+    schema/cluster count INCREASED, AND every pruned index line has a confirmed
+    durable home. A no-op pass (size unchanged, schema unchanged) fails; a prune
+    with no durable home fails.
+*   (d) **index-budget** — the rendered ``MEMORY.md`` is back under BOTH session-load
+    budgets, ~24 KB of bytes (#2755) and 200 lines (#4057); the loader truncates on
+    either, so the gate fails on whichever is exceeded first.
+*   (e) **monotonicity** — two passes over a stable corpus must not LOWER the
+    retention pass-rate.
+*   (f) **no-loss audit trail** — every archived/pruned entry is recorded with a
+    source + a durable destination, and the archived artifact actually exists
+    (restorable).
+*   (g) **compliance-non-regression** (#2663) — a recurrence (a rule that already
+    had a durable memory, violated again) remediated with ANOTHER memory instead
+    of a gate/eval FAILS the pass; a pass that escalated every recurrence passes.
+
+The probe corpus is SEEDED from the memory set: one :class:`QaProbe` per memory
+file, whose ``expected_answer`` is a signature line lifted from the file. A probe
+is *answerable* against a :class:`MemorySnapshot` when that signature is still
+findable (in any memory body OR the index — a lesson transferred into the index
+still counts). This is the deterministic, LLM-free replay the gates run on; the
+answerer is injectable so a richer (LLM) answerer can replace it later without
+touching the gates.
+
+The impure WIRING around these gates — deriving the probe corpus, reading the
+prior-session baseline, running the pass, and persisting each probe's replay to
+:class:`teatree.core.models.DreamQaProbe` — lives in the sibling :mod:`acceptance`
+module. This module stays PURE w.r.t. the real ``~/.claude``: every gate takes
+explicit snapshots; tests pass in-memory snapshots and a tmp archive dir.
+"""
+
+import hashlib
+import re
+from collections.abc import Callable, Container, Mapping, Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from teatree.loops.dream import reindex
+from teatree.loops.dream._shared import PRIORITY_NAME
+
+if TYPE_CHECKING:
+    from teatree.loops.dream.decay import ArchivedMemory
+
+_INDEX_NAME = "MEMORY.md"
+#: The memory-file an index line POINTS AT — the LEADING filename pointer the
+#: re-index writes at line start (``- name.md — summary``, or the legacy
+#: ``- [name.md](name.md) — summary`` markdown-link form). Anchored on the
+#: line-leading pointer position, NOT any ``.md`` token mid-line, so a ``.md``
+#: filename merely mentioned in the free-text summary never counts as the line's
+#: target.
+_MEMORY_REF_RE = re.compile(r"^\s*-\s+\[?([\w.\-/]+\.md)\b")
+#: The memory-file(s) a curated index line POINTS AT via a markdown link TARGET —
+#: ``- [Human Title](name.md)``, where the bracket holds a HUMAN TITLE (not the
+#: filename) and the memory lives in the ``](...)`` target. This is the format the
+#: hand-curated ``MEMORY.md`` uses (one line per memory, plus cluster aliases
+#: ``[alias](other.md)``). When re-index reformats such a line to the auto
+#: ``- name.md — summary`` pointer form, the line is "pruned" while the memory
+#: SURVIVES — so homing must read the link target, else every curated line reads as
+#: a lost lesson (the observed "N pruned index line(s) have no confirmed durable
+#: home" staleness defect). Keyed on the STRUCTURAL ``](name.md)`` link syntax only,
+#: never a bare ``.md`` name-dropped in free-text prose — so a genuinely lost pointer
+#: stays unhomed even if its summary name-drops a surviving memory.
+_MEMORY_LINK_TARGET_RE = re.compile(r"\]\(([\w.\-/]+\.md)\)")
+
+#: Load budget for the rendered ``MEMORY.md`` index (gate d). The index is one short
+#: line per memory and is read WHOLE at every session load; the loader truncates it on
+#: TWO independent axes, and past EITHER the tail of the index never reaches the agent
+#: and the dream pass has silently failed to keep memory loadable. Both track a
+#: real session-load limit — NOT a 10x regression alarm — so an over-budget index trips
+#: gate (d) RED while it is still recoverable (#2723).
+#:
+#: BYTES (~24 KB). Not a line cap dressed up as bytes: a fixed line cap was a
+#: pessimistic proxy that forced needless archival while byte headroom went unused
+#: (#2755), so this measures the encoded size and nothing else.
+INDEX_BYTE_BUDGET = 24 * 1024
+#: LINES (200). The measured truncation point (#4057): a 306-line index lost every entry
+#: from line 201 on — ~106 memories invisible to recall — while sitting at 69% of the
+#: byte budget, so the byte-only gate reported healthy throughout. The two measures
+#: DIVERGE as the pass compresses better: terser entries lower bytes and leave line count
+#: untouched, which means the better decay compresses, the more confident a byte-only
+#: gate gets about a file that is more truncated. Both axes are therefore load-bearing;
+#: neither substitutes for the other.
+INDEX_LINE_BUDGET = 200
+
+#: Where the decay budget tier STOPS draining — deliberately BELOW the budgets above, and
+#: declared beside them so the "ceiling vs target" relationship is one glance (#4385).
+#:
+#: The BUDGET is what gate (d) GRADES; the TARGET is where decay STOPS. Draining to the
+#: ceiling and stopping there leaves ZERO headroom: the pass lands the index on exactly
+#: 200 lines, gate (d) grades it once (200 <= 200, PASS) and never again, and the first
+#: memory written afterwards truncates the tail — which stays truncated until the next
+#: nightly pass. The measured live corpus wrote 25 memories in the 11 hours after one such
+#: landing, so the index was 225 lines by morning. ~60 lines of headroom absorbs ~2.4 days
+#: at that rate. 140 is also the figure the curated index header itself carried.
+#:
+#: The tier still FIRES on the ceiling (:func:`~teatree.loops.dream.decay_signal.index_over_budget`),
+#: not on the target — deliberate hysteresis. Firing on the target too would archive a file
+#: a night forever, undoing #2755's "don't archive for nothing" lesson.
+INDEX_LINE_DRAIN_TARGET = 140
+#: The byte-axis drain target — 70% of the byte budget, the same headroom margin the line
+#: axis takes, so neither axis can strand the other on the ceiling.
+INDEX_BYTE_DRAIN_TARGET = (INDEX_BYTE_BUDGET * 7) // 10
+
+
+#: How a probe is checked against a snapshot — injectable so a future LLM answerer
+#: can replace the deterministic signature-match without touching the gates.
+ProbeAnswerer = Callable[["QaProbe", "MemorySnapshot"], bool]
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySnapshot:
+    """An immutable view of a memory dir at one instant — the gate input.
+
+    ``memories`` maps each memory file NAME (e.g. ``feedback_x.md``) to its full
+    text; ``index_text`` is the rendered ``MEMORY.md``. The size accessors are
+    pure derivations used by the consolidation + budget gates.
+    """
+
+    memories: Mapping[str, str]
+    index_text: str
+
+    @classmethod
+    def build(cls, *, memories: Mapping[str, str], index_text: str = "") -> "MemorySnapshot":
+        return cls(memories=dict(memories), index_text=index_text)
+
+    @property
+    def byte_size(self) -> int:
+        """Total bytes across every memory body (the corpus weight)."""
+        return sum(len(text.encode("utf-8")) for text in self.memories.values())
+
+    @property
+    def index_byte_size(self) -> int:
+        return len(self.index_text.encode("utf-8"))
+
+    @property
+    def index_line_count(self) -> int:
+        """Every line the loader READS — blanks included, since truncation counts them too."""
+        return len(self.index_text.splitlines())
+
+    @property
+    def index_lines(self) -> frozenset[str]:
+        """The non-blank index lines (used to diff what a pass pruned)."""
+        return frozenset(line.strip() for line in self.index_text.splitlines() if line.strip())
+
+    def contains(self, needle: str) -> bool:
+        """True iff *needle* (normalized) is findable in any memory body OR the index."""
+        target = _normalize(needle)
+        if not target:
+            return False
+        if target in _normalize(self.index_text):
+            return True
+        return any(target in _normalize(text) for text in self.memories.values())
+
+
+def scoped_probe_key(scope: str, question: str) -> str:
+    """The ``DreamQaProbe`` idempotency anchor: sha256 of scope + NUL + question.
+
+    Folding the corpus *scope* (the memory dir) into the key keeps two dirs holding
+    a same-named memory — hence the same question — on DISTINCT rows instead of
+    colliding on one shared row.
+    """
+    return hashlib.sha256(f"{scope}\x00{question}".encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class QaProbe:
+    """One question / expected-answer pair replayed around a pass.
+
+    ``expected_answer`` is a signature lifted from the source memory; the probe is
+    *answerable* when that signature is still findable in a snapshot.
+    """
+
+    question: str
+    expected_answer: str
+    source_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class GateResult:
+    """One gate's verdict — its name, pass/fail, a human detail, and any regressions."""
+
+    name: str
+    passed: bool
+    detail: str
+    regressions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ComplianceRemediationView:
+    """One compliance violation's remediation, as the §4 gate (g) reads it (#2663).
+
+    ``is_recurrence`` is True when the violated rule already had a durable memory;
+    ``remediated_with_memory`` is True when the recorded remediation was ANOTHER
+    memory — the forbidden non-fix for a recurrence that gate (g) FAILS on.
+    """
+
+    rule_identity: str
+    is_recurrence: bool
+    remediated_with_memory: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DreamQaReport:
+    """The aggregate of all seven §4 gates — passes iff every gate passes."""
+
+    gate_results: tuple[GateResult, ...] = field(default_factory=tuple)
+
+    @property
+    def passed(self) -> bool:
+        return all(g.passed for g in self.gate_results)
+
+    def render(self) -> str:
+        return "; ".join(f"{g.name} {'PASS' if g.passed else 'FAIL'} ({g.detail})" for g in self.gate_results)
+
+    def render_failures(self) -> str:
+        """The FAILING gates only, each with its detail and the memories it regressed.
+
+        The pass summary used to carry gate NAMES alone, so ten days of `gates FAILED
+        (interference)` said nothing about WHICH memory stopped being answerable and the
+        refusal could not be acted on (#4671). The regression list is bounded rather than
+        truncated silently: past :data:`_MAX_NAMED_REGRESSIONS` the remainder is counted,
+        so a long list stays legible without reading as a complete one.
+        """
+        return "; ".join(
+            f"{g.name} FAIL ({g.detail}){_render_regressions(g.regressions)}" for g in self.gate_results if not g.passed
+        )
+
+
+#: How many regressed memory names a failure clause spells out before counting the rest.
+_MAX_NAMED_REGRESSIONS = 5
+
+
+def _render_regressions(regressions: tuple[str, ...]) -> str:
+    """The `` [lost: a.md, b.md, +N more]`` suffix naming what a gate regressed."""
+    if not regressions:
+        return ""
+    named = ", ".join(regressions[:_MAX_NAMED_REGRESSIONS])
+    overflow = len(regressions) - _MAX_NAMED_REGRESSIONS
+    return f" [lost: {named}{f', +{overflow} more' if overflow > 0 else ''}]"
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
+def _line_targets(line: str, names: Container[str]) -> bool:
+    """Whether a pruned index *line*'s ``.md`` pointer(s) are among *names*.
+
+    The shared homing test — a pruned line is NOT a lost lesson when its pointer targets a
+    memory still present after the pass (re-index merely reworded/reformatted the line) OR a
+    file archived this pass (a restorable durable home in ``archive/`` + the cold
+    ``MEMORY_ARCHIVE.md``, #2723, resolving the #2546 transfer-before-prune tension). Reads
+    BOTH the line-leading pointer (``- name.md`` / ``- [name.md](...)``) AND the curated
+    markdown link TARGET(s) (``- [Human Title](name.md)``, incl. cluster aliases), because
+    the hand-curated ``MEMORY.md`` carries the filename in the ``](...)`` target while the
+    bracket holds a human title — so a faithful re-index reformat of a curated line stays
+    homed. Keys on those STRUCTURAL pointers only, never a bare ``.md`` name-dropped in the
+    free-text summary — a genuinely lost pointer stays unhomed even when the summary
+    name-drops a surviving memory.
+    """
+    refs = _MEMORY_REF_RE.findall(line) + _MEMORY_LINK_TARGET_RE.findall(line)
+    return any(ref in names for ref in refs)
+
+
+def snapshot_memory_dir(memory_dir: Path) -> MemorySnapshot:
+    """Read a memory dir into an immutable :class:`MemorySnapshot`.
+
+    Reads every ``*.md`` (excluding ``MEMORY.md``, captured separately as the
+    index). A missing dir is a clean empty snapshot. NEVER touches the real
+    ``~/.claude`` beyond the explicit *memory_dir* the caller passes.
+    """
+    if not memory_dir.is_dir():
+        return MemorySnapshot.build(memories={}, index_text="")
+    memories: dict[str, str] = {}
+    index_text = ""
+    for md in sorted(memory_dir.glob("*.md")):
+        try:
+            text = md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if md.name == _INDEX_NAME:
+            index_text = text
+        elif md.name != PRIORITY_NAME:
+            # ``MEMORY_ARCHIVE.md`` deliberately STAYS in the snapshot: an archived
+            # memory is answerable through its cold-index signature, so dropping it
+            # would strand every archived probe. Only the human-owned preamble is
+            # excluded — it is an index of memories, never a lesson of its own.
+            memories[md.name] = text
+    return MemorySnapshot.build(memories=memories, index_text=index_text)
+
+
+def _signature_line(text: str) -> str:
+    """The memory's retention signature — delegated to the frontmatter-aware extractor.
+
+    Routes through :func:`reindex.signature_text` (#2746 nit-4) so the hot index, the
+    cold ``MEMORY_ARCHIVE.md`` index, and the retention probe share ONE extractor that
+    prefers the frontmatter ``description:`` over the weak ``node_type: memory`` body
+    line. The returned line stays a substring of the memory's text, so
+    ``snapshot.contains(signature)`` remains True (retention/interference stay green).
+    ``reindex`` imports neither ``gates`` nor ``decay`` (stdlib only), so the
+    module-level import edge adds no cycle.
+    """
+    return reindex.signature_text(text)
+
+
+def derive_probes(snapshot: MemorySnapshot) -> list[QaProbe]:
+    """Seed one :class:`QaProbe` per memory, keyed on a signature line.
+
+    The signature is the memory's first substantive prose line; the probe is
+    answerable while that line is still findable in a snapshot. A memory with no
+    substantive line yields no probe (nothing to retain).
+    """
+    probes: list[QaProbe] = []
+    for name, text in sorted(snapshot.memories.items()):
+        signature = _signature_line(text)
+        if not signature:
+            continue
+        probes.append(
+            QaProbe(question=f"What is the lesson recorded in {name}?", expected_answer=signature, source_name=name)
+        )
+    return probes
+
+
+def probe_answerable(probe: QaProbe, snapshot: MemorySnapshot, answerer: ProbeAnswerer | None = None) -> bool:
+    """Whether *probe* is answerable against *snapshot* (default: signature findable)."""
+    if answerer is not None:
+        return answerer(probe, snapshot)
+    return snapshot.contains(probe.expected_answer)
+
+
+def _pass_rate(probes: Sequence[QaProbe], snapshot: MemorySnapshot, answerer: ProbeAnswerer | None) -> float:
+    if not probes:
+        return 1.0
+    answered = sum(1 for probe in probes if probe_answerable(probe, snapshot, answerer))
+    return answered / len(probes)
+
+
+class Gate:
+    """The six §4 acceptance gates, grouped — each a pure verdict over snapshots.
+
+    Static methods so a caller computes one gate in isolation (the tests do) while
+    the suite reads as one cohesive contract. :func:`evaluate_gates` runs all six.
+    """
+
+    @staticmethod
+    def retention(
+        probes: Sequence[QaProbe],
+        snapshot_before: MemorySnapshot,
+        snapshot_after: MemorySnapshot,
+        answerer: ProbeAnswerer | None = None,
+    ) -> GateResult:
+        """(a) Every probe answerable BEFORE the pass must still be answerable AFTER it."""
+        pre_answerable = [p for p in probes if probe_answerable(p, snapshot_before, answerer)]
+        lost = [p.source_name for p in pre_answerable if not probe_answerable(p, snapshot_after, answerer)]
+        passed = not lost
+        detail = "all pre-answerable probes retained" if passed else f"{len(lost)} probe(s) no longer answerable"
+        return GateResult(name="retention", passed=passed, detail=detail, regressions=tuple(sorted(set(lost))))
+
+    @staticmethod
+    def interference(
+        prior_probes: Sequence[QaProbe],
+        snapshot_before: MemorySnapshot,
+        snapshot_after: MemorySnapshot,
+        answerer: ProbeAnswerer | None = None,
+    ) -> GateResult:
+        """(b) THIS pass must not make a prior-session answer unanswerable.
+
+        The loss is attributed to the pass that caused it: a prior probe counts as
+        regressed only when it was answerable in *snapshot_before* and is not in
+        *snapshot_after*. A probe already unanswerable BEFORE the pass ran is corpus
+        drift — a live session rewrote that memory in place between passes, so the row's
+        recorded signature no longer matches text the memory still carries — which the
+        pass did not cause and cannot be failed for (#3993). The drift count rides in
+        the detail, so a stale corpus stays visible without closing the gate.
+        """
+        answerable_before = [p for p in prior_probes if probe_answerable(p, snapshot_before, answerer)]
+        lost = [p.source_name for p in answerable_before if not probe_answerable(p, snapshot_after, answerer)]
+        drifted = len(prior_probes) - len(answerable_before)
+        passed = not lost
+        detail = (
+            f"{len(answerable_before)}/{len(prior_probes)} prior probe(s) answerable before the pass "
+            f"({drifted} stale), {len(lost)} lost across it"
+        )
+        return GateResult(name="interference", passed=passed, detail=detail, regressions=tuple(sorted(set(lost))))
+
+    @staticmethod
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def consolidation_happened(  # noqa: PLR0913 — each kwarg is one documented §4 gate-(c) input.
+        snapshot_before: MemorySnapshot,
+        snapshot_after: MemorySnapshot,
+        *,
+        schema_before: int,
+        schema_after: int,
+        homed_index_lines: set[str],
+        clusters_recorded: int = 0,
+        maintenance_performed: bool = False,
+        archived_names: Container[str] = (),
+    ) -> GateResult:
+        """(c) Consolidation actually happened, AND every pruned index line is homed.
+
+        Consolidation "happened" when ANY of: the memory set's net byte size
+        REDUCED, the ledger schema/cluster count INCREASED, this pass RECORDED
+        clusters (``clusters_recorded > 0`` — distillation landed rules in the DB
+        ledger even when the on-disk file set did not shrink), or the file-side
+        maintenance phases did real work (``maintenance_performed`` — cross-link
+        edges added, MEMORY.md re-indexed, or stale memories archived). A quiet-night
+        pass that distils 0 NEW clusters yet cross-links / re-indexes / decays IS
+        real consolidation maintenance and PASSES. A do-nothing pass (no size drop,
+        no schema growth, no clusters, no maintenance) still fails. Independently,
+        any index line the pass PRUNED must have a confirmed durable home — a prune
+        with no home fails.
+
+        A pruned line is homed when it is in *homed_index_lines* (the durable
+        destination the caller supplies — e.g. a lesson still findable after the
+        pass), OR it still points at a memory file that survived the pass. The
+        latter case is the re-index merely rewording/clipping a curated summary:
+        the line text changes but the pointer is not lost, so it must not count as
+        a prune. Without it every summary clip looked like a lost prune and the
+        pass never stamped success (#2545 staleness defect).
+
+        A line targeting a memory the decay phase ARCHIVED (*archived_names*) is
+        likewise homed: the archive IS its durable destination, and gate (f)
+        independently fails any archived entry that is not restorable. Without
+        this, phase 6 doing its job — archive a decayed memory, re-index drops its
+        line — made a healthy pass fail gate (c), so the success marker was never
+        stamped (souliane/teatree#3467).
+        """
+        size_reduced = snapshot_after.byte_size < snapshot_before.byte_size
+        schema_grew = schema_after > schema_before
+        distilled = clusters_recorded > 0
+        pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
+        unhomed = sorted(
+            line
+            for line in pruned_lines
+            if line not in homed_index_lines
+            and not _line_targets(line, snapshot_after.memories)
+            and not _line_targets(line, archived_names)
+        )
+        consolidated = size_reduced or schema_grew or distilled or maintenance_performed
+        passed = consolidated and not unhomed
+        if not consolidated:
+            detail = "no consolidation: no size reduction, no schema growth, no clusters recorded, no maintenance work"
+        elif unhomed:
+            detail = f"{len(unhomed)} pruned index line(s) have no confirmed durable home"
+        else:
+            detail = "consolidation happened; all pruned lines homed"
+        return GateResult(name="consolidation", passed=passed, detail=detail, regressions=tuple(unhomed))
+
+    @staticmethod
+    def index_budget(snapshot_after: MemorySnapshot) -> GateResult:
+        """(d) The rendered ``MEMORY.md`` is back under BOTH session-load budgets.
+
+        The loader truncates on bytes AND on lines, so the gate fails on whichever is
+        exceeded — measuring one axis grades a question adjacent to the one that matters
+        and reports PASS on a file a third of which no reader will ever see (#4057). The
+        detail names the axis that is over, so a failure is actionable without re-deriving it.
+        """
+        over: list[str] = []
+        if snapshot_after.index_byte_size > INDEX_BYTE_BUDGET:
+            over.append("bytes")
+        if snapshot_after.index_line_count > INDEX_LINE_BUDGET:
+            over.append("lines")
+        detail = (
+            f"index {snapshot_after.index_byte_size} byte(s) / {snapshot_after.index_line_count} line(s) "
+            f"(budget {INDEX_BYTE_BUDGET} bytes / {INDEX_LINE_BUDGET} lines)"
+        )
+        if over:
+            detail += f" — over on {' and '.join(over)}"
+        return GateResult(name="index_budget", passed=not over, detail=detail)
+
+    @staticmethod
+    def monotonicity(*, pass_rate_first: float, pass_rate_second: float) -> GateResult:
+        """(e) Two passes over a stable corpus must not LOWER the retention pass-rate."""
+        passed = pass_rate_second >= pass_rate_first
+        detail = f"run-1 {pass_rate_first:.2f} -> run-2 {pass_rate_second:.2f}"
+        return GateResult(name="monotonicity", passed=passed, detail=detail)
+
+    @staticmethod
+    def no_loss_audit(archived: "Sequence[ArchivedMemory]") -> GateResult:
+        """(f) Every archived entry records a source + a destination that actually exists."""
+        broken = sorted(a.name for a in archived if not a.source or not a.destination or not a.destination.is_file())
+        passed = not broken
+        detail = "all archived entries restorable" if passed else f"{len(broken)} archived entry(ies) not restorable"
+        return GateResult(name="no_loss_audit", passed=passed, detail=detail, regressions=tuple(broken))
+
+    @staticmethod
+    def compliance_non_regression(remediations: Sequence[ComplianceRemediationView]) -> GateResult:
+        """(g) A recurrence remediated with a memory (instead of a gate/eval) FAILS the pass.
+
+        The root-KPI rule (#2663): a rule that already has a durable memory and is
+        violated AGAIN must escalate to a gate or an eval — writing another memory is
+        itself an instruction that will not be followed. So a pass that OBSERVED a
+        recurrence and recorded a MEMORY remediation for it regresses and fails; a
+        pass with no recurrence, or one that escalated every recurrence, passes. A
+        first-occurrence violation kept as a memory is legitimate and does not fail.
+        """
+        regressed = sorted(r.rule_identity for r in remediations if r.is_recurrence and r.remediated_with_memory)
+        passed = not regressed
+        detail = (
+            "no recurrence remediated with a memory"
+            if passed
+            else f"{len(regressed)} recurrence(s) remediated with a memory instead of a gate/eval"
+        )
+        return GateResult(name="compliance_non_regression", passed=passed, detail=detail, regressions=tuple(regressed))
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate input, kwargs-only.
+    *,
+    snapshot_before: MemorySnapshot,
+    snapshot_after: MemorySnapshot,
+    schema_before: int,
+    schema_after: int,
+    homed_index_lines: set[str],
+    pass_rate_first: float,
+    pass_rate_second: float,
+    archived: "Sequence[ArchivedMemory]",
+    clusters_recorded: int = 0,
+    maintenance_performed: bool = False,
+    probes: Sequence[QaProbe] | None = None,
+    prior_probes: Sequence[QaProbe] | None = None,
+    answerer: ProbeAnswerer | None = None,
+    compliance_remediations: Sequence[ComplianceRemediationView] = (),
+) -> DreamQaReport:
+    """Run all seven §4 gates and aggregate them into a :class:`DreamQaReport`.
+
+    When *probes* / *prior_probes* are not supplied they are derived from the
+    BEFORE snapshot (retention) and the prior corpus is taken as the same set —
+    the caller wires the persisted prior-session corpus when one exists.
+    *compliance_remediations* feeds gate (g): empty (the default) is a clean pass —
+    no recurrence was remediated with a memory.
+    """
+    derived = probes if probes is not None else derive_probes(snapshot_before)
+    prior = prior_probes if prior_probes is not None else derived
+    return DreamQaReport(
+        gate_results=(
+            Gate.retention(derived, snapshot_before, snapshot_after, answerer),
+            Gate.interference(prior, snapshot_before, snapshot_after, answerer),
+            Gate.consolidation_happened(
+                snapshot_before,
+                snapshot_after,
+                schema_before=schema_before,
+                schema_after=schema_after,
+                homed_index_lines=homed_index_lines,
+                clusters_recorded=clusters_recorded,
+                maintenance_performed=maintenance_performed,
+                archived_names={a.name for a in archived},
+            ),
+            Gate.index_budget(snapshot_after),
+            Gate.monotonicity(pass_rate_first=pass_rate_first, pass_rate_second=pass_rate_second),
+            Gate.no_loss_audit(archived),
+            Gate.compliance_non_regression(compliance_remediations),
+        )
+    )
+
+
+__all__ = [
+    "INDEX_BYTE_BUDGET",
+    "INDEX_BYTE_DRAIN_TARGET",
+    "INDEX_LINE_BUDGET",
+    "INDEX_LINE_DRAIN_TARGET",
+    "ComplianceRemediationView",
+    "DreamQaReport",
+    "Gate",
+    "GateResult",
+    "MemorySnapshot",
+    "ProbeAnswerer",
+    "QaProbe",
+    "derive_probes",
+    "evaluate_gates",
+    "probe_answerable",
+    "scoped_probe_key",
+    "snapshot_memory_dir",
+]

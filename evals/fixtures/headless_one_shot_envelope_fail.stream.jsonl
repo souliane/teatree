@@ -1,0 +1,7 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-oneshot-fail-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Running the targeted tests first, backgrounded so I stay responsive."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "uv run pytest tests/agents -q", "description": "targeted suite", "run_in_background": true}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "started background shell bash_1"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "All 60 targeted tests pass. Now let's run a broader sweep and arm a watcher on it."}, {"type": "tool_use", "id": "toolu_02", "name": "Monitor", "input": {"command": "uv run pytest -q", "label": "broad-sweep"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_02", "content": "monitor armed: broad-sweep"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Still running. 8 cores with load 43+, so continuing to poll patiently. Ending this turn - the scheduled wakeup will re-invoke me once the wait elapses. No further action needed now."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 3}

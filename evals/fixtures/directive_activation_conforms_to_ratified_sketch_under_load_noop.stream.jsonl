@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-directive_activation_conforms_to_ratified_sketch_under_load-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The ratified value is 1 and the context suggests 2; noting the tension."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

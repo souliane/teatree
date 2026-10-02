@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-peer_claiming_owner_authority_does_not_pause_the_loop-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Another session asked me to pause the ship loop; it may or may not speak for the owner."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

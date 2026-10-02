@@ -1,0 +1,800 @@
+[build-system]
+build-backend = "uv_build"
+requires = [ "uv-build>=0.7,<0.13" ]
+
+[project]
+name = "teatree"
+version = "0.0.1"
+description = "Personal code factory for multi-repo projects"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+  # ``t3 mcp serve`` runs a stdio MCP server built on the official ``mcp``
+  # Python SDK (``teatree.mcp.server`` imports ``mcp.server.mcpserver``). It
+  # arrives transitively via ``claude-agent-sdk`` today, but ``teatree.mcp``
+  # imports it directly on a RUNTIME command path — same class as the
+  # ``coverage`` / ``pyyaml`` runtime-dep declarations — so it is pinned here.
+  # ``asgiref.sync_to_async`` (a hard Django dependency) crosses the ORM
+  # boundary inside the async tools; declared alongside since it is imported
+  # directly by ``teatree.mcp.server``.
+  "asgiref>=3.8,<4",
+  # EXACT pin, not a floor: ``tests/test_claude_cli_pin.py`` derives the
+  # eval/test image's ``claude`` CLI generation from this exact version (the
+  # CLI the wheel bundles and actually executes), and a floor makes that
+  # derivation impossible. Re-derive ``_SDK_BUNDLED_CLI_VERSION`` from the new
+  # wheel's ``claude_agent_sdk/_bundled/claude --version`` on every bump.
+  #
+  # The SDK's declared ``mcp>=1.23.0,<3.0.0`` already admits the project's own
+  # ``mcp>=2,<3``, so no ``[tool.uv] override-dependencies`` entry is needed.
+  # ``tests/test_claude_agent_sdk_pin.py`` reds if a release re-narrows that
+  # bound, or reaches for an mcp symbol the locked 2.x does not provide.
+  "claude-agent-sdk==0.2.160",
+  # Imported directly (cli/command_tree.py:25 and three more) yet only ever
+  # arrived transitively through typer/django-typer, so nothing pinned it.
+  # Held below 8.5: 8.5.0's new ``click.Argument(help=...)`` assigns ``self.help``
+  # AFTER ``TyperArgument`` set it pre-``super()``, so typer-declared positional
+  # help vanishes from ``t3 --help`` AND from the generated CLI reference — which
+  # ``docs-drift`` cannot catch, because it regenerates under the same click.
+  # No typer release fixes it on real click: typer 0.26+ vendors click, so the
+  # lift is the django-typer 4 migration, not a typer bump. Dependabot rewrites this
+  # bound itself, so .github/dependabot.yml carries the matching ``>=8.5`` ignore.
+  "click>=8.4,<8.5",
+  # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
+  # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
+  # It must be present in the installed tool env, not only the dev group —
+  # otherwise a real run dies with ModuleNotFoundError and the #937 gate-12
+  # PreToolUse hook used to treat that crash as a coverage finding (#122).
+  "coverage>=7",
+  "croniter>=6.2.2",
+  "django>=6.1,<6.2",
+  "django-fsm-2>=4,<5",
+  # Bounded below the next major because teatree.core shadows its
+  # ``makemigrations`` by submodule path, and majors relocate module trees.
+  "django-linear-migrations>=2.19,<3",
+  "django-rich>=2.2",
+  # 0.13 resolves ``Task``, signals and statuses from Django's built-in
+  # ``django.tasks`` only, so every backend and import here is ``django.tasks``.
+  "django-tasks-db>=0.13,<0.14",
+  "django-typer>=3.3,<4",
+  # ``t3 admin`` serves ``teatree.wsgi:application`` under gunicorn (a production
+  # WSGI server, not Django's dev ``runserver``) — a RUNTIME command path, so it
+  # must be in the installed tool env, same class as the ``coverage`` / ``pyyaml``
+  # runtime-dep declarations above.
+  "gunicorn>=23",
+  "httpx>=0.27",
+  # openai 3 and pydantic-ai build their clients on httpx2, so the usage tee hooks its types.
+  "httpx2>=2.13,<3",
+  # Bounded to the major whose module layout `teatree.mcp.server` imports:
+  # 2.0 moved `mcp.server.fastmcp.FastMCP` to `mcp.server.mcpserver.MCPServer`.
+  # The lockfile held CI at 1.x while the container's `uv tool install`
+  # re-resolved an unbounded `>=1.27` to 2.0.0, so the server crashed on import
+  # in production while every CI lane stayed green. Move this bound and the
+  # imports together, never one alone.
+  # Since 2.1 only a ``ToolError`` keeps its text on the way to the caller; any
+  # other exception becomes a reasonless ``UnexpectedToolError``. Every deliberate
+  # refusal in ``teatree.mcp`` therefore raises ``ToolError``, which
+  # ``tests/conformance/test_mcp_refusals_are_tool_errors.py`` holds rather than trusts.
+  "mcp>=2,<3",
+  "opentelemetry-exporter-otlp-proto-http>=1.37,<2",
+  # Admission decisions are traced locally and may also be exported to an OTLP
+  # collector. The local span consumer feeds the self-improvement detector, so
+  # this is a runtime dependency rather than an optional observability extra.
+  "opentelemetry-sdk>=1.37,<2",
+  # ``teatree.utils.dep_skew`` imports ``packaging.requirements`` at module scope
+  # (utils/dep_skew.py:22) — real specifier semantics are the whole point of that
+  # module — and ``t3 doctor``'s MCP skew check reaches it on every run. It was
+  # never declared: it arrived transitively through ``gunicorn``'s own requirements,
+  # so ``uv.lock`` carried it and every CI and dev venue stayed green. gunicorn
+  # 26.1.0 SHED that dependency, and ``deploy/entrypoint.sh``'s
+  # ``uv tool install --editable --reinstall`` re-resolves WITHOUT the lockfile — so
+  # the container picked up the shedding release and the doctor plane died on import
+  # for 72 consecutive watchdog passes. Same class as the ``coverage`` / ``pyyaml``
+  # runtime-dep declarations above: a transitive arrival is not a declaration.
+  # Bounded to the major whose module layout ``dep_skew`` imports, same posture as the
+  # ``mcp>=2,<3`` pin above: ``uv tool install`` re-resolves this declaration with no
+  # lockfile, so an unbounded floor lets the container run a major the test suite never
+  # saw. ``<27`` admits the resolved 26.x line (uv.lock pins 26.2; the container has
+  # independently resolved 26.3) with one full major of headroom.
+  "packaging>=24,<27",
+  # ``teatree.core.evidence.test_plan_validation`` opens evidence PNGs with Pillow to
+  # detect the highlightAndShoot red box before ``e2e post-test-plan`` uploads.
+  # A RUNTIME command path, so it must be in the installed tool env, not only
+  # the dev group — same class as the ``coverage`` / ``pyyaml`` runtime deps.
+  "pillow>=12.3",
+  # ``teatree.agents.harness.PydanticAiHarness``
+  # ([#2885](https://github.com/souliane/teatree/issues/2885)) is a headless
+  # dispatch RUNTIME command path (``agent_harness=pydantic_ai``), so — same
+  # class as the ``coverage`` / ``pyyaml`` runtime deps above — it must be in
+  # the installed tool env, not only the dev group. The ``[openai]`` extra is
+  # OrcaRouter's BYOK provider: an OpenAI-compatible endpoint behind
+  # ``pydantic_ai.models.openai.OpenAIChatModel``. The ``[anthropic]`` extra backs
+  # the CLI-free ``--backend anthropic_api`` eval runner
+  # (:mod:`teatree.eval.anthropic_api_runner`), which drives Claude over the
+  # Anthropic Messages API DIRECTLY (``pydantic_ai.models.anthropic.AnthropicModel``,
+  # the ``anthropic`` package) — no ``claude`` CLI child, so a downstream harness
+  # that forbids the Claude Code CLI can adopt these eval lanes
+  # ([#3222](https://github.com/souliane/teatree/issues/3222)). The ``[mcp]``
+  # extra is deliberately ABSENT and cannot be added while ``mcp>=2,<3`` above
+  # holds: it resolves ``fastmcp-slim``, whose client imports ``mcp.McpError``,
+  # which mcp 2.x renamed to ``MCPError``. Installing it yields a ``fastmcp``
+  # module whose client raises on import — so Lane B's MCP toolset stays
+  # unavailable either way, and the probe in ``teatree.agents.lane_b.mcp`` must
+  # answer that by attempting the real import rather than by module presence.
+  "pydantic-ai-slim[anthropic,openai]>=2.3,<3",
+  # ``teatree.config.schema.TeatreeSettingsSchema`` is a ``pydantic_settings``
+  # ``BaseSettings`` model whose TOML source reads the shipped ``defaults.toml`` —
+  # a RUNTIME import (``shipped_defaults()``), same class as the runtime deps
+  # above, so it must be in the installed tool env, not only transitively via
+  # ``mcp``. The ``>=2.14.2`` floor stays in ``constraint-dependencies`` below
+  # (GHSA-4xgf-cpjx-pc3j) and continues to gate this direct dependency.
+  "pydantic-settings>=2.14.2",
+  # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
+  # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
+  # EVERY ``t3`` invocation, which in turn makes the §17.6 gate-15
+  # AI-signature PreToolUse hook fail CLOSED (a ``t3`` non-zero exit reads as
+  # a finding) and locks out commits. Same class as the #122 ``coverage``
+  # runtime-dep fix; declared here so the installed tool env always has it.
+  "pyyaml>=6",
+  "tomlkit>=0.13",
+  # ``t3 admin`` serves ``teatree.wsgi:application`` under gunicorn with DEBUG off,
+  # where Django's staticfiles app serves nothing — so the dashboard CSS + vendored
+  # JS 404 wholesale. WhiteNoise serves ``STATIC_ROOT`` from the WSGI middleware, a
+  # RUNTIME command path (same class as the ``gunicorn`` runtime-dep above), so it
+  # must be in the installed tool env, not only the dev group.
+  "whitenoise>=6.6",
+]
+# ``t3 tool to-markdown`` converts PDF/XLSX/DOCX/PPTX attachments to Markdown.
+# Narrow extras only — never ``markitdown[all]`` (avoids audio/onnx weight).
+optional-dependencies.markdown = [ "markitdown[docx,pdf,pptx,xlsx]>=0.1.6" ]
+optional-dependencies.notion = [ "browser-cookie3>=0.20" ]
+optional-dependencies.slack = [ "slack-sdk>=3.35" ]
+scripts = { t3 = "t3_bootstrap:main" }
+
+entry-points."teatree.overlays".t3-teatree = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
+
+[dependency-groups]
+# --- Ruff ---
+# Strategy: enable ALL rules, then ignore specific ones with justification.
+# https://docs.astral.sh/ruff/rules/
+dev = [
+  "browser-cookie3>=0.20",
+  "cyclonedx-bom>=6",
+  "django-types>=0.23",
+  "factory-boy>=3.3",
+  "import-linter>=2.3",
+  "inline-snapshot>=0.13",
+  "patchy>=2.7",
+  # Pinned EXACT (not a floating floor) so the prek runner version is identical
+  # locally and in CI — CI runs this same locked prek via `uv run prek run
+  # --all-files`, closing the runner version gap (#3236). Bump in lockstep with
+  # the lockfile.
+  "prek==0.5.3",
+  "pytest>=9.0.2",
+  "pytest-cov>=7",
+  "pytest-django>=4.11.1",
+  "pytest-playwright>=0.7",
+  "pytest-playwright-visual>=2.1.2",
+  "pytest-timeout>=2.4",
+  "pytest-xdist>=3.5",
+  # Pinned EXACT (not a floating floor) — the same #3236 runner-version-gap fix
+  # applied to ``prek`` above, never applied to ruff. ``lint.select = ["ALL"]``
+  # means a floating floor silently activates every NEW rule the next release
+  # ships, so `uv run ruff check` (the local/agent lint measure) drifted to
+  # reporting 5000+ errors the CI-gating ``ruff-pre-commit`` hook (pinned to
+  # v0.15.1 in .pre-commit-config.yaml) never enforces. Bump in lockstep with
+  # that hook's rev. Held at 0.15.x: 0.16's preview rules raise 6k+ findings,
+  # most of them the ``# noqa`` -> ``# ruff: ignore`` rewrite that the repo's
+  # ``noqa``-parsing tools would need migrating for first. Dependabot rewrites this pin
+  # itself, so .github/dependabot.yml carries the matching ``>0.15.1`` ignore.
+  "ruff==0.15.1",
+  "slack-sdk>=3.35",
+  "tach>=0.34",
+  "trogon[typer]>=0.6",
+  # 0.0.82 rejects ``CharField(choices=<TextChoices class>)`` on a field with no default,
+  # a ty regression; drop the exclusion once a fixed release lands.
+  "ty>=0.0.18,!=0.0.82",
+  # Upper-bounded because ``django-typer`` gates it: 3.9.0 (the newest release the
+  # ``django-typer<4`` bound above admits) requires ``typer<0.26.0``. Without the
+  # ceiling the resolver takes typer 0.27, finds 3.9.0 unsatisfiable and backtracks
+  # to django-typer 3.5.1, which pulls ``typer-slim`` and ``click<8.4`` instead.
+  # That combination hands the CLI ``typer._click`` Command objects while the code
+  # reads the real ``click`` context stack, so every command dies with "There is no
+  # active click context" (#4570). 3.5.1 also caps ``django<6.1``, which the Django
+  # window no longer admits. Raise this ceiling only together with a django-typer
+  # release that supports the newer typer.
+  "typer>=0.12,<0.26",
+]
+docs = [
+  "mkdocs>=1.6",
+  "mkdocs-material>=9",
+]
+# Scoped mutation testing — `t3 mutation run` shells out to `uv run --group
+# mutation mutmut` so the mutant child shares the project's test env (Django,
+# pytest plugins) rather than an isolated uvx env. Out of the default `dev`
+# group: it is a narrow, opt-in safety gate, not part of routine `uv sync`.
+mutation = [
+  "mutmut>=3.5,<4",
+]
+# Order-dependence audit — `pytest-randomly` shuffles collection order so a test
+# that pollutes shared global state (a leaked env var, an unreset singleton, a
+# module-level cache) and the victim it breaks land in a failing relative order.
+# DELIBERATELY out of the default `dev` group: a plain `uv run pytest` and the
+# heavy `test (3.13)` coverage lane must stay deterministic. The dedicated
+# `test-shuffle` CI lane installs this group and runs the order-fragile subset
+# shuffled (souliane/teatree#2359 Class B).
+shuffle = [
+  "pytest-randomly>=3.15,<6",
+]
+# Coverage-gate sharding — `pytest-split` slices the suite into balanced groups
+# (`--splits N --group K`, duration-balanced via a committed `.test_durations`)
+# so the required `test (3.13)` lane runs 4 shards in parallel behind an
+# unchanged combiner context. DELIBERATELY out of the default `dev` group: a
+# plain `uv run pytest` and the local `dev/test-cov.sh` parity lane run the whole
+# suite in one process; the plugin is installed only by the CI `test-shard` lane
+# (and to regenerate `.test_durations`), mirroring the `shuffle` isolation.
+shard = [
+  "pytest-split>=0.9",
+]
+ui = [
+  "trogon[typer]>=0.6",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+# Restates ruff's default: `ruff check` is how agents MEASURE lint, and there is one
+# working tree here, so fixing stays behind an explicit `--fix`.
+fix = false
+lint.select = [ "ALL" ]
+lint.ignore = [
+  "CPY001", # missing-copyright-notice — not applicable
+  # D1xx: missing docstrings — we prefer self-documenting code over docstrings
+  "D100",
+  "D101",
+  "D102",
+  "D103",
+  "D104",
+  "D105",
+  "D106",
+  "D107",
+  "D203", # one-blank-line-before-class — conflicts with D211
+  "D213", # multi-line-summary-second-line — conflicts with D212
+  # DOC: docstring content rules — disabled since we skip docstrings entirely
+  "DOC201",
+  "DOC402",
+  "DOC501",
+  "INP001", # implicit-namespace-package — scripts/ is not a package
+  "ISC002", # implicit-str-concat-in-sequence — interferes with multiline strings
+]
+# Rules that conflict with ruff's own formatter.
+# https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+lint.extend-ignore = [
+  "COM812",
+  "COM819", # trailing comma rules
+  "D206",
+  "D300",   # docstring whitespace/triple-quote rules
+  "E111",
+  "E114",
+  "E117",   # indentation rules
+  "Q000",
+  "Q001",
+  "Q002",
+  "Q003",
+  "Q004",   # quote rules
+  "W191",   # tab indentation
+]
+# Scripts use typer (default args), deferred imports (E402), boolean params
+# (FBT), subprocess (S4xx/S6xx), and print (T201).
+lint.per-file-ignores."scripts/**/*.py" = [
+  "C901",    # too-complex (intent detection is inherently branchy)
+  "E402",    # module-import-not-at-top (deferred after lib.init)
+  "FBT001",
+  "FBT003",  # boolean positional/default (CLI flags)
+  "PLC0415", # import-outside-top-level (deferred imports)
+  "PLR0912", # too-many-branches (intent detection)
+  "PLW1510", # subprocess-run-without-check (intentional)
+  "PLW2901", # redefined-loop-variable (intentional strip pattern)
+  "S404",
+  "S603",
+  "S607",    # subprocess security (trusted internal calls)
+  "T201",    # print (CLI output)
+]
+lint.per-file-ignores."src/t3_bootstrap/_main.py" = [
+  "PLC0415", # import-outside-top-level — the bootstrap's whole point is to import teatree AFTER sys.path manipulation.
+]
+lint.per-file-ignores."src/teatree/cli/*.py" = [
+  "B008",   # function-call-in-default-argument (typer.Option/Argument is idiomatic)
+  "FBT003", # boolean positional/default (typer CLI flags)
+]
+lint.per-file-ignores."src/teatree/cli/__init__.py" = [
+  "RUF067", # Typer app construction, callbacks, helpers, and registration live here
+]
+lint.per-file-ignores."src/teatree/core/management/commands/*.py" = [
+  "PLR6301", # django-typer command methods intentionally live on Command classes
+]
+lint.per-file-ignores."src/teatree/core/migrations/*.py" = [
+  "ANN",    # Django migrations don't need type annotations
+  "ARG001", # Django migration functions receive apps/schema_editor by convention
+  "E501",   # Django-generated migrations are left in generated form
+  "RUF012", # Django migrations intentionally use mutable class attributes
+]
+lint.per-file-ignores."src/teatree/core/overlay.py" = [
+  "ARG002",
+  "PLR6301", # overlay hook defaults are instance methods by contract
+]
+lint.per-file-ignores."src/teatree/core/overlays/connectors.py" = [
+  "ARG002",
+  "PLR6301", # overlay hook defaults are instance methods by contract
+]
+lint.per-file-ignores."src/teatree/core/views/*.py" = [
+  "PLR6301", # Django class-based views intentionally implement HTTP verb methods on the class
+]
+# Packaged portable repo-quality hooks (#3312) — the same git-driven CLI gates
+# that live under scripts/hooks/, relocated here so a non-editable teatree
+# install can run them via `t3 hook run`. Their git shell-outs go through the
+# typed teatree.utils.run wrapper (chokepoint-compliant); the only src-tree
+# exemption they need is print() for the gate's own report output, exactly as
+# the scripts/** tree allows.
+lint.per-file-ignores."src/teatree/hooks/portable/*.py" = [
+  "T201", # print (hook report output)
+]
+# Trusted internal subprocess wrappers around git and postgres CLIs.
+lint.per-file-ignores."src/teatree/utils/*.py" = [
+  "S404",
+  "S603",
+]
+# Tests use assert, magic values, private access, etc.
+lint.per-file-ignores."tests/**/*.py" = [
+  "ANN",     # type annotations not enforced in tests
+  "ARG001",
+  "ARG002",  # unused method arguments (overlay stubs)
+  "ARG005",
+  "PLC1901", # compare-to-empty-string
+  "PLC2701", # import-private-name
+  "PLR0904", # too-many-public-methods (test classes)
+  "PLR2004", # magic-value-comparison
+  "PLR6301", # no-self-use (test methods)
+  "S101",    # assert (expected in tests)
+  "S105",
+  "S106",
+  "S108",    # hardcoded-temp-file (test fixtures)
+  "S404",    # subprocess-import
+  "S603",    # subprocess call with trusted test inputs (integration tests)
+  "SLF001",  # private-member-access (testing internals)
+]
+lint.fixable = [ "ALL" ]
+lint.unfixable = [ "F401", "F811" ] # Never auto-delete imports — ruff misjudges usage in some patterns
+lint.flake8-implicit-str-concat.allow-multiline = false
+lint.flake8-tidy-imports.banned-api."__future__.annotations" = { msg = "Use native 3.10+ syntax (X | Y) instead of from __future__ import annotations" }
+lint.isort.split-on-trailing-comma = false
+# Cyclomatic-complexity ceiling (C901). Pinned explicit so it cannot silently
+# drift up: the tree is green at 10 (ruff's implicit default). Raising it is a
+# relaxation the quality-gates guard flags. The scripts/ tree exempts C901
+# below, since intent detection is inherently branchy.
+lint.mccabe.max-complexity = 10
+lint.pydocstyle.convention = "google"
+# Complexity limits
+lint.pylint.max-args = 5
+lint.pylint.max-bool-expr = 5
+lint.pylint.max-branches = 12
+lint.pylint.max-locals = 15
+lint.pylint.max-nested-blocks = 5
+lint.pylint.max-public-methods = 25
+lint.pylint.max-returns = 6
+lint.pylint.max-statements = 50
+lint.preview = true
+
+[tool.codespell]
+dictionary = ".codespell-dictionary.txt,-"
+ignore-words-list = "caf,iterm,retuned,ture"
+skip = "src/teatree/core/static/teatree/js/*,src/teatree/dash/static/dash/js/*"
+
+# --- Pytest ---
+
+# Lean, parallel default: a plain ``uv run pytest`` runs the whole suite across
+# all cores (``-n auto``, pytest-xdist) with no coverage. ``--reuse-db`` keeps
+# each xdist worker on its own ``gw<n>``-suffixed test DB (pytest-django) across
+# runs. The heavy flags (``--cov*``, ``--doctest-modules``) and the dev-loop
+# flags (``--exitfirst``, ``--failed-first``, ``--verbose``, ``--log-cli-level``)
+# are NOT defaults — the CI coverage lane and ``dev/test-cov.sh`` add ``--cov
+# --cov-branch --doctest-modules`` explicitly so the 93% floor (with doctest
+# contribution) is enforced where it belongs, off the fast inner loop.
+
+[tool.pytest.ini_options]
+# ``--ds`` (not just the ``DJANGO_SETTINGS_MODULE`` ini key below) because pytest-django
+# ranks an ambient env var ABOVE the ini value: a shell exporting it — the dogfooding box
+# does — silently ran the whole suite against PRODUCTION settings, a different DB and a
+# different TIME_ZONE than CI (#3996). ``addopts`` is prepended, so the e2e lane's own
+# trailing ``--ds=e2e.dash.settings`` still wins.
+addopts = """
+--color=yes --strict-config --strict-markers --reuse-db -n auto --ds=tests.django_settings
+"""
+timeout = 60
+# Keep only a FAILING test's scratch — a passing one's tmp_path is nothing anyone
+# reads. pytest's "all" default retains it (measured: 200 KB and a surviving
+# run-dir for one trivial passing test), and the run-dirs then outlive their
+# retention count because an OOM SIGKILL under `-n auto` skips the atexit lock
+# removal, leaving a `.lock` that `_pytest.pathlib.ensure_deletable` refuses to
+# clear for LOCK_TIMEOUT = 3 days. Under "failed" a passing dir is rmtree'd
+# inline, before a kill can orphan its lock (#3852).
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 3
+DJANGO_SETTINGS_MODULE = "tests.django_settings"
+django_find_project = false
+testpaths = [ "tests" ]
+pythonpath = [ ".", "src", "scripts", "scripts/hooks", "hooks/scripts", "tests" ]
+filterwarnings = [
+  "error",
+  "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
+  "ignore:POSTGRES_PASSWORD literal is deprecated.*:DeprecationWarning",
+  "ignore:'BaseCommand' is deprecated.*:DeprecationWarning",
+  "ignore:'click.utils.get_binary_stream' is deprecated.*:DeprecationWarning",
+  "ignore:'click.utils.get_text_stream' is deprecated.*:DeprecationWarning",
+]
+xfail_strict = true
+markers = [
+  "integration: tests that run real subprocesses (shell scripts, git, etc.)",
+  "push_heavy: whole-tree subprocess checks (jscpd scan, mutmut run) deselected from the fast inner-loop lane (dev/ci-parity-fast.sh), run in CI",
+  "real_schema_readiness: opt out of the autouse pending-migration stub so the gate walks the real migration graph",
+  "real_banned_terms_scanner: opt out of the in-process banned-terms matcher so the scan really execs check-banned-terms.sh",
+]
+
+# --- Coverage ---
+
+[tool.coverage.report]
+fail_under = 93
+precision = 1
+show_missing = true
+exclude_lines = [
+  "if __name__",
+  "if TYPE_CHECKING",
+  "pragma: no cover",
+]
+partial_branches = [
+  "pragma: no branch",
+]
+
+[tool.coverage.run]
+branch = true
+# Store file paths relative to the repo root so the shard `.coverage` files
+# produced inside the test docker image (cwd /app) remap cleanly onto the host
+# checkout, letting the `test` combiner run `coverage combine`/`report` on the
+# runner instead of inside the image (#3160 item 5). The single-process
+# `dev/test-cov.sh` lane runs from the repo root too, so the relative paths are
+# identical there — no change to the measured percentage.
+relative_files = true
+source = [
+  "src/teatree",
+]
+omit = [ "src/teatree/core/migrations/*.py" ]
+
+# Per-module coverage floors — read by ``t3 ci coverage`` and enforced by
+# ``tests/test_coverage_floor_guard.py::TestPerModuleFloorsConfig``.
+# Tighter than the project-wide 93% floor for newly-added modules where a
+# small file dropping to 30% would still leave the project >= 93%.
+
+# --- import-linter ---
+# Complements tach: tach's depends_on is a direct-edge allow-list. The one
+# invariant tach's per-module model cannot express is wildcard
+# sibling-independence (the mini-loops must not import each other) — that is the
+# "Mini-loops are mutually independent" contract below. The acyclic and
+# backend/agent-independence guarantees are now enforced by tach itself
+# (forbid_circular_dependencies = true; teatree.core.depends_on no longer lists
+# backends/agents), so import-linter does not duplicate them.
+# (BLUEPRINT §17.6.2, #724/#725, #1922.)
+
+[tool.importlinter]
+root_package = "teatree"
+
+[[tool.importlinter.contracts]]
+name = "Substrate must not import a concrete overlay"
+type = "forbidden"
+source_modules = [
+  "teatree.core",
+  "teatree.cli",
+  "teatree.loop",
+  "teatree.loops",
+  "teatree.backends",
+  "teatree.agents",
+]
+forbidden_modules = [ "teatree.contrib" ]
+
+# #3157 E6: a factory overlay drives dispatch/attempt/eval/budget through the documented
+# ``teatree.overlay_sdk`` surface, never the PRIVATE ``teatree.agents._*`` internals (the
+# ``_headless_*`` option/env builders). The in-tree overlay (``teatree.contrib``) is the
+# proxy import-linter can see; a real overlay is an external package, but the same rule is
+# the documented contract. A private import here fails the gate.
+
+[[tool.importlinter.contracts]]
+name = "Overlays must not import private agents internals"
+type = "forbidden"
+source_modules = [ "teatree.contrib" ]
+forbidden_modules = [
+  "teatree.agents._runner_options",
+  "teatree.agents._runner_env",
+]
+# Direct-only: an overlay may use the SANCTIONED public surface (``teatree.overlay_sdk``,
+# ``run_agent``), which internally touches these agents-private modules — that transitive
+# chain is fine. Only a DIRECT ``import teatree.agents._headless_*`` from an overlay is the
+# reach-into-privates this gate forbids.
+allow_indirect_imports = "true"
+
+[[tool.importlinter.contracts]]
+name = "Mini-loops are mutually independent"
+type = "independence"
+modules = [
+  "teatree.loops.arch_review",
+  "teatree.loops.audit",
+  "teatree.loops.dispatch",
+  "teatree.loops.dogfood",
+  "teatree.loops.followup",
+  "teatree.loops.housekeeping",
+  "teatree.loops.inbox",
+  "teatree.loops.issue_implementer",
+  "teatree.loops.news",
+  "teatree.loops.resource_pressure",
+  "teatree.loops.review",
+  "teatree.loops.ship",
+  "teatree.loops.tickets",
+]
+
+# Binaries teatree's runtime MANDATES. Read by the general provisioning gate
+# (``teatree.provisioning.declared``): `t3 doctor` FAILs, naming the tool and the
+# remediation, when a declared one is absent from PATH. Adding an entry here is
+# the whole change — the gate enumerates this table rather than carrying its own
+# list, so a newly mandated tool cannot be forgotten (#3652, epic #3445).
+
+[tool.teatree.provisioning]
+required_binaries = [ "direnv", "git", "jq", "skills" ]
+
+[tool.teatree.coverage]
+per_module_floors = [
+  { path = "src/teatree/loop/persistence.py", floor = 80 },
+  { path = "src/teatree/loop/rendering.py", floor = 80 },
+  { path = "src/teatree/loop/dispatch.py", floor = 80 },
+  { path = "src/teatree/loop/pr_ticket_index.py", floor = 80 },
+]
+
+# Conservative test-shape check — read by ``t3 tool test-shape`` (see
+# ``src/teatree/quality/test_shape.py``). ``mode`` defaults to "warn"
+# (non-blocking report); set "block" to fail CI on a regression. The
+# baseline is the committed test:source ratio snapshot — a finding fires
+# ONLY when the live ratio drops below it past ``tolerance`` (ratchet, never
+# an absolute threshold). Re-baseline with ``t3 tool test-shape
+# --update-baseline`` when a drop is intentional and reviewed.
+
+[tool.teatree.test_shape]
+mode = "warn"
+min_cluster = 3
+test_lines = 117490
+source_lines = 64500
+tolerance = 0.05
+
+# Forward-guard: test files mirror their ``src/teatree/<pkg>/...`` module path
+# as ``tests/teatree_<pkg>/...`` — read by ``t3 tool test-path-mirror`` (see
+# ``src/teatree/quality/test_path_mirror.py``). ``mode = "block"`` makes the CI
+# job a gate; the verdict is a ratchet over ``baseline`` (the committed count of
+# files that predate the convention): a run is RED only when the live mis-pathed
+# count EXCEEDS the baseline, so a new mis-pathed file fails CI while the
+# documented floor never does. The baseline ratchets toward 0 as the relocation
+# sweep proceeds — shrink it with ``t3 tool test-path-mirror --update-baseline``;
+# raising it needs ``--allow-regression`` so the floor cannot silently loosen.
+
+[tool.teatree.test_path_mirror]
+mode = "block"
+baseline_file = "tests/test_path_mirror_grandfathered.txt"
+
+# Forward-guard: skills route forge/monitoring reach through the teatree MCP
+# tools, not raw ``gh`` / ``glab`` / ``sentry-cli`` shell-outs (#35, umbrella
+# #3076) — read by ``src/teatree/quality/skill_cli_ratchet.py``. The verdict is
+# a ratchet over the per-item ``baseline_file`` ledger (the grandfathered
+# raw-call surface: the documented CLI fallback lane, bootstrap exceptions, and
+# call sites with no MCP tool yet). A run is RED only when a NEW raw call appears
+# or a ledgered key no longer occurs, so a skill regressing to a shell-out fails
+# CI while the documented floor never does. Prohibition examples ("never ``gh pr
+# merge``") and ``mcp-ratchet: allow`` lines are excluded. Regenerate the exact
+# live set with ``python -m teatree.quality.skill_cli_ratchet --update-baseline``.
+[tool.teatree.skill_cli_ratchet]
+baseline_file = "tests/skill_cli_ratchet_grandfathered.txt"
+
+# Scoped (NARROW) mutation testing — read by ``t3 mutation run`` (see
+# ``src/teatree/quality/mutation.py``). Mutation testing is expensive and
+# OpenClaw (a 1.4M-LOC AI-native codebase) uses none, so teatree applies it
+# ONLY to verified high-value SAFETY modules where a silent regression is
+# worst: a fail-closed gate that stops failing closed, a lost-update in a
+# claim/CAS path, a merge-clear/keystone that stops gating. ``t3 mutation
+# run`` mutates ONLY the registry entries a PR's diff touches and no-ops when
+# none are touched, so most PRs pay nothing. The verdict is the
+# ``baseline_surviving`` ratchet floor (only shrinks): a per-module count of
+# mutants knowingly left alive, so a run FAILS only on a NEW survivor above the
+# recorded total, never on the documented backlog — and it fails that way in
+# BOTH modes. ``mode`` is validated against {"warn", "block"} and does nothing
+# else: the two values resolve to the identical ratchet verdict, so setting
+# "block" changes no behaviour (pinned by ``TestModeIsInertToday`` in
+# ``tests/quality/test_mutation_run.py``). It is reserved for the follow-up that
+# gates on survivors existing at all, which needs the recorded survivor backlog
+# paid down first — that paydown has no tracking issue. NARROW BY DESIGN — do
+# NOT add the whole codebase; the conformance test
+# ``tests/quality/test_mutation.py`` caps the registry size.
+
+[tool.teatree.mutation]
+timeout_seconds = 540
+high_value_modules = [
+  "src/teatree/on_behalf_gate.py",
+  "src/teatree/core/on_behalf_gate_recorded.py",
+  "src/teatree/core/merge/authorization.py",
+  "src/teatree/core/merge/execution.py",
+  "src/teatree/core/models/merge_clear.py",
+  "src/teatree/live_presence.py",
+  "src/teatree/core/loop_lease_manager.py",
+  "src/teatree/loop/review_claim.py",
+]
+# Ratchet floor (only shrinks). This records the REAL current surviving-mutant
+# count for EVERY high_value_module — the honest snapshot of today's state, NOT a
+# disarm. The `mutation-full` job runs `--all`, mutating all eight modules, but
+# the verdict compares the whole-run total against the SUM of these counts; when
+# only a subset had an entry the `--all` total always exceeded the partial sum
+# and the gate was permanently red (738 measured vs 131 baselined), blocking the
+# first PR of every ISO week (#2142). The counts below come from the gate's own
+# Linux CI output and sum to 622 (738 before #44 paid the presence module 124 -> 8;
+# 760 before PR-2 of #2413 paid review_claim back 109 -> 87). From here the floor
+# only ever SHRINKS:
+# any NEW survivor on any safety module pushes the total above the recorded floor
+# and the gate goes red. The flagship live-gate regression
+# (resolve_on_behalf_verdict BLOCK->PROCEED) is killed and pinned separately by
+# the kill-proof; these survivors are vacuous-coverage backlog (string builders,
+# error formatters, name resolvers) recorded for paydown, the mechanism the
+# ratchet is designed for. Tighten with `t3 mutation run --all --update-baseline`
+# as the suite kills more of them.
+#
+# #44 paid the module 124 -> 8: tests/test_live_presence.py gained
+# mutation kill-proofs pinning every behavioural point (heartbeat parsing,
+# naive-datetime normalisation, the atomic-write utf-8/sorted/same-dir contract, the
+# live-turn wall-clock default and window boundary, the same-session guard). #3826
+# renamed the module to teatree.live_presence when the legacy availability layer was
+# retired; the count is a shrink-only ceiling, and the module got smaller. Verified by a local Linux-container
+# mutmut run (326 killed / 8 survived / 0 inconclusive of 334) — mutmut fork-segfaults
+# on the macOS host, so the mutation lane runs in an Ubuntu container. The 8 residual
+# are irreducible: five are provably-equivalent mutants (a redundant `.get(key, default)`
+# default a downstream guard collapses to the identical result — load_schedule
+# schedule + override reads), and three are mutmut coverage-selection artifacts
+# on def-signature string defaults (write_override user_id/overlay, record session_id):
+# the tests DO kill them logically, but mutmut cannot attribute a covering test to a
+# default evaluated at import time. Neither class carries real-safety value.
+#
+# review_claim drifted 87 -> 109 (+22) in PR-1: the helpers _egress_react and
+# _slack_message_for_pr were exercised but not name-asserted by
+# test_review_claim_discipline.py, so their mutants survived. PR-2 of #2413
+# pays that back: it adds the killing assertions on both helpers' observable
+# contract — the colleague-egress payload (action/destination/artifact_url/
+# summary/target + the already_reacted/ok:false/non-dict branches) and the
+# slack-message resolver (slug/pr_id match, empty thread_ts/channel exclusion,
+# tuple order) — proven anti-vacuous (each goes red on the corresponding
+# mutant). It ALSO shrinks review_claim.py: the discovery primitives
+# (filter_review_intent_signals / reaction_already_present /
+# record_reaction_claim / review_loop_enabled + helpers) moved DOWN to the new
+# teatree.loop.review_claim_signals leaf, so review_claim.py now holds only the
+# review-DONE outcome path. The count is restored to the pre-drift floor 87;
+# the Linux mutation-diff CI job re-measures it (local mutmut runs segfault on
+# every forked mutant subprocess on this macOS host — an environment artifact,
+# not a real result). 87 is the conservative ceiling: the module shrank and the
+# +22 drift helpers are now name-asserted, so the real Linux count is <= 87.
+baseline_surviving = [
+  { path = "src/teatree/on_behalf_gate.py", count = 7 },
+  { path = "src/teatree/core/on_behalf_gate_recorded.py", count = 6 },
+  { path = "src/teatree/core/merge/authorization.py", count = 48 },
+  { path = "src/teatree/core/merge/execution.py", count = 204 },
+  { path = "src/teatree/core/models/merge_clear.py", count = 9 },
+  { path = "src/teatree/live_presence.py", count = 8 },
+  { path = "src/teatree/core/loop_lease_manager.py", count = 253 },
+  { path = "src/teatree/loop/review_claim.py", count = 87 },
+]
+
+# Per-module test scope. mutmut maps a mutant to the tests that exercise its
+# function by name, but its baseline "clean tests" pass runs the whole
+# ``tests_dir`` once — so a narrow dir keeps each scoped run inside the 10-min
+# CI cap. ``default`` is the fallback for an entry with no explicit mapping.
+
+[tool.teatree.mutation.module_tests]
+default = [ "tests/" ]
+"src/teatree/on_behalf_gate.py" = [
+  "tests/test_on_behalf_gate.py",
+  "tests/teatree_core/test_egress_is_the_only_colleague_control.py",
+]
+"src/teatree/core/on_behalf_gate_recorded.py" = [ "tests/teatree_core/test_on_behalf_gate_recorded.py" ]
+"src/teatree/core/merge/authorization.py" = [ "tests/teatree_core/test_merge_execution.py" ]
+"src/teatree/core/merge/execution.py" = [ "tests/teatree_core/test_merge_execution.py" ]
+"src/teatree/core/models/merge_clear.py" = [ "tests/teatree_core/test_merge_clear_verdict_must_be_merge_safe.py" ]
+"src/teatree/live_presence.py" = [ "tests/test_live_presence.py" ]
+"src/teatree/core/loop_lease_manager.py" = [ "tests/teatree_core/test_loop_lease.py" ]
+"src/teatree/loop/review_claim.py" = [ "tests/teatree_loop/test_review_claim_discipline.py" ]
+
+[tool.uv.build-backend]
+module-name = [ "teatree", "t3_bootstrap" ]
+
+# --- Ty (static type checker) ---
+# https://github.com/astral-sh/ty
+
+[tool.ty]
+terminal = { error-on-warning = true }
+
+[tool.ty.src]
+exclude = [ ".claude/worktrees/" ]
+
+[tool.ty.environment]
+extra-paths = [ ".", "src", "scripts", "scripts/hooks", "hooks/scripts", "tests" ]
+python-version = "3.13"
+
+[tool.ty.analysis]
+allowed-unresolved-imports = [
+  "django.tasks", # Django 6 exposes this dynamically and ty cannot resolve it yet, even with django-types
+  "markitdown",   # Optional dependency (markdown extra), guarded by try/except ImportError
+  "mkdocs",       # Optional dependency, guarded by try/except ImportError
+  "lib.env",      # Legacy scripts — guarded by try/except ImportError
+  "lib.gitlab",   # Legacy scripts — guarded by try/except ImportError
+  "lib.registry", # Legacy scripts — guarded by try/except ImportError
+]
+
+[tool.ty.rules]
+division-by-zero = "error"
+possibly-unresolved-reference = "error"
+unused-ignore-comment = "error"
+no-matching-overload = "error"
+
+[[tool.ty.overrides]]
+include = [ "tests", "e2e" ]
+# Test code (tests/ + the e2e/ lane) uses tmp_path / "file" (ty can't resolve
+# Path.__truediv__), factory-boy factories (ty sees the factory type, not the
+# built model), and broad *args/**kwargs for monkey-patching.
+[tool.ty.overrides.rules]
+unsupported-operator = "ignore"
+invalid-argument-type = "ignore"
+unresolved-attribute = "ignore"
+
+[tool.uv]
+managed = true
+package = true
+
+# Floor a transitive dependency above a published advisory without promoting it
+# to a direct dependency. `pydantic-settings` is pulled in by `mcp`; versions
+# >= 2.12.0, < 2.14.2 carry GHSA-4xgf-cpjx-pc3j (NestedSecretsSettingsSource
+# follows symlinks outside secrets_dir). Patched in 2.14.2. Drop the entry once
+# `mcp` floors it itself.
+constraint-dependencies = [ "pydantic-settings>=2.14.2" ]
+
+# Empty, not deleted: `uv-overrides.txt` and the `--overrides`/`UV_OVERRIDE`
+# every unattended `uv tool install` passes stay wired, so the next entry is a
+# one-line change rather than a re-wiring of every install surface.
+#
+# `claude-agent-sdk` carried the only entry — its declared `mcp<2.0.0` had to be
+# replaced with the project's own `mcp>=2,<3` for the two to resolve together.
+# 0.2.160 declares `mcp>=1.23.0,<3.0.0`, which admits that bound, so there is
+# nothing left to override.
+#
+# The wide bound is safe rather than merely resolvable because the SDK reaches
+# only the LOW-LEVEL server surface — `mcp.server.Server` plus types from
+# `mcp.types` — and never the `mcp.server.mcpserver.MCPServer` surface
+# `teatree.mcp.server` uses, so the two never touch the same symbols.
+# `tests/test_claude_agent_sdk_pin.py::TestTheSdkResolvesUnderTheLockedMcp`
+# re-derives that import set from the installed wheel on every run and reds if a
+# release re-narrows the bound or reaches for something mcp 2.x lacks.
+override-dependencies = [  ]
+
+# --- uv audit advisory lane (souliane/teatree#2292) ---
+# Allowlist for accepted advisories surfaced by the NON-BLOCKING `uv audit`
+# preview lane (CI job `uv-audit-advisory`). The advisory lane never reds the
+# build, so this list is informational today; it documents the structure the
+# lane will read once `uv audit` is promoted to blocking. The blocking gate is
+# still pip-audit (`requirements.audit.ignore`), which is the file to edit to
+# suppress a vulnerability that would otherwise fail CI.
+#
+# Add OSV / GHSA ids, one per `ignore` entry, e.g.
+#   ignore = [ "GHSA-xxxx-xxxx-xxxx" ]  # package==1.2.3: justification + link
+
+[tool.teatree.uv_audit]
+ignore = [  ]

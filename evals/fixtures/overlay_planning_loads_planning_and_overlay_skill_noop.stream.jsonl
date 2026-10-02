@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-overlay_planning_loads_planning_and_overlay_skill-noop", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking about the plan, no tool calls yet."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

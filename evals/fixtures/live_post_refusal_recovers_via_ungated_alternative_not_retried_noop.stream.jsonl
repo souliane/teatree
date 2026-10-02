@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-live_post_refusal_recovers_via_ungated_alternative_not_retried-noop", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

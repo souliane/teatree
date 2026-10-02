@@ -1,0 +1,32 @@
+{% extends "dash/base.html" %}
+{% block title %}Health{% endblock %}
+{% block heading %}Health{% endblock %}
+{% block content %}
+  <div id="health-bands"
+    hx-get="{% url 'dash:health_bands' %}"
+    hx-trigger="every 5s"
+    hx-sync="this:drop"
+    hx-swap="morph:innerHTML">
+    {% include "dash/partials/_health_bands.html" %}
+  </div>
+
+  <section class="band">
+    <h2>Debug commands</h2>
+    {% comment %} One form per command: the vendored htmx drops the clicked submitter, so a
+    shared form posted an empty `command` and every button was refused. {% endcomment %}
+    <div class="toolbar">
+      {% for spec in command_buttons %}
+        <form method="post" action="{% url 'dash:command_run' %}" hx-post="{% url 'dash:command_run' %}" hx-target="#command-result" hx-swap="innerHTML">
+          {% csrf_token %}
+          <input type="hidden" name="command" value="{{ spec.key }}">
+          {% if spec.needs_loop %}
+            <span class="field-group"><input type="text" name="loop" placeholder="loop name"><button class="dash-btn" type="submit" hx-confirm="Run {{ spec.label }}?">{{ spec.label }}</button></span>
+          {% else %}
+            <button class="dash-btn" type="submit" hx-confirm="Run {{ spec.label }}?">{{ spec.label }}</button>
+          {% endif %}
+        </form>
+      {% endfor %}
+    </div>
+    <div id="command-result"></div>
+  </section>
+{% endblock %}

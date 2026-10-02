@@ -1,0 +1,208 @@
+"""§17.6 enforcement-gate tool commands (#836).
+
+Split out of ``cli/tools.py`` (which had reached the per-file
+module-health public-function cap): the two deterministic gates in the
+§17.6 enforcement-gate family — the PR-body / commit AI-signature scan
+and the per-diff coverage + mutation/revert gate. Commands register onto
+the shared ``tool_app`` so the user-facing CLI surface (``t3 tool
+ai-sig-scan`` / ``t3 tool diff-coverage``) is unchanged; this mirrors
+the ``triage_tools`` split.
+
+Importing this module has the side effect of registering the commands;
+``cli/__init__`` imports it after ``tool_app`` is constructed.
+"""
+
+import json
+from pathlib import Path
+
+import typer
+
+from teatree.cli.tools import ToolRunner
+from teatree.core.invocation_cwd import invocation_cwd
+
+
+def ai_sig_scan(
+    path: str = typer.Argument("-", help="File or '-' for stdin (PR body / commit message)"),
+) -> None:
+    """Refuse a PR body / commit message carrying an AI-signature trailer.
+
+    Enforces the "No AI Signature on Posts Made on the User's Behalf" rule
+    (BLUEPRINT §17.6 gate 15, #836) as deterministic code — previously prose
+    only in /t3:rules and unenforced at the PR-body layer (PR #831 leak).
+    """
+    ToolRunner.run_script("ai_signature_scan", path)
+
+
+def _source_is_newer(src: Path, cov_mtime: float) -> bool:
+    """Whether *src* is strictly newer than the coverage file's mtime.
+
+    A file removed mid-walk (``OSError`` on ``stat``) contributes nothing to
+    the staleness decision rather than crashing the whole gate — the walk
+    degrades gracefully without suppressing a genuine staleness signal from
+    the files that are still present.
+    """
+    try:
+        return src.stat().st_mtime > cov_mtime
+    except OSError:
+        return False
+
+
+def _coverage_is_stale(coverage_file: Path, repo: Path) -> bool:
+    try:
+        cov_mtime = coverage_file.stat().st_mtime
+        return any(_source_is_newer(src, cov_mtime) for src in repo.rglob("*.py") if src != coverage_file)
+    except OSError:
+        return False
+
+
+def diff_coverage(
+    *,
+    repo: Path = typer.Option(invocation_cwd, "--repo", help="Repo root (default: where t3 was invoked)"),
+    base: str = typer.Option(
+        "",
+        "--base",
+        help=(
+            "Ref to diff against (merge-base..HEAD). Default: T3_DIFF_COVERAGE_BASE, "
+            "else the teatree.targetBranch git config, else the repo's default branch."
+        ),
+    ),
+    coverage_file: Path = typer.Option(Path(".coverage"), "--coverage-file", help="Path to .coverage data file"),
+    output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6 gate 12, #836).
+
+    Measures coverage on the *branch's* added production lines — the committed
+    diff against its merge-base with ``--base``, NOT the clone's working tree, so
+    unrelated uncommitted edits never enter the gate. When ``--base`` is omitted it
+    resolves ``T3_DIFF_COVERAGE_BASE``, then the ``teatree.targetBranch`` git config,
+    then the repo's ACTUAL default branch, never a hardcoded ``origin/main`` — the
+    latter grades a ``master``-default repo or a fork's whole integration branch as
+    new/uncovered.
+    Requires every new/changed production symbol to be imported by a changed test
+    (the test-a-local-copy anti-vacuity check). Exits non-zero when a new line is
+    uncovered or a symbol is unreferenced.
+    """
+    from teatree.utils.diff_coverage import measure_diff_coverage  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.git import branch_diff, resolve_diff_base  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    if not coverage_file.exists():
+        typer.echo(
+            f"WARNING: no coverage data at {coverage_file} — the per-diff "
+            "line-coverage check measured nothing (only the symbol check ran). "
+            "Run `uv run pytest` first for full enforcement.",
+            err=True,
+        )
+    elif _coverage_is_stale(coverage_file, repo):
+        typer.echo(
+            f"WARNING: .coverage at {coverage_file} is stale (a source file is newer) — "
+            "line-coverage results may be inaccurate. Run `uv run pytest` to refresh.",
+            err=True,
+        )
+
+    diff = branch_diff(str(repo), base or resolve_diff_base(str(repo)))
+    report = measure_diff_coverage(diff, coverage_data_file=coverage_file, repo_root=repo)
+    if output_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "passes": report.passes(),
+                    "uncovered": [{"path": u.path, "lines": u.lines} for u in report.uncovered],
+                    "unreferenced_symbols": report.unreferenced_symbols,
+                }
+            )
+        )
+    else:
+        typer.echo(report.summary())
+    if not report.passes():
+        raise typer.Exit(code=1)
+
+
+def gate_relaxation(
+    *,
+    repo: Path = typer.Option(invocation_cwd, "--repo", help="Repo root (default: where t3 was invoked)"),
+    base: str = typer.Option("", "--base", help="Diff <merge-base>..HEAD against this ref instead of the staged diff."),
+    output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Anti-relaxation + tach-soundness gate (BLUEPRINT §17.6.1/§17.6.2, #850).
+
+    Refuses a diff that relaxes a lint/coverage constraint or a tach module
+    boundary without a sanctioned relax marker: a new unjustified ``# noqa``, a
+    new ``per-file-ignores`` / coverage ``omit`` entry, a lowered ``fail_under``,
+    a committed ``--no-verify``, a new empty ``interfaces = []``, or a new
+    ``ignore_type_checking_imports`` without a justifying comment. Only the
+    diff's ADDED lines are inspected, so the pre-gate boilerplate baseline is
+    exempt. Scans the STAGED diff by default; ``--base`` scans a branch range.
+    Exits non-zero on any BLOCK finding; WARN findings (possible test vacuity)
+    print advisory-only and never fail.
+    """
+    from teatree.quality.gate_relaxation import (  # noqa: PLC0415 — heavy import kept off the CLI cold path
+        BLOCK,
+        scan_relaxation,
+    )
+    from teatree.utils.git_commit import branch_diff  # noqa: PLC0415 — heavy import kept off the CLI cold path
+    from teatree.utils.git_run import run as _git_run  # noqa: PLC0415 — heavy import kept off the CLI cold path
+
+    if base:
+        diff = branch_diff(str(repo), base)
+    else:
+        diff = _git_run(repo=str(repo), args=["diff", "--cached", "--src-prefix=a/", "--dst-prefix=b/"])
+    findings = scan_relaxation(diff)
+    blocking = [f for f in findings if f.severity == BLOCK]
+    if output_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "passes": not blocking,
+                    "findings": [
+                        {"kind": f.kind, "path": f.path, "severity": f.severity, "message": f.message, "line": f.line}
+                        for f in findings
+                    ],
+                }
+            )
+        )
+    else:
+        for f in findings:
+            typer.echo(f"{f.severity.upper()}: {f.path}: {f.message}", err=True)
+        typer.echo("PASS" if not blocking else f"BLOCKED: {len(blocking)} relaxation finding(s)")
+    if blocking:
+        raise typer.Exit(code=1)
+
+
+def open_pr(
+    *,
+    branch: str = typer.Option("", "--branch", help="Branch to probe (default: the repo's checked-out branch)"),
+    repo: Path = typer.Option(invocation_cwd, "--repo", help="Repo root (default: where t3 was invoked)"),
+) -> None:
+    """Report the OPEN PR/MR backing a branch as an explicit tri-state, as JSON.
+
+    The shell-facing face of ``core.forge_pr_probe.find_open_pr_for_branch``, so a
+    cold hook can ask "does the artifact this refusal is about already exist?"
+    without hand-rolling a fourth ``gh pr list`` — the drift that probe exists to
+    prevent. ``outcome`` is ``found`` / ``none`` / ``unknown``; a caller must not
+    read ``unknown`` (missing CLI, auth failure, unparsable JSON) as "no PR".
+
+    Every ``--repo`` in this module defaults to
+    :func:`~teatree.core.invocation_cwd.invocation_cwd`, not ``Path.cwd``: ``deploy/t3``
+    runs the CLI through a container exec that starts in the image WORKDIR and passes no
+    container workdir (a host cwd usually has no container counterpart), so the operator's
+    directory crosses ONLY as ``TEATREE_INVOCATION_CWD``. Defaulting to the process cwd
+    therefore probed the image WORKDIR and answered ``unknown`` for a branch whose merge
+    request exists — silently, since ``unknown`` is a legitimate tri-state value.
+    Host-native runs are unchanged: ``invocation_cwd()`` falls back to ``Path.cwd()`` when
+    nothing was declared.
+
+    Always exits 0: this is a probe, not a gate. The tri-state IS the answer.
+    """
+    from teatree.core.forge_pr_probe import find_open_pr_for_branch  # noqa: PLC0415 — deferred: keeps CLI startup light
+    from teatree.utils.git import current_branch  # noqa: PLC0415 — deferred: keeps CLI startup light
+
+    probe = find_open_pr_for_branch(repo, branch or current_branch(repo=str(repo)))
+    typer.echo(json.dumps({"outcome": probe.outcome.name.lower(), "url": probe.url}))
+
+
+def register(app: typer.Typer) -> None:
+    """Register this module's ``t3 tool`` command(s) onto *app* (called from ``cli/__init__``)."""
+    app.command("ai-sig-scan")(ai_sig_scan)
+    app.command("diff-coverage")(diff_coverage)
+    app.command("gate-relaxation")(gate_relaxation)
+    app.command("open-pr")(open_pr)

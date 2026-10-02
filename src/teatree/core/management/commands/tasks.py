@@ -1,0 +1,565 @@
+import logging
+import pathlib
+import sys
+from functools import partial
+from typing import IO, Annotated, cast
+
+import typer
+from django_typer.management import TyperCommand, command
+
+from teatree.core.admission_priority import ADMISSION_RANK_ALIAS, admission_priority_annotations
+from teatree.core.agent_admission import agent_admission_verdict
+from teatree.core.deterministic_phases import run_deterministic_phase
+from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
+from teatree.core.machine_output import emit
+from teatree.core.management.commands.tasks_session_view import (
+    TaskRow,
+    render_reconcile_checklist,
+    render_session_view,
+    render_tasks_table,
+)
+from teatree.core.managers_task_claim import claim_when_admitted
+from teatree.core.modelkit.phases import PhaseCost, cheap_phase_spellings
+from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
+from teatree.core.models import Task, TaskAttempt, Ticket
+from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation
+from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
+from teatree.core.overlay_loader import get_overlay_for_ticket
+from teatree.core.session_identity import current_session_id
+
+logger = logging.getLogger(__name__)
+
+
+class Command(TyperCommand):
+    @command()
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def create(
+        self,
+        ticket: Annotated[int, typer.Argument(help="Ticket PK (see `ticket_id` in `tasks list`).")],
+        *,
+        phase: Annotated[
+            str,
+            typer.Option(help="Phase: scoping, coding, testing, reviewing, shipping."),
+        ] = "",
+        reason: Annotated[
+            str,
+            typer.Option(help="Prompt body for the worker. Use '-' to read from stdin. Overrides --reason-file."),
+        ] = "",
+        reason_file: Annotated[
+            pathlib.Path | None,
+            typer.Option(help="Read the prompt body from a file."),
+        ] = None,
+        kind: Annotated[
+            str,
+            typer.Option(help="Classify the ticket as 'fix' or 'feature' (records Ticket.kind, #17)."),
+        ] = "",
+    ) -> dict[str, int | str]:
+        """Enqueue the next-phase task for a ticket.
+
+        Used by `/t3:next` to hand off from one phase to the next; a worker claims it immediately.
+        A machine handoff: the created-task record is JSON on stdout, the human confirmation on
+        stderr.
+
+        ``--kind`` (#17) records the ticket's FEATURE/FIX classification, arming the S2
+        defect-escape signal and the fix-record DoD gate for correction work.
+        """
+        if not phase.strip():
+            self.stderr.write("--phase is required (scoping, coding, testing, reviewing, or shipping).")
+            raise SystemExit(1)
+        body = _resolve_reason(reason=reason, reason_file=reason_file)
+        if not body.strip():
+            self.stderr.write(
+                "--reason (or --reason-file, or stdin via '--reason -') is required and must not be blank."
+            )
+            raise SystemExit(1)
+
+        try:
+            ticket_obj = Ticket.objects.get(pk=ticket)
+        except Ticket.DoesNotExist:
+            self.stderr.write(f"Ticket {ticket} not found.")
+            raise SystemExit(1) from None
+
+        if kind.strip():
+            try:
+                ticket_obj.kind = classify_ticket_kind(explicit=kind)
+            except ValueError as exc:
+                self.stderr.write(str(exc))
+                raise SystemExit(1) from None
+            ticket_obj.save(update_fields=["kind"])
+
+        try:
+            task = enqueue_phase_task(ticket=ticket_obj, phase=phase, reason=body)
+        except TaskEnqueueError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(1) from None
+        payload: dict[str, int | str] = {
+            "task_id": task.pk,
+            "ticket_id": ticket_obj.pk,
+            "phase": phase,
+        }
+        self.print_result = False
+        self.stderr.write(f"Created task {task.pk} (ticket {ticket_obj.pk}, phase={phase}).")
+        emit(payload, json_output=True, out=cast("IO[str]", self.stdout), err=cast("IO[str]", self.stderr))
+        return payload
+
+    @command()
+    def cancel(
+        self,
+        task_id: int,
+        *,
+        confirm: bool = False,
+        reason: Annotated[
+            str,
+            typer.Option(help="Audit-trail reason recorded on a TaskAttempt (e.g. 'superseded by !42')."),
+        ] = "",
+    ) -> None:
+        """Cancel a pending or (with --confirm) claimed task, driving it to FAILED.
+
+        ``--reason`` persists to the DB as a ``TaskAttempt`` (mirroring ``complete
+        --note``) so the audit trail records WHY the task was cancelled — the cancel
+        transition is otherwise indistinguishable from any other failure (#2559).
+        Omitting it does not skip the audit row: the cancellation is still recorded
+        under the ``cancelled`` failure kind, because a FAILED task that names no cause
+        is exactly what makes the board unreadable (#3957).
+        """
+        from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+        with transaction.atomic():
+            try:
+                task = Task.objects.select_for_update().get(pk=task_id)
+            except Task.DoesNotExist:
+                self.stderr.write(f"Task {task_id} not found.")
+                raise SystemExit(1) from None
+
+            if task.status == Task.Status.CLAIMED and not confirm:
+                self.stderr.write(f"Task {task_id} is currently claimed. Pass --confirm to cancel it.")
+                raise SystemExit(1)
+
+            if task.status in Task.Status.terminal():
+                self.stderr.write(f"Task {task_id} already finished ({task.status}).")
+                raise SystemExit(1)
+
+            # An operator who gives no reason still leaves one behind (#3957): the
+            # attempt used to be written ONLY when ``--reason`` was passed, so a bare
+            # cancel produced a cause-less FAILED row indistinguishable from a crash.
+            cancel_reason = f"{CANCELLED_PREFIX}{reason.strip() or 'cancelled by an operator with no reason given'}"
+            TaskAttempt.objects.create(
+                # no-usage: an operator cancel records a decision, not a run — nothing billed.
+                task=task,
+                ended_at=timezone.now(),
+                exit_code=1,
+                error=cancel_reason,
+                result={"cancel_reason": cancel_reason},
+            )
+            task.fail(reason=cancel_reason, by_holder=False)
+        self.stdout.write(f"Task {task_id} cancelled.")
+
+    @command()
+    def complete(
+        self,
+        task_id: Annotated[int, typer.Argument(help="Task ID (see `task_id` in `tasks list`).")],
+        *,
+        note: Annotated[
+            str,
+            typer.Option(help="Audit-trail reason recorded on a TaskAttempt (e.g. 'work landed via !42')."),
+        ] = "",
+    ) -> None:
+        """Mark a claimed or failed task COMPLETED for work finished out-of-band.
+
+        Drives the Task FSM ``claimed → completed`` (releasing the lease and
+        auto-advancing the ticket). Idempotent: completing an already-completed
+        task is a no-op with exit 0.
+
+        A ``failed`` task whose work later landed out-of-band is resolved the same
+        way (``failed → completed``), but ONLY with a mandatory evidence ``--note``
+        — the pointer to where that work landed (#1949). Without it there is no
+        record of why a failed task was marked done. A ``pending`` task is rejected.
+
+        Fail-closed evidence gate (#1280): when ``--note`` ASSERTS an external
+        outcome (merged / posted / shipped / deployed) it must also carry a
+        resolvable artifact pointer (URL / SHA / ``!42`` / ``#42`` / note id /
+        path / Slack ts), so a phantom "done" claim cannot be recorded without
+        proof. A Slack post recorded as ``slack:<channel>:<ts>`` or
+        ``<channel>:<ts>`` is normalized to its archives permalink before the gate
+        and before storage. A note with no outcome claim — or no note — is
+        untouched.
+        """
+        from django.db import transaction  # noqa: PLC0415 — deferred: Django import at call time
+        from django.utils import timezone  # noqa: PLC0415 — deferred: Django import at call time
+
+        from teatree.core.review.completion_evidence import (  # noqa: PLC0415 — deferred: keeps command import light
+            CompletionEvidenceError,
+            check_completion_evidence,
+            normalize_artifact_pointers,
+        )
+
+        note = normalize_artifact_pointers(note)
+        try:
+            check_completion_evidence(note)
+        except CompletionEvidenceError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(1) from None
+
+        with transaction.atomic():
+            try:
+                task = Task.objects.select_for_update().get(pk=task_id)
+            except Task.DoesNotExist:
+                self.stderr.write(f"Task {task_id} not found.")
+                raise SystemExit(1) from None
+
+            if task.status == Task.Status.COMPLETED:
+                self.stdout.write(f"Task {task_id} already completed; nothing to do.")
+                return
+
+            if task.status == Task.Status.FAILED and not note.strip():
+                self.stderr.write(
+                    f"Task {task_id} is 'failed'. Completing it out-of-band requires a mandatory evidence "
+                    "--note pointing at where the work landed (e.g. --note 'merged via <url-or-!id-or-sha>').",
+                )
+                raise SystemExit(1)
+
+            if task.status not in {Task.Status.CLAIMED, Task.Status.FAILED}:
+                self.stderr.write(
+                    f"Task {task_id} is '{task.status}', not 'claimed' or 'failed'. "
+                    "Only a claimed or failed task can be completed.",
+                )
+                raise SystemExit(1)
+
+            if note.strip():
+                TaskAttempt.objects.create(
+                    # no-usage: an out-of-band completion note describes work this process
+                    # never ran, so it has no spend of its own to record.
+                    task=task,
+                    ended_at=timezone.now(),
+                    exit_code=0,
+                    result={"complete_note": note},
+                )
+            # Decouple the completion bookkeeping from the FSM auto-advance
+            # (#1977): a deliberate gate refusal (no PlanArtifact, dirty
+            # worktree, missing shipping attestation) must complete the task —
+            # the out-of-band-done write the operator asked for — and SURFACE
+            # the refusal loudly, never crash rc=1 and wedge the task claimed.
+            ticket_id = task.ticket_id
+            advance_failure = task.complete_surfacing_advance_failure()
+
+        self.stdout.write(f"Task {task_id} completed.")
+        if advance_failure:
+            self.stderr.write(
+                f"WARNING: task {task_id} completed but the ticket FSM did NOT advance: {advance_failure}\n"
+                f"  The completion stands; record the missing plan ("
+                f'`t3 <overlay> ticket plan {ticket_id} "<text>"` or `ticket plan-bypass`) '
+                f"and the replay sweep advances the ticket. The task is NOT wedged claimed.",
+            )
+
+    @command(name="record-attempt")
+    def record_attempt(
+        self,
+        task_id: Annotated[int, typer.Argument(help="Task ID the in-session sub-agent ran.")],
+        result_json: Annotated[
+            str,
+            typer.Argument(help="The agent result envelope as JSON. Use '-' to read from stdin."),
+        ],
+        *,
+        claim_token: Annotated[
+            str,
+            typer.Option(help="The claim_token the claim that spawned this sub-agent emitted."),
+        ] = "",
+        agent_session_id: Annotated[
+            str,
+            typer.Option(help="Claude session id of the sub-agent, for resume context on follow-ups."),
+        ] = "",
+    ) -> None:
+        """Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path).
+
+        The ``/loop`` slot calls this after its ``Agent`` sub-agent returns: it
+        hands the same structured result envelope ``run_agent`` would have
+        parsed out of the detached headless-SDK run, and this drives the Task to its
+        terminal state through the SHARED recorder — schema-key check, the
+        #1284 phase-evidence gate, then ``complete`` (auto-advancing the
+        ticket) or ``fail``. Pairs with ``t3 loop claim-next`` /
+        ``loop_dispatch spawn-claim``: claim → spawn → record-attempt. The task
+        must be ``claimed`` (the claim is the spawn boundary); recording onto a
+        finished task is rejected.
+
+        ``--claim-token`` is REQUIRED and is the whole reason a late record cannot
+        finish somebody else's unit. This command reads the row fresh, so the
+        recorder's own claim-generation guard would compare that row against itself
+        and always hold; the token is the generation the CALLER observed when it was
+        given the work (``claim-next`` / ``spawn-claim`` emit it). A lease that
+        lapsed mid-run, was reclaimed and re-offered mints a new generation, so the
+        stale token no longer matches and the record is refused instead of
+        completing the unit the next tick is executing — and advancing the ticket
+        FSM over it.
+        """
+        from teatree.agents.attempt_recorder import (  # noqa: PLC0415 — deferred: keeps command import light
+            AttemptUsage,
+            ResultEnvelopeError,
+            parse_result_envelope,
+            record_result_envelope,
+        )
+
+        payload = sys.stdin.read() if result_json == "-" else result_json
+        try:
+            result = parse_result_envelope(payload)
+        except ResultEnvelopeError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(1) from None
+
+        try:
+            task = Task.objects.get(pk=task_id)
+        except Task.DoesNotExist:
+            self.stderr.write(f"Task {task_id} not found.")
+            raise SystemExit(1) from None
+
+        if task.status in Task.Status.terminal():
+            self.stderr.write(f"Task {task_id} is already '{task.status}'; cannot record an attempt.")
+            raise SystemExit(1)
+        if task.status != Task.Status.CLAIMED:
+            self.stderr.write(
+                f"Task {task_id} is '{task.status}', not 'claimed'. Claim it first "
+                "(`t3 loop claim-next` / `loop_dispatch spawn-claim`) before `tasks record-attempt`.",
+            )
+            raise SystemExit(1)
+        if not claim_token.strip():
+            self.stderr.write(
+                f"Task {task_id} needs --claim-token: pass back the `claim_token` the claim "
+                "that spawned this sub-agent emitted, so a record whose unit was reclaimed "
+                "mid-run is refused rather than completing the generation another tick owns.",
+            )
+            raise SystemExit(1)
+        live_generation = claim_generation(task)
+        if claim_token.strip() != live_generation:
+            self.stderr.write(
+                f"Task {task_id} was re-claimed since --claim-token was issued "
+                f"(now {live_generation!r}); another tick owns this unit and its attempt is not recorded.",
+            )
+            raise SystemExit(1)
+
+        # souliane/teatree#657: an in-session sub-agent runs inside the user's
+        # own Claude Code session — always the Max subscription seat, never
+        # metered (see ``TaskAttemptQuerySet.headless()``'s billing contract).
+        usage = AttemptUsage(agent_session_id=agent_session_id, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        attempt = record_result_envelope(task, result, usage=usage)
+        task.refresh_from_db()
+        self.stdout.write(f"Recorded attempt {attempt.pk} for task {task_id} (task now '{task.status}').")
+
+    @command(name="list")
+    def list_tasks(
+        self,
+        *,
+        status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
+        session: Annotated[
+            bool,
+            typer.Option(help="Scope to the current harness session and group pending / claimed / done."),
+        ] = False,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the task rows as JSON on stdout instead of the human table."),
+        ] = False,
+    ) -> list[TaskRow]:
+        """List the teatree tasks queue (not your harness TODO list).
+
+        A pure READ: it never reaps or reclaims. Failing a stale CLAIMED task from
+        a read path (a bare ``reap_stale_claims`` with no preceding
+        ``reclaim_orphaned_claims``) would terminally FAIL a recoverable
+        crashed-session task on a mere ``tasks list``, bypassing the
+        rescue-before-fail ordering the boot/tick ``run_boot_sweeps`` owns.
+        """
+        if session:
+            return self._list_session_todos(status=status, json_output=json_output)
+        qs = Task.objects.select_related("ticket").annotate(**admission_priority_annotations()).order_by("pk")
+        if status:
+            qs = qs.filter(status=status)
+        rows = [_task_row(task) for task in qs]
+        self.print_result = False
+        emit(
+            rows,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: render_tasks_table(rows, stream=stream),
+        )
+        return rows
+
+    def _list_session_todos(
+        self,
+        *,
+        status: str | None,
+        json_output: bool,
+    ) -> list[TaskRow]:
+        """Print the current session's teatree tasks, grouped by status.
+
+        Renders only the teatree ``Task`` rows (DB-backed lifecycle tasks scoped
+        to the active harness session via ``Session.agent_id``). It does NOT
+        render the harness TODO list: that list is the agent's live in-memory
+        ``TaskCreate`` / ``TaskUpdate`` state, which a CLI subprocess cannot read
+        (it can only see a stale on-disk snapshot that lags the live session).
+        ``/t3:checking`` builds the harness half from the live ``TaskList`` harness
+        tool instead, so this view never masquerades as the live session list.
+        """
+        session_id = current_session_id()
+        qs = (
+            Task.objects.for_claude_session(session_id)
+            .select_related("ticket")
+            .annotate(**admission_priority_annotations())
+        )
+        if status:
+            qs = qs.filter(status=status)
+        rows = [_task_row(task) for task in qs]
+        self.print_result = False
+        emit(
+            rows,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: render_session_view(rows, session_id=session_id, stream=stream),
+        )
+        return rows
+
+    @command(name="reconcile-checklist")
+    def reconcile_checklist(self) -> None:
+        """Emit the in-session harness-TODO reconciliation checklist (read-only).
+
+        The harness TODO list lives only in the agent's live, in-memory
+        ``TaskList`` state — the Task tools bypass ``PreToolUse`` /
+        ``PostToolUse`` hooks, so a CLI subprocess (and any background loop)
+        can neither read nor write it. Only the in-session agent holding those
+        tools can. This command is therefore NOT the maintainer (it cannot
+        touch the live list); it is the deterministic *checklist emitter* the
+        agent applies with its OWN ``TaskList`` / ``TaskUpdate`` /
+        ``TaskCreate`` tools each turn: reconcile the live list against the
+        conversation, consolidate/dedupe, and mark completed items done.
+
+        It also surfaces this session's open teatree ``Task`` rows as
+        completion anchors (work the loop tracked that the agent may need to
+        mark done). It makes NO writes of any kind — it never creates,
+        completes, transitions, reaps, or reclaims a task (the live harness list
+        is unreachable from a subprocess, and a read surface must not fail a
+        recoverable crashed-session task by reaping it without the
+        rescue-before-fail reclaim the boot/tick ``run_boot_sweeps`` owns).
+        Running it twice prints the same thing.
+        """
+        session_id = current_session_id()
+        qs = (
+            Task.objects.for_claude_session(session_id)
+            .filter(status__in=Task.Status.active())
+            .select_related("ticket")
+            .annotate(**admission_priority_annotations())
+        )
+        rows = [_task_row(task) for task in qs]
+        render_reconcile_checklist(
+            rows,
+            session_id=session_id,
+            stream=cast("IO[str]", self.stdout),
+        )
+
+    @command()
+    def claim(self, claimed_by: str = "worker") -> int | None:
+        task = self._claim_next_task(claimed_by=claimed_by)
+        return int(task.pk) if task else None
+
+    @command(name="work-next")
+    def work_next(self, claimed_by: str = "worker") -> dict[str, str] | None:
+        task = self._claim_next_task(claimed_by=claimed_by)
+        if task is None:
+            return None
+        return self._execute(task)
+
+    def _claim_next_task(self, *, claimed_by: str) -> Task | None:
+        """Claim the next ADMITTED task for both the ``claim`` and ``work-next`` leaves (#4464).
+
+        ``work-next`` hands the row straight to the heartbeat-renewing agent runner, so the
+        claim takes the heartbeat-matched lease rather than ``Task.claim``'s 300s default —
+        otherwise a starved first renewal lets the lease lapse under a live run and the sweep
+        re-queues it, discarding whatever the attempt had produced. ``claim`` shares the lease
+        because its caller is the same worker one step later.
+
+        Enqueue and claim are two ways to START work, so the governor's verdict decides both:
+        a box braked enough to stop the drain enqueueing kept claiming through this seam.
+        A shed EXPENSIVE lane narrows the candidates to the reserved cheap phases IN THE
+        QUERY rather than walking a backed-up queue row by row, so the review that retires
+        work is reachable behind a coding row instead of stuck behind it.
+
+        It reads the lane verdict and does NOT book a seat: the seat is per-task and the
+        enqueue that produced this row already took it, so booking again is refused as an
+        already-dispatched double-admission and the claim returns nothing.
+        """
+        admission = agent_admission_verdict()
+        admission.log_denials()
+        claimable = Task.objects.claimable()
+        if admission.denied_for(PhaseCost.EXPENSIVE) is not None:
+            if admission.denied_for(PhaseCost.CHEAP) is not None:
+                return None
+            claimable = claimable.filter(phase__in=cheap_phase_spellings())
+        task = claimable.first()
+        if task is None or admission.denied_reason(task.phase) is not None:
+            return None
+        refusal = claim_when_admitted(
+            partial(task.claim, claimed_by=claimed_by, lease_seconds=HEARTBEAT_MATCHED_LEASE_SECONDS)
+        )
+        return None if refusal else task
+
+    @staticmethod
+    def _execute(task: Task) -> dict[str, str]:
+        import traceback  # noqa: PLC0415 — deferred: loaded only when this command runs
+
+        from teatree.agents.runner import run_agent  # noqa: PLC0415 — deferred: keeps command import light
+
+        # A non-agentic phase (``short_describe``) runs its own implementation, not a
+        # generic ticket-work brief its least-privilege toolset cannot satisfy (#3570).
+        # ``run_agent`` drives an agent unconditionally, so the short-circuit belongs
+        # at each ENTRY POINT: this one and ``core.tasks.execute_task``, both
+        # consulting the single ``teatree.core.deterministic_phases`` registry so the two
+        # entry points cannot drift.
+        if (deterministic := run_deterministic_phase(task)) is not None:
+            return deterministic
+
+        # Durable failure recording, the same semantics ``execute_task``
+        # applies (souliane/teatree#2192): ``run_agent`` can RAISE on an SDK
+        # client startup / query / response error. The task is already CLAIMED;
+        # without this, the raise leaves it silently CLAIMED until lease reap, then
+        # re-fires forever with NO durable failed TaskAttempt — a wedge/retry-loop
+        # under the no-fallback cutover. Record a FAILED attempt carrying the error
+        # via the shared ``complete_with_attempt`` recorder (which FAILs the task,
+        # releasing the claim) and return a nonzero command result, mirroring the
+        # refusal path above rather than re-raising and dropping the result dict.
+        try:
+            attempt = run_agent(
+                task,
+                phase=task.phase,
+                overlay_skill_metadata=get_overlay_for_ticket(task.ticket).metadata.get_skill_metadata(),
+            )
+        except Exception:  # noqa: BLE001 — ANY SDK failure (startup/query/response) must be recorded durably, not escape.
+            error = traceback.format_exc()
+            logger.warning("Task %s: SDK headless run raised; recording a failed attempt", task.pk)
+            task.complete_with_attempt(exit_code=1, error=error, result={"sdk_error": error}, usage_unknown=True)
+            return {"exit_code": "1", "sdk_error": error}
+        return {"exit_code": str(attempt.exit_code), "attempt_id": str(attempt.pk)}
+
+
+def _task_row(task: Task) -> TaskRow:
+    return TaskRow(
+        task_id=task.pk,
+        ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+        ticket_title=task.ticket.short_description,
+        status=task.status,
+        phase=task.phase,
+        execution_reason=task.execution_reason,
+        claimed_by=task.claimed_by,
+        admission_rank=getattr(task, ADMISSION_RANK_ALIAS),
+        parent_task_id=task.parent_task_id,  # ty: ignore[unresolved-attribute]
+        failure_kind=task.failure_kind,
+        failure_reason=task.failure_reason,
+        failure_environmental=is_environmental(task.failure_kind),
+    )
+
+
+def _resolve_reason(*, reason: str, reason_file: pathlib.Path | None) -> str:
+    if reason == "-":
+        return sys.stdin.read()
+    if reason:
+        return reason
+    if reason_file is not None:
+        return reason_file.read_text()
+    return ""

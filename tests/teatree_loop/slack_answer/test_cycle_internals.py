@@ -1,0 +1,360 @@
+"""Branch coverage for the cycle internals (#1014).
+
+Covers the CAS-lost paths, the read-back-exception path, the Stage-B-bail
+→ orchestration fall-through, the no-backend skip, and the production
+``_default_resolver`` (factory) seam.
+"""
+
+from dataclasses import dataclass, field
+from unittest.mock import patch
+
+import pytest
+
+from teatree.core.models import PendingChatInjection, Task
+from teatree.loop.inbound_reading import InboundIntent, InboundReading, ReadingSource
+from teatree.loop.slack_answer.cycle import (
+    SlackAnswerReport,
+    _default_resolver,
+    _handle_noted,
+    _orchestrate,
+    _process_unit,
+    _react_eyes_once,
+    _Unit,
+    run_slack_answer_cycle,
+    verify_reply_visible,
+)
+from teatree.types import RawAPIDict
+
+
+def _reading(intent: InboundIntent, *, answerable: bool = False, summary: str = "") -> InboundReading:
+    return InboundReading(
+        intent=intent,
+        answerable=answerable,
+        work_summary=summary,
+        source=ReadingSource.MODEL,
+        rationale="test fixture",
+    )
+
+
+def _reader(reading: InboundReading):
+    return lambda _text: reading
+
+
+_NOTHING_TO_DO = _reader(_reading(InboundIntent.NOISE))
+_STATE_QUESTION = _reader(_reading(InboundIntent.QUESTION, answerable=True))
+_NEEDS_A_LANE = _reader(_reading(InboundIntent.INSTRUCTION, summary="fix the build"))
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+pytestmark = pytest.mark.django_db
+
+
+_BOT_UID = "UBOT"
+
+
+@dataclass
+class RecordingBackend:
+    reactions: list[tuple[str, str, str]] = field(default_factory=list)
+    replies: list[tuple[str, str, str]] = field(default_factory=list)
+    thread_replies: dict[str, list[RawAPIDict]] = field(default_factory=dict)
+
+    def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
+        _ = since
+        return []
+
+    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
+        _ = since
+        return []
+
+    def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
+        _ = (channel, ts)
+        return {}
+
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        _ = channel
+        return list(self.thread_replies.get(thread_ts, []))
+
+    def auth_test(self) -> RawAPIDict:
+        return {"ok": True, "user_id": _BOT_UID}
+
+    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        _ = (channel, text, thread_ts)
+        return {}
+
+    def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
+        self.replies.append((channel, ts, text))
+        self.thread_replies.setdefault(ts, []).append({"ts": f"{ts}-bot", "user": _BOT_UID, "text": text})
+        return {"ok": True}
+
+    def open_dm(self, user_id: str) -> str:
+        _ = user_id
+        return "D1"
+
+    def get_permalink(self, *, channel: str, ts: str) -> str:
+        _ = (channel, ts)
+        return "https://slack/p1"
+
+    def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        self.reactions.append((channel, ts, emoji))
+        return {"ok": True}
+
+    def resolve_user_id(self, handle: str) -> str:
+        _ = handle
+        return ""
+
+
+@dataclass
+class FailingReactBackend(RecordingBackend):
+    """A backend whose ``react`` always raises — models a Slack outage."""
+
+    def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        _ = (channel, ts, emoji)
+        msg = "slack react failed"
+        raise RuntimeError(msg)
+
+
+def _row(text: str, ts: str = "1.0") -> PendingChatInjection:
+    row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text)
+    assert row is not None
+    return row
+
+
+class TestVerifyReplyVisible:
+    def test_exception_is_conservative_false(self) -> None:
+        class Boom:
+            def auth_test(self) -> RawAPIDict:
+                return {"ok": True, "user_id": _BOT_UID}
+
+            def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+                _ = (channel, thread_ts)
+                msg = "network down"
+                raise RuntimeError(msg)
+
+        assert verify_reply_visible(Boom(), channel="C", thread_root="root.ts") is False
+
+    def test_present_bot_reply_under_root_is_true(self) -> None:
+        backend = RecordingBackend(thread_replies={"root.ts": [{"ts": "r-bot", "user": _BOT_UID, "text": "hi"}]})
+
+        assert verify_reply_visible(backend, channel="C", thread_root="root.ts") is True
+
+
+class TestReactEyesOnce:
+    def test_already_reacted_short_circuits(self) -> None:
+        row = _row("thanks")
+        row.mark_eyes_reacted()
+        backend = RecordingBackend()
+
+        assert _react_eyes_once(backend, _Unit([row])) is False
+        assert backend.reactions == []
+
+    def test_cas_lost_returns_false(self) -> None:
+        row = _row("thanks")
+        backend = RecordingBackend()
+        with patch.object(type(row), "mark_eyes_reacted", return_value=False):
+            assert _react_eyes_once(backend, _Unit([row])) is False
+        assert backend.reactions == []
+
+
+class TestReactEyesRetriesOnFailedSideEffect:
+    """#1880: claim -> react -> release-on-failure, so a failed :eyes: retries."""
+
+    def test_failed_react_rolls_back_the_receipt(self) -> None:
+        row = _row("thanks")
+        backend = FailingReactBackend()
+
+        with pytest.raises(RuntimeError, match="slack react failed"):
+            _react_eyes_once(backend, _Unit([row]))
+
+        row.refresh_from_db()
+        assert row.eyes_reacted_at is None  # not stamped -> next cycle retries
+
+    def test_successful_react_stamps_exactly_once(self) -> None:
+        row = _row("thanks")
+        backend = RecordingBackend()
+
+        assert _react_eyes_once(backend, _Unit([row])) is True
+        row.refresh_from_db()
+        assert row.eyes_reacted_at is not None
+        assert backend.reactions == [("C1", "1.0", "eyes")]
+
+    def test_two_concurrent_attempts_react_exactly_once(self) -> None:
+        row_a = _row("thanks")
+        row_b = PendingChatInjection.objects.get(pk=row_a.pk)
+        backend_a = RecordingBackend()
+        backend_b = RecordingBackend()
+
+        first = _react_eyes_once(backend_a, _Unit([row_a]))
+        second = _react_eyes_once(backend_b, _Unit([row_b]))
+
+        assert (first, second) == (True, False)
+        assert backend_a.reactions == [("C1", "1.0", "eyes")]
+        assert backend_b.reactions == []
+
+
+class TestHandleNotedCasLost:
+    def test_cas_lost_skips_reaction(self) -> None:
+        row = _row("thanks")
+        backend = RecordingBackend()
+        with patch.object(type(row), "mark_loop_replied", return_value=False):
+            assert _handle_noted(backend, _Unit([row])) is False
+        assert backend.reactions == []
+
+
+class TestHandleNotedRetriesOnFailedSideEffect:
+    """#1880: the noted path claims the loop-reply, then reacts; a failed react rolls back."""
+
+    def test_failed_react_rolls_back_the_whole_unit(self) -> None:
+        lead = _row("thanks", ts="1.0")
+        follow = _row("thanks again", ts="1.1")
+        backend = FailingReactBackend()
+
+        with pytest.raises(RuntimeError, match="slack react failed"):
+            _handle_noted(backend, _Unit([lead, follow]))
+
+        lead.refresh_from_db()
+        follow.refresh_from_db()
+        assert lead.loop_replied_at is None
+        assert lead.answer_kind == ""
+        assert follow.loop_replied_at is None
+
+    def test_successful_react_stamps_the_unit_once(self) -> None:
+        row = _row("thanks")
+        backend = RecordingBackend()
+
+        assert _handle_noted(backend, _Unit([row])) is True
+        row.refresh_from_db()
+        assert row.loop_replied_at is not None
+        assert row.answer_kind == "ack"
+        assert backend.reactions == [("C1", "1.0", "pray")]
+
+
+class TestOrchestrateCasLost:
+    def test_cas_lost_creates_no_task(self) -> None:
+        row = _row("fix the build")
+        backend = RecordingBackend()
+        report = SlackAnswerReport()
+        with patch.object(type(row), "mark_loop_replied", return_value=False):
+            _orchestrate(backend, _Unit([row]), _reading(InboundIntent.INSTRUCTION), report)
+        assert report.dispatched == 0
+        assert Task.objects.filter(phase="answering").count() == 0
+
+
+class TestOrchestrateRetriesOnFailedSideEffect:
+    """A failed 🔧 react releases the claim; the retry finds its own lane, not a rival."""
+
+    def test_failed_react_rolls_back_but_keeps_the_single_lane(self) -> None:
+        row = _row("fix the build")
+        report = SlackAnswerReport()
+
+        with pytest.raises(RuntimeError, match="slack react failed"):
+            _orchestrate(FailingReactBackend(), _Unit([row]), _reading(InboundIntent.INSTRUCTION), report)
+
+        row.refresh_from_db()
+        assert row.loop_replied_at is None
+        assert Task.objects.filter(phase="answering").count() == 1
+
+        _orchestrate(RecordingBackend(), _Unit([row]), _reading(InboundIntent.INSTRUCTION), report)
+
+        assert Task.objects.filter(phase="answering").count() == 1
+        assert report.dispatched == 1
+
+
+class TestSimpleStageBBailFallsThroughToOrchestration:
+    def test_stage_b_sentinel_dispatches(self) -> None:
+        row = _row("which PRs are open?")
+        backend = RecordingBackend()
+        report = SlackAnswerReport()
+
+        with patch(
+            "teatree.loop.slack_answer.cycle.build_simple_answer",
+            return_value="NEEDS_WORK",
+        ):
+            _process_unit(backend, _Unit([row]), report, _STATE_QUESTION)
+
+        assert report.dispatched == 1
+        assert Task.objects.filter(phase="answering").count() == 1
+
+    def test_stage_a_none_budget_closed_dispatches(self) -> None:
+        row = _row("what's the status?")
+        backend = RecordingBackend()
+        report = SlackAnswerReport()
+
+        with patch(
+            "teatree.loop.slack_answer.cycle.build_simple_answer",
+            return_value=None,
+        ):
+            _process_unit(backend, _Unit([row]), report, _STATE_QUESTION)
+
+        assert report.dispatched == 1
+
+
+class TestProcessUnitDegenerateBranches:
+    """The three CAS-lost / already-acked fall-through arcs in ``_process_unit``."""
+
+    def test_eyes_already_reacted_does_not_bump_counter_but_continues(self) -> None:
+        # _react_eyes_once → False (already reacted): the eyes counter is
+        # NOT bumped, yet reading + answering still proceed.
+        row = _row("thanks")
+        row.mark_eyes_reacted()
+        backend = RecordingBackend()
+        report = SlackAnswerReport()
+
+        _process_unit(backend, _Unit([row]), report, _NOTHING_TO_DO)
+
+        assert report.eyes_reacted == 0
+        assert report.acked == 1
+        assert backend.reactions == [("C1", "1.0", "pray")]
+
+    def test_noted_cas_lost_returns_without_counting(self) -> None:
+        # Nothing-to-do route but _handle_noted → False (a concurrent cycle
+        # won the CAS): nothing is counted and we return before orchestration.
+        row = _row("thanks")
+        backend = RecordingBackend()
+        report = SlackAnswerReport()
+
+        with patch.object(type(row), "mark_loop_replied", return_value=False):
+            _process_unit(backend, _Unit([row]), report, _NOTHING_TO_DO)
+
+        assert report.acked == 0
+        assert report.dispatched == 0
+
+    def test_orchestrate_cas_lost_does_not_count_dispatched(self) -> None:
+        # A work-implying route whose CAS is lost: the dispatched counter
+        # stays at zero and no lane is minted.
+        row = _row("fix the build")
+        backend = RecordingBackend()
+        report = SlackAnswerReport()
+
+        with patch.object(type(row), "mark_loop_replied", return_value=False):
+            _process_unit(backend, _Unit([row]), report, _NEEDS_A_LANE)
+
+        assert report.dispatched == 0
+        assert Task.objects.filter(phase="answering").count() == 0
+
+
+class TestNoBackendSkip:
+    def test_none_backend_is_skipped_not_an_error(self) -> None:
+        _row("thanks")
+        report = run_slack_answer_cycle(messaging_resolver=lambda _o: None)
+
+        assert report.skipped_no_backend == 1
+        assert report.errors == 0
+        assert report.processed == 1
+
+
+class TestDefaultResolver:
+    def test_default_resolver_delegates_to_factory(self) -> None:
+        sentinel = object()
+        with patch(
+            "teatree.core.backend_factory.messaging_from_overlay",
+            return_value=sentinel,
+        ) as factory:
+            assert _default_resolver("acme") is sentinel
+        factory.assert_called_once_with("acme")
+
+    def test_default_resolver_empty_overlay_passes_none(self) -> None:
+        with patch(
+            "teatree.core.backend_factory.messaging_from_overlay",
+            return_value=None,
+        ) as factory:
+            assert _default_resolver("") is None
+        factory.assert_called_once_with(None)

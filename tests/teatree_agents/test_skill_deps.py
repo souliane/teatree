@@ -1,0 +1,166 @@
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+import teatree.skill_support.loading as skill_loading_mod
+from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.skill_support.loading import SkillLoadingPolicy, _git_remote_urls
+from tests._unreadable_file import skip_if_root
+
+
+def test_resolve_skill_bundle_basic(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'mypkg'\n", encoding="utf-8")
+
+    bundle = resolve_skill_bundle(
+        phase="coding",
+        overlay_skill_metadata={},
+    )
+
+    assert "code" in bundle
+
+
+def test_agent_launch_explicit_phase_and_skills_raises() -> None:
+    policy = SkillLoadingPolicy()
+    with pytest.raises(ValueError, match="cannot be used together"):
+        policy.select_for_agent_launch(
+            cwd=Path("/tmp"),
+            overlay_skill_metadata={},
+            ticket_status="",
+            explicit_phase="coding",
+            explicit_skills=["code"],
+            overlay_active=False,
+        )
+
+
+def test_agent_launch_unknown_explicit_phase_raises() -> None:
+    policy = SkillLoadingPolicy()
+    with pytest.raises(ValueError, match="Unknown phase"):
+        policy.select_for_agent_launch(
+            cwd=Path("/tmp"),
+            overlay_skill_metadata={},
+            ticket_status="",
+            explicit_phase="nonsense",
+            explicit_skills=[],
+            overlay_active=False,
+        )
+
+
+def test_agent_launch_valid_explicit_phase(tmp_path: Path) -> None:
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_agent_launch(
+        cwd=tmp_path,
+        overlay_skill_metadata={},
+        ticket_status="",
+        explicit_phase="coding",
+        explicit_skills=[],
+        overlay_active=False,
+    )
+    assert result.lifecycle_skill == "code"
+    assert "code" in result.skills
+
+
+def test_agent_launch_status_without_lifecycle_asks_user(tmp_path: Path) -> None:
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_agent_launch(
+        cwd=tmp_path,
+        overlay_skill_metadata={},
+        ticket_status="unknown-status",
+        explicit_phase="",
+        explicit_skills=[],
+        overlay_active=False,
+    )
+    assert result.ask_user is True
+
+
+def test_prompt_hook_with_supplementary_skills(tmp_path: Path) -> None:
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_prompt_hook(
+        cwd=tmp_path,
+        overlay_skill_metadata={},
+        loaded_skills=set(),
+        supplementary_skills=["custom-skill"],
+    )
+    assert "custom-skill" in result.skills
+
+
+def test_prompt_hook_no_context(tmp_path: Path) -> None:
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_prompt_hook(
+        cwd=tmp_path,
+        overlay_skill_metadata={},
+        loaded_skills=set(),
+    )
+    assert result.lifecycle_skill == ""
+    assert result.skills == []
+
+
+def test_prompt_hook_does_not_surface_overlay_skill(tmp_path: Path) -> None:
+    # The prompt hook surfaces framework/cwd skills only; the overlay's own
+    # skill loads through the dispatch paths, never the prompt hook.
+    policy = SkillLoadingPolicy()
+    result = policy.select_for_prompt_hook(
+        cwd=tmp_path,
+        overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": ["*"]},
+        loaded_skills=set(),
+    )
+    assert "t3-acme" not in result.skills
+
+
+def test_detect_framework_python_from_setup_py(tmp_path: Path) -> None:
+    (tmp_path / "setup.py").write_text("from setuptools import setup\n")
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-python"]
+
+
+def test_detect_framework_python_from_pyproject(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "foo"\n')
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-python"]
+
+
+def test_detect_framework_django_from_pyproject(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text('dependencies = ["django>=5"]\n')
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == ["ac-django"]
+
+
+@skip_if_root
+def test_detect_framework_pyproject_read_error(tmp_path: Path) -> None:
+    pp = tmp_path / "pyproject.toml"
+    pp.write_text("placeholder", encoding="utf-8")
+    pp.chmod(0o000)
+    try:
+        assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == []
+    finally:
+        pp.chmod(0o644)
+
+
+def test_detect_framework_nothing(tmp_path: Path) -> None:
+    assert SkillLoadingPolicy.detect_framework_skills(tmp_path) == []
+
+
+def test_git_remote_urls_fallback_to_verbose(tmp_path: Path) -> None:
+    with (
+        patch.object(skill_loading_mod.git, "remote_url", return_value=""),
+        patch.object(
+            skill_loading_mod.git,
+            "run",
+            return_value="upstream\tgit@gitlab.com:foo/bar (fetch)\nupstream\tgit@gitlab.com:foo/bar (push)",
+        ),
+    ):
+        urls = _git_remote_urls(tmp_path)
+
+    assert urls == ["git@gitlab.com:foo/bar"]
+
+
+def test_git_remote_urls_all_fail(tmp_path: Path) -> None:
+    with (
+        patch.object(skill_loading_mod.git, "remote_url", return_value=""),
+        patch.object(skill_loading_mod.git, "run", return_value=""),
+    ):
+        urls = _git_remote_urls(tmp_path)
+    assert urls == []
+
+
+def test_git_remote_urls_origin_found(tmp_path: Path) -> None:
+    with patch.object(skill_loading_mod.git, "remote_url", return_value="git@gitlab.com:foo/bar"):
+        urls = _git_remote_urls(tmp_path)
+    assert urls == ["git@gitlab.com:foo/bar"]

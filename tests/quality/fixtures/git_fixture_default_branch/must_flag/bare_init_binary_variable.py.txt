@@ -1,0 +1,9 @@
+import subprocess
+
+
+def setup(p):
+    # The argv's executable element is a binary-name variable, not the literal
+    # ``"git"``. The vector is still a git call and the bare init still assumes
+    # the ambient default branch — it must be flagged.
+    subprocess.run([_GIT, "init", "-q", str(p)], check=True)
+    subprocess.run([_GIT, "-C", str(p), "worktree", "add", str(p / "wt"), "main"], check=True)

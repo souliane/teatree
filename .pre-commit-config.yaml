@@ -1,0 +1,600 @@
+default_install_hook_types: [commit-msg, pre-commit, pre-push]
+default_stages: [commit, manual]
+fail_fast: true
+
+repos:
+  # Phase 0 - Safety
+  - repo: local
+    hooks:
+      - id: no-commit-on-merged-branch
+        name: Refuse commits on branches whose remote is gone (merged PR)
+        language: system
+        entry: >-
+          bash -c 'b=$(git symbolic-ref -q --short HEAD) || exit 0;
+          [ "$(git for-each-ref --format="%(upstream:track)" "refs/heads/$b")" = "[gone]" ] || exit 0;
+          echo "teatree: remote tracking branch is gone (PR merged?). Push to a new branch or use --no-verify.";
+          exit 1'
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
+
+      - id: refuse-main-clone-commit
+        name: Refuse commits in the main clone on a non-default branch (worktree-first)
+        language: system
+        entry: scripts/hooks/refuse-main-clone-commit.sh
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
+
+      - id: refuse-public-push-with-leak
+        name: Refuse pushing a privacy-leaking diff to a PUBLIC repo (#685)
+        language: system
+        entry: scripts/hooks/refuse-public-push-with-leak.sh
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
+      - id: refuse-push-to-foreign-mr
+        name: Refuse pushing to a branch that backs a teammate's open MR (#2211)
+        language: system
+        entry: scripts/hooks/refuse-push-to-foreign-mr.sh
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
+  # Phase 1 - Init
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 5ab6bd930e86ba0e929eedcee2be458f6b8e4936  # 0.8.16
+    hooks:
+      - id: uv-lock
+      - id: uv-sync
+        args: ["--locked", "--all-packages"]
+
+  # Phase 2 - Formatters
+  # django-upgrade rewrites deprecated Django patterns to the target-version idiom.
+  # It runs before the formatters so ruff reformats its output to project style.
+  # Target is the supported floor (django>=X.Y in pyproject.toml) so rewrites stay
+  # compatible with every Django version the project supports.
+  - repo: https://github.com/adamchainz/django-upgrade
+    rev: 5adcd2667f92470d6637737d60c5d3fc00105e6b  # 1.31.1
+    hooks:
+      - id: django-upgrade
+        args: [--target-version, "6.1"]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: fa93bc3224c614a0e9786d3e2d3d48edcca246eb  # v0.15.1
+    hooks:
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
+    hooks:
+      # stages:[commit] REQUIRED: without stage metadata prek runs these at pre-push too;
+      # pin to commit (CI lint re-runs them whole-tree) so the push stays a fast signal.
+      - id: end-of-file-fixer
+        stages: [commit]
+      - id: trailing-whitespace
+        stages: [commit]
+      - id: mixed-line-ending
+        args: [--fix=lf]
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: d174eb7a8f35e05d4065c82d375ad84aa0b32352  # v0.17.2
+    hooks:
+      - id: markdownlint-cli2
+        args: [--fix]
+  - repo: https://github.com/tox-dev/pyproject-fmt
+    rev: 8a22e281b3f6d1bb298aaabfc165a943a943882c  # v2.7.0
+    hooks:
+      - id: pyproject-fmt
+        files: ^pyproject\.toml$
+  - repo: https://github.com/pappasam/toml-sort
+    rev: 4ec24891e200ae663aa2a7cecd19516080777133  # v0.24.2
+    hooks:
+      # `config/defaults.toml` is excluded because its LAYOUT is load-bearing, not
+      # cosmetic: `[teatree]` leads under the hand-written header (the renderer reproduces
+      # the file byte-for-byte, so a reshuffle would show as churn in every snapshot diff),
+      # and the `[loops.<name>]` table order IS the seed order pinned against the frozen
+      # `0001_initial` copy. toml-sort would sort the top-level tables alphabetically and
+      # move `[teatree]` last. The `[teatree]` keys stay sorted by the renderer itself.
+      - id: toml-sort-fix
+        exclude: ^(pyproject\.toml|uv\.lock|src/teatree/config/defaults\.toml)$
+
+  # Phase 3 - Fast syntax
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=600]
+        stages: [commit]  # pin off pre-push (see end-of-file-fixer above); CI lint re-runs it
+        # Vendored dashboard JS (mermaid is ~3 MB minified) is load-bearing at
+        # runtime — the templates load it via {% static %}, so it must be tracked.
+        exclude: ^src/teatree/dash/static/dash/js/.*\.min\.js$
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+
+  # Phase 4 - Linters
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: fa93bc3224c614a0e9786d3e2d3d48edcca246eb  # v0.15.1
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+  - repo: local
+    hooks:
+      - id: tach
+        name: tach
+        entry: uv run tach check
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
+      - id: import-linter
+        name: import-linter (transitive/laundered import boundaries)
+        entry: uv run lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
+      - id: tach-modules-declared
+        name: Every teatree package declared in tach.toml (no blind spots)
+        entry: uv run python scripts/hooks/check_tach_modules_declared.py
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: jscpd
+        name: jscpd (copy/paste duplication in src/teatree — minLines 6 / blocking ratchet 1.5%)
+        entry: jscpd --config .jscpd.json src/teatree
+        language: node
+        additional_dependencies: ["jscpd@4.2.4"]
+        pass_filenames: false
+        stages: [commit]
+        files: ^src/teatree/.*\.py$
+  - repo: https://github.com/pre-commit/pygrep-hooks
+    rev: 3a6eb0fadf60b3cccfd80bad9dbb6fae7e47b316  # v1.10.0
+    hooks:
+      - id: text-unicode-replacement-char
+  - repo: https://github.com/codespell-project/codespell
+    rev: 63c8f8312b7559622c0d82815639671ae42132ac  # v2.4.1
+    hooks:
+      - id: codespell
+        args: [--write-changes]
+  - repo: https://github.com/editorconfig-checker/editorconfig-checker.python
+    rev: 61529b21391331d7cfd1f191df6293534a1fd79a  # v3.4.0
+    hooks:
+      - id: editorconfig-checker
+
+  # Phase 5 - Type check
+  - repo: local
+    hooks:
+      - id: ty-check
+        name: ty-check
+        language: system
+        entry: uv run ty check
+        pass_filenames: false
+
+  # Phase 6 - Security & custom
+  # Local, not the upstream `gitleaks/gitleaks` hook, for two measured reasons.
+  # (1) That hook is `language: golang`, so a cold cache builds gitleaks from source
+  # against proxy.golang.org and sum.golang.org — a network dependency that has failed
+  # repeatedly with `HTTP/2 stream ... INTERNAL_ERROR`. `scripts/hooks/gitleaks.py` fetches the
+  # sha256-pinned prebuilt release instead.
+  # (2) Its entry is `gitleaks git --staged`, which on a clean checkout scans the EMPTY
+  # staged set, so inside a `--all-files` CI run it is a gate over nothing. Staged-mode is
+  # the right scope for a COMMIT gate; a whole-tree `gitleaks dir` scan of committed
+  # content belongs in a CI lane of its own.
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (staged diff)
+        # Bare `python3`, not `uv run`: the bootstrap is stdlib-only on purpose, so the
+        # secret gate does not need the project venv to have been synced.
+        entry: python3 scripts/hooks/gitleaks.py git --staged --redact --no-banner
+        language: system
+        pass_filenames: false
+        always_run: true
+  - repo: local
+    hooks:
+      - id: scripts-no-raw-sys-argv
+        name: scripts-no-raw-sys-argv
+        language: pygrep
+        entry: 'sys\.argv'
+        files: 'scripts/[^_][^/]*\.py$'
+      - id: banned-terms
+        name: banned-terms
+        language: script
+        entry: scripts/hooks/check-banned-terms.sh --diff-only
+        types: [text]
+        exclude: |
+          (?x)^(
+            \.pre-commit-config\.yaml |
+            scripts/hooks/.* |
+            tests/test_no_overlay_leak_hook\.py
+          )$
+      - id: no-overlay-leak
+        name: no overlay names in src/teatree or docs (BLUEPRINT § 1)
+        language: system
+        entry: uv run python scripts/hooks/check_no_overlay_leak.py
+        files: '^(src/teatree|docs)/'
+        pass_filenames: true
+
+  # Phase 6b - ac-django testing conventions (ast-grep; grandfathered INLINE via
+  # rule-scoped `# ast-grep-ignore: <rule-id>` comments — no baseline file, no
+  # count cap. The colon form is used over the bracket form so it coexists with
+  # ruff's ERA001 preview rule.) ast-grep is pinned to 0.42.3 by the hook wrapper
+  # (resolved via `uvx --from ast-grep-cli==0.42.3`). The pyproject hook
+  # grandfathers the three existing complexity-ignore entries via --grandfather.
+  - repo: https://github.com/souliane/skills
+    rev: 92d6cfa57e08b44c27573b09183256834df59a8b
+    hooks:
+      - id: ac-django-no-pytest-django-db
+        files: ^tests/.*\.py$
+      - id: ac-django-testcase-no-pytest-parametrize
+        files: ^tests/.*\.py$
+      - id: ac-django-no-complexity-suppressions
+        files: ^(src/teatree/.*\.py|tests/.*\.py)$
+      - id: ac-django-no-pyproject-complexity
+        files: ^pyproject\.toml$
+        args:
+          - --grandfather=C901@lint.per-file-ignores.scripts/**/*.py
+          - --grandfather=PLR0912@lint.per-file-ignores.scripts/**/*.py
+          - --grandfather=PLR0904@lint.per-file-ignores.tests/**/*.py
+
+  # Phase 7 - Project-specific
+  - repo: local
+    hooks:
+      - id: check-linear-migrations
+        name: django-linear-migrations (forked migration graph guard)
+        language: system
+        entry: uv run python scripts/hooks/check_linear_migrations.py
+        pass_filenames: false
+        files: ^src/teatree/.*/migrations/
+      - id: validate-skill-md
+        name: Validate SKILL.md frontmatter
+        language: system
+        entry: uv run python -m teatree.skill_support.schema
+        files: 'SKILL\.md$'
+        types: [markdown]
+      - id: validate-skill-refs
+        name: Validate agent skill references resolve
+        language: system
+        entry: uv run python -m teatree.skill_support.ref_validator
+        pass_filenames: false
+        files: '^(agents/.*\.md|skills/.*/SKILL\.md)$'
+      - id: update-readme-skills
+        name: Update README skills catalogue
+        language: system
+        entry: uv run scripts/hooks/update_readme_skills.py
+        pass_filenames: false
+        always_run: true
+
+  # Phase 7a - Auto-generated docs
+  - repo: local
+    hooks:
+      - id: dependency-graph
+        name: Update tach dependency graph in docs/dependency-graph.md
+        language: system
+        entry: uv run python scripts/hooks/update_dependency_graph.py
+        pass_filenames: false
+        files: (tach\.toml|src/teatree/)
+      - id: generate-cli-reference
+        name: Generate CLI reference docs
+        language: system
+        entry: uv run python scripts/hooks/generate_cli_reference.py
+        pass_filenames: false
+        files: ^src/teatree/cli/
+      - id: cli-reference-sync
+        name: CLI reference doc in sync with the command tree
+        language: system
+        entry: uv run python scripts/hooks/check_cli_reference_sync.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: generate-fsm-diagrams
+        name: Generate the FSM lifecycle diagrams from the models
+        language: system
+        entry: uv run python scripts/hooks/generate_fsm_diagrams.py
+        pass_filenames: false
+        files: ^src/teatree/core/(models/(worktree|pull_request|ticket)\.py|diagrams\.py)$
+      - id: fsm-diagrams-sync
+        name: FSM lifecycle diagrams in sync with their models
+        language: system
+        entry: uv run python scripts/hooks/check_fsm_diagrams_sync.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: generate-dashboard-snapshot
+        name: Generate the admin-dashboard HTML snapshot from the models
+        language: system
+        entry: uv run python scripts/hooks/generate_dashboard_snapshot.py
+        pass_filenames: false
+        # Also fires on any registered model module: the snapshot lists every
+        # model's verbose_name, so a verbose_name change must regenerate it (the
+        # FSM-diagram hook keys on its model modules the same way). The /admin/
+        # re-skin adds two HTML-affecting inputs: the base_site.html override
+        # (injects the token <link>s the snapshot captures) and admin-theme.css.
+        files: ^src/teatree/(core/(admin\.py|dashboard_snapshot\.py|models/.*\.py)|templates/admin/base_site\.html|dash/static/dash/css/admin-theme\.css)$
+      - id: generate-cli-output-snapshot
+        name: Generate the representative CLI-output fixture from the CLI
+        language: system
+        entry: uv run python scripts/hooks/generate_cli_output_snapshot.py
+        pass_filenames: false
+        files: ^src/teatree/cli/
+      - id: generate-management-commands-doc
+        name: Generate management-commands reference doc
+        language: system
+        entry: uv run python scripts/hooks/generate_management_commands_doc.py
+        pass_filenames: false
+        files: ^src/teatree/core/management/commands/
+      - id: generate-antipattern-catalog
+        name: Generate anti-pattern catalog doc
+        language: system
+        entry: uv run python scripts/hooks/generate_antipattern_catalog.py
+        pass_filenames: false
+        files: ^src/teatree/quality/antipatterns\.yaml$
+      - id: antipattern-catalog-sync
+        name: Anti-pattern catalog doc in sync with antipatterns.yaml
+        language: system
+        entry: uv run python scripts/hooks/check_antipattern_catalog_sync.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: check-antipatterns
+        name: Greppable anti-patterns in the staged diff (manual, non-gating)
+        language: system
+        entry: uv run python scripts/hooks/check_antipatterns.py
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+      - id: test-shape
+        name: Test-shape report (near-duplicate tests + ratio regression, advisory)
+        language: system
+        entry: uv run python scripts/hooks/check_test_shape.py
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+      - id: test-path-mirror
+        name: Test-path-mirror ratchet (test files mirror src/teatree/<pkg>/...; promotes to [push] once baseline is low)
+        language: system
+        entry: uv run python scripts/hooks/check_test_path_mirror.py
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+      - id: eval-pinned-regressions
+        name: Pinned-regressions eval lane (every past process failure pinned as a deterministic git/FSM check; token-free)
+        language: system
+        entry: uv run t3 eval pinned-regressions
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
+  # Phase 7b - Quality gate guard
+  - repo: local
+    hooks:
+      - id: quality-gates
+        name: Detect quality gate relaxations
+        language: system
+        entry: uv run python scripts/hooks/check_quality_gates.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: module-health
+        name: Enforce module health (LOC, OOP, typed data)
+        language: system
+        entry: uv run python scripts/hooks/check_module_health.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: check-chokepoints
+        name: Chokepoint call-site authorization (registry-driven)
+        language: system
+        entry: uv run python scripts/hooks/check_chokepoints.py
+        types: [python]
+        files: ^src/teatree/
+      - id: check-url-classify
+        name: PR/MR-URL classification regexes only in teatree.url_classify
+        language: system
+        entry: uv run python scripts/hooks/check_url_classify.py
+        types: [python]
+        files: ^src/teatree/
+      - id: no-silent-skip
+        name: Ban unconditionally-disabled tests (skip / skipif(True))
+        language: system
+        entry: uv run python scripts/hooks/check_no_silent_skip.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: broad-except-must-observe
+        name: Broad-except must log/raise (warn-first, manual stage)
+        language: system
+        entry: uv run python scripts/hooks/check_broad_except.py
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+      - id: skill-prose-ban
+        name: Ban new imperative rules in skill MD without companion code (#140)
+        language: system
+        entry: uv run python scripts/hooks/check_skill_prose.py
+        pass_filenames: false
+        always_run: true
+
+  # Phase 7b2 - BLUEPRINT sync
+  - repo: local
+    hooks:
+      - id: blueprint-sync
+        name: Check BLUEPRINT.md updated with source changes
+        language: system
+        entry: uv run python scripts/hooks/check_blueprint_sync.py
+        always_run: true
+        stages: [commit-msg]
+      - id: blueprint-invariant-numbering
+        name: BLUEPRINT.md §17.1 invariants are a gapless 1..N (#836 §17.6 gate 1)
+        language: system
+        entry: uv run python scripts/hooks/check_blueprint_invariant_numbering.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: gate-relaxation
+        name: Anti-relaxation + tach-soundness gate (§17.6.1/§17.6.2, #850)
+        language: system
+        entry: uv run python scripts/hooks/check_gate_relaxation.py
+        pass_filenames: false
+        always_run: true
+
+  # Phase 7c - Version sync
+  - repo: local
+    hooks:
+      - id: version-sync
+        name: Version sync (plugin.json == pyproject.toml == apm.yml)
+        language: system
+        entry: uv run python scripts/hooks/check_version_sync.py
+        pass_filenames: false
+        always_run: true
+
+  # Phase 8 - Slow (dependency audit + SBOM, manual-only — CI runs them on every PR)
+  - repo: local
+    hooks:
+      # Hook ``id`` kept as ``uv-audit`` so the PR-sweep scanner
+      # (``src/teatree/loop/scanners/pr_sweep.py``, ``UV_AUDIT_CHECK_NAME``)
+      # and ``SKIP=uv-audit`` references in CI keep working. Inner tool is
+      # ``pip-audit`` because ``uv audit`` is still preview and broke on
+      # astral-sh/uv#19492 — see souliane/teatree#1264.
+      - id: uv-audit
+        name: pip audit
+        language: system
+        entry: bash -c 'uv export --format requirements-txt --no-emit-project --no-emit-workspace --no-header --quiet > requirements.audit.txt && uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt; rc=$?; rm -f requirements.audit.txt; exit $rc'
+        pass_filenames: false
+        files: ^(pyproject\.toml|uv\.lock)$
+        stages: [manual]
+      - id: cyclonedx-sbom
+        name: Generate CycloneDX SBOM
+        language: system
+        entry: scripts/hooks/generate_sbom.sh
+        pass_filenames: false
+        files: ^(pyproject\.toml|uv\.lock)$
+        stages: [manual]
+
+  # Phase 8b - Pre-push
+  # No FULL-suite pytest gate here on purpose: the whole suite is CI's job, never
+  # the local push path. A host under load times out unrelated wall-clock and
+  # concurrency tests and blocks the push (#112/#21/#38). push -> CI is the gate.
+  # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) and the exact
+  # full-CI predicate (dev/ci-parity.sh) stay as explicit opt-ins. The push gate
+  # below (dev/push-gate.sh, #122) runs the never-lockout safety contract plus the
+  # incremental push gate -- the scoped doctest (Engine A) + scoped ast-grep
+  # regression scan (Engine B), FULL on any uncertainty, behind the DB-home
+  # `incremental_push_gate` flag (ON by default => scoped to the diff; OFF =>
+  # whole-tree both, the pre-#122 run). The broad tests/quality directory is CI-only
+  # (~420s locally even with push_heavy deselected -- it hit the push wall-clock cap);
+  # CI's test-shard lane runs it whole-tree on every PR, so relocating it off the push
+  # path loses no coverage. Guarded by tests/test_no_full_suite_on_pre_push.py.
+  - repo: local
+    hooks:
+      - id: ci-critical-parity
+        name: CI-critical parity (never-lockout contract + incremental push gate; path-scoped)
+        language: system
+        entry: dev/push-gate.sh
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+      - id: doc-update-gate
+        name: README/BLUEPRINT update gate (#1461)
+        language: system
+        entry: uv run python scripts/hooks/check_doc_update.py
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+      - id: e2e-no-skip-gate
+        name: E2E no-skip gate (no test.skip/only/fixme or // TODO in staged specs)
+        language: system
+        entry: uv run python scripts/hooks/check_e2e_no_skip.py
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+      - id: snapshot-baseline-gate
+        name: Snapshot-baseline gate (staged visual baseline needs a recorded attestation)
+        language: system
+        entry: uv run python scripts/hooks/check_snapshot_baseline.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
+      - id: pr-body-stray
+        name: Refuse a staged PR/MR body scratch file (belongs in a temp file, never the repo)
+        language: system
+        entry: uv run python scripts/hooks/check_pr_body_stray.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit]
+      - id: comment-density
+        name: Near-zero-comments gate (added comments must not restate the code)
+        language: system
+        entry: uv run python scripts/hooks/check_comment_density.py
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+      - id: ensure-pr
+        name: ensure PR exists (no-orphan invariant)
+        language: system
+        entry: uv run t3 teatree pr ensure-pr
+        pass_filenames: false
+        always_run: true
+        stages: [push]
+
+  # Phase 9a - Named regression-detector rules (blocking; zero-findings on main).
+  # Migrated off semgrep to ast-grep (souliane/teatree#87): each rule lives under
+  # `.ast-grep/blocking/<id>.yml`, declared in
+  # `src/teatree/quality/regression_rules.yaml`, and the gate runs the pinned
+  # ast-grep engine (uvx --from ast-grep-cli==<pin>) over the tree, exiting
+  # non-zero on any re-introduced bug. The same scan powers the zero-findings
+  # conformance test (tests/quality/test_regression_rules.py). The hook FAILS
+  # LOUD (exit 2) when the engine is absent — never a silent skip-as-pass.
+  - repo: local
+    hooks:
+      - id: regression-rules
+        name: Named regression-detector rules (ast-grep; blocking; zero-findings on main)
+        language: system
+        entry: uv run python scripts/hooks/check_regression_rules.py
+        pass_filenames: false
+        always_run: true
+
+  # Phase 9b - Manual: public OWASP/CI rulesets via the semgrep registry. These
+  # are NOT the blocking regression rules (those moved to ast-grep above) — they
+  # are semgrep-registry rulesets (`p/ci`, `p/owasp-top-ten`) that ast-grep
+  # cannot run, so they are kept here under their own manual stage. Removing them
+  # would silently drop OWASP coverage.
+  - repo: https://github.com/semgrep/semgrep
+    rev: 4cc850aff696dce0f6beddd4bb72db7f4c9abbc0  # v1.165.0 (parses PEP 695 `type` statements)
+    hooks:
+      - id: semgrep
+        additional_dependencies: [semgrep]
+        args: [--config=p/ci, --config=p/owasp-top-ten, --error, --timeout=120]
+        stages: [manual]
+  # Phase 10 - Commit-msg
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: 37b5f04f364960e8e7b361d0dbaaf8f28ec06392  # v4.2.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        # Upstream's manifest sets `always_run: true`. That is safe only while this
+        # config is the repo-ROOT workspace, where `.git/COMMIT_EDITMSG` sits inside
+        # the workspace and is passed as the hook's one filename. When the config is
+        # run as a NESTED workspace (this tree vendored under another repo) the commit
+        # message file is outside the workspace root and is filtered out, yet
+        # `always_run` still fires the hook — with no filename. argparse then binds the
+        # LAST type below to the required `input` positional and the hook dies with
+        # `FileNotFoundError: 'test'` on every commit, which is how a whole repo learns
+        # to skip the hook. `always_run: false` turns that crash into a clean skip and
+        # changes nothing where this config is the root: the file is present, so the
+        # hook runs and rejects a non-conventional message exactly as before.
+        always_run: false
+        args:
+          - --verbose
+          - build
+          - chore
+          - ci
+          - docs
+          - feat
+          - fix
+          - perf
+          - refactor
+          - revert
+          - style
+          - test

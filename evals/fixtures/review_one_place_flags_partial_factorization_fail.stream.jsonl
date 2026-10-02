@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review-one-place-partial-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Clean. The helper removes the duplicated lines from the main call sites, and the locale string and appended flag make the other adapters reasonable exceptions."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
