@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.factory.operational_health import HealthStatus, read_health
@@ -28,7 +29,7 @@ from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict
 
-from ._git_origin import init_bare, init_client, ref_sha, require_credential
+from ._git_origin import init_bare, init_client, private_origin, ref_sha
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend
 
 _ISSUE = "https://github.com/souliane/teatree/issues/4242"
+_ROUTED_TOKEN = "routed-token"
 
 
 @dataclass
@@ -67,6 +69,11 @@ def _route_claims(client: Path):
     return patch.object(fleet_claim_wire, "resolve_claim_repo", return_value=str(client))
 
 
+def _route_credential():
+    routed = ForgeTokenResolution("github_token", "acme", ForgeTokenState.TOKEN, token=_ROUTED_TOKEN)
+    return patch("teatree.core.forge_push.resolve_repo_token", return_value=routed)
+
+
 class TestDispatchClaim(TestCase):
     def test_acquires_ref_and_stamps_fencing_sha(self) -> None:
         tmp = Path(self._make_tmp())
@@ -92,12 +99,9 @@ class TestDispatchClaim(TestCase):
         assert second is None
 
     def test_claims_and_heartbeats_with_the_routed_credential_the_origin_requires(self) -> None:
-        tmp = Path(self._make_tmp())
-        bare = require_credential(init_bare(tmp / "origin.git"), "routed-token")
-        client = init_client(tmp / "client", bare)
-        routed = ForgeTokenResolution("github_token", "acme", ForgeTokenState.TOKEN, token="routed-token")
+        bare, client = private_origin(Path(self._make_tmp()), _ROUTED_TOKEN)
         ref = fleet_claim.claim_ref(_ISSUE)
-        with _route_claims(client), patch("teatree.core.forge_push.resolve_repo_token", return_value=routed):
+        with _route_claims(client), _route_credential():
             row = _scanner()._claim(_ISSUE)
             assert row is not None
             claimed_sha = row.claim_ref_sha
@@ -107,6 +111,18 @@ class TestDispatchClaim(TestCase):
 
         row.refresh_from_db()
         assert row.claim_ref_sha == ref_sha(bare, ref) != claimed_sha
+
+    def test_steals_an_expired_claim_with_the_routed_credential_the_origin_requires(self) -> None:
+        bare, client = private_origin(Path(self._make_tmp()), _ROUTED_TOKEN)
+        expired = fleet_claim.acquire(
+            _ISSUE, repo=str(client), ttl_seconds=10.0, now=1000.0, extra_env={"GH_TOKEN": _ROUTED_TOKEN}
+        )
+        assert expired is not None
+        with _route_claims(client), _route_credential():
+            row = _scanner()._claim(_ISSUE)
+
+        assert row is not None
+        assert row.claim_ref_sha == ref_sha(bare, fleet_claim.claim_ref(_ISSUE)) != expired.sha
 
     def test_unreachable_ref_infra_fails_safe_no_row(self) -> None:
         tmp = Path(self._make_tmp())
@@ -223,6 +239,10 @@ class TestShipFenceGate(TestCase):
         holder = init_client(tmp / "holder", bare)
         claim = fleet_claim.acquire(_ISSUE, repo=str(holder))
         assert claim is not None
+        ticket, worktree = self._fenced_ticket(holder, claim)
+        return ticket, worktree, claim.sha, bare
+
+    def _fenced_ticket(self, holder: Path, claim: fleet_claim.Claim) -> tuple[Ticket, Worktree]:
         ticket = Ticket.objects.create(overlay="acme", issue_url=_ISSUE, state=Ticket.State.SELF_REVIEWED)
         worktree = Worktree.objects.create(
             ticket=ticket, overlay="acme", repo_path=str(holder), branch="feat", extra={"worktree_path": str(holder)}
@@ -233,12 +253,23 @@ class TestShipFenceGate(TestCase):
         ImplementedIssueMarker.objects.cache_from_fleet_claim(
             _ISSUE, "acme", claim_ref_sha=claim.sha, claimed_by_instance=claim.instance_id
         )
-        return ticket, worktree, claim.sha, bare
+        return ticket, worktree
 
     def test_passes_when_claim_still_held(self) -> None:
         tmp = self._tmp()
         ticket, worktree, _sha, _bare = self._ship_setup(tmp)
         assert run_fleet_claim_fence_gate(ticket, worktree) is None
+
+    def test_passes_on_a_private_origin_with_the_routed_credential(self) -> None:
+        _bare, holder = private_origin(self._tmp(), _ROUTED_TOKEN)
+        claim = fleet_claim.acquire(_ISSUE, repo=str(holder), extra_env={"GH_TOKEN": _ROUTED_TOKEN})
+        assert claim is not None
+        ticket, worktree = self._fenced_ticket(holder, claim)
+        with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="credential refused"):
+            fleet_claim.is_held_by_me(_ISSUE, claim, repo=str(holder))
+
+        with _route_credential():
+            assert run_fleet_claim_fence_gate(ticket, worktree) is None
 
     def test_blocks_when_claim_was_stolen(self) -> None:
         tmp = self._tmp()
