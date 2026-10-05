@@ -9,6 +9,7 @@ than silently classifying it as a benign open PR.
 
 import logging
 
+from teatree.loop.dispatch import dispatch
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.my_prs_ci import BoundedCiEnricher, reset_ci_memo
 from teatree.utils.throttled_log import reset_throttle
@@ -141,3 +142,42 @@ class TestCiEnrichmentReachesTheRedLane:
         ).scan()
 
         assert reads == []
+
+
+def _gitlab_mr_whose_pipeline_is(status: str) -> dict[str, object]:
+    return {
+        "iid": 4,
+        "title": "GitLab MR",
+        "web_url": "https://gitlab.example.com/group/repo/-/merge_requests/4",
+        "head_pipeline": {"status": status},
+    }
+
+
+def _routes(status: str) -> list[tuple[str, str, str]]:
+    reset_throttle()
+    signals = MyPrsScanner(host=FakeCodeHost(user="alice", my_prs=[_gitlab_mr_whose_pipeline_is(status)])).scan()
+    return [(signal.kind, action.kind, action.zone) for signal in signals for action in dispatch([signal])]
+
+
+class TestOnlyARealFailureDispatchesDebug:
+    """Each pipeline state is decided explicitly: skipped is settled, manual waits on a person, failed is broken."""
+
+    def test_a_pipeline_every_job_of_which_was_skipped_is_settled_and_dispatches_no_debug(self) -> None:
+        assert _routes("skipped") == [("my_pr.open", "statusline", "in_flight")]
+
+    def test_a_manual_pipeline_waits_for_a_person_and_dispatches_no_debug(self) -> None:
+        assert _routes("manual") == [("my_pr.manual_action", "statusline", "action_needed")]
+
+    def test_a_manual_pipeline_is_reported_as_needing_a_manual_action(self) -> None:
+        reset_throttle()
+        (signal,) = MyPrsScanner(
+            host=FakeCodeHost(user="alice", my_prs=[_gitlab_mr_whose_pipeline_is("manual")])
+        ).scan()
+
+        assert "waiting for a manual action" in signal.summary
+
+    def test_control_a_failed_pipeline_still_dispatches_debug(self) -> None:
+        assert _routes("failed") == [
+            ("my_pr.failed", "agent", "t3:debug"),
+            ("my_pr.failed", "statusline", "action_needed"),
+        ]
