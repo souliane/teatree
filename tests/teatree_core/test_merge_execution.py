@@ -34,7 +34,7 @@ from teatree.core.merge import (
 )
 from teatree.core.models import ClearRequest, MergeAudit, MergeClear, PullRequest, Session, Ticket, Worktree
 from teatree.utils.pr_ref import PrRef
-from tests._forge_stub import changed_files_stdout
+from tests._forge_stub import merge_path_stdout
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import CommandOverlay, record_merge_prerequisites_for_test, record_owned_pr_for_test
 
@@ -192,7 +192,7 @@ class _GhStub:
         if "pulls" in joined and "merge" in joined:
             moved = "Head branch was modified. Review and try the merge again. (409)"
             return (1, "", moved) if self.merge_rc != 0 else (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, changed_files_stdout(joined), "")
+        return (0, merge_path_stdout(joined), "")
 
 
 def _run(clear: MergeClear, stub: _GhStub, identity: str = "merge-loop") -> MergeOutcome:
@@ -398,7 +398,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             joined = " ".join(argv)
             if "headRefOid" in joined:
                 return (1, "", "boom")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_no_head),
@@ -418,7 +418,7 @@ class TestMergeExecutionEdgeCases(TestCase):
                 return probe
             if "pulls" in joined and "merge" in joined:
                 return (1, "", "500 Internal Server Error")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_merge_500),
@@ -524,7 +524,7 @@ class TestMergeExecutionEdgeCases(TestCase):
                 return (0, "false", "")
             if "statusCheckRollup" in joined:
                 return (1, "", "api error")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_rollup_rc1),
@@ -597,7 +597,7 @@ class TestMergeExecutionEdgeCases(TestCase):
                 return probe
             if "pulls" in joined and "merge" in joined:
                 return (0, "not-json-at-all", "")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_bad_merge_json):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -669,7 +669,7 @@ class _LostPostHookGhStub:
             return (0, self._merge_state_payload(), "")
         if "pulls" in joined and "merge" in joined:
             return self._do_merge()
-        return (0, changed_files_stdout(joined), "")
+        return (0, merge_path_stdout(joined), "")
 
 
 class TestLostPostHookRecoverable(TestCase):
@@ -740,7 +740,7 @@ class TestLostPostHookRecoverable(TestCase):
                 return (0, _GREEN, "")
             if "state,mergeCommit" in joined:
                 return (0, '{"state": "MERGED", "mergeCommit": {"oid": "othermerge0"}}', "")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_merged_other_head),
@@ -765,7 +765,7 @@ class TestLostPostHookRecoverable(TestCase):
                 return probe
             if "state,mergeCommit" in joined:
                 return (0, '{"state": "MERGED", "mergeCommit": null}', "")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_merged_no_commit):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -1158,7 +1158,7 @@ class _TransientThenSuccessGhStub:
                 return (1, "", "unexpected end of JSON input")
             self.merged = True
             return (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, changed_files_stdout(joined), "")
+        return (0, merge_path_stdout(joined), "")
 
 
 class TestTransientMergeRetry(TestCase):
@@ -1225,7 +1225,7 @@ class TestTransientMergeRetry(TestCase):
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "Pull Request is not mergeable (405)")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.core.merge.execution.time.sleep") as sleep,
@@ -1252,7 +1252,7 @@ class TestTransientMergeRetry(TestCase):
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "Head branch was modified. Review and try the merge again. (409)")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.core.merge.execution.time.sleep"),
@@ -1285,7 +1285,7 @@ class TestTransientMergeRetry(TestCase):
                 # The merge lands at GitHub but the response is truncated.
                 state["merged"] = True
                 return (1, "", "unexpected end of JSON input")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.core.merge.execution.time.sleep"),
@@ -1323,7 +1323,7 @@ class TestTransientMergeRetry(TestCase):
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.core.merge.execution.time.sleep"),

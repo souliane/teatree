@@ -31,7 +31,7 @@ from django.test import TestCase
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr, pr_slug_resolution
 from teatree.core.models import MergeAudit, MergeClear, Session, Ticket
 from teatree.utils.pr_ref import PrRef
-from tests._forge_stub import changed_files_stdout
+from tests._forge_stub import merge_path_stdout
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import record_merge_prerequisites_for_test
 
@@ -81,7 +81,7 @@ class _Gh:
                 return answer
         if "pulls" in joined and "merge" in joined:
             return (0, json.dumps({"sha": "merged0deadbeef"}), "")
-        return (0, changed_files_stdout(joined), "")
+        return (0, merge_path_stdout(joined), "")
 
     def _answers(self) -> dict[str, tuple[int, str, str]]:
         """Each `gh --json` probe keyed by the field name that identifies it."""
@@ -254,7 +254,7 @@ class TestUnreadableHeadNeverNamesAForcePush(TestCase):
                 return (0, _DRIFTED_SHA, "") if _CANDIDATE in joined else (1, "", "no such PR")
             if "mergeCommit" in joined:
                 return (0, json.dumps({"state": "OPEN", "mergeCommit": None, "mergeable": "MERGEABLE"}), "")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_answers),

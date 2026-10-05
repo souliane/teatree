@@ -9,6 +9,7 @@ from teatree.core.backend_protocols import (
     MessagingBackend,
     PipelineRead,
     PrMergeState,
+    PrMessage,
     PrOpenState,
     PullRequestSpec,
     ReviewState,
@@ -247,8 +248,14 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return []
 
-    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
-        _ = (slug, pr_id, expected_head_oid)
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
+        _ = (slug, pr_id)
+        return None
+
+    def merge_pr_squash_bound(
+        self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage
+    ) -> ForgeMergeResult:
+        _ = (slug, pr_id, expected_head_oid, message)
         return ForgeMergeResult(returncode=0, stdout="", stderr="", merged_sha="")
 
 

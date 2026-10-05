@@ -18,7 +18,7 @@ the byte-for-byte error parity the keystone tests pin is unchanged.
 
 import json
 import logging
-from typing import cast
+from typing import NotRequired, TypedDict, cast
 
 import httpx
 
@@ -31,6 +31,7 @@ from teatree.core.backend_protocols import (
     ForgeMergeResult,
     MergeConflictState,
     PrMergeState,
+    PrMessage,
 )
 from teatree.types import RawAPIDict
 
@@ -52,6 +53,12 @@ _TRANSPORT_FAILURE_PREFIX = "temporary failure reaching the GitLab API"
 
 # GitLab merge methods that land a merge commit when ``squash`` is false; ``ff`` fast-forwards instead.
 _MERGE_COMMIT_METHODS = frozenset({"merge", "rebase_merge"})
+
+
+class _MergePayload(TypedDict):
+    sha: str
+    squash: bool
+    squash_commit_message: NotRequired[str]
 
 
 def _mr_endpoint(slug: str, pr_id: int) -> str:
@@ -236,10 +243,23 @@ class GitLabApiMergeRpc:
         paths = [entry.get("new_path") or entry.get("old_path") for entry in diffs]
         return [path.strip() for path in paths if isinstance(path, str) and path.strip()]
 
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
+        """The MR title and description, or ``None`` when the MR could not be read with a title."""
+        mr = self._fetch_mr(slug=slug, pr_id=pr_id)
+        if mr is None:
+            return None
+        title, description = mr.get("title"), mr.get("description") or ""
+        if not isinstance(title, str) or not title.strip() or not isinstance(description, str):
+            return None
+        return PrMessage(title=title, body=description)
+
     def merge_pr_squash_bound(
-        self, *, slug: str, pr_id: int, expected_head_oid: str, squash: bool = True
+        self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
     ) -> ForgeMergeResult:
         """``PUT merge_requests/<iid>/merge`` bound to *expected_head_oid*, squashed unless ``squash=False``.
+
+        A squash publishes *message*'s title — GitLab's default ``%{title}`` squash
+        template, pinned so a project template naming ``%{description}`` cannot widen it.
 
         Issued NON-idempotently: a merge that reached GitLab and only lost its
         response must not be blindly replayed by the retry transport (the replay
@@ -250,12 +270,11 @@ class GitLabApiMergeRpc:
         endpoint = f"{_mr_endpoint(slug, pr_id)}/merge"
         if not squash and (refusal := self._merge_commit_refusal(slug)):
             return ForgeMergeResult(returncode=1, stdout="", stderr=refusal, merged_sha="")
+        payload: _MergePayload = {"sha": expected_head_oid, "squash": squash}
+        if squash:
+            payload["squash_commit_message"] = message.title
         try:
-            response = self._client.put_response(
-                endpoint,
-                {"sha": expected_head_oid, "squash": squash},
-                idempotent=False,
-            )
+            response = self._client.put_response(endpoint, payload, idempotent=False)
         except httpx.RequestError as exc:
             return _transport_failure(exc)
         except BackendResolutionError as exc:

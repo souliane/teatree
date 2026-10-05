@@ -86,6 +86,7 @@ _GITLAB_ISSUE_URL = "https://gitlab.com/acme/widget/-/issues/6264"
 _GITLAB_SELF_HOSTED_URL = "https://gitlab.example.com/acme/widget/-/issues/6264"
 _GITLAB_SLUG = "acme/widget"
 _PR_IID = 6264
+_MR_TITLE = "Tidy the widget"
 
 
 def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
@@ -128,8 +129,10 @@ class _GitLabApiStub:
         merge_status: int = 200,
         merge_body: str = "",
         merge_sha: str = "merged0deadbeef",
+        description: str = "Tidies the widget.",
     ) -> None:
         self.sha = sha
+        self.description = description
         self.draft = draft
         self.state = state
         self.pipeline_status = pipeline_status
@@ -144,7 +147,14 @@ class _GitLabApiStub:
         if "/pipelines" in endpoint:
             return [{"id": 12345, "status": self.pipeline_status, "sha": self.sha}]
         if "/merge_requests/" in endpoint:
-            return {"iid": _PR_IID, "sha": self.sha, "draft": self.draft, "state": self.state}
+            return {
+                "iid": _PR_IID,
+                "sha": self.sha,
+                "draft": self.draft,
+                "state": self.state,
+                "title": _MR_TITLE,
+                "description": self.description,
+            }
         return {}
 
     def resolve_project(self, repo: str) -> object:
@@ -344,7 +354,14 @@ class TestExecuteBoundMergeGitLab(TestCase):
             result = _merge_at(_SHA)
         assert result == "commit-sha-12345"
         assert f"projects/acme%2Fwidget/merge_requests/{_PR_IID}/merge" in stub.calls
-        assert stub.merge_payloads == [{"sha": _SHA, "squash": True}]
+        assert stub.merge_payloads == [{"sha": _SHA, "squash": True, "squash_commit_message": _MR_TITLE}]
+
+    def test_a_footer_in_the_description_is_refused_before_the_merge_request(self) -> None:
+        footer = "\U0001f916 Generated with [Claude Code](https://claude.com/claude-code)"
+        stub = _GitLabApiStub(description=f"Tidies the widget.\n\n{footer}")
+        with _patch_gitlab(stub), pytest.raises(MergePreconditionError, match="AI-signature"):
+            _merge_at(_SHA)
+        assert stub.merge_payloads == []
 
     def test_merge_failure_raises_precondition_error(self) -> None:
         # HTTP 422 is a policy refusal — a verdict on the merge, never retried.

@@ -29,6 +29,7 @@ from teatree.loop.scanners.pr_sweep_adapters import AutoReviewTaskDispatcher, Gh
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, PrApiClient
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.types import RawAPIDict
+from tests._forge_stub import merge_path_stdout
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import record_merge_prerequisites_for_test
 
@@ -148,7 +149,7 @@ class _GhStub:
                 return (0, answer, "")
         if "pulls" in joined and "merge" in joined:
             return (0, json.dumps({"sha": MERGED_SHA}), "")
-        return (0, "", "")
+        return (0, merge_path_stdout(joined), "")
 
 
 def _seed_ledger() -> tuple[Ticket, PullRequest]:

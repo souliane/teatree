@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, cast
 from teatree.core.backend_protocols import (
     DraftState,
     PrMergeState,
+    PrMessage,
     changed_paths_unavailable,
     plan_restricted_no_protection,
     rollup_query_failed,
@@ -159,6 +160,10 @@ class CodeHostQuery:
         narrow it), so a missing diff never weakens the existing label-based gate.
         """
         return self.backend.fetch_pr_changed_paths(slug=self.ref.slug, pr_id=self.ref.pr_id)
+
+    def pr_message(self) -> PrMessage | None:
+        """The PR/MR title and body a merge publishes; ``None`` when the forge did not answer."""
+        return self.backend.fetch_pr_message(slug=self.ref.slug, pr_id=self.ref.pr_id)
 
     def required_context_names(self) -> set[str] | None:
         """Live branch-protection required context names for the PR/MR base (the sweep's source).

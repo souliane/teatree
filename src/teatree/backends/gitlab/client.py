@@ -18,6 +18,7 @@ from teatree.core.backend_protocols import (
     DraftState,
     ForgeMergeResult,
     PrMergeState,
+    PrMessage,
     PrOpenState,
     PullRequestSpec,
     ReviewState,
@@ -587,9 +588,12 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
 
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
+        return self._merge_rpc().fetch_pr_message(slug=slug, pr_id=pr_id)
+
     def merge_pr_squash_bound(
-        self, *, slug: str, pr_id: int, expected_head_oid: str, squash: bool = True
+        self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
     ) -> ForgeMergeResult:
         return self._merge_rpc().merge_pr_squash_bound(
-            slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid, squash=squash
+            slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid, message=message, squash=squash
         )

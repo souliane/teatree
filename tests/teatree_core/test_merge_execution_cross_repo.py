@@ -31,7 +31,7 @@ from teatree.core.merge import MergePreconditionError, merge_ticket_pr, resolve_
 from teatree.core.merge.authorization import assert_review_verdict_gate
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha
 from teatree.core.models import MergeAudit, MergeClear, ReviewVerdict, Ticket
-from tests._forge_stub import changed_files_stdout
+from tests._forge_stub import merge_path_stdout
 from tests.teatree_core.conftest import record_owned_pr_for_test, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -111,7 +111,7 @@ def _gh_keyed_by_repo(calls: list[list[str]], right_repo: str = _OVERLAY_REPO):
             return (0, '{"state": "OPEN", "mergeCommit": null}', "")
         if "pulls" in joined and "merge" in joined:
             return (0, '{"sha": "merged0deadbeef"}', "")
-        return (0, changed_files_stdout(joined), "")
+        return (0, merge_path_stdout(joined), "")
 
     return _gh
 
@@ -201,7 +201,7 @@ class TestCrossRepoCandidateProbe(TestCase):
                 return (0, "false", "")
             if "statusCheckRollup" in joined:
                 return (0, _GREEN, "")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         def _remote_slug_for_path(repo: str = ".", remote: str = "origin") -> str:
             del remote
@@ -265,7 +265,7 @@ class TestCrossRepoCandidateProbe(TestCase):
                 return (0, '{"state": "OPEN", "mergeCommit": null}', "")
             if "pulls" in joined and "merge" in joined:
                 return (0, '{"sha": "merged0deadbeef"}', "")
-            return (0, changed_files_stdout(joined), "")
+            return (0, merge_path_stdout(joined), "")
 
         def _remote_slug_for_path(repo: str = ".", remote: str = "origin") -> str:
             del remote

@@ -28,6 +28,7 @@ from teatree.core.backend_protocols import (
     ForgeMergeResult,
     MergeConflictState,
     PrMergeState,
+    PrMessage,
 )
 from teatree.types import RawAPIDict
 from teatree.utils.run import run_allowed_to_fail
@@ -381,13 +382,43 @@ class GhMergeRpc:
             return [CHANGED_PATHS_UNAVAILABLE]
         return [line.strip() for line in out.splitlines() if line.strip()]
 
+    def fetch_pr_message(self, *, slug: str, pr_id: int) -> PrMessage | None:
+        """The PR title and body, or ``None`` when ``gh`` did not answer with a titled PR."""
+        rc, out, _ = self._run(["pr", "view", str(pr_id), "--repo", slug, "--json", "title,body"])
+        if rc != 0:
+            return None
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict):
+            return None
+        title, body = data.get("title"), data.get("body") or ""
+        if not isinstance(title, str) or not title.strip() or not isinstance(body, str):
+            return None
+        return PrMessage(title=title, body=body)
+
     def merge_pr_squash_bound(
-        self, *, slug: str, pr_id: int, expected_head_oid: str, squash: bool = True
+        self, *, slug: str, pr_id: int, expected_head_oid: str, message: PrMessage, squash: bool = True
     ) -> ForgeMergeResult:
+        """``PUT pulls/<n>/merge`` publishing exactly *message*, never the repo's commit-message template."""
         endpoint = f"repos/{slug}/pulls/{pr_id}/merge"
         method = "squash" if squash else "merge"
         rc, out, err = self._run(
-            ["api", "--method", "PUT", endpoint, "-f", f"merge_method={method}", "-f", f"sha={expected_head_oid}"],
+            [
+                "api",
+                "--method",
+                "PUT",
+                endpoint,
+                "-f",
+                f"merge_method={method}",
+                "-f",
+                f"sha={expected_head_oid}",
+                "-f",
+                f"commit_title={message.title} (#{pr_id})",
+                "-f",
+                f"commit_message={message.body}",
+            ],
         )
         merged_sha = ""
         if rc == 0:

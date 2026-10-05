@@ -17,6 +17,7 @@ from django.test import TestCase
 from teatree.core.backend_protocols import DraftState
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.messaging.notify_with_fallback import notify_with_fallback
+from tests._forge_stub import merge_path_stdout
 
 # ---------------------------------------------------------------------------
 # Helpers shared across findings
@@ -253,7 +254,7 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
                 # The merge response carries no ``sha`` field — the bound path
                 # must fall back to the bound head, never a silent empty string.
                 return (0, "{}", "")
-            return (0, "", "")
+            return (0, merge_path_stdout(joined), "")
 
         client = GhPrApiClient()
         # The #18 floor re-reads the live not-draft + required-checks state at the
