@@ -216,11 +216,10 @@ def _verdict(
 _PLAN_RESTRICTED_BODY = "Upgrade to GitHub Pro or make this repository public to enable this feature."
 _PLAN_RESTRICTED: tuple[int, str, str] = (1, "", _PLAN_RESTRICTED_BODY)
 
-# What a fine-grained token gets reading the check rollup of a private repo on GitHub Free.
 _ROLLUP_FORBIDDEN: tuple[int, str, str] = (
     1,
     "",
-    "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)",
+    "GraphQL: Resource not accessible (repository.pullRequest.statusCheckRollup)",
 )
 
 
@@ -496,9 +495,12 @@ class TestPlanRestrictedActionsAPIFallback(TestCase):
         stub = _actions_fallback_gh_stub(actions_runs=[_workflow_run("CI")])
         assert self._verdict(stub) == "green"
 
-    def test_unreadable_head_sha_is_unreadable(self) -> None:
-        stub = _actions_fallback_gh_stub(head=(1, "", "head sha error"))
-        assert self._verdict(stub) == CHECKS_UNREADABLE
+    def test_unreadable_or_blank_head_sha_is_unreadable(self) -> None:
+        # Green runs: a verdict read from an unfiltered ``head_sha=`` query would come back green.
+        for head in ((1, "", "head sha error"), (0, "", ""), (0, "\n", "")):
+            with self.subTest(head=head):
+                stub = _actions_fallback_gh_stub(head=head, actions_runs=[_workflow_run("CI")])
+                assert self._verdict(stub) == CHECKS_UNREADABLE
 
     def test_actions_api_read_failure_is_unreadable(self) -> None:
         stub = _actions_fallback_gh_stub(actions_rc=1)
@@ -609,6 +611,7 @@ class TestKeystoneMergeOnRefusedRollupRead(TestCase):
         merged, ticket, _ = self._clear_and_merge(_workflow_run("CI"), _workflow_run("lint", conclusion="failure"))
         assert merged["merged"] is False
         assert merged["escalated"] is True
+        assert "are 'failed'" in str(merged["error"])
         assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
 
