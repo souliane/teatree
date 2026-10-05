@@ -342,12 +342,12 @@ This step is **idempotent** — running it multiple times only adds missing entr
 
 After all tickets are processed (or when invoked in "check status" mode), scan in-flight tickets for possible status transitions. This covers tickets discovered by §8b as well as any ticket with prior state in `$T3_DATA_DIR/tickets/`.
 
-Run the gate checks from [`references/ticket-transitions.md`](references/ticket-transitions.md) for each in-flight ticket:
+Run these gate checks for each in-flight ticket:
 
 - **Doing → Technical Review:** all PRs have review request messages cached
 - **Technical Review → DEV Review:** all PRs merged AND deployed
 
-Each transition updates the issue tracker and calls `ticket_update_external_tracker`. See the reference file for the full gate logic, storage format, and extension points.
+Each transition updates the issue tracker and calls `ticket_update_external_tracker`. The tracker CLI recipe is in your [issue tracker platform reference](../platforms/references/) § "Transition Logic".
 
 #### 10. Status Check Mode
 

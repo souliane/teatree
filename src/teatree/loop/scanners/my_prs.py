@@ -54,18 +54,22 @@ _IN_PROGRESS_STATUSES = {
 }
 
 
-def _needs_attention(status: str) -> bool:
-    """Not-green == red.
+#: Settled without a failure: every job of the pipeline was excluded by ``rules:``.
+_SETTLED_STATUSES = GREEN_STATUSES | {"skipped"}
 
-    Any pipeline state that is neither an explicit success nor a
-    legitimately-in-progress state — ``failed``/``error``/``canceled``/
-    ``skipped``/``manual``/``blocked``/any unknown terminal value — must
-    surface as action-needed. The old code only treated three literals
-    (``failed``/``failure``/``error``) as failure and silently passed
-    everything else (gray/skipped/manual/canceled) as a benign open PR;
-    that is the "walked away from a gray job" failure mode this fixes.
+#: Blocked on a person playing a manual job — waiting, not broken, so no fix agent.
+_MANUAL_ACTION_STATUSES = frozenset({"manual"})
+
+MANUAL_ACTION_KIND = "my_pr.manual_action"
+
+
+def _needs_attention(status: str) -> bool:
+    """Not-green == red, for every state that is not settled, waiting on a person, or in progress.
+
+    ``failed``/``error``/``canceled``/``blocked``/any unknown terminal value surfaces as
+    action-needed rather than passing silently as a benign open PR.
     """
-    return status not in GREEN_STATUSES and status not in _IN_PROGRESS_STATUSES
+    return status not in _SETTLED_STATUSES | _MANUAL_ACTION_STATUSES | _IN_PROGRESS_STATUSES
 
 
 class CiEnricher(Protocol):
@@ -172,6 +176,15 @@ class MyPrsScanner:
                 "head_sha": sha,
                 "raw": pr,
             }
+            if status in _MANUAL_ACTION_STATUSES:
+                signals.append(
+                    ScanSignal(
+                        kind=MANUAL_ACTION_KIND,
+                        summary=f"PR #{iid} pipeline waiting for a manual action: {title}",
+                        payload=base_payload,
+                    )
+                )
+                continue
             if _needs_attention(status):
                 signals.append(
                     ScanSignal(

@@ -45,7 +45,7 @@ def test_pipeline_status_reads_whichever_shape_the_forge_populated(payload: RawA
         ("failed", CiState.FAILED),
         ("error", CiState.FAILED),
         ("canceled", CiState.UNKNOWN),
-        ("skipped", CiState.UNKNOWN),
+        ("skipped", CiState.GREEN),
         ("manual", CiState.UNKNOWN),
         ("", CiState.UNKNOWN),
     ],
