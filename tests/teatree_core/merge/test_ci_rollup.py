@@ -19,6 +19,7 @@ where every rolled-up name is required. Only the unstoppable external — the
 
 import json
 from collections.abc import Callable
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from django.core.management import call_command
@@ -41,9 +42,12 @@ from teatree.core.merge.ci_rollup import (
 from teatree.core.merge.ci_rollup_dedupe import _check_identity, _dedupe_newest_per_name
 from teatree.core.merge.gitlab_pipeline import classify_gitlab_pipeline
 from teatree.core.modelkit.forge_readability import CHECKS_UNREADABLE, REFUSING_CHECK_VERDICTS
-from teatree.core.models import MergeClear
+from teatree.core.models import MergeAudit, MergeClear, Ticket, TrustedIdentity
 from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.utils.pr_ref import PrRef
+from tests._forge_stub import changed_files_stdout
+from tests.factories import waive_rubric
+from tests.teatree_core.conftest import record_merge_prerequisites_for_test
 
 _SLUG = "souliane/teatree"
 _PR_ID = 2580
@@ -210,31 +214,41 @@ def _verdict(
 # GitHub Free's exact plan-restriction 403 body (souliane/teatree#4844's OWNER-confirmed
 # root cause) — the specific phrase that must be told apart from a generic 403.
 _PLAN_RESTRICTED_BODY = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+_PLAN_RESTRICTED: tuple[int, str, str] = (1, "", _PLAN_RESTRICTED_BODY)
+
+# What a fine-grained token gets reading the check rollup of a private repo on GitHub Free.
+_ROLLUP_FORBIDDEN: tuple[int, str, str] = (
+    1,
+    "",
+    "GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)",
+)
 
 
-def _plan_restricted_gh_stub(
+def _actions_fallback_gh_stub(
     *,
+    rollup: tuple[int, str, str] = (0, "[]", ""),
+    protection: tuple[int, str, str] = _PLAN_RESTRICTED,
     actions_runs: list[dict[str, object]] | None = None,
     actions_rc: int = 0,
-    head_sha: str = "deadbeef",
-    head_rc: int = 0,
+    head: tuple[int, str, str] = (0, "deadbeef", ""),
 ) -> Callable[[list[str]], tuple[int, str, str]]:
-    """A ``gh`` runner for a GitHub-Free repo.
+    """A ``gh`` runner for the GitHub-Free Actions-API fallback.
 
-    Both protection endpoints answer the plan-restriction 403, then the
-    Actions-API fallback queries (``headRefOid``, ``actions/runs``) are scripted.
+    *protection* answers both branch-protection endpoints (the plan-restriction 403
+    by default), *rollup* the ``statusCheckRollup`` read and *head* the
+    ``headRefOid`` read; the fallback's ``actions/runs`` query is scripted.
     """
 
     def run(argv: list[str]) -> tuple[int, str, str]:
         joined = " ".join(argv)
         if "statusCheckRollup" in joined:
-            return (0, "[]", "")
+            return rollup
         if "baseRefName" in joined:
             return (0, "main", "")
         if "rules/branches" in joined or "required_status_checks" in joined:
-            return (1, "", _PLAN_RESTRICTED_BODY)
+            return protection
         if "headRefOid" in joined:
-            return (head_rc, head_sha, "") if head_rc == 0 else (head_rc, "", "head sha error")
+            return head
         if "actions/runs" in joined:
             return (
                 (actions_rc, "", "actions api error")
@@ -452,11 +466,11 @@ class TestPlanRestrictedActionsAPIFallback(TestCase):
             return CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_checks_status()
 
     def test_all_success_runs_at_head_is_green(self) -> None:
-        stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("test")])
+        stub = _actions_fallback_gh_stub(actions_runs=[_workflow_run("test")])
         assert self._verdict(stub) == "green"
 
     def test_one_failed_run_among_several_is_failed(self) -> None:
-        stub = _plan_restricted_gh_stub(
+        stub = _actions_fallback_gh_stub(
             actions_runs=[_workflow_run("test"), _workflow_run("lint", conclusion="failure")],
         )
         assert self._verdict(stub) == "failed"
@@ -464,14 +478,14 @@ class TestPlanRestrictedActionsAPIFallback(TestCase):
     def test_zero_actions_runs_at_head_is_unreadable(self) -> None:
         # Eventual-consistency lag (nothing has reported yet) is NOT proof nothing
         # is required — never green on no evidence.
-        stub = _plan_restricted_gh_stub(actions_runs=[])
+        stub = _actions_fallback_gh_stub(actions_runs=[])
         assert self._verdict(stub) == CHECKS_UNREADABLE
 
     def test_floor_named_workflow_never_ran_is_unreadable(self) -> None:
         # An operator-configured floor names a workflow that never ran at this head
         # — its ABSENCE is not proof it passed.
         call_command("config_setting", "set", "expected_required_contexts", '["test (3.13)"]')
-        stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("some-other-workflow")])
+        stub = _actions_fallback_gh_stub(actions_runs=[_workflow_run("some-other-workflow")])
         assert self._verdict(stub) == CHECKS_UNREADABLE
 
     def test_floor_satisfied_by_matching_workflow_name_is_green(self) -> None:
@@ -479,23 +493,123 @@ class TestPlanRestrictedActionsAPIFallback(TestCase):
         # workflow ``name`` field, not a branch-protection check name — a floor
         # that names the actual workflow (e.g. "CI") is satisfied.
         call_command("config_setting", "set", "expected_required_contexts", '["CI"]')
-        stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("CI")])
+        stub = _actions_fallback_gh_stub(actions_runs=[_workflow_run("CI")])
         assert self._verdict(stub) == "green"
 
     def test_unreadable_head_sha_is_unreadable(self) -> None:
-        stub = _plan_restricted_gh_stub(head_rc=1)
+        stub = _actions_fallback_gh_stub(head=(1, "", "head sha error"))
         assert self._verdict(stub) == CHECKS_UNREADABLE
 
     def test_actions_api_read_failure_is_unreadable(self) -> None:
-        stub = _plan_restricted_gh_stub(actions_rc=1)
+        stub = _actions_fallback_gh_stub(actions_rc=1)
         assert self._verdict(stub) == CHECKS_UNREADABLE
 
     def test_unreadable_floor_over_green_runs_fails_closed(self) -> None:
         # Mirrors the sibling floor-unreadable branch: an unresolvable floor over an
         # otherwise-green Actions read must not classify as green.
         with patch("teatree.core.merge.ci_rollup._expected_required_contexts_floor", return_value=None):
-            stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("test")])
+            stub = _actions_fallback_gh_stub(actions_runs=[_workflow_run("test")])
             assert self._verdict(stub) == "failed"
+
+    def test_forbidden_rollup_with_green_runs_is_green(self) -> None:
+        stub = _actions_fallback_gh_stub(rollup=_ROLLUP_FORBIDDEN, actions_runs=[_workflow_run("CI")])
+        assert self._verdict(stub) == "green"
+
+    def test_forbidden_rollup_with_a_failed_run_is_failed(self) -> None:
+        stub = _actions_fallback_gh_stub(
+            rollup=_ROLLUP_FORBIDDEN,
+            actions_runs=[_workflow_run("CI"), _workflow_run("lint", conclusion="failure")],
+        )
+        assert self._verdict(stub) == "failed"
+
+    def test_forbidden_rollup_with_unreadable_or_absent_runs_is_unreadable(self) -> None:
+        cases = {
+            "actions api error": _actions_fallback_gh_stub(rollup=_ROLLUP_FORBIDDEN, actions_rc=1),
+            "no runs at the head": _actions_fallback_gh_stub(rollup=_ROLLUP_FORBIDDEN, actions_runs=[]),
+        }
+        for label, stub in cases.items():
+            with self.subTest(label):
+                assert self._verdict(stub) == CHECKS_UNREADABLE
+
+    def test_forbidden_rollup_on_readable_protection_stays_unreadable(self) -> None:
+        # Green runs cannot stand in for a readable required set the refused rollup cannot be scoped to.
+        stub = _actions_fallback_gh_stub(
+            rollup=_ROLLUP_FORBIDDEN,
+            protection=(0, _rules_payload("CI"), ""),
+            actions_runs=[_workflow_run("CI")],
+        )
+        assert self._verdict(stub) == CHECKS_UNREADABLE
+
+
+_KEYSTONE_HEAD = "a" * 40
+
+
+def _keystone_gh_stub(ci: Callable[[list[str]], tuple[int, str, str]]) -> Callable[[list[str]], tuple[int, str, str]]:
+    """*ci* plus the PR metadata, changed-files and merge answers the keystone also reads."""
+
+    def run(argv: list[str]) -> tuple[int, str, str]:
+        joined = " ".join(argv)
+        for needle, out in ((".author.login", "souliane"), (".isCrossRepository", "false"), ("isDraft", "false")):
+            if needle in joined:
+                return (0, out, "")
+        if "merge_method=" in joined:
+            return (0, '{"sha": "merged0deadbeef"}', "")
+        if changed := changed_files_stdout(joined):
+            return (0, changed, "")
+        return ci(argv)
+
+    return run
+
+
+class TestKeystoneMergeOnRefusedRollupRead(TestCase):
+    """``ticket clear`` then ``ticket merge`` on a GitHub Free repo whose rollup read is refused.
+
+    Only the ``gh`` subprocess is stubbed; the CLEAR, the keystone transition and its audit are real.
+    """
+
+    def setUp(self) -> None:
+        TrustedIdentity.objects.get_or_create(platform="github", handle="souliane")
+
+    def _clear_and_merge(self, *actions_runs: dict[str, object]) -> tuple[dict[str, object], Ticket, int]:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        waive_rubric(ticket)
+        record_merge_prerequisites_for_test(ticket, _KEYSTONE_HEAD)
+        issued = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                str(_PR_ID),
+                _SLUG,
+                reviewed_sha=_KEYSTONE_HEAD,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
+                ticket_id=int(ticket.pk),
+            ),
+        )
+        clear_id = cast("int", issued["clear_id"])
+        ci = _actions_fallback_gh_stub(
+            rollup=_ROLLUP_FORBIDDEN, head=(0, _KEYSTONE_HEAD, ""), actions_runs=list(actions_runs)
+        )
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_keystone_gh_stub(ci)):
+            merged = cast(
+                "dict[str, object]", call_command("ticket", "merge", str(clear_id), loop_identity="merge-loop")
+            )
+        ticket.refresh_from_db()
+        return merged, ticket, clear_id
+
+    def test_green_actions_runs_merge(self) -> None:
+        merged, ticket, clear_id = self._clear_and_merge(_workflow_run("CI"))
+        assert merged["merged"] is True
+        assert ticket.state == Ticket.State.MERGED
+        assert MergeAudit.objects.get(clear_id=clear_id).required_checks_status == "green"
+
+    def test_failed_actions_run_is_refused(self) -> None:
+        merged, ticket, _ = self._clear_and_merge(_workflow_run("CI"), _workflow_run("lint", conclusion="failure"))
+        assert merged["merged"] is False
+        assert merged["escalated"] is True
+        assert ticket.state == Ticket.State.REVIEW_REQUESTED
 
 
 class TestDedupeNewestPerName:
@@ -796,7 +910,7 @@ class TestSharedClassifierHelpers:
         # (determinate "no gate") set for a plan-restricted repo — only the keystone's
         # own verdict function gets the Actions-API fallback; the sweep stays
         # fail-closed exactly as it does for a genuine transport failure.
-        stub = _plan_restricted_gh_stub(actions_runs=[_workflow_run("test")])
+        stub = _actions_fallback_gh_stub(actions_runs=[_workflow_run("test")])
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
             assert CodeHostQuery.for_ref(PrRef(slug=_SLUG, pr_id=_PR_ID)).required_context_names() is None
 

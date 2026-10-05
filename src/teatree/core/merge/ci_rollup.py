@@ -214,18 +214,20 @@ class CodeHostQuery:
         required set cannot be fetched the merge fails CLOSED (``unreadable``). An empty
         required set means no gate → ``green``. The rollup is first deduped to the
         newest check-run per ``(typename, name)`` so a stale/cancelled FAILURE
-        superseded by a newer SUCCESS for the same name does not false-block.
+        superseded by a newer SUCCESS for the same name does not false-block. The
+        required set is read BEFORE the rollup: a plan-restricted base is gated on its
+        Actions runs and never reads the rollup, which GitHub Free refuses there.
 
         **GitLab** gates on the head pipeline's overall status (which aggregates the
         required jobs server-side); it needs the head SHA to pick the right
         (non-merge-train) pipeline, fetched via :meth:`live_head_sha`.
         """
+        if self.ref.host_kind != "gitlab":
+            return _github_required_checks_verdict(self.backend, slug=self.ref.slug, pr_id=self.ref.pr_id)
         rollup = self.backend.fetch_required_checks_rollup(slug=self.ref.slug, pr_id=self.ref.pr_id)
         if rollup_query_failed(rollup):
             return CHECKS_UNREADABLE
-        if self.ref.host_kind == "gitlab":
-            return _gitlab_pipeline_verdict(self.backend, rollup, slug=self.ref.slug, pr_id=self.ref.pr_id)
-        return _github_required_checks_verdict(self.backend, rollup, slug=self.ref.slug, pr_id=self.ref.pr_id)
+        return _gitlab_pipeline_verdict(self.backend, rollup, slug=self.ref.slug, pr_id=self.ref.pr_id)
 
 
 def attach_touched_paths(clear: object, query: CodeHostQuery) -> None:
@@ -428,13 +430,7 @@ def _expected_required_contexts_floor() -> set[str] | None:
         return None
 
 
-def _github_required_checks_verdict(
-    backend: "CodeHostBackend",
-    rollup: "list[RawAPIDict]",
-    *,
-    slug: str,
-    pr_id: int,
-) -> str:
+def _github_required_checks_verdict(backend: "CodeHostBackend", *, slug: str, pr_id: int) -> str:
     """GitHub §17.4.3 verdict: scope the rollup to the branch-protection required contexts.
 
     Fail CLOSED as ``unreadable`` when the required set is indeterminate — the endpoint
@@ -453,7 +449,10 @@ def _github_required_checks_verdict(
     BEFORE that extractor folds it into the same ``None`` a genuine transport
     failure produces — a repo on GitHub Free with no way to answer branch
     protection at all falls back to :func:`_github_actions_runs_verdict` instead of
-    refusing forever (issue #4844).
+    refusing forever (issue #4844). That check runs before the rollup is read: the
+    same plan refuses the rollup read too, and the fallback never needs it. Every
+    other required-set answer still needs a readable rollup, so a refused one
+    there stays ``unreadable``.
     """
     raw_required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
     if plan_restricted_no_protection(raw_required):
@@ -462,6 +461,9 @@ def _github_required_checks_verdict(
         # Fail CLOSED, and say WHY: the branch-protection required set could not be
         # read, so no verdict about the checks exists. Refused on the same terms as a
         # red (``REFUSING_CHECK_VERDICTS``) — only the word the operator sees differs.
+        return CHECKS_UNREADABLE
+    rollup = backend.fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+    if rollup_query_failed(rollup):
         return CHECKS_UNREADABLE
     required_names = _extract_required_names(raw_required)
     if not required_names:
