@@ -13,7 +13,8 @@
 # souliane/teatree#4437: it also CLASSIFIES what the resolve moved
 # (``scripts/ci/lock_delta.py``) and self-merges only a patch-only one. A minor,
 # a major, or a version the classifier cannot read withholds auto-merge and
-# routes the PR to a human — a boundary crossing is a framework migration, not a
+# routes the PR to the factory's careful review (cold review of the diff and tests,
+# then merge; a bump is never refused) — a boundary crossing is a framework migration, not a
 # hash refresh, and must not land unattended over a weekend. The same classifier
 # renders the PR body, so what the body claims is what the lockfile resolved.
 #
@@ -173,7 +174,7 @@ jobs:
             gh pr merge "$BRANCH" --auto --squash --delete-branch \
               || echo "::warning::Could not enable auto-merge on $BRANCH — enable 'Allow auto-merge' in the repo settings, or let the ship loop merge it once green."
           else
-            echo "::warning::$BRANCH crosses a feature/major boundary (or carries a version the classifier could not read), so auto-merge is withheld — it needs a human. The PR body names what moved."
+            echo "::warning::$BRANCH crosses a feature/major boundary (or carries a version the classifier could not read), so auto-merge is withheld — it goes to the factory's cold review, then merges. The PR body names what moved."
             # The branch is reused, so clear an auto-merge a previous patch-only run armed.
             gh pr merge "$BRANCH" --disable-auto || true
           fi
