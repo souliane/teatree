@@ -44,22 +44,18 @@ def _gitlab_pipeline_verdict(
     if head is None:
         return "failed"
     verdict = classify_gitlab_pipeline(str(head.get("status") or ""))
-    return _skipped_pipeline_verdict(backend, slug=slug) if verdict == _GITLAB_PIPELINE_SKIPPED else verdict
+    return _skipped_pipeline_verdict(head, slug=slug) if verdict == _GITLAB_PIPELINE_SKIPPED else verdict
 
 
-def _skipped_pipeline_verdict(backend: "CodeHostBackend", *, slug: str) -> str:
+def _skipped_pipeline_verdict(head: "_GitlabPipeline", *, slug: str) -> str:
     """GitLab's own rule: a skipped head merges only where the project counts skipped pipelines as successful."""
-    try:
-        allowed = backend.get_repo(repo=slug).get("allow_merge_on_skipped_pipeline")
-    except Exception:  # noqa: BLE001 — an unread project setting refuses the merge; it must never crash the gate.
-        logger.warning("merge_execution: could not read %s's skipped-pipeline setting — failing closed", slug)
-        return CHECKS_UNREADABLE
+    allowed = head.get("allow_merge_on_skipped_pipeline")
     if allowed is True:
         return "green"
     if allowed is False:
         logger.info("merge_execution: %s's head pipeline was skipped and the project requires success", slug)
         return CHECKS_FAILED
-    logger.warning("merge_execution: %s's skipped-pipeline setting is absent — failing closed", slug)
+    logger.warning("merge_execution: %s's skipped-pipeline setting is unreadable — failing closed", slug)
     return CHECKS_UNREADABLE
 
 
@@ -103,6 +99,7 @@ class _GitlabPipeline(TypedDict, total=False):
     ref: object
     source: object
     status: object
+    allow_merge_on_skipped_pipeline: object
 
 
 def _is_merge_train_pipeline(pipeline: _GitlabPipeline) -> bool:

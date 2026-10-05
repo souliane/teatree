@@ -1504,7 +1504,6 @@ def test_get_repo_returns_project_metadata() -> None:
         "path_with_namespace": "org/repo",
         "short_name": "repo",
         "default_branch": "main",
-        "allow_merge_on_skipped_pipeline": None,
     }
 
 

@@ -90,7 +90,6 @@ def repo_metadata(project: ProjectInfo | None, *, repo: str) -> RawAPIDict:
         "path_with_namespace": project.path_with_namespace,
         "short_name": project.short_name,
         "default_branch": project.default_branch,
-        "allow_merge_on_skipped_pipeline": project.allow_merge_on_skipped_pipeline,
     }
 
 

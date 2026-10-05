@@ -385,6 +385,17 @@ class TestSkippedHeadPipelineFollowsTheProjectSetting(TestCase):
         with _patch_gitlab(_skipped_head(project={"allow_merge_on_skipped_pipeline": True})):
             assert_ci_not_failed(_gitlab_query())
 
+    def test_a_head_that_was_not_skipped_never_reads_the_project(self) -> None:
+        wire = GitLabWire(
+            {
+                _MR_PATH: {"iid": _PR_IID, "sha": _SHA},
+                f"{_MR_PATH}/pipelines": [{"id": 1, "status": "success", "sha": _SHA, "source": "merge_request_event"}],
+            }
+        )
+        with _patch_gitlab(wire):
+            assert _gitlab_query().required_checks_status() == "green"
+        assert _PROJECT_PATH not in wire.paths
+
 
 class TestExecuteBoundMergeGitLab(TestCase):
     def setUp(self) -> None:

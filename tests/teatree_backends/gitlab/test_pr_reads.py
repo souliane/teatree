@@ -80,7 +80,6 @@ def test_repo_metadata_returns_project_fields() -> None:
         "path_with_namespace": "org/repo",
         "short_name": "repo",
         "default_branch": "main",
-        "allow_merge_on_skipped_pipeline": None,
     }
 
 
