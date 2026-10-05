@@ -63,6 +63,7 @@ class ProjectInfo:
     path_with_namespace: str
     short_name: str
     default_branch: str = "main"
+    allow_merge_on_skipped_pipeline: bool | None = None
 
 
 class GitLabTokenCredential(Credential):
@@ -117,7 +118,6 @@ class GitLabHTTPClient(BoundedRetryTransport):
     ) -> None:
         self.token = token or _resolve_token()
         self.base_url = base_url.rstrip("/")
-        self._project_cache: dict[str, ProjectInfo] = {}
         self._response_cache: dict[str, tuple[float, object]] = {}
         self._timeout = env_float("T3_GITLAB_HTTP_TIMEOUT", _DEFAULT_TIMEOUT_SECONDS)
         self._configure_retry(

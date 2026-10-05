@@ -1572,6 +1572,26 @@ def test_resolve_project_caches_successful_resolution() -> None:
     first.assert_called()
 
 
+def test_resolve_project_re_reads_a_project_setting_once_its_cache_entry_ages_out() -> None:
+    api = _api()
+    with (
+        patch("teatree.backends.gitlab.http_client.time.monotonic", return_value=1000.0),
+        patch(
+            "httpx.get",
+            return_value=_response(200, json_body={**_PROJECT_JSON, "allow_merge_on_skipped_pipeline": False}),
+        ),
+    ):
+        assert api.resolve_project("org/repo").allow_merge_on_skipped_pipeline is False
+    with (
+        patch("teatree.backends.gitlab.http_client.time.monotonic", return_value=1000.0 + 24 * 3600),
+        patch(
+            "httpx.get",
+            return_value=_response(200, json_body={**_PROJECT_JSON, "allow_merge_on_skipped_pipeline": True}),
+        ),
+    ):
+        assert api.resolve_project("org/repo").allow_merge_on_skipped_pipeline is True
+
+
 _PROJECT_JSON = {
     "id": 42,
     "path_with_namespace": "org/repo",

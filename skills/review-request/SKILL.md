@@ -5,7 +5,7 @@ compatibility: macOS/Linux, git, issue tracker CLI (glab, gh, etc.), team chat i
 requires:
   - workspace
   - platforms
-  - followup
+  - checking
   - verification-before-completion
 metadata:
   version: 0.0.1
@@ -136,7 +136,7 @@ After all messages are sent (or skipped), check if the ticket is ready to transi
     - Report: `Ticket #<IID> → Technical Review (all PRs have review requests)`
 5. If some PRs are missing review messages → report which ones and skip the transition.
 
-See [`../followup/references/ticket-transitions.md`](../followup/references/ticket-transitions.md) for the full transition system.
+See [`../checking/SKILL.md`](../checking/SKILL.md) § "9. Check Ticket Transitions" for the full transition system.
 
 ### 10. Handle Deferred PRs
 
