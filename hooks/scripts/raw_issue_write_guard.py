@@ -40,9 +40,10 @@ logger = logging.getLogger(__name__)
 _FORGES = frozenset({"gh", "glab"})
 _NOTE_VERBS = frozenset({"comment", "note"})
 #: Past one of these, a forge word is the program: the argv wrappers the detector's traversal reads
-#: (``env gh …``, ``timeout 30 gh …``) and a function head (``function f { gh …; }``).
+#: (``env gh …``, ``timeout 30 gh …``), a function head (``function f { gh …; }``) and ``coproc``.
 _WRAPPERS = frozenset({"command", "env", "exec", "nohup", "time", "xargs", "timeout", "nice", "stdbuf", "setsid"})
-_HEADS = frozenset({"function"})
+_HEADS = frozenset({"function", "coproc"})
+_COMMENT_AFTER = frozenset(" \t\n;&|(")
 _KEYWORDS = frozenset({"{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!"})
 _ASSIGNMENT = re.compile(r"\w+=")
 _EXPANDED = re.compile(r"[$`]")
@@ -80,7 +81,7 @@ def _deciding_word(words: list[str]) -> str | None:
     subcommand = words[index] if index < len(words) else ""
     if _EXPANDED.search(subcommand):
         return subcommand
-    if subcommand != "issue":
+    if subcommand not in {"issue", "issues"}:
         return None
     index = _past_options(words, index + 1)
     verb = words[index] if index < len(words) else ""
@@ -144,7 +145,7 @@ def _segments(text: str) -> list[list[str]]:
             if char == "\n" and heredocs:
                 index = _heredoc_bodies(text, index, heredocs, bodies)
                 heredocs = []
-        elif char == "#" and word is None:
+        elif char == "#" and word is None and (index == 0 or text[index - 1] in _COMMENT_AFTER):
             newline = text.find("\n", index)
             index = len(text) if newline < 0 else newline
         else:

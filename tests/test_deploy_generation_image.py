@@ -294,11 +294,19 @@ def _one_off_run(
         "STUB_DEPLOY": str(DEPLOY),
         "TEATREE_HOST_HOME": str(tmp_path / "home"),
         "TEATREE_DOCKER_SOCKET_GID": "0",
+        # The host's own deploy lock, held while a real deploy runs, would turn the one-off into a 180s wait.
+        "TEATREE_DEPLOY_LOCK": str(tmp_path / "absent.lock"),
         "TEATREE_FORCE_ONE_OFF": "1" if running else "",
         **extra_env,
     }
+    # cwd off every checkout: from inside one (the suite's own) the wrapper refuses before dispatching.
     return subprocess.run(
-        [BASH, str(DEPLOY / "t3"), "--version"], capture_output=True, text=True, env=run_env, check=False
+        [BASH, str(DEPLOY / "t3"), "--version"],
+        capture_output=True,
+        text=True,
+        env=run_env,
+        check=False,
+        cwd=tmp_path,
     )
 
 

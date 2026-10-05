@@ -37,8 +37,9 @@ def test_real_host_wrapper_targets_the_configured_project_with_two_stacks_presen
         COMPOSE_PROJECT_NAME="teatree",
     )
 
+    # cwd off every checkout: from inside one (the suite's own) the wrapper refuses before dispatching.
     result = subprocess.run(
-        [_BASH, str(WRAPPER), "teatree", "info"], env=env, capture_output=True, text=True, check=False
+        [_BASH, str(WRAPPER), "teatree", "info"], env=env, capture_output=True, text=True, check=False, cwd=tmp_path
     )
 
     assert result.returncode == 0, result.stderr

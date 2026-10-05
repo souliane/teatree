@@ -14,6 +14,7 @@ import pytest
 from django.db import OperationalError, connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
+from django_fsm.signals import post_transition
 
 from teatree.backends.github import ProjectItem
 from teatree.backends.github.sync import GitHubSyncBackend
@@ -83,8 +84,11 @@ class TestAnFsmLandingClosesTheRefusalOnce(TestCase):
 
     def test_a_move_between_landed_states_never_touches_the_refusal(self) -> None:
         ticket, issue = _refused(Ticket.State.MERGED)
+        _landed_on_the_forge(ticket)
 
         with CaptureQueriesContext(connection) as captured:
+            ticket.mark_merged()
+            ticket.save()
             ticket.retrospect()
             ticket.save()
             ticket.retrospect()
@@ -92,6 +96,20 @@ class TestAnFsmLandingClosesTheRefusalOnce(TestCase):
 
         assert ticket.state == Ticket.State.RETRO_RECORDED
         assert _known_issue_queries(captured) == []
+        issue.refresh_from_db()
+        assert issue.is_open
+
+    def test_an_entry_into_a_post_merge_state_that_skipped_merged_never_closes_it(self) -> None:
+        # No transition does this today; the receiver must still settle on MERGED alone, the one state the
+        # merge-evidence gate admits only on a confirmed forge merge.
+        ticket, issue = _refused()
+        ticket.state = Ticket.State.DELIVERED
+        post_transition.send(
+            sender=Ticket, instance=ticket, name="board", source=Ticket.State.REVIEW_REQUESTED, target=ticket.state
+        )
+
+        ticket.save()
+
         issue.refresh_from_db()
         assert issue.is_open
 
@@ -127,6 +145,14 @@ class TestAnFsmLandingClosesTheRefusalOnce(TestCase):
 
 
 class TestABulkSyncLandingClosesTheRefusal(TestCase):
+    def test_a_bulk_move_to_a_post_merge_state_without_the_merge_leaves_it_open(self) -> None:
+        ticket, issue = _refused()
+
+        ticket.merge_extra(also_set={"state": Ticket.State.DELIVERED})
+
+        issue.refresh_from_db()
+        assert issue.is_open
+
     def test_a_merge_extra_that_lands_the_ticket_closes_it(self) -> None:
         ticket, issue = _refused()
 
@@ -166,7 +192,7 @@ class TestABulkSyncLandingClosesTheRefusal(TestCase):
         issue.refresh_from_db()
         assert not issue.is_open
 
-    def test_the_github_board_done_column_closes_it(self) -> None:
+    def test_the_github_board_done_column_without_a_merge_leaves_it_open(self) -> None:
         ticket, issue = _refused()
         overlay = SyncOverlay(
             gitlab_token="",
@@ -200,4 +226,4 @@ class TestABulkSyncLandingClosesTheRefusal(TestCase):
         assert result.errors == []
         assert Ticket.objects.get(pk=ticket.pk).state == Ticket.State.DELIVERED
         issue.refresh_from_db()
-        assert not issue.is_open
+        assert issue.is_open

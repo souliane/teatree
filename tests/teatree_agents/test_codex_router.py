@@ -5,13 +5,13 @@ import gc
 import os
 import signal
 import sys
-import time
 from contextlib import suppress
 from pathlib import Path
 
 import pytest
 
 from teatree.agents.codex_router import run_router
+from tests._process_liveness import is_gone_within
 
 
 def _router_script(tmp_path: Path, body: str) -> Path:
@@ -110,15 +110,7 @@ def test_a_caller_that_stops_waiting_takes_the_routers_children_down_too(
 
     try:
         assert asyncio.run(cancel_mid_run()) is True
-        child = int(child_pid.read_text(encoding="utf-8"))
-        for _ in range(40):
-            try:
-                os.kill(child, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.05)
-        with pytest.raises(ProcessLookupError):
-            os.kill(child, 0)
+        assert is_gone_within(int(child_pid.read_text(encoding="utf-8")), seconds=2)
     finally:
         if child_pid.exists():
             with suppress(ProcessLookupError):
@@ -136,15 +128,7 @@ def test_a_router_that_exits_leaving_a_child_on_its_pipes_is_declined_and_the_ch
 
     try:
         assert asyncio.run(run_router("PreToolUse", {}, str(tmp_path))) is None
-        child = int(child_pid.read_text(encoding="utf-8"))
-        for _ in range(40):
-            try:
-                os.kill(child, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.05)
-        with pytest.raises(ProcessLookupError):
-            os.kill(child, 0)
+        assert is_gone_within(int(child_pid.read_text(encoding="utf-8")), seconds=2)
     finally:
         if child_pid.exists():
             with suppress(ProcessLookupError):

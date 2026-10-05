@@ -657,7 +657,7 @@ jobs:
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
     # Stopgap headroom for the 2.3x shard imbalance; #4603 rebalances the split.
-    timeout-minutes: 25
+    timeout-minutes: 35
     runs-on: ubuntu-latest
     permissions:
       contents: read

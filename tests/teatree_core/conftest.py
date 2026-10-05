@@ -189,11 +189,12 @@ def ready_review_batch_for_test(mr_url: str) -> Iterator[None]:
 def record_executed_repro_for_test(ticket: Ticket) -> None:
     """Execute a RED command and its GREEN replay on descendant fixture commits."""
     command = "test -f fixed.flag"
-    zsh = shutil.which("zsh") or "/bin/zsh"
+    # The POSIX shell every host has; zsh is absent from the CI image and the deploy image.
+    shell = shutil.which("sh") or "/bin/sh"
     with tempfile.TemporaryDirectory(prefix="teatree-repro-fixture-") as temp_dir:
         repo = make_git_repo(Path(temp_dir) / "repro")
         red_sha = run_git(repo, "rev-parse", "HEAD")
-        red = subprocess.run([zsh, "-c", command], cwd=repo, capture_output=True, text=True, check=False)
+        red = subprocess.run([shell, "-c", command], cwd=repo, capture_output=True, text=True, check=False)
         assert red.returncode != 0
         ReproEvidence.record_red(
             ticket=ticket,
@@ -205,7 +206,7 @@ def record_executed_repro_for_test(ticket: Ticket) -> None:
         run_git(repo, "add", "fixed.flag")
         run_git(repo, "commit", "-q", "-m", "satisfy repro")
         green_sha = run_git(repo, "rev-parse", "HEAD")
-        green = subprocess.run([zsh, "-c", command], cwd=repo, capture_output=True, text=True, check=False)
+        green = subprocess.run([shell, "-c", command], cwd=repo, capture_output=True, text=True, check=False)
         ancestor = run_git_captured(repo, "merge-base", "--is-ancestor", red_sha, green_sha)
         ReproEvidence.record_green(
             ticket=ticket,

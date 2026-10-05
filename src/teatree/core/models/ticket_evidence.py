@@ -185,8 +185,9 @@ class TicketEvidenceModel(TicketFacet):
             unchanged = locked.extra == merged and all(
                 getattr(locked, field) == value for field, value in (also_set or {}).items()
             )
-            landed = self.merged_states()
-            lands = (also_set or {}).get("state") in landed and locked.state not in landed
+            # Only the forge's merge clears a refusal: a board-only move to DELIVERED is no merge.
+            forge_merged = cast("Ticket", self).State.MERGED
+            lands = (also_set or {}).get("state") == forge_merged and locked.state != forge_merged
             self.extra = merged
             for field, value in (also_set or {}).items():
                 setattr(self, field, value)

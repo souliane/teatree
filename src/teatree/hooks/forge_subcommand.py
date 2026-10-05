@@ -30,8 +30,10 @@ from teatree.hooks._shell_lexer import split_commands, tokenize
 # a body line that BEGINS with the subcommand phrase cannot land at a command position.
 _HEREDOC_HEAD_RE = re.compile(r"(?<!<)<<(-)?[ \t]*(['\"]?)(\w+)\2[ \t]*\n")
 
-# Where a ``#`` opens a comment (at a word's start), and where a heredoc delimiter word ends.
+# Where a heredoc delimiter word ends, and what a ``#`` must follow to open a comment: the start of a
+# word, never a ``)`` closing a substitution (``$(git rev-parse HEAD)#L10`` is one word).
 _WORD_BREAKS = frozenset(" \t\n;&|()<>")
+_COMMENT_AFTER = frozenset(" \t\n;&|(")
 
 # A leading ``NAME=val`` env-assignment run (consumed before the program word).
 _ENV_ASSIGN_RE = re.compile(r"^\w+=")
@@ -199,12 +201,17 @@ def _live_text(text: str, index: int, bodies: list[str], *, closing: bool) -> in
 
 
 def _past_unexpanded(text: str, index: int, heredocs: list[tuple[str, bool, bool]], bodies: list[str]) -> int | None:
-    """The index past a ``#`` comment, a heredoc head, or the heredoc bodies the newline at *index* starts.
+    """The index past a ``#`` comment, an ANSI-C ``$'…'`` string, a heredoc head, or the bodies a newline starts.
 
     ``None`` when none of them starts at *index*. A head is queued on *heredocs* until its line ends.
     """
-    if text[index] == "#" and (index == 0 or text[index - 1] in _WORD_BREAKS):
+    if text[index] == "#" and (index == 0 or text[index - 1] in _COMMENT_AFTER):
         return _line_end(text, index)
+    if text.startswith("$'", index):
+        cursor = index + 2
+        while cursor < len(text) and text[cursor] != "'":
+            cursor += 2 if text[cursor] == "\\" else 1
+        return cursor + 1
     if (head := _heredoc_head(text, index)) is not None:
         heredocs.append(head[0])
         return head[1]
@@ -296,7 +303,7 @@ def program_words(segment_words: list[str]) -> list[str]:
     index = 0
     while index < len(segment_words):
         word = segment_words[index]
-        if word in {"case", "function"}:
+        if word in {"case", "function", "coproc"}:
             index = _past_head(segment_words, index)
             continue
         if _ENV_ASSIGN_RE.match(word) or word in _COMPOUND_KEYWORDS or word.endswith(")"):
@@ -313,13 +320,15 @@ def program_words(segment_words: list[str]) -> list[str]:
 
 
 def _past_head(words: list[str], index: int) -> int:
-    """The index past ``case WORD in`` or ``function NAME``.
+    """The index past ``case WORD in``, ``function NAME`` or ``coproc`` (and its ``NAME`` before a ``{``).
 
     A case arm's ``PATTERN)`` and a function's ``NAME()`` are then skipped as words ending in ``)``, so the
     arm's or the body's command is the program.
     """
     if words[index] == "function":
         return index + 2
+    if words[index] == "coproc":
+        return index + (2 if words[index + 2 : index + 3] == ["{"] else 1)
     return words.index("in", index) + 1 if "in" in words[index:] else len(words)
 
 

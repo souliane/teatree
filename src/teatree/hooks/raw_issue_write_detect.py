@@ -49,7 +49,8 @@ import re
 from teatree.hooks.forge_subcommand import basename, forge_program_argvs
 
 _FORGES: frozenset[str] = frozenset({"gh", "glab"})
-_ISSUE_SUBCOMMAND = "issue"
+#: ``issue`` and glab's ``issues`` alias (gh has none, so the plural is inert there).
+_ISSUE_SUBCOMMANDS: frozenset[str] = frozenset({"issue", "issues"})
 
 #: A parameter, arithmetic or command substitution: the word the shell runs is not the word written.
 _EXPANSION_RE = re.compile(r"[$`]")
@@ -104,7 +105,7 @@ def _note_deny_reason(words: list[str]) -> str | None:
     index, subcommand = _positional(words, 1)
     if _EXPANSION_RE.search(subcommand):
         return undeterminable_reason(words[0], subcommand)
-    if subcommand != _ISSUE_SUBCOMMAND:
+    if subcommand not in _ISSUE_SUBCOMMANDS:
         return None
     _, verb = _positional(words, index + 1)
     if _EXPANSION_RE.search(verb):

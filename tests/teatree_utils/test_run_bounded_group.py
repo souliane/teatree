@@ -17,25 +17,9 @@ from pathlib import Path
 import pytest
 
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_bounded_group
+from tests._process_liveness import is_running
 
 ESCAPEE_HOLD_SECONDS = 10
-
-
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return not _is_zombie(pid)
-
-
-def _is_zombie(pid: int) -> bool:
-    # A killed orphan in a container whose PID 1 never reaps stays a zombie, which kill(0) still finds.
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    except OSError:
-        return False
-    return stat.rsplit(")", 1)[-1].split()[0] == "Z"
 
 
 def _escapee_command(tmp_path: Path) -> tuple[list[str], Path]:
@@ -108,9 +92,9 @@ class TestBoundedGroupKillsTheWholeGroup:
             run_bounded_group(["sh", "-c", f"sleep 30 & echo $! > {pid_file}; wait"], timeout=2)
         grandchild = int(pid_file.read_text().strip())
         deadline = time.monotonic() + 5
-        while _alive(grandchild) and time.monotonic() < deadline:
+        while is_running(grandchild) and time.monotonic() < deadline:
             time.sleep(0.1)
-        assert not _alive(grandchild), (
+        assert not is_running(grandchild), (
             f"grandchild {grandchild} outlived the deadline — orphaned, exactly as on the box"
         )
 
@@ -135,7 +119,7 @@ class TestBoundedGroupBoundsTheDrainAfterTheKill:
                 "the escaped descendant owns, which run_checked's POSIX path never does"
             )
             assert pid_file.is_file(), "the escapee never started — nothing held the pipes open"
-            assert _alive(int(pid_file.read_text(encoding="utf-8"))), "the escapee died with the group — vacuous"
+            assert is_running(int(pid_file.read_text(encoding="utf-8"))), "the escapee died with the group — vacuous"
         finally:
             _reap(pid_file)
 

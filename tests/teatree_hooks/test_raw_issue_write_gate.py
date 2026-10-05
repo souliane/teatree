@@ -133,6 +133,9 @@ MATRIX: tuple[tuple[str, str, bool, str], ...] = (
     ("P6-here-string-mention", 'grep -c x <<< "gh issue comment 12"', False, ""),
     ("P6-backslash-delimiter", "cat > notes.md <<\\EOF\n`gh issue comment 12`\nEOF", False, ""),
     ("P6-escaped-substitution", "cat <<EOF\nrun \\$(gh issue comment 12) later\nEOF", False, ""),
+    ("P6-hash-in-quotes", 'echo "see #12" "ls)#x gh issue comment 12"', False, ""),
+    ("P6-comment-after-subshell", "(ls) # gh issue comment 12", False, ""),
+    ("P6-glab-issues-view", "glab issues view 3", False, ""),
     ("empty", "", False, ""),
     ("R1", "gh issue comment 12 --body x", True, ""),
     ("R2", "gh -R o/r issue comment 12 --body x", True, ""),
@@ -230,6 +233,17 @@ MATRIX: tuple[tuple[str, str, bool, str], ...] = (
     ("R29-process-substitution", "cat <(gh issue comment 12)", True, ""),
     ("R30-options-end", "gh -- issue comment 12", True, ""),
     ("R30-options-end-verb", "gh issue -- comment 12", True, ""),
+    (
+        "R31-hash-after-substitution",
+        'link=https://x/blob/$(git rev-parse HEAD)#L10; url=$(gh issue comment 12 --body "$link")',
+        True,
+        "",
+    ),
+    ("R31-hash-after-process-substitution", "diff <(ls)#x $(gh issue comment 1)", True, ""),
+    ("R32-ansi-c-escaped-quote", "x=$'\\''; url=$(gh issue comment 12 --body y)", True, ""),
+    ("R32-coproc", "coproc gh issue comment 12 --body x", True, ""),
+    ("R32-coproc-named", "coproc NOTE { gh issue comment 12 --body x; }", True, ""),
+    ("R32-glab-issues-alias", "glab issues note 3 -m x", True, ""),
 )
 
 

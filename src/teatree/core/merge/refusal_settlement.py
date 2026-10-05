@@ -1,7 +1,9 @@
 """Close the board's merge-refusal issue on the save that LANDS a ticket through the FSM, and on no other save.
 
-The refusal is pinned against auto-resolve, so a landing is the only thing that clears it. The transition
-into a merged state only marks the instance; the ``post_save`` that persists that state settles the issue
+The refusal is pinned against auto-resolve, so a landing is the only thing that clears it, and a landing is
+an entry into ``MERGED``: the merge-evidence gate admits it only on a confirmed forge merge. A board-only move
+to a post-merge state (a Projects card dragged to Done sets ``DELIVERED``) is not one. The transition
+into ``MERGED`` only marks the instance; the ``post_save`` that persists that state settles the issue
 and clears the mark. Resolving at the transition would close it for a landing whose save then fails, and
 resolving on every save of a landed ticket would take the production SQLite write lock a second time for
 an unrelated ``extra`` write. A save that does not write ``state`` keeps the mark for the save that does.
@@ -21,9 +23,7 @@ _LANDING_MARK = "_teatree_landing_unsaved"
 
 
 def _mark_a_landing(*, instance: Ticket, source: str, target: str, **_kwargs: object) -> None:
-    # self-loop-safe: a self-loop into a landed state starts in one, and `source not in landed` never marks it.
-    landed = Ticket.merged_states()
-    if target in landed and source not in landed:
+    if target == Ticket.State.MERGED and source != target:
         instance.__dict__[_LANDING_MARK] = True
 
 

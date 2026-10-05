@@ -10,7 +10,6 @@ genuine one — the branch is absent from the remote because it was never pushed
 not because a classifier was patched to say so.
 """
 
-import os
 import shlex
 import time
 from collections.abc import Iterator
@@ -38,6 +37,7 @@ from teatree.core.models import PendingPullRequest
 from teatree.core.models.pending_pull_request import MAX_DRAIN_ATTEMPTS
 from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.run import CommandFailedError
+from tests._process_liveness import is_gone_within
 from tests.teatree_core.cleanup._shared import _run_git
 from tests.teatree_core.pr_command._shared import _MOCK_OVERLAY
 
@@ -171,17 +171,6 @@ def _unreadable_remote(repo: Path, transport: str) -> Iterator[None]:
         server.server_close()
 
 
-def _process_is_gone(pid: int, *, within_seconds: float) -> bool:
-    deadline = time.monotonic() + within_seconds
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        time.sleep(0.1)
-    return False
-
-
 class EnsurePrReadsTheRemoteBeforeOwingTestCase(TestCase):
     """What the remote says decides the obligation: present, absent, or unreadable.
 
@@ -265,7 +254,7 @@ class EnsurePrReadsTheRemoteBeforeOwingTestCase(TestCase):
         self._assert_owed_as_unreadable(result, branch)
         assert elapsed < 20
         transport_pid = int((self._tmp_path / "ssh-hang.pid").read_text())
-        assert _process_is_gone(transport_pid, within_seconds=5)
+        assert is_gone_within(transport_pid, seconds=5)
 
     def test_a_credential_in_the_remote_diagnostic_never_reaches_the_log(self) -> None:
         repo, branch = _first_push_repo(self._tmp_path)
