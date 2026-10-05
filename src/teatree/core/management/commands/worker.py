@@ -24,6 +24,8 @@ from types import FrameType
 
 from django_typer.management import TyperCommand
 
+from teatree.core.models import WorkerGeneration
+from teatree.generation import current_generation
 from teatree.utils.singleton import AlreadyRunningError
 
 #: Exit code for a worker refused the same way N times running — distinct from the 1 an
@@ -53,6 +55,8 @@ class Command(TyperCommand):
                 )
                 with health_guard:
                     clear_refusals(WORKER_SINGLETON)
+                    if generation := current_generation():
+                        WorkerGeneration.objects.boot(generation)
                     worker = LoopWorker()
 
                     def _shutdown(_signum: int, _frame: FrameType | None) -> None:

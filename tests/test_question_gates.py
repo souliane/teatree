@@ -8,9 +8,13 @@ Everything the assistant wrote before dispatching fell outside the turn.
 """
 
 import json
+import time
 from pathlib import Path
 
-from hooks.scripts.question_gates import is_tool_result_only, last_assistant_turn
+import pytest
+
+from hooks.scripts import question_gates
+from hooks.scripts.question_gates import is_tool_result_only, iter_transcript_reversed, last_assistant_turn
 
 
 def _assistant(*blocks: dict) -> dict:
@@ -103,3 +107,58 @@ class TestLastAssistantTurn:
         assert turn is not None
         _text_out, used_question_tool = turn
         assert used_question_tool is True
+
+
+class TestTheTranscriptReadNewestFirst:
+    _SHAPES = ("entry", "blank", "crlf", "entry", "garbage", "long", "multibyte")
+
+    def _lines(self, seed: int) -> list[bytes]:
+        lines: list[bytes] = []
+        for index in range(seed % 13):
+            shape = self._SHAPES[(seed * 7 + index * 3) % len(self._SHAPES)]
+            width = (seed * 31 + index * 17) % 300
+            if shape in {"entry", "long", "crlf"}:
+                pad = "x" * (width if shape == "long" else width % 40)
+                lines.append(json.dumps({"n": index, "pad": pad}).encode() + (b"\r" if shape == "crlf" else b""))
+            elif shape == "multibyte":
+                lines.append(json.dumps({"n": index, "pad": "é€" * (width % 40 + 1)}, ensure_ascii=False).encode())
+            elif shape == "garbage":
+                lines.append(b"{not json")
+            else:
+                lines.append(b"")
+        return lines
+
+    @pytest.mark.parametrize("block", [1, 2, 3, 7, 64, 65536])
+    @pytest.mark.parametrize("seed", range(12))
+    def test_yields_exactly_the_forward_parse_reversed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block: int, seed: int
+    ) -> None:
+        monkeypatch.setattr(question_gates, "_TAIL_BLOCK_BYTES", block)
+        lines = self._lines(seed)
+        path = tmp_path / "transcript.jsonl"
+        path.write_bytes(b"\n".join(lines) + (b"\n" if seed % 2 else b""))
+        forward = [json.loads(line) for line in lines if line.strip() and line != b"{not json"]
+
+        assert list(iter_transcript_reversed(str(path))) == forward[::-1]
+
+    def test_the_corpus_carries_every_shape(self) -> None:
+        corpus = b"\n".join(line for seed in range(12) for line in self._lines(seed))
+
+        assert b"\r" in corpus
+        assert "€".encode() in corpus
+        assert b"{not json" in corpus
+
+    def test_one_huge_line_costs_no_more_than_the_same_bytes_in_short_lines(self, tmp_path: Path) -> None:
+        size = 32 * 1024 * 1024
+        head = json.dumps({"n": 0}).encode() + b"\n"
+        huge, short = tmp_path / "huge.jsonl", tmp_path / "short.jsonl"
+        huge.write_bytes(head + b"z" * size + b"\n")
+        short.write_bytes(head + (b"z" * 63 + b"\n") * (size // 64))
+
+        started = time.process_time()
+        assert list(iter_transcript_reversed(str(short))) == [{"n": 0}]
+        linear = time.process_time() - started
+        started = time.process_time()
+        assert list(iter_transcript_reversed(str(huge))) == [{"n": 0}]
+
+        assert time.process_time() - started < 2 * linear

@@ -22,7 +22,6 @@ from teatree.cli.review import review_app
 from teatree.cli.review.run_github import (
     audit_github_pr,
     diff_stats_from_files,
-    github_token_for_repo,
     read_github_token_for_repo,
     review_state_from_reviews,
     skip_verdict_for_open_state,
@@ -195,7 +194,7 @@ class TestGitHubTokenRouting:
         ConfigSetting.objects.set_value("github_token_pass_key", "venue/github", scope="t3-teatree")
         monkeypatch.setattr("teatree.core.overlays.forge_credential_provider.read_pass", lambda _entry: "db-token")
 
-        assert github_token_for_repo("souliane/teatree") == "db-token"
+        assert read_github_token_for_repo("souliane/teatree").value == "db-token"
 
     @pytest.mark.parametrize("ambient_name", ["GH_TOKEN", "GITHUB_TOKEN"])
     def test_ambient_cli_token_never_replaces_an_empty_owner_route(
@@ -207,7 +206,7 @@ class TestGitHubTokenRouting:
         ConfigSetting.objects.set_value("github_token_pass_key", "venue/github", scope="t3-teatree")
         monkeypatch.setattr("teatree.core.overlays.forge_credential_provider.read_pass", lambda _entry: "")
 
-        assert github_token_for_repo("souliane/teatree") == ""
+        assert read_github_token_for_repo("souliane/teatree").value == ""
 
     def test_owning_overlay_db_route_is_used_before_ambient_gh_login(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for candidate in ("TEATREE_GH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
@@ -221,7 +220,7 @@ class TestGitHubTokenRouting:
 
         monkeypatch.setattr("teatree.core.overlays.forge_credential_provider.read_pass", read_pass)
 
-        assert github_token_for_repo("souliane/teatree") == "db-token"
+        assert read_github_token_for_repo("souliane/teatree").value == "db-token"
         assert pass_reads == ["venue/github"]
 
     def test_audit_injects_the_db_routed_token_into_the_live_host(self, monkeypatch: pytest.MonkeyPatch) -> None:

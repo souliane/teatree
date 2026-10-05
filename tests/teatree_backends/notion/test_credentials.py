@@ -1,6 +1,7 @@
 """Token resolution: env first, then the overlay's `pass` entry, then fail loud."""
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.backends.notion.credentials import build_notion_client, resolve_notion_token
@@ -34,6 +35,9 @@ class TestResolution:
         with pytest.raises(NotionTokenMissingError):
             resolve_notion_token()
 
+        with pytest.raises(NotionTokenMissingError):
+            resolve_notion_token()
+
         assert read == []
 
 
@@ -60,6 +64,57 @@ class TestFailLoud:
             resolve_notion_token()
 
         assert "ntn_" not in str(caught.value), "a diagnostic must never carry a secret shape"
+
+
+class TestTheMissingTokenNamesTheOverlayAndItsFix:
+    @pytest.fixture(autouse=True)
+    def _no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("NOTION_TOKEN", raising=False)
+        monkeypatch.setattr("teatree.llm.credentials.read_pass", lambda _: "")
+
+    def test_an_overlay_routing_no_entry_is_named_with_the_command_that_routes_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("teatree.backends.notion.credentials.overlay_notion_pass_key", lambda _: "")
+
+        with pytest.raises(NotionTokenMissingError) as caught:
+            build_notion_client("t3-teatree")
+
+        message = str(caught.value)
+        assert "overlay 't3-teatree' routes no notion_token_pass_key" in message
+        assert "`t3 teatree config_setting set notion_token_pass_key '\"<entry>\"' --overlay t3-teatree`" in message
+
+    def test_an_empty_routed_entry_is_named_with_the_command_that_stores_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("teatree.backends.notion.credentials.overlay_notion_pass_key", lambda _: "venue/notion")
+
+        with pytest.raises(NotionTokenMissingError) as caught:
+            build_notion_client("t3-teatree")
+
+        message = str(caught.value)
+        assert "`pass venue/notion`, which overlay 't3-teatree' routes, is empty" in message
+        assert "`t3 notion setup --overlay t3-teatree`" in message
+
+    def test_an_unregistered_name_lists_the_overlays_that_exist(self) -> None:
+        with pytest.raises(NotionTokenMissingError) as caught:
+            build_notion_client("typo")
+
+        assert "no overlay named 'typo' is registered (registered: " in str(caught.value)
+        assert "t3-teatree" in str(caught.value)
+
+    def test_two_identities_refuse_with_the_token_missing_code(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def ambiguous(_requested: str | None) -> str:
+            msg = "pick one: --overlay t3-a"
+            raise ImproperlyConfigured(msg)
+
+        monkeypatch.setattr("teatree.backends.notion.credentials.notion_overlay", ambiguous)
+
+        with pytest.raises(NotionTokenMissingError) as caught:
+            build_notion_client()
+
+        assert "--overlay t3-a" in str(caught.value)
+        assert caught.value.exit_code == 3
 
 
 class TestEveryReadPathResolvesTheSameEntry(TestCase):

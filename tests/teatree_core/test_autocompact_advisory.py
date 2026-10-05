@@ -118,9 +118,9 @@ class TestKillSwitchTripsModelMatrix:
             "claude-opus-4-7",
             "claude-opus-4-8",
             "claude-opus-5",
+            "claude-opus-5-5",
             "claude-sonnet-5",
-            "claude-fable-5",
-            "claude-fable-5-1",
+            "claude-sonnet-5-5",
             "claude-mythos-5",
             "claude-mythos-5-1",
         ):
@@ -131,17 +131,15 @@ class TestKillSwitchTripsModelMatrix:
             assert kill_switch_trips(config) is True, model
             assert kill_switch_trips(_config(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="25", CLAUDE_CODE_MODEL=f"{model}[1m]"))
 
-    def test_live_planning_model_fable_5_1_trips(self) -> None:
-        # #4715: the factory plans on claude-fable-5-1; the set once held only the
-        # previous generation, so the live model never tripped the advisory.
-        for model in ("claude-fable-5-1", "Claude-Fable-5-1", "claude-fable-5-1[1m]"):
+    def test_live_planning_model_opus_5_5_trips(self) -> None:
+        for model in ("claude-opus-5-5", "Claude-Opus-5-5", "claude-opus-5-5[1m]"):
             config = _config(
                 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="25",
                 CLAUDE_CODE_MODEL=model,
             )
             assert kill_switch_trips(config) is True, model
         # Anti-vacuity control: an id absent from the catalog must still be False.
-        absent = _config(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="25", CLAUDE_CODE_MODEL="claude-fable-4-9")
+        absent = _config(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="25", CLAUDE_CODE_MODEL="claude-opus-4-9")
         assert kill_switch_trips(absent) is False
 
     def test_two_hundred_k_models_do_not_trip(self) -> None:

@@ -5,6 +5,7 @@ teatree's own repo, skills, and GitHub project as the target.
 """
 
 import os
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, override
 
@@ -25,6 +26,7 @@ from teatree.overlay_sdk import (
     reap_compose_project,
     run_checked,
 )
+from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
@@ -106,7 +108,7 @@ class TeatreeMetadata(OverlayMetadata):
     def get_skill_metadata(self) -> SkillMetadata:
         root = _repo_root()
         return {
-            "skill_path": str(root / "skills" / "internals" / "SKILL.md"),
+            "skill_path": "internals",
             "skill_root": str(root / "skills"),
             "remote_patterns": ["souliane/teatree"],
         }
@@ -140,6 +142,15 @@ class TeatreeProvisioning(OverlayProvisioning):
         return [] if result.is_noop else [str(result)]
 
 
+def _python_env_ready(repo: Path) -> bool:
+    python = repo / ".venv" / "bin" / "python"
+    try:
+        run_checked([str(python), "-c", ""], cwd=repo, timeout=5)
+    except (OSError, CommandFailedError, TimeoutExpired):
+        return False
+    return True
+
+
 def _sync_dependencies_step(repo: Path) -> ProvisionStep:
     """The ``uv sync`` step, shared by provisioning and by the test run's prerequisites.
 
@@ -149,10 +160,16 @@ def _sync_dependencies_step(repo: Path) -> ProvisionStep:
     """
 
     def sync_deps() -> None:
+        venv = repo / ".venv"
+        if (venv.is_dir() or venv.is_symlink()) and not _python_env_ready(repo):
+            if venv.is_symlink():
+                venv.unlink()
+            else:
+                shutil.rmtree(venv)
         run_checked(["uv", "sync"], cwd=repo)
 
     def python_env_ready() -> bool:
-        return (repo / ".venv").is_dir()
+        return _python_env_ready(repo)
 
     return ProvisionStep(
         name="sync-dependencies",
@@ -182,7 +199,7 @@ class TeatreeRuntime(OverlayRuntime):
         if service != "tests" or not on_disk:
             return []
         repo = Path(on_disk)
-        return [] if (repo / ".venv").is_dir() else [_sync_dependencies_step(repo)]
+        return [] if _python_env_ready(repo) else [_sync_dependencies_step(repo)]
 
     @override
     def lint_command(self, worktree: "Worktree") -> list[str]:

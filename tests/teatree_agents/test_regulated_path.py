@@ -34,43 +34,33 @@ class TestIsRegulatedPathEligible:
 class TestAssertModelAllowedOnRegulatedPath:
     """:func:`assert_model_allowed_on_regulated_path` — the regulated-lane allowlist gate."""
 
-    def test_unenforced_lane_never_raises(self) -> None:
-        # The teatree factory lane carries no regulated data — any model runs.
-        assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro", enforce_regulated_path=False, allowlist=[])
+    def test_empty_allowlist_never_raises(self) -> None:
+        assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro", allowlist=[])
 
     def test_allowlisted_model_on_the_regulated_path_is_a_noop(self) -> None:
-        assert_model_allowed_on_regulated_path(
-            "anthropic/claude-opus-4.8", enforce_regulated_path=True, allowlist=["anthropic/"]
-        )
+        assert_model_allowed_on_regulated_path("anthropic/claude-opus-4.8", allowlist=["anthropic/"])
 
     def test_model_off_the_allowlist_is_refused_on_the_regulated_path(self) -> None:
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
-            assert_model_allowed_on_regulated_path(
-                "deepseek/deepseek-v4-pro", enforce_regulated_path=True, allowlist=["anthropic/"]
-            )
+            assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro", allowlist=["anthropic/"])
 
-    def test_enforced_but_empty_allowlist_refuses_everything(self) -> None:
-        with pytest.raises(ValueError, match="not eligible for the regulated path"):
-            assert_model_allowed_on_regulated_path(
-                "anthropic/claude-opus-4.8", enforce_regulated_path=True, allowlist=[]
-            )
+    def test_empty_allowlist_blocks_nothing(self) -> None:
+        assert_model_allowed_on_regulated_path("anthropic/claude-opus-4.8", allowlist=[])
 
 
 class TestAssertModelAllowedDefaultSettings(TestCase):
     """The default (params ``None``) reads the resolved DB-home regulated-path settings."""
 
-    def test_default_unenforced_never_raises(self) -> None:
-        # No row set — enforce_regulated_path defaults False, so nothing is gated.
+    def test_default_empty_allowlist_never_raises(self) -> None:
+        # No row set means this installation has no regulated model restriction.
         assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro")
 
     def test_default_reads_the_resolved_regulated_path_settings(self) -> None:
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
             assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro")
 
-    def test_allowlisted_model_passes_under_enforcement(self) -> None:
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
+    def test_allowlisted_model_passes(self) -> None:
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/", "claude"])
         assert_model_allowed_on_regulated_path("anthropic/claude-opus-4.8")
 
@@ -82,29 +72,27 @@ class TestRegulatedPathPolicy(TestCase):
         RegulatedPathPolicy().assert_allowed("deepseek/deepseek-v4-pro")
 
     def test_it_resolves_from_the_stored_settings(self) -> None:
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
-        assert RegulatedPathPolicy.from_settings() == RegulatedPathPolicy(enforce=True, allowlist=("anthropic/",))
+        assert RegulatedPathPolicy.from_settings() == RegulatedPathPolicy(allowlist=("anthropic/",))
 
     def test_supplied_settings_win_over_a_fresh_resolution(self) -> None:
         # The dispatch path passes the settings it ALREADY resolved for the task's overlay scope,
         # so the transport and the gate can never read two different scopes.
-        supplied = UserSettings(enforce_regulated_path=True, regulated_path_model_allowlist=["google/"])
-        assert RegulatedPathPolicy.from_settings(supplied) == RegulatedPathPolicy(enforce=True, allowlist=("google/",))
+        supplied = UserSettings(regulated_path_model_allowlist=["google/"])
+        assert RegulatedPathPolicy.from_settings(supplied) == RegulatedPathPolicy(allowlist=("google/",))
 
     def test_a_resolved_policy_still_refuses_an_ineligible_model(self) -> None:
-        policy = RegulatedPathPolicy(enforce=True, allowlist=("anthropic/",))
+        policy = RegulatedPathPolicy(allowlist=("anthropic/",))
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
             policy.assert_allowed("deepseek/deepseek-v4-pro")
 
     def test_resolve_keeps_a_supplied_policy(self) -> None:
-        supplied = RegulatedPathPolicy(enforce=True, allowlist=("google/",))
+        supplied = RegulatedPathPolicy(allowlist=("google/",))
         assert RegulatedPathPolicy.resolve(supplied) is supplied
 
     def test_resolve_falls_back_to_the_stored_settings(self) -> None:
         # Without this fallback an unresolved policy would silently STOP enforcing — a
         # compliance gate narrowed by a construction detail.
-        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
         ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
         with pytest.raises(ValueError, match="not eligible for the regulated path"):
             RegulatedPathPolicy.resolve(None).assert_allowed("deepseek/deepseek-v4-pro")

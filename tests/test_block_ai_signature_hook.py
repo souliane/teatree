@@ -11,9 +11,13 @@ the same pre-merge layer as the draft-lock and structured-question gates.
 
 import json
 import subprocess
+import time
 from unittest.mock import patch
 
+import pytest
+
 import hooks.scripts.hook_router as router
+from hooks.scripts import hook_budget
 from hooks.scripts.hook_router import _extract_ai_sig_payload, handle_block_ai_signature
 
 
@@ -23,6 +27,25 @@ def _gh_pr_create(body: str) -> dict:
 
 _FINDING_STDOUT = "AI-signature scan: 1 banned trailer(s)\n  line 3: co-authored-by-model: Co-Authored-By: Claude"
 _CLEAN_STDOUT = "AI-signature scan: clean (0 findings)"
+
+
+class TestTheScanFitsTheHookBudget:
+    def test_the_scan_is_capped_by_what_the_hook_has_left(self, monkeypatch, hook_clock):
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        hook_clock.now = 25.0
+        clean = subprocess.CompletedProcess(args=[], returncode=0, stdout=_CLEAN_STDOUT, stderr="")
+        with patch.object(router.subprocess, "run", return_value=clean) as run:
+            assert handle_block_ai_signature(_gh_pr_create("body")) is False
+        assert run.call_args.kwargs["timeout"] == pytest.approx(4.0)
+
+    def test_no_scan_starts_once_the_hook_budget_is_spent(self, monkeypatch, capsys):
+        # Only ``t3`` resolves: a ``docker`` hit would start the process-cached mount probe on a cold worker.
+        monkeypatch.setattr(router.shutil, "which", lambda name: "/usr/local/bin/t3" if name == "t3" else None)
+        monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - float(hook_budget.HOOK_CEILING_S))
+        with patch.object(router.subprocess, "run") as run:
+            assert handle_block_ai_signature(_gh_pr_create("body")) is False
+        assert run.call_count == 0
+        assert "no time left in the hook budget" in capsys.readouterr().err
 
 
 class TestBlocksBannedTrailer:

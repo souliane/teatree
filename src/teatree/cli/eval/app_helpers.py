@@ -7,6 +7,7 @@ domain value, or exits 2 (usage error) naming the valid choices.
 
 import dataclasses
 import os
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import typer
@@ -14,10 +15,13 @@ from claude_agent_sdk.types import EffortLevel
 
 from teatree.agents.model_tiering import resolve_tier
 from teatree.cli.eval.escalate import EscalationConfig
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import API_BACKEND, FRESH_CLAUDE_BACKENDS, UNMETERED_FRESH_BACKENDS
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.model_variant import EFFORT_LEVELS
 from teatree.eval.models import EvalSpec
+from teatree.eval.pass_at_k import PassAtKResult
+from teatree.eval.pass_at_k_html import render_pass_at_k_html
 from teatree.eval.presets import Preset, PresetError, resolve_preset
 from teatree.eval.report import ScenarioResult, render_html
 from teatree.eval.summary_json import write_summary_json
@@ -44,10 +48,11 @@ def _benchmark_models() -> str:
 
     Resolves :data:`BENCHMARK_TIERS` through :func:`resolve_tier` so the benchmark
     runs every scenario against the concrete model behind each of the three
-    tiers. The single source of truth (``TIER_MODELS`` / ``[agent.tier_models]``)
-    decides the models — adopting a new one needs no benchmark-flag edit.
+    tiers, once per distinct model. The single source of truth (``TIER_MODELS`` /
+    ``[agent.tier_models]``) decides the models — adopting a new one needs no
+    benchmark-flag edit.
     """
-    return ",".join(resolve_tier(tier) for tier in BENCHMARK_TIERS)
+    return ",".join(dict.fromkeys(resolve_tier(tier) for tier in BENCHMARK_TIERS))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -236,7 +241,8 @@ class RunReportPaths:
     ``transcript_html`` is the private per-trial transcript; ``summary_md`` and
     ``summary_json`` are the sanitized, publish-safe dashboards. Grouped so the
     matrix-shape guard iterates the report flags rather than repeating one
-    near-identical rejection per flag.
+    near-identical rejection per flag, and so both run shapes write them through
+    one redacting path.
     """
 
     transcript_html: Path | None = None
@@ -250,6 +256,33 @@ class RunReportPaths:
             (self.summary_md, "--summary-md", "the single-trial / --trials aggregate dashboard"),
             (self.summary_json, "--summary-json", "the single-trial / --trials per-scenario artifact"),
         )
+
+    def write_single_trial(self, results: list[ScenarioResult]) -> None:
+        """Write the single-trial transcript HTML, sanitized summary markdown, and/or JSON.
+
+        All are written from THIS run's results (no re-run) and BEFORE any guard/gate
+        can exit, so a red run still drops each artifact. Each path being ``None`` is
+        a no-op.
+        """
+        self._write(results, lambda: render_html(results))
+
+    def write_pass_at_k(self, results: list[PassAtKResult]) -> None:
+        """Drop the per-trial transcript + sanitized dashboards BEFORE any guard/gate exits.
+
+        Each is written from THIS run's in-memory results so a red lane still drops the
+        diagnostic transcript AND the publish-safe summary/JSON the workflow uploads.
+        """
+        self._write(results, lambda: render_pass_at_k_html(results))
+
+    def _write(
+        self, results: Sequence[ScenarioResult] | Sequence[PassAtKResult], render_transcript: Callable[[], str]
+    ) -> None:
+        if self.transcript_html is not None:
+            write_artifact(self.transcript_html, render_transcript())
+        if self.summary_md is not None:
+            write_artifact(self.summary_md, render_summary_markdown(results))
+        if self.summary_json is not None:
+            write_summary_json(results, self.summary_json)
 
 
 def reject_unsupported_run_output(
@@ -275,26 +308,3 @@ def reject_unsupported_run_output(
                 err=True,
             )
             raise typer.Exit(code=2)
-
-
-def write_single_trial_reports(
-    results: list[ScenarioResult],
-    *,
-    transcript_html: Path | None,
-    summary_md: Path | None,
-    summary_json: Path | None = None,
-) -> None:
-    """Write the single-trial transcript HTML, sanitized summary markdown, and/or JSON.
-
-    All are written from THIS run's results (no re-run) and BEFORE any guard/gate
-    can exit, so a red run still drops each artifact. ``transcript_html`` is the
-    full per-scenario transcript (private); ``summary_md`` / ``summary_json`` are
-    the sanitized, publish-safe dashboards (no transcript). Each path being
-    ``None`` is a no-op.
-    """
-    if transcript_html is not None:
-        transcript_html.write_text(render_html(results), encoding="utf-8")
-    if summary_md is not None:
-        summary_md.write_text(render_summary_markdown(results), encoding="utf-8")
-    if summary_json is not None:
-        write_summary_json(results, summary_json)

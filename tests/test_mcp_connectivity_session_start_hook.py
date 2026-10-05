@@ -45,13 +45,13 @@ class TestMcpConnectivityAdvisory:
 
     def test_merge_prepends_advisory_to_session_context(self, staged_home: Path) -> None:
         _write_claude_json(staged_home, {"claudeAiMcpEverConnected": ["claude.ai Notion"]})
-        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup")
+        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup", router.StartClaims())
         assert "BASE DIRECTIVE" in merged
         assert merged.index(RECONNECT_COMMAND) < merged.index("BASE DIRECTIVE")
 
     def test_merge_no_servers_leaves_context_unchanged(self, staged_home: Path) -> None:
         _write_claude_json(staged_home, {})
-        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup")
+        merged = router._merge_session_start_context("BASE DIRECTIVE", "sess-1", "startup", router.StartClaims())
         assert merged == "BASE DIRECTIVE"
 
 

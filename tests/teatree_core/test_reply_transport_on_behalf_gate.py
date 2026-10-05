@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import BotPing, IncomingEvent, OnBehalfApproval, OnBehalfAudit, ReplyDispatch
+from teatree.core.models import BotPing, ConfigSetting, IncomingEvent, OnBehalfApproval, OnBehalfAudit, ReplyDispatch
 from teatree.core.reply_transport import NoopReplier, ReplySpec, _BaseReplier
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 
@@ -45,6 +45,11 @@ def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_
         conn.close()
 
 
+@pytest.fixture(autouse=True)
+def _allow_expected_reply_channel() -> None:
+    ConfigSetting.objects.set_value("send_proxy_allowlist", ["slack:C-eng"])
+
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db
 class TestReplyTransportOnBehalfGate:
@@ -54,7 +59,9 @@ class TestReplyTransportOnBehalfGate:
         self.monkeypatch = monkeypatch
 
     def _event(self, key: str) -> IncomingEvent:
-        return IncomingEvent.objects.create(source=IncomingEvent.Source.SLACK, body="x", idempotency_key=key)
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK, channel_ref="C-eng", body="x", idempotency_key=key
+        )
 
     def test_post_in_thread_blocked_when_no_approval(self) -> None:
         seed_forbidding_posture()
@@ -141,7 +148,9 @@ class TestReplyTransportAfterReceiptDm:
         self.monkeypatch = monkeypatch
 
     def _event(self, key: str) -> IncomingEvent:
-        return IncomingEvent.objects.create(source=IncomingEvent.Source.SLACK, body="x", idempotency_key=key)
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK, channel_ref="C-eng", body="x", idempotency_key=key
+        )
 
     def test_on_behalf_reply_emits_after_receipt_dm_on_sent(self) -> None:
         backend = _notify_backend()
@@ -237,7 +246,9 @@ class TestRedeliverReusesReservation:
         self.monkeypatch = monkeypatch
 
     def _event(self, key: str) -> IncomingEvent:
-        return IncomingEvent.objects.create(source=IncomingEvent.Source.SLACK, body="x", idempotency_key=key)
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK, channel_ref="C-eng", body="x", idempotency_key=key
+        )
 
     def _failed_dispatch(self, event: IncomingEvent, key: str) -> ReplyDispatch:
         return ReplyDispatch.objects.create(

@@ -27,7 +27,7 @@ from teatree.core.merge import merge_ticket_pr
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.host_kind import resolve_host_kind
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear, Ticket
-from tests.teatree_core.conftest import seed_merge_safe_verdict
+from tests.teatree_core.conftest import record_owned_pr_for_test, seed_merge_safe_verdict
 
 pytestmark = pytest.mark.django_db  # ast-grep-ignore: ac-django-no-pytest-django-db
 
@@ -209,9 +209,10 @@ class TestDeclaredScopeForge(TestCase):
 
 
 class TestTicketlessGitLabKeystone(TestCase):
-    """A managed-repo MR with no teatree Ticket merges through the sanctioned path."""
+    """A ticketless CLEAR finds its MR owner and uses the GitLab transport."""
 
     def test_ticketless_gitlab_clear_drives_the_gitlab_transport(self) -> None:
+        owner = record_owned_pr_for_test(slug=_GITLAB_SLUG, pr_id=_MR_IID, head_sha=_SHA, host_kind="gitlab")
         clear = _ticketless_clear(host_kind="gitlab")
         seed_merge_safe_verdict(slug=_GITLAB_SLUG, pr_id=_MR_IID, sha=_SHA)
         stub = _GitLabApiStub()
@@ -226,8 +227,10 @@ class TestTicketlessGitLabKeystone(TestCase):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
         clear.refresh_from_db()
+        owner.refresh_from_db()
         assert outcome.merged_sha == stub.merge_sha
-        assert outcome.ticket_state == ""
+        assert outcome.ticket_state == Ticket.State.MERGED
+        assert owner.state == Ticket.State.MERGED
         assert clear.consumed_at is not None
         assert MergeAudit.objects.filter(clear=clear).exists()
         assert any("merge_requests" in call for call in stub.calls), (

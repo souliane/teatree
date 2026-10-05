@@ -1,12 +1,4 @@
-"""The publication gate's banned-terms source fails CLOSED on an unreadable store (#4008).
-
-``_db_banned_terms`` feeds the PUBLIC-target scan vocabulary. Its unset disposition mirrors the
-shell scanner's: a genuinely-unset list is the dev/solo no-op (``()``), a deployment that MUST
-scrub gets ``None`` (fail closed). A store that could not be READ is neither — it is a broken
-control plane, and scanning a public body against no terms because sqlite was busy is the leak
-the gate exists to stop. Both gates now route through the ONE
-``banned_terms_cli.resolve_unset_verdict`` disposition, so they cannot diverge.
-"""
+"""The publication gate's banned-terms source fails closed without a readable registry."""
 
 import sqlite3
 from pathlib import Path
@@ -18,8 +10,7 @@ from teatree.core.gates.privacy_gate import _db_banned_terms
 
 @pytest.fixture(autouse=True)
 def _no_ambient_banned_terms_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
-    monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
+    monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
 
 def test_unreadable_store_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -29,9 +20,9 @@ def test_unreadable_store_fails_closed(tmp_path: Path, monkeypatch: pytest.Monke
     assert _db_banned_terms() is None
 
 
-def test_absent_store_is_the_dev_solo_no_op(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_absent_store_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
-    assert _db_banned_terms() == ()
+    assert _db_banned_terms() is None
 
 
 def test_configured_list_is_returned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -41,7 +32,10 @@ def test_configured_list_is_returned(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "CREATE TABLE teatree_config_setting ("
         "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
     )
-    conn.execute("INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', '[\"acme\"]')")
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+        ('{"leak": ["acme"], "prose_collider": ["acme"]}',),
+    )
     conn.commit()
     conn.close()
     monkeypatch.setenv("T3_CONFIG_DB", str(db))

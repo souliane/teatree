@@ -42,24 +42,6 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_empty() -> None:
-    # The carve-out is empty — every ``UserSettings`` field is DB-home.
-    toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
-    assert toml_home == frozenset()
-    moved_to_db = (
-        "workspace_dir",
-        "check_updates",
-        "handover_mirror_path",
-        "statusline_chain",
-        "autoload",
-        "speak",
-        "mr_reminder",
-    )
-    for moved in moved_to_db:
-        assert moved not in toml_home
-        assert SETTING_HOMES[moved] is SettingHome.DB
-
-
 def test_per_overlay_fields_are_db_home() -> None:
     # A per-overlay override lives in a ``ConfigSetting`` overlay row, not a file.
     assert SETTING_HOMES["orchestrator_bash_gate_enabled"] is SettingHome.DB
@@ -85,12 +67,8 @@ def test_mr_reminder_is_db_home() -> None:
     assert SETTING_HOMES["mr_reminder"] is SettingHome.DB
 
 
-def test_check_updates_is_db_home() -> None:
-    assert SETTING_HOMES["check_updates"] is SettingHome.DB
-
-
-def test_derived_fields_are_exactly_the_one_computed_value() -> None:
-    assert frozenset({"notify_on_behalf"}) == DERIVED_FIELDS
+def test_no_derived_setting_fields_remain() -> None:
+    assert not DERIVED_FIELDS
 
 
 def test_db_home_covers_every_non_carve_out_non_derived_field() -> None:

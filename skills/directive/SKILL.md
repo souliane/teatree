@@ -50,8 +50,7 @@ t3 directive capture "<verbatim directive text>" [--scope <overlay>]
 - Nothing implements before that approval — `Directive.admit` is structurally
   human-gated (it raises without a consumed, answered ratify question).
 
-If the directive loop is dark (its `Loop` row disabled or `directive_loop_enabled`
-off — visible as a `SKIP` from `t3 directive tick`), still capture (the explicit path
+If the directive loop is dark (its `Loop` row disabled — visible as a `SKIP` from `t3 directive tick`), still capture (the explicit path
 is always live) and add ONE line: the ratify question will not arrive until the loop
 is enabled, so the capture waits in the ledger until then.
 

@@ -69,7 +69,7 @@ def _home_with_config(
 ) -> Path:
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
-    rows: dict[str, object] = {"banned_terms": banned_terms}
+    rows: dict[str, object] = {"banned_term_registry": {"leak": banned_terms, "prose_collider": banned_terms}}
     if private_repos is not None:
         rows["private_repos"] = private_repos
     db = home / "config.sqlite3"
@@ -263,5 +263,5 @@ class TestWholeTokenMatcherPin:
         tmp_path: Path,
     ) -> None:
         cfg = tmp_path / "cfg.sqlite3"
-        _seed_config_db(cfg, {"banned_terms": ["democorp"]})
+        _seed_config_db(cfg, {"banned_term_registry": {"leak": ["democorp"], "prose_collider": ["democorp"]}})
         assert banned_terms_scanner.scan_text(text, config_path=cfg) == expected

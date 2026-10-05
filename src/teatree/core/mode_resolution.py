@@ -9,11 +9,9 @@ The precedence chain reuses the DB override/schedule resolver that already backs
 ``default_mode`` beneath it when neither governs. Three layers, all of them durable
 writes or a calendar: what runs is decided top-down and nothing moves it sideways.
 
-A keystroke used to upgrade a schedule/default mode to ``present``, and it was the one
-arm that flipped with no observable event — raised by typing, lowered by the mere
-absence of it — so a decision PERSISTED under one side of it could not be kept correct
-by any chokepoint. Presence is still read for live-turn QUESTION routing
-(:mod:`teatree.live_presence`); it no longer decides which loops run.
+Typing in a session never decides which loops run: an arm raised by a keystroke and
+lowered by its mere absence flips with no observable event, so no chokepoint could keep
+a decision persisted under one side of it correct.
 
 Fail-open: any resolution error degrades to a safe default mode with a WARNING, so a
 broken mode config can never brick the loop fleet.

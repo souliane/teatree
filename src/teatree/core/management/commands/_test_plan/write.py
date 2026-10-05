@@ -32,8 +32,6 @@ from teatree.core.management.commands._test_plan.body_captures import resolve_bo
 from teatree.core.management.commands._test_plan.committed_captures import (
     embed_side_captures,
     evidence_dir_for,
-    legacy_flat_capture_migration,
-    migrate_legacy_flat_captures,
     refuse_invalid_committed_captures,
 )
 from teatree.core.management.commands._test_plan.file_store import plan_path_for_ticket, read_plan_state, write_plan
@@ -281,14 +279,11 @@ def write_test_plan(write: TestPlanWrite) -> PlanWriteResult:
     source = _resolve_scenario_source(write.manifest, prior)
     evidence_dir = evidence_dir_for(write.path)
     incoming = _incoming_captures(write) if write.embed_captures else {}
-    migrations = legacy_flat_capture_migration(evidence_dir, incoming=incoming, prior=prior)
     refuse_invalid_committed_captures(
         evidence_dir,
         incoming=incoming,
-        superseded_legacy=migrations.keys(),
         skip=write.skip_validation,
     )
-    migrate_legacy_flat_captures(migrations, prior=prior)
 
     sides = write.manifest.present_sides()
     embeds = {env: _side_embeds(write, side, env=env, evidence_dir=evidence_dir) for env, side in sides.items()}
@@ -377,7 +372,6 @@ def _write_body_file(flags: TestPlanFlags) -> PlanWriteResult:
     refuse_invalid_committed_captures(
         evidence_dir,
         incoming=captures.incoming_images(),
-        superseded_legacy=captures.superseded_flat,
         skip=flags.skip_validation,
     )
     captures.embed()

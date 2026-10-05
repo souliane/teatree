@@ -219,7 +219,7 @@ class TestHeadedBrowserRidesNoAllowlist:
             "echo 'never pass {flag} to playwright'",
             "grep -rn -- {flag} docs/",
             "git commit -m 'docs: explain why {flag} is banned'",
-            "t3 myapp config_setting set chrome_devtools_headless true",
+            "t3 myapp config_setting set autoload true",
             "ruff check --fix src/",
         ],
     )

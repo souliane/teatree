@@ -55,8 +55,7 @@ _CAT_HEREDOC_SUBST_RE: Final[re.Pattern[str]] = re.compile(
 
 # A body value that IS exactly a single shell-variable reference (``$VAR`` or
 # ``${VAR}``). Resolved best-effort from the hook subprocess's environment (it
-# inherits the agent's env, the same channel the ``ALLOW_BANNED_TERM`` override
-# reaches the gate through). An absent variable is genuinely unresolvable and
+# inherits the agent's env). An absent variable is genuinely unresolvable and
 # fails closed.
 _VAR_REF_RE: Final[re.Pattern[str]] = re.compile(r"^\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?$")
 

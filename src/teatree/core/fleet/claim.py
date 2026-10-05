@@ -196,7 +196,8 @@ def steal_if_expired(
     ``None`` when the ref is absent (nothing to steal — use :func:`acquire`), the
     holder is still live, or a concurrent stealer's CAS won the race (this
     instance's CAS carried a now-stale expected value and was rejected
-    server-side). Exactly one stealer wins under contention.
+    server-side). A refused push that leaves the ref unchanged raises
+    :class:`FleetClaimUnavailableError`. Exactly one stealer wins under contention.
     """
     ref = claim_ref(work_key)
     ts = _resolve_now(now)
@@ -212,6 +213,9 @@ def steal_if_expired(
         won = _cas(scope, ref, old_sha=current_sha, new_sha=new_sha)
     if won:
         return Claim(work_key=work_key, ref=ref, sha=new_sha, instance_id=inst, claimed_at=ts, ttl_seconds=ttl_seconds)
+    if _ls_remote_sha(repo, remote, ref) == current_sha:
+        msg = f"claim steal push for {ref} failed but the ref is unchanged (remote unwritable)"
+        raise FleetClaimUnavailableError(msg)
     return None
 
 

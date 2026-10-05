@@ -72,7 +72,7 @@ if [ "${LINT_DOCKER:-0}" = "1" ]; then
   # baked hook env vs whatever `uv run prek` resolves on the host) surfaces
   # here that the plain host-native invocation below can never catch.
   docker build -q -f dev/Dockerfile.test --target lint -t teatree-lint-local . >/dev/null
-  docker run --rm -v "$PWD":/app -e SKIP -e T3_BANNED_TERMS -e TEATREE_TERM_REGISTRY teatree-lint-local \
+  docker run --rm -v "$PWD":/app -e SKIP -e TEATREE_TERM_REGISTRY teatree-lint-local \
     bash -c "uv run prek run --all-files"
 else
   echo "=== [4/6] prek (all hooks, all files) -- CI lint job ==="

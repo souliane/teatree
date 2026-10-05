@@ -1,7 +1,6 @@
 r"""Built-in terminology gate for teatree-internal vocabulary.
 
-Unlike the brand/tenant ``banned_terms`` lists (operator-supplied via
-the teatree bootstrap TOML config / ``$TEATREE_BANNED_BRANDS``), these phrases are
+Unlike operator-supplied classes in ``banned_term_registry``, these phrases are
 teatree's own internal vocabulary rules — they ship with the public repo
 and apply to the repo itself, so they live in code with a fixed
 correction message per phrase rather than in operator config.

@@ -19,11 +19,10 @@ bundle keeps the two CLIs in one image from disagreeing.
 independently. That image feeds the paths that DO exec the global binary
 (``teatree.cli.loop.app``'s ``os.execv``, ``teatree.cli.agent``,
 ``teatree.agents.web_terminal``, ``teatree.core.management.commands.tasks``), so it
-may LEAD the bundle but never trail it: a generation behind the introduction of
-``claude-opus-5`` breaks ``teatree.agents.model_tiering``'s ``TIER_MODELS``, which
-sets that model as the ``frontier`` tier.
+may LEAD the bundle but never trail it: a generation behind a tier model's floor
+breaks ``teatree.agents.model_tiering``'s ``TIER_MODELS``.
 
-Both tiers are additionally held at or above :data:`_MODEL_MINIMUM_CLI_VERSION`. Every
+Both tiers are additionally held at or above :data:`_CATALOG_CLI_FLOOR`. Every
 other assertion here compares the pins only to EACH OTHER, so they all hold at a version
 the API rejects — which is how the implementation lane 400ed for a day with this file
 green (souliane/teatree#4704).
@@ -37,8 +36,8 @@ moves on its own.
 Both tiers reconcile pinned STRINGS, which agree with each other whatever the wheel
 ships. :class:`TestTheBundledCliIsTheBinaryThatActuallyRuns` is the third concern:
 it opens the installed wheel, execs its bundled CLI, and holds that binary to the
-:data:`_FRONTIER_MODEL_CLI_FLOOR` — the gap that let a bundle too old for
-``claude-opus-5`` sit here for five days with every lane green (#239).
+:data:`_CATALOG_CLI_FLOOR` — the gap that let a bundle too old for the frontier
+model sit here for five days with every lane green (#239).
 """
 # test-path: cross-cutting — scans every Dockerfile/workflow install site plus the SDK's
 # installed wheel, and cross-checks teatree.agents.model_tiering; no single src/teatree/ mirror.
@@ -73,32 +72,20 @@ _SDK_MODULE = "claude_agent_sdk"
 #: The SDK pin whose bundled CLI the eval/test tier tracks. When the SDK pin moves,
 #: this constant reds and :data:`_SDK_BUNDLED_CLI_VERSION` must be re-derived from
 #: the NEW wheel's ``claude_agent_sdk/_bundled/claude --version`` — never assumed.
-_PINNED_SDK_VERSION = "0.2.160"
+_PINNED_SDK_VERSION = "0.2.161"
 
 #: ``claude_agent_sdk/_bundled/claude --version`` from the wheel of
-#: :data:`_PINNED_SDK_VERSION` → ``2.1.283 (Claude Code)``.
-_SDK_BUNDLED_CLI_VERSION = "2.1.283"
+#: :data:`_PINNED_SDK_VERSION` → ``2.1.284 (Claude Code)``.
+_SDK_BUNDLED_CLI_VERSION = "2.1.284"
 
 #: The deployed runtime's pin: the version the factory host runs today.
-_RUNTIME_CLI_VERSION = "2.1.283"
+_RUNTIME_CLI_VERSION = "2.1.284"
 
 _FRONTIER_MODEL = TIER_MODELS["frontier"]
 _FRONTIER_MODEL_CLI_FLOOR = MODEL_MINIMUM_CLI_VERSIONS[_FRONTIER_MODEL]
 
 #: ``pyright-langserver`` for the pyright-lsp plugin in the runtime image.
 _PYRIGHT_VERSION = "1.1.411"
-
-#: Fork delta: this fork runs the eval lanes from its own root pipeline, so the vendored
-#: core carries no `.gitlab-ci.yml`. Upstream's copy of this set keeps that entry.
-#: The oldest CLI the API accepts for the models teatree dispatches. Under it every
-#: dispatch dies with ``400 ... Claude Code 2.1.233 does not support this model; version
-#: 2.1.251 or newer is required`` BEFORE the task is claimed, so nothing local sees it.
-#: The floor is server-side: no manifest, lockfile or bot can read it, and the tier
-#: assertions below only ever compared the pins to EACH OTHER — which is how both tiers
-#: sat under it with this suite green (souliane/teatree#4704). Raise it only from an
-#: observed API refusal, never speculatively — ``claude-opus-5-5`` refused 2.1.277 with
-#: ``claude_code_version_too_old`` (souliane/teatree#4874).
-_MODEL_MINIMUM_CLI_VERSION = "2.1.280"
 
 _EVAL_TEST_SITES = frozenset(
     {
@@ -256,6 +243,15 @@ def _sdk_pin() -> str:
 
 def _as_tuple(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
+
+
+#: The oldest CLI that serves every tier model. The tier assertions below only compare the
+#: pins to EACH OTHER, which is how both tiers once sat under the API's floor with this
+#: suite green (souliane/teatree#4704).
+_CATALOG_CLI_FLOOR = max(
+    (MODEL_MINIMUM_CLI_VERSIONS[model] for model in TIER_MODELS.values() if model in MODEL_MINIMUM_CLI_VERSIONS),
+    key=_as_tuple,
+)
 
 
 def _bundled_cli_binary() -> Path:
@@ -463,9 +459,8 @@ class TestTheRuntimeTierIsPinnedIndependently:
     def test_the_runtime_is_never_rolled_back_behind_the_eval_bundle(self) -> None:
         # The tiers are pinned separately, but only in one direction: the deployed CLI
         # may lead the bundle, never trail it. Pinning the runtime back to the bundled
-        # generation would take it behind `claude-opus-5`, which model_tiering's
-        # TIER_MODELS resolves as the `frontier` tier, breaking model selection in
-        # production.
+        # generation would take it behind a tier model's floor, breaking model
+        # selection in production.
         assert _as_tuple(_RUNTIME_CLI_VERSION) >= _as_tuple(_SDK_BUNDLED_CLI_VERSION), (
             f"the runtime pin {_RUNTIME_CLI_VERSION} trails the SDK-bundled {_SDK_BUNDLED_CLI_VERSION}."
         )
@@ -492,7 +487,7 @@ class TestTheBundledCliIsTheBinaryThatActuallyRuns:
     """The third concern: the version INSIDE the wheel, which neither tier above reads.
 
     Both tiers agree pinned STRINGS with each other, and a string agrees with a string whatever
-    the wheel ships. So a bundle below what the frontier model serves keeps every lane green
+    the wheel ships. So a bundle below what a tier model needs keeps every lane green
     while ``_find_cli()`` — which returns this binary before any ``shutil.which`` fallback —
     execs a CLI that refuses every call (#239).
     """
@@ -505,11 +500,11 @@ class TestTheBundledCliIsTheBinaryThatActuallyRuns:
             "hand-copied constant is the one thing in this file nothing else measures."
         )
 
-    def test_the_bundled_cli_serves_the_frontier_model(self) -> None:
-        assert _as_tuple(_bundled_cli_version()) >= _as_tuple(_FRONTIER_MODEL_CLI_FLOOR), (
+    def test_the_bundled_cli_serves_every_tier_model(self) -> None:
+        assert _as_tuple(_bundled_cli_version()) >= _as_tuple(_CATALOG_CLI_FLOOR), (
             f"the wheel of claude-agent-sdk=={_PINNED_SDK_VERSION} bundles claude {_bundled_cli_version()}, "
-            f"older than the {_FRONTIER_MODEL_CLI_FLOOR} that serves `{_FRONTIER_MODEL}`. Every SDK-driven "
-            "agent execs this binary, so planning is down factory-wide until the SDK pin moves."
+            f"older than the {_CATALOG_CLI_FLOOR} the tier models need. Every SDK-driven "
+            "agent execs this binary, so dispatch is down factory-wide until the SDK pin moves."
         )
 
 
@@ -553,10 +548,7 @@ class TestTheProbeRefusesRatherThanReportAClean:
         _bundled_cli_version.cache_clear()
         with (
             patch.object(importlib.metadata, "version", return_value="0.2.151"),
-            pytest.raises(
-                RuntimeError,
-                match=rf"has claude-agent-sdk==0\.2\.151, not the pinned {re.escape(_PINNED_SDK_VERSION)}",
-            ),
+            pytest.raises(RuntimeError, match=r"has claude-agent-sdk==0\.2\.151, not the pinned 0\.2\.161"),
         ):
             _bundled_cli_version()
         _bundled_cli_version.cache_clear()
@@ -575,25 +567,25 @@ class TestEveryPinClearsTheApiFloor:
         below = {
             name: version
             for name, version in sorted(_install_sites().items())
-            if version is not None and _as_tuple(version) < _as_tuple(_MODEL_MINIMUM_CLI_VERSION)
+            if version is not None and _as_tuple(version) < _as_tuple(_CATALOG_CLI_FLOOR)
         }
         assert not below, (
-            f"every `npm install -g @anthropic-ai/claude-code` must pin >= {_MODEL_MINIMUM_CLI_VERSION}, "
+            f"every `npm install -g @anthropic-ai/claude-code` must pin >= {_CATALOG_CLI_FLOOR}, "
             "the oldest CLI the API accepts for the dispatched models — under it every dispatch dies "
             f"with an API 400 before the task is ever claimed. Below the floor: {below}"
         )
 
     def test_the_runtime_tier_clears_the_floor(self) -> None:
-        assert _as_tuple(_RUNTIME_CLI_VERSION) >= _as_tuple(_MODEL_MINIMUM_CLI_VERSION), (
-            f"the runtime pin {_RUNTIME_CLI_VERSION} is under the API floor {_MODEL_MINIMUM_CLI_VERSION}: "
+        assert _as_tuple(_RUNTIME_CLI_VERSION) >= _as_tuple(_CATALOG_CLI_FLOOR), (
+            f"the runtime pin {_RUNTIME_CLI_VERSION} is under the API floor {_CATALOG_CLI_FLOOR}: "
             "the deployed image execs the global binary, so every dispatched task would 400."
         )
 
     def test_the_eval_test_tier_clears_the_floor(self) -> None:
         # The fix when this reds is the SDK pin, never this file: the eval lane execs the
         # bundle, so only a release bundling a newer CLI can lift the tier off the floor.
-        assert _as_tuple(_SDK_BUNDLED_CLI_VERSION) >= _as_tuple(_MODEL_MINIMUM_CLI_VERSION), (
+        assert _as_tuple(_SDK_BUNDLED_CLI_VERSION) >= _as_tuple(_CATALOG_CLI_FLOOR), (
             f"claude-agent-sdk=={_PINNED_SDK_VERSION} bundles claude-code@{_SDK_BUNDLED_CLI_VERSION}, "
-            f"under the API floor {_MODEL_MINIMUM_CLI_VERSION}. The eval lane execs that bundle, so it "
+            f"under the API floor {_CATALOG_CLI_FLOOR}. The eval lane execs that bundle, so it "
             "would 400 on every scenario — bump the SDK pin to a release bundling a CLI at or above it."
         )

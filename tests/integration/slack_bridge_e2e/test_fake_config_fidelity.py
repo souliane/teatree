@@ -10,13 +10,8 @@ them — because ``get_effective_settings`` rebuilds settings with
 ``base.__class__(**changes)``. A promoted key the mirror had not been taught raised
 ``TypeError`` and reddened the whole fortress.
 
-That crash was invisible to CI purely by accident of the checkout directory name: the
-code-default tier is populated only when the active overlay resolves, and active-overlay
-resolution folds the *cwd basename* onto the ``t3-teatree`` entry point
-(``discovery._match_canonical_ep`` — the ``-teatree`` suffix rule). CI runs from ``/app``
-(basename ``app`` — no fold → no active overlay → empty code defaults → ``replace`` never
-sees the promoted keys), so the fortress stayed green there while a dev clone named
-``teatree`` folded, populated the tier, and went red.
+That crash was invisible to CI when no active overlay resolved from its checkout,
+because an empty code-default tier never exercised the extra constructor fields.
 
 ``conftest.fake_config`` now returns a REAL ``TeaTreeConfig`` carrying a REAL
 ``UserSettings``, so there is no second field list to fall behind and the drift is

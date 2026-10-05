@@ -9,7 +9,7 @@ interactive/headless claim query) both short-circuit, exactly as they do for
 missing relation.
 
 These drive the REAL gate: the pending-migration probe is the only thing stubbed,
-so the verdict, the memo, the kill switch and both claim chokepoints are exercised
+so the verdict, the memo and both claim chokepoints are exercised
 end to end. Every case asserts the row survives untouched — a refused claim is a
 deferral, never a loss.
 """
@@ -92,22 +92,27 @@ class TestUnverifiableSchemaFailsClosed(_SchemaGateBase):
         assert Task.objects.filter(status=Task.Status.PENDING).count() == 1
 
 
-class TestKillSwitchIsTheNeverLockoutEscape(_SchemaGateBase):
-    def test_disabled_gate_admits_work_against_a_behind_schema(self) -> None:
-        TaskFactory(status=Task.Status.PENDING)
-        ConfigSetting.objects.set_value("schema_readiness_gate_enabled", value=False)
-
-        with self._behind():
-            claimed = Task.objects.claim_next_pending(claimed_by="loop")
-
-        assert claimed is not None
-
-    def test_default_is_enabled(self) -> None:
-        """No stored row: the guarantee is on, so a behind schema still refuses."""
+class TestSchemaKillSwitch(_SchemaGateBase):
+    def test_behind_schema_refuses_by_default(self) -> None:
         TaskFactory(status=Task.Status.PENDING)
 
         with self._behind():
             assert Task.objects.claim_next_pending(claimed_by="loop") is None
+
+    def test_false_behind_reading_can_be_bypassed_for_both_claim_paths(self) -> None:
+        TaskFactory(status=Task.Status.PENDING)
+        ConfigSetting.objects.set_value("schema_readiness_gate_enabled", value=False)
+
+        with self._behind():
+            assert Task.objects.claimable().exists()
+            assert Task.objects.claim_next_pending(claimed_by="loop") is not None
+
+    def test_process_freshness_false_behind_uses_the_same_escape(self) -> None:
+        ConfigSetting.objects.set_value("schema_readiness_gate_enabled", value=False)
+        with patch("teatree.core.managers_task_claim._process_code_behind_schema", return_value="false BEHIND"):
+            from teatree.core.managers_task_claim import code_behind_schema  # noqa: PLC0415 — test the claim seam
+
+            assert code_behind_schema() is False
 
 
 class TestSchemaGateLeavesInFlightAlone(_SchemaGateBase):

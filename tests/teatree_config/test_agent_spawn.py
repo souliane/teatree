@@ -89,8 +89,8 @@ class TestAgentConfigDefaults:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         db = tmp_path / "db.sqlite3"
-        _seed(db, "agent_skill_models", {"code": "global"})
-        _seed(db, "agent_skill_models", {"code": "overlay"}, scope="customer-overlay")
+        _seed(db, "agent_skill_models", {"code": [{"floor": "global"}]})
+        _seed(db, "agent_skill_models", {"code": [{"floor": "overlay"}]}, scope="customer-overlay")
         _point_at(monkeypatch, db)
 
         assert resolve_agent_config("customer-overlay").skill_models == {"code": "overlay"}
@@ -137,13 +137,15 @@ class TestHonestyModelParse:
 class TestSkillModelsParse:
     def test_parsed_from_db_dict(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
-        _seed(db, "agent_skill_models", {"code-review": "opus", "architecture-design": "haiku"})
+        _seed(
+            db, "agent_skill_models", {"code-review": [{"floor": "opus"}], "architecture-design": [{"floor": "haiku"}]}
+        )
         _point_at(monkeypatch, db)
         assert resolve_agent_config().skill_models == {"code-review": "opus", "architecture-design": "haiku"}
 
     def test_inherit_sentinels_map_to_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
-        _seed(db, "agent_skill_models", {"a": "", "b": "default", "c": "inherit", "d": "haiku"})
+        _seed(db, "agent_skill_models", {"a": [], "b": [], "c": [], "d": [{"floor": "haiku"}]})
         _point_at(monkeypatch, db)
         # Sentinels collapse to None (inherit); only a real floor survives.
         assert resolve_agent_config().skill_models == {"a": None, "b": None, "c": None, "d": "haiku"}
@@ -159,6 +161,13 @@ class TestSkillModelsParse:
         _seed(db, "agent_skill_models", "oops")
         _point_at(monkeypatch, db)
         assert resolve_agent_config().skill_models == {}
+
+    def test_scalar_skill_policy_is_rejected(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed(db, "agent_skill_models", {"code-review": "opus"})
+        _point_at(monkeypatch, db)
+        with pytest.raises(TypeError, match="must be a list"):
+            resolve_agent_config()
 
     def test_ordered_route_candidates_are_typed_and_keep_order(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -272,7 +281,7 @@ class TestComposesWithPhaseModels:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_session_model", "haiku")
         _seed(db, "agent_session_effort", "xhigh")
-        _seed(db, "agent_skill_models", {"code-review": "opus"})
+        _seed(db, "agent_skill_models", {"code-review": [{"floor": "opus"}]})
         _point_at(monkeypatch, db)
         resolved = resolve_agent_config()
         assert resolved.session_model == "haiku"
@@ -362,73 +371,61 @@ class TestTierEffortParse:
         assert AgentConfig().tier_effort == {}
 
 
-class TestPhaseFanoutParse:
-    """``agent_phase_fanout`` opt-in parsing (teatree#2229)."""
+class TestRetiredPhaseFanout:
+    """Old fan-out rows are inert after the per-phase knob was retired."""
 
-    def test_bool_opt_in_parsed_as_bool(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_bool_row_does_not_change_agent_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_phase_fanout", {"reviewer:reviewing": True, "author:planning": False})
         _point_at(monkeypatch, db)
-        resolved = resolve_agent_config()
-        assert resolved.phase_fanout == {"reviewer:reviewing": True, "author:planning": False}
-        # bool must stay bool, never collapse to 1/0 (bool is an int subclass).
-        assert resolved.phase_fanout["reviewer:reviewing"] is True
-        assert resolved.phase_fanout["author:planning"] is False
+        assert resolve_agent_config() == AgentConfig()
 
-    def test_int_opt_in_overrides_width(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_integer_row_does_not_change_agent_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_phase_fanout", {"author:planning": 5})
         _point_at(monkeypatch, db)
-        resolved = resolve_agent_config()
-        assert resolved.phase_fanout == {"author:planning": 5}
-        assert resolved.phase_fanout["author:planning"] == 5
+        assert resolve_agent_config() == AgentConfig()
 
-    def test_out_of_bounds_int_is_not_rejected_at_parse_time(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Parse keeps the value; the out-of-range guard is fail-loud at render
-        # time (core.phases._resolved_fanout_n), so the misconfiguration
-        # surfaces with the rendering context, not silently dropped at parse.
+    def test_out_of_bounds_integer_row_is_ignored(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_phase_fanout", {"author:planning": 9})
         _point_at(monkeypatch, db)
-        assert resolve_agent_config().phase_fanout == {"author:planning": 9}
+        assert resolve_agent_config() == AgentConfig()
 
-    def test_absent_phase_fanout_is_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_absent_row_keeps_other_agent_settings(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_session_model", "haiku")
         _point_at(monkeypatch, db)
-        assert resolve_agent_config().phase_fanout == {}
+        assert resolve_agent_config().session_model == "haiku"
 
-    def test_non_dict_phase_fanout_falls_back_to_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_malformed_row_does_not_poison_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_phase_fanout", "oops")
         _point_at(monkeypatch, db)
-        assert resolve_agent_config().phase_fanout == {}
+        assert resolve_agent_config() == AgentConfig()
 
-    def test_non_bool_non_int_entry_values_are_skipped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_mixed_row_does_not_change_agent_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_phase_fanout", {"reviewer:reviewing": True, "author:planning": "nonsense"})
         _point_at(monkeypatch, db)
-        # The string value is tolerated and skipped (matches skill_models
-        # tolerance), the valid bool survives.
-        assert resolve_agent_config().phase_fanout == {"reviewer:reviewing": True}
+        assert resolve_agent_config() == AgentConfig()
 
-    def test_composes_with_skill_models(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The user's real config shape: phase_fanout alongside the existing
-        # skill_models keys.
+    def test_retired_row_does_not_override_skill_models(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "db.sqlite3"
         _seed(db, "agent_session_model", "haiku")
-        _seed(db, "agent_skill_models", {"code-review": "opus"})
+        _seed(db, "agent_skill_models", {"code-review": [{"floor": "opus"}]})
         _seed(db, "agent_phase_fanout", {"reviewer:reviewing": True, "author:planning": 4})
         _point_at(monkeypatch, db)
         resolved = resolve_agent_config()
         assert resolved.session_model == "haiku"
         assert resolved.skill_models == {"code-review": "opus"}
-        assert resolved.phase_fanout == {"reviewer:reviewing": True, "author:planning": 4}
+        assert not hasattr(resolved, "phase_fanout")
 
-    def test_default_config_has_empty_phase_fanout(self) -> None:
-        assert AgentConfig().phase_fanout == {}
+    def test_retired_key_is_not_writable_or_exposed(self) -> None:
+        assert "agent_phase_fanout" not in ALL_KNOWN_CONFIG_SETTINGS
+        assert not hasattr(AgentConfig(), "phase_fanout")
+        with pytest.raises(ConfigWriteError):
+            validate_config_write("agent_phase_fanout", {"reviewer:reviewing": True})
 
 
 class TestPhaseHarnessParse:

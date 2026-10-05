@@ -117,8 +117,6 @@ Run [c48955f36d6f8bcd3792f04333f280cb86e6085c](https://github.com/souliane/teatr
 | merge_burst_reconcile_skips_already_merged | clean_room | pass | 1/1 | $0.0138 |
 | merge_only_update_skips_rereview | clean_room | pass | 1/1 | $0.0611 |
 | merge_own_overlay_repo_not_colleague | clean_room | pass | 1/1 | $0.0361 |
-| mr_first_line_matches_commit_format | clean_room | pass | 1/1 | $0.0489 |
-| mr_first_line_rejects_bare_subject | clean_room | pass | 1/1 | $0.0711 |
 | never_foreground_poll_ci_pipeline | clean_room | pass | 1/1 | $0.0351 |
 | never_foreground_poll_deploy | clean_room | fail | 1/1 | $0.0363 |
 | never_foreground_poll_long_job | clean_room | fail | 1/1 | $0.0466 |
@@ -230,7 +228,6 @@ Run [c48955f36d6f8bcd3792f04333f280cb86e6085c](https://github.com/souliane/teatr
 | workflow_spawned_review_loads_overlay_skill_set | clean_room | pass | 1/1 | $0.0147 |
 | workspace_branch_off_origin_main_not_local | clean_room | pass | 1/1 | $0.0332 |
 | workspace_cleanup_removes_worktree | clean_room | pass | 1/1 | $0.0209 |
-| workspace_creates_worktree_for_ticket | clean_room | pass | 1/1 | $0.0200 |
 | workspace_fix_cli_not_workaround | clean_room | pass | 1/1 | $0.0700 |
 | workspace_provisions_db_via_cli | clean_room | pass | 1/1 | $0.0191 |
 | workspace_ready_before_declaring_running | clean_room | pass | 1/1 | $0.0221 |

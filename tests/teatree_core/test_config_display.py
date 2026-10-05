@@ -7,7 +7,7 @@ class TestIsSecret:
     """One taxonomy — the full four-class union of what must never render."""
 
     def test_secret_category_and_denylist_keys_are_secret(self) -> None:
-        assert is_secret("banned_terms") is True  # Category.SECRET + SECRET_SETTINGS
+        assert is_secret("banned_term_registry") is True  # Category.SECRET + SECRET_SETTINGS
         assert is_secret("github_token_pass_key") is True  # credential coordinate
 
     def test_a_personal_identifier_not_on_the_denylist_is_secret(self) -> None:
@@ -17,7 +17,7 @@ class TestIsSecret:
 
     def test_an_ordinary_dial_is_not_secret(self) -> None:
         assert is_secret("mode") is False
-        assert is_secret("adaptive_intake_concurrency_enabled") is False
+        assert is_secret("admit_colleague_prs_to_board") is False
 
     def test_an_unknown_non_schema_key_is_not_secret(self) -> None:
         # A key that is neither a secret/personal/credential coordinate NOR a model field

@@ -140,6 +140,17 @@ class TestFetchPrMergeState:
         )
         assert state.merge_commit_oid == "squashed"
 
+    def test_merged_fast_forward_uses_mr_head_sha(self) -> None:
+        state = _rpc(
+            get={"state": "merged", "merge_commit_sha": None, "squash_commit_sha": None, "sha": _SHA}
+        ).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
+        assert state.is_merged
+        assert state.merge_commit_oid == _SHA
+
+    def test_open_mr_head_is_not_merge_evidence(self) -> None:
+        state = _rpc(get={"state": "opened", "sha": _SHA}).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
+        assert state.merge_commit_oid == ""
+
     @pytest.mark.parametrize("failure", _READ_FAILURES)
     def test_empty_state_on_any_forge_failure(self, failure: Exception) -> None:
         state = _rpc(raises=failure).fetch_pr_merge_state(slug=_SLUG, pr_id=_IID)
@@ -160,15 +171,15 @@ class TestFetchPrMergeStateConflictAxis:
     @pytest.mark.parametrize(
         ("payload", "expected"),
         [
-            ({"has_conflicts": False, "merge_status": "can_be_merged"}, MergeConflictState.CLEAN),
-            ({"has_conflicts": True, "merge_status": "cannot_be_merged"}, MergeConflictState.CONFLICTED),
+            ({"has_conflicts": False, "detailed_merge_status": "mergeable"}, MergeConflictState.CLEAN),
+            ({"has_conflicts": True, "detailed_merge_status": "conflict"}, MergeConflictState.CONFLICTED),
             # `has_conflicts` is authoritative on its own — a draft / unapproved MR still
-            # reports its real conflict state instead of hiding behind `merge_status`.
-            ({"has_conflicts": True, "merge_status": "checking"}, MergeConflictState.CONFLICTED),
-            ({"merge_status": "cannot_be_merged"}, MergeConflictState.CONFLICTED),
+            # reports its real conflict state instead of hiding behind the detailed status.
+            ({"has_conflicts": True, "detailed_merge_status": "checking"}, MergeConflictState.CONFLICTED),
+            ({"detailed_merge_status": "conflict"}, MergeConflictState.CONFLICTED),
             # Still computing: `has_conflicts` is a default here, not a finding.
-            ({"has_conflicts": False, "merge_status": "checking"}, MergeConflictState.UNKNOWN),
-            ({"has_conflicts": False, "merge_status": "unchecked"}, MergeConflictState.UNKNOWN),
+            ({"has_conflicts": False, "detailed_merge_status": "checking"}, MergeConflictState.UNKNOWN),
+            ({"has_conflicts": False, "detailed_merge_status": "unchecked"}, MergeConflictState.UNKNOWN),
             ({}, MergeConflictState.UNKNOWN),
         ],
     )
@@ -180,7 +191,7 @@ class TestFetchPrMergeStateConflictAxis:
 
     def test_a_mergeable_mr_is_clean_so_the_scanner_stays_silent(self) -> None:
         """The regression itself: a healthy open MR must produce NO conflict signal."""
-        rpc = _rpc(get={"state": "opened", "has_conflicts": False, "merge_status": "can_be_merged"})
+        rpc = _rpc(get={"state": "opened", "has_conflicts": False, "detailed_merge_status": "mergeable"})
         assert rpc.fetch_pr_merge_state(slug=_SLUG, pr_id=_IID).conflict is MergeConflictState.CLEAN
 
     def test_an_unreadable_mr_stays_unknown(self) -> None:

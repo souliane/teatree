@@ -59,3 +59,34 @@ class TestDreamCliDelegation:
             result = runner.invoke(dream_app, ["compliance", "show"])
         assert result.exit_code == 0
         call_mock.assert_called_once_with("dream", "compliance")
+
+
+class TestDreamGapCommandsDelegate:
+    def test_gap_coverage_passes_ticket_and_json(self) -> None:
+        with (
+            patch("teatree.cli.dream.ensure_django"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(dream_app, ["gap-coverage", "--ticket", "905", "--json"])
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("dream", "gap-coverage", "--ticket", "905", "--json")
+
+    def test_gap_coverage_propagates_a_non_zero_exit(self) -> None:
+        with (
+            patch("teatree.cli.dream.ensure_django"),
+            patch("django.core.management.call_command", side_effect=SystemExit(1)),
+        ):
+            result = runner.invoke(dream_app, ["gap-coverage"])
+        assert result.exit_code == 1
+
+    def test_gap_disposition_passes_address_and_reject(self) -> None:
+        with (
+            patch("teatree.cli.dream.ensure_django"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            address = runner.invoke(dream_app, ["gap-disposition", "905", "abc", "--citation", "task 5561"])
+            reject = runner.invoke(dream_app, ["gap-disposition", "905", "abc", "--reject", "not a core gap"])
+        assert (address.exit_code, reject.exit_code) == (0, 0)
+        prefix = ("dream", "gap-disposition", "905", "abc")
+        assert call_mock.call_args_list[0].args == (*prefix, "--citation", "task 5561")
+        assert call_mock.call_args_list[1].args == (*prefix, "--reject", "not a core gap")

@@ -4,7 +4,7 @@
 Sub-agents have repeatedly posted MR/PR review comments by shelling out to a
 raw forge REST POST (``glab api .../merge_requests/<n>/discussions -X POST``,
 ``.../notes``, or the GitHub ``.../pulls/<n>/comments``), bypassing the
-sanctioned top-level ``t3 review post-comment`` / ``post-draft-note`` path
+sanctioned top-level ``t3 review post-comment`` path
 (draft-default + dedup + on-behalf approval). This gate HARD-DENIES those
 writes at the Bash boundary while letting plain GET reads through.
 
@@ -86,7 +86,7 @@ class TestDeniesRawReviewWrites:
         assert deny is not None
         reason = deny["permissionDecisionReason"]
         assert "review post-comment" in reason
-        assert "post-draft-note" in reason
+        assert "post-comment" in reason
         assert "update-note" in reason
         assert "delete-discussion" in reason
         assert "draft" in reason
@@ -125,7 +125,7 @@ class TestRemedyAddressesTheBlockedObject:
         assert deny is not None
         reason = deny["permissionDecisionReason"]
         assert "ticket comment" in reason
-        assert "post-draft-note" not in reason
+        assert "post-comment" not in reason
 
     def test_mr_note_create_still_names_the_review_clis(self, capsys: pytest.CaptureFixture[str]) -> None:
         command = "glab api projects/42/merge_requests/7/discussions -X POST -f body='hi'"

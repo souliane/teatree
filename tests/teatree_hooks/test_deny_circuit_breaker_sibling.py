@@ -3,7 +3,7 @@
 The repeated-denial circuit breaker was extracted whole out of ``hook_router``
 into ``hooks/scripts/deny_circuit_breaker.py`` (the #2384 Wave-2 router split,
 PR3). These tests pin the extraction contract — the behavioural breaker tests
-(streak counting, UX-relax vs safety-escalate, kill-switch) live in
+(streak counting, UX-relax vs safety-escalate) live in
 ``test_hook_router_deny_circuit_breaker.py`` and exercise the real subprocess
 chain unchanged.
 
@@ -14,7 +14,7 @@ The contract:
     helper here and the breaker the router invokes are the same object;
 * the router re-exports the breaker entry points under their original underscore
     names, so ``_apply_deny_circuit_breaker`` / ``_reset_deny_streak`` /
-    ``_deny_circuit_breaker_enabled`` / ``_deny_is_ux_gate`` resolve via the router
+    ``_deny_is_ux_gate`` resolve via the router
     exactly as before the move;
 * the sibling cold-imports with stdlib + already-extracted siblings only — no
     Django, no ``teatree.core`` at module top (the live PreToolUse hook is a bare
@@ -48,18 +48,7 @@ class TestRouterReExportReachable:
     def test_reexports_are_the_same_objects(self) -> None:
         assert router._apply_deny_circuit_breaker is dcb.apply_deny_circuit_breaker
         assert router._reset_deny_streak is dcb.reset_deny_streak
-        assert router._deny_circuit_breaker_enabled is dcb.deny_circuit_breaker_enabled
         assert router._deny_is_ux_gate is dcb.deny_is_ux_gate
-
-    def test_patching_sibling_helper_is_seen_through_the_router(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Patching a sibling internal affects the breaker the router drives — one module object."""
-        monkeypatch.setattr(router, "_CURRENT_EVENT", "PreToolUse")
-        monkeypatch.setattr(router, "_CURRENT_DATA", {"session_id": "sib"})
-        monkeypatch.setattr(dcb, "deny_circuit_breaker_enabled", lambda: False)
-        # Disabled breaker is a pure pass-through: the original deny stands.
-        decision = router._apply_deny_circuit_breaker("LOOP REGISTRATION: x")
-        assert decision.allow is False
-        assert decision.reason == "LOOP REGISTRATION: x"
 
 
 class TestLeakGateNeverGranted:
@@ -98,6 +87,10 @@ class TestLeakGateNeverGranted:
         for gate_id in dcb.NON_GRANTABLE_GATE_IDS:
             decision = dcb.apply_deny_circuit_breaker("BLOCKED: force push to a colleague's branch.", gate_id=gate_id)
             assert decision.allow is False, gate_id
+
+    def test_only_force_or_delete_push_is_non_grantable(self) -> None:
+        assert "foreign_branch_push_force_delete" in dcb.NON_GRANTABLE_GATE_IDS
+        assert "foreign_branch_push" not in dcb.NON_GRANTABLE_GATE_IDS
 
     def test_non_leak_deny_with_fp_confirmed_token_is_suppressed(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

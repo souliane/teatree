@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from teatree.cli.doctor import DoctorService
+from teatree.paths import PathHelpers
 
 
 def find_main_clone() -> Path | None:
@@ -27,20 +28,21 @@ def find_main_clone() -> Path | None:
             return candidate
 
     repo = DoctorService.find_teatree_repo()
-    if not repo:
-        return None
+    return _main_clone_of(repo) if repo else None
+
+
+def _main_clone_of(repo: Path) -> Path | None:
     git = repo / ".git"
-    if git.is_dir():
+    if PathHelpers.is_baked_generation_root(repo) or git.is_dir():
         return repo
-    if git.is_file():
-        match = re.match(r"^gitdir:\s*(.+)$", git.read_text().strip())
-        if not match:
-            return None
-        # `.git` points to `<main-clone>/.git/worktrees/<name>`; step back up to main clone.
-        main_clone_git = Path(match.group(1)).parent.parent
-        if main_clone_git.name == ".git" and main_clone_git.is_dir():
-            return main_clone_git.parent
-    return None
+    if not git.is_file():
+        return None
+    match = re.match(r"^gitdir:\s*(.+)$", git.read_text().strip())
+    if not match:
+        return None
+    # `.git` points to `<main-clone>/.git/worktrees/<name>`; step back up to main clone.
+    main_clone_git = Path(match.group(1)).parent.parent
+    return main_clone_git.parent if main_clone_git.name == ".git" and main_clone_git.is_dir() else None
 
 
 def validate_repo(repo: Path | None) -> Path:

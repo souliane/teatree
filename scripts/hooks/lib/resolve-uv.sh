@@ -38,6 +38,10 @@
 # is not ours. Relative, so uv resolves it against the same workspace root; scoped
 # per platform because a bind-mounted clone is one directory the host and the
 # container both reach, and a shared one is rebuilt by each in turn.
+#
+# PLATFORM-SCOPED because a bind-mounted clone is ONE directory two platforms
+# reach: under a single name the host and the container reconcile the same venv,
+# and each rebuild strands the other's ~650 MB husk beside it.
 _UV_HOOK_ENV_NAME=".venv-hook-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 
 # How far up from the project a `.venv` still counts as "at or above" it, and how
@@ -215,13 +219,15 @@ uv_project_run_prefix() {
     # untouched — a standalone project that owns its environment keeps being
     # managed in place, and its cold clone still builds its own.
     #
+    # `-u DJANGO_SETTINGS_MODULE`: a fork's inherited overlay settings are not installed in the hook env.
+    #
     # Deliberately NOT memoised alongside the binary: the boundary this inspects
     # can change while every candidate stays byte-identical.
     local uv_path="$1" project="$2"
     UV_PROJECT_RUN=("$uv_path")
 
     if _uv_project_is_workspace_member "$project"; then
-        UV_PROJECT_RUN=(env "UV_PROJECT_ENVIRONMENT=${_UV_HOOK_ENV_NAME}" "$uv_path")
+        UV_PROJECT_RUN=(env -u DJANGO_SETTINGS_MODULE "UV_PROJECT_ENVIRONMENT=${_UV_HOOK_ENV_NAME}" "$uv_path")
         return 0
     fi
 
@@ -230,7 +236,7 @@ uv_project_run_prefix() {
         cfg="${dir}/.venv/pyvenv.cfg"
         if [ -f "$cfg" ]; then
             if _uv_env_is_foreign "$cfg"; then
-                UV_PROJECT_RUN=(env "UV_PROJECT_ENVIRONMENT=${_UV_HOOK_ENV_NAME}" "$uv_path")
+                UV_PROJECT_RUN=(env -u DJANGO_SETTINGS_MODULE "UV_PROJECT_ENVIRONMENT=${_UV_HOOK_ENV_NAME}" "$uv_path")
             fi
             return 0
         fi

@@ -47,6 +47,7 @@ from django.utils import timezone
 from teatree.core.claim_liveness import ClaimOwner, owner_is_executing
 from teatree.loops.chain_membership import loop_timers_by_name, timer_chain_loop_names
 from teatree.loops.self_improve_cycle import run_self_improve_cycle_via_command as _run_self_improve_cycle_via_command
+from teatree.loops.standing_directives_publish import ensure_standing_directives_publish_chain
 from teatree.loops.timer_chains import LOOPS_QUEUE, compute_successor_run_after, enqueue_loop_timer
 
 logger = logging.getLogger(__name__)
@@ -82,7 +83,6 @@ SLACK_ANSWER_LEASE = "loop-slack-answer"
 #: ``loop_self_improve`` mgmt command / interactive ``/loop`` slot acquires, so the
 #: worker chain and an owner session can never run two cycles at once.
 SELF_IMPROVE_LEASE = "loop-self-improve"
-#: The only tier with detectors wired; the mgmt command refuses the rest.
 
 
 def ensure_loop_timers() -> dict[str, int]:
@@ -540,7 +540,8 @@ def ensure_maintenance_chains() -> None:
     """Seed every maintenance chain if absent.
 
     Reconcile, prune, expire, drain, slack-answer, self-improve, off-live-tick drive,
-    usage-window recovery, preset transitions, and statusline refresh.
+    usage-window recovery, preset transitions, statusline refresh, and the
+    standing-directive publish.
     """
     from teatree.loop.loop_cadences import (  # noqa: PLC0415 — deferred: tick-time import
         self_improve_cadence_seconds,
@@ -587,3 +588,5 @@ def ensure_maintenance_chains() -> None:
     # cadence even when NO domain loop is admitted-and-ticking (the true cause of the
     # long-standing stale-loop-line complaint), gated by the ``autoload`` #256 flag.
     ensure_statusline_refresh_chain()
+    # The hooks deliver the standing directives from a published file; this keeps it current.
+    ensure_standing_directives_publish_chain()

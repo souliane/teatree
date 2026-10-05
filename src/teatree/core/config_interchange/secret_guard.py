@@ -54,10 +54,9 @@ def resolve_export_scan_terms() -> tuple[str, ...]:
     """Every ban-class term for the export content scan; fails safe to empty when unset.
 
     Delegates to :func:`banned_term_registry.export_scan_terms` — the single home that
-    resolves the ban classes registry-first (``leak`` + ``prose_collider`` + ``tone`` +
-    ``overlay``; the ``allow`` carve-out is excluded) and falls back to the legacy
-    ``banned_terms`` + ``banned_brands`` rows when the registry is unset. Keeping the
-    resolution there (rather than reading the legacy rows here) leaves the registry the
+    resolves the ban classes (``leak`` + ``prose_collider`` + ``tone`` +
+    ``overlay``; the ``allow`` carve-out is excluded). Keeping the
+    resolution there leaves the registry the
     single term-source: a shared export scans the operator's configured customer/brand
     terms without any file, an unconfigured store yields no terms, and a malformed
     registry fails loud exactly like the gates.

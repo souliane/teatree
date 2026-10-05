@@ -21,8 +21,6 @@ from pathlib import Path
 
 import pytest
 
-from teatree.config import cold_reader
-
 Row = tuple[str, str, object]
 
 
@@ -62,51 +60,8 @@ def settings_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     return teatree_settings
 
 
-class TestDbValueWins:
-    def test_db_disables_a_default_enabled_gate(
-        self, settings_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_config_db(db, [("", "memory_recall_enabled", False)])
-        monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        assert settings_module.teatree_bool_setting("memory_recall_enabled", default=True) is False
-
-    def test_db_enables_a_default_disabled_gate(
-        self, settings_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        db = tmp_path / "db.sqlite3"
-        _make_config_db(db, [("", "dispatch_quote_gate_on_task_create_enabled", True)])
-        monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        result = settings_module.teatree_bool_setting("dispatch_quote_gate_on_task_create_enabled", default=False)
-        assert result is True
-
-
 class TestFailOpenParity:
     """A missing/unreadable DB row falls to the per-setting default."""
-
-    def test_missing_db_returns_default(self, settings_module) -> None:
-        assert settings_module.teatree_bool_setting("memory_recall_enabled", default=True) is True
-        assert (
-            settings_module.teatree_bool_setting("dispatch_quote_gate_on_task_create_enabled", default=False) is False
-        )
-
-    def test_unreadable_db_fails_open_to_default(
-        self, settings_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        garbage = tmp_path / "corrupt.sqlite3"
-        garbage.write_bytes(b"this is not a sqlite database at all")
-        monkeypatch.setenv("T3_CONFIG_DB", str(garbage))
-        assert settings_module.teatree_bool_setting("memory_recall_enabled", default=True) is True
-
-    def test_no_silent_gate_disable_when_unconfigured(
-        self, settings_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        # The crux: a default-enabled gate with a DB present but NO row for it must
-        # stay enabled — a missing row never flips the verdict to disabled.
-        db = tmp_path / "db.sqlite3"
-        _make_config_db(db, [("", "some_other_key", True)])
-        monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        assert settings_module.teatree_bool_setting("memory_recall_enabled", default=True) is True
 
     def test_db_row_missing_returns_default(
         self, settings_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -117,48 +72,8 @@ class TestFailOpenParity:
         assert settings_module.teatree_bool_setting("orchestrator_bash_gate_enabled", default=True) is True
 
 
-class TestQuotedStringSemantics:
-    def test_non_bool_db_value_falls_through_to_default(
-        self, settings_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        # A JSON string in the DB is not a real bool, so it must not disable a
-        # default-true gate — it falls through to the default verdict.
-        db = tmp_path / "db.sqlite3"
-        _make_config_db(db, [("", "memory_recall_enabled", "false")])
-        monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        assert settings_module.teatree_bool_setting("memory_recall_enabled", default=True) is True
-
-
 class TestNonTeatreeSection:
     """Only the ``teatree`` section maps to a DB scope; any other section has none."""
 
     def test_other_section_missing_returns_default(self, settings_module) -> None:
         assert settings_module.section_bool_setting("mysection", "flag", default=True) is True
-
-
-class TestDelegatesToColdReader:
-    """Anti-vacuous: patching ``cold_reader.read_setting_confirmed`` flips the reader's output.
-
-    That flip is observable only if ``teatree_settings`` routes through the cold
-    reader — proving the DB read is live. The confirming sibling is the seam, not the
-    value half: the leaf needs the store's readability, which ``read_setting`` discards.
-    """
-
-    def test_reader_routes_through_cold_reader(self, settings_module, monkeypatch: pytest.MonkeyPatch) -> None:
-        seen: list[tuple[str, str]] = []
-
-        def _fake(name: str, *, scope: str = "", **_: object) -> cold_reader.SettingRead:
-            seen.append((name, scope))
-            return cold_reader.SettingRead(value=False, readable=True)
-
-        monkeypatch.setattr(cold_reader, "read_setting_confirmed", _fake)
-        assert settings_module.teatree_bool_setting("memory_recall_enabled", default=True) is False
-        assert ("memory_recall_enabled", "") in seen
-
-    def test_reader_fails_open_when_the_db_layer_raises(self, settings_module, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _boom(*_args: object, **_kwargs: object) -> object:
-            msg = "db layer exploded"
-            raise RuntimeError(msg)
-
-        monkeypatch.setattr(cold_reader, "read_setting_confirmed", _boom)
-        assert settings_module.teatree_bool_setting("memory_recall_enabled", default=True) is True

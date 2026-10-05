@@ -1,10 +1,10 @@
 """Run the named regression-detector ast-grep rules and parse their findings.
 
 ast-grep is not a teatree runtime dependency: it is pinned (``ASTGREP_PIN``) and
-resolved hermetically through ``uvx --from ast-grep-cli==<pin> ast-grep`` (the
-same engine the ac-django convention hooks use), falling back to a system
-``ast-grep``/``sg`` on PATH. Here it is invoked so the conformance test (and any
-caller) runs the SAME pinned engine without adding ast-grep to the project lock.
+resolved from a version-checked local ``ast-grep``/``sg`` or through
+``uvx --from ast-grep-cli==<pin> ast-grep``. Here it is invoked so the
+conformance test (and any caller) runs the SAME pinned engine without adding
+ast-grep to the project lock.
 
 A future pin bump fails the explicit ``test_engine_is_invocable`` pin rather than
 a silent CI no-op.
@@ -23,7 +23,7 @@ from pathlib import Path
 import yaml
 
 from teatree.paths import teatree_source_root
-from teatree.utils.run import run_allowed_to_fail
+from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 ASTGREP_PIN = "0.42.3"
 
@@ -34,12 +34,19 @@ class AstGrepUnavailableError(RuntimeError):
 
 
 def _astgrep_argv() -> list[str]:
+    for binary in ("ast-grep", "sg"):
+        local = shutil.which(binary)
+        if local is None:
+            continue
+        try:
+            version = run_allowed_to_fail([local, "--version"], expected_codes=None, timeout=5)
+        except (OSError, TimeoutExpired):
+            continue
+        if version.returncode == 0 and version.stdout.strip() == f"ast-grep {ASTGREP_PIN}":
+            return [local]
     if shutil.which("uvx") is not None:
         return ["uvx", "--from", f"ast-grep-cli=={ASTGREP_PIN}", "ast-grep"]
-    for binary in ("ast-grep", "sg"):
-        if shutil.which(binary) is not None:
-            return [binary]
-    reason = "neither 'uvx' nor a system 'ast-grep'/'sg' is on PATH"
+    reason = f"neither 'uvx' nor a pinned ast-grep {ASTGREP_PIN} is available"
     raise AstGrepUnavailableError(reason)
 
 

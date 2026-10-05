@@ -78,11 +78,6 @@ class SettingGroupNode[RowT]:
         """How many levels down this node sits — 1 for a top-level group."""
         return len(self.path)
 
-    @property
-    def is_ungrouped(self) -> bool:
-        """Whether this is the leftovers bucket, which renders under a visible banner."""
-        return self.path == UNGROUPED_PATH
-
 
 def _declaration_bases() -> "tuple[type[DataclassInstance], ...]":
     """Every ``UserSettings`` declaration base, in the order the bases tuple declares.

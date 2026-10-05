@@ -23,12 +23,11 @@ from teatree.forge_credentials import ForgeTokenResolution, ForgeTokenState
 from teatree.loop.scanners.outbound_audit import (
     OutboundAuditScanner,
     VerifyResult,
-    _default_verifier_for,
-    _github_note_verifier,
-    _gitlab_approve_verifier,
-    _gitlab_note_verifier,
+    _github_note_verifier_for_overlay,
+    _gitlab_approve_verifier_for_overlay,
+    _gitlab_note_verifier_for_overlay,
     _hash_body,
-    _slack_dm_verifier,
+    _slack_dm_verifier_for_overlay,
     _usernames_from_approvers,
     kind_settling_seconds,
 )
@@ -302,44 +301,6 @@ def _http_status_error(status: int) -> httpx.HTTPStatusError:
     return httpx.HTTPStatusError("status error", request=request, response=response)
 
 
-class DefaultVerifierForTests(TestCase):
-    """``_default_verifier_for`` dispatches to the kind-specific lazy factory."""
-
-    def test_gitlab_note_kind_dispatches_to_gitlab_note_factory(self) -> None:
-        sentinel = lambda _c: VerifyResult.ok()  # noqa: E731 — sentinel comparison
-        with patch("teatree.loop.scanners.outbound_audit._gitlab_note_verifier", return_value=sentinel) as factory:
-            result = _default_verifier_for("gitlab_note")
-        factory.assert_called_once()
-        assert result is sentinel
-
-    def test_gitlab_approve_kind_dispatches_to_gitlab_approve_factory(self) -> None:
-        sentinel = lambda _c: VerifyResult.ok()  # noqa: E731
-        with patch("teatree.loop.scanners.outbound_audit._gitlab_approve_verifier", return_value=sentinel) as factory:
-            result = _default_verifier_for("gitlab_approve")
-        factory.assert_called_once()
-        assert result is sentinel
-
-    def test_slack_dm_kind_dispatches_to_slack_dm_factory(self) -> None:
-        sentinel = lambda _c: VerifyResult.ok()  # noqa: E731
-        with patch("teatree.loop.scanners.outbound_audit._slack_dm_verifier", return_value=sentinel) as factory:
-            result = _default_verifier_for("slack_dm")
-        factory.assert_called_once()
-        assert result is sentinel
-
-    def test_github_note_kind_dispatches_to_github_note_factory(self) -> None:
-        sentinel = lambda _c: VerifyResult.ok()  # noqa: E731
-        with patch("teatree.loop.scanners.outbound_audit._github_note_verifier", return_value=sentinel) as factory:
-            result = _default_verifier_for("github_note")
-        factory.assert_called_once()
-        assert result is sentinel
-
-    def test_unknown_kind_returns_none(self) -> None:
-        # Notion kinds and any other unmapped string -> no production verifier
-        assert _default_verifier_for("notion_edit") is None
-        assert _default_verifier_for("notion_comment") is None
-        assert _default_verifier_for("totally_made_up") is None
-
-
 class UsernamesFromApproversTests(TestCase):
     """``_usernames_from_approvers`` handles malformed GitLab approval payloads."""
 
@@ -386,7 +347,7 @@ class UsernamesFromApproversTests(TestCase):
 
 
 class GitLabNoteVerifierTests(TestCase):
-    """``_gitlab_note_verifier`` matches the GitLab API behaviour for note lookups.
+    """The overlay-bound GitLab note verifier matches the API's note lookups.
 
     Anti-vacuous proof: each test names the production path it guards;
     reverting the factory's import-guard / lookup logic flips the assertion.
@@ -402,7 +363,7 @@ class GitLabNoteVerifierTests(TestCase):
         saved = sys.modules.get("teatree.backends.gitlab.api")
         sys.modules["teatree.backends.gitlab.api"] = None  # ty: ignore[invalid-assignment] — a `None` entry in `sys.modules` is how CPython blocks an import; the `dict[str, ModuleType]` stub cannot express it, and that block IS what this test exercises.
         try:
-            assert _gitlab_note_verifier() is None
+            assert _gitlab_note_verifier_for_overlay("") is None
         finally:
             if saved is not None:
                 sys.modules["teatree.backends.gitlab.api"] = saved
@@ -413,13 +374,13 @@ class GitLabNoteVerifierTests(TestCase):
         # Missing token -> resolve fails -> GitLabAPI() still constructs (token=""),
         # but our `_resolve_token` could raise; simulate constructor raise.
         with patch("teatree.backends.gitlab.api.GitLabAPI", side_effect=RuntimeError("no token")):
-            assert _gitlab_note_verifier() is None
+            assert _gitlab_note_verifier_for_overlay("") is None
 
     def test_404_returns_drift(self) -> None:
         fake_api = MagicMock()
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.NOT_FOUND)
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_note_verifier()
+            verifier = _gitlab_note_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_NOTE,
@@ -435,7 +396,7 @@ class GitLabNoteVerifierTests(TestCase):
         fake_api = MagicMock()
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.INTERNAL_SERVER_ERROR)
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_note_verifier()
+            verifier = _gitlab_note_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_NOTE,
@@ -459,7 +420,7 @@ class GitLabNoteVerifierTests(TestCase):
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.INTERNAL_SERVER_ERROR)
         notify = MagicMock()
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_note_verifier()
+            verifier = _gitlab_note_verifier_for_overlay("")
         assert verifier is not None
         scanner = OutboundAuditScanner(verifiers={"gitlab_note": verifier}, notifier=notify)
         signals = scanner.scan()
@@ -472,7 +433,7 @@ class GitLabNoteVerifierTests(TestCase):
     def test_returns_ok_when_extra_missing_required_fields(self) -> None:
         fake_api = MagicMock()
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_note_verifier()
+            verifier = _gitlab_note_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_NOTE,
@@ -487,7 +448,7 @@ class GitLabNoteVerifierTests(TestCase):
         fake_api = MagicMock()
         fake_api.get_json.return_value = {"id": 42, "body": "the note"}
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_note_verifier()
+            verifier = _gitlab_note_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_NOTE,
@@ -502,7 +463,7 @@ class GitLabNoteVerifierTests(TestCase):
         # is a malformed claim — return ok rather than 404 on a non-route.
         fake_api = MagicMock()
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_note_verifier()
+            verifier = _gitlab_note_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_NOTE,
@@ -514,17 +475,17 @@ class GitLabNoteVerifierTests(TestCase):
 
 
 class GitLabApproveVerifierTests(TestCase):
-    """``_gitlab_approve_verifier`` covers approve / unapprove drift detection."""
+    """The overlay-bound GitLab approval verifier covers drift detection."""
 
     def test_returns_none_when_username_resolution_fails(self) -> None:
         fake_api = MagicMock()
         fake_api.current_username.return_value = ""
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            assert _gitlab_approve_verifier() is None
+            assert _gitlab_approve_verifier_for_overlay("") is None
 
     def test_returns_none_when_constructor_raises(self) -> None:
         with patch("teatree.backends.gitlab.api.GitLabAPI", side_effect=RuntimeError("auth")):
-            assert _gitlab_approve_verifier() is None
+            assert _gitlab_approve_verifier_for_overlay("") is None
 
     def test_returns_none_when_gitlab_api_module_unimportable(self) -> None:
         import sys  # noqa: PLC0415
@@ -532,7 +493,7 @@ class GitLabApproveVerifierTests(TestCase):
         saved = sys.modules.get("teatree.backends.gitlab.api")
         sys.modules["teatree.backends.gitlab.api"] = None  # ty: ignore[invalid-assignment] — a `None` entry in `sys.modules` is how CPython blocks an import; the `dict[str, ModuleType]` stub cannot express it, and that block IS what this test exercises.
         try:
-            assert _gitlab_approve_verifier() is None
+            assert _gitlab_approve_verifier_for_overlay("") is None
         finally:
             if saved is not None:
                 sys.modules["teatree.backends.gitlab.api"] = saved
@@ -544,7 +505,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.return_value = {"approved_by": [{"user": {"username": "bob"}}]}
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_approve_verifier()
+            verifier = _gitlab_approve_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_APPROVE,
@@ -560,7 +521,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.return_value = {"approved_by": [{"user": {"username": "alice"}}]}
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_approve_verifier()
+            verifier = _gitlab_approve_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_APPROVE,
@@ -574,7 +535,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.return_value = {"approved_by": [{"user": {"username": "alice"}}]}
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_approve_verifier()
+            verifier = _gitlab_approve_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_APPROVE,
@@ -590,7 +551,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.return_value = {"approved_by": [{"user": {"username": "bob"}}]}
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_approve_verifier()
+            verifier = _gitlab_approve_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_APPROVE,
@@ -604,7 +565,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.NOT_FOUND)
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_approve_verifier()
+            verifier = _gitlab_approve_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_APPROVE,
@@ -620,7 +581,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.INTERNAL_SERVER_ERROR)
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_approve_verifier()
+            verifier = _gitlab_approve_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_APPROVE,
@@ -634,7 +595,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api = MagicMock()
         fake_api.current_username.return_value = "alice"
         with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
-            verifier = _gitlab_approve_verifier()
+            verifier = _gitlab_approve_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.GITLAB_APPROVE,
@@ -647,11 +608,11 @@ class GitLabApproveVerifierTests(TestCase):
 
 
 class SlackDmVerifierTests(TestCase):
-    """``_slack_dm_verifier`` distinguishes 404-equivalent from transport errors."""
+    """The overlay-bound Slack DM verifier distinguishes missing messages from transport errors."""
 
     def test_returns_none_when_backend_unavailable(self) -> None:
         with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None):
-            assert _slack_dm_verifier() is None
+            assert _slack_dm_verifier_for_overlay("") is None
 
     def test_returns_none_when_factory_module_unimportable(self) -> None:
         import sys  # noqa: PLC0415
@@ -659,7 +620,7 @@ class SlackDmVerifierTests(TestCase):
         saved = sys.modules.get("teatree.core.backend_factory")
         sys.modules["teatree.core.backend_factory"] = None  # ty: ignore[invalid-assignment] — a `None` entry in `sys.modules` is how CPython blocks an import; the `dict[str, ModuleType]` stub cannot express it, and that block IS what this test exercises.
         try:
-            assert _slack_dm_verifier() is None
+            assert _slack_dm_verifier_for_overlay("") is None
         finally:
             if saved is not None:
                 sys.modules["teatree.core.backend_factory"] = saved
@@ -670,7 +631,7 @@ class SlackDmVerifierTests(TestCase):
         fake_backend = MagicMock()
         fake_backend.get_permalink.return_value = "https://slack.example/archives/C/p123"
         with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=fake_backend):
-            verifier = _slack_dm_verifier()
+            verifier = _slack_dm_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.SLACK_DM,
@@ -684,7 +645,7 @@ class SlackDmVerifierTests(TestCase):
         fake_backend = MagicMock()
         fake_backend.get_permalink.return_value = ""
         with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=fake_backend):
-            verifier = _slack_dm_verifier()
+            verifier = _slack_dm_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.SLACK_DM,
@@ -700,7 +661,7 @@ class SlackDmVerifierTests(TestCase):
         fake_backend = MagicMock()
         fake_backend.get_permalink.side_effect = _http_status_error(HTTPStatus.INTERNAL_SERVER_ERROR)
         with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=fake_backend):
-            verifier = _slack_dm_verifier()
+            verifier = _slack_dm_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.SLACK_DM,
@@ -715,7 +676,7 @@ class SlackDmVerifierTests(TestCase):
         fake_backend = MagicMock()
         fake_backend.get_permalink.side_effect = httpx.ConnectError("connection refused")
         with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=fake_backend):
-            verifier = _slack_dm_verifier()
+            verifier = _slack_dm_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.SLACK_DM,
@@ -737,7 +698,7 @@ class SlackDmVerifierTests(TestCase):
         fake_backend.get_permalink.side_effect = _http_status_error(HTTPStatus.INTERNAL_SERVER_ERROR)
         notify = MagicMock()
         with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=fake_backend):
-            verifier = _slack_dm_verifier()
+            verifier = _slack_dm_verifier_for_overlay("")
         assert verifier is not None
         scanner = OutboundAuditScanner(verifiers={"slack_dm": verifier}, notifier=notify)
         signals = scanner.scan()
@@ -750,7 +711,7 @@ class SlackDmVerifierTests(TestCase):
     def test_returns_ok_when_extra_missing_channel_or_ts(self) -> None:
         fake_backend = MagicMock()
         with patch("teatree.core.backend_factory.messaging_from_overlay", return_value=fake_backend):
-            verifier = _slack_dm_verifier()
+            verifier = _slack_dm_verifier_for_overlay("")
         assert verifier is not None
         claim = OutboundClaim(
             kind=OutboundClaim.Kind.SLACK_DM,
@@ -770,7 +731,7 @@ def _gh_cmd_failed(stderr: str) -> Exception:
 
 
 class GitHubNoteVerifierTests(TestCase):
-    """``_github_note_verifier`` GETs the comment by id and asserts body hash (#1198).
+    """The overlay-bound GitHub note verifier checks comment id and body hash (#1198).
 
     Mirrors :class:`GitLabNoteVerifierTests` — proves each branch of the
     factory's error doctrine so the resilience contract is anti-vacuous.
@@ -784,7 +745,7 @@ class GitHubNoteVerifierTests(TestCase):
     def test_returns_none_when_no_github_token_resolves(self) -> None:
         """Codex-found gap: with no token a private-repo 404 is auth, not drift."""
         with patch(self._RESOLVE_PATH, return_value=""):
-            assert _github_note_verifier() is None
+            assert _github_note_verifier_for_overlay("") is None
 
     def test_404_returns_drift(self) -> None:
         with (
@@ -794,7 +755,7 @@ class GitHubNoteVerifierTests(TestCase):
                 side_effect=_gh_cmd_failed("HTTP 404: Not Found"),
             ),
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             claim = OutboundClaim(
                 kind=OutboundClaim.Kind.GITHUB_NOTE,
@@ -814,7 +775,7 @@ class GitHubNoteVerifierTests(TestCase):
                 side_effect=_gh_cmd_failed("HTTP 500: Internal Server Error"),
             ),
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             claim = OutboundClaim(
                 kind=OutboundClaim.Kind.GITHUB_NOTE,
@@ -841,7 +802,7 @@ class GitHubNoteVerifierTests(TestCase):
                 side_effect=_gh_cmd_failed("HTTP 500: Internal Server Error"),
             ),
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             scanner = OutboundAuditScanner(verifiers={"github_note": verifier}, notifier=notify)
             signals = scanner.scan()
@@ -859,7 +820,7 @@ class GitHubNoteVerifierTests(TestCase):
                 return_value={"id": 42, "body": "tampered"},
             ),
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             claim = OutboundClaim(
                 kind=OutboundClaim.Kind.GITHUB_NOTE,
@@ -882,7 +843,7 @@ class GitHubNoteVerifierTests(TestCase):
                 return_value={"id": 42, "body": "lgtm"},
             ),
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             claim = OutboundClaim(
                 kind=OutboundClaim.Kind.GITHUB_NOTE,
@@ -909,7 +870,7 @@ class GitHubNoteVerifierTests(TestCase):
             patch(self._RESOLVE_PATH, return_value="pat_abc"),
             patch("teatree.backends.github.client._gh_api_get", side_effect=_fake_get),
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             claim = OutboundClaim(
                 kind=OutboundClaim.Kind.GITHUB_NOTE,
@@ -925,7 +886,7 @@ class GitHubNoteVerifierTests(TestCase):
             patch(self._RESOLVE_PATH, return_value="tok-test"),
             patch("teatree.backends.github.client._gh_api_get") as mock_get,
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             claim = OutboundClaim(
                 kind=OutboundClaim.Kind.GITHUB_NOTE,
@@ -941,7 +902,7 @@ class GitHubNoteVerifierTests(TestCase):
             patch(self._RESOLVE_PATH, return_value="tok-test"),
             patch("teatree.backends.github.client._gh_api_get") as mock_get,
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             claim = OutboundClaim(
                 kind=OutboundClaim.Kind.GITHUB_NOTE,
@@ -956,7 +917,7 @@ class GitHubNoteVerifierTests(TestCase):
             patch(self._RESOLVE_PATH, return_value="tok-test"),
             patch("teatree.backends.github.client._gh_api_get", return_value=[]),
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             claim = OutboundClaim(
                 kind=OutboundClaim.Kind.GITHUB_NOTE,
@@ -976,7 +937,7 @@ class GitHubNoteVerifierTests(TestCase):
                 return_value={"id": 42, "body": "anything"},
             ),
         ):
-            verifier = _github_note_verifier()
+            verifier = _github_note_verifier_for_overlay("")
             assert verifier is not None
             claim = OutboundClaim(
                 kind=OutboundClaim.Kind.GITHUB_NOTE,

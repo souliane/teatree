@@ -69,7 +69,8 @@ class TestBothFiltersOffChangesNothing(TestCase):
         # comment. Both halves are read from `setting_comment` — the one renderer the file is
         # written by — never re-typed here: spelling the sentence out a second time is what let
         # this assertion keep asserting the help half alone after the type/choices half shipped.
-        assert export_db_to_toml(scan_terms=()).toml == (
+        dump = export_db_to_toml(scan_terms=()).toml
+        assert dump.split("\n[loops.", 1)[0] == (
             '[teatree.Agents."Mode & harness"]\n'
             f'mode = "auto" # {setting_comment("mode")}\n'
             "\n"
@@ -92,10 +93,10 @@ class TestFilterOneRestrictsTheEligibleKeys(TestCase):
     """*Export default keys only* drops registries, secrets, identifiers and overlay scopes."""
 
     def test_a_secret_row_is_out_of_scope_even_with_include_private(self) -> None:
-        ConfigSetting.objects.set_value("banned_brands", ["acmebrand"])
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
         ConfigSetting.objects.set_value("mode", "auto")
         dump = export_db_to_toml(include_private=True, scan_terms=(), default_keys_only=True).toml
-        assert "banned_brands" not in _teatree(dump)
+        assert "banned_term_registry" not in _teatree(dump)
         assert _teatree(dump)["mode"] == "auto"
 
     def test_an_overlay_scope_is_dropped(self) -> None:
@@ -127,9 +128,9 @@ class TestFilterTwoEmitsTheUnchangedKeysToo(TestCase):
     def test_the_filter_alone_keeps_the_wider_eligible_key_set(self) -> None:
         # Without filter 1 the eligible set is every ``[teatree]``-emittable key, so a
         # Secret key carrying a row still rides along under ``include_private``.
-        ConfigSetting.objects.set_value("banned_brands", ["acmebrand"])
+        ConfigSetting.objects.set_value("banned_term_registry", {"leak": ["acmebrand"], "prose_collider": []})
         emitted = set(_teatree(export_db_to_toml(include_private=True, scan_terms=(), include_defaults=True).toml))
-        assert emitted == set(default_category_keys()) | {"banned_brands"}
+        assert emitted == set(default_category_keys()) | {"banned_term_registry"}
 
     def test_a_key_no_persisted_tier_reaches_is_left_out_never_invented(self) -> None:
         # A Secret/Personal key with no row and no shipped value has only an in-code

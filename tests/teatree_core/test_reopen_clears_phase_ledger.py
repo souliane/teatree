@@ -54,23 +54,6 @@ class TestReopenClearsPhaseLedger(TestCase):
             f"reopen() must retire the prior workstream's phase_visits audit trail; got {prior.phase_visits!r}"
         )
 
-    def test_reopen_clears_repos_modified_and_tested(self) -> None:
-        ticket = _ticket(state=Ticket.State.MERGED)
-        prior = Session.objects.create(ticket=ticket, agent_id="prior-loop")
-        prior.mark_repo_modified("backend")
-        prior.mark_repo_tested("backend")
-
-        ticket.reopen()
-        ticket.save()
-
-        prior.refresh_from_db()
-        assert prior.repos_modified == [], (
-            f"reopen() must retire the prior workstream's repos_modified; got {prior.repos_modified!r}"
-        )
-        assert prior.repos_tested == [], (
-            f"reopen() must retire the prior workstream's repos_tested; got {prior.repos_tested!r}"
-        )
-
     def test_reopen_clears_every_session_across_the_ticket(self) -> None:
         ticket = _ticket(state=Ticket.State.PR_OPENED)
         s1 = Session.objects.create(ticket=ticket, agent_id="coding")

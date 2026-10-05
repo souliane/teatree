@@ -219,6 +219,7 @@ class OverlayAppBuilder:
         self._register_shortcut_commands()
         self._register_skill_preamble_command()
         self._register_config_commands()
+        self._register_loops_commands()
         register_gate_commands(self.overlay_app)
         register_wip_commands(self.overlay_app)
         register_autonomy_commands(self.overlay_app)
@@ -425,6 +426,33 @@ class OverlayAppBuilder:
         """Register the empty ``config`` subgroup so overlay commands hang off it."""
         config_group = typer.Typer(no_args_is_help=True, help="Overlay configuration.")
         self.overlay_app.add_typer(config_group, name="config")
+
+    def _register_loops_commands(self) -> None:
+        """Expose the overlay-scoped per-loop tick without duplicating its CLI.
+
+        Every flag passes straight through, so the core command stays the single
+        definition of what a tick accepts. ``--overlay`` is added explicitly rather than
+        left to ``T3_OVERLAY_NAME``: that env var selects the overlay's settings and DB,
+        but the tick scopes its BACKEND list off the flag, so without it
+        ``t3 <overlay> loops tick`` would sweep the whole fleet.
+        """
+        overlay_name = self.overlay_name
+        group = typer.Typer(no_args_is_help=True, help="Run DB-configured autonomous loops for this overlay.")
+
+        @group.command(
+            "tick",
+            context_settings={
+                "allow_extra_args": True,
+                "allow_interspersed_args": False,
+                "ignore_unknown_options": True,
+            },
+            add_help_option=False,
+        )
+        def _tick(ctx: typer.Context) -> None:
+            scope = () if any(arg.startswith("--overlay") for arg in ctx.args) else ("--overlay", overlay_name)
+            managepy_core("loops", "tick", *ctx.args, *scope, overlay_name=overlay_name)
+
+        self.overlay_app.add_typer(group, name="loops")
 
     def _bridge_subcommand(
         self,

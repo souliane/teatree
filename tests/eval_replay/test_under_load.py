@@ -14,13 +14,7 @@ from teatree.eval.discovery import discover_specs
 from teatree.eval.models import EvalSpec
 from teatree.eval.prompt_framing import DELEGATION_FRAMING, SKILL_BUNDLE_FRAMING
 from teatree.eval.toolset import DELEGATION_SUBAGENT_NAME, scenario_exposes_subagent_spawn
-from teatree.eval.under_load import (
-    SKILLS_DIR,
-    build_system_prompt,
-    build_user_prompt,
-    load_budgeted_skill_bundle,
-    load_skill_bundle,
-)
+from teatree.eval.under_load import SKILLS_DIR, build_system_prompt, build_user_prompt, load_budgeted_skill_bundle
 
 #: Anti-vacuity floor for the shipped spawn-capable set (28 at the time of writing).
 #: A discovery regression that returned an empty list would otherwise satisfy the
@@ -55,21 +49,6 @@ def _bundle_skill_dir(tmp_path: Path) -> Path:
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
     return skills
-
-
-class TestLoadSkillBundle:
-    def test_concatenates_every_skill_with_a_named_header(self, tmp_path: Path) -> None:
-        bundle = load_skill_bundle(skills_dir=_bundle_skill_dir(tmp_path))
-        assert "## skill: alpha" in bundle
-        assert "## skill: beta" in bundle
-        assert "rule one" in bundle
-        assert "rule two" in bundle
-
-    def test_skips_skill_dir_with_no_skill_md(self, tmp_path: Path) -> None:
-        skills = _bundle_skill_dir(tmp_path)
-        (skills / "empty").mkdir()
-        bundle = load_skill_bundle(skills_dir=skills)
-        assert "## skill: empty" not in bundle
 
 
 class TestBuildSystemPrompt:
@@ -177,11 +156,6 @@ class TestLoadBudgetedSkillBundle:
             (skills / name).mkdir(parents=True)
             (skills / name / "SKILL.md").write_text(body, encoding="utf-8")
         return skills
-
-    def test_small_catalog_under_budget_keeps_every_skill(self, tmp_path: Path) -> None:
-        skills = _bundle_skill_dir(tmp_path)
-        budgeted = load_budgeted_skill_bundle(char_budget=1_000_000, skills_dir=skills)
-        assert budgeted == load_skill_bundle(skills_dir=skills)
 
     def test_over_budget_keeps_agent_path_skill_rules_and_health(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)

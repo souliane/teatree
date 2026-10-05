@@ -10,22 +10,30 @@ for headless retries.
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import IO, Annotated, TypedDict, cast
+from typing import IO, Annotated, cast
 
 import typer
 from django.db import transaction
-from django_typer.management import TyperCommand, command
+from django_typer.management import command
 
 from teatree.core.diagrams import render_fsm_mermaid
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue, start_services_or_enqueue
 from teatree.core.intake.resolve import _ticket_by_number, resolve_worktree
-from teatree.core.machine_output import emit
+from teatree.core.machine_output import MachineOutputCommand, emit
 from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks
+from teatree.core.management.commands._worktree_adopt_command import WorktreeAdoptCommands
 from teatree.core.management.commands._worktree_occupancy import OccupancyCommands
+from teatree.core.management.commands._worktree_result_types import (
+    ProvisionSummary,
+    SmokeCheck,
+    SmokeReport,
+    WorktreeDiagnose,
+    WorktreeStatus,
+)
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay, get_overlay_for_worktree
-from teatree.core.provision.provision_postconditions import PostConditionOutcome, evaluate_post_conditions
+from teatree.core.provision.provision_postconditions import evaluate_post_conditions
 from teatree.core.provision.provision_report import ProvisionReport
 from teatree.core.runners import (
     WorktreeProvisionRunner,
@@ -39,52 +47,6 @@ from teatree.core.worktree.worktree_env import compose_project, env_cache_path
 from teatree.docker.build import ensure_base_image
 from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
-
-
-class ProvisionSummary(TypedDict):
-    """Rendered summary of the worktree's last ``Worktree.extra['provision_report']``."""
-
-    total_duration: float
-    steps: int
-    success: bool
-    slowest_step: str
-    slowest_step_duration: float
-
-
-class WorktreeStatus(TypedDict, total=False):
-    state: str
-    repo_path: str
-    branch: str
-    ports: dict[str, int]
-    provision_report: ProvisionSummary
-    post_conditions: list[PostConditionOutcome]
-    provisioned_ok: bool
-
-
-class WorktreeDiagnose(TypedDict):
-    state: str
-    repo_path: str
-    worktree_dir: bool
-    git_marker: bool
-    env_cache: bool
-    db_name: str
-    docker_services: str
-
-
-class SmokeCheck(TypedDict, total=False):
-    status: str
-    detail: str
-    repos: list[str]
-    worktrees: int
-    errors: list[str]
-
-
-class SmokeReport(TypedDict, total=False):
-    overlay: SmokeCheck
-    cli: SmokeCheck
-    database: SmokeCheck
-    hooks: SmokeCheck
-    imports: SmokeCheck
 
 
 def validate_docker_service_contract(overlay: OverlayBase, worktree: Worktree) -> None:
@@ -184,7 +146,9 @@ def _render_diagnose(checks: "WorktreeDiagnose", stream: IO[str]) -> None:
     stream.write(f"  docker: {checks['docker_services']}\n")
 
 
-class Command(OccupancyCommands, TyperCommand):
+class Command(WorktreeAdoptCommands, OccupancyCommands, MachineOutputCommand):
+    """Per-worktree FSM operations."""
+
     @command()
     def provision(
         self,

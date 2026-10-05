@@ -4,7 +4,7 @@ import pytest
 
 from teatree.backends.notion.client import NotionClient
 from teatree.backends.notion.comments import CommentPoster
-from teatree.backends.notion.errors import NotionWriteNotLandedError
+from teatree.backends.notion.errors import NotionWriteNotLandedError, NotionWriteRefusedError
 from tests.teatree_backends.notion._fake_notion import FakeNotion
 
 MARKER = "[t3:bdd-test-creation]"
@@ -89,3 +89,75 @@ class TestVerification:
 
         with pytest.raises(NotionWriteNotLandedError, match="treat the write as failed"):
             _poster().post(notion.page_id, BODY, marker=MARKER)
+
+
+class TestTheDefaultKeyIsTheWholeComment:
+    def test_a_body_contained_in_a_longer_comment_is_not_a_duplicate(self, notion: FakeNotion) -> None:
+        _seed(notion, "Is the reset monthly? Yes or no")
+
+        result = _poster().post(notion.page_id, "Yes")
+
+        assert result.outcome == "posted"
+
+    def test_a_short_reply_contained_in_an_earlier_comment_of_its_discussion_is_posted(
+        self, notion: FakeNotion
+    ) -> None:
+        paragraph = notion.paragraph("rates reset every quarter")
+        notion.comment_on(paragraph, "Is the reset monthly? Yes or no", discussion_id="disc-1")
+
+        result = _poster().reply(paragraph, "disc-1", "Yes")
+
+        assert result.outcome == "posted"
+
+    def test_the_same_reply_in_another_discussion_on_the_block_is_posted(self, notion: FakeNotion) -> None:
+        paragraph = notion.paragraph("rates reset every quarter")
+        notion.comment_on(paragraph, "Done.", discussion_id="disc-1")
+        notion.comment_on(paragraph, "please confirm", discussion_id="disc-2")
+
+        result = _poster().reply(paragraph, "disc-2", "Done.")
+
+        assert result.outcome == "posted"
+        assert notion.comments[-1]["discussion_id"] == "disc-2"
+
+    def test_the_same_reply_again_in_its_own_discussion_is_a_duplicate(self, notion: FakeNotion) -> None:
+        paragraph = notion.paragraph("rates reset every quarter")
+        notion.comment_on(paragraph, "please confirm", discussion_id="disc-1")
+        _poster().reply(paragraph, "disc-1", "Done.")
+
+        result = _poster().reply(paragraph, "disc-1", "  done. ")
+
+        assert result.outcome == "duplicate"
+
+
+class TestDryRun:
+    def test_a_dry_run_names_what_it_would_post_and_sends_no_write(self, notion: FakeNotion) -> None:
+        result = _poster().post(notion.page_id, BODY, marker=MARKER, dry_run=True)
+
+        assert result.outcome == "would post"
+        assert result.marker == MARKER
+        assert {method for method, _path in notion.requests} == {"GET"}
+        assert notion.comments == []
+
+    def test_a_dry_run_reports_a_marker_already_on_the_page_as_a_duplicate(self, notion: FakeNotion) -> None:
+        _seed(notion, f"{MARKER} an earlier run")
+
+        result = _poster().post(notion.page_id, BODY, marker=MARKER, dry_run=True)
+
+        assert result.outcome == "duplicate"
+        assert result.comment_id == "comment-seed"
+
+    def test_a_dry_run_on_a_page_outside_the_write_roots_is_refused(
+        self, notion: FakeNotion, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("teatree.backends.notion.write_guard.notion_write_roots", lambda _overlay: ([], []))
+
+        with pytest.raises(NotionWriteRefusedError):
+            _poster().post(notion.page_id, BODY, marker=MARKER, dry_run=True)
+
+    def test_a_dry_run_reply_names_its_discussion(self, notion: FakeNotion) -> None:
+        paragraph = notion.paragraph("rates reset every quarter")
+        notion.comment_on(paragraph, "please confirm", discussion_id="disc-1")
+
+        result = _poster().reply(paragraph, "disc-1", "Done.", dry_run=True)
+
+        assert (result.outcome, result.discussion_id) == ("would post", "disc-1")

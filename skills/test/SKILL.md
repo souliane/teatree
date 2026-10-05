@@ -132,13 +132,15 @@ Never Y: reaching for a local whole-tree run to get that result — `bash dev/ci
 ### Recording an Executed Reproduction
 
 A regression test is only evidence once it has been SEEN to fail on the pre-fix code
-(`/t3:code` § TDD Discipline). `require_executed_repro` reads the recorded pair, so record both
-halves on the live worktree — both need git, because the ancestry proof is what makes the pair
-mean "this test failed BEFORE the fix and passes after":
+(`/t3:code` § TDD Discipline). The executed-repro gate reads a pair recorded on the live
+worktree — both halves need git, because the ancestry proof is what makes the pair mean
+"this test failed BEFORE the fix and passes after":
+
+For FIX tickets, record RED before editing; the coding completion check requires it, and the testing phase reruns that command and records GREEN before it can complete.
 
 ```bash
 t3 <overlay> repro record-red <ticket-id> ...      # observed failing on the pre-fix tree
-t3 <overlay> repro record-green <ticket-id> ...    # observed passing with the fix
+t3 <overlay> repro record-green <ticket-id> ...    # observed passing on the fixed tree
 ```
 
 A reproduction that genuinely cannot be executed takes a human-approved
@@ -176,9 +178,7 @@ See [`../e2e/SKILL.md`](../e2e/SKILL.md) (`/t3:e2e`) for the full E2E workflow: 
 - `t3 ci fetch-failed-tests` — extract failed test node IDs from CI.
 - `t3 ci fetch-errors` — extract error logs from CI.
 - Run failed tests locally to reproduce before fixing.
-- `t3 eval ci-heal open` — open a healing session against a red PR branch. It is what writes the
-  row `ci_eval_heal_autofix_enabled` reads, so a red branch nobody opens a session for leaves
-  that gate with nothing to observe and no way to be armed.
+- `t3 eval ci-heal open` — open an observe-only healing session against a red PR branch.
 
 ### CI Pipeline Monitoring
 

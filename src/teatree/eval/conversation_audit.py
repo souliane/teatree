@@ -125,17 +125,6 @@ def audit_session(
     return _unlabelled_record(audit_input, analysis)
 
 
-def classify_behavior_pattern(record: SessionAuditRecord) -> BehaviorPattern:
-    """Classify a record's invariant + gate-failure signal as clean / one-shot / sustained.
-
-    Pure over the persisted signal (``invariant_results`` + ``gate_failure_slugs``)
-    so it reads identically off an in-memory unsaved record and a row re-read from
-    the ledger.
-    """
-    violations = sum(1 for o in record.invariant_results if not o.get("ok", True))
-    return _behavior_pattern(violations + len(record.gate_failure_slugs))
-
-
 def run_conversation_audit(
     inputs: Sequence[AuditInput],
     *,

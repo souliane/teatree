@@ -14,7 +14,7 @@ every member of it carries a recorded reason.
 each measured against a key the narrow walk called unread while a reader plainly existed:
 
 *   ``hooks/`` sits outside the package, and ``loop_cadence_seconds`` is read only there;
-*   a ``.sh`` reader has no Python AST at all — ``statusline_engaged_render`` is read by
+*   a ``.sh`` reader has no Python AST at all — ``statusline_chain`` is read by
     ``hooks/scripts/statusline.sh`` through the sqlite CLI and by nothing else;
 *   ``config/`` is not uniformly a declaration. Its RESOLVERS are readers, and excluding
     the package wholesale hid the only read of
@@ -112,9 +112,13 @@ _READ_HELPERS = frozenset(
         "str_setting",
         "value_setting",
         "read_setting",
+        "teatree_bool_setting",
+        "_teatree_bool_setting",
+        "teatree_int_setting",
+        "_teatree_int_setting",
+        "section_int_setting",
         "_cold_db_bool",
         "_cold_db_int",
-        "_cold_db_raw",
         "_cold_db_str",
     }
 )

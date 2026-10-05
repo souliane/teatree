@@ -7,7 +7,7 @@ from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.gates.merge_guard import MergeGuard
-from teatree.core.models import ConfigSetting, Directive, IncomingEvent, IntentClassification, ReplyDispatch
+from teatree.core.models import Directive, IncomingEvent, IntentClassification, ReplyDispatch
 from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
 from teatree.core.overlay import OverlayBase, OverlayReview
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
@@ -555,7 +555,7 @@ class TestIncomingEventsScannerReliability(TestCase):
             signals = IncomingEventsScanner().scan()
 
         event.refresh_from_db()
-        assert event.is_dead_lettered is True
+        assert event.dead_lettered_at is not None
         dead = [s for s in signals if s.kind == "incoming_event.dead_letter"]
         assert len(dead) == 1
         assert dead[0].payload["event_id"] == event.pk
@@ -608,10 +608,8 @@ class TestDirectiveEventIsUnrouteable(TestCase):
         assert event.body.strip()
 
     @patch("teatree.loop.scanners.incoming_events.classify_event")
-    def test_directive_loop_enabled_does_not_route_a_directive_event(self, mock_classify: object) -> None:
-        # Enabling the explicit directive loop must NOT route an untrusted inbound
-        # DIRECTIVE event anywhere — there is no ambient path to arm.
-        ConfigSetting.objects.set_value("directive_loop_enabled", value=True)
+    def test_directive_loop_does_not_route_a_directive_event(self, mock_classify: object) -> None:
+        # The running directive loop must not route an untrusted inbound event.
         event = self._directive_event()
         mock_classify.return_value = self._directive_classification(event)
         IncomingEventsScanner().scan()

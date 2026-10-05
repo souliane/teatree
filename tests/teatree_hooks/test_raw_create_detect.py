@@ -46,6 +46,7 @@ _STILL_BLOCKED = [
     pytest.param("result=`gh pr create --title x`", id="command-substitution-backtick-assigned"),
     pytest.param('echo "$(gh pr create --title x)"', id="command-substitution-in-double-quotes"),
     pytest.param("cat <<EOF\n$(gh pr create --title x)\nEOF", id="command-substitution-in-heredoc-body"),
+    pytest.param("cat <<A <<B\na\nA\nb\nB\ngh pr create --title x", id="after-two-heredocs-opened-on-one-line"),
     pytest.param("( gh pr create --title x )", id="subshell-group"),
     pytest.param("{ gh pr create --title x; }", id="brace-group"),
     pytest.param("if true; then gh pr create --title x; fi", id="compound-if-then"),

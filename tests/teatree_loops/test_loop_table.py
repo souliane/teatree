@@ -7,10 +7,10 @@ the seeded production loops.
 """
 
 import datetime as dt
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import django.test
+import pytest
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
@@ -18,12 +18,15 @@ from django.utils import timezone
 from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Loop, LoopState, Mode, ModeOverride, Prompt
 from teatree.loops.base import MiniLoop
-from teatree.loops.loop_table import admitted_loop_names, build_loop_table_jobs
+from teatree.loops.loop_table import admitted_loop_names, dispatch_loop_table, preview_loop_jobs
 from teatree.loops.preset_seed import seed_default_presets_and_schedules
 from teatree.loops.seed import seed_default_loops_and_prompts
 
-if TYPE_CHECKING:
-    from teatree.loop.job_identity import _ScannerJob
+
+def _dispatch_jobs(context: dict[str, object], *, now: dt.datetime, only: str | None = None) -> list[object]:
+    """Project the live dispatcher outcomes onto their jobs for these assertions."""
+    return [job for outcome in dispatch_loop_table(context, now=now, only=only) for job in outcome.jobs]
+
 
 _MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 
@@ -53,7 +56,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         Loop.objects.create(name="m-b", delay_seconds=60, prompt=_prompt(), last_run_at=now)  # cooling -> not due
         Loop.objects.create(name="m-c", delay_seconds=60, prompt=_prompt(), enabled=False)  # due but disabled
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-a"), _mini("m-b"), _mini("m-c"))):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-m-a" in jobs
         assert "job-m-b" not in jobs
         assert "job-m-c" not in jobs
@@ -62,13 +65,13 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="m-d", delay_seconds=60, prompt=_prompt())
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-d"),)):
-            build_loop_table_jobs({}, now=now)
+            _dispatch_jobs({}, now=now)
         assert Loop.objects.get(name="m-d").last_run_at == now
 
     def test_skips_registry_loop_with_no_row(self) -> None:
         now = timezone.now()
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-orphan"),)):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert jobs == []
 
     def test_off_live_tick_loop_is_never_picked_up(self) -> None:
@@ -84,7 +87,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
             off_live_tick=True,
         )
         with patch("teatree.loops.loop_table.iter_loops", return_value=(off,)):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-m-dream" not in jobs
         assert jobs == []
         # never re-armed: its cadence anchor is untouched by the live tick
@@ -98,7 +101,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         Loop.objects.create(name="m-only", delay_seconds=60, prompt=_prompt())  # enabled + due
         Loop.objects.create(name="m-other", delay_seconds=60, prompt=_prompt())  # enabled + due
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-only"), _mini("m-other"))):
-            jobs = build_loop_table_jobs({}, now=now, only="m-only")
+            jobs = _dispatch_jobs({}, now=now, only="m-only")
         assert "job-m-only" in jobs
         assert "job-m-other" not in jobs
         assert Loop.objects.get(name="m-only").last_run_at == now
@@ -108,7 +111,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="m-disabled", delay_seconds=60, prompt=_prompt(), enabled=False)
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-disabled"),)):
-            jobs = build_loop_table_jobs({}, now=now, only="m-disabled")
+            jobs = _dispatch_jobs({}, now=now, only="m-disabled")
         assert jobs == []
 
     def test_one_loop_raising_does_not_abort_the_rest(self) -> None:
@@ -119,7 +122,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
             name="m-boom", default_cadence_seconds=60, build_jobs=lambda **_: (_ for _ in ()).throw(RuntimeError("x"))
         )
         with patch("teatree.loops.loop_table.iter_loops", return_value=(boom, _mini("m-ok"))):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-m-ok" in jobs
         # The anchor is now claimed atomically BEFORE build_jobs, so a loop that
         # wins the claim and then raises has already advanced its anchor — it is
@@ -133,7 +136,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
 class TestMasterHonoursLoopState(django.test.TestCase):
     """The master gate routes through the unified verdict (#2584).
 
-    The #2513 cutover left ``build_loop_table_jobs`` gating only on
+    The #2513 cutover left ``_dispatch_jobs`` gating only on
     ``Loop.enabled AND is_due`` — it ignored the durable ``LoopState`` control
     tier (``t3 loop pause`` / ``disable``, #1913). These pin that the master now
     reaches the SAME unified verdict (``loop_state_admits``): a ``Loop`` row that
@@ -149,7 +152,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
         Loop.objects.create(name="m-paused", delay_seconds=60, prompt=_prompt())
         LoopState.objects.pause("m-paused")
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-paused"),)):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert jobs == []
         assert Loop.objects.get(name="m-paused").last_run_at is None
 
@@ -158,7 +161,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
         Loop.objects.create(name="m-disabled-state", delay_seconds=60, prompt=_prompt())
         LoopState.objects.disable("m-disabled-state")
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-disabled-state"),)):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert jobs == []
         assert Loop.objects.get(name="m-disabled-state").last_run_at is None
 
@@ -174,7 +177,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
             patch.dict("os.environ", {"T3_LOOPS_DISABLED": "all"}),
             patch("teatree.loops.loop_table.iter_loops", return_value=registry),
         ):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-m-env-a" in jobs
         assert "job-m-env-b" in jobs
         assert Loop.objects.get(name="m-env-a").last_run_at == now
@@ -190,7 +193,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
             patch.dict("os.environ", {"T3_LOOPS_DISABLED": "m-named-off"}),
             patch("teatree.loops.loop_table.iter_loops", return_value=registry),
         ):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-m-named-off" in jobs
         assert "job-m-named-on" in jobs
         assert Loop.objects.get(name="m-named-off").last_run_at == now
@@ -203,7 +206,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
         Loop.objects.create(name="m-anchor", delay_seconds=60, prompt=_prompt())
         LoopState.objects.pause("m-anchor")
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-anchor"),)):
-            build_loop_table_jobs({}, now=now)
+            _dispatch_jobs({}, now=now)
         assert Loop.objects.get(name="m-anchor").last_run_at is None
 
 
@@ -225,7 +228,7 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         Loop.objects.create(name="m-alias", delay_seconds=60, script="src/teatree/loops/m-target/loop.py")
         registry = (_mini("m-alias"), _mini("m-target"))
         with patch("teatree.loops.loop_table.iter_loops", return_value=registry):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-m-target" in jobs
         assert "job-m-alias" not in jobs
 
@@ -235,7 +238,7 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="m-self", delay_seconds=60, script="src/teatree/loops/m-self/loop.py")
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-self"),)):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-m-self" in jobs
 
     def test_stale_shared_script_row_is_logged_and_skipped_never_silent(self) -> None:
@@ -251,7 +254,7 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
             patch("teatree.loops.loop_table.iter_loops", return_value=registry),
             self.assertLogs("teatree.loops.loop_table", level="ERROR") as logs,
         ):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-m-good" in jobs
         assert "job-m-stale" not in jobs
         assert any("m-stale" in line or "run.py" in line for line in logs.output)
@@ -267,7 +270,7 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="m-prompt", delay_seconds=60, prompt=_prompt())
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-prompt"),)):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-m-prompt" in jobs
 
 
@@ -309,8 +312,8 @@ class TestCadenceClaimIsAtomic(django.test.TestCase):
     """A master and a per-loop tick that read the same anchor drive the loop ONCE.
 
     The lost-update (TOCTOU) the cutover left open: a master
-    ``build_loop_table_jobs(only=None)`` and a per-loop
-    ``build_loop_table_jobs(only=<name>)`` that both read the same stale
+    ``_dispatch_jobs(only=None)`` and a per-loop
+    ``_dispatch_jobs(only=<name>)`` that both read the same stale
     ``last_run_at`` would each build the loop's jobs and each bump the anchor —
     the loop is driven twice. The fix claims the anchor atomically (CAS) BEFORE
     building, so exactly one wins.
@@ -327,7 +330,7 @@ class TestCadenceClaimIsAtomic(django.test.TestCase):
     def test_concurrent_master_and_per_loop_drive_exactly_one(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="m-race", delay_seconds=60, prompt=_prompt())  # never-run → due
-        concurrent: dict[str, list[_ScannerJob]] = {"jobs": []}
+        concurrent: dict[str, list[object]] = {"jobs": []}
         per_loop_mini = MiniLoop(name="m-race", default_cadence_seconds=60, build_jobs=lambda **_: ["job-m-race"])
         fired = {"n": 0}
 
@@ -335,12 +338,12 @@ class TestCadenceClaimIsAtomic(django.test.TestCase):
             fired["n"] += 1
             if fired["n"] == 1:
                 with patch("teatree.loops.loop_table.iter_loops", return_value=(per_loop_mini,)):
-                    concurrent["jobs"] = build_loop_table_jobs({}, now=now, only="m-race")
+                    concurrent["jobs"] = _dispatch_jobs({}, now=now, only="m-race")
             return ["job-m-race"]
 
         master_mini = MiniLoop(name="m-race", default_cadence_seconds=60, build_jobs=master_build_jobs)
         with patch("teatree.loops.loop_table.iter_loops", return_value=(master_mini,)):
-            master_jobs = build_loop_table_jobs({}, now=now, only=None)
+            master_jobs = _dispatch_jobs({}, now=now, only=None)
 
         produced = ("job-m-race" in master_jobs) + ("job-m-race" in concurrent["jobs"])
         assert produced == 1, f"loop driven {produced}x (master={master_jobs}, per_loop={concurrent['jobs']})"
@@ -352,7 +355,7 @@ class TestAdmittedLoopNames(django.test.TestCase):
     """teatree.loops.loop_table.admitted_loop_names — the loop-timer chain's no-CAS verdict (#1796).
 
     The timer's admission pre-filter reuses the SAME unified verdict
-    ``build_loop_table_jobs`` gates on (enabled + due + un-held, off_live_tick
+    ``_dispatch_jobs`` gates on (enabled + due + un-held, off_live_tick
     skipped) but claims no cadence anchor — the CAS belongs to the per-loop tick the
     timer runs.
     """
@@ -401,7 +404,7 @@ class TestAdmittedLoopNames(django.test.TestCase):
 class TestAtLeastOnceDoubleDeliveryIsACasNoOp(django.test.TestCase):
     """A redelivered per-loop tick is a no-op via the ``mark_run_if_unchanged`` CAS (#1796).
 
-    The per-loop tick runs ``build_loop_table_jobs(only=name)``. Two deliveries for
+    The per-loop tick runs ``_dispatch_jobs(only=name)``. Two deliveries for
     the same loop reach that path twice; the first claims the anchor and dispatches,
     the second reads the already-bumped anchor, finds the row not-due, and dispatches
     nothing — the cadence CAS, not the queue, is the idempotency guard.
@@ -411,9 +414,9 @@ class TestAtLeastOnceDoubleDeliveryIsACasNoOp(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="dd-once", delay_seconds=60, prompt=_prompt())  # never run -> due
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("dd-once"),)):
-            first = build_loop_table_jobs({}, now=now, only="dd-once")
+            first = _dispatch_jobs({}, now=now, only="dd-once")
             claimed = Loop.objects.get(name="dd-once").last_run_at
-            second = build_loop_table_jobs({}, now=now, only="dd-once")
+            second = _dispatch_jobs({}, now=now, only="dd-once")
         assert "job-dd-once" in first
         assert second == []  # redelivery is a no-op
         assert Loop.objects.get(name="dd-once").last_run_at == claimed  # anchor unchanged by the redelivery
@@ -433,7 +436,7 @@ class TestLoopStateBulkLoadedOncePerTick(django.test.TestCase):
     def _loop_state_query_count(ctx: CaptureQueriesContext) -> int:
         return sum("teatree_loop_state" in q["sql"] for q in ctx.captured_queries)
 
-    def test_build_loop_table_jobs_reads_loop_state_at_most_once(self) -> None:
+    def test_dispatch_loop_table_reads_loop_state_at_most_once(self) -> None:
         now = timezone.now()
         registry = tuple(_mini(f"n1-{i}") for i in range(5))
         for loop in registry:
@@ -442,7 +445,7 @@ class TestLoopStateBulkLoadedOncePerTick(django.test.TestCase):
             patch("teatree.loops.loop_table.iter_loops", return_value=registry),
             CaptureQueriesContext(connection) as ctx,
         ):
-            build_loop_table_jobs({}, now=now)
+            _dispatch_jobs({}, now=now)
         assert self._loop_state_query_count(ctx) <= 1
 
     def test_admitted_loop_names_reads_loop_state_at_most_once(self) -> None:
@@ -475,7 +478,7 @@ class TestColleagueFacingLoopHeldOffByTheModeMask(django.test.TestCase):
             patch(_MODE_SEAM, return_value=_resolved(entries={"cf-review": False})),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-review"),)),
         ):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert jobs == []
 
     def test_colleague_facing_loop_runs_when_the_mode_admits_it(self) -> None:
@@ -485,7 +488,7 @@ class TestColleagueFacingLoopHeldOffByTheModeMask(django.test.TestCase):
             patch(_MODE_SEAM, return_value=_resolved(source="default")),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-present"),)),
         ):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-cf-present" in jobs
 
     def test_a_sibling_loop_the_same_mask_admits_is_unaffected(self) -> None:
@@ -495,7 +498,7 @@ class TestColleagueFacingLoopHeldOffByTheModeMask(django.test.TestCase):
             patch(_MODE_SEAM, return_value=_resolved(entries={"cf-review": False, "cf-internal": True})),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-internal"),)),
         ):
-            jobs = build_loop_table_jobs({}, now=now)
+            jobs = _dispatch_jobs({}, now=now)
         assert "job-cf-internal" in jobs
 
     def test_masked_colleague_facing_loop_cadence_anchor_is_not_consumed(self) -> None:
@@ -507,12 +510,12 @@ class TestColleagueFacingLoopHeldOffByTheModeMask(django.test.TestCase):
             patch(_MODE_SEAM, return_value=_resolved(entries={"cf-anchor": False})),
             patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("cf-anchor"),)),
         ):
-            build_loop_table_jobs({}, now=now)
+            _dispatch_jobs({}, now=now)
         assert Loop.objects.get(name="cf-anchor").last_run_at is None
 
     def test_admitted_loop_names_also_honours_the_mask(self) -> None:
         # The beat's pre-filter shares the SAME unified verdict — the mask can
-        # never drift between build_loop_table_jobs and admitted_loop_names.
+        # never drift between _dispatch_jobs and admitted_loop_names.
         now = timezone.now()
         Loop.objects.create(name="cf-beat", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
         with (
@@ -544,3 +547,53 @@ class TestAutoMergePathAdmittedUnderAfk(django.test.TestCase):
         assert "ship" in admitted
         assert "review" in admitted
         assert "followup" in admitted
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestPreviewLoopJobs(django.test.TestCase):
+    """``preview_loop_jobs`` builds a loop's jobs with no admission gate and no cadence claim.
+
+    The property that matters: a loop is previewed precisely BECAUSE it is masked off, so
+    routing the preview through the live gate would answer "nothing selected" and read as
+    a clean bill of health for a scan that never happened.
+    """
+
+    def test_previews_a_loop_the_live_gate_refuses(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="m-off", delay_seconds=60, prompt=_prompt(), enabled=False)
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-off"),)):
+            live = _dispatch_jobs({}, now=now)
+            preview = preview_loop_jobs("m-off", {})
+        assert live == []
+        assert preview == ["job-m-off"]
+
+    def test_previews_a_loop_that_is_not_due(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="m-cooling", delay_seconds=60, prompt=_prompt(), last_run_at=now)
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-cooling"),)):
+            preview = preview_loop_jobs("m-cooling", {})
+        assert preview == ["job-m-cooling"]
+
+    def test_claims_no_cadence_anchor(self) -> None:
+        Loop.objects.create(name="m-anchor", delay_seconds=60, prompt=_prompt())
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-anchor"),)):
+            preview_loop_jobs("m-anchor", {})
+        assert Loop.objects.get(name="m-anchor").last_run_at is None
+
+    def test_dispatches_the_loop_the_script_column_names(self) -> None:
+        Loop.objects.create(name="m-alias", delay_seconds=60, script="src/teatree/loops/m-target/loop.py")
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-alias"), _mini("m-target"))):
+            preview = preview_loop_jobs("m-alias", {})
+        assert preview == ["job-m-target"]
+
+    def test_previews_a_registered_loop_with_no_row(self) -> None:
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-unseeded"),)):
+            preview = preview_loop_jobs("m-unseeded", {})
+        assert preview == ["job-m-unseeded"]
+
+    def test_raises_for_an_unregistered_loop(self) -> None:
+        with (
+            patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-known"),)),
+            pytest.raises(KeyError, match="m-ghost"),
+        ):
+            preview_loop_jobs("m-ghost", {})

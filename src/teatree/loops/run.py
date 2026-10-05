@@ -5,11 +5,9 @@ Each script-backed ``Loop`` row's ``script`` is its OWN module
 — the ``script`` column is PER-LOOP and load-bearing, never a value shared across
 rows. :func:`parse_script_loop_name` is the single normalization seam that maps
 such a path UP to the loop name the loop-table fan-out dispatches
-(:func:`teatree.loops.loop_table.build_loop_table_jobs`).
 
 This module is a pure path↔name helper, NOT a dispatch seam: there is no central
 runner and no shared tick. The DB ``Loop`` table is the single source of truth and
-``build_loop_table_jobs`` is the one driver (#2513); each enabled row runs as its
 own native Claude ``/loop`` firing ``t3 loops tick --loop <name>`` (#2650).
 """
 

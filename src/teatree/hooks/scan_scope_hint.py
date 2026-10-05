@@ -18,7 +18,6 @@ is chained with anything. The agent discovers this only by stalling.
 takes its target from the git remote of the dir it runs in. When the hook's cwd
 is not inside that repo, no destination resolves, the visibility is UNKNOWN, and
 the gate fails closed (#3477) — so a post that could only ever land on a repo
-``private_repos`` / ``internal_publish_namespaces`` already declares internal is
 blocked as if it were public.
 
 Both hints are pure TEXT appended to an already-decided refusal. Nothing here
@@ -52,9 +51,8 @@ _UNRESOLVED_HINT = (
     "\n\nWHY THIS SCANNED: no publish destination could be resolved from this command — there is no "
     "`--repo`/`-R` flag, no forge URL, and the working directory the hook sees is not inside the "
     "target repo, so its git remote gave nothing. An unresolvable target is treated as PUBLIC and "
-    "fails closed. If the target is private, name it explicitly and the gate will skip: add "
-    "`--repo <owner/repo>` (or address the forge URL directly), and make sure the namespace is "
-    "declared — `t3 <overlay> config_setting get private_repos` / `internal_publish_namespaces`."
+    "fails closed. If the target is private, name it explicitly with `--repo <owner/repo>` "
+    "(or address the forge URL directly), then declare host/owner in private_repos."
 )
 
 

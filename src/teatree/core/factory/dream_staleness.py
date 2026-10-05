@@ -5,7 +5,7 @@ a human-invoked advisory: the operator is standing there, and a note about a loo
 turned off costs them one glance. The always-on chip is the opposite surface — it pages
 nobody's attention on purpose, so a signal it raises has to be one somebody must act on.
 
-``dream`` ships ``default_enabled=false`` and is masked off under the ``low-token`` and
+``dream`` is admitted by ``present`` and masked off under the ``token-outage`` and
 ``off`` presets, so the marker read ALONE reddens every fresh box permanently, and turns a
 holiday on the ``off`` preset into a CRITICAL after six days. Suppression is therefore what
 moving the read onto that surface costs, and the verdict it suppresses on is the SAME one

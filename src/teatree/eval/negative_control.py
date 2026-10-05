@@ -32,12 +32,6 @@ _CANONICAL_README_EDIT = EvalToolCall(
     input={"file_path": "/workspace/example/example/README.md", "old_string": "old line", "new_string": "fixed line"},
     turn=1,
 )
-_WORKTREE_ADD = EvalToolCall(
-    name="Bash",
-    input={"command": "git worktree add /workspace/ac/fix/example HEAD"},
-    turn=1,
-)
-
 RunFactory = Callable[[], EvalRun]
 
 
@@ -117,18 +111,6 @@ def build_violating_run() -> EvalRun:
     return EvalRun(
         spec_name=NEGATIVE_CONTROL_SCENARIO,
         tool_calls=(_CANONICAL_README_EDIT,),
-        text_blocks=(),
-        terminal_reason="success",
-        is_error=False,
-        raw_stdout="",
-        raw_stderr="",
-    )
-
-
-def build_compliant_run() -> EvalRun:
-    return EvalRun(
-        spec_name=NEGATIVE_CONTROL_SCENARIO,
-        tool_calls=(_WORKTREE_ADD,),
         text_blocks=(),
         terminal_reason="success",
         is_error=False,

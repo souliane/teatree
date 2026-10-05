@@ -1,14 +1,10 @@
 # test-path: cross-cutting — drives hooks/scripts/hook_router.py + subagent_hint.py; no src/teatree/ mirror.
 """A sub-agent deny must not advertise a self-authorize escape hatch (#3252).
 
-The banned-terms / quote-scanner leak denies tell the operator to re-issue with a
-leading ``ALLOW_BANNED_TERM=1`` / ``QUOTE_OK=1`` env prefix. A SUB-AGENT cannot
-self-authorize that bypass: the auto-mode classifier denies the retry as an
-"unauthorized safety-gate bypass", which poisoned the sub-agent's whole context.
-The router rewrites the hint at the ``emit_pretooluse_deny`` chokepoint when the
-call is from a sub-agent (a non-empty ``agent_id``), pointing it at the route it
-CAN take — escalate to the main agent / user — while the deny itself stays
-fail-closed. A main-agent deny keeps the verbatim escape-hatch hint.
+Public banned-term and quote-scanner refusals keep owner escalation guidance
+without naming an override variable. A deny that offers the owner a per-call
+``[quote-ok: <reason>]`` approval is rewritten at the ``emit_pretooluse_deny``
+chokepoint when a sub-agent receives it; a sub-agent cannot self-authorize a bypass.
 """
 
 import json
@@ -18,6 +14,8 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from teatree.hooks import banned_terms_scanner
+from teatree.hooks.quote_gate_messages import format_dispatch_block_message
+from teatree.hooks.quote_scanner import HIGH, Finding, ScanResult
 
 
 @pytest.fixture(autouse=True)
@@ -38,13 +36,14 @@ def _emit_reason(capsys: pytest.CaptureFixture[str], reason: str) -> str:
 class TestSubagentSelfAuthHintSuppression:
     _BANNED_DENY = banned_terms_scanner.format_block_message("acmecorp")
 
-    def test_main_agent_keeps_verbatim_escape_hatch_hint(
+    def test_main_agent_keeps_owner_escalation_without_override_token(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(router, "_CURRENT_DATA", {"session_id": "s-main", "tool_name": "Bash"})
         emitted = _emit_reason(capsys, self._BANNED_DENY)
-        assert "ALLOW_BANNED_TERM=1" in emitted
-        assert "re-issue the command with a leading" in emitted
+        assert "ALLOW_BANNED_TERM" not in emitted
+        assert "ask the owner to review the blocked publication" in emitted.lower()
+        assert "re-issue" not in emitted
 
     def test_subagent_hint_is_rewritten_to_escalation(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -53,30 +52,38 @@ class TestSubagentSelfAuthHintSuppression:
             router, "_CURRENT_DATA", {"session_id": "s-sub", "tool_name": "Bash", "agent_id": "agent-7"}
         )
         emitted = _emit_reason(capsys, self._BANNED_DENY)
-        # The escape-hatch hint is gone; the escalation guidance replaces it.
-        assert "re-issue the command with a leading" not in emitted
-        assert "cannot self-authorize" in emitted
-        assert "main agent / user" in emitted
+        # Both agent roles receive owner escalation without an override token.
+        assert "ALLOW_BANNED_TERM=1" not in emitted
+        assert "ask the owner to review the blocked publication" in emitted.lower()
         # The deny itself is UNCHANGED — still fail-closed, still names the gate.
         assert emitted.startswith("BLOCKED: banned-terms posting gate")
         assert "acmecorp" in emitted
 
 
 class TestSuppressHelperUnit:
-    """Direct unit coverage of the rewrite predicate."""
+    """Direct unit coverage of the rewrite predicate, over the hint the gates emit today."""
 
-    _HINTED = (
-        "BLOCKED: some gate. If the match is a false positive, re-issue the command "
-        "with a leading QUOTE_OK=1 env prefix (e.g. `QUOTE_OK=1 <command>`)."
-    )
+    _HINTED = format_dispatch_block_message(ScanResult([Finding("owner-quote", HIGH, "you said")]))
 
     def test_main_agent_unchanged(self) -> None:
         assert router._suppress_self_auth_hint_for_subagent(self._HINTED, {}) == self._HINTED
 
-    def test_subagent_rewrites(self) -> None:
+    def test_subagent_does_not_see_the_live_quote_ok_approval(self) -> None:
         out = router._suppress_self_auth_hint_for_subagent(self._HINTED, {"agent_id": "a-1"})
-        assert "QUOTE_OK=1 env prefix" not in out
+
+        assert "[quote-ok:" not in out
+        assert "A token placed" not in out
         assert "cannot self-authorize" in out
+        assert out.startswith("BLOCKED: pre-dispatch quote-scanner gate (#1401).")
+        assert "ask the owner" in out
+
+    def test_a_retired_variable_form_is_not_matched(self) -> None:
+        reason = (
+            "BLOCKED: some gate. Rephrase without the quoted span or ask the owner. "
+            "The owner may approve this one post with a per-call QUOTE_OK=1 override (it is recorded)."
+        )
+
+        assert router._suppress_self_auth_hint_for_subagent(reason, {"agent_id": "a-1"}) == reason
 
     def test_subagent_reason_without_hint_is_untouched(self) -> None:
         plain = "BLOCKED: out-of-band merge on a managed repo."

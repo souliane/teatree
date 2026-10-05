@@ -45,7 +45,6 @@ class AgentHarness(StrEnum):
         also admits an overlay-registered harness name.
         """
         normalised = value.strip().lower()
-        normalised = _PROVIDER_VALUE_ALIASES.get(normalised, normalised)
         try:
             return cls(normalised)
         except ValueError as exc:
@@ -145,13 +144,9 @@ class AgentHarnessProvider(StrEnum):
 
         Mirrors :meth:`Mode.parse`: the conservative default
         (:attr:`SUBSCRIPTION_OAUTH`) is applied by the caller when the setting is
-        absent, so a typo never silently switches the credential. A retired VALUE
-        is aliased forward (:data:`_PROVIDER_VALUE_ALIASES`) so a stored row written
-        before the generic-backend collapse (#3666) keeps resolving — the value half
-        of the same migrate-or-fail-loud contract the key half carries.
+        absent, so a typo never silently switches the credential.
         """
         normalised = value.strip().lower()
-        normalised = _PROVIDER_VALUE_ALIASES.get(normalised, normalised)
         try:
             return cls(normalised)
         except ValueError as exc:
@@ -163,11 +158,6 @@ class AgentHarnessProvider(StrEnum):
     def valid_for(cls, harness: "AgentHarness") -> frozenset["AgentHarnessProvider"]:
         """The Layer-2 providers CONSTRAINED-VALID under Layer-1 *harness*."""
         return _VALID_PROVIDERS_BY_HARNESS[harness]
-
-
-#: Retired ``agent_harness_provider`` VALUES mapped forward. The data migration
-#: rewrites stored rows; this keeps an env var or an un-migrated row resolving.
-_PROVIDER_VALUE_ALIASES: dict[str, str] = {"orca_router_byok": AgentHarnessProvider.OPENAI_COMPATIBLE.value}
 
 
 _VALID_PROVIDERS_BY_HARNESS: dict[AgentHarness, frozenset[AgentHarnessProvider]] = {

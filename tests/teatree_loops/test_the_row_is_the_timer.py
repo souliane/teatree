@@ -14,7 +14,6 @@ quantity survives — `arch_review`'s 168h is not its daily row restated, so it 
 
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.seed_defaults import shipped_seed_table
-from teatree.config.setting_taxonomy import SettingClass, classify
 
 
 def _row(name: str) -> dict[str, object]:
@@ -27,7 +26,6 @@ class TestTheDailyBackupIsAnchoredNotChained:
 
     def test_the_inner_daily_gate_is_retired(self) -> None:
         assert "db_backup_cadence_hours" not in ALL_KNOWN_CONFIG_SETTINGS
-        assert classify("db_backup_cadence_hours").classes == {SettingClass.RETIRED}
 
 
 class TestTheWeeklyEvalRunsWeeklyRatherThanCheckingDaily:
@@ -38,7 +36,6 @@ class TestTheWeeklyEvalRunsWeeklyRatherThanCheckingDaily:
 
     def test_the_inner_weekly_gate_is_retired(self) -> None:
         assert "eval_local_cadence_hours" not in ALL_KNOWN_CONFIG_SETTINGS
-        assert classify("eval_local_cadence_hours").classes == {SettingClass.RETIRED}
 
 
 class TestTheDailyTriageRunsDailyRatherThanCheckingHourly:
@@ -49,7 +46,6 @@ class TestTheDailyTriageRunsDailyRatherThanCheckingHourly:
 
     def test_the_inner_daily_gate_is_retired(self) -> None:
         assert "triage_assessor_cadence_hours" not in ALL_KNOWN_CONFIG_SETTINGS
-        assert classify("triage_assessor_cadence_hours").classes == {SettingClass.RETIRED}
 
 
 class TestTheDailyBacklogSweepRunsDailyRatherThanCheckingDaily:
@@ -60,7 +56,6 @@ class TestTheDailyBacklogSweepRunsDailyRatherThanCheckingDaily:
 
     def test_the_inner_daily_gate_is_retired(self) -> None:
         assert "backlog_sweep_cadence_hours" not in ALL_KNOWN_CONFIG_SETTINGS
-        assert classify("backlog_sweep_cadence_hours").classes == {SettingClass.RETIRED}
 
 
 class TestTheDailyDogfoodSmokeRunsDailyRatherThanCheckingHourly:
@@ -71,7 +66,6 @@ class TestTheDailyDogfoodSmokeRunsDailyRatherThanCheckingHourly:
 
     def test_the_inner_daily_gate_is_retired(self) -> None:
         assert "dogfood_smoke_cadence_hours" not in ALL_KNOWN_CONFIG_SETTINGS
-        assert classify("dogfood_smoke_cadence_hours").classes == {SettingClass.RETIRED}
 
 
 class TestTheHourlySelfUpdateRunsHourlyRatherThanCheckingHourly:
@@ -82,7 +76,6 @@ class TestTheHourlySelfUpdateRunsHourlyRatherThanCheckingHourly:
 
     def test_the_inner_hourly_gate_is_retired(self) -> None:
         assert "self_update_cadence_hours" not in ALL_KNOWN_CONFIG_SETTINGS
-        assert classify("self_update_cadence_hours").classes == {SettingClass.RETIRED}
 
 
 class TestADifferentQuantitySurvives:

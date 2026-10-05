@@ -13,6 +13,7 @@ from teatree.core.merge.ci_rollup import CodeHostQuery
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.substrate_standing import resolve_overlay_by_repo_identity, substrate_standing_authorization
 from teatree.core.models.mr_review_lock import MRReviewLock
+from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 from teatree.core.models.reviewer_identity import normalize_reviewer_identity
 from teatree.core.review.author_trust import AuthorSubject, AutonomyGate, TrustVerdict, decide_author_trust
@@ -365,12 +366,11 @@ def _config_standing_substrate_delegation(clear: "MergeClear", presented: str, *
 def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
     """Refuse a merge whose CLEAR ticket lacks a SHA-bound anti-vacuity proof (#1829).
 
-    NO-OP when ``require_anti_vacuity_attestation`` is off (opt-in default) or
-    the CLEAR carries no ticket (the attestation lives on the ticket's durable
-    ``extra``). A ticketless CLEAR is not thereby ungated: the same gate runs by PR
-    identity in :func:`assert_ticket_scoped_gates` at the shared merge chokepoint,
-    which is where a resolvable-nowhere ticket is REFUSED rather than skipped. The
-    :class:`AntiVacuityAttestationError` raised on a block is
+    NO-OP when the CLEAR carries no ticket (the attestation lives on the ticket's durable
+    ``extra``). The same gate runs by PR identity in
+    :func:`assert_ticket_scoped_gates` at the shared merge chokepoint when an
+    owning ticket resolves. A PR with no owning ticket remains outside this
+    ticket-scoped gate. The :class:`AntiVacuityAttestationError` raised on a block is
     re-wrapped as a :class:`MergePreconditionError` so the merge command's
     single re-escalation path surfaces it (the loop never self-issues a
     replacement CLEAR).
@@ -525,10 +525,11 @@ def assert_merge_provenance_trusted(*, slug: str, pr_id: int, host_kind: str = "
     overlay MRs cross this gate identically.
     """
     query = CodeHostQuery.for_ref(PrRef(slug=slug, pr_id=pr_id, host_kind=host_kind))
+    stored_url = PullRequest.objects.recorded_pr_url(slug=slug, pr_id=pr_id, host_kind=host_kind)
     subject = AuthorSubject(
         slug=slug,
         author=query.pr_author(),
-        host_kind=host_kind,
+        pr_url=stored_url,
         same_repo=query.pr_same_repo(),
     )
     if decide_author_trust(subject, gate=AutonomyGate.MERGE) is TrustVerdict.AUTONOMOUS:

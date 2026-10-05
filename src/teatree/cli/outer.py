@@ -17,8 +17,8 @@ outer_app = typer.Typer(
     name="outer",
     help=(
         "T4 autoresearch outer loop — propose → ratify → implement → measure → "
-        "keep-only-if-better. Ships QUADRUPLE-OFF (feature flag + disabled loop row + "
-        "off_live_tick + critic/signal code guards); a full tick is a no-op at defaults."
+        "keep-only-if-better. Runs under the present and afk presets; the critic-live and "
+        "score-signal guards refuse a tick while either is not trustworthy."
     ),
     no_args_is_help=True,
 )
@@ -50,7 +50,7 @@ def propose_command(
     hypothesis: str = typer.Option("", "--hypothesis", help="The operator hypothesis to test."),
     target: str = typer.Option("", "--target", help="The signal provider_id to improve."),
 ) -> None:
-    """Record an operator hypothesis as a PROPOSED experiment (refused while off)."""
+    """Record an operator hypothesis as a PROPOSED experiment."""
     ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415 — deferred until ensure_django() bootstraps Django

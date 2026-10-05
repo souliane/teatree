@@ -63,10 +63,6 @@ def _write_pending(session_id: str, skills: list[str]) -> None:
     (router.STATE_DIR / f"{session_id}.pending").write_text("\n".join(skills) + "\n", encoding="utf-8")
 
 
-def _write_loop_pending(session_id: str) -> None:
-    (router.STATE_DIR / f"{session_id}.loop-pending").write_text("1", encoding="utf-8")
-
-
 def _run(data: dict) -> tuple[bool, dict | None]:
     out = StringIO()
     err = StringIO()
@@ -206,25 +202,10 @@ class TestGateStillFiresOnCodeWork:
         assert payload is None
 
 
-class TestLoopBootstrapExemption:
-    """The skill-load gate must not deadlock a loop-registration bootstrap turn (#1918)."""
+class TestGateKeepsItsTeeth:
+    """Code work with a resolvable unloaded skill pending is refused."""
 
-    def test_loop_bootstrap_turn_not_blocked(self, gate: Path) -> None:
-        # A code-work Bash with a resolvable unloaded skill pending would normally
-        # block; the loop-pending marker (this session is mid loop-bootstrap) exempts it.
-        _write_pending("sess-loop", ["ac-python"])
-        _write_loop_pending("sess-loop")
-        blocked, payload = _run(
-            {"session_id": "sess-loop", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
-        )
-        assert blocked is False, (
-            "DEADLOCK regression (#1918) — code work during a loop-registration bootstrap turn was blocked."
-        )
-        assert payload is None
-
-    def test_gate_still_fires_after_loop_registers(self, gate: Path) -> None:
-        # No loop-pending marker (the bootstrap turn cleared it once the loop
-        # registered) → the gate keeps its teeth on genuine code work.
+    def test_gate_fires_on_code_work(self, gate: Path) -> None:
         _write_pending("sess-registered", ["ac-python"])
         blocked, payload = _run(
             {"session_id": "sess-registered", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
@@ -317,10 +298,7 @@ class TestCliSelfRescue:
             conn.close()
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         from teatree.cli.overlay import OverlayAppBuilder  # noqa: PLC0415 — deferred: after T3_CONFIG_DB is pinned
-        from teatree.cli.teatree_gate import (  # noqa: PLC0415 — deferred: same pinned-env window
-            SKILL_GATE_KEY,
-            skill_loading_gate_is_enabled,
-        )
+        from teatree.cli.teatree_gate import SKILL_GATE_KEY  # noqa: PLC0415 — deferred: same pinned-env window
 
         app = OverlayAppBuilder(overlay_name="acme", project_path=None).build()
         result = CliRunner().invoke(app, ["gate", "skill-loading", "disable"])
@@ -329,4 +307,3 @@ class TestCliSelfRescue:
         from teatree.config import cold_reader  # noqa: PLC0415 — deferred: read back through the same pinned config DB
 
         assert cold_reader.read_setting(SKILL_GATE_KEY) is False
-        assert skill_loading_gate_is_enabled() is False

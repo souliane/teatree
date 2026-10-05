@@ -4,14 +4,25 @@ The auto-sweep / discover surfaces previously relied on agent-side BINDING
 memory to apply these rules; this module is the canonical structural fix.
 """
 
+from collections.abc import Iterable
+
 from teatree.config import cold_reader
 from teatree.core.review.review_candidate import (
     _is_self_authored,
     author_is_self,
     broadcast_claimed_by_other,
-    should_review_candidate,
     should_review_candidate_reasons,
 )
+from teatree.types import RawAPIDict
+
+
+def should_review_candidate(
+    mr: RawAPIDict, *, current_user: str, self_identities: Iterable[str] = (), broadcast: RawAPIDict | None = None
+) -> bool:
+    """Test the live reasoned verdict through its boolean projection."""
+    return not should_review_candidate_reasons(
+        mr, current_user=current_user, self_identities=self_identities, broadcast=broadcast
+    )
 
 
 class _Host:

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import typer
 
 from teatree.eval.harness_failure import measured_nothing
-from teatree.eval.judge import ClaudeJudge, JudgeBudget
+from teatree.eval.judge import ClaudeJudge, JudgeBudget, ModelSeamJudge
 from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult
@@ -161,7 +161,7 @@ class RunGuards:
         So a judge-oracle scenario that executed but whose judge skipped is the
         fake-green this turns RED — see :func:`assert_judge_was_metered`.
         """
-        eligible = sum(1 for r in results if not r.skipped and r.judge is not None)
+        eligible = sum(1 for r in results if not r.skipped and r.judge is not None and not r.judge.coverage_incomplete)
         calls = sum(1 for r in results if r.judge is not None and not r.judge.skipped)
         try:
             assert_judge_was_metered(judge_requested=judge_requested, judge_eligible=eligible, judge_calls=calls)
@@ -194,15 +194,24 @@ def with_model(spec: EvalSpec, model: str) -> EvalSpec:
     return dataclasses.replace(spec, model=model)
 
 
-def make_grader(*, enabled: bool, judge_budget: int) -> JudgeGrader | None:
+def make_grader(*, enabled: bool, judge_budget: int, backend: str = "api") -> JudgeGrader | None:
     """Return an LLM-judge grader closure when ``--judge`` is set, else ``None``."""
     if not enabled:
         return None
-    claude_judge = ClaudeJudge(budget=JudgeBudget(max_calls=judge_budget))
+    claude_judge = (
+        ModelSeamJudge(budget=JudgeBudget(max_calls=judge_budget))
+        if backend == "anthropic_api"
+        else ClaudeJudge(budget=JudgeBudget(max_calls=judge_budget))
+    )
 
     def _grade(spec: EvalSpec, run: EvalRun) -> JudgeOutcome:
         verdict = claude_judge.grade(spec, run)
-        return JudgeOutcome(passed=verdict.passed, skipped=verdict.skipped, rationale=verdict.rationale)
+        return JudgeOutcome(
+            passed=verdict.passed,
+            skipped=verdict.skipped,
+            rationale=verdict.rationale,
+            coverage_incomplete=verdict.coverage_incomplete,
+        )
 
     return _grade
 
@@ -468,7 +477,7 @@ def finalize_single_run(  # noqa: PLR0913 — each kwarg threads one `eval run` 
     # Every failing scenario reds the run. The ONE exception is the interactive
     # surface, whose verdict rides a bundled claude CLI's AskUserQuestion rendering
     # rather than the question contract teatree owns — reported, never gating (#3855).
-    failed = any(r.verdict == "fail" and not is_advisory(r.spec) for r in results)
+    failed = any(r.measured_failure and not is_advisory(r.spec) for r in results)
     return failed or regressed or cost_regressed or cost_bounds_failed
 
 

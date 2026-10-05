@@ -92,7 +92,7 @@ class TestSiblingReserveMatchesTheDeclaredCaps:
 
     def test_derived_worker_ceiling_still_leaves_the_siblings_their_caps(self) -> None:
         host_mib = 32000
-        derived_mib = DockerWorkerSizing.worker_mem_limit_mib(total_ram_mib=host_mib)
+        derived_mib = DockerWorkerSizing.worker_sizing(total_ram_mib=host_mib).mem_limit_mib
         siblings_mib = sum(_cap(name) for name in _SIBLING_SERVICES) // _MIB
         assert derived_mib + siblings_mib <= host_mib
 

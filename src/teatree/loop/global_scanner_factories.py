@@ -7,13 +7,15 @@ fan the global dispatch set + per-overlay slices into the tick. Depends DOWN on
 of the loop tick fan-out to stay under the module-health LOC cap.
 """
 
+import logging
 import os
 from pathlib import Path
 
 from teatree.config import discover_active_overlay, discover_overlays, get_effective_settings
-from teatree.config.settings import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
+from teatree.core.models.dream_gap_ledger import dream_umbrella_url
+from teatree.generation import in_place_update_refusal
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain, single_overlay_messaging_jobs
 from teatree.loop.job_identity import CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
 from teatree.loop.scanners import (
@@ -22,6 +24,7 @@ from teatree.loop.scanners import (
     CiEvalHealScanner,
     DbBackupScanner,
     EvalLocalScanner,
+    GitLabEventsScanner,
     IdleStackReaperScanner,
     IntakeConcurrencyScanner,
     LocalStackQueueDrainerScanner,
@@ -39,6 +42,8 @@ from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.scanners.pr_findings import RecordedVerdictReader
 from teatree.loop.scanners.self_update import CORE_REPO_LABEL
 from teatree.loop.scanners.self_update_ci import ForgeMainCiStatus
+
+logger = logging.getLogger(__name__)
 
 
 def _active_overlay_anchor() -> str:
@@ -145,8 +150,7 @@ def _git_toplevel(path: Path) -> Path | None:
 def _self_update_scanner() -> SelfUpdateScanner | None:
     """Build the global self-update scanner from teatree-core config (#1249, #1760).
 
-    Returns ``None`` when ``self_update_disabled = true`` (the escape
-    hatch) OR when there are no editable clones to walk (a non-editable
+    Returns ``None`` when there are no editable clones to walk (a non-editable
     install with no registered overlay project paths — nothing to pull).
     Otherwise builds a single global :class:`SelfUpdateScanner`, whose cadence
     is the hourly ``housekeeping`` ``Loop`` row that fires it. It is wired as a
@@ -159,13 +163,13 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
     ff-pull unless the default branch's CI is explicitly green — the
     verdict comes from :class:`ForgeMainCiStatus`, which routes each clone
     to the arm its own ``origin`` speaks — ``gh`` check-runs on GitHub, the
-    commit's gating pipeline on GitLab. ``auto_update_reinstall`` (default off,
-    ``T3_LOOP_AUTO_UPDATE`` env wins) opts into queuing a deferred reinstall behind an
-    actual update.
+    commit's gating pipeline on GitLab. An actual update always queues the
+    deferred reinstall behind it.
     """
-    settings = get_effective_settings()
-    if settings.self_update_disabled:
+    if refusal := in_place_update_refusal():
+        logger.debug("self_update: %s", refusal)
         return None
+    settings = get_effective_settings()
     repos = _collect_self_update_repos()
     if not repos:
         return None
@@ -173,7 +177,6 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
         repos=tuple(repos),
         ci_status=ForgeMainCiStatus(),
         require_green_main=settings.auto_update_require_green_main,
-        auto_update_reinstall=settings.auto_update_reinstall,
     )
 
 
@@ -185,26 +188,16 @@ def _resource_pressure_scanner() -> ResourcePressureScanner | None:
     thresholds, cadence and allow-lists come from the RESOLVED settings. Whether the loop
     runs at all is the ``resource_pressure`` ``Loop`` row's preset opinion.
 
-    The two destructive levers are the exception, and deliberately so. Every read in this
-    module used to be ``load_config().user`` — the dataclass DEFAULTS, as that function's
-    own docstring says — so no stored row has ever reached this scanner. Resolving these
-    two along with the rest would therefore not be a repair but an ACTIVATION: a box that
-    set either flag at any point would begin deleting on the next tick having never done
-    so. That is the owner's call, so they stay at their shipped value and say why here,
-    rather than being armed as a side effect of fixing an unrelated bug.
+    The scanner exposes only safe reclamation steps; legacy destructive flags and
+    heuristic worktree/process actions have been removed.
     """
     settings = get_effective_settings()
-    shipped = UserSettings()
     return ResourcePressureScanner(
         disk_warn_free_gb=settings.disk_warn_free_gb,
         disk_crit_free_gb=settings.disk_crit_free_gb,
         ram_warn_avail_gb=settings.ram_warn_avail_gb,
         ram_crit_avail_gb=settings.ram_crit_avail_gb,
         disk_cache_allowlist=tuple(settings.disk_cache_allowlist),
-        allow_destructive_disk=shipped.allow_destructive_disk,
-        worktree_stale_days=settings.worktree_stale_days,
-        allow_destructive_ram=shipped.allow_destructive_ram,
-        ram_kill_allowlist=tuple(settings.ram_kill_allowlist),
         scratch_retention_days=settings.scratch_retention_days,
         scratch_sweep_root=settings.scratch_sweep_root,
     )
@@ -213,14 +206,10 @@ def _resource_pressure_scanner() -> ResourcePressureScanner | None:
 def _intake_concurrency_scanner() -> IntakeConcurrencyScanner | None:
     """Wire the global adaptive-intake-concurrency scanner (#3992).
 
-    Returns ``None`` under its own ``adaptive_intake_concurrency_enabled`` toggle, which
-    names this JOB rather than the loop — the preset admits the loop or it does not, and
-    cannot address one of its two scanners. Global (``overlay=""``) for the same reason
+    The preset admits the loop as a whole. Global (``overlay=""``) for the same reason
     the pressure scanner is: RAM is a property of the box, not of any one overlay's work.
     """
     settings = get_effective_settings()
-    if not settings.adaptive_intake_concurrency_enabled:
-        return None
     return IntakeConcurrencyScanner(
         static_ceiling=settings.issue_implementer_max_concurrent,
         reserve_gb=settings.intake_ram_reserve_gb,
@@ -283,6 +272,12 @@ def _snapshot_warmer_scanner() -> SnapshotWarmerScanner | None:
     if not configs:
         return None
     return SnapshotWarmerScanner(configs=configs, max_age_days=settings.snapshot_warmer_max_age_days)
+
+
+def _gitlab_events_scanner() -> GitLabEventsScanner | None:
+    """Build the GitLab group-webhook pull job; an empty ``gitlab_events_subscription`` is OFF."""
+    subscription = get_effective_settings().gitlab_events_subscription
+    return GitLabEventsScanner(subscription=subscription) if subscription else None
 
 
 def _db_backup_scanner() -> DbBackupScanner | None:
@@ -406,6 +401,7 @@ def _backlog_sweep_scanner() -> BacklogSweepScanner | None:
         overlay_name=overlay_name,
         skill=settings.backlog_sweep_skill,
         require_approval=settings.ask_before_backlog_sweep_closes,
+        dream_umbrella_url=dream_umbrella_url(),
     )
 
 

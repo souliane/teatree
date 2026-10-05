@@ -5,8 +5,19 @@ the model promises in its docstring is asserted here (guarded factory,
 single-use consume, scope of queryset, audit row).
 """
 
-import pytest
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
+import pytest
+from django.core.management import call_command
+from django.db import OperationalError
+from django.test import TestCase
+
+from teatree import answer_handback
+from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.approval_dial import auto_answer_by_policy
 from teatree.core.models.deferred_question import (
     DeferredQuestion,
     DeferredQuestionAudit,
@@ -276,3 +287,92 @@ class TestStrRepr:
         )
         assert "deferred-question-audit" in str(audit)
         assert "souliane" in str(audit)
+
+
+class TestAnAnswerIsPostedToTheSessionThatAsked(TestCase):
+    def setUp(self) -> None:
+        self.data_home = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch.dict(os.environ, {"XDG_DATA_HOME": str(self.data_home)}))
+
+    def _asked(self, session_id: str = "s-ask", **extra: object) -> DeferredQuestion:
+        return DeferredQuestion.record("Which DB host?", session_id=session_id, run_id="r", generation=1, **extra)
+
+    def test_a_local_answer_from_the_cli_is_posted(self) -> None:
+        question = self._asked()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            call_command("questions", "answer", question.pk, "use postgres-1")
+
+        assert answer_handback.collect("s-ask") == [{"id": question.pk, "answer": "use postgres-1"}]
+        question.refresh_from_db()
+        assert question.applied_at is not None
+
+    def test_a_locked_database_while_posting_never_aborts_the_answers(self) -> None:
+        first, second = self._asked(), self._asked()
+        locked = OperationalError("database is locked")
+
+        with (
+            patch.object(DeferredQuestion, "mark_posted", side_effect=locked),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            call_command("questions", "answer", first.pk, "use postgres-1", also=[second.pk])
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert (first.answer_text, second.answer_text) == ("use postgres-1", "use postgres-1")
+
+    def test_a_failed_posted_stamp_is_logged_as_that_not_as_an_unposted_answer(self) -> None:
+        question = self._asked()
+        locked = OperationalError("database is locked")
+
+        with (
+            patch.object(DeferredQuestion, "mark_posted", side_effect=locked),
+            self.assertLogs("teatree.core.models.deferred_question", level="WARNING") as logs,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            DeferredQuestion.consume(question.pk, answer="use postgres-1")
+
+        assert answer_handback.collect("s-ask") == [{"id": question.pk, "answer": "use postgres-1"}]
+        assert any("posted" in line and "not stamped" in line for line in logs.output)
+
+    def test_a_policy_answer_is_posted(self) -> None:
+        question = self._asked()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            auto_answer_by_policy(question, "approve")
+
+        assert answer_handback.collect("s-ask") == [{"id": question.pk, "answer": "approve"}]
+
+    def test_nothing_is_posted_before_the_answer_commits(self) -> None:
+        question = self._asked()
+
+        with self.captureOnCommitCallbacks(execute=False):
+            DeferredQuestion.consume(question.pk, answer="use postgres-1")
+
+        assert answer_handback.collect("s-ask") == []
+
+    def test_a_dismissed_question_posts_nothing(self) -> None:
+        question = self._asked()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            DeferredQuestion.consume(question.pk, dismissed_reason="asked twice")
+
+        assert answer_handback.collect("s-ask") == []
+
+    def test_a_question_parked_on_a_task_is_resumed_not_posted(self) -> None:
+        ticket = Ticket.objects.create()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        question = self._asked(parked_task=parked)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            DeferredQuestion.consume(question.pk, answer="use postgres-1")
+
+        assert answer_handback.collect("s-ask") == []
+        question.refresh_from_db()
+        assert question.applied_at is None
+
+
+class TestTheAskingSessionIsAClaudeSession:
+    def test_a_teatree_session_number_is_refused_as_the_asking_session(self) -> None:
+        with pytest.raises(DeferredQuestionError, match="task_session"):
+            DeferredQuestion.record("q", session_id="42")

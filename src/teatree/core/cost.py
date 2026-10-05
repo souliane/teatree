@@ -8,7 +8,6 @@ billing model would charge, so the user can see what teatree's loop would cost.
 
 Two layers. :class:`ModelPrice` / :data:`PRICE_TABLE` hold the per-model list
 prices per MTok with the documented cache multipliers (read 0.1x input, write
-1.25x input). :func:`attempt_cost_usd` / :class:`CostBreakdown` produce the
 per-attempt and cycle-to-date dollar figures: the CLI-reported
 ``total_cost_usd`` is preferred when present, with the price table as the
 fallback so historical rows whose cost was never captured still get an estimate.
@@ -47,9 +46,8 @@ class ModelPrice:
         A caller that must tell "priced" from "unpriceable" apart needs that ``None``.
         """
         override = _override_price(model, _cost_price_overrides())
-        tier = tier_of_model(model)
-        unpriced = not model or tier == UNPRICED_TIER
-        return override if override is not None else (None if unpriced else PRICE_TABLE[tier])
+        unpriced = not model or tier_of_model(model) == UNPRICED_TIER
+        return override if override is not None else (None if unpriced else _builtin_price_for_model(model))
 
     def cost(
         self,
@@ -77,18 +75,15 @@ class ModelPrice:
 # spend (§3a #2, §7 #4).
 UNPRICED_TIER = "unpriced"
 
-# Tier keys are the short names the model_tiering layer emits (``opus`` /
-# ``sonnet`` / ``haiku``) plus the dated full model ids the CLI envelope
-# reports under ``modelUsage`` (``claude-opus-4-8`` ...). Lookup normalises a
-# model id to its tier (:func:`price_for_model`), so a future dated release of
-# the same tier prices correctly without a new entry. :data:`UNPRICED_TIER` is
-# priced at the conservative opus rate but kept a distinct bucket (above).
+# Family prices are fallback estimates; exact model prices take precedence.
 PRICE_TABLE: dict[str, ModelPrice] = {
     "opus": ModelPrice(input_per_mtok=5.0, output_per_mtok=25.0),
     "sonnet": ModelPrice(input_per_mtok=3.0, output_per_mtok=15.0),
     "haiku": ModelPrice(input_per_mtok=1.0, output_per_mtok=5.0),
     UNPRICED_TIER: ModelPrice(input_per_mtok=5.0, output_per_mtok=25.0),
 }
+
+_MODEL_PRICES: dict[str, ModelPrice] = {"claude-sonnet-5-5": ModelPrice(input_per_mtok=2.0, output_per_mtok=10.0)}
 
 # The Claude family short-names :func:`tier_of_model` matches (by substring) in a
 # model id before falling back to :data:`UNPRICED_TIER`. Explicit so the fallback
@@ -201,6 +196,10 @@ def _override_price(model: str | None, overrides: Mapping[str, ModelPrice]) -> M
     return next((p for pattern, p in overrides.items() if lowered and pattern.lower() in lowered), None)
 
 
+def _builtin_price_for_model(model: str | None) -> ModelPrice:
+    return _MODEL_PRICES.get((model or "").lower().split("[", 1)[0], PRICE_TABLE[tier_of_model(model)])
+
+
 def price_for_model(model: str | None, *, overrides: Mapping[str, ModelPrice] | None = None) -> ModelPrice:
     """Return the :class:`ModelPrice` for a model id / tier name.
 
@@ -213,7 +212,7 @@ def price_for_model(model: str | None, *, overrides: Mapping[str, ModelPrice] | 
     variant that answers ``None`` instead of falling back.
     """
     resolved = _cost_price_overrides() if overrides is None else overrides
-    return _override_price(model, resolved) or PRICE_TABLE[tier_of_model(model)]
+    return _override_price(model, resolved) or _builtin_price_for_model(model)
 
 
 def tier_rank(model: str | None) -> int:
@@ -391,20 +390,6 @@ def price_table_cost_usd(usage: AttemptUsage, *, overrides: Mapping[str, ModelPr
         cache_read_tokens=usage.cache_read_tokens,
         cache_write_tokens=usage.cache_write_tokens,
     )
-
-
-def attempt_cost_usd(usage: AttemptUsage, *, overrides: Mapping[str, ModelPrice] | None = None) -> float:
-    """SDK-equivalent dollar cost for one attempt.
-
-    Prefers the CLI-reported ``total_cost_usd`` when present (the most
-    accurate figure — it already reflects the exact per-iteration rates);
-    falls back to the price-table estimate when absent, so historical rows
-    whose cost was never captured still contribute an estimate. *overrides*
-    threads a once-resolved ``cost_model_prices`` map through to that fallback.
-    """
-    if usage.reported_cost_usd is not None:
-        return usage.reported_cost_usd
-    return price_table_cost_usd(usage, overrides=overrides)
 
 
 class _CacheAccumulator:

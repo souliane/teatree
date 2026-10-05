@@ -22,8 +22,9 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import BotPing, OnBehalfApproval, PendingChatInjection
+from teatree.core.models import BotPing, ConfigSetting, OnBehalfApproval, PendingChatInjection
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.send_proxy import SendBlockedError
 from teatree.on_behalf_gate import OnBehalfContext
 from teatree.types import RawAPIDict
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
@@ -54,6 +55,12 @@ _COLLEAGUE = "C_REVIEW"
 _TARGET = "https://github.com/o/r/pull/1"
 _APPROVER = "U-OPERATOR"
 _QUESTION_TS = "1780757338.674389"
+
+
+@pytest.fixture(autouse=True)
+def _allow_expected_colleague_channel() -> None:
+    # Approval behaviour is exercised against a destination that the send proxy allows.
+    ConfigSetting.objects.set_value("send_proxy_allowlist", [f"slack:{_COLLEAGUE}", "slack:C_UNKNOWN"])
 
 
 @dataclass
@@ -238,7 +245,7 @@ class TestFailClosed(TestCase):
 
     def test_no_route_token_backend_blocks_under_a_forbidding_posture(self) -> None:
         fake = _NoRouteFake()
-        with pytest.raises(OnBehalfPostBlockedError):
+        with pytest.raises(SendBlockedError, match="not on the send-proxy allowlist"):
             OnBehalfSlackEgress(fake).react(
                 channel=_DM_CHANNEL,
                 ts="1.1",

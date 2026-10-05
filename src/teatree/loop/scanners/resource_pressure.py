@@ -42,10 +42,7 @@ CRITICAL — disk OR ram below the CRIT threshold AND the freeing rate-limit has
 elapsed: ``resource.cleanup_needed`` to the mechanical handler (allow-list
 cache purge, docker reclaim, dormant-venv eviction, the proven-done worktree
 sweep, idle-container stop — each losing nothing that is not rebuilt on demand).
-L3 CRITICAL DESTRUCTIVE — flag-gated: the heuristic worktree GC
-(``allow_destructive_disk``) and renderer SIGTERM (``allow_destructive_ram``
-after >= 2 consecutive CRITICAL-RAM ticks) live in the handler, never run
-without an explicit opt-in.
+The retired destructive worktree GC and renderer SIGTERM branches are absent.
 
 Every action is best-effort: a measurement or freeing failure logs and
 returns rather than crashing the tick (mirrors ``SelfUpdateScanner``).
@@ -55,7 +52,7 @@ import logging
 import os
 import platform
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -417,10 +414,6 @@ class ResourcePressureScanner:
     cadence_minutes: int = 5
     min_free_interval_minutes: int = 30
     disk_cache_allowlist: tuple[str, ...] = ()
-    allow_destructive_disk: bool = False
-    worktree_stale_days: int = 30
-    allow_destructive_ram: bool = False
-    ram_kill_allowlist: tuple[str, ...] = field(default_factory=tuple)
     scratch_retention_days: int = 0
     scratch_sweep_root: str = ""
     name: str = "resource_pressure"
@@ -529,15 +522,11 @@ class ResourcePressureScanner:
                 "free_gb": free_gb,
                 "level": "critical",
                 "disk_cache_allowlist": list(self.disk_cache_allowlist),
-                "allow_destructive_disk": self.allow_destructive_disk,
                 # The stall signal reads how far below these the box actually is (#4644),
                 # so it needs the shape of the ladder it was dispatched from, not just
                 # the reading.
                 "disk_warn_free_gb": self.disk_warn_free_gb,
                 "disk_crit_free_gb": self.disk_crit_free_gb,
-                "worktree_stale_days": self.worktree_stale_days,
-                "allow_destructive_ram": self.allow_destructive_ram,
-                "ram_kill_allowlist": list(self.ram_kill_allowlist),
                 "scratch_retention_days": self.scratch_retention_days,
                 "scratch_sweep_root": self.scratch_sweep_root,
                 "consecutive_critical": getattr(marker, "consecutive_critical", 0) or 0,

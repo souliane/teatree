@@ -15,9 +15,13 @@
   "interface": {
     "displayName": "TeaTree",
     "shortDescription": "Personal code factory for multi-repo projects",
+    "longDescription": "TeaTree skills, lifecycle guidance, and local MCP tools for structured multi-repo work.",
     "developerName": "souliane",
     "category": "Productivity",
     "capabilities": ["Interactive", "Write"],
-    "websiteURL": "https://github.com/souliane/teatree"
+    "websiteURL": "https://github.com/souliane/teatree",
+    "defaultPrompt": [
+      "Start a TeaTree lifecycle task in this repository."
+    ]
   }
 }

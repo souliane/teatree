@@ -1,5 +1,8 @@
 {
   "name": "souliane",
+  "interface": {
+    "displayName": "TeaTree"
+  },
   "plugins": [
     {
       "name": "t3",

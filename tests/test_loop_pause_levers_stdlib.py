@@ -13,9 +13,7 @@ Django (~3s), which dominated the ~15s Stop hook and blew the 30s timeout (the
 recurring TIMEOUT). The lever now reads durable state DIRECTLY in stdlib:
 ``db_loop_state_suppresses_self_pump`` reads the ``teatree_loop_state`` row via the
 Django-free ``teatree.config.cold_reader.loop_status``. (#4202 retired the second,
-mode-posture lever: a mode is a pure loop table, so the brake on a self-waking
-directive is now the mask over the self-pump's own loop — see
-``tests/teatree_loop/test_standing_directives.py``.)
+mode-posture lever: a mode is a pure loop table.)
 
 These tests reproduce the bare-``python3`` context (the in-process bootstrap is
 forced to fail) and prove a durable pause STILL suppresses the pump — now with no

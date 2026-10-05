@@ -15,6 +15,8 @@ from django.db import transaction
 
 from teatree.agents.envelope_refusal import MALFORMED_RUBRIC_GRADES_PREFIX
 from teatree.agents.result_schema import AgentResultBlob, ReviewVerdictEnvelope
+from teatree.core.gates.anti_vacuity_gate import is_complete as anti_vacuity_complete
+from teatree.core.gates.integration_review_gate import distinct_repos
 from teatree.core.gates.rubric_gate import clear_honesty_escalation_on_pass
 from teatree.core.merge.ticket_resolution import gated_ticket_for_review_task
 from teatree.core.modelkit.phase_tools import ENVELOPE_VERDICT_PHASES
@@ -24,6 +26,7 @@ from teatree.core.models import (
     ChecksContradictionError,
     DeferredQuestion,
     Finding,
+    ReviewEvidence,
     ReviewVerdict,
     ReviewVerdictError,
     Rubric,
@@ -32,18 +35,21 @@ from teatree.core.models import (
     Task,
 )
 from teatree.core.models.auto_review_dispatch import MAX_DISPATCH_ATTEMPTS, AutoReviewDispatch
+from teatree.core.models.review_evidence import ReviewEvidenceError
 from teatree.core.models.review_target import ReviewTarget, review_target_for_task, verdict_at
 from teatree.core.models.reviewer_identity import (
     assigned_reviewer_identity,
     is_independent_reviewer_identity,
     is_non_reviewer_role,
 )
+from teatree.core.models.types import AntiVacuityAttestation
 from teatree.core.review.diff_scope_probe import changed_file_set_for_findings
 from teatree.core.review.head_workflow_runs import live_checks_at
 from teatree.core.review.verdict_head_binding import resolve_verdict_head
 from teatree.utils.pr_ref import PrRef
 
 if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import RubricGrade
 
 #: Reviewing phases whose returned ``review_verdict`` the orchestrator records
@@ -69,6 +75,36 @@ _REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
 #: whose brief returns the envelope at all, so it IS that set rather than a second spelling
 #: of it. Pinned against the brief by ``tests/teatree_agents/test_phase_blocks.py``.
 _RUBRIC_GRADED_PHASES = ENVELOPE_VERDICT_PHASES
+_MIN_INTEGRATION_REPOS = 2
+
+
+def _additional_evidence_error(
+    ticket: "Ticket | None", envelope: ReviewVerdictEnvelope, result: AgentResultBlob
+) -> str:
+    """Validate the evidence a merge-safe review must return for the owning ticket."""
+    if ticket is None or str(envelope.get("verdict", "")).strip().lower() != ReviewVerdict.Verdict.MERGE_SAFE:
+        return ""
+    anti_vacuity = result.get("anti_vacuity")
+    if not isinstance(anti_vacuity, dict) or not anti_vacuity_complete(AntiVacuityAttestation(**anti_vacuity)):
+        return (
+            "anti-vacuity recording refused: return ac_coverage and either proven_tests "
+            "(revert fix -> RED) or an explicit no_new_tests claim"
+        )
+    repos = distinct_repos(ticket)
+    if len(repos) < _MIN_INTEGRATION_REPOS:
+        return ""
+    integration_review = result.get("integration_review")
+    covered = integration_review.get("repos") if isinstance(integration_review, dict) else None
+    if (
+        not isinstance(covered, list)
+        or not all(isinstance(repo, str) for repo in covered)
+        or not set(repos) <= set(covered)
+    ):
+        return (
+            "integration review recording refused: review the combined changeset and return "
+            "every ticket repo in integration_review.repos"
+        )
+    return ""
 
 
 def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phase: str) -> str:
@@ -96,10 +132,8 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     """
     resolved_phase = normalize_phase(phase or task.phase)
     envelope = _returned_review_verdict(result, phase=resolved_phase)
-    if envelope is None:
-        return ""
-    target = review_target_for_task(task)
-    if target is None:
+    target = review_target_for_task(task) if envelope is not None else None
+    if envelope is None or target is None:
         return ""
     if not target.head_sha:
         return (
@@ -121,6 +155,9 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
 
     ticket = gated_ticket_for_review_task(task) if resolved_phase in _RUBRIC_GRADED_PHASES else None
     rubric = Rubric.objects.active_for_ticket(ticket) if ticket is not None else None
+    evidence_error = _additional_evidence_error(ticket, envelope, result)
+    if evidence_error:
+        return evidence_error
     returned = envelope.get("rubric_grades")
     try:
         # Scoped to a rubric that EXISTS, like both refusals below — with none, nothing is stamped.
@@ -130,7 +167,7 @@ def record_returned_review_envelope(task: Task, result: AgentResultBlob, *, phas
     return (
         _rubric_coverage_error(rubric, grades, returned=returned)
         or _merge_safe_over_fail_error(rubric, envelope, grades)
-        or _record_verdict_and_grades(task, envelope, target=target, rubric=rubric, grades=grades)
+        or _record_verdict_and_grades(task, result, envelope=envelope, target=target, rubric_grades=(rubric, grades))
         or _settle_recorded_verdict(task, target, rubric=rubric)
     )
 
@@ -229,11 +266,11 @@ def _merge_safe_over_fail_error(
 
 def _record_verdict_and_grades(
     task: Task,
-    envelope: "ReviewVerdictEnvelope",
+    result: AgentResultBlob,
     *,
+    envelope: ReviewVerdictEnvelope,
     target: ReviewTarget,
-    rubric: "Rubric | None",
-    grades: "list[RubricGrade]",
+    rubric_grades: "tuple[Rubric | None, list[RubricGrade]]",
 ) -> str:
     """Write the verdict and the rubric grades in ONE transaction, or return the refusal.
 
@@ -247,6 +284,8 @@ def _record_verdict_and_grades(
     the branch advanced to) rather than the reviewer's raw assertion, so a grade can never
     vouch for a tree the verdict does not.
     """
+    rubric, grades = rubric_grades
+    ticket = gated_ticket_for_review_task(task)
     raw_findings = envelope.get("findings", [])
     findings = (
         [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
@@ -254,8 +293,21 @@ def _record_verdict_and_grades(
         else []
     )
     identity = _recorded_reviewer_identity(target, envelope)
+    anti_vacuity = result.get("anti_vacuity")
+    integration_review = result.get("integration_review")
     try:
         with transaction.atomic():
+            if (
+                ticket is not None
+                and str(envelope.get("verdict", "")).strip().lower() == ReviewVerdict.Verdict.MERGE_SAFE
+                and isinstance(anti_vacuity, dict)
+            ):
+                ticket.record_anti_vacuity_attestation(
+                    target.head_sha,
+                    str(anti_vacuity.get("ac_coverage", "")),
+                    [str(node) for node in anti_vacuity.get("proven_tests", [])],
+                    no_new_tests=anti_vacuity.get("no_new_tests") is True,
+                )
             ReviewVerdict.record(
                 pr_id=target.pr_id,
                 slug=target.slug,
@@ -265,12 +317,25 @@ def _record_verdict_and_grades(
                 findings=findings,
                 gh_verify_result=str(envelope.get("gh_verify_result") or "green"),
                 blast_class=str(envelope.get("blast_class") or "logic"),
-                ticket=task.ticket,
+                ticket=ticket or task.ticket,
                 lock_holder=target.lock_holder,
                 changed_files=changed_file_set_for_findings(findings, slug=target.slug, pr_id=target.pr_id),
                 merge_result_retake=bool(envelope.get("merge_result_retake")),
                 live_checks=live_checks_at,
             )
+            if (
+                ticket is not None
+                and len(distinct_repos(ticket)) >= _MIN_INTEGRATION_REPOS
+                and isinstance(integration_review, dict)
+            ):
+                ReviewEvidence.record(
+                    ticket=ticket,
+                    kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
+                    reviewer_identity=identity,
+                    verdict=str(envelope.get("verdict", "")),
+                    head_sha=target.head_sha,
+                    repos=[str(repo) for repo in integration_review.get("repos", [])],
+                )
             if rubric is not None:
                 rubric.apply_grades(grades, grader_identity=identity, reviewed_sha=target.head_sha)
     except ReviewVerdictError as exc:
@@ -283,6 +348,8 @@ def _record_verdict_and_grades(
         return f"review verdict recording refused: {exc}"
     except RubricError as exc:
         return f"{MALFORMED_RUBRIC_GRADES_PREFIX}{exc}"
+    except ReviewEvidenceError as exc:
+        return f"integration review recording refused: {exc}"
     return ""
 
 
@@ -389,7 +456,7 @@ def _latch_checks_contradiction(target: ReviewTarget, *, task: Task, reason: str
         return
     DeferredQuestion.record(
         _refusal_question(target, reason=reason),
-        session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
+        task_session=task.session,
         dedupe_marker=_refusal_marker(target),
     )
 

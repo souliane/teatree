@@ -157,7 +157,7 @@ under 120 cols so neither path can eat it.
 Apply this checklist whenever you modify CLI commands, loop scanners,
 dispatch logic, or statusline rendering — before declaring the change done.
 
-1. **Run the CLI from a worktree** — `cd $T3_WORKSPACE_DIR/<branch>/teatree && t3 teatree <command>`. Worktree directory names don't match overlay names, so cwd-based discovery exercises the entry-point fallback (see § "Known pitfalls" above).
+1. **Run the CLI from a worktree** — `cd <worktree_root>/<branch>/teatree && t3 teatree <command>`, where `<worktree_root>` is `config.worktree_root()` for the overlay. Worktree directory names don't match overlay names, so cwd-based discovery exercises the entry-point fallback (see § "Known pitfalls" above).
 2. **Tick the loop and read the file** — for any change touching `loop/`, `scanners/`, `dispatch/`, or `statusline/`, run the tick and inspect both the JSON and the rendered file (see § "Reading a Tick + the Rendered Statusline" above). The JSON is the structured contract; the file is the rendered contract. Both must match the change you intended.
 3. **Exercise both color paths** — the `NO_COLOR` path above, plus a normal-color tick, and confirm the expected escape codes are present/absent as documented.
 4. **Exercise both overlay paths** when you have more than one overlay registered:
@@ -245,7 +245,7 @@ listed.
 
 For each confirmed bug, in severity order:
 
-1. `gh issue create` with label `bug`, clear reproduction (paste the relevant `tick.json` excerpt and the rendered statusline line), severity, and the scanner / module to look at.
+1. File through `mcp__teatree__github_issue_create` — never a raw `gh issue create`, which skips the #162 dedupe — with label `bug`, clear reproduction (paste the relevant `tick.json` excerpt and the rendered statusline line), severity, and the scanner / module to look at. The tool answers the first call with `judgment_required` plus the open backlog; judge each candidate and call again with `dedupe={"snapshot": ..., "decisions": [...]}`. A dogfood finding that already has a ticket gets **appended** to it, which is the outcome you want — a second ticket for the same stale signal kind is the backlog noise Step 4 told you to dedupe away.
 2. Implement per `/t3:wip` rules (worktree via `t3 teatree workspace ticket`, TDD against the existing scanner/dispatch tests in `tests/teatree_loop/`, `t3:reviewer` sub-agent, sequential merge).
 3. Close the issue via the PR.
 

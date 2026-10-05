@@ -1,6 +1,6 @@
 """The RATIFY phase — the ONLY writer of the directive ``ADMITTED`` state (PR-6, #116).
 
-Verbatim the outer-loop shape (``loops/outer_loop/ratify.py``): :func:`ask_ratification`
+Ratification seam inherited from the retired experiment loop: :func:`ask_ratification`
 records ONE :class:`DeferredQuestion` rendering the FULL sketch — so the human ratifies
 the DESIGN DIRECTION (setting, chokepoint, activation, the named rejected alternative),
 not vague intent — and moves the directive to ``RATIFY_PENDING``; :func:`try_admit` is

@@ -117,7 +117,15 @@ repos:
     rev: fa93bc3224c614a0e9786d3e2d3d48edcca246eb  # v0.15.1
     hooks:
       - id: ruff-check
-        args: [--fix]
+        # `--fix` is deliberate: a commit should auto-fix. `--exit-non-zero-on-fix`
+        # is what stops the fixed version being committed SILENTLY — prek stashes the
+        # unstaged tree around the run, so a hook rewrite that passes lands a file the
+        # author never read. Failing here makes the author re-stage and see the diff.
+        # The complement is `fix = false` in pyproject.toml, which keeps a bare
+        # `ruff check <file>` (an agent merely INSPECTING) from rewriting anything;
+        # a named path on the command line overrides `extend-exclude`, so the config
+        # default is the only thing standing between an inspection and a rewrite.
+        args: [--fix, --exit-non-zero-on-fix]
   - repo: local
     hooks:
       - id: tach
@@ -146,8 +154,9 @@ repos:
         language: node
         additional_dependencies: ["jscpd@4.2.4"]
         pass_filenames: false
-        stages: [commit]
         files: ^src/teatree/.*\.py$
+        stages: [commit]  # pin off pre-push: the entry hardcodes the whole src/teatree
+                          # tree, so every push re-scanned it; CI lint re-runs it
   - repo: https://github.com/pre-commit/pygrep-hooks
     rev: 3a6eb0fadf60b3cccfd80bad9dbb6fae7e47b316  # v1.10.0
     hooks:
@@ -163,13 +172,20 @@ repos:
       - id: editorconfig-checker
 
   # Phase 5 - Type check
+  # Filenames are PASSED, so this judges the commit's own delta like every other hook
+  # in this file. `pass_filenames: false` made it the one whole-tree gate here, and a
+  # whole-tree gate at commit time refuses a clean delta for diagnostics its author did
+  # not write — measured on a one-comment edit under `src/`: 24 diagnostics, none of
+  # them in the staged file, every other hook in this config green. The whole-tree run
+  # is CI's (`prek-core`, `--all-files`), where a red is reported rather than blocking
+  # an unrelated commit.
   - repo: local
     hooks:
       - id: ty-check
         name: ty-check
         language: system
         entry: uv run ty check
-        pass_filenames: false
+        types_or: [python, pyi]
 
   # Phase 6 - Security & custom
   # Local, not the upstream `gitleaks/gitleaks` hook, for two measured reasons.
@@ -312,6 +328,14 @@ repos:
         # re-skin adds two HTML-affecting inputs: the base_site.html override
         # (injects the token <link>s the snapshot captures) and admin-theme.css.
         files: ^src/teatree/(core/(admin\.py|dashboard_snapshot\.py|models/.*\.py)|templates/admin/base_site\.html|dash/static/dash/css/admin-theme\.css)$
+      - id: generate-defaults-toml
+        name: Render defaults.toml from the settings declarations
+        language: system
+        entry: uv run python scripts/hooks/generate_defaults_toml.py --write
+        pass_filenames: false
+        # The declarations that state a shipped value, the renderer that lays them out,
+        # and the file itself — so a hand edit to the generated table is rendered away.
+        files: ^src/teatree/config/(settings(_loop_owned|_loop_flags)?|registries|schema|declared_defaults|defaults_snapshot|setting_(help|groups|annotation))\.py|^src/teatree/config/defaults\.toml$
       - id: generate-cli-output-snapshot
         name: Generate the representative CLI-output fixture from the CLI
         language: system
@@ -478,18 +502,19 @@ repos:
   # concurrency tests and blocks the push (#112/#21/#38). push -> CI is the gate.
   # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) and the exact
   # full-CI predicate (dev/ci-parity.sh) stay as explicit opt-ins. The push gate
-  # below (dev/push-gate.sh, #122) runs the never-lockout safety contract plus the
-  # incremental push gate -- the scoped doctest (Engine A) + scoped ast-grep
-  # regression scan (Engine B), FULL on any uncertainty, behind the DB-home
-  # `incremental_push_gate` flag (ON by default => scoped to the diff; OFF =>
-  # whole-tree both, the pre-#122 run). The broad tests/quality directory is CI-only
+  # below (dev/push-gate.sh, #122) runs the never-lockout safety contract, the
+  # conformance TOTALITY CORE (serial, 120s cap, deferred to CI on expiry -- the whole
+  # tests/conformance dir ran 19+ min under load, #172), plus the incremental push
+  # gate -- the scoped doctest (Engine A) + scoped ast-grep regression scan
+  # (Engine B), FULL on any uncertainty. The broad tests/quality directory is CI-only
   # (~420s locally even with push_heavy deselected -- it hit the push wall-clock cap);
-  # CI's test-shard lane runs it whole-tree on every PR, so relocating it off the push
-  # path loses no coverage. Guarded by tests/test_no_full_suite_on_pre_push.py.
+  # CI's test-shard lane
+  # runs it whole-tree on every PR, so relocating it off the push path loses no
+  # coverage. Guarded by tests/test_no_full_suite_on_pre_push.py.
   - repo: local
     hooks:
       - id: ci-critical-parity
-        name: CI-critical parity (never-lockout contract + incremental push gate; path-scoped)
+        name: CI-critical parity (never-lockout contract + capped conformance core + incremental push gate; path-scoped)
         language: system
         entry: dev/push-gate.sh
         pass_filenames: false
@@ -533,7 +558,8 @@ repos:
       - id: ensure-pr
         name: ensure PR exists (no-orphan invariant)
         language: system
-        entry: uv run t3 teatree pr ensure-pr
+        # --all-packages: a member-dir `uv run` registers only t3-teatree, so no overlay's bot declaration is visible.
+        entry: uv run --all-packages t3 teatree pr ensure-pr
         pass_filenames: false
         always_run: true
         stages: [push]

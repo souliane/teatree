@@ -14,14 +14,9 @@ writer of the ``ADMITTED`` state and RAISES unless a consumed (answered) ratify
 question exists, so no code path can auto-admit an experiment; :meth:`record_reverted`
 and :meth:`record_kept` are likewise gated on a consumed revert / keep question — an
 improving experiment parks in ``KEEP_PENDING`` and asks a human before it is KEPT
-(H1-KEEP), never auto-kept. The keep/revert decision is taken by the pure rule in
-:mod:`teatree.loops.outer_loop.decide` — an experiment whose score does not improve
-is never KEPT.
+(H1-KEEP), never auto-kept.
 
-Ships inert: the outer loop that writes these rows refuses every tick at default
-config (flag off, loop row disabled, critic not live, signals untrusted), so the
-migrated table stays empty — the only persistent footprint (the ``ConfigSetting``
-empty-table doctrine).
+The active outer loop writes these rows only behind a live merge critic and bounded admission.
 """
 
 import datetime as dt

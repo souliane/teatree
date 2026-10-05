@@ -1,10 +1,10 @@
 """A ``repair-`` marker OWNS its row's subject — no fall-through to the session (#4178).
 
 The generalised drain added two subject sources the ``repair-`` reconcile (#3692) never
-had: ``parked_task`` and a numeric ``session_id``. The hazard the generalisation creates
-is that a ``repair-`` row whose marker cannot name its subject stops being undeterminable
-and starts being answered by whichever source replies next — and the escalation writes
-``session_id=str(task.session_id)``, so EVERY repair-halt row carries one. #3692's rule is
+had: ``parked_task`` and ``task_session``. The hazard the generalisation creates is that a
+``repair-`` row whose marker cannot name its subject stops being undeterminable and starts
+being answered by whichever source replies next — and the escalation writes
+``task_session``, so EVERY repair-halt row carries one. #3692's rule is
 that an undeterminable repair subject is KEPT; these tests pin that the generalisation did
 not quietly trade it away.
 """
@@ -12,6 +12,7 @@ not quietly trade it away.
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.answer_handback import collect
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.question_drain import drain_pending_questions
@@ -50,7 +51,7 @@ def _session_keyed_question(*, marker: str, ticket_state: str) -> DeferredQuesti
     session = Session.objects.create(ticket=ticket, agent_id="coding")
     return DeferredQuestion.record(
         "How should this proceed?",
-        session_id=str(session.pk),
+        task_session=session,
         dedupe_marker=marker,
         audience=DeferredQuestion.Audience.INTERNAL,
     )
@@ -58,7 +59,7 @@ def _session_keyed_question(*, marker: str, ticket_state: str) -> DeferredQuesti
 
 class TestRepairMarkerOwnsItsSubject(TestCase):
     def test_halt_row_whose_parked_tasks_were_reaped_is_kept(self) -> None:
-        # The escalation stamps session_id=<task session pk>, and that session's ticket is
+        # The escalation stamps task_session=<the task's session>, and that session's ticket is
         # the SAME ticket — so once the parked task is reaped the marker goes
         # undeterminable while the session still answers "terminal". #3692 keeps this row.
         task = _escalated_halt_task()
@@ -157,3 +158,18 @@ class TestNonRepairSubjectsAreUnchanged(TestCase):
         assert drain_pending_questions().drained == 1
         question.refresh_from_db()
         assert question.status == DeferredQuestion.STATUS_DISMISSED
+
+
+class TestATaskHaltNamesNoAskingSession(TestCase):
+    def test_its_answer_is_never_posted_and_its_subject_still_resolves(self) -> None:
+        task = _escalated_halt_task()
+        question = _halt_question()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            DeferredQuestion.consume(question.pk, answer="ignore")
+
+        question.refresh_from_db()
+        assert question.session_id == ""
+        assert question.task_session_id == task.session_id
+        assert question.applied_at is None
+        assert collect(str(task.session_id)) == []

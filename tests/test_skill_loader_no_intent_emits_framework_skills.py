@@ -1,7 +1,6 @@
 """``suggest_skills`` must surface framework skills even with empty intent.
 
-When the UserPromptSubmit hook (or a future PreToolUse hook) hands
-``suggest_skills`` a payload with no prompt intent but a ``tool_input.file_path``
+When a caller hands ``suggest_skills`` a payload with no intent but a ``tool_input.file_path``
 pointing at a teatree ``.py`` file, the framework-skill auto-detection
 (``_framework_skills_for_directory``) must still fire on the file's directory
 so ``/ac-django`` is suggested.
@@ -38,11 +37,9 @@ class TestNoIntentFilePathEmitsFrameworkSkills:
 
         result = suggest_skills(
             {
-                "prompt": "",
                 "cwd": str(tmp_path),
                 "loaded_skills": [],
                 "skill_search_dirs": [],
-                "supplementary_config": "",
                 "tool_input": {"file_path": str(py_file)},
             }
         )
@@ -57,11 +54,9 @@ class TestNoIntentFilePathEmitsFrameworkSkills:
 
         result = suggest_skills(
             {
-                "prompt": "",
                 "cwd": str(tmp_path),
                 "loaded_skills": [],
                 "skill_search_dirs": [],
-                "supplementary_config": "",
                 "tool_input": {"file_path": str(py_file)},
             }
         )
@@ -73,11 +68,9 @@ class TestNoIntentFilePathEmitsFrameworkSkills:
         # applies: nothing to detect on.
         result = suggest_skills(
             {
-                "prompt": "",
                 "cwd": str(tmp_path),
                 "loaded_skills": [],
                 "skill_search_dirs": [],
-                "supplementary_config": "",
             }
         )
         assert result["suggestions"] == []
@@ -90,11 +83,9 @@ class TestNoIntentFilePathEmitsFrameworkSkills:
 
         result = suggest_skills(
             {
-                "prompt": "",
                 "cwd": str(tmp_path),
                 "loaded_skills": ["ac-django"],
                 "skill_search_dirs": [],
-                "supplementary_config": "",
                 "tool_input": {"file_path": str(py_file)},
             }
         )

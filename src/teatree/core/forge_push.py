@@ -8,12 +8,14 @@ kills it, and the "fix" for that
 ``.git/config`` of a host-bind-mounted worktree, where it outlives the session.
 
 :func:`push_branch` closes both: the credential is resolved from the repository's
-owning overlay and handed to git as ``GH_TOKEN`` env only, every
+owning overlay and handed to git as ``GH_TOKEN`` (GitHub) or ``GITLAB_TOKEN``
+(https GitLab) env only, matching the remote's own forge, every
 interactive prompt is disabled so a missing credential fails in milliseconds
 with a readable reason, and a remote that already embeds a secret is refused
 rather than pushed to. It never passes ``--no-verify``, so the pre-push hooks
-still gate the push, and it offers ``--force-with-lease`` but no bare
-``--force``.
+still gate the push — after :func:`~teatree.core.prek_hook.harden_hooks` has
+replaced whatever prek binary another venue baked into the shared hooks — and it
+offers ``--force-with-lease`` but no bare ``--force``.
 """
 
 import time
@@ -30,6 +32,7 @@ from teatree.core.forge_push_verdict import GitPushError as _GitPushError
 from teatree.core.forge_push_verdict import PushFailure as _PushFailure
 from teatree.core.forge_push_verdict import PushVerdict as _PushVerdict
 from teatree.core.forge_push_verdict import gate_aborted_verdict as _gate_aborted_verdict
+from teatree.core.forge_push_verdict import hooks_repair_verdict
 from teatree.core.push_gate_record import GateRunRecord
 from teatree.forge_credentials import ForgeTokenState, resolve_repo_token
 from teatree.utils.forge import forge_from_remote
@@ -146,9 +149,14 @@ def scrub_token(text: str, token: str) -> str:
     return text.replace(token, REDACTION) if token else text
 
 
-def resolve_forge_credential(repo: str | Path = ".") -> _ForgeCredential:
-    """Resolve the owning overlay's routed GitHub credential for *repo*."""
-    resolution = resolve_repo_token(str(repo), credential="github_token")
+def resolve_forge_credential(repo: str | Path = ".", *, credential: str = "github_token") -> _ForgeCredential:
+    """Resolve the owning overlay's routed *credential* token for *repo*.
+
+    *credential* names the routed setting (``"github_token"`` / ``"gitlab_token"``),
+    so a caller that already knows the remote's forge can request the matching route
+    instead of the GitHub-only default.
+    """
+    resolution = resolve_repo_token(str(repo), credential=credential)
     return _ForgeCredential(
         token=resolution.token,
         source=_CredentialSource.OVERLAY_PASS_STORE,
@@ -197,6 +205,15 @@ class RemoteUrls:
     @property
     def embeds_credential(self) -> bool:
         return any(remote_url_embeds_credential(url) for url in (self.fetch, self.push))
+
+    @property
+    def credential_forge(self) -> str:
+        """The forge whose routed token this push uses; GitLab's token is only ever sent over https."""
+        url = self.push or self.fetch
+        forge = forge_from_remote(url)
+        if forge == "gitlab" and not url.lower().startswith("https://"):
+            return ""
+        return forge
 
 
 @dataclass(frozen=True)
@@ -348,6 +365,49 @@ def _config_verdict(*, repo: str, remote: str, branch: BranchRef) -> _PushVerdic
     return _PushVerdict(_PushFailure.NONE, "")
 
 
+def _forge_write_credential(repo_path: str, forge: str) -> _ForgeCredential:
+    """The repository's routed write credential for *forge*.
+
+    An https GitLab remote routes through its own ``gitlab_token_pass_key``; any
+    other remote (GitHub, SSH, plain http, or a host :func:`~teatree.utils.forge.forge_from_remote`
+    cannot classify) keeps the original single-credential GitHub route.
+    """
+    if forge == "gitlab":
+        return resolve_forge_credential(repo_path, credential="gitlab_token")
+    return resolve_forge_credential(repo_path)
+
+
+def _refuse_missing_forge_credential(
+    forge: str, credential: _ForgeCredential, *, resolved_branch: BranchRef, remote: str
+) -> PushOutcome | None:
+    """The refusal when *forge* is a known forge with no routed token; ``None`` otherwise.
+
+    An unrecognised host is never refused here — it relies on the ambient git
+    credential helper, same as before either forge got an explicit route.
+    """
+    if forge not in {"github", "gitlab"} or credential.state is ForgeTokenState.TOKEN:
+        return None
+    return _refusal(
+        _PushVerdict(
+            _PushFailure.CREDENTIAL,
+            f"{forge}_token_pass_key for the repository's owning overlay is "
+            f"{credential.state.value}: {credential.detail}; refusing ambient git/gh authentication",
+        ),
+        branch=resolved_branch,
+        remote=remote,
+        credential=credential,
+    )
+
+
+def _refuse_unrepairable_hooks(
+    repo: str, *, resolved_branch: BranchRef, remote: str, credential: _ForgeCredential
+) -> PushOutcome | None:
+    repair = hooks_repair_verdict(repo)
+    if not repair.failure:
+        return None
+    return _refusal(repair, branch=resolved_branch, remote=remote, credential=credential)
+
+
 def push_branch(
     *,
     repo: str | Path = ".",
@@ -365,28 +425,22 @@ def push_branch(
     :class:`~teatree.core.forge_push_verdict.PushFailure` that says which fix it needs.
     """
     repo_path = str(repo)
-    credential = resolve_forge_credential(repo_path)
     resolved_branch = BranchRef.resolve(repo=repo_path, branch=branch)
     config = _config_verdict(repo=repo_path, remote=remote, branch=resolved_branch)
+    forge = RemoteUrls.read(repo=repo_path, remote=remote).credential_forge
+    credential = _forge_write_credential(repo_path, forge)
     if config.failure:
         return _refusal(config, branch=resolved_branch, remote=remote, credential=credential)
-    urls = RemoteUrls.read(repo=repo_path, remote=remote)
-    github_remote = forge_from_remote(urls.push or urls.fetch) == "github"
-    if github_remote and credential.state is not ForgeTokenState.TOKEN:
-        return _refusal(
-            _PushVerdict(
-                _PushFailure.CREDENTIAL,
-                f"github_token_pass_key for the repository's owning overlay is "
-                f"{credential.state.value}: {credential.detail}; refusing ambient git/gh authentication",
-            ),
-            branch=resolved_branch,
-            remote=remote,
-            credential=credential,
+    refusal = _refuse_missing_forge_credential(forge, credential, resolved_branch=resolved_branch, remote=remote)
+    if refusal is None:
+        refusal = _refuse_unrepairable_hooks(
+            repo_path, resolved_branch=resolved_branch, remote=remote, credential=credential
         )
-
+    if refusal is not None:
+        return refusal
     env = git_env_non_interactive()
     if credential.token:
-        env["GH_TOKEN"] = credential.token
+        env["GITLAB_TOKEN" if forge == "gitlab" else "GH_TOKEN"] = credential.token
     # Read BEFORE the push: a commit landing locally while it runs would otherwise make
     # a genuinely delivered push look like a mismatch against a tip it never carried.
     tip_before_push = local_tip(repo=repo_path, ref=resolved_branch.qualified)

@@ -1,23 +1,12 @@
-"""The metered behavioral-eval workflow runs weekly + on demand, off the PR path.
-
-The metered ``claude -p`` suite lives in a standalone workflow
-(``.github/workflows/eval.yml`` / a GitLab schedule + manual job) so a PR
-pipeline neither runs nor displays a metered-eval check. These tests pin the
-weekly schedule and the on-demand manual trigger on both mirrors: GitHub
-``schedule`` + ``workflow_dispatch`` (with a ``backend`` input defaulting to
-the SDK ``api`` backend), and a GitLab schedule + ``when: manual`` eval job.
-"""
+"""The GitHub metered eval workflow supports weekly and manual runs."""
 
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
-from tests._ci_config import gitlab_ci_path
-
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
-_GITLAB_CI = gitlab_ci_path()
 
 
 def _gh_eval_workflow() -> dict[str, Any]:
@@ -32,10 +21,6 @@ def _gh_on() -> dict[str, Any]:
 
 def _gh_eval_job() -> dict[str, Any]:
     return cast("dict[str, Any]", _gh_eval_workflow()["jobs"]["eval"])
-
-
-def _gitlab_config() -> dict[str, Any]:
-    return cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
 
 
 class TestGitHubEvalTriggers:
@@ -80,42 +65,3 @@ class TestGitHubEvalTriggers:
                 return
         msg = "the eval job must run the behavioral suite (`t3 eval run`)."
         raise AssertionError(msg)
-
-
-class TestGitLabEvalTriggers:
-    def test_eval_manual_job_exists_with_when_manual(self) -> None:
-        config = _gitlab_config()
-        assert "eval-manual" in config, "GitLab must expose an `eval-manual` eval job variant."
-        rules = cast("list[dict[str, Any]]", config["eval-manual"]["rules"])
-        assert any(rule.get("when") == "manual" for rule in rules), (
-            "The eval-manual job must carry a `when: manual` rule for on-demand parity."
-        )
-
-    def test_eval_weekly_runs_on_schedule(self) -> None:
-        config = _gitlab_config()
-        rules = cast("list[dict[str, Any]]", config["eval-weekly"]["rules"])
-        assert any("schedule" in rule.get("if", "") for rule in rules), (
-            "The eval-weekly job must fire on a GitLab pipeline schedule."
-        )
-
-    def test_eval_runs_the_suite(self) -> None:
-        # The suite script is the shared `.eval-suite` body extended by the jobs.
-        script = "\n".join(cast("list[str]", _gitlab_config()[".eval-suite"]["script"]))
-        assert "t3 eval run" in script, "the shared eval-suite must run the behavioral suite."
-
-    def test_eval_jobs_share_one_suite_definition(self) -> None:
-        # DRY: both eval jobs extend the single `.eval-suite` template rather than
-        # carrying their own copy of image/before_script/script/retry.
-        config = _gitlab_config()
-        assert ".eval-suite" in config, "the shared eval-suite template must exist."
-        for job in ("eval-weekly", "eval-manual"):
-            assert config[job].get("extends") == ".eval-suite", f"{job} must extend the shared eval-suite."
-            assert "script" not in config[job], f"{job} must not carry its own script copy."
-            assert "retry" not in config[job], f"{job} must not carry its own retry copy."
-
-    def test_eval_manual_inherits_the_transient_retry(self) -> None:
-        # The shared `.eval-suite` gives every eval job the same bounded retry on
-        # transient infra classes.
-        retry = cast("dict[str, Any]", _gitlab_config()[".eval-suite"]["retry"])
-        assert retry["max"] == 2
-        assert "script_failure" in retry["when"]

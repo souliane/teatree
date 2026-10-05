@@ -37,27 +37,29 @@ _PIN_TO_BOOLEANS = {
 def _backfill_mode_booleans(apps, schema_editor):
     """Back-fill the three intrinsic booleans on every existing LoopPreset (fail-open, idempotent)."""
     LoopPreset = apps.get_model("core", "LoopPreset")
-    for preset in LoopPreset.objects.all():
+    presets = LoopPreset.objects.using(schema_editor.connection.alias)
+    for preset in presets.all():
         recommended = _RECOMMENDED_POSTURE.get(preset.name)
         if recommended is not None:
             defers, pauses, sensitive = recommended
         else:
             defers, pauses = _PIN_TO_BOOLEANS.get((preset.availability_mode or "").strip(), (False, False))
             sensitive = True
-        preset.defers_questions = defers
-        preset.pauses_self_pump = pauses
-        preset.presence_sensitive = sensitive
-        preset.save(update_fields=["defers_questions", "pauses_self_pump", "presence_sensitive"])
+        presets.filter(pk=preset.pk).update(
+            defers_questions=defers, pauses_self_pump=pauses, presence_sensitive=sensitive
+        )
 
 
 def _seed_offline_mode(apps, schema_editor):
     """Create the NEW ``offline`` holiday-away mode if absent (idempotent)."""
     LoopPreset = apps.get_model("core", "LoopPreset")
     Loop = apps.get_model("core", "Loop")
-    if LoopPreset.objects.filter(name="offline").exists():
+    db = schema_editor.connection.alias
+    presets = LoopPreset.objects.using(db)
+    if presets.filter(name="offline").exists():
         return
-    all_off = dict.fromkeys(Loop.objects.values_list("name", flat=True), False)
-    LoopPreset.objects.create(
+    all_off = dict.fromkeys(Loop.objects.using(db).values_list("name", flat=True), False)
+    presets.create(
         name="offline",
         description=_OFFLINE_DESCRIPTION,
         entries=all_off,

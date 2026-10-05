@@ -292,7 +292,9 @@ class TestProvisionPoolConnectionHygiene(TestCase):
             raw_connections.append(connection.connection)
             return WorktreeProvisionResult(worktree_id=wt.pk, repo_path=wt.repo_path, ok=True, detail="ok")
 
-        run_worktree_provisions_in_parallel([worktree], executor=orm_touching_executor)
+        run_worktree_provisions_in_parallel(
+            [worktree], executor=orm_touching_executor, admission_check=ProvisionAdmissionVerdict.allow
+        )
 
         assert raw_connections, "the executor never opened a connection"
         with pytest.raises(sqlite3.ProgrammingError):

@@ -7,6 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Self
 
+from teatree.core.prek_hook import harden_hooks
 from teatree.core.push_gate_record import GateRunRecord
 from teatree.forge_credentials import ForgeTokenState
 from teatree.utils.git_run import run as git_read
@@ -109,6 +110,19 @@ def gate_aborted_verdict(
     )
 
 
+def hooks_repair_verdict(repo: str) -> PushVerdict:
+    """Re-probe the prek binary another venue baked into the shared hooks; a hook file it cannot rewrite refuses."""
+    try:
+        harden_hooks(repo)
+    except OSError as exc:
+        return PushVerdict(
+            PushFailure.CONFIG,
+            f"could not repair the shared prek hooks this push would run ({exc}) — make them writable and "
+            "re-run `t3 push`",
+        )
+    return PushVerdict(PushFailure.NONE, "")
+
+
 def credential_failure_hint(git_stderr: str, credential: ForgeCredential) -> str:
     """The actionable next step when git failed for want of a credential; ``""`` otherwise."""
     if not any(marker in git_stderr.lower() for marker in _CREDENTIAL_FAILURE_MARKERS):
@@ -116,7 +130,7 @@ def credential_failure_hint(git_stderr: str, credential: ForgeCredential) -> str
     if credential.state is not ForgeTokenState.TOKEN:
         return (
             f"no routed forge token resolved ({credential.state.value}: {credential.detail}) — "
-            "configure github_token_pass_key for the repository's owning overlay, then re-run `t3 push`"
+            "configure the routed pass key named above for the repository's owning overlay, then re-run `t3 push`"
         )
     return (
         f"a {credential.source.value} token was supplied but git could not use it — "

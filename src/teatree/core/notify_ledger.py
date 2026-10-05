@@ -26,8 +26,7 @@ logger = logging.getLogger("teatree.core.notify")
 # ``answer-<anything>-<slack_ts>``. ``slack_ts`` is the Slack message
 # timestamp (e.g. ``1700000000.0001``) of the question the agent is
 # answering. When notify_user sees a key with this shape it auto-stamps
-# ``answered_at`` on the matching :class:`PendingChatInjection` row, so
-# the Stop hook stops nagging once the reply has been posted.
+# ``answered_at`` on the matching :class:`PendingChatInjection` row.
 _ANSWER_KEY_PATTERN = re.compile(r"^answer-.+-(\d+\.\d+)$")
 
 
@@ -105,12 +104,10 @@ def maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> No
     ``idempotency_key="answer-<anything>-<slack_ts>"`` — the agent used
     the answer-key convention; the ts is extracted from the suffix.
 
-    The stamp keys on ``slack_ts`` alone — symmetric with the unscoped
-    Stop-hook gate — so a reply sent from one overlay's session clears a
-    question recorded under a *different* overlay (the concurrent multi-
-    overlay case). Scoping by the active ``T3_OVERLAY_NAME`` here was the
-    original defect: it stamped 0 rows whenever the answering session's
-    overlay differed from the recording overlay, leaving the gate nagging.
+    The stamp keys on ``slack_ts`` alone, so a reply sent from one overlay's
+    session clears a question recorded under a *different* overlay (the
+    concurrent multi-overlay case); scoping by the active ``T3_OVERLAY_NAME``
+    stamped 0 rows whenever the two overlays differed.
     """
     ts = answering_slack_ts
     if not ts:

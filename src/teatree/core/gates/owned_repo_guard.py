@@ -22,8 +22,8 @@ Opt-in + misconfig guard:
     never see this gate.
 *   ``owned_repos`` empty under the flag → pass (misconfig guard: a flag set
     with no declared scope must not block EVERYTHING).
-*   ``approved`` (per-invocation ``--approve-unowned`` / interactive
-    AskUserQuestion) → pass. Approval is per-invocation, never persisted.
+*   ``approved`` (the caller's per-invocation human authorization; the merge
+    command accepts ``--human-authorized <id>``) → pass. It is never persisted.
 *   verdict ``unknown`` → raise :class:`UnownedRepoError` (block-with-remediation).
 """
 
@@ -32,12 +32,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypedDict
 
-from teatree.core.intake.repo_scope import (
-    host_aware_owns,
-    identity_from_host_and_slug,
-    repo_identity_for_cwd,
-    repo_scope,
-)
+from teatree.core.intake.repo_scope import host_aware_owns, identity_from_host_and_slug, repo_identity_for_cwd
 from teatree.utils.throttled_log import warn_throttled
 
 logger = logging.getLogger(__name__)
@@ -92,48 +87,6 @@ class _MergeClearLike(Protocol):
 class PushScopeVerdict(StrEnum):
     ALLOW = "allow"
     REQUIRE_APPROVAL = "require_approval"
-
-
-class UnownedRepoError(RuntimeError):
-    """Raised when a push/merge targets a repo outside the overlay's declared scope.
-
-    Carries an actionable message naming the remediation (declare the
-    host/namespace in ``[overlays.<name>.owned_repos]`` or pass the
-    per-invocation approval) so the caller surfaces a satisfiable block,
-    never a silent proceed.
-    """
-
-
-def _remediation(target: str) -> str:
-    return (
-        f"HELD FOR APPROVAL: target `{target}` is OUTSIDE every declared "
-        "working scope (`owned_repos`). This is the SCOPE axis — owned-vs-unknown — "
-        "separate from visibility (private_repos) and from review (the author/merge "
-        "gate). Add its host/namespace to `[overlays.<name>.owned_repos]` "
-        '(e.g. `github.com = ["<owner>"]`), or approve this one push '
-        "(`--approve-unowned`, or confirm when asked)."
-    )
-
-
-def require_owned_or_approved(cwd: Path, overlay: "OverlayBase", *, approved: bool = False) -> None:
-    """Hold an out-of-scope push/merge for approval; pass everything else.
-
-    Fail-CLOSED on a clean ``unknown`` verdict. The opt-in flag and the
-    empty-``owned_repos`` misconfig guard both PASS, as does a per-invocation
-    *approved*. A resolver EXCEPTION is NOT caught here — the caller's
-    never-lockout wrapper owns fail-open-on-exception so this gate stays a
-    pure verdict.
-    """
-    if not overlay.config.require_owned_repo_approval:
-        return
-    if not overlay.config.owned_repos:
-        return
-    if approved:
-        return
-    if repo_scope(cwd, overlay.config.owned_repos) == "unknown":
-        identity = repo_identity_for_cwd(cwd)
-        target = f"{identity.host}/{identity.namespace}" if identity.host else (identity.namespace or "<unresolved>")
-        raise UnownedRepoError(_remediation(target))
 
 
 def _opted_in_scopes(

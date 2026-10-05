@@ -50,9 +50,13 @@ import os
 import shutil
 import subprocess  # noqa: S404 — stdlib subprocess for the trusted internal `t3` CLI
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from hooks.scripts.container_visibility import container_path
+
+CompletedProcess = subprocess.CompletedProcess
+TimeoutExpired = subprocess.TimeoutExpired
 
 # Alias the bare and ``hooks.scripts.`` identities so a module importing one and a
 # test patching the other operate on ONE module object.
@@ -134,12 +138,17 @@ def t3_argv(*args: str) -> list[str] | None:
     return [binary, *args] if binary else None
 
 
+class NoTimeLeft(subprocess.TimeoutExpired):
+    """The caller's budget was spent before the spawn could start, so nothing ran."""
+
+
 def run_t3(
     argv: list[str],
     *,
     timeout: float,
     cwd: str | Path | None = None,
     stdin_text: str | None = None,
+    budget: Callable[[float], float | None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run *argv* to completion from a container-visible directory.
 
@@ -149,17 +158,25 @@ def run_t3(
 
     *cwd* overrides the pinned default for a caller whose subject IS a directory.
     Omitting it is what makes the session directory unreachable.
+
+    *budget* bounds *timeout* by what the caller can still afford. It is read only
+    once the environment is resolved, because that resolution can itself spend the
+    caller's time, and it raises :class:`NoTimeLeft` when nothing is left.
     """
     resolved = str(cwd) if cwd is not None else t3_invocation_cwd()
+    env = t3_invocation_env(resolved)
+    granted = timeout if budget is None else budget(timeout)
+    if granted is None:
+        raise NoTimeLeft(argv, 0)
     return subprocess.run(  # noqa: S603 — trusted internal subprocess; fixed argv, no shell
         argv,
         input=stdin_text,
         capture_output=True,
         text=True,
         check=False,
-        timeout=timeout,
+        timeout=granted,
         cwd=resolved,
-        env=t3_invocation_env(resolved),
+        env=env,
     )
 
 

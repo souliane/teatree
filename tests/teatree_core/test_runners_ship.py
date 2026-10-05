@@ -151,7 +151,7 @@ class TestShipExecutor(TestCase):
     def test_loop_ship_path_refuses_net_new_debt(self) -> None:
         # North-star PR-3: the autonomous loop's task-driven ship reaches
         # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates — the
-        # same bypass class the budget gate closed. With require_debt_delta on and
+        # same bypass class the budget gate closed. With the debt gate active and
         # a net-new noqa in the branch diff, the ship is refused and NO PR is
         # created. #4151: nor is the branch PUSHED — the push opens a PR through the
         # pre-push `ensure-pr` hook, so a refusal concluded after it is a lie.
@@ -172,7 +172,6 @@ class TestShipExecutor(TestCase):
             patch("teatree.core.runners.ship.push_branch") as push,
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
-            patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
             patch.object(debt_delta_gate.git, "branch_diff", return_value=new_noqa),
         ):
             result = ShipExecutor(ticket).run()
@@ -183,7 +182,7 @@ class TestShipExecutor(TestCase):
         push.assert_not_called()
 
     def test_loop_ship_path_allows_pr_when_diff_is_clean(self) -> None:
-        # Inert companion: require_debt_delta on but the branch introduces no
+        # Inert companion: the debt gate runs but the branch introduces no
         # net-new debt, so the loop ship proceeds and opens the PR.
         slug = "souliane/teatree"
         ticket = self._ticket_with_worktree()
@@ -202,7 +201,6 @@ class TestShipExecutor(TestCase):
             patch("teatree.core.runners.ship.push_branch"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
             patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
-            patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
             patch.object(debt_delta_gate.git, "branch_diff", return_value=clean),
         ):
             result = ShipExecutor(ticket).run()
@@ -932,16 +930,16 @@ class TestShipResolvesBackendFromRepoHost(TestCase):
         _run_git("commit", "--allow-empty", "-q", "-m", "feat: x", cwd=self.repo)
 
     def _ticket(self) -> Ticket:
-        # A blank overlay is the documented ambient-default fallback; this case
-        # is about backend resolution from the remote, not overlay scoping.
+        # A real ticket records its canonical overlay; backend selection still
+        # comes from the checkout's remote host.
         ticket = Ticket.objects.create(
-            overlay="",
+            overlay="t3-teatree",
             issue_url="https://gitlab.com/group/repo/-/issues/2025",
             extra={"branch": "547-fix-foo"},
         )
         Worktree.objects.create(
             ticket=ticket,
-            overlay="",
+            overlay="t3-teatree",
             repo_path=str(self.repo),
             branch="547-fix-foo",
             extra={"worktree_path": str(self.repo)},

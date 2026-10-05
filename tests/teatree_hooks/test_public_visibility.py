@@ -78,8 +78,8 @@ def leak_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
         )
         conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
-            (json.dumps([_BANNED_TERM]),),
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps({"leak": [_BANNED_TERM], "prose_collider": [_BANNED_TERM]}),),
         )
         conn.commit()
     finally:
@@ -169,15 +169,15 @@ class TestGateSkipsForVisibilityPolarity:
         # FAILS CLOSED -- the gate scans, it does not skip.
         assert self._skips("gh issue create --repo owner/mystery --body x", monkeypatch, None) is False
 
-    def test_is_affirmatively_public_only_on_confirmed_public(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_destination_visibility_only_public_on_confirmed_public(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Distinct slugs so the per-slug day-cache does not carry the first
         # verdict into the second assertion.
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         public_dest = resolve_publish_destination("gh issue create --repo souliane/teatree --body x")
-        assert public_visibility.is_affirmatively_public(public_dest) is True
+        assert public_visibility.destination_visibility(public_dest).value == "public"
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         unknown_dest = resolve_publish_destination("gh issue create --repo owner/mystery --body x")
-        assert public_visibility.is_affirmatively_public(unknown_dest) is False
+        assert public_visibility.destination_visibility(unknown_dest).value == "unknown"
 
 
 class TestApiWriteUnresolvableDoesNotSkip:
@@ -394,7 +394,7 @@ class TestProbeErrorFailsClosed:
             )
             conn.execute(
                 "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
-                (json.dumps(["declaredowner/svc"]),),
+                (json.dumps(["github.com/declaredowner/svc"]),),
             )
             conn.commit()
         finally:

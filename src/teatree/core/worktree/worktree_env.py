@@ -11,7 +11,6 @@ this module makes the file actively inhospitable to being treated as
 truth.
 """
 
-import logging
 import os
 import stat
 from dataclasses import dataclass
@@ -21,19 +20,12 @@ from typing import TYPE_CHECKING
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.utils import secrets
 from teatree.utils.ports import docker_host_address
-from teatree.utils.postgres_secret import (
-    PASS_KEY_ENV,
-    POSTGRES_PASSWORD_ENV,
-    PostgresPasswordUnavailableError,
-    ensure_postgres_pass_entry,
-)
+from teatree.utils.postgres_secret import PASS_KEY_ENV, POSTGRES_PASSWORD_ENV, ensure_postgres_pass_entry
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
     from teatree.core.models.types import WorktreeExtra
     from teatree.core.overlay import OverlayBase
-
-logger = logging.getLogger(__name__)
 
 CACHE_DIRNAME = ".t3-cache"
 CACHE_FILENAME = ".t3-env.cache"
@@ -140,15 +132,8 @@ def _core_env_pairs(worktree: "Worktree") -> list[tuple[str, str]]:
 def stored_postgres_pass_key(worktree: "Worktree") -> str:
     """Return *worktree*'s postgres pass key ONLY when the entry behind it resolves.
 
-    ``""`` — omit the reference entirely — when no secret is stored under it. The cache
-    used to advertise ``POSTGRES_PASSWORD_PASS_KEY`` unconditionally while the only
-    writer of that entry was ``env migrate-secrets``, run after the fact and by hand, so
-    on a freshly provisioned worktree every consumer resolving the reference got a
-    ``pass show`` miss: :func:`~teatree.utils.postgres_secret.resolve_postgres_password`
-    logged "resolved to empty value" and fell through to whatever ``POSTGRES_PASSWORD``
-    literal happened to be in the ambient process env — or, for a caller that had none
-    (the provision post-condition's ``psql``), to no password at all. A key present in
-    the cache is now a key that answers.
+    ``""`` — omit the reference entirely — when no secret is stored under it.
+    A key present in the cache must answer.
     """
     key = worktree.pass_key
     return key if key and secrets.pass_entry_exists(key) else ""
@@ -157,10 +142,8 @@ def stored_postgres_pass_key(worktree: "Worktree") -> str:
 def store_postgres_secret(worktree: "Worktree", overlay: "OverlayBase") -> str:
     """Store the overlay's postgres password under *worktree*'s pass key; return the key.
 
-    ``""`` when there is nothing to store (the overlay contributes no password) or
-    ``pass`` cannot hold it — in both cases the cache renders without a
-    ``POSTGRES_PASSWORD_PASS_KEY`` line rather than naming a dead entry, and the
-    literal-in-``env_extra`` path keeps working for subprocess callers.
+    ``""`` when the overlay contributes no password. A failed ``pass`` write
+    raises, so a cache never hides an unresolved credential.
 
     Called by :func:`write_env_cache`, so PROVISIONING creates the entry its own cache
     advertises. Idempotent: an entry that already resolves is left untouched, so a
@@ -174,16 +157,7 @@ def store_postgres_secret(worktree: "Worktree", overlay: "OverlayBase") -> str:
     password = overlay.provisioning.env_extra(worktree).get(POSTGRES_PASSWORD_ENV, "")
     if not password:
         return ""
-    try:
-        return ensure_postgres_pass_entry(worktree.ticket_id, password)  # ty: ignore[unresolved-attribute]  # Django FK
-    except PostgresPasswordUnavailableError:
-        logger.warning(
-            "Could not store the postgres password in pass for %s — the env cache will omit %s "
-            "and callers fall back to the env_extra literal.",
-            key,
-            PASS_KEY_ENV,
-        )
-        return ""
+    return ensure_postgres_pass_entry(worktree.ticket_id, password)  # ty: ignore[unresolved-attribute]  # Django FK
 
 
 def _declared_core_keys() -> set[str]:

@@ -20,15 +20,11 @@ from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.directive_loop import guards
 from teatree.loops.directive_loop.tick import MAX_OPEN_RATIFY_QUESTIONS, TickSeams, run_tick
 from teatree.loops.directive_loop.verify import VerifySeams
-from teatree.loops.outer_loop.guards import CriticLiveness, GuardSeams
+from teatree.loops.shared.guards import GuardSeams
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 
 _SCOPE = "t3-teatree"
 _KEY = "max_open_prs_per_repo_per_ticket"
-
-
-def _live_critic() -> CriticLiveness:
-    return CriticLiveness(live=True, verdict_count=guards.__dict__.get("MIN_CRITIC_SAMPLE", 5) or 5)
 
 
 def _healthy_report() -> FactorySignalsReport:
@@ -48,10 +44,8 @@ def _healthy_report() -> FactorySignalsReport:
     )
 
 
-def _open_settings(*, score: bool = True, intake_per_tick: int = 25) -> SimpleNamespace:
+def _open_settings(*, intake_per_tick: int = 25) -> SimpleNamespace:
     return SimpleNamespace(
-        directive_loop_enabled=True,
-        factory_score_enabled=score,
         directive_verify_days=7,
         directive_intake_per_tick=intake_per_tick,
     )
@@ -69,7 +63,7 @@ def _all_green_verify() -> VerifySeams:
 
 def _seams(*, merged: bool | None = None, verify_seams: VerifySeams | None = None) -> TickSeams:
     return TickSeams(
-        guards=GuardSeams(critic_probe=_live_critic, signal_report=_healthy_report(), budget=BudgetVerdict.allow()),
+        guards=GuardSeams(signal_report=_healthy_report(), budget=BudgetVerdict.allow()),
         merged_probe=(lambda _d: merged) if merged is not None else None,
         verify_seams=verify_seams,
     )
@@ -293,7 +287,7 @@ class TestDirectiveSpawnedTicketsDoNotCollide(TestCase):
     to disambiguate (``#directive=<pk>`` vs ``#directive-impl=<pk>``), so their
     ``repo_namespaced_key`` must stay distinct — the whole full-tick path throws an
     IntegrityError on the ``unique_nonempty_repo_namespaced_key`` constraint otherwise
-    (the PR-8 dogfood collision that blocks enabling ``directive_loop_enabled``).
+    (the PR-8 dogfood collision that blocked the directive loop).
     """
 
     def _drive_captured_to_implementing(self) -> Directive:
@@ -489,9 +483,7 @@ class TestSignalTrustGateScopedToTheExecutionArc(TestCase):
             signals=[gap],
             verdict=SignalVerdict.RED,
         )
-        return TickSeams(
-            guards=GuardSeams(critic_probe=_live_critic, signal_report=report, budget=BudgetVerdict.allow())
-        )
+        return TickSeams(guards=GuardSeams(signal_report=report, budget=BudgetVerdict.allow()))
 
     def test_captured_advances_while_a_signal_reports_an_instrumentation_gap(self) -> None:
         directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
@@ -523,56 +515,12 @@ class TestSignalTrustGateScopedToTheExecutionArc(TestCase):
         assert Directive.objects.get(pk=directive.pk).state == Directive.State.ADMITTED
         assert ConfigSetting.objects.get_effective(_KEY, scope=_SCOPE) is None
 
-
-class TestScoreGateScopedToTheExecutionArc(TestCase):
-    """#3643 — the dark ``factory_score_enabled`` flag no longer blocks owner intake.
-
-    The pre-admission arc interprets and STOPS at the structural human ratify gate, so
-    it needs no admission baseline; the post-admission arc (where the loop changes
-    config) keeps the score requirement.
-    """
-
-    def test_captured_advances_while_the_score_flag_is_off(self) -> None:
-        directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
-        result = run_tick(settings=_open_settings(score=False), seams=_seams())
-        assert result.action == "interpret_dispatched"
-        assert DirectiveDispatch.objects.filter(directive=directive).exists()
-
-    def test_intake_reaches_the_ratify_gate_while_the_score_flag_is_off(self) -> None:
-        directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
-        directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="c")
-        result = run_tick(settings=_open_settings(score=False), seams=_seams())
-        assert result.action == "ratify_asked"
-        directive.refresh_from_db()
-        assert directive.state == Directive.State.RATIFY_PENDING
-        assert directive.ratify_question is not None
-
-    def test_admission_still_requires_a_consumed_answered_ratify_question(self) -> None:
-        directive = Directive.objects.capture("do X", source=Directive.Source.CLI)
-        directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="c")
-        question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
-        directive.attach_ratification(question)
-        pending = run_tick(settings=_open_settings(score=False), seams=_seams())
-        assert pending.action == "pending"
-        assert Directive.objects.get(pk=directive.pk).state == Directive.State.RATIFY_PENDING
-        DeferredQuestion.consume(question.pk, answer="approve")
-        admitted = run_tick(settings=_open_settings(score=False), seams=_seams())
-        assert admitted.action == "admitted"
-
-    def test_execution_arc_still_refuses_while_the_score_flag_is_off(self) -> None:
-        directive = _admitted(kind="activation_only", acceptance_tests=[])
-        result = run_tick(settings=_open_settings(score=False), seams=_seams())
-        assert result.action == "refused"
-        assert result.reason == guards.SCORE_OFF
-        assert Directive.objects.get(pk=directive.pk).state == Directive.State.ADMITTED
-        assert ConfigSetting.objects.get_effective(_KEY, scope=_SCOPE) is None
-
     def test_a_refusal_is_logged_so_it_is_not_indistinguishable_from_idle(self) -> None:
         _admitted(kind="activation_only", acceptance_tests=[])
         with self.assertLogs("teatree.loops.directive_loop.tick", level="WARNING") as captured:
-            run_tick(settings=_open_settings(score=False), seams=_seams())
-        assert any(guards.SCORE_OFF in line for line in captured.output)
+            run_tick(settings=_open_settings(), seams=self._gap_seams())
+        assert any(guards.SIGNAL_UNTRUSTED in line for line in captured.output)
 
     def test_an_idle_tick_logs_no_refusal_warning(self) -> None:
         with self.assertNoLogs("teatree.loops.directive_loop.tick", level="WARNING"):
-            assert run_tick(settings=_open_settings(), seams=_seams()).action == "idle"
+            assert run_tick(settings=_open_settings(), seams=self._gap_seams()).action == "idle"

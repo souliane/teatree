@@ -23,8 +23,8 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_quote_scanner_pretool
 from teatree.hooks import _repo_visibility, quote_scanner
-from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, is_fail_closed_sentinel
-from teatree.hooks.quote_scanner import extract_publish_payload, has_quote_ok_override, scan_text
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL, is_fail_closed_sentinel
+from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
 
 
 @pytest.fixture(autouse=True)
@@ -275,7 +275,6 @@ class TestT3PublishCommands:
         [
             "t3 teatree notify send",
             "t3 teatree review post-comment",
-            "t3 teatree review post-draft-note",
             "t3 mycustomer review post-comment",
             "t3 teatree ticket create-issue",
             "t3 slack react",
@@ -286,74 +285,6 @@ class TestT3PublishCommands:
         payload = extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
         assert "User mandate" in payload
-
-
-class TestQuoteOkOverride:
-    def test_flag_in_bash_command_bypasses_check(self) -> None:
-        cmd = 'gh pr create --title t --body "the user said: foo" --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is True
-
-    def test_env_var_in_tool_input_bypasses_check(self) -> None:
-        cmd = 'gh pr create --title t --body "the user said: foo"'
-        assert has_quote_ok_override("Bash", {"command": cmd, "env": {"QUOTE_OK": "1"}}) is True
-
-    def test_clean_command_has_no_override(self) -> None:
-        assert has_quote_ok_override("Bash", {"command": "gh pr create --title t --body x"}) is False
-
-    def test_quote_ok_substring_inside_quoted_body_does_not_count(self) -> None:
-        # The flag-detection uses shlex tokens — a literal "--quote-ok"
-        # substring inside a double-quoted body arg is NOT a token of
-        # its own, so the override does not fire.
-        cmd = 'gh pr create --title t --body "discussion of --quote-ok semantics"'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_quote_ok_smuggled_after_shell_comment_is_rejected(self) -> None:
-        # Codex CRITICAL #1: ``# --quote-ok`` after a publish command must
-        # NOT bypass the gate. ``shlex.split`` must strip comments.
-        cmd = 'gh issue comment 1 --body "leak" # --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_quote_ok_smuggled_after_metacharacter_is_rejected(self) -> None:
-        # Override must not fire when it lives after a shell metacharacter
-        # — even if it parses as a token, it is not part of the publish
-        # invocation we are gating.
-        for metachar in (";", "|", "&&"):
-            cmd = f'gh issue comment 1 --body "leak" {metachar} echo --quote-ok'
-            assert has_quote_ok_override("Bash", {"command": cmd}) is False, (
-                f"override smuggled after {metachar!r} must be rejected"
-            )
-
-    def test_flag_on_cd_prefixed_publish_segment_bypasses(self) -> None:
-        cmd = 'cd /tmp/wt && gh pr create --title t --body "the user said: foo" --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is True
-
-    def test_flag_on_second_chained_publish_segment_bypasses(self) -> None:
-        cmd = 'echo prep && gh pr create --title t --body "the user said: foo" --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is True
-
-    def test_decoy_flag_on_unrelated_segment_does_not_vouch_for_chained_publish(self) -> None:
-        cmd = 'echo --quote-ok && gh pr create --title t --body "the user said: foo"'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_decoy_flag_on_trailing_non_publish_segment_does_not_vouch(self) -> None:
-        cmd = 'gh pr create --title t --body "the user said: foo" ; echo --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_inline_env_assignment_on_cd_prefixed_publish_bypasses(self) -> None:
-        cmd = 'cd /tmp/wt && QUOTE_OK=1 gh pr create --title t --body "the user said: foo"'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is True
-
-    def test_inline_env_assignment_on_leading_publish_bypasses(self) -> None:
-        cmd = 'QUOTE_OK=1 gh pr create --title t --body "the user said: foo"'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is True
-
-    def test_decoy_inline_env_assignment_on_unrelated_segment_does_not_vouch(self) -> None:
-        cmd = 'QUOTE_OK=1 echo hi && gh pr create --title t --body "the user said: foo"'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_inline_env_assignment_zero_does_not_bypass(self) -> None:
-        cmd = 'QUOTE_OK=0 gh pr create --title t --body "the user said: foo"'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
 
 
 class TestBypassClosures:
@@ -505,15 +436,21 @@ class TestHookHandlerEndToEnd:
         assert ledger
         assert ledger[-1]["decision"] == "warn"
 
-    def test_quote_ok_override_bypasses_high_match(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        data = _bash('gh pr create --title t --body "## User mandate\nfoo" --quote-ok')
+    def test_quote_ok_override_does_not_bypass_public_high_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash(
+            'gh pr create -R souliane/teatree --title t --body "## User ask (verbatim, 2026-05-20)\nfoo" --quote-ok'
+        )
         blocked = handle_quote_scanner_pretool(data)
-        assert blocked is False
-        assert capsys.readouterr().out == ""
+        assert blocked is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "QUOTE_OK" not in reason
         ledger = _ledger_lines(tmp_path)
         assert ledger
-        assert ledger[-1]["decision"] == "allow-override"
-        assert ledger[-1]["override"] is True
+        assert ledger[-1]["decision"] == "deny"
+        assert ledger[-1]["override"] is False
 
     def test_non_publish_bash_command_is_a_noop(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_quote_scanner_pretool(_bash("ls -la"))
@@ -553,6 +490,25 @@ class TestHookHandlerEndToEnd:
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
+        reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "scan matched quoted owner text" in reason.lower()
+        assert "rephrase without the quoted span or ask the owner" in reason.lower()
+        assert "ask the owner to review the blocked publication" in reason.lower()
+        assert "re-issue" not in reason
+        assert "--quote-ok" not in reason
+
+    def test_slack_mcp_unverified_destination_ignores_env_escape(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("QUOTE_OK", "1")
+        data = {
+            "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+            "tool_input": {"text": "## User ask (verbatim, 2026-05-20)\nplease ship"},
+        }
+
+        assert handle_quote_scanner_pretool(data) is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "QUOTE_OK" not in reason
 
     def test_multiline_heredoc_with_high_pattern_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
         cmd = (
@@ -697,18 +653,6 @@ class TestRound2BypassClosures:
 
     # --- Round-2 #1: newline-separated ``--quote-ok`` override ---
 
-    def test_override_smuggled_after_literal_newline_is_rejected(self) -> None:
-        # ``gh ... --body "leak"\n--quote-ok`` — the override token must
-        # only count as a CLI token in the FIRST shell command, not as
-        # text after a literal newline (which acts as a shell separator
-        # at the command level).
-        cmd = 'gh issue comment 1 --body "## User mandate\nbody"\n--quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_override_smuggled_after_carriage_return_is_rejected(self) -> None:
-        cmd = 'gh issue comment 1 --body "## User mandate\nbody"\r\n--quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
     def test_high_match_with_newline_smuggled_override_still_blocks(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -730,15 +674,6 @@ class TestRound2BypassClosures:
         payload = extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
         assert "User mandate" in payload
-
-    def test_line_continuation_does_not_smuggle_override(self) -> None:
-        # Splitting ``--quote-ok`` across a backslash-newline must not
-        # bypass the override check — the joined token is ``--quote-ok``
-        # which IS a legitimate override (this case should fire), but
-        # the FIRST-segment rule still applies. Place the override AFTER
-        # a metacharacter to confirm it is rejected.
-        cmd = 'gh issue comment 1 --body "leak" \\\n  ; echo --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
 
     # --- Round-2 #3: ANSI-C $'...' quoting ---
 
@@ -966,25 +901,6 @@ class TestRound3BypassClosures:
         assert "User mandate" in payload
 
     # --- Round-3 #2: --quote-ok after unspaced metachar ---
-
-    def test_override_after_unspaced_semicolon_is_rejected(self) -> None:
-        # ``echo body;echo --quote-ok`` — a real shell tokenizes ``;`` as
-        # a separate token regardless of whitespace, so ``--quote-ok``
-        # lives in a SECOND command and must not bypass the gate.
-        cmd = 'gh issue comment 1 --body "## User mandate\nbody";echo --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_override_after_unspaced_pipe_is_rejected(self) -> None:
-        cmd = 'gh issue comment 1 --body "leak"|echo --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_override_after_unspaced_double_amp_is_rejected(self) -> None:
-        cmd = 'gh issue comment 1 --body "leak"&&echo --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_override_after_unspaced_double_pipe_is_rejected(self) -> None:
-        cmd = 'gh issue comment 1 --body "leak"||echo --quote-ok'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
 
     def test_override_after_unspaced_semicolon_blocks_end_to_end(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -1309,18 +1225,34 @@ def _private_repo_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         )
         conn.execute(
             "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
-            (json.dumps(["acmecorp-engineering"]),),
+            (json.dumps(["gitlab.com/acmecorp-engineering"]),),
         )
         conn.commit()
     finally:
         conn.close()
     monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    # Share the isolated data root with this module's ledger reader.
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
 
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("_private_repo_cfg")
 class TestPrivateRepoCarveOut:
     """A private-repo commit with a verbatim quote downgrades to warn (#126)."""
+
+    def test_override_on_private_target_still_allows_without_printing_variable(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cmd = (
+            "QUOTE_OK=1 glab mr create -R acmecorp-engineering/product --title t "
+            '--description "## User ask (verbatim, 2026-05-20)\nplease ship"'
+        )
+        assert handle_quote_scanner_pretool(_bash(cmd)) is False
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "QUOTE_OK" not in captured.err
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "allow-nonpublic-destination"
 
     def test_private_repo_commit_with_quote_pattern_downgrades_to_warn(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1443,7 +1375,11 @@ class TestTildeShipIsGradedAgainstTheRepoItNames:
         # STILL-GRANTS control: the same mechanism must not have been traded for
         # a strict bug — a commit landing in the allowlisted-private repo still
         # downgrades, from a session sitting in a public clone.
-        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        monkeypatch.setattr(
+            _repo_visibility,
+            "probe_visibility",
+            lambda slug: "PUBLIC" if slug.startswith("github.com/") else None,
+        )
         self._home_ship(tmp_path, monkeypatch, "product", "git@gitlab.com:acmecorp-engineering/product.git")
         session = self._session(tmp_path, "git@github.com:souliane/teatree.git")
         data = {
@@ -1692,14 +1628,14 @@ class TestChainedRawRestPostDefeatsPrivateDowngrade:
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # ANTI-OVER-BLOCK: a verbatim quote in a private commit chained to a PRIVATE
-        # structured ``gh pr create --repo <PRIVATE>`` (NOT raw REST) still downgrades.
+        # structured GitLab MR create (NOT raw REST) still downgrades.
         # The raw-REST guard rejects only raw REST, never a normal private post.
         repo = tmp_path / "repo"
         repo.mkdir()
         _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
         cmd = (
             'git commit -m "**User directive (verbatim, today):** ship it now" '
-            "&& gh pr create --repo acmecorp-engineering/product --title t --body ok"
+            "&& glab mr create -R acmecorp-engineering/product --title t --description ok"
         )
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
         assert handle_quote_scanner_pretool(data) is False  # both segments private → downgrade

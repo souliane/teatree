@@ -13,12 +13,11 @@ from pathlib import Path
 from django.test import TestCase
 
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream import batch_promote as bp
-from teatree.loops.dream._shared import DREAM_BATCH_MANIFEST_HEADER
+from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
+from teatree.loop.scanners.backlog_sweep import BacklogSweepScanner
 from teatree.loops.dream.engine import DistilledCluster, write_clusters
 from teatree.loops.dream.replay import TranscriptMember, build_extract
 from teatree.loops.dream.transcript_extract import high_signal_lines
-from teatree.loops.dream.umbrella_ledger import GapSpec
 
 UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
 RULE = "Before tightening a shared predicate, check every other caller of that predicate."
@@ -37,7 +36,9 @@ def _manifest() -> str:
         verified_citation=CITATION,
         durable_destination="skills/architecture-design/SKILL.md",
     )
-    return bp._batch_context(UMBRELLA, [GapSpec(gap_key="gap-1", title="Workflow gap", cluster_key="gap-1")])
+    return BacklogSweepScanner(overlay_name="t3-teatree", dream_umbrella_url=UMBRELLA)._dream_gap_section(
+        [{"gap_key": "gap-1", "title": "Workflow gap", "cluster_key": "gap-1"}]
+    )
 
 
 def _brief(manifest: str) -> str:
@@ -97,5 +98,9 @@ class ManifestEvidenceDoesNotGroundTestCase(TestCase):
 
 
 class ManifestRendersTheSharedHeaderTestCase(TestCase):
-    def test_the_manifest_opens_with_the_header_the_extract_filters_on(self) -> None:
-        assert _manifest().startswith(DREAM_BATCH_MANIFEST_HEADER)
+    def test_the_manifest_places_the_header_after_the_directive_the_extract_filters_on(self) -> None:
+        manifest = _manifest()
+        directive, marked_block = manifest.split("\n", 1)
+
+        assert "DREAM GAPS:" in directive
+        assert marked_block.startswith(f"{DREAM_BATCH_MANIFEST_HEADER}\n")

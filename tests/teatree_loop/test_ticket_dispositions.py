@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -241,7 +242,7 @@ class TicketDispositionScannerAliasTests(TestCase):
             host=host,
             ready_labels=("ready",),
             overlay_name=self.OVERLAY,
-            user_identity_aliases=aliases,
+            identity_alias_groups=(aliases,),
         )
 
     def _ticket(self) -> Ticket:
@@ -341,15 +342,10 @@ class _FakeBackend:
         self.identities = identities
 
 
-class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
-    """#1113 Defect 1 — the trusted operator identity set is an implicit self-group.
+class TicketDispositionGroupedIdentityTests(TestCase):
+    """Configured identity groups suppress same-human handoffs.
 
-    ``_user_identity_aliases_for_overlay`` / ``_identity_alias_groups_for_overlay``
-    both resolve empty in the user's deployment (no explicit config), so the
-    scanner's self-handoff predicate never fired and same-human reassigns
-    (``acme-gh → souliane``) rendered as ``reassigned`` churn. The fix
-    unions ``backend.identities`` into the alias groups passed to the
-    disposition scanner. This drives the real
+    This drives the real
     ``scanner_factories._jobs_for_backend_hosts`` builder → scan → dispatch →
     render pipeline (integration, not a hand-rolled comparator).
     """
@@ -361,7 +357,11 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
     def _disposition_scanner(self, backend: _FakeBackend) -> TicketDispositionScanner:
         from teatree.loop.scanner_factories import _jobs_for_backend_hosts  # noqa: PLC0415
 
-        jobs = _jobs_for_backend_hosts(backend, self.OVERLAY)
+        with patch(
+            "teatree.loop.scanner_host_fanout._identity_alias_groups_for_overlay",
+            return_value=(self.IDENTITIES,),
+        ):
+            jobs = _jobs_for_backend_hosts(backend, self.OVERLAY)
         scanner = next(j.scanner for j in jobs if j.scanner.name == "ticket_dispositions")
         assert isinstance(scanner, TicketDispositionScanner)
         return scanner
@@ -382,7 +382,7 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
         )
 
     def test_reassign_between_operator_identities_emits_no_reassigned_row(self) -> None:
-        """acme-gh → souliane (both in backend.identities) → no reassigned churn."""
+        """acme-gh → souliane within one group produces no reassigned row."""
         Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.WORK_STARTED)
         host = _Host(
             user="acme-gh",
@@ -399,7 +399,7 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
         assert "reassigned (from acme-gh → to" not in blob, repr(blob)
 
     def test_reassign_to_real_colleague_still_renders(self) -> None:
-        """acme-gh → colleague (∉ backend.identities) — still an actionable handoff."""
+        """acme-gh → colleague outside the group remains actionable."""
         Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.WORK_STARTED)
         host = _Host(
             user="acme-gh",
@@ -415,15 +415,7 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
         blob = self._render_blob(self._disposition_scanner(backend))
         assert "reassigned (from acme-gh → to real-colleague):" in blob, repr(blob)
 
-    def test_single_identity_backend_does_not_trigger_self_group_union(self) -> None:
-        """Explicit identity-group config must take precedence over backend.identities.
-
-        A single-identity ``backend.identities`` (no real multi-handle
-        ambiguity) must NOT short-circuit reassigns to itself — the union
-        path is skipped when an explicit group is already set.
-        """
-        from unittest.mock import patch  # noqa: PLC0415
-
+    def test_builder_passes_configured_group_through(self) -> None:
         from teatree.loop.scanner_factories import _jobs_for_backend_hosts  # noqa: PLC0415
 
         # An explicit non-empty groups tuple skips the union branch entirely.

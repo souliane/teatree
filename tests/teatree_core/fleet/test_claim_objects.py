@@ -5,7 +5,7 @@ nothing about the mutex needs it in the local object DB. The bug class guarded
 here: an ``acquire``/``heartbeat``/``steal`` that writes into the shared clone
 leaves an unreachable loose object, nothing on the claim path ever triggers git's
 auto-gc, and the footprint then grows without bound (one object per in-flight
-claim per heartbeat tick) for as long as ``fleet_claim_enabled`` is on.
+claim per heartbeat tick.
 
 Anti-vacuity: :func:`test_probe_detects_an_unisolated_object_write` plants that
 leaking write shape (the module's own writer, minus the ephemeral object dir) and

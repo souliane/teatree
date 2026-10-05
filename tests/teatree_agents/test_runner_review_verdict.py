@@ -84,6 +84,11 @@ def _verdict_envelope(
 ) -> dict[str, object]:
     return {
         "summary": "Completed an independent cold review of the pull request.",
+        "review_context": {
+            "work_item": f"https://github.com/{_SLUG}/pull/{_PR_ID}",
+            "documents": ["specs/review-requirements.md"],
+            "analysis": "Compared the diff against the downloaded requirements.",
+        },
         "review_verdict": {
             "verdict": verdict,
             "reviewed_sha": reviewed_sha,
@@ -370,7 +375,8 @@ class TestBranchOnlyProbeIsRefused(TestCase):
             ],
             **verdict_extra,
         }
-        envelope: dict[str, object] = {"summary": "Cold review of the pull request.", "review_verdict": verdict}
+        envelope: dict[str, object] = _verdict_envelope()
+        envelope["review_verdict"] = verdict
         with patch(
             "teatree.agents.review_envelope_recorder.changed_file_set_for_findings",
             return_value=changed,
@@ -411,15 +417,11 @@ class TestBranchOnlyProbeIsRefused(TestCase):
 
 def _envelope_with(**overrides: object) -> dict[str, object]:
     """A well-formed verdict envelope with *overrides* applied to the verdict itself."""
-    verdict: dict[str, object] = {
-        "verdict": "merge_safe",
-        "reviewed_sha": _HEAD,
-        "reviewer_identity": "cold-reviewer-agent",
-        "gh_verify_result": "green",
-        "findings": [],
-        **overrides,
-    }
-    return {"summary": "Completed an independent cold review of the pull request.", "review_verdict": verdict}
+    envelope = _verdict_envelope()
+    verdict = envelope["review_verdict"]
+    assert isinstance(verdict, dict)
+    verdict.update(overrides)
+    return envelope
 
 
 def _contradiction_envelope(**overrides: object) -> dict[str, object]:

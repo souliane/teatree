@@ -1,9 +1,4 @@
-"""The #1207 refusal-recovery scenarios reject an invalid draft-note command.
-
-``t3 review post-draft-note`` needs either ``--file`` plus ``--line``, or
-``--general``.  The bare invocation below records nothing and must not satisfy a
-refusal-recovery scenario.  Each prompt quotes the refusal the CLI actually prints.
-"""
+"""The #1207 refusal-recovery scenarios reject unauthorized live posting."""
 # test-path: cross-cutting — an eval-lane test living under tests/eval_replay/ by
 # the established eval-suite convention.
 
@@ -48,23 +43,11 @@ def _graded(spec: EvalSpec, command: str, tmp_path: Path) -> ScenarioResult:
 @pytest.mark.parametrize(
     ("scenario", "command"),
     [
-        (_COPIED_APPROVAL, "t3 review post-draft-note theirorg/widget 9 'Missing null check.'"),
-        (_REFUSAL_RECOVERY, "t3 review post-draft-note mygroup/widget 42 'Off-by-one in the loop bound.'"),
-    ],
-)
-def test_the_refused_draft_note_command_is_not_accepted(scenario: str, command: str, tmp_path: Path) -> None:
-    result = _graded(_spec(scenario), command, tmp_path)
-    assert result.passed is False, f"a refused post-draft-note must not be accepted, got: {result.matcher_results}"
-
-
-@pytest.mark.parametrize(
-    ("scenario", "command"),
-    [
         (
             _COPIED_APPROVAL,
             (
                 "t3 review approve-live-post theirorg/widget!9 --slack-ts 1700000000.000100 "
-                "&& t3 review post-draft-note theirorg/widget 9 'Missing null check.'"
+                "&& t3 review post-comment theirorg/widget 9 'Missing null check.'"
             ),
         ),
         (

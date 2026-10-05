@@ -24,6 +24,7 @@ from claude_agent_sdk.types import RateLimitInfo
 
 from teatree.agents.harness import HarnessSession, pydantic_ai_thread
 from teatree.agents.result_schema import AgentResultBlob
+from teatree.agents.round_ceiling import RoundCeiling
 from teatree.agents.runner_failure_taxonomy import MODEL_FALLBACK_SUBTYPE, TURN_CEILING_SUBTYPE, is_context_exhaustion
 from teatree.agents.runner_usage import context_size
 from teatree.agents.skill_injection import _bare_skill_name, _resolve_skill_md, harness_skills_dirs
@@ -61,6 +62,8 @@ class HarnessOutcome:
     observed_skill_loads: tuple[str, ...] = ()
     #: Whether the ``PreCompact`` guard ended the run on an automatic compaction attempt.
     compaction_stopped: bool = False
+    #: Why the driver stopped a hookless runtime at a round boundary; recorded as a hand-off.
+    round_handoff: str = ""
     #: The ``model_fallback`` events the CLI streamed — a run served by a model it did not ask for.
     model_fallbacks: tuple[Mapping[str, object], ...] = ()
     #: The conversation's size at its last main-thread turn; ``None`` when no turn reported usage.
@@ -97,6 +100,7 @@ class HarnessOutcome:
 class StreamCapture:
     """The stream so far: the agent's text, the terminal result, a rejected window, the tool calls."""
 
+    round_ceiling: RoundCeiling | None = None
     text_parts: list[str] = field(default_factory=list)
     result_message: ResultMessage | None = None
     rate_limit_info: RateLimitInfo | None = None
@@ -107,6 +111,8 @@ class StreamCapture:
     context_tokens: int | None = None
 
     def observe(self, message: object) -> None:
+        if self.round_ceiling is not None:
+            self.round_ceiling.observe(message)
         if isinstance(message, AssistantMessage):
             self.text_parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
             self.tool_calls += sum(1 for block in message.content if isinstance(block, ToolUseBlock))
@@ -159,17 +165,26 @@ class StreamCapture:
             thread=thread,
             tool_calls=self.tool_calls,
             observed_skill_loads=tuple(dict.fromkeys(self.observed_skill_loads)),
+            round_handoff=self.round_handoff,
             model_fallbacks=tuple(self.model_fallbacks),
             context_tokens=self.context_tokens,
         )
+
+    @property
+    def round_handoff(self) -> str:
+        return self.round_ceiling.handoff if self.round_ceiling is not None else ""
 
 
 async def _collect(session: HarnessSession, prompt: str, capture: StreamCapture | None = None) -> HarnessOutcome:
     """Send *prompt* and collect the agent's text + terminal ``ResultMessage`` + rejected window."""
     capture = capture if capture is not None else StreamCapture()
     await session.query(prompt)
+    interrupted = False
     async for message in session.receive_response():
         capture.observe(message)
+        if capture.round_handoff and not interrupted:
+            await session.interrupt()
+            interrupted = True
     return capture.outcome(thread=pydantic_ai_thread(session))  # (#2886) captured while `session` is still open
 
 

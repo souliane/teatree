@@ -4,8 +4,10 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 import httpx
+from django.utils import timezone
 
 from teatree.backends.slack import SlackReviewSearchRequest, search_review_permalinks
+from teatree.core.gates.review_request_guard import REVIEW_CHANNEL_LOOKBACK
 from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.types import SyncResult
@@ -63,6 +65,7 @@ def fetch_review_permalinks(result: SyncResult) -> None:
     if not pr_urls:
         return
 
+    oldest_ts = f"{(timezone.now() - REVIEW_CHANNEL_LOOKBACK).timestamp():.6f}"
     for channel_name, channel_id in channels:
         if not channel_id:
             continue
@@ -73,6 +76,7 @@ def fetch_review_permalinks(result: SyncResult) -> None:
                     channel_id=channel_id,
                     channel_name=channel_name,
                     pr_urls=pr_urls,
+                    oldest_ts=oldest_ts,
                 )
             )
         except (httpx.HTTPError, RuntimeError, ValueError) as exc:

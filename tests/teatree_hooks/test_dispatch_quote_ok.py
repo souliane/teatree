@@ -144,8 +144,10 @@ class TestRefusalNamesAWorkingPlacement:
         assert str(_dispatch_quote_ok.TOKEN_WINDOW) in message
         assert "skill preamble" in message
 
-    def test_names_relayed_authorisation_as_a_legitimate_reason(self, message: str) -> None:
-        assert "authorisation" in message
+    def test_false_match_directs_agent_to_rephrase_or_ask_owner(self, message: str) -> None:
+        assert "rephrase without the quoted span or ask the owner" in message.lower()
+        assert "owner may approve this one dispatch" in message.lower()
+        assert "add `[quote-ok:" not in message
 
     def test_does_not_repeat_the_placement_that_silently_failed(self, message: str) -> None:
         assert "near the start of the prompt" not in message

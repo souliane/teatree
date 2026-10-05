@@ -1,8 +1,7 @@
 """Clear the stored rows under the retired ``dream_promotion_cap``.
 
 A dream pass now batches every promotion into ONE ticket, so the cap has no reader. A
-surviving row makes ``retired_settings.warn_removed_setting`` print a loud stderr line on
-every resolution, on the statusline/hook/gate hot path. The key is a literal, as in 0109.
+surviving row is ignored on every resolution. The key is a literal, as in 0109.
 """
 
 from django.db import migrations

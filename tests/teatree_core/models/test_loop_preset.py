@@ -81,40 +81,28 @@ class TestTokenOutageAutoEngage(django.test.TestCase):
         Mode.objects.create(name="token-outage", entries={"inbox": True})
         self.reset = timezone.now() + dt.timedelta(hours=2)
 
-    def _enable(self) -> None:
-        ConfigSetting.objects.set_value("token_outage_auto_engage", value=True)
-
-    def test_no_op_when_flag_off(self) -> None:
-        assert ModeOverride.objects.auto_engage_token_outage(resets_at=self.reset) is False
-        assert ModeOverride.objects.current() is None
-
-    def test_engages_when_flag_on(self) -> None:
-        self._enable()
+    def test_always_engages_when_usage_window_is_parked(self) -> None:
         assert ModeOverride.objects.auto_engage_token_outage(resets_at=self.reset) is True
         override = ModeOverride.objects.current()
         assert override.preset_name == "token-outage"
         assert override.expected_lift_at == self.reset
 
     def test_never_overwrites_a_live_user_override(self) -> None:
-        self._enable()
         ModeOverride.objects.set_override("present", reason="user hold")
         assert ModeOverride.objects.auto_engage_token_outage(resets_at=self.reset) is False
         assert ModeOverride.objects.current().preset_name == "present"
 
     def test_no_op_when_target_preset_absent(self) -> None:
-        self._enable()
         ConfigSetting.objects.set_value("token_outage_preset_name", "ghost")
         assert ModeOverride.objects.auto_engage_token_outage(resets_at=self.reset) is False
 
     def test_repointable_target_preset(self) -> None:
-        self._enable()
         Mode.objects.create(name="frugal", entries={})
         ConfigSetting.objects.set_value("token_outage_preset_name", "frugal")
         ModeOverride.objects.auto_engage_token_outage(resets_at=self.reset)
         assert ModeOverride.objects.current().preset_name == "frugal"
 
     def test_clear_removes_only_an_auto_engaged_override(self) -> None:
-        self._enable()
         ModeOverride.objects.auto_engage_token_outage(resets_at=self.reset)
         assert ModeOverride.objects.clear_auto_engaged_token_outage() is True
         assert ModeOverride.objects.current() is None

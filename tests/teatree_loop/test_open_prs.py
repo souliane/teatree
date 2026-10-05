@@ -41,14 +41,6 @@ class TestOpenPrsFromSignals:
         signals = [_signal("my_pr.open", iid=7, title="wip", draft=True)]
         assert open_prs_from_signals(signals)[0].draft is True
 
-    def test_reads_legacy_work_in_progress_alias(self) -> None:
-        signal = ScanSignal(
-            kind="my_pr.open",
-            summary="legacy wip",
-            payload={"iid": 8, "title": "old gitlab", "url": "https://h/p/8", "raw": {"work_in_progress": True}},
-        )
-        assert open_prs_from_signals([signal])[0].draft is True
-
     def test_dedups_by_url(self) -> None:
         signals = [
             _signal("my_pr.open", iid=5, title="once"),

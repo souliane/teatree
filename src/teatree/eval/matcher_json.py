@@ -11,6 +11,7 @@ from teatree.eval.models import (
     Matcher,
     PlanBeforeToolMatcher,
     SuccessfulToolCallMatcher,
+    ToolCallCountMatcher,
 )
 
 
@@ -88,6 +89,16 @@ class MatcherJson:
                 before_arg_path=matcher.before_arg_path,
                 before_operator=matcher.before_operator,
                 before_value=matcher.before_value,
+                passed=passed,
+                message=message,
+            )
+        if isinstance(matcher, ToolCallCountMatcher):
+            return cls(
+                kind="tool_call_count",
+                tool=matcher.tool,
+                arg_path=matcher.arg_path,
+                operator="~",
+                value=matcher.pattern,
                 passed=passed,
                 message=message,
             )

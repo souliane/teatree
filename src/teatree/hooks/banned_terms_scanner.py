@@ -23,13 +23,6 @@ The module is pure detection. The PreToolUse hook in
 ``hooks/scripts/hook_router.py`` is the only place that knows about
 ``stdout`` / ``permissionDecision`` JSON.
 
-Override via the ``--allow-banned-term`` flag in the first command
-segment, a leading ``ALLOW_BANNED_TERM=1`` inline env-assignment token on
-the publish segment itself (``ALLOW_BANNED_TERM=1 glab ...`` or
-``cd <worktree> && ALLOW_BANNED_TERM=1 git commit ...`` — bash scopes the
-assignment to that command), the ``ALLOW_BANNED_TERM=1`` process env var,
-or ``ALLOW_BANNED_TERM=1`` in the tool-input env mapping — mirroring the
-quote-scanner's ``--quote-ok`` / ``QUOTE_OK=1`` escape hatch.
 """
 
 import os
@@ -39,21 +32,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TypedDict
 
-from teatree.config import cold_reader
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import extract_secret_scan_text as _extract_secret_scan_text
-from teatree.hooks._command_parser import first_segment_words as _first_segment_words
-from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
-from teatree.hooks._command_parser import is_unavailable_body_source_sentinel as _is_unavailable_body_source_sentinel
-from teatree.hooks._hook_state import note_env_override_once
-from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
-from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError
+from teatree.hooks._parser_primitives import is_fail_closed_sentinel as _is_fail_closed_sentinel
+from teatree.hooks._parser_primitives import is_unavailable_body_source_sentinel as _is_unavailable_body_source_sentinel
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnreadableError, BannedTermsUnsetError
 from teatree.hooks.term_match import matched_term as _matched_token_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
-
-_OVERRIDE_FLAG = "--allow-banned-term"
-_OVERRIDE_ENV = "ALLOW_BANNED_TERM"
 
 # Marker returned by ``scan_text`` when the body source cannot be resolved
 # (a missing ``--body-file``, an unreadable path). The gate blocks on this
@@ -94,19 +80,15 @@ SCANNER_TIMEOUT_MARKER: str = "<banned-terms-scanner-timeout>"
 # is simply ABSENT is not this — it is a confirmed answer, and carries no marker.
 STORE_UNREADABLE_MARKER: str = "<banned-terms-store-unreadable>"
 
-# Marker returned when the store WAS read, holds no term list, and the deployment has set
-# ``banned_terms_required``. That flag is read inside the shell scanner, which the
-# nothing-configured branch below never invokes, so it was inert on exactly the path it
-# exists for: the deployment that MUST scrub published unscanned.
-TERMS_REQUIRED_UNSET_MARKER: str = "<banned-terms-required-but-unset>"
+# Marker returned when the store was read but holds no term list. The shell
+# scanner is skipped on this path, so the publish gate must refuse directly.
+TERMS_UNSET_MARKER: str = "<banned-terms-unset>"
 
 # Its deny reason. The remedy is the operator's own configuration, not a repair.
-_TERMS_REQUIRED_UNSET_DENY: str = (
-    "BLOCKED: banned-terms posting gate (#1415/#3247). No banned-term list is configured and "
-    "banned_terms_required is set, so this deployment must scrub before publishing and has "
-    "nothing to scrub against. Configure the list with `t3 <overlay> config_setting set "
-    "banned_terms`, or unset banned_terms_required on a box that does not need it. Failing "
-    "closed: an unscanned body is not allowed onto a public surface."
+_TERMS_UNSET_DENY: str = (
+    "BLOCKED: banned-terms posting gate. No banned-term list is configured. "
+    "Configure banned_term_registry with terms for the scan before publishing. "
+    "Failing closed: an unscanned body is not allowed onto a public surface."
 )
 
 # Its deny reason. Separate from the scanner messages for the reason one of them was
@@ -119,8 +101,7 @@ _STORE_UNREADABLE_DENY: str = (
     "so this gate cannot tell an empty term list from a list it simply could not see. The config DB "
     "is corrupt, locked by a live writer, or missing its table, and no published projection answers "
     "this key either — `t3 doctor check` says which. Failing closed: an unscanned body is not "
-    "allowed onto a public surface. The escapes remain — ALLOW_BANNED_TERM=1 for one call, or "
-    "banned_terms_gate_enabled false to disable the gate."
+    "allowed onto a public surface. Ask the owner to resolve the unreadable store."
 )
 
 # How long to wait for the shell scanner before failing closed. The harness
@@ -131,11 +112,7 @@ _STORE_UNREADABLE_DENY: str = (
 SCAN_TIMEOUT_DEFAULT_S = 10
 SCAN_TIMEOUT_ENV = "T3_BANNED_TERMS_SCAN_TIMEOUT_S"
 
-# DB-home term key and the ``T3_BANNED_TERMS`` env override that WINS over the DB
-# (mirroring ``banned_terms_cli``). The allowlist carve-out is read via
-# ``banned_term_registry.allowlist_terms`` (dual-read).
-_TERMS_KEY = "banned_terms"
-_TERMS_ENV = "T3_BANNED_TERMS"
+# The term and allowlist classes are read through ``banned_term_registry``.
 
 
 class ToolInput(TypedDict, total=False):
@@ -146,16 +123,11 @@ class ToolInput(TypedDict, total=False):
 
 
 def _banned_terms_configured(config_path: Path | None) -> bool:
-    """Return True iff a banned-terms source (registry, env, or legacy row) is set.
+    """Return True iff the banned-term registry is set.
 
-    The gate is a clean NO-OP when nothing is configured — matching the shell
-    hook's own "no terms ⇒ no-op" contract — so this decides whether to shell
-    out at all. Configured means ANY of: a set ``T3_BANNED_TERMS`` env; the
-    consolidated ``banned_term_registry`` present (DB row or
-    ``$TEATREE_TERM_REGISTRY`` secret); or a present legacy ``banned_terms`` row
-    (even an explicit empty list). Consulting the registry closes the post-cutover
-    fail-open: once the operator sets the registry and drops the legacy row, the
-    gate must still scan rather than silently no-op. *config_path* overrides the
+    The gate refuses when nothing is configured, before trying to shell out.
+    Configured means the ``banned_term_registry`` is present (DB row or
+    ``$TEATREE_TERM_REGISTRY`` secret). *config_path* overrides the
     DB path (else the canonical DB / ``T3_CONFIG_DB``). A malformed registry
     propagates :class:`BannedTermsUnsetError` (fail-loud), never a silent no-op.
 
@@ -163,23 +135,12 @@ def _banned_terms_configured(config_path: Path | None) -> bool:
     :class:`BannedTermsUnreadableError` rather than resolving to "not configured":
     that read is indistinguishable from an unset row, and treating it as unset let a
     busy store open this publish-surface gate the same way it opened the commit-only
-    shell scanner (#4008). Confirmed ABSENCE is the opposite case and returns ``False``:
-    no DB anywhere, no published projection, no row is what a fresh install looks like,
-    and refusing it made this gate match its own sentinel against every body — every
-    fresh install, the whole test suite, and every issue the factory files. The
-    deployment that must scrub declares itself with ``banned_terms_required``, which
-    :func:`_no_term_list_verdict` honours on exactly this branch.
+    shell scanner (#4008). Confirmed absence returns ``False`` so the caller
+    can identify the missing installation value separately from an unreadable store.
     """
-    from teatree.hooks.banned_term_registry import load_registry  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_term_registry import load_registry  # noqa: PLC0415 — cold-path import
 
-    if os.environ.get(_TERMS_ENV, "").strip():
-        return True
-    if load_registry(db_path=config_path) is not None:
-        return True
-    read = cold_reader.read_setting_confirmed(_TERMS_KEY, db_path=config_path)
-    if not read.readable:
-        raise BannedTermsUnreadableError.for_store(_TERMS_KEY, _TERMS_ENV)
-    return isinstance(read.value, list)
+    return load_registry(db_path=config_path) is not None
 
 
 def _scanner_script() -> Path:
@@ -227,82 +188,6 @@ def secret_scan_text(tool_name: str, tool_input: ToolInput) -> str:
     return _extract_secret_scan_text(tool_input.get("command", ""))
 
 
-def _segment_leads_with_override(words: list[str]) -> bool:
-    """Return True iff ``words`` leads with ``ALLOW_BANNED_TERM=1`` before its command.
-
-    Only the leading run of ``KEY=value`` env-assignment tokens is inspected:
-    bash applies a leading inline assignment to that command's environment, while
-    a ``KEY=val``-shaped token after the command name is an argument, not an
-    override. The first non-assignment token ends the run.
-    """
-    for word in words:
-        name, sep, value = word.partition("=")
-        if not sep:
-            return False  # command name reached: later KEY=val tokens are args
-        if name == _OVERRIDE_ENV:
-            return value.strip() == "1"
-    return False
-
-
-def _has_leading_env_override(command: str) -> bool:
-    """Return True iff the segment carrying the publish leads with ``ALLOW_BANNED_TERM=1``.
-
-    The Claude Code harness forwards a ``Bash`` command verbatim and lets
-    NEITHER an inline ``env`` block reach the gate NOR ``glab``/``gh`` accept
-    a ``--allow-banned-term`` flag (they reject the unknown flag). The one
-    spelling the agent CAN reliably emit is a leading inline env assignment
-    on the command itself — ``ALLOW_BANNED_TERM=1 glab mr note ...`` — which
-    bash applies to that command's environment.
-
-    Bash scopes a leading inline assignment to that one command, so the override
-    is honoured iff the segment it leads IS ITSELF the publish/commit the gate
-    would scan (checked via :func:`_is_publish_command` on the standalone
-    segment). This honours the common sub-agent shape that navigates first
-    (``cd <worktree> && ALLOW_BANNED_TERM=1 git commit ...`` — override on the
-    commit segment) while a decoy override on a harmless segment cannot vouch for
-    a chained publish elsewhere (``ALLOW_BANNED_TERM=1 echo hi && gh issue create
-    …`` and ``gh issue create … ; ALLOW_BANNED_TERM=1 echo`` both still fire).
-    """
-    for words in _segment_word_lists_raw(command):
-        if _segment_leads_with_override(words) and _is_publish_command(" ".join(words)):
-            return True
-    return False
-
-
-def has_override(tool_name: str, tool_input: ToolInput) -> bool:
-    """Return True iff the caller explicitly opted out of the gate.
-
-    The ``--allow-banned-term`` flag is honoured only when it appears as a
-    token in the FIRST command segment (anything after a command-separator
-    metacharacter is a separate command and must not bypass the gate). A
-    leading ``ALLOW_BANNED_TERM=1`` inline env-assignment token in the first
-    segment (``ALLOW_BANNED_TERM=1 glab ...``) is ALSO honoured: the harness
-    forwards neither an inline ``env`` block nor a ``--allow-banned-term``
-    flag glab/gh would accept, so the leading env-assignment is the spelling
-    that actually reaches the gate.
-
-    ``ALLOW_BANNED_TERM=1`` is honoured from the process environment
-    (``os.environ``). The Claude Code PreToolUse payload for a ``Bash``
-    tool carries NO ``env`` block, so the agent's ``ALLOW_BANNED_TERM=1``
-    lives in the hook subprocess's own environment; reading only
-    ``tool_input["env"]`` meant the documented override never reached the
-    wrapper and forced numeric-id + paraphrase workarounds (#126).
-    ``tool_input["env"]`` is still consulted for any harness build that
-    DOES populate it. Mirrors ``quote_scanner.has_quote_ok_override``.
-    """
-    if tool_name == "Bash":
-        command = tool_input.get("command", "")
-        if _OVERRIDE_FLAG in _first_segment_words(command):
-            return True
-        if _has_leading_env_override(command):
-            return True
-    if os.environ.get(_OVERRIDE_ENV, "").strip() == "1":
-        note_env_override_once(_OVERRIDE_ENV)
-        return True
-    env = tool_input.get("env") or {}
-    return env.get(_OVERRIDE_ENV, "").strip() == "1"
-
-
 def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     """Run ``check-banned-terms.sh`` against ``text``; return the matched term, else ``None``.
 
@@ -342,15 +227,12 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
 
 
 def _configured_or_unreadable(config_path: Path | None) -> bool | None:
-    """``_banned_terms_configured``, or ``None`` when the legacy row could not be READ.
+    """Resolve the registry: present, absent/malformed, or unreadable.
 
     Isolated from :func:`_run_shell_scanner` so its own unreadable-store handling
-    does not add to that function's return-statement count. ``None`` is the
-    FAIL-CLOSED signal — a legacy row that errored on read (locked, corrupt, or
-    missing its table) is indistinguishable from unset, so it must never resolve
-    to ``False`` ("nothing configured"): that collapse is exactly what let a busy
-    store open this publish-surface gate the same way it opened the commit-only
-    shell scanner (#4008).
+    does not add to that function's return-statement count. ``None`` is an
+    unreadable store; ``False`` is a confirmed absence or malformed registry.
+    Both outcomes produce blocking markers.
     """
     try:
         return _banned_terms_configured(config_path)
@@ -361,6 +243,8 @@ def _configured_or_unreadable(config_path: Path | None) -> bool | None:
             "a clean scan — retry, or repair the store.\n"
         )
         return None
+    except BannedTermsUnsetError:
+        return False
 
 
 def _scan_timeout_s() -> int:
@@ -385,27 +269,18 @@ def _marker_for_scanner_failure(exc: Exception, timeout: int) -> str:
     return SCANNER_UNAVAILABLE_MARKER
 
 
-def _no_term_list_verdict(config_path: Path | None, *, configured: bool | None) -> str | None:
-    """The scan result when no term list resolved: a marker to block on, or a clean no-op.
-
-    ``None`` from the caller is a store that could not be read. ``False`` is a store that was
-    read and holds nothing — the genuine no-op on a dev box, and a fail-closed on the
-    deployment that set ``banned_terms_required``, which never reached this branch because
-    that flag is read inside the shell scanner the branch skips.
-    """
-    from teatree.hooks.banned_terms_cli import banned_terms_required  # noqa: PLC0415  CLI import, off the fast path
-
+def _no_term_list_verdict(*, configured: bool | None) -> str:
+    """Distinguish an unreadable store from an absent term list; refuse both."""
     if configured is None:
         return STORE_UNREADABLE_MARKER
-    return TERMS_REQUIRED_UNSET_MARKER if banned_terms_required(db_path=config_path) else None
+    return TERMS_UNSET_MARKER
 
 
 def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """Delegate ``text`` to ``check-banned-terms.sh``; return the matched term, else ``None``.
 
     Writes ``text`` to a temp file and invokes the shell scanner (which reads the
-    DB-home term list). Returns ``None`` ONLY on a genuine no-op — nothing
-    configured, so there is nothing to scan. Returns
+    DB-home term list). Returns ``None`` only after a clean scan. Returns
     :data:`SCANNER_UNAVAILABLE_MARKER` (the gate fails CLOSED) when the scanner
     could not run, INCLUDING a MISSING scanner script while banned-terms IS
     configured (HLG-7), OR the legacy row could not be READ at all (#4008): both
@@ -416,7 +291,7 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """
     configured = _configured_or_unreadable(config_path)
     if configured is not True:
-        return _no_term_list_verdict(config_path, configured=configured)
+        return _no_term_list_verdict(configured=configured)
     script = _scanner_script()
     if not script.is_file():
         # banned-terms IS configured (checked above) but the scanner script is
@@ -424,8 +299,8 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
         # made a missing script indistinguishable from a real clean scan, so a
         # PUBLIC body slipped through unscanned (HLG-7). Fail LOUD + CLOSED like a
         # crashing interpreter (#1954): a scanner that cannot run must never resolve
-        # to ALLOW. Never-lockout escapes remain (the ``ALLOW_BANNED_TERM=1``
-        # override, the ``banned_terms_gate_enabled`` kill-switch).
+        # to ALLOW. The never-lockout escape is the ``banned_terms_gate_enabled``
+        # kill-switch.
         sys.stderr.write(
             f"[teatree] NOTE: banned-terms scanner script is missing at {script} while "
             "banned-terms is configured. Failing CLOSED rather than reporting a clean scan — "
@@ -470,20 +345,19 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
 
 
 def _load_allowlist(config_path: Path | None) -> tuple[str, ...]:
-    """Return the DB-home ``banned_terms_allowlist`` carve-out array.
+    """Return the registry ``allow`` carve-out.
 
     Mirrors :func:`banned_terms_cli._load_allowlist` so the report-attribution
     path here and the shell scanner's matching path read the SAME carve-out. The
     shell scanner already blanks allow-listed identifier runs when flagging a
     line, so this is only used to keep the REPORTED term in sync — a line flagged
     for a genuine customer codename next to a company identifier must attribute
-    the codename, never the carved-out org slug. Dual-read: the consolidated
-    ``banned_term_registry`` ``allow`` class when present, else the legacy
-    ``banned_terms_allowlist`` row. Reads the canonical ``ConfigSetting`` store
+    the codename, never the carved-out org slug. Reads the consolidated
+    ``banned_term_registry`` ``allow`` class from the ``ConfigSetting`` store
     via :mod:`teatree.config.cold_reader`; *config_path* overrides the DB path.
     Empty (default) is a no-op.
     """
-    from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_term_registry import allowlist_terms  # noqa: PLC0415 — cold-path import
 
     return allowlist_terms(config_path)
 
@@ -521,19 +395,13 @@ def _matched_term(report: str, allowlist: tuple[str, ...] = ()) -> str | None:
 def format_block_message(term: str) -> str:
     """Render the PreToolUse deny reason for a banned-term match.
 
-    The false-positive escape names the leading ``ALLOW_BANNED_TERM=1`` env
-    PREFIX, not a ``--allow-banned-term`` CLI flag: the flag is consumed by the
-    gate's parser, never by the posting command, so a ``t3 review post-comment``
-    (or any other subcommand) would reject it as an unknown option. The env
-    prefix is a real shell construct every command accepts — it sets a variable
-    bash scopes to that one command and never reaches the subcommand's arg
-    parser — so it is the spelling that actually works at the prompt.
+    Public egress has no override; the owner reviews a blocked publication.
     """
     return (
         f"BLOCKED: banned-terms posting gate (#1415). The body carries the banned term "
-        f"'{term}'. Remove the overlay/customer term before posting to the public surface. "
-        f"If the match is a false positive, re-issue the command with a leading "
-        f"{_OVERRIDE_ENV}=1 env prefix (e.g. `{_OVERRIDE_ENV}=1 <command>`)."
+        f"'{term}'. Rephrase without the matched term before posting to the public surface, "
+        "or ask the owner if this is a false match. "
+        "Ask the owner to review the blocked publication."
     )
 
 
@@ -624,7 +492,7 @@ _MARKER_DENY_RENDERERS: dict[str, Callable[[], str]] = {
     SCANNER_TIMEOUT_MARKER: format_scanner_timeout_message,
     SCANNER_UNAVAILABLE_MARKER: format_scanner_unavailable_message,
     STORE_UNREADABLE_MARKER: lambda: _STORE_UNREADABLE_DENY,
-    TERMS_REQUIRED_UNSET_MARKER: lambda: _TERMS_REQUIRED_UNSET_DENY,
+    TERMS_UNSET_MARKER: lambda: _TERMS_UNSET_DENY,
 }
 
 

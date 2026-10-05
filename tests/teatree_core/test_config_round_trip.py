@@ -221,7 +221,7 @@ class TestAPrivateBackupIsRestorable(TestCase):
 
     #: One row per withhold class the guard has a rule for. Every value is SYNTHETIC.
     _PRIVATE_ROWS: ClassVar[dict[str, object]] = {
-        "banned_brands": ["acmebrand"],  # private-key
+        "banned_term_registry": {"leak": ["acmebrand"], "prose_collider": []},  # private-key
         "slack_user_id": "<the-operator>",  # personal-identifier
         "ban_close_trailers_on_namespaces": ["acmecorp"],  # banned-term content scan
     }
@@ -275,6 +275,9 @@ class TestAPrivateBackupIsRestorable(TestCase):
     def test_the_restore_flag_does_not_relax_a_file_that_is_not_a_backup(self) -> None:
         # Anti-vacuous control: the allowance is tied to the file DECLARING itself a personal
         # backup, so a shared dump carrying a secret row is refused exactly as it always was.
-        result = self._import('[teatree]\nbanned_brands = ["acmebrand"]\n', restore_private=True)
-        assert [(row.key, row.reason) for row in result.rejected] == [("banned_brands", "secret (private-key)")]
+        result = self._import(
+            '[teatree]\nbanned_term_registry = { leak = ["acmebrand"], prose_collider = [] }\n',
+            restore_private=True,
+        )
+        assert [(row.key, row.reason) for row in result.rejected] == [("banned_term_registry", "secret (private-key)")]
         assert result.private_backup is False

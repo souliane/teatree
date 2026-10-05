@@ -3,8 +3,8 @@
 One coherent package for the PreToolUse banned-terms leak gate, previously three
 scattered ``hooks/scripts/banned_terms_{gate,deny,marker}.py`` siblings: the
 ``gate`` (the ``handle_banned_terms_pretool`` entry point the router dispatches),
-the ``deny`` emitter, and the ``marker`` (the ``ALLOW_BANNED_TERM=1`` escape
-resolver). Behaviour-preserving move — scan/deny logic is unchanged; the public
+the ``deny`` emitter, and the ``marker`` (legacy token detection). Public egress
+ignores override tokens; the public
 entry point is re-exported here so ``from hooks.scripts.banned_terms import
 handle_banned_terms_pretool`` keeps working.
 """

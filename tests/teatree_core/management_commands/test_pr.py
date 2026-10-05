@@ -10,6 +10,7 @@ from django.test import TestCase, override_settings
 import teatree.core.management.commands.pr as pr_mod
 from teatree.core.backend_protocols import UploadVerification
 from teatree.core.models import Session, Ticket, Worktree
+from tests._send_gate import allow_forge_repos
 from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, SETTINGS, _patch_overlays
 
 pytestmark = pytest.mark.filterwarnings(
@@ -239,11 +240,16 @@ class TestPrDetectTenant(TestCase):
 
 
 class TestPrPostTestPlan(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos("my/repo", "other:test/project")
+
     @pytest.fixture(autouse=True)
     def _no_on_behalf_gate(
         self,
         tmp_path_factory: pytest.TempPathFactory,
         monkeypatch: pytest.MonkeyPatch,
+        configured_banned_term_registry: None,
     ) -> None:
         """Disable the on-behalf gate (#960) for transport-mechanics tests.
 

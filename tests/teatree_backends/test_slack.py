@@ -4,6 +4,8 @@ The transport is routed through :class:`SlackHttpClient` (bounded retry + 429
 handling), so the fake replaces that class rather than a raw ``httpx.Client``.
 """
 
+import itertools
+
 import pytest
 
 from teatree.backends.slack import (
@@ -377,25 +379,33 @@ def test_read_recent_review_matches_not_ok_when_history_pending_without_cursor(m
     assert read.ok is False
 
 
-def test_read_recent_review_matches_not_ok_when_the_page_cap_truncates_the_walk(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A cap-truncated walk never saw the whole window, so it is not a clean empty read."""
-    page = {"ok": True, "messages": [], "has_more": True, "response_metadata": {"next_cursor": "c2"}}
-    fake = FakeSlackHttp(pages=[page, page])
+def test_read_recent_review_matches_not_ok_when_the_walk_budget_runs_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A walk the clock cut short never saw the whole window, so it is not a clean empty read."""
+    pending = {"ok": True, "messages": [], "has_more": True, "response_metadata": {"next_cursor": "c2"}}
+    fake = FakeSlackHttp(pages=[pending] * 50 + [{"ok": True, "messages": [], "has_more": False}])
+    _patch(monkeypatch, fake)
+    monkeypatch.setattr("teatree.backends.slack.client.monotonic", itertools.count(0.0, 1e9).__next__)
+
+    read = read_recent_review_matches(
+        SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=["https://x/pull/1"])
+    )
+    assert read.ok is False
+    assert fake._page_idx < 51
+
+
+def test_read_recent_review_matches_follows_the_cursor_past_any_page_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    pr_url = "https://gitlab.com/org/repo/-/merge_requests/9"
+    pending = {"ok": True, "messages": [], "has_more": True, "response_metadata": {"next_cursor": "next"}}
+    last = {"ok": True, "messages": [{"text": f"review {pr_url}", "ts": "1700000001.000100"}], "has_more": False}
+    fake = FakeSlackHttp(pages=[pending] * 24 + [last])
     _patch(monkeypatch, fake)
 
     read = read_recent_review_matches(
-        SlackReviewSearchRequest(
-            token="xoxb",
-            channel_id="C1",
-            channel_name="r",
-            pr_urls=["https://x/pull/1"],
-            max_pages=1,
-        )
+        SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=[pr_url])
     )
-    assert read.ok is False
-    assert fake._page_idx == 1
+    assert read.ok is True
+    assert [match.pr_url for match in read.matches] == [pr_url]
+    assert fake._page_idx == 25
 
 
 def test_iter_review_matches_uses_bot_id_author(monkeypatch: pytest.MonkeyPatch) -> None:

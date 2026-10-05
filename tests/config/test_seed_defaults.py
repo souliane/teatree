@@ -39,7 +39,7 @@ class TestReadsTheShippedSeedTables:
     def test_a_loop_entry_carries_its_cadence_and_description(self) -> None:
         inbox = shipped_seed_table("loops")["inbox"]
         assert inbox["delay_seconds"] == 60
-        assert inbox["default_enabled"] is True
+        assert "default_enabled" not in inbox
         assert inbox["description"]
 
     def test_a_schedule_entry_carries_its_slots_as_an_array_of_tables(self) -> None:

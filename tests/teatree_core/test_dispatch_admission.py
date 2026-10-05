@@ -59,26 +59,12 @@ def _admits(*, ceiling: int) -> AdmissionDecision:
 def _signals(*, load1: float = 1.0, quota: QuotaSignal | None = None) -> Iterator[None]:
     machine = MachineSignal(cores=_CORES, load1=load1, ram_available_gb=20.0)
     with ExitStack() as stack:
-        stack.enter_context(patch.object(gate_mod, "governor_enabled", return_value=True))
         stack.enter_context(patch.object(gate_mod, "read_quota_signal", return_value=quota or _healthy_quota()))
         stack.enter_context(patch.object(gate_mod, "read_machine_signal", return_value=machine))
         yield
 
 
 class TestDispatchAdmissionDeniedReason(TestCase):
-    def test_kill_switch_off_admits(self) -> None:
-        # Acceptance #3: admission_governor_enabled = false ⇒ exactly today's behaviour.
-        with patch.object(gate_mod, "governor_enabled", return_value=False):
-            assert dispatch_admission_denied_reason() is None
-
-    def test_kill_switch_off_never_probes(self) -> None:
-        with (
-            patch.object(gate_mod, "governor_enabled", return_value=False),
-            patch.object(gate_mod, "decide_admission") as decide,
-        ):
-            dispatch_admission_denied_reason()
-        decide.assert_not_called()
-
     def test_the_dispatch_path_calls_decide_admission(self) -> None:
         # Acceptance #2: the governor's caller count is no longer "factory lanes only".
         with _signals(), patch.object(gate_mod, "decide_admission", wraps=gate_mod.decide_admission) as decide:
@@ -99,7 +85,6 @@ class TestDispatchAdmissionDeniedReason(TestCase):
 
     def test_a_signal_read_failure_admits_fail_open(self) -> None:
         with (
-            patch.object(gate_mod, "governor_enabled", return_value=True),
             patch.object(gate_mod, "read_quota_signal", side_effect=RuntimeError("probe down")),
         ):
             assert dispatch_admission_denied_reason() is None
@@ -188,11 +173,6 @@ class TestTheCeilingSeesItsOwnAdmissions(TestCase):
             patch.object(InteractiveDispatch.objects, "claim_seat", side_effect=RuntimeError("db gone")),
         ):
             assert dispatch_admission_denied_reason(session_id="s-4129") is None
-
-    def test_the_kill_switch_writes_no_seat(self) -> None:
-        with patch.object(gate_mod, "governor_enabled", return_value=False):
-            assert dispatch_admission_denied_reason(session_id="s-4129") is None
-        assert InteractiveDispatch.objects.count() == 0
 
     def test_an_agent_with_no_task_row_still_binds_the_ceiling(self) -> None:
         # The population #4107 governs — a harness Agent/Task sub-agent — holds no Task

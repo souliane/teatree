@@ -35,6 +35,10 @@
 # rather than the whole teatree.core package, which would put a package-wide edge on
 # the core fan-in ratchet to buy one function.
 #
+# teatree.deploy -- the roller that moves the runtime stack between image
+# generations. Orchestration, beside teatree.loop, because it drives the loop's
+# per-generation drain; that same-layer edge is its one declared dependency.
+#
 # depends_on is NOT an exhaustive import list. In tach's layered mode a module
 # may import any module in a LOWER layer without declaring it, so only
 # SAME-layer edges bind here. teatree.mcp (integration), for example, also
@@ -63,9 +67,14 @@ layers = [
 ]
 
 [[modules]]
+path = "teatree.dream_constants"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.paths"
 layer = "foundation"
-depends_on = ["teatree.sqlite_snapshot"]
+depends_on = ["teatree.generation", "teatree.sqlite_snapshot"]
 
 [[modules]]
 path = "teatree.sqlite_snapshot"
@@ -84,11 +93,6 @@ depends_on = []
 
 [[modules]]
 path = "teatree.project"
-layer = "foundation"
-depends_on = ["teatree.paths"]
-
-[[modules]]
-path = "teatree.live_presence"
 layer = "foundation"
 depends_on = ["teatree.paths"]
 
@@ -201,6 +205,11 @@ depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.hooks"
+layer = "platform"
+depends_on = ["teatree.config", "teatree.hooks._private_repo_entries", "teatree.utils"]
+
+[[modules]]
+path = "teatree.hooks._private_repo_entries"
 layer = "platform"
 depends_on = ["teatree.config", "teatree.utils"]
 
@@ -360,9 +369,24 @@ layer = "domain"
 depends_on = []
 
 [[modules]]
+path = "teatree.core.managers_admission"
+layer = "domain"
+depends_on = ["teatree.core.modelkit"]
+
+[[modules]]
 path = "teatree.core.managers_task_claim"
 layer = "domain"
-depends_on = ["teatree.config", "teatree.core.process_freshness", "teatree.core.schema_readiness"]
+depends_on = [
+  "teatree.config",
+  "teatree.core.admission.generation_admission",
+  "teatree.core.process_freshness",
+  "teatree.core.schema_readiness"
+]
+
+[[modules]]
+path = "teatree.core.admission.generation_admission"
+layer = "domain"
+depends_on = ["teatree.generation"]
 
 [[modules]]
 path = "teatree.core.managers_task_sweeps"
@@ -413,11 +437,13 @@ path = "teatree.core.managers"
 layer = "domain"
 depends_on = [
   "teatree.config",
+  "teatree.core.admission.generation_admission",
   "teatree.core.claim_liveness",
   "teatree.utils",
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.loop_lease_manager",
+  "teatree.core.managers_admission",
   "teatree.core.managers_inbound",
   "teatree.core.managers_issue_match",
   "teatree.core.managers_overlay",
@@ -451,7 +477,8 @@ depends_on = [
   "teatree.instance_id",
   "teatree.url_classify",
   "teatree.verification",
-  "teatree.core.telemetry"
+  "teatree.core.telemetry",
+  "teatree.answer_handback"
 ]
 
 [[modules]]
@@ -502,7 +529,6 @@ depends_on = [
   "teatree.types",
   "teatree.utils",
   "teatree.core",
-  "teatree.identity",
   "teatree.llm",
   "teatree.backends.errors",
   "teatree.backends.types",
@@ -541,7 +567,6 @@ depends_on = [
   "teatree.utils",
   "teatree.core",
   "teatree.core.models",
-  "teatree.identity",
   "teatree.url_classify",
   "teatree.backends.http_retry"
 ]
@@ -1031,6 +1056,11 @@ depends_on = [
 ]
 
 [[modules]]
+path = "teatree.deploy"
+layer = "orchestration"
+depends_on = ["teatree.loop"]
+
+[[modules]]
 path = "teatree.loops"
 layer = "orchestration"
 depends_on = [
@@ -1062,22 +1092,17 @@ layer = "integration"
 depends_on = ["teatree.core", "teatree.utils"]
 
 [[modules]]
-path = "teatree.identity"
-layer = "platform"
-depends_on = ["teatree.config"]
-
-[[modules]]
 path = "teatree.instance_id"
 layer = "foundation"
 depends_on = []
 
 [[modules]]
-path = "teatree.on_behalf_gate"
-layer = "platform"
-depends_on = ["teatree.config"]
+path = "teatree.generation"
+layer = "foundation"
+depends_on = []
 
 [[modules]]
-path = "teatree.missing_issue_policy"
+path = "teatree.on_behalf_gate"
 layer = "platform"
 depends_on = ["teatree.config"]
 
@@ -1112,9 +1137,14 @@ layer = "platform"
 depends_on = ["teatree.utils"]
 
 [[modules]]
-path = "teatree.url_title_fetcher"
-layer = "platform"
-depends_on = ["teatree.utils", "teatree.config"]
+path = "teatree.answer_handback"
+layer = "foundation"
+depends_on = ["teatree.paths"]
+
+[[modules]]
+path = "teatree.standing_directives_cache"
+layer = "foundation"
+depends_on = ["teatree.paths"]
 
 [[modules]]
 path = "teatree.url_classify"

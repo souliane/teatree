@@ -79,9 +79,8 @@ def recover_truncated_inline_skills(
     required_explicit: set[str],
     rendered_context: str,
     skills_dirs: Sequence[Path] | None = None,
-    can_load: bool,
 ) -> tuple[set[str], set[str], str]:
-    """Turn budget-truncated bodies into explicit full-file loads when tools permit.
+    """Turn budget-truncated bodies into explicit full-file loads.
 
     A skill header surviving the 96 KiB context budget is not the whole skill.
     The agent gets both the Skill-tool reference and the exact local file path;
@@ -89,8 +88,6 @@ def recover_truncated_inline_skills(
     """
     inline = set(required_inline)
     explicit = set(required_explicit)
-    if not can_load:
-        return inline, explicit, ""
     directories = list(skills_dirs) if skills_dirs is not None else harness_skills_dirs()
     lines = []
     for name in sorted(required_inline):

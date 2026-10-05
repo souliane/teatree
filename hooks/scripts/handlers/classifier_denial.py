@@ -3,7 +3,7 @@
 Makes the "Classifier Denial Protocol" (skills/rules/SKILL.md) deterministic:
 PostToolUse writes a per-session marker when a tool_response carries the canonical
 denial preamble; the Stop gate turns a pending marker into a STOP-and-explain
-systemMessage; the next UserPromptSubmit clears it. Fail-safe-to-empty: every
+systemMessage and consumes the marker. Fail-safe-to-empty: every
 handler returns silently on malformed input so the hook never crashes the harness.
 The state-dir helpers stay in the router and are back-imported lazily, so a test
 patching router.STATE_DIR reaches the marker path.
@@ -105,7 +105,7 @@ def handle_track_classifier_denial(data: dict) -> None:
 
 
 def handle_classifier_deny_stop_gate(data: dict) -> bool | None:
-    """Stop: emit STOP-and-explain ``systemMessage`` if a denial is pending.
+    """Stop: emit STOP-and-explain ``systemMessage`` once per recorded denial.
 
     Returns ``True`` to break the Stop chain (mirrors the consideration gate
     pattern) when the marker exists. Otherwise returns ``None`` so the rest of
@@ -122,7 +122,9 @@ def handle_classifier_deny_stop_gate(data: dict) -> bool | None:
     if not marker.is_file():
         return None
     try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
+        raw = marker.read_text(encoding="utf-8")
+        marker.unlink(missing_ok=True)
+        payload = json.loads(raw)
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict):
@@ -141,25 +143,3 @@ def handle_classifier_deny_stop_gate(data: dict) -> bool | None:
     # visible to the agent) so the nag survives.
     json.dump({"systemMessage": body}, sys.stdout)
     return True
-
-
-def handle_clear_classifier_deny_marker(data: dict) -> None:
-    """UserPromptSubmit: clear the classifier-deny marker for this session.
-
-    The next user turn re-arms the gate — the user either grants the per-call
-    authorisation explicitly (which the agent now relays) or redirects to a
-    different approach. Either way the previous denial is no longer the active
-    blocker.
-    """
-    from hooks.scripts.hook_router import _state_file  # noqa: PLC0415 deferred back-import
-
-    if not isinstance(data, dict):
-        return
-    session_id = data.get("session_id", "")
-    if not isinstance(session_id, str) or not session_id:
-        return
-    marker = _state_file(session_id, _CLASSIFIER_DENY_MARKER_SUFFIX)
-    try:
-        marker.unlink(missing_ok=True)
-    except OSError:
-        return

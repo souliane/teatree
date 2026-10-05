@@ -26,21 +26,21 @@ _LOOP_RUNNER_SESSION_ID = "loop-runner"
 
 
 def park_loop_runner_targets(apps, schema_editor) -> None:
-    handover = apps.get_model("core", "SessionHandover")
-    handover.objects.filter(claimed_at__isnull=True, to_session=_LOOP_RUNNER_SESSION_ID).update(to_session="")
+    handover = apps.get_model("core", "SessionHandover").objects.using(schema_editor.connection.alias)
+    handover.filter(claimed_at__isnull=True, to_session=_LOOP_RUNNER_SESSION_ID).update(to_session="")
 
 
 def park_self_addressed(apps, schema_editor) -> None:
     """``0048``'s forward, repeated so the check constraint applies on any DB a raw create slipped one into."""
-    handover = apps.get_model("core", "SessionHandover")
-    handover.objects.filter(claimed_at__isnull=True, to_session=models.F("from_session")).exclude(
-        from_session=""
-    ).update(to_session="")
+    handover = apps.get_model("core", "SessionHandover").objects.using(schema_editor.connection.alias)
+    handover.filter(claimed_at__isnull=True, to_session=models.F("from_session")).exclude(from_session="").update(
+        to_session=""
+    )
 
 
 def collapse_duplicate_unclaimed(apps, schema_editor) -> None:
-    handover = apps.get_model("core", "SessionHandover")
-    unclaimed = handover.objects.filter(claimed_at__isnull=True)
+    handover = apps.get_model("core", "SessionHandover").objects.using(schema_editor.connection.alias)
+    unclaimed = handover.filter(claimed_at__isnull=True)
     authors = [
         row["from_session"]
         for row in unclaimed.values("from_session").annotate(rows=models.Count("pk")).filter(rows__gt=1)
@@ -49,15 +49,15 @@ def collapse_duplicate_unclaimed(apps, schema_editor) -> None:
         siblings = list(unclaimed.filter(from_session=author).order_by("created_at", "id"))
         survivor = min(siblings, key=lambda row: row.pk)
         newest = siblings[-1]
-        survivor.payload = "\n\n".join(
+        payload = "\n\n".join(
             f"## Hand-off {index} of {len(siblings)} — from `{row.from_session}` "
             f"at {row.created_at.isoformat()}\n\n{row.payload}"
             for index, row in enumerate(siblings, start=1)
         )
-        survivor.created_at = newest.created_at
-        survivor.to_session = newest.to_session
-        survivor.save(update_fields=["payload", "created_at", "to_session"])
-        handover.objects.filter(pk__in=[row.pk for row in siblings if row.pk != survivor.pk]).delete()
+        handover.filter(pk=survivor.pk).update(
+            payload=payload, created_at=newest.created_at, to_session=newest.to_session
+        )
+        handover.filter(pk__in=[row.pk for row in siblings if row.pk != survivor.pk]).delete()
 
 
 class Migration(migrations.Migration):

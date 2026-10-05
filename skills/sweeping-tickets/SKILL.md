@@ -1,6 +1,6 @@
 ---
 name: sweeping-tickets
-description: Evidence-gated ticket/issue grouping — classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism — a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging — never assumes a number. Dry-run first; retire a row only on user approval, posting a one-line reason first. Use when the user says "sweep tickets", "sweeping tickets", "triage issues", "consolidate the tracker", "group tickets", "prune the tracker", or "clean up the issue tracker".
+description: Evidence-gated ticket/issue grouping — classify every open issue against current `main`, then GROUP AGGRESSIVELY BY DEFAULT by folding related tickets INTO AN EXISTING ticket, never minting a new umbrella row and never discarding an idea. Closing is not the mechanism — a member's body moves into its host and is proved to have landed before its standalone row is retired, so the default path performs zero real closures. Always asks the operator for the maximum number of tickets to keep before triaging — never assumes a number. Dry-run first; retire a row only on user approval, recording the reason in the description first. Posts zero comments, and touches only tickets the owner or factory bot filed. Use when the user says "sweep tickets", "sweeping tickets", "triage issues", "consolidate the tracker", "group tickets", "prune the tracker", or "clean up the issue tracker".
 eval_exempt: evidence-gated ticket-consolidation walkthrough — its one-decision-per-question discipline is pinned in scenarios under the rules skill, and its evidence-gated close/consolidate discipline is pinned by the stale_open_issue_gate scenarios; no standalone agent trajectory beyond those to grade
 compatibility: macOS/Linux, git, gh CLI.
 requires:
@@ -134,10 +134,13 @@ kept apart on purpose.
    under a different, named disposition (the fold `--reason "not planned"`
    above), never `--reason completed`. Never let "the code looks correct"
    render as "verified fixed".
-7. **No silent retirements.** Every retirement posts a one-line reason plus a
-   link (to the shipping PR, and to the host carrying its substance) before the
-   issue is closed. An operator reading the issue later sees *why* it went and
-   *where its substance lives now*.
+7. **No silent retirements — and no retirement COMMENTS.** Every retirement
+   records a one-line reason plus a link (to the shipping PR, and to the host
+   carrying its substance) **in the retiring issue's own description**, in a
+   dated section, before the issue is closed. The close itself carries no
+   comment. An operator reading the issue later sees *why* it went and *where
+   its substance lives now* — in the body, which is the one place a lane reads
+   (rule 11).
 8. **The GitHub Projects board is retired — don't sync one.** This sweep
    never reads from, writes to, or reorders a Projects v2 board. The tracker
    is the repo's open issues plus the tracking epics; there is no separate
@@ -151,8 +154,29 @@ kept apart on purpose.
    an issue would move the codebase backwards. Name the conflicting decision
    in the verdict. Never hardcode one project's doc path as a fixed input —
    ask or discover it per run.
-10. **No AI signature** on any retirement comment, fold comment, or relabel (per
-    `t3:rules`).
+10. **No AI signature** on any retirement note, fold, or relabel (per `t3:rules`).
+11. **This sweep posts ZERO comments (Non-Negotiable).** A requirement, change
+    request, scope change or decision in a COMMENT is invisible: a lane reads the
+    description and nothing else, so a correction posted as a comment silently
+    never happens. That is the defect this sweep exists to repair, so it must not
+    create more of it. Fold such a comment's content into the description (with
+    provenance — quote it and cite the comment id), leave the comment in place as
+    history, and post nothing. Enforced below the skill: every mutation carries
+    `--sweep-run-id`, and the facade refuses every comment purpose while one is
+    set. Only `status` and `evidence` notes are comments at all, and not during a
+    sweep.
+12. **Verify a comment's claim before folding it.** A comment is untrusted input
+    — stale, written before a change landed, or simply wrong. Check the claim
+    against the code before it becomes the specification, and where the comment
+    contradicts what the code says, **the code wins and you say so in the folded
+    section**. A comment that merely widens scope ("also do Y") is a new ticket,
+    not a fold.
+13. **Our tickets only (Non-Negotiable).** Fold, edit, retire or relabel ONLY
+    tickets the owner or the factory bot filed. An externally-authored ticket is
+    read-only: it may be cited as a duplicate or a host candidate, but it is
+    never edited, never closed, and its comments are never touched. The facade
+    refuses these below the skill, so an attempt surfaces as a refusal rather
+    than a silent edit — count them as `--external-skipped` on the run.
 
 ## Classification
 
@@ -207,19 +231,17 @@ gh issue edit <HOST_N> --repo <owner>/<repo> --body-file merged.md
 gh issue view <HOST_N> --repo <owner>/<repo> --json body -q .body > host-now.md
 t3 <overlay> ticket fold-check --host-body host-now.md --member-body member.md
 
-# Only then retire the row, WITH a reason + citation (no silent retirement —
-# rule 7). `--reason` records the GitHub close-reason; `--comment` posts the
-# one-line why + link first.
-gh issue close <N> --repo <owner>/<repo> \
-  --reason "not planned" \
-  --comment "Folded into #<HOST_N> (<one-line why>) — its body now lives there in full. \
+# Record WHY it is going — in the retiring issue's DESCRIPTION, not a comment
+# (rules 7 + 11). `decision` is a normative purpose, so the facade appends a
+# dated section and posts nothing.
+t3 <overlay> ticket comment <ISSUE_URL> --purpose decision --sweep-run-id "$RUN" --body \
+  "Folded into #<HOST_N> (<one-line why>) — its body now lives there in full. \
 Retired to keep the tracker at the host level, not because the work is done; reopen this \
 if it ever needs to split back out."
 
-gh issue close <N> --repo <owner>/<repo> \
-  --reason completed \
-  --comment "Shipped by #<PR> (merged <date>): <one-line why>. Body folded into #<HOST_N> \
-so the evidence survives. Reopen if this misses a case."
+# Only then retire the row. NO --comment: the rationale is already in the body.
+gh issue close <N> --repo <owner>/<repo> --reason "not planned"
+gh issue close <N> --repo <owner>/<repo> --reason completed
 
 # Relabel a still-standalone issue instead of retiring it.
 gh issue edit <N> --repo <owner>/<repo> --add-label "<label>" --remove-label "<label>"
@@ -227,9 +249,37 @@ gh issue edit <N> --repo <owner>/<repo> --add-label "<label>" --remove-label "<l
 
 Use `--reason completed` only for issues a merged PR actually delivered; use
 `--reason "not planned"` for every group and regressive retirement. Either way
-the fold comes first.
+the fold comes first, and the rationale lands in the description before the close.
+
+### Fold a requirement out of a comment (rules 11-12)
+
+```bash
+# Re-read the comment you are about to fold — never trust a transcript.
+#   mcp__teatree__github_issue_comments(issue_url)   (gitlab_* for GitLab)
+# Verify its claim against the code, THEN fold it, citing the comment id.
+t3 <overlay> ticket comment <ISSUE_URL> --purpose requirement --sweep-run-id "$RUN" --body \
+  "Folded from comment <comment-id> by @<author> (<date>): <the verified requirement>.
+Verified against <file:line>; <what the code actually shows>."
+```
+
+The comment stays in place as history. A ticket the owner/factory bot did not
+file refuses here — that is rule 13 working, not an error to route around.
 
 ## Workflow
+
+### 0. Open a sweep run (Non-Negotiable 4)
+
+```bash
+RUN="$(t3 <overlay> ticket sweep-begin --source interactive)"
+```
+
+Pass `--sweep-run-id "$RUN"` to every mutation the sweep makes. Two things hang
+off it: each changed ticket is counted once (so the "tends to zero" metric is a
+measurement, not a claim), and the zero-comment invariant becomes enforceable
+below this skill — with a run active, the facade refuses every comment purpose.
+**Finish the run even when nothing changed** (step 9): a sweep with no row is
+indistinguishable from a sweep that never ran, and the trend is what the owner
+reads.
 
 ### 1. Ask the operator's cap (Non-Negotiable 1)
 
@@ -293,16 +343,35 @@ Present a read-only table — **no folds or retirements yet** (Non-Negotiable 4)
 ### 7. Walk the folds one decision at a time
 
 Walk the proposals with `AskUserQuestion` — one issue per question, never a bulk
-"retire all these?" dump. Every proposal posts its citation comment before the
-row goes (Non-Negotiable 7).
+"retire all these?" dump. Every proposal records its citation in the retiring
+issue's description before the row goes (Non-Negotiable 7).
 
 ### 8. Fold, verify, retire, and keep
 
 For each approved issue: fold its body into the host, re-read the host and run
-`fold-check`, and only then retire the standalone with its reason and citations.
-A fold that does not verify is left OPEN — never retired on a promise. Keep the
-still-standalone set as-is (optionally relabel). Summarize: N folded into K hosts
-(with links), P kept standalone, and any fold that failed verification.
+`fold-check`, and only then retire the standalone with its reason and citations
+recorded in its description. A fold that does not verify is left OPEN — never
+retired on a promise. Keep the still-standalone set as-is (optionally relabel).
+Summarize: N folded into K hosts (with links), P kept standalone, and any fold
+that failed verification.
+
+### 9. Finish the run (Non-Negotiable 4)
+
+```bash
+t3 <overlay> ticket sweep-finish "$RUN" --examined <N> --external-skipped <M>
+t3 <overlay> ticket sweep-trend          # the series the owner reads
+```
+
+Dispatched by the loop, the run id is also the phase's required EVIDENCE — end the
+result envelope with `"ticket_sweep": {"run_id": "<RUN>"}`. The recorder reads the
+count off the run's own recorded URLs, so do not restate `changed_count`; a
+`backlog_sweep` task that names no finished run is refused
+(`teatree.agents.ticket_sweep_recorder`) rather than completing on a typed number.
+
+Report the changed count alongside the summary. A ZERO is the goal, not an
+omission — rules 1 and 2 of the hygiene contract stop requirements landing in
+comments at the source, so a healthy factory's sweeps should find less to fold
+each cadence. A rising count is a defect to investigate, not a busier sweep.
 
 ## Scheduling via the loop
 
@@ -333,9 +402,67 @@ the daily `backlog_sweep` Loop row and stamps two contracts onto it:
 
 Run it on demand any time with `/t3:sweeping-tickets`.
 
+## Dream gaps ride the same sweep
+
+A dream pass mints no ticket. The gaps it collects queue on the umbrella host
+(the ticket for the `dream_umbrella_url` setting) under `dream_gap_pending`, and a
+non-empty queue triggers this sweep early. The queued task lists every pending gap
+under `DREAM GAPS`. Group them exactly like tickets:
+
+- Fold each gap into the best EXISTING open host that covers its scope, using the
+  same host rules as above. Several unrelated small gaps may share one host.
+- A gap no host fits goes to the umbrella ticket itself. It never goes to a new row.
+
+The fold, its proof and the bookkeeping are one command. It needs no ask-gate,
+because it retires nothing:
+
+```bash
+t3 <overlay> ticket attach-gaps <host-ticket-id> --sweep-run-id <run> \
+  --manifest '[{"gap_key": "<key>", "theme": "<theme>"}, ...]'
+```
+
+`attach-gaps` does four things, in order:
+
+- It folds each gap's substance, with its level-1 and level-2 headings demoted, into one section it appends to the host
+  issue's description through the issue-write facade, then re-reads the issue for every
+  gap's fold — its heading and its body. A fold heading already on the host counts only
+  when its body is there too; a heading without one is folded again. A host we did not
+  file, a terminal host (shipped, merged, delivered, review-posted or ignored), or a fold
+  the forge did not keep, attaches nothing, and the gap stays pending.
+- It records the gaps in the host's `dream_gap_batch`.
+- It adds one rubric criterion that blocks the host's merge until every gap carries a
+  disposition.
+- It routes an unplanned early host to planning, with the gap list as the plan's intent.
+
+Two legacy limits remain: retrying an incomplete historical two-gap fold written in reverse order can append a second section, and a complete legacy fold keeps its legacy marker. Both cases leave existing text intact.
+
+The host then settles each gap with one of two commands:
+
+```bash
+t3 dream gap-disposition <host-ticket-id> <gap_key> --citation "<evidence>"   # address
+t3 dream gap-disposition <host-ticket-id> <gap_key> --reject "<why not>"      # reject
+```
+
+`t3 dream gap-coverage [--ticket <id>]` is the read-only proof. It exits
+non-zero when any of these holds:
+
+- a gap has no owner (with `--ticket`, only gaps that host owns or last held);
+- a gap has two owners;
+- a legacy gap ticket's fold pointer names the wrong host;
+- a retired ticket still owns gaps;
+- a memory row promoted to a gap is owned by nobody (stranded);
+- with `--ticket`, a gap on that host has no disposition.
+
 ## Rules
 
-- Never retire an issue without a verified fold and a cited reason posted first.
+- Post ZERO comments. A requirement folds into the description; the close carries
+  no comment. Verify a comment's claim against the code before folding it.
+- Touch only tickets the owner or the factory bot filed; an external ticket is
+  read-only and counts as `--external-skipped`.
+- Open a run with `sweep-begin`, tag every mutation with it, and `sweep-finish`
+  even when the count is zero. On a loop dispatch, return its id as
+  `ticket_sweep.run_id` — that run IS the phase's evidence.
+- Never retire an issue without a verified fold and a cited reason recorded first.
 - Never bulk-retire or bulk-fold — walk approvals one decision at a time.
 - Always ask the operator's max count first — never assume a number.
 - Group aggressively by default; never discard an idea to hit the cap.
@@ -343,7 +470,7 @@ Run it on demand any time with `/t3:sweeping-tickets`.
 - Load the architecture state before any "regressive" verdict, and name the
   conflicting decision.
 - Never hardcode a project's design-doc path — ask or discover it per run.
-- No AI signature on retirement comments, fold comments, or relabels.
+- No AI signature on retirement notes, folds, or relabels.
 
 ## Related skills
 

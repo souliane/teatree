@@ -170,6 +170,16 @@ def record_merge_and_advance(
                 # `t3 <overlay> ticket backfill-clears` links the row once the PR is attributable.
                 logger.warning("merge keystone: %s#%s merged but resolved no owning ticket", locked.slug, locked.pr_id)
                 return ""
+            ticket.refresh_from_db(fields=["extra"])
+            extra = ticket.extra or {}
+            attestations = extra.get("anti_vacuity_attestations")
+            if isinstance(attestations, dict) and locked.reviewed_sha in attestations:
+                remaining = {sha: item for sha, item in attestations.items() if sha != locked.reviewed_sha}
+                ticket.merge_extra(set_keys={"anti_vacuity_attestations": remaining})
+            grades = extra.get("rubric_grades_by_head")
+            if isinstance(grades, dict) and locked.reviewed_sha in grades:
+                remaining_grades = {sha: item for sha, item in grades.items() if sha != locked.reviewed_sha}
+                ticket.merge_extra(set_keys={"rubric_grades_by_head": remaining_grades})
             # Bind the phase attestation to the merged HEAD/workstream it was
             # earned against (the §17.6 enforcement candidate (7), absorbed
             # here): the canonical phase session records the SHA that actually

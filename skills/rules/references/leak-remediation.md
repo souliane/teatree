@@ -10,7 +10,7 @@ Before creating an issue, PR, discussion, or any body of content on an external 
 gh repo view <owner>/<repo> --json visibility,isPrivate
 ```
 
-If the target is **PUBLIC**, the body must not contain internal identifiers: customer names, internal GitLab/Jira/Notion URLs, client-specific repo names, ticket IDs from private trackers, CI job/pipeline IDs, local filesystem paths (`/Users/…`, `/home/…`), environment variable values, or internal hostnames. Replace with generic placeholders (`<repo>`, `<namespace>`, `<ticket_url>`, `$T3_WORKSPACE_DIR/<ticket>/<repo>`) before posting.
+If the target is **PUBLIC**, the body must not contain internal identifiers: customer names, internal GitLab/Jira/Notion URLs, client-specific repo names, ticket IDs from private trackers, CI job/pipeline IDs, local filesystem paths (`/Users/…`, `/home/…`), environment variable values, or internal hostnames. Replace with generic placeholders (`<repo>`, `<namespace>`, `<ticket_url>`, `<worktree_root>/<ticket>/<repo>`) before posting.
 
 **Every public artifact, not only a filing.** The check covers an issue, a PR body, a comment and a commit message alike: before any of them lands on a public repo, ask what the text discloses about something that is not public. Two classes are easy to miss because they carry no identifier a term list would catch.
 

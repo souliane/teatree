@@ -81,7 +81,7 @@ class TestStatusResolvesWorktreeOverlay(_MultiOverlayStatusTest):
         worktree = self._worktree(overlay=OVERLAY_A)
         assert self._evaluate(worktree) is self.overlay_a
 
-    def test_falls_back_to_ticket_overlay_when_field_blank(self) -> None:
+    def test_blank_worktree_overlay_is_rejected_even_when_ticket_is_named(self) -> None:
         ticket = Ticket.objects.create(overlay=OVERLAY_A, issue_url="https://example.com/blank")
         worktree = Worktree.objects.create(
             ticket=ticket,
@@ -91,7 +91,8 @@ class TestStatusResolvesWorktreeOverlay(_MultiOverlayStatusTest):
             extra={"worktree_path": "/tmp/wt"},
             state=Worktree.State.PROVISIONED,
         )
-        assert self._evaluate(worktree) is self.overlay_a
+        with pytest.raises(ImproperlyConfigured, match="has no overlay"):
+            self._evaluate(worktree)
 
     def test_created_worktree_skips_post_conditions(self) -> None:
         ticket = Ticket.objects.create(overlay=OVERLAY_B, issue_url="https://example.com/created")

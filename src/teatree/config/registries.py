@@ -39,7 +39,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from teatree.config.setting_parsers import _parse_str_list, _parse_strict_bool, _parse_strict_int, _parse_strict_str
+from teatree.config.setting_parsers import (
+    _parse_private_repos,
+    _parse_strict_bool,
+    _parse_strict_int,
+    _parse_strict_str,
+)
 
 #: What a cold setting stores — the JSON/TOML shapes its parser accepts and returns.
 #: Element types stay open so a default is assignable to the renderer's own stored-value
@@ -53,6 +58,14 @@ def _parse_registry_dict(raw: object) -> dict[str, Any]:
         msg = f"Invalid registry value {raw!r}; expected a JSON/TOML table"
         raise TypeError(msg)
     return cast("dict[str, Any]", raw)
+
+
+def _parse_agent_skill_models(raw: object) -> dict[str, list[object]]:
+    value = _parse_registry_dict(raw)
+    if any(not isinstance(routes, list) for routes in value.values()):
+        msg = "agent_skill_models must map each skill to a list policy"
+        raise TypeError(msg)
+    return cast("dict[str, list[object]]", value)
 
 
 @dataclass(frozen=True)
@@ -97,36 +110,17 @@ REGISTRY_KEYS: tuple[str, ...] = tuple(REGISTRY_SETTINGS)
 COLD_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Registries", "Term scanning, agent tables & cold reads")
 
 COLD_SETTINGS: dict[str, ColdHookSetting] = {
-    # Customer / brand / partner codename lists (stored as JSON arrays). The DB is
-    # personal, so these are safe here; ``SECRET_SETTINGS`` keeps them out of a
-    # shared ``config_setting export``. These four are now LEGACY sources folded into
-    # ``banned_term_registry`` (``banned_brands`` → leak, ``banned_terms`` →
-    # prose_collider, ``overlay_leak_terms`` → overlay, ``banned_terms_allowlist`` →
-    # allow); every gate resolves through the registry via
-    # ``banned_term_registry.terms_for_gate`` and only FALLS BACK to these rows when
-    # the registry is unset. They stay registered as that fallback tier — do not
-    # delete them. An unset list is not an empty ban set: the fail-loud gates raise
-    # rather than read this default, which exists as the shipped/export shape.
-    "banned_terms": ColdHookSetting(_parse_str_list, default=[]),
-    "banned_terms_allowlist": ColdHookSetting(_parse_str_list, default=[]),
-    "banned_brands": ColdHookSetting(_parse_str_list, default=[]),
-    # The class-tagged registry (`leak`/`prose_collider`/`tone`/`overlay`/`allow` →
-    # term lists) the four legacy lists fold into — the single source every
-    # term-scanning gate resolves through. A JSON table, so it is validated by the
-    # registry-dict parser, not the str-list one.
+    # The single classed term registry is private to the operator and withheld
+    # from shared exports. Gates read its classes through terms_for_gate.
     "banned_term_registry": ColdHookSetting(_parse_registry_dict, default={}),
-    "internal_publish_namespaces": ColdHookSetting(_parse_str_list, default=[]),
-    "private_repos": ColdHookSetting(_parse_str_list, default=[]),
-    # Legacy overlay-leak fallback (folded into the registry's ``overlay`` class).
-    "overlay_leak_terms": ColdHookSetting(_parse_str_list, default=[]),
+    "private_repos": ColdHookSetting(_parse_private_repos, default=[]),
     # ``[agent]`` spawn tables (str->str/bool/int maps) + scalars, read by the
     # dispatch paths (``config.agent_spawn`` / ``model_tiering``) via ``cold_reader``.
     "agent_phase_models": ColdHookSetting(_parse_registry_dict, default={}),
-    "agent_skill_models": ColdHookSetting(_parse_registry_dict, default={}),
+    "agent_skill_models": ColdHookSetting(_parse_agent_skill_models, default={}),
     "agent_tier_models": ColdHookSetting(_parse_registry_dict, default={}),
     "agent_pydantic_ai_tier_models": ColdHookSetting(_parse_registry_dict, default={}),
     "agent_tier_effort": ColdHookSetting(_parse_registry_dict, default={}),
-    "agent_phase_fanout": ColdHookSetting(_parse_registry_dict, default={}),
     "agent_phase_harness": ColdHookSetting(_parse_registry_dict, default={}),
     # Per-phase history trim depth for the pydantic-ai lane (``lane_b.compaction``).
     "agent_compaction_keep_recent": ColdHookSetting(_parse_registry_dict, default={}),
@@ -149,9 +143,8 @@ COLD_SETTINGS: dict[str, ColdHookSetting] = {
     "loops": ColdHookSetting(_parse_registry_dict, default={}),
     "danger_gate_fail_open": ColdHookSetting(_parse_strict_bool, default=False),
     # Loop preset + schedule layer (#3159): the active weekly-schedule selector and
-    # the default-off low-token auto-engage flag + its re-pointable target preset.
+    # the token-outage auto-engage setting + its re-pointable target preset.
     "active_loop_schedule": ColdHookSetting(_parse_strict_str, default=""),
-    "token_outage_auto_engage": ColdHookSetting(_parse_strict_bool, default=False),
     "token_outage_preset_name": ColdHookSetting(_parse_strict_str, default=""),
     # Host-keyed logins the operator ALSO acts as (``{"gitlab.com": ["my-bot"]}``), read
     # cold by the pre-push foreign-MR guard: a forge CLI answers with ONE login, so an MR
@@ -173,8 +166,6 @@ COLD_HOOK_SETTINGS_GROUP_PATH: tuple[str, ...] = ("Gates", "Pre-Django hooks")
 
 COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     # ``teatree_bool_setting`` gate kill-switches the hook leaves read cold.
-    "memory_recall_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    "orchestrator_investigation_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "orchestrator_delegation_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "unknown_repo_push_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "no_self_reviewer_assign_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
@@ -182,38 +173,26 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "git_add_all_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "foreign_branch_push_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "general_purpose_agent_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    "merged_detection_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "config_overwrite_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "cron_loop_shell_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "completion_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "headless_authoring_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "main_clone_guard_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "single_branch_repo_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    "deny_circuit_breaker_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "skill_loading_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "plan_edit_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "visible_plan_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    "mcp_privacy_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    "self_dm_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "mcp_slack_write_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    "dispatch_quote_gate_on_task_create_enabled": ColdHookSetting(_parse_strict_bool, default=False),
-    "dispatch_quote_scan_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "self_dm_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "banned_terms_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    # Not a gate kill-switch: the banned-terms scanner's UNSET-list posture. False (the
-    # dev/solo default) warns and allows; True is the deployment that MUST scrub (#3247).
-    "banned_terms_required": ColdHookSetting(_parse_strict_bool, default=False),
     "orchestrator_boundary_agent_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "out_of_band_merge_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "raw_pr_create_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "standing_goal_stop_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "standing_grant_ask_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    "stop_snapshotter_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "answer_first_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "unbacked_claim_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "brief_anchor_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
-    # Not a kill-switch: the brief-anchor lint's POSTURE. False (the default) warns and
-    # allows; True refuses an unanchored dispatch brief outright (#4341).
-    "brief_anchor_gate_refuse": ColdHookSetting(_parse_strict_bool, default=False),
     "verbatim_paste_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     # Bespoke integer budgets ``hook_router`` reads straight from ``[teatree]``.
     "orchestrator_turn_budget": ColdHookSetting(_parse_strict_int, default=25),

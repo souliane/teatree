@@ -422,3 +422,40 @@ class TestTakingAClaimClearsThePreviousDriveMarker(TestCase):
 
         assert claimed is not None
         assert Task.objects.get(pk=task.pk).owner_driving_since is None
+
+
+class TestClaimStampsTheGeneration(TestCase):
+    _SHA = "d" * 40
+
+    def _pending_task(self) -> Task:
+        ticket = Ticket.objects.create()
+        return Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+    def test_claim_records_the_claiming_generation(self) -> None:
+        task = self._pending_task()
+
+        with mock.patch.dict("os.environ", {"TEATREE_GENERATION": self._SHA}):
+            claim(task, claimed_by="w")
+
+        task.refresh_from_db()
+        assert task.claimed_generation == self._SHA
+
+    def test_claim_next_pending_records_the_claiming_generation(self) -> None:
+        task = self._pending_task()
+
+        with mock.patch.dict("os.environ", {"TEATREE_GENERATION": self._SHA}):
+            Task.objects.claim_next_pending(claimed_by="w")
+
+        task.refresh_from_db()
+        assert task.claimed_generation == self._SHA
+
+    def test_a_legacy_claim_records_no_generation(self) -> None:
+        task = self._pending_task()
+        Task.objects.filter(pk=task.pk).update(claimed_generation=self._SHA)
+        task.refresh_from_db()
+
+        with mock.patch.dict("os.environ", {"TEATREE_GENERATION": ""}):
+            claim(task, claimed_by="w")
+
+        task.refresh_from_db()
+        assert task.claimed_generation == ""

@@ -47,7 +47,7 @@ from teatree.core.models import (
 from teatree.utils.pr_ref import PrRef
 from tests._forge_stub import changed_files_stdout
 from tests.factories import waive_rubric
-from tests.teatree_core.conftest import seed_merge_safe_verdict
+from tests.teatree_core.conftest import record_merge_prerequisites_for_test, seed_merge_safe_verdict
 
 
 @pytest.fixture(autouse=True)
@@ -265,6 +265,7 @@ class TestClearIssuanceSeam(TestCase):
         """The seam closes the loop: issue a CLEAR, the loop merges by its id."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
+        record_merge_prerequisites_for_test(ticket, _SHA)
         issued = cast(
             "dict[str, object]",
             call_command(
@@ -525,6 +526,7 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.SUBSTRATE,
         )
+        record_merge_prerequisites_for_test(ticket, _SHA)
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
             pytest.raises(MergePreconditionError, match="substrate"),
@@ -584,6 +586,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
             blast_class=MergeClear.BlastClass.SUBSTRATE,
             human_authorizer="owner:adrien",
         )
+        record_merge_prerequisites_for_test(ticket, _SHA)
         seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             result = cast(
@@ -710,6 +713,7 @@ class TestAgentExecutesApprovedSubstrateMerge(TestCase):
             blast_class=MergeClear.BlastClass.SUBSTRATE,
             human_authorizer="owner:adrien",
         )
+        record_merge_prerequisites_for_test(ticket, _SHA)
         seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         # call_command is exactly what the durable loop / agent invokes for
         # `t3 <overlay> ticket merge`. No human-actor parameter exists; the
@@ -772,6 +776,7 @@ def _substrate_clear(ticket: Ticket, **overrides: object) -> MergeClear:
     }
     defaults.update(overrides)
     clear = MergeClear.objects.create(**defaults)
+    record_merge_prerequisites_for_test(ticket, clear.reviewed_sha, slug=clear.slug, pr_id=clear.pr_id)
     # The #2829 merge-verdict gate needs the sibling verdict the real clear path
     # records (harmless on the held-substrate tests that refuse before the gate).
     seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
@@ -1685,6 +1690,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.SUBSTRATE,
         )
+        record_merge_prerequisites_for_test(ticket, _SHA)
         seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
@@ -1737,6 +1743,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.SUBSTRATE,
         )
+        record_merge_prerequisites_for_test(ticket, _SHA)
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
@@ -1844,6 +1851,7 @@ class TestSubstrateStandingDelegationConfig(TestCase):
             blast_class=MergeClear.BlastClass.SUBSTRATE,
             human_authorizer=_DELEGATE,
         )
+        record_merge_prerequisites_for_test(ticket, _SHA)
         seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         with (
             _overlay_standing_delegation("t3-teatree", authorized_by=_DELEGATE),

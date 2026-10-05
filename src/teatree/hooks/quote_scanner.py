@@ -29,13 +29,9 @@ archive. Each non-blank, non-``#``-prefixed line is compiled with
 ``re.IGNORECASE``. The spec is explicit: blocklists must not embed
 the raw quotes they protect against.
 
-Override via ``--quote-ok`` flag in the command string or
-``QUOTE_OK=1`` in the tool-input env mapping. Either one bypasses all
-checks and is itself logged for audit.
 """
 
 import json
-import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -44,15 +40,12 @@ from pathlib import Path
 from typing import Final, Literal, TypedDict
 
 from teatree.hooks import _dispatch_quote_ok
-from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL as _FAIL_CLOSED_SENTINEL
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
-from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
-from teatree.hooks._hook_state import hook_state_root, note_env_override_once
-from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
+from teatree.hooks._hook_state import hook_state_root
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL as _FAIL_CLOSED_SENTINEL
+from teatree.hooks._parser_primitives import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._quote_normalize import normalize_quotes as _normalize_quotes
-
-_QUOTE_OK_ENV = "QUOTE_OK"
 
 type Severity = Literal["high", "medium"]
 
@@ -475,81 +468,9 @@ def extract_dispatch_payload(tool_name: str, tool_input: ToolInput) -> str | Non
 # ── Override + ledger ──────────────────────────────────────────────
 
 
-def _segment_leads_with_env_override(words: list[str]) -> bool:
-    """Return True iff ``words`` leads with ``QUOTE_OK=1`` before its command.
-
-    Only the leading run of ``KEY=value`` env-assignment tokens is inspected:
-    bash applies a leading inline assignment to that command's environment, while
-    a ``KEY=val``-shaped token after the command name is an argument, not an
-    override. The first non-assignment token ends the run.
-    """
-    for word in words:
-        name, sep, value = word.partition("=")
-        if not sep:
-            return False
-        if name == _QUOTE_OK_ENV:
-            return value.strip() == "1"
-    return False
-
-
-def _segment_carries_override(words: list[str]) -> bool:
-    return "--quote-ok" in words or _segment_leads_with_env_override(words)
-
-
-def _publish_segment_carries_override(command: str) -> bool:
-    """Return True iff the segment carrying the publish also carries the override.
-
-    The override (``--quote-ok`` flag or a leading ``QUOTE_OK=1`` inline
-    env-assignment) is honoured only when it rides the segment that IS ITSELF
-    the publish (checked via :func:`_is_publish_command` on the standalone
-    segment). This honours the common sub-agent shape that navigates first
-    (``cd <worktree> && QUOTE_OK=1 gh pr create …`` or ``cd <wt> && gh pr
-    create … --quote-ok``) while a decoy override on an unrelated segment cannot
-    vouch for a chained publish elsewhere (``echo --quote-ok && gh pr create …``
-    and ``gh pr create … ; echo --quote-ok`` both still fire). Mirrors
-    ``banned_terms_scanner._has_leading_env_override`` (#2031, #2034).
-    """
-    for words in _segment_word_lists_raw(command):
-        if _segment_carries_override(words) and _is_publish_command(" ".join(words)):
-            return True
-    return False
-
-
-def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
-    """Return True iff the caller explicitly opted out of the gate.
-
-    The ``--quote-ok`` flag and a leading ``QUOTE_OK=1`` inline env-assignment
-    are both honoured only when they ride the command segment that IS ITSELF the
-    publish the gate would scan (:func:`_publish_segment_carries_override`). The
-    common sub-agent shape navigates first (``cd <worktree> && QUOTE_OK=1 gh pr
-    create …`` / ``cd <wt> && gh pr create … --quote-ok``), so the override lives
-    on a NON-leading segment; checking each segment's own override against
-    whether that segment is the publish honours it while a decoy on an unrelated
-    segment cannot vouch for a chained publish elsewhere. Mirrors the #2031
-    per-segment scoping in ``banned_terms_scanner.has_override``.
-
-    ``QUOTE_OK=1`` is also honoured from the process environment
-    (``os.environ``) — the documented env escape (#1213 AC §3). The Claude Code
-    PreToolUse payload for a ``Bash`` tool carries NO ``env`` block, so the
-    agent's ``QUOTE_OK=1`` lives in the hook subprocess's own environment;
-    reading only ``tool_input["env"]`` meant the documented escape never reached
-    the wrapper and the gate could only be cleared by paraphrasing (#126).
-    ``tool_input["env"]`` is still consulted for any harness build that DOES
-    populate it.
-    """
-    if tool_name == "Bash" and _publish_segment_carries_override(tool_input.get("command", "")):
-        return True
-    if os.environ.get(_QUOTE_OK_ENV, "").strip() == "1":
-        note_env_override_once(_QUOTE_OK_ENV)
-        return True
-    env = tool_input.get("env") or {}
-    return env.get(_QUOTE_OK_ENV, "").strip() == "1"
-
-
-# In-prompt opt-out token for the dispatch-prompt gate (#1401). Unlike the
-# publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env (shell/env concepts that
-# have no analogue inside an Agent/Task prompt body), the dispatch gate opt-out
-# is an in-prompt token mirroring ``hook_router``'s ``[skill-load-ok: <reason>]``.
+# In-prompt opt-out token for the dispatch-prompt gate (#1401): an Agent/Task prompt
+# body has no command line or env to carry a flag, so the opt-out is an in-prompt
+# token mirroring ``hook_router``'s ``[skill-load-ok: <reason>]``.
 # Its placement contract lives in :mod:`teatree.hooks._dispatch_quote_ok`.
 
 

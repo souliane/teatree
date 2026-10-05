@@ -10,8 +10,11 @@ import io
 import subprocess
 from contextlib import redirect_stdout
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
 from teatree.cli import doctor as doctor_mod
 from teatree.core.gates import clone_guard
@@ -158,39 +161,27 @@ class TestEdgeCases:
         assert doctor_check_clone_currency([("repo", clone)]) is True
 
 
-class TestDoctorAggregation:
+class TestDoctorAggregation(TestCase):
     """Doctor check aggregates the clone-currency surface."""
 
-    def test_doctor_check_calls_clone_currency_surface(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        bare = _make_remote(tmp_path)
-        clone = _clone(tmp_path, bare)
-        _advance_remote(tmp_path, bare, n=2)
+    def test_doctor_check_calls_clone_currency_surface(self) -> None:
+        with TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            bare = _make_remote(tmp_path)
+            clone = _clone(tmp_path, bare)
+            _advance_remote(tmp_path, bare, n=2)
 
-        # Steer `doctor_check_clone_currency()` (called with no args by the
-        # aggregator) at this stale clone via the `_collect_repos` indirection
-        # the function uses when `repos is None`. No mock — real `git` under
-        # `tmp_path` runs the full fetch + ancestor check.
-        monkeypatch.setattr(
-            "teatree.cli.update._collect_repos",
-            lambda: [("repo", clone)],
-        )
+            buffer = io.StringIO()
+            with (
+                patch("teatree.cli.update._collect_repos", return_value=[("repo", clone)]),
+                redirect_stdout(buffer),
+            ):
+                ok = doctor_mod.run_doctor_checks()
 
-        buffer = io.StringIO()
-        with redirect_stdout(buffer):
-            # `_check_singletons` / `_ensure_plugin_registered` are real-env
-            # side-effects we tolerate — only the clone-currency aggregation
-            # is what we pin here. `run_doctor_checks` is the bool core the
-            # `check` command wraps into an exit code.
-            ok = doctor_mod.run_doctor_checks()
-
-        out = buffer.getvalue()
-        assert ok is False
-        assert "behind origin/main" in out
-        assert "t3 update" in out
+            out = buffer.getvalue()
+            assert ok is False
+            assert "behind origin/main" in out
+            assert "t3 update" in out
 
 
 class TestDefensiveBranches:
@@ -241,7 +232,10 @@ class TestAnUnreadableCloneIsReportedNotPassed:
         _git(clone, "config", "fetch.prune", "true")
         _git(bare, "branch", "-m", "main", "trunk")
 
-        ok, out = self._doctor(clone)
+        # Newer Git versions may remove the dangling origin/HEAD during fetch.
+        # Pin the damaged branch name so this exercises the unreadable-ref path.
+        with patch.object(clone_guard, "_default_branch", return_value="main"):
+            ok, out = self._doctor(clone)
 
         assert ok is True
         assert "WARN" in out

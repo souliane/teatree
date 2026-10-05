@@ -20,7 +20,7 @@ def review_context_refusal(ticket: Ticket, transition_name: str) -> str:
     if transition_name != "review" or ticket.review_context_satisfied():
         return ""
     return (
-        f"Transition 'review' refused: require_review_context is on but no referenced-context "
+        f"Transition 'review' refused: no referenced-context "
         f"retrieval is recorded for ticket {ticket.pk}. Fetch the work item from its source, follow "
         f"its links, download + analyze the referenced documents, then `t3 <overlay> lifecycle "
         f"record-review-context {ticket.pk} --work-item <url> --documents <urls> "

@@ -11,7 +11,6 @@ string resolves to is the one the deleted text predicate produced.
 import pytest
 
 from teatree.core.gates.closed_issue_dispatch_gate import ISSUE_CLOSED_PREFIX
-from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.modelkit.task_failure_taxonomy import (
     CLI_TOO_OLD_PREFIX,
     COMPACTION_BLOCKED_MARKER,
@@ -31,6 +30,7 @@ from teatree.core.modelkit.task_failure_taxonomy import (
     stall_fingerprints,
     stall_kinds,
 )
+from teatree.core.models.plan_decision import PLAN_MISSING_PREFIX
 from teatree.llm.anthropic_limits import LimitCause, LimitMatch
 
 #: The environmental set as it stood before the table absorbed it. Spelled out literally rather than

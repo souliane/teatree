@@ -45,6 +45,7 @@ from typing import ClassVar
 
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import F
 from django.utils import timezone
 
 from teatree.core.models.loop_state import LoopState
@@ -76,6 +77,14 @@ class LoopManager(models.Manager["Loop"]):
         deadline still records that it ran.
         """
         self.filter(name=name).update(last_attempt_at=ts)
+
+    def record_deadline_kill(self, name: str) -> int:
+        """One more tick of *name* killed at its deadline; returns how many in a row."""
+        self.filter(name=name).update(consecutive_deadline_kills=F("consecutive_deadline_kills") + 1)
+        return self.filter(name=name).values_list("consecutive_deadline_kills", flat=True).first() or 0
+
+    def clear_deadline_kills(self, name: str) -> None:
+        self.filter(name=name).exclude(consecutive_deadline_kills=0).update(consecutive_deadline_kills=0)
 
     def mark_run_if_unchanged(self, name: str, *, previous_last_run_at: dt.datetime | None, now: dt.datetime) -> bool:
         """Atomically claim the cadence anchor: bump ``last_run_at`` iff still ``previous_last_run_at``.
@@ -158,6 +167,8 @@ class Loop(models.Model):
     last_run_at = models.DateTimeField(null=True, blank=True)
     #: When a tick last EXECUTED, whatever it produced — the anchor no pass may withhold.
     last_attempt_at = models.DateTimeField(null=True, blank=True)
+    #: Ticks killed at their deadline in a row; a tick that completes resets it.
+    consecutive_deadline_kills = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

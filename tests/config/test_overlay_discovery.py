@@ -16,13 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.config import (
-    OverlayEntry,
-    _match_canonical_ep,
-    _resolve_ep_project_path,
-    discover_active_overlay,
-    discover_overlays,
-)
+from teatree.config import OverlayEntry, _resolve_ep_project_path, discover_active_overlay, discover_overlays
 
 from ._shared import _seed_config_db, _write_manage_py
 
@@ -91,16 +85,20 @@ def test_discover_overlays_tilde_expansion(tmp_path: Path, config_db: Path, monk
     assert by_name["my-project"].overlay_class == "myproj.settings"
 
 
-def test_discover_active_overlay_from_manage_py(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unregistered_manage_py_does_not_select_an_overlay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_manage_py(tmp_path, "active.settings")
     monkeypatch.chdir(tmp_path)
-    result = discover_active_overlay()
-    assert result is not None
-    assert result.project_path == tmp_path
+    entries = [MagicMock(name="first"), MagicMock(name="second")]
+    entries[0].name = "t3-teatree"
+    entries[0].value = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
+    entries[1].name = "t3-acme"
+    entries[1].value = "acme_overlay.overlay:AcmeOverlay"
+    with patch("importlib.metadata.entry_points", return_value=entries):
+        assert discover_active_overlay() is None
 
 
 def test_discover_active_overlay_canonicalizes_clone_dir_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A clone dir named ``teatree`` resolves to the registered ``t3-teatree`` (#1959)."""
+    """A checkout with one installed overlay resolves to that registered name."""
     project = tmp_path / "teatree"
     _write_manage_py(project, "active.settings")
     monkeypatch.chdir(project)
@@ -120,14 +118,7 @@ def test_discover_active_overlay_canonicalizes_clone_dir_name(tmp_path: Path, mo
 def test_discover_active_overlay_folds_deploy_dirname_to_sole_overlay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A deploy dir named ``teatree-deploy`` folds onto the sole registered overlay.
-
-    The basename ``teatree-deploy`` matches neither ``t3-teatree`` exactly nor
-    the ``-teatree-deploy`` dash-suffix alias rule, so pre-fix it leaked through
-    unchanged and stamped an undispatchable overlay onto every scanner ticket
-    (tickets 6/7/8 stuck ``not_started``). With exactly one overlay installed
-    there is no ambiguity — resolve to that overlay's canonical entry-point name.
-    """
+    """A checkout with an arbitrary directory name uses its sole installed overlay."""
     project = tmp_path / "teatree-deploy"
     _write_manage_py(project, "active.settings")
     monkeypatch.chdir(project)
@@ -144,16 +135,8 @@ def test_discover_active_overlay_folds_deploy_dirname_to_sole_overlay(
     assert result.project_path == project
 
 
-def test_discover_active_overlay_canonicalizes_via_settings_module(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A clone dir matching no entry point resolves through its settings module.
-
-    ``acme-factory`` matches neither ``t3-acme`` exactly nor the dash-suffix
-    alias rule, and the sole-overlay fallback cannot fire with two installed —
-    so pre-fix the raw basename leaked out as an undispatchable overlay anchor.
-    ``acme.settings`` names the Django project that IS the overlay.
-    """
+def test_discover_active_overlay_uses_entry_point_project_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A checkout selects its owning installed overlay by project path."""
     project = tmp_path / "acme-factory"
     _write_manage_py(project, "acme.settings")
     monkeypatch.chdir(project)
@@ -165,7 +148,13 @@ def test_discover_active_overlay_canonicalizes_via_settings_module(
     ep_teatree.name = "t3-teatree"
     ep_teatree.value = "t3_teatree.overlay:TeatreeOverlay"
 
-    with patch("importlib.metadata.entry_points", return_value=[ep_acme, ep_teatree]):
+    with (
+        patch("importlib.metadata.entry_points", return_value=[ep_acme, ep_teatree]),
+        patch(
+            "teatree.config.discovery._resolve_ep_project_path",
+            side_effect=lambda value: project if value == ep_acme.value else None,
+        ),
+    ):
         result = discover_active_overlay()
 
     assert result is not None
@@ -173,15 +162,10 @@ def test_discover_active_overlay_canonicalizes_via_settings_module(
     assert result.project_path == project
 
 
-def test_discover_active_overlay_dirname_kept_raw_when_multiple_overlays(
+def test_discover_active_overlay_ambiguous_dirname_returns_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With >1 overlay installed an ambiguous basename is NOT force-folded.
-
-    The single-overlay fallback only fires when there is exactly one registered
-    entry point; multiple installed overlays make the choice ambiguous, so the
-    directory basename is preserved (existing multi-overlay behaviour intact).
-    """
+    """With two installed overlays an ambiguous basename yields no active overlay."""
     project = tmp_path / "teatree-deploy"
     _write_manage_py(project, "active.settings")
     monkeypatch.chdir(project)
@@ -196,8 +180,7 @@ def test_discover_active_overlay_dirname_kept_raw_when_multiple_overlays(
     with patch("importlib.metadata.entry_points", return_value=[ep_a, ep_b]):
         result = discover_active_overlay()
 
-    assert result is not None
-    assert result.name == "teatree-deploy"
+    assert result is None
 
 
 def test_discover_active_overlay_single_declared(
@@ -416,14 +399,7 @@ def test_discover_overlays_entry_point_with_project_path(tmp_path: Path, config_
         assert result[0].project_path == project_root
 
 
-def test_bundled_overlay_not_duplicated_as_teatree_and_t3_teatree(config_db: Path) -> None:
-    """A legacy bare ``teatree`` registry entry must not become a stray overlay.
-
-    The bundled overlay is registered under the entry-point name ``t3-teatree``
-    (souliane/teatree#1108). A legacy bare ``teatree`` registry entry — written by
-    older setup runs — must fold into its canonical entry-point name instead of
-    emitting a stray duplicate.
-    """
+def test_definitionless_unregistered_overlay_is_not_discovered(config_db: Path) -> None:
     _seed_config_db(config_db, overlays={"teatree": {"mode": "auto"}})
 
     other_ep = MagicMock()
@@ -444,18 +420,6 @@ def test_bundled_overlay_not_duplicated_as_teatree_and_t3_teatree(config_db: Pat
     assert "teatree" not in names
 
 
-def test_canonical_ep_name_exact_match() -> None:
-    assert _match_canonical_ep("t3-acme", {"t3-acme", "t3-teatree"}) == "t3-acme"
-
-
-def test_canonical_ep_name_suffix_match_skipping_nonmatch() -> None:
-    assert _match_canonical_ep("teatree", {"unrelated-ep", "t3-teatree"}) == "t3-teatree"
-
-
-def test_canonical_ep_name_no_match_returns_none() -> None:
-    assert _match_canonical_ep("ghost", {"t3-acme", "t3-teatree"}) is None
-
-
 # ── canonical_overlay_name (CLI route/dedup key) ─────────────────────
 
 
@@ -472,8 +436,8 @@ def test_canonical_overlay_name_strips_t3_prefix(name: str, expected: str) -> No
     assert OverlayEntry.canonical_overlay_name(name) == expected
 
 
-def test_bare_alias_entry_still_folds_into_t3_prefixed_entry_point(config_db: Path) -> None:
-    """A bare ``beta`` registry entry folds into ``t3-beta`` (the #1108 guard)."""
+def test_short_registry_entry_is_ignored_when_only_canonical_entry_point_exists(config_db: Path) -> None:
+    """Discovery admits the installed canonical name without using a short registry key."""
     _seed_config_db(config_db, overlays={"beta": {"mode": "auto"}})
 
     entry_point = MagicMock()
@@ -486,5 +450,5 @@ def test_bare_alias_entry_still_folds_into_t3_prefixed_entry_point(config_db: Pa
     ):
         result = discover_overlays()
 
-    names = {entry.name for entry in result}
-    assert names == {"t3-beta"}
+    assert [entry.name for entry in result] == ["t3-beta"]
+    assert result[0].overrides == {}

@@ -1,7 +1,7 @@
 """The captures a hand-authored ``--body-file`` plan links to.
 
-A body names its captures itself, as links into ``evidence/<plan>/<side>/<file>``
-(or a legacy flat ``evidence/<plan>/<file>``). Each link must resolve before the
+A body names its captures itself, as links into ``evidence/<plan>/<side>/<file>``.
+Each link must resolve before the
 body is written: with ``--embed-captures`` a side link is sourced from the run's
 artifacts directory and copied in; otherwise it must already be committed. The
 resolved set then passes the same capture gates as a manifest's captures.
@@ -29,14 +29,12 @@ class BodyCaptures:
     """Where each capture a body links to comes from.
 
     ``incoming`` maps a side to the artifacts copied under ``<evidence_dir>/<side>/``;
-    ``committed`` holds linked captures already in git; ``superseded_flat`` holds
-    legacy flat captures the body no longer links whose side re-capture replaces them.
+    ``committed`` holds linked captures already in git.
     """
 
     evidence_dir: Path
     incoming: dict[str, list[Path]] = field(default_factory=dict)
     committed: list[Path] = field(default_factory=list)
-    superseded_flat: list[Path] = field(default_factory=list)
 
     def linked(self, kind: MediaKind) -> list[Path]:
         every = [source for sources in self.incoming.values() for source in sources] + self.committed
@@ -49,8 +47,6 @@ class BodyCaptures:
         }
 
     def embed(self) -> None:
-        for legacy in self.superseded_flat:
-            legacy.unlink()
         for side, sources in self.incoming.items():
             destination = self.evidence_dir / side
             destination.mkdir(parents=True, exist_ok=True)
@@ -65,20 +61,16 @@ def resolve_body_captures(body: str, *, evidence_dir: Path, embed: bool, artifac
         (link, *_split_link(link, prefix=prefix))
         for link in dict.fromkeys(unquote(a or b) for a, b in _LINK_RE.findall(body))
     ]
-    flat_linked = {evidence_dir / name for _, side, name in links if not side}
     index = _artifact_index(artifacts_dir) if embed and artifacts_dir is not None else {}
     captures = BodyCaptures(evidence_dir=evidence_dir)
     for link, side, name in links:
-        if side and embed:
+        if embed:
             source = _artifact_for(index, link=link, side=side, name=name, artifacts_dir=artifacts_dir)
             captures.incoming.setdefault(side, []).append(source)
-            legacy = evidence_dir / name
-            if legacy.is_file() and legacy not in flat_linked and legacy not in captures.superseded_flat:
-                captures.superseded_flat.append(legacy)
             continue
         committed = evidence_dir / side / name
         if not committed.is_file():
-            hint = " — pass --embed-captures with --artifacts-dir to copy it from the run" if side else ""
+            hint = " — pass --embed-captures with --artifacts-dir to copy it from the run"
             msg = f"The body links {link!r}, but no capture is committed at {committed}{hint}."
             raise TestPlanValidationError(msg)
         captures.committed.append(committed)
@@ -86,14 +78,14 @@ def resolve_body_captures(body: str, *, evidence_dir: Path, embed: bool, artifac
 
 
 def _split_link(link: str, *, prefix: str) -> tuple[str, str]:
-    """``(side, file name)`` for one evidence link; side is empty for a legacy flat capture."""
+    """``(side, file name)`` for one evidence link."""
     if not link.startswith(prefix):
         msg = f"The body links {link!r}; this plan's captures live under {prefix}."
         raise TestPlanValidationError(msg)
     side, _, name = link.removeprefix(prefix).rpartition("/")
-    if name and (not side or side in _ENVS):
+    if name and side in _ENVS:
         return side, name
-    msg = f"The body links {link!r}; expected {prefix}<dev, local or stack>/<file> or {prefix}<file>."
+    msg = f"The body links {link!r}; expected {prefix}<dev, local or stack>/<file>."
     raise TestPlanValidationError(msg)
 
 

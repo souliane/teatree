@@ -145,6 +145,22 @@ class TestPassKeyRouting(NotionSetupCase):
         assert result.exit_code == 0, result.output
         assert self.store.writes == [(_ROUTED_KEY, _SECRET)]
 
+    def test_a_short_alias_is_refused_without_storing_a_secret(self) -> None:
+        result = self.runner.invoke(notion_app, ["setup", "--overlay", "teatree"], input=f"{_SECRET}\n")
+
+        assert result.exit_code == 1, result.output
+        assert self.store.writes == []
+        assert "Overlay 'teatree' not found" in result.output
+
+    def test_an_unrouted_overlay_is_told_a_route_command_the_cli_accepts(self) -> None:
+        self.monkeypatch.setattr("teatree.backends.notion.credentials.overlay_notion_pass_key", lambda _name=None: "")
+
+        result = self.runner.invoke(notion_app, ["setup", "--overlay", "t3-teatree"], input=f"{_SECRET}\n")
+
+        assert result.exit_code == 1, result.output
+        assert "`t3 teatree config_setting set notion_token_pass_key" in result.output
+        assert "t3 t3-teatree" not in result.output
+
 
 class TestTheSecretNeverTravels(NotionSetupCase):
     def test_the_pasted_secret_reaches_the_store_and_not_the_output(self) -> None:
@@ -296,9 +312,12 @@ class TestSharingPass(NotionSetupCase):
         assert not [path for _method, path in self.notion.requests if path.startswith("/pages/")]
 
     def test_a_page_an_in_flight_ticket_tracks_is_checked_without_being_named(self) -> None:
-        TicketFactory(extra={"notion_url": f"https://www.notion.so/Spec-{self.notion.page_id.replace('-', '')}"})
+        TicketFactory(
+            overlay="t3-teatree",
+            extra={"notion_url": f"https://www.notion.so/Spec-{self.notion.page_id.replace('-', '')}"},
+        )
 
-        result = self.runner.invoke(notion_app, ["setup"], input=f"{_SECRET}\n")
+        result = self.runner.invoke(notion_app, ["setup", "--overlay", "t3-teatree"], input=f"{_SECRET}\n")
 
         assert result.exit_code == 0, result.output
         assert f"OK    {self.notion.page_id} — readable and live" in result.output

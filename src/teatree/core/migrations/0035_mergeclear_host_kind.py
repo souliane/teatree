@@ -15,14 +15,14 @@ from teatree.utils.forge import forge_from_remote
 
 def backfill_host_kind(apps, schema_editor):
     merge_clear = apps.get_model("core", "MergeClear")
-    for clear in merge_clear.objects.select_related("ticket").iterator():
+    clears = merge_clear.objects.using(schema_editor.connection.alias)
+    for clear in clears.select_related("ticket").iterator():
         issue_url = clear.ticket.issue_url if clear.ticket_id else ""
-        clear.host_kind = forge_from_remote(issue_url or "") or "github"
-        clear.save(update_fields=["host_kind"])
+        clears.filter(pk=clear.pk).update(host_kind=forge_from_remote(issue_url or "") or "github")
 
 
 def clear_host_kind(apps, schema_editor):
-    apps.get_model("core", "MergeClear").objects.update(host_kind="")
+    apps.get_model("core", "MergeClear").objects.using(schema_editor.connection.alias).update(host_kind="")
 
 
 class Migration(migrations.Migration):

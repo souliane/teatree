@@ -145,7 +145,6 @@ class TestIncomingEventReliability(TestCase):
 
         assert dead is True
         event.refresh_from_db()
-        assert event.is_dead_lettered is True
         assert event.dead_lettered_at is not None
         assert event.next_retry_at is None
 

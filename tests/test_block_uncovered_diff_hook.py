@@ -28,7 +28,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts import coverage_gate
+from hooks.scripts import hook_budget
 from hooks.scripts.coverage_gate import diff_coverage_finding, repo_ships_branch, shipped_branch
 from hooks.scripts.existing_artifact import _PROBE_TIMEOUT_S
 from hooks.scripts.hook_budget import HOOK_CEILING_S
@@ -320,7 +320,9 @@ class TestDenyNamesTheArtifactThatAlreadyExists:
 
     def test_deny_names_the_open_pr_and_calls_it_flagged_not_refused(self, shipping_repo, monkeypatch, capsys):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        with t3_reports(_finding_json(uncovered=[], symbols=["retirement_notice"]), returncode=1, open_pr=self.OPEN_PR):
+        with t3_reports(
+            _finding_json(uncovered=[], symbols=["governance_trailer"]), returncode=1, open_pr=self.OPEN_PR
+        ):
             reason = self._deny_reason(self._create_call(shipping_repo), capsys)
         assert "https://github.com/o/r/pull/4149" in reason
         assert "ALREADY EXISTS" in reason
@@ -407,7 +409,8 @@ class TestOneCeilingSharedByMeasurementAndProbe:
 
     def test_a_slow_measurement_shrinks_the_probe_rather_than_adding_to_it(self, shipping_repo, monkeypatch, capsys):
         clock = MeasurementClock(cost_s=25.0)
-        monkeypatch.setattr(coverage_gate, "time", clock)
+        monkeypatch.setattr(hook_budget, "time", clock)
+        monkeypatch.setattr(hook_budget, "_STARTED_AT", 0.0)
         with t3_reports(_finding_json(), returncode=1, open_pr=self.OPEN_PR, clock=clock) as measurement:
             reason = self._deny(shipping_repo, capsys)
         assert measurement.open_pr_timeout is not None
@@ -420,7 +423,8 @@ class TestOneCeilingSharedByMeasurementAndProbe:
     ):
         # The acceptance case: the probe is what gets sacrificed, never the deny.
         clock = MeasurementClock(cost_s=float(HOOK_CEILING_S))
-        monkeypatch.setattr(coverage_gate, "time", clock)
+        monkeypatch.setattr(hook_budget, "time", clock)
+        monkeypatch.setattr(hook_budget, "_STARTED_AT", 0.0)
         with t3_reports(_finding_json(), returncode=1, open_pr=self.OPEN_PR, clock=clock) as measurement:
             reason = self._deny(shipping_repo, capsys)
         assert measurement.open_pr_argv == []

@@ -27,9 +27,17 @@ and bare siblings — never Django / ``teatree.core``.
 
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Final
 
+from hooks.scripts.foreign_branch_push_shell import (
+    SHELL_WRAPPERS,
+    command_name,
+    flatten_command,
+    past_leaders,
+    shell_payload,
+)
 from hooks.scripts.mr_cli_fields import strip_quoted_and_heredoc
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
@@ -40,9 +48,16 @@ sys.modules.setdefault("hooks.scripts.git_add_all_guard", sys.modules[__name__])
 _ADD_ALL_OK_RE: Final[re.Pattern[str]] = re.compile(r"\[add-all-ok:\s*(\S[^\]]*?)\s*\]")
 _TOKEN_SCAN_LIMIT: Final[int] = 512
 _SEGMENT_SPLIT_RE: Final[re.Pattern[str]] = re.compile(r"\|\||&&|[;|&\n]")
-_ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
-# Prefixes that run the NEXT word rather than being the command themselves.
-_WRAPPER_LEADERS: Final[frozenset[str]] = frozenset({"command", "env", "nohup", "time", "stdbuf", "nice"})
+_ANSI_C_QUOTE_RE: Final[re.Pattern[str]] = re.compile(r"\$(?=')")
+# Options that take a value, per wrapper `past_leaders` drops; any other option is a bare flag (`sudo -n`, `env -i`).
+_LEADER_VALUE_FLAGS: Final[dict[str, frozenset[str]]] = {
+    "nice": frozenset({"-n", "--adjustment"}),
+    "sudo": frozenset(
+        {"-u", "--user", "-g", "--group", "-C", "--close-from", "-D", "--chdir", "-h", "--host", "-p", "--prompt"}
+        | {"-r", "--role", "-t", "--type", "-T", "--command-timeout", "-U", "--other-user", "-R", "--chroot"}
+    ),
+    "env": frozenset({"-u", "--unset", "-C", "--chdir"}),
+}
 
 # git's leading global options that consume the NEXT token as their value, so
 # the subcommand scanner skips two tokens for them (``git -C <path> add``).
@@ -58,6 +73,7 @@ _NO_SWEEP_FLAGS: Final[frozenset[str]] = frozenset(
     {"-u", "--update", "-p", "--patch", "-i", "--interactive", "-n", "--dry-run"}
 )
 _WHOLE_TREE_PATHSPECS: Final[frozenset[str]] = frozenset({".", "./", ":/", "*"})
+_NESTED_SHELL_DEPTH: Final[int] = 3
 
 
 def deny_reason() -> str:
@@ -72,15 +88,46 @@ def deny_reason() -> str:
     )
 
 
-def is_whole_tree_stage(command: str) -> bool:
+def is_whole_tree_stage(command: str, *, depth: int = 0) -> bool:
     """True iff *command* invokes ``git add`` over the whole working tree.
 
     Scanned on the quote/heredoc-stripped skeleton, so the phrase inside a commit
-    message, a PR body or a heredoc is text rather than an invocation.
+    message, a PR body or a heredoc is text rather than an invocation. The script a
+    shell runs (``bash -lc '…'``) is an invocation, so it is scanned the same way.
     """
-    return any(
-        _segment_stages_whole_tree(segment) for segment in _SEGMENT_SPLIT_RE.split(strip_quoted_and_heredoc(command))
+    skeleton = strip_quoted_and_heredoc(command)
+    if any(_segment_stages_whole_tree(segment) for segment in _SEGMENT_SPLIT_RE.split(skeleton)):
+        return True
+    return depth < _NESTED_SHELL_DEPTH and any(
+        is_whole_tree_stage(script, depth=depth + 1) for script in _wrapped_scripts(command)
     )
+
+
+def _command_words(tokens: Sequence[str]) -> list[str]:
+    """*tokens* past env assignments, control words, wrappers and the options a wrapper takes (``nice -n 5``)."""
+    while True:
+        leading = past_leaders(tokens)
+        dropped = len(tokens) - len(leading)
+        value_flags = (
+            _LEADER_VALUE_FLAGS.get(command_name(tokens[dropped - 1]), frozenset()) if dropped else frozenset()
+        )
+        skipped = 0
+        while skipped < len(leading) and leading[skipped].startswith("-"):
+            skipped += 2 if leading[skipped] in value_flags else 1
+        if not skipped:
+            return leading
+        tokens = leading[skipped:]
+
+
+def _wrapped_scripts(command: str) -> list[str]:
+    """The ``-c`` script of every shell the command runs, past the words that only introduce it."""
+    scripts = []
+    for segment in flatten_command(_ANSI_C_QUOTE_RE.sub("", command)).segments:
+        leading = _command_words(segment)
+        # shell_payload also reads a -c after the script operand (`bash deploy.sh -c ...`): an accepted false positive.
+        if leading and command_name(leading[0]) in SHELL_WRAPPERS and (script := shell_payload(leading)):
+            scripts.append(script)
+    return scripts
 
 
 def ok_token(command: str) -> str | None:
@@ -118,7 +165,7 @@ def handle_block_git_add_all(data: dict) -> bool:
     if reason := ok_token(command):
         sys.stderr.write(f"NOTE: whole-tree stage allowed via [add-all-ok: {reason}].\n")
         return False
-    return _fail_open_or_deny(data, deny_reason())
+    return _fail_open_or_deny(data, deny_reason(), gate_id="git_add_all")
 
 
 def _segment_stages_whole_tree(segment: str) -> bool:
@@ -137,17 +184,15 @@ def _segment_stages_whole_tree(segment: str) -> bool:
 def _git_add_args(tokens: list[str]) -> list[str] | None:
     """The arguments of a ``git add`` invocation in *tokens*, else None.
 
-    ``git`` must LEAD the segment (past any env assignment or ``command``-style
-    wrapper), so ``echo git add -A`` prints a string rather than staging one.
-    Skips git's leading global options so ``git -C <path> add`` is still an
-    ``add``; a path-form executable (``/usr/bin/git``) matches a bare ``git``.
+    ``git`` must LEAD the segment (past env assignments, control words and wrappers such
+    as ``sudo``/``timeout``), so ``echo git add -A`` prints a string rather than staging
+    one. Skips git's leading global options so ``git -C <path> add`` is still an ``add``;
+    a path-form executable (``/usr/bin/git``) matches a bare ``git``.
     """
-    index = 0
-    while index < len(tokens) and (_ENV_ASSIGNMENT_RE.match(tokens[index]) or tokens[index] in _WRAPPER_LEADERS):
-        index += 1
-    if index >= len(tokens) or PurePosixPath(tokens[index]).name != "git":
+    tokens = _command_words(tokens)
+    if not tokens or PurePosixPath(tokens[0]).name != "git":
         return None
-    cursor = index + 1
+    cursor = 1
     while cursor < len(tokens) and tokens[cursor].startswith("-"):
         cursor += 2 if tokens[cursor] in _GIT_VALUE_FLAGS else 1
     if cursor >= len(tokens) or tokens[cursor] != "add":

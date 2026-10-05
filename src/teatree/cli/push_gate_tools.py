@@ -1,10 +1,9 @@
-"""``t3 tool push-gate`` — plan (or run) the safety-biased incremental push gate (#122).
+"""``t3 tool push-gate`` — plan (or run) the safety-biased scoped push gate (#122).
 
 Registers onto the shared ``tool_app`` (side-effect import from ``cli/__init__``,
 mirroring ``comment_density_tools`` / ``test_path_mirror_tools``). The planning +
 execution live in :mod:`teatree.quality.push_gate`; this module is the thin CLI
-surface. It resolves the ``incremental_push_gate`` flag (fail-safe to OFF ⇒ FULL),
-plans the diff, and either prints the plan (``--json`` / ``--emit-cmd`` / default
+surface. It plans the diff and either prints the plan (``--json`` / ``--emit-cmd`` / default
 human report) or executes the two scoped sweeps (``--run``, the driver
 ``dev/push-gate.sh`` invokes).
 """
@@ -14,23 +13,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.config import get_effective_settings
 from teatree.quality.push_gate import PushGatePlan, resolve_plan, run_push_gate, sweep_command
-from teatree.utils.django_bootstrap import ensure_django
-
-
-def _resolve_flag() -> bool:
-    """Resolve ``incremental_push_gate``, failing SAFE to OFF (⇒ whole-tree FULL).
-
-    The flag defaults ON, but any failure to bootstrap Django or read the store
-    resolves it to OFF (fail-safe), so a broken/unconfigured environment runs the
-    whole-tree sweeps — never a scoped run it could not authorize.
-    """
-    try:
-        ensure_django()
-        return bool(get_effective_settings().incremental_push_gate)
-    except Exception:  # noqa: BLE001 — fail safe: any read failure ⇒ OFF ⇒ whole-tree FULL.
-        return False
 
 
 def _emit_cmd(plan: PushGatePlan, repo_root: Path) -> str:
@@ -49,7 +32,6 @@ def _plan_as_dict(plan: PushGatePlan) -> dict:
     return {
         "is_full": plan.is_full,
         "reason": plan.reason,
-        "enabled": plan.enabled,
         "doctest_targets": [str(t) for t in plan.doctest_targets],
         "astgrep_scope": None if plan.astgrep_scope is None else [str(p) for p in plan.astgrep_scope],
     }
@@ -64,14 +46,11 @@ def push_gate_command(
 ) -> None:
     """Plan (or ``--run``) the incremental push gate: scoped doctest + ast-grep, FULL-fallback.
 
-    The ``incremental_push_gate`` flag defaults ON ⇒ scoped to the diff, with FULL as
-    the classifier's default branch (every uncertainty runs the whole sweep). OFF ⇒
-    whole-tree both sweeps (the pre-#122 behaviour). A read failure fails safe to
-    whole-tree FULL, and the CI whole-tree backstop is untouched regardless of the flag.
+    A provably local diff is scoped; every uncertainty runs the whole sweep.
+    The CI whole-tree backstop remains in place.
     """
-    enabled = _resolve_flag()
     cwd = Path.cwd()
-    plan = resolve_plan(base, enabled=enabled, cwd=cwd)
+    plan = resolve_plan(base, cwd=cwd)
 
     if output_json:
         typer.echo(json.dumps(_plan_as_dict(plan), indent=2))

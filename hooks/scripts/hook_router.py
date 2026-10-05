@@ -52,6 +52,7 @@ if __name__ == "__main__":
     sys.modules.setdefault("hooks.scripts.hook_router", sys.modules[__name__])
 
 from hooks.scripts.active_repo_tracking import handle_track_active_repo
+from hooks.scripts.additional_context import emit_additional_context
 from hooks.scripts.answer_first_gate import handle_answer_first_gate
 from hooks.scripts.banned_terms import handle_banned_terms_pretool
 from hooks.scripts.bash_env import resolve_loop_env as _resolve_loop_env
@@ -75,9 +76,6 @@ from hooks.scripts.cron_tracking import derive_loop_name as _derive_loop_name  #
 from hooks.scripts.cron_tracking import handle_track_cron_jobs
 from hooks.scripts.deny_circuit_breaker import apply_deny_circuit_breaker as _apply_deny_circuit_breaker
 from hooks.scripts.deny_circuit_breaker import (
-    deny_circuit_breaker_enabled as _deny_circuit_breaker_enabled,  # noqa: F401 re-export for test access
-)
-from hooks.scripts.deny_circuit_breaker import (
     deny_is_ux_gate as _deny_is_ux_gate,  # noqa: F401 re-export for test access
 )
 from hooks.scripts.deny_circuit_breaker import reset_deny_streak as _reset_deny_streak
@@ -90,7 +88,7 @@ from hooks.scripts.dispatch_admission_gate import handle_dispatch_admission
 from hooks.scripts.dispatch_ledger import handle_track_agents
 from hooks.scripts.dispatch_seat_release import handle_subagent_stop_release
 from hooks.scripts.django_bootstrap import bootstrap_teatree_django
-from hooks.scripts.engagement import autoload_skill_demand, engage
+from hooks.scripts.engagement import engage
 from hooks.scripts.engagement import skill_load_activates_teatree as _skill_load_activates_teatree
 from hooks.scripts.engagement_advisory import session_start_advisory as _session_start_advisory
 from hooks.scripts.foreign_branch_push_gate import handle_block_foreign_branch_push
@@ -104,31 +102,31 @@ from hooks.scripts.forge_api_detect import (
 )
 from hooks.scripts.forge_api_detect import invokes_raw_merge_subcommand as _invokes_raw_merge_subcommand
 from hooks.scripts.forge_api_detect import is_raw_merge_api_write as _is_raw_merge_api_write
+from hooks.scripts.gate_decision import record_gate_decision as _record_gate_decision
+from hooks.scripts.gate_decision import write_pretooluse_deny as _write_pretooluse_deny
 from hooks.scripts.gate_result import (
+    CompletedRun,
     GateOutcome,
     GateSkipped,
     ValidatorTimedOut,
     announce_cannot_evaluate,
     classify_validator_run,
-    validator_timeout_seconds,
+    run_validator,
     warn_gate_skipped,
 )
 from hooks.scripts.general_purpose_agent_gate import handle_block_general_purpose_agent
 from hooks.scripts.git_add_all_guard import handle_block_git_add_all
 from hooks.scripts.glab_stale_base_remote_guard import handle_block_glab_stale_base_remote
-from hooks.scripts.handlers.classifier_denial import (
-    handle_classifier_deny_stop_gate,
-    handle_clear_classifier_deny_marker,
-    handle_track_classifier_denial,
-)
+from hooks.scripts.handlers.classifier_denial import handle_classifier_deny_stop_gate, handle_track_classifier_denial
 from hooks.scripts.headless_authoring_gate import handle_block_interactive_authoring
 from hooks.scripts.loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
-from hooks.scripts.loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
-from hooks.scripts.loop_prompt_registration import handle_enforce_loop_on_prompt
 from hooks.scripts.loop_prompt_shape import LOOP_PROMPT as _LOOP_PROMPT  # noqa: F401 re-export for sibling + tests
-from hooks.scripts.loop_prompt_shape import is_bare_loop_prompt as _is_bare_loop_prompt
 from hooks.scripts.loop_registry_liveness import pid_namespace as _pid_namespace
 from hooks.scripts.loop_registry_liveness import prune_dead_owner as _prune_dead_owner
+from hooks.scripts.loop_registry_liveness import session_owns_loop as _session_owns_loop
+from hooks.scripts.loop_registry_path import OWNER_LOOP as _OWNER_LOOP
+from hooks.scripts.loop_registry_path import loop_registry_path as _loop_registry_path
+from hooks.scripts.loop_registry_path import read_loop_registry as _read_loop_registry
 from hooks.scripts.loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from hooks.scripts.main_clone_guard import handle_block_main_clone_mutation
 from hooks.scripts.managed_repo import cwd_teatree_managed_state as _cwd_is_teatree_managed
@@ -139,8 +137,7 @@ from hooks.scripts.managed_repo import overlay_managed_repo_signals as _overlay_
 from hooks.scripts.managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
 from hooks.scripts.managed_repo import resolve_branch_and_root as _resolve_branch_and_root
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
-from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write, is_slack_mcp_tool
-from hooks.scripts.memory_recall import handle_recall_cold_memory
+from hooks.scripts.mcp_slack_write_guard import handle_block_mcp_slack_write
 from hooks.scripts.merged_detection_probe_gate import handle_warn_merged_detection_probe
 from hooks.scripts.mr_cli_fields import (
     cli_update_is_title_only,
@@ -158,6 +155,7 @@ from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent a
 from hooks.scripts.orchestrator_delegation_gate import handle_block_undelegated_investigation
 from hooks.scripts.orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from hooks.scripts.over_cap_growth_advisory import handle_over_cap_growth_advisory
+from hooks.scripts.owner_prompts import is_live_user_turn, owner_prompted_since
 from hooks.scripts.plan_edit_gate import (  # noqa: F401 re-export
     _resolve_worktree_state,
     _ticket_state_for_cwd,
@@ -177,8 +175,10 @@ from hooks.scripts.question_gates import (
 )
 from hooks.scripts.question_gates import last_assistant_turn as _last_assistant_turn
 from hooks.scripts.question_gates import read_transcript_entries as _read_transcript_entries
+from hooks.scripts.question_handback import hand_back_context, handle_hand_back_answers
 from hooks.scripts.quote_scanner_verdict_io import quote_scanner_high_block_message as _quote_high_block_message
 from hooks.scripts.quote_verdict import resolve_high_verdict as _resolve_quote_verdict
+from hooks.scripts.raw_issue_write_guard import handle_block_raw_issue_write
 from hooks.scripts.raw_pid_kill_guard import handle_block_raw_pid_kill
 from hooks.scripts.raw_review_post_guard import (
     REVIEW_POST_ENDPOINT_RE as _REVIEW_POST_ENDPOINT_RE,  # noqa: F401 re-export for test access
@@ -193,18 +193,17 @@ from hooks.scripts.self_dm_destinations import SelfDmDestinations as _SelfDmDest
 from hooks.scripts.self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
 from hooks.scripts.self_dm_destinations import self_dm_destination as _self_dm_destination
 from hooks.scripts.self_dm_destinations import slack_tool_suffix as _slack_tool_suffix
+from hooks.scripts.session_end_self_pump import handle_session_end_self_pump
 from hooks.scripts.session_end_work_check import handle_session_end
 from hooks.scripts.session_handover_pickup import claim_session_handover as _claim_session_handover
-from hooks.scripts.session_nudges import handle_todo_freshness_nudge
+from hooks.scripts.session_start_delivery import StartClaims
 from hooks.scripts.session_start_hook_budget import session_start_hook_budget_advisory
 from hooks.scripts.session_start_skills import session_start_skill_context as _session_start_skill_context
 from hooks.scripts.single_branch_repo_guard import handle_block_second_branch
-from hooks.scripts.skill_loader_input import build_skill_loader_input as _build_skill_loader_input
 from hooks.scripts.skill_path_probe import is_file_safe
-from hooks.scripts.skill_suggestion_render import render_skill_suggestion_message
 from hooks.scripts.standing_goal_stop_gate import handle_standing_goal_stop
 from hooks.scripts.standing_grant_ask_gate import handle_block_standing_grant_ask
-from hooks.scripts.state_files import append_line, read_lines
+from hooks.scripts.state_files import append_line, hook_state_dir, read_lines
 from hooks.scripts.stop_snapshot_slot import handle_stop_snapshot_slot
 from hooks.scripts.stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
 from hooks.scripts.stop_snapshot_slot import render_git_state_section as _render_git_state_section
@@ -214,7 +213,6 @@ from hooks.scripts.subagent_no_commit import handle_subagent_stop_no_commit
 from hooks.scripts.t3_invocation import run_t3, spawn_t3_detached, t3_argv, t3_available, t3_never_started
 from hooks.scripts.teatree_settings import autoload_enabled as _autoload_enabled
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
-from hooks.scripts.teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
 from hooks.scripts.teatree_settings import teatree_int_setting as _teatree_int_setting
 from hooks.scripts.turn_inspect import current_turn_assistant_text as _current_turn_assistant_text
 from hooks.scripts.turn_inspect import current_turn_edits as _current_turn_edits
@@ -223,16 +221,10 @@ from hooks.scripts.unapprovable_author_create_gate import handle_block_unapprova
 from hooks.scripts.unbacked_claim_gate import handle_unbacked_claim_gate
 from hooks.scripts.unbounded_wait_guard import handle_block_unbounded_wait
 from hooks.scripts.unknown_repo_push_gate import handle_block_unknown_repo_push
-from hooks.scripts.ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
-from hooks.scripts.verbatim_paste_gate import handle_block_verbatim_operator_paste, handle_record_operator_message
+from hooks.scripts.verbatim_paste_gate import handle_block_verbatim_operator_paste
 from hooks.scripts.visible_plan_gate import handle_enforce_visible_plan_before_tools
 
-STATE_DIR = Path(
-    os.environ.get(
-        "TEATREE_CLAUDE_STATUSLINE_STATE_DIR",
-        os.environ.get("T3_HOOK_STATE_DIR", "/tmp/claude-statusline"),  # noqa: S108 — fixed agent-controlled path, not user input
-    )
-)
+STATE_DIR = hook_state_dir()
 
 # Per-invocation context shared with the deny circuit breaker. Each hook event
 # is a fresh ``python3`` process (one per tool call), so these globals are set
@@ -254,25 +246,6 @@ def _current_hook_context() -> tuple[str, dict]:
 
 _FILE_PATH_TOOLS = {"Edit", "Write"}
 _MR_TOOLS = {"mcp__glab__glab_mr_create", "mcp__glab__glab_mr_update"}
-
-# Patterns that indicate workspace/infrastructure operations where the agent
-# MUST use `t3` CLI instead of running underlying commands directly.
-_T3_CLI_REMINDER_RE = re.compile(
-    r"\b("
-    r"worktree|setup|workspace|database|restore|migrate|runserver|"
-    r"manage\.py|nx serve|docker compose|createdb|dropdb|"
-    r"playwright|e2e|frontend|backend|dslr|pg_restore|pg_dump|"
-    r"npm run|pipenv|pip install"
-    r")\b",
-    re.IGNORECASE,
-)
-
-_T3_CLI_REMINDER = (
-    "MANDATORY: Use `t3` CLI for ALL workspace, server, database, and test operations. "
-    "NEVER run underlying commands directly (manage.py, nx serve, docker compose, "
-    "createdb, playwright, npm run, pipenv, pip install, dslr, etc.). "
-    "If a `t3` command fails, fix the `t3` code — do not work around it."
-)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -305,7 +278,7 @@ _SWEEP_SENTINEL = ".last-sweep"
 # repeated for the life of the session — and ``statusline.sh`` gates the WHOLE
 # statusline on its presence (exits blank when absent). Sweeping it makes a
 # long-lived session's statusline silently go blank. The throttle-and-recreate
-# markers (``loop-pending`` / ``pump-armed`` / ``mr_refreshed`` …) are NOT
+# markers (``pump-armed`` / ``mr_refreshed`` …) are NOT
 # listed: their absence is the safe default and they are re-armed on demand.
 #
 # ``.agents`` / ``.agents-stopped`` (#4108) are a THIRD reason to protect, distinct
@@ -395,36 +368,13 @@ def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
     """
     decision = _apply_deny_circuit_breaker(reason, gate_id=gate_id)
     if decision.allow:
+        _record_gate_decision(reason, decision="override", gate_id=gate_id, context=_current_hook_context())
         return False
-    # A sub-agent deny must not advertise the ALLOW_*/QUOTE_OK self-bypass hint it
+    # A sub-agent deny must not advertise the `[quote-ok: <reason>]` approval it
     # cannot self-authorize (the classifier-denied retry poisoned its context) —
     # rewrite the hint to escalation guidance, deny unchanged (#3252, sibling leaf).
     reason_out = _suppress_self_auth_hint_for_subagent(decision.reason, _current_hook_context()[1])
-    return _write_pretooluse_deny(reason_out, gate_id=gate_id)
-
-
-def _write_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
-    payload = {
-        # Legacy flat shape — kept for in-process consumers (existing
-        # handler tests). Harmless to the harness because it ignores
-        # unknown top-level keys.
-        "permissionDecision": "deny",
-        "permissionDecisionReason": reason,
-        # Modern shape — the one the harness actually reads.
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        },
-    }
-    # A small non-privacy-sensitive gate identity a gate can stamp on its deny
-    # (PR-25 plan_gate marker) so the transcript-conformance eval can key on the
-    # gate WITHOUT ever reading the raw (privacy-sensitive) deny reason.
-    if gate_id:
-        payload["gate_id"] = gate_id
-        payload["hookSpecificOutput"]["gate_id"] = gate_id
-    json.dump(payload, sys.stdout)
-    return True
+    return _write_pretooluse_deny(reason_out, gate_id=gate_id, context=_current_hook_context())
 
 
 # ── Shared fail-open / self-rescue routing for the OVER-DENY gates ──
@@ -525,10 +475,13 @@ def _fail_open_or_deny(data: dict, reason: str, *, gate_id: str | None = None) -
     fail-closed (see the module note above).
     """
     # A raising resolver must NEVER relax a gate: the suppression falls through to the deny.
+    allow = False
     with contextlib.suppress(Exception):
         command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
-        if _is_self_rescue(command) or _danger_gate_fail_open_enabled():
-            return False
+        allow = _is_self_rescue(command) or _danger_gate_fail_open_enabled()
+    if allow:
+        _record_gate_decision(reason, decision="override", gate_id=gate_id, context=(_current_hook_context()[0], data))
+        return False
     return emit_pretooluse_deny(reason, gate_id=gate_id)
 
 
@@ -551,17 +504,15 @@ def _t3_engaged(session_id: str) -> bool:
 def _teatree_engaged(session_id: str) -> bool:
     # #256 engagement seam: teatree is engaged when the owner enabled autoload,
     # a teatree-requiring skill was loaded (``.teatree-active``), OR any ``t3:``
-    # skill was loaded (``.t3-engaged``). Gates the suggester + T3 CLI reminder.
+    # skill was loaded (``.t3-engaged``). Gates the SessionStart suggester.
     return _autoload_enabled() or _teatree_active(session_id) or _t3_engaged(session_id)
 
 
 def _loop_auto_load_active(session_id: str) -> bool:
     """Whether this session may auto-arm the loop/statusline machinery (#256).
 
-    The single gate every session-start auto-load injection point shares —
-    the reactive-loop registration (:func:`handle_enforce_loop_on_prompt`) and the
-    tick-owner bootstrap (:func:`handle_session_start_bootstrap`). Two conditions
-    must BOTH hold:
+    The gate the tick-owner bootstrap (:func:`handle_session_start_bootstrap`)
+    applies. Two conditions must BOTH hold:
 
     - the session opted into teatree (:func:`_teatree_active` — a teatree
         skill was loaded), AND
@@ -580,100 +531,7 @@ _read_lines = read_lines
 _append_line = append_line
 
 
-# ── UserPromptSubmit ────────────────────────────────────────────────
-
-
-def handle_user_prompt_submit(data: dict) -> None:
-    """Suggest cwd/overlay-context skills — never a free-text scan of the prompt."""
-    session_id = data.get("session_id", "")
-    prompt = data.get("prompt", "")
-    if not session_id or not prompt:
-        return
-
-    _ensure_state_dir()
-    pending = _state_file(session_id, "pending")
-    pending.write_text("", encoding="utf-8")
-
-    # #256 default-OFF: a session that has not engaged teatree (no autoload, no
-    # teatree/t3: skill loaded) gets NO skill suggestion, NO ``.pending`` write,
-    # and NO T3 CLI reminder. ``.pending`` stays empty above, so the PreToolUse
-    # skill-loading gate never blocks (never-lockout). The owner opts in via
-    # ``/t3:interactive`` (or any ``t3:`` skill), or ``[teatree] autoload = true``.
-    if not _teatree_engaged(session_id):
-        return
-
-    scripts_dir = Path(__file__).resolve().parent.parent.parent / "scripts"
-    if not (scripts_dir / "lib" / "skill_loader.py").is_file():
-        return
-
-    loader_input = _build_skill_loader_input(prompt, session_id)
-
-    sys.path.insert(0, str(scripts_dir))
-    try:
-        from lib.skill_loader import suggest_skills  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
-
-        result = suggest_skills(loader_input)
-    except Exception:  # noqa: BLE001 — crash-proof hook: a broken suggester degrades to the standing demand below
-        result = {"suggestions": [], "advisory": [], "companions": []}
-    finally:
-        sys.path.pop(0)
-
-    # ``autoload`` is a STANDING opt-in, so the platform-skill demand it implies
-    # must not depend on the suggester surviving — nor on the overlay metadata
-    # the suggester needs. A silently degraded suggester is precisely what made
-    # "teatree is on" indistinguishable from "the owner never opted in".
-    result["suggestions"] = [*autoload_skill_demand(loader_input["loaded_skills"]), *result.get("suggestions", [])]
-
-    # Deterministic t3 CLI reminder — injected when prompt matches
-    # workspace/infrastructure patterns, regardless of skill suggestions.
-    t3_reminder = _T3_CLI_REMINDER if _T3_CLI_REMINDER_RE.search(prompt) else ""
-    message = render_skill_suggestion_message(
-        result, pending=pending, t3_reminder=t3_reminder, normalize=normalize_skill_name
-    )
-    if message:
-        print(message)  # noqa: T201 — hook stdout is the UserPromptSubmit message channel
-
-
-# ── UserPromptSubmit: live-presence heartbeat (#58 away-misclassification) ────
-
-
-def handle_record_presence(data: dict) -> None:
-    """Stamp a live-presence heartbeat — a prompt proves the user is here.
-
-    ``core.mode_resolution`` reads this stamp to upgrade a schedule-derived mode to
-    the configured presence-upgrade mode: a user actively submitting prompts is
-    demonstrably here, so the loops must not stay masked off just because the clock
-    is outside their configured work hours.
-    Fail-open and silent — an unwritable heartbeat never blocks the prompt.
-    """
-    prompt = data.get("prompt")
-    if not prompt:
-        return
-    # A PURE loop-tick continuation is autonomous, not user presence — stamping
-    # it would let the #189 live-turn predicate mistake an owner-session tick for
-    # a fresh keystroke, and it is not evidence the user is at the keyboard for
-    # the 15-min schedule upgrade either. Skip it on both counts.
-    #
-    # But suppress ONLY the bare tick, never a prompt that merely *starts with*
-    # the loop text (#2155): when the user types a genuine fresh prompt while the
-    # owner session is self-pumping, the harness delivers it PREFIXED by the loop
-    # continuation text. A `startswith` guard swallowed that live keystroke, so
-    # the next AskUserQuestion deferred to a DeferredQuestion even though the user
-    # was demonstrably present. `_is_bare_loop_prompt` strips the harness ambient
-    # blocks and suppresses only when nothing but the loop prompt remains —
-    # genuine user content beyond it proves presence and must stamp.
-    if _is_bare_loop_prompt(prompt):
-        return
-    # Write the heartbeat in pure stdlib — the write never needed Django (the
-    # module import did), so a live-presence stamp no longer boots django.setup()
-    # on every user prompt (#22). Byte-identical to ``PresenceHeartbeat.record``.
-    try:
-        record_presence(str(data.get("session_id", "")))
-    except Exception:  # noqa: BLE001 — heartbeat is best-effort; never block the prompt.
-        return
-
-
-# ── UserPromptSubmit + PreToolUse: enforce-loop-registration ──────────
+# ── Loop tick-staleness window ──────────────────────────────────────
 
 _LOOP_CADENCE_DEFAULT = 720
 
@@ -707,83 +565,29 @@ def _tick_meta_stale() -> bool:
     return age > cadence * 2
 
 
-def _cleanup_stale_pending(session_id: str) -> None:
-    """Remove other sessions' per-session loop markers.
-
-    Sweeps both ``*.loop-pending`` and ``*.pump-armed`` (#758 N1): a
-    crashed session would otherwise leave a stale ``pump-armed`` marker
-    whose mere presence suppresses a *new* owner session's self-pump
-    (the anti-spin check keys on the marker file existing).
-    """
-    for suffix in ("loop-pending", "pump-armed"):
-        for f in STATE_DIR.glob(f"*.{suffix}"):
-            if f.stem != session_id:
-                f.unlink(missing_ok=True)
-
-
-def _claim_loop_ownership(session_id: str) -> None:
-    """Atomically claim the tick-owner record for *session_id* if unclaimed.
-
-    Risk-6 fix: when teatree is loaded mid-session (after SessionStart was
-    gated out), the ownership-claim logic in
-    :func:`handle_session_start_bootstrap` never ran.  The first
-    UserPromptSubmit after the marker is set calls this to fill the gap.
-    No-ops if a live foreign owner already holds the record, or if the
-    ``T3_LOOP_DISOWN`` immediate-mitigation knob is truthy.  Durable per-loop
-    pause/disable lives in the DB ``LoopState`` tier (``t3 loop pause`` /
-    ``disable``); there is no ``[loops] enabled`` toml kill-switch (the dead cold
-    arm was dropped — loop control is ``/loops`` + the DB only).  The in-process
-    ``T3_LOOP_DISOWN`` knob is the orthogonal immediate-mitigation lever, not a
-    loops kill-switch.
-    """
-    if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
-        return
-    current_pid = os.getppid()
-    with _loop_registry_txn() as box:
-        registry = _prune_dead_owner(box[0])
-        owner = registry.get(_OWNER_LOOP)
-        if owner is not None and owner.get("session_id") != session_id:
-            # A foreign, still-alive session holds the file registry. The DB is the
-            # take-over authority (#2851): when ``t3 loop claim --take-over`` already
-            # moved the LIVE DB lease to THIS session, reconcile the stale file
-            # registry (fall through to rewrite ``_OWNER_LOOP``) and WIN the claim, so
-            # the new owner emits cron registrations. A foreign/unowned DB lease (or a
-            # disabled consult) backs off as before — a live foreign owner is never
-            # stolen without an explicit DB hand-off.
-            if not _db_owner_is_current_session(session_id):
-                box[0] = registry
-                return
-        elif owner is None and _db_live_foreign_owner(session_id, current_pid=current_pid):
-            box[0] = registry
-            return
-        box[0] = _tick_owner_record(session_id, "")
-
-
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
 #
 # The gate blocks Bash/Edit/Write until every suggested-but-unloaded
 # skill is loaded. A suggestion lands in ``<session>.pending`` from the
-# supplementary keyword config (``$HOME/.teatree-skills.yml``) or from
-# lifecycle/intent detection.
+# SessionStart suggester.
 #
-# Fail-open contract (the lockout class this closes): a config entry can
-# map a keyword to a skill NAME that no longer resolves (renamed or
-# removed skill — e.g. ``ac-auditing-repos`` after the rename to
-# ``ac-reviewing-codebase``). Demanding a skill the ``Skill`` tool cannot
+# Fail-open contract (the lockout class this closes): a demand can name a
+# skill that no longer resolves (renamed or removed skill — e.g.
+# ``ac-auditing-repos`` after the rename to ``ac-reviewing-codebase``). Demanding a skill the ``Skill`` tool cannot
 # load ("Unknown skill") would block ALL Bash/Edit/Write for the whole
 # session with no in-session self-rescue. So before blocking, the gate
 # verifies each required name resolves to a loadable skill; an
 # unresolvable name does NOT block — it emits a one-line warning naming
-# the stale skill + the config file and is dropped from the demand. Only
+# the stale skill and is dropped from the demand. Only
 # skills that genuinely resolve but are not yet loaded enforce load-first.
 #
 # Resolution reuses the canonical :func:`_skill_search_dirs` (defined
 # below for skill-usage tracking) so the gate scans the SAME dirs the
 # loader builds its trigger index from — the repo ``skills/``
 # source-of-truth (lifecycle skills) plus the agent install dirs
-# (supplementary skills), honouring the ``T3_SKILL_SEARCH_DIRS`` override.
+# (framework skills), honouring the ``T3_SKILL_SEARCH_DIRS`` override.
 # ``<session>.pending`` carries bare names (lifecycle ``code``/``debug``,
-# supplementary ``ac-*``) AND overlay ``skill_path`` values of the shape
+# framework ``ac-*``) AND overlay ``skill_path`` values of the shape
 # ``skills/<skill>/SKILL.md``; :func:`_skill_resolves` handles both so the
 # gate keeps enforcing load-first for a genuinely-installed overlay skill
 # while still failing open on a stale name.
@@ -847,7 +651,7 @@ def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
 
     Resolution is deliberately CONSERVATIVE: a name resolves only when its
     own skill directory exists VERBATIM. Two shapes reach
-    ``<session>.pending``. A bare name (lifecycle ``code``, supplementary
+    ``<session>.pending``. A bare name (lifecycle ``code``, framework
     ``ac-*``) matches ``<dir>/<name>/SKILL.md``. An overlay ``skill_path``
     (``skills/<skill>/SKILL.md``, emitted by the overlay generator) matches
     when the literal path is a file under a search dir (or its parent), or
@@ -918,7 +722,7 @@ def _plugin_owned_skills() -> set[str]:
 
     These are the names the Skill tool namespaces under
     :func:`_plugin_namespace`. A bare ``rules`` present here canonicalizes
-    to ``<namespace>:rules``; a name absent here (a supplementary ``ac-*``
+    to ``<namespace>:rules``; a name absent here (an ``ac-*``
     installed elsewhere) is left unqualified.
     """
     owned: set[str] = set()
@@ -1088,26 +892,6 @@ def _skill_gate_targets_code_work(data: dict) -> bool:
     return False
 
 
-def _skill_loading_exempt(session_id: str) -> bool:
-    """True when the skill-load gate must NOT fire for this session's code work.
-
-    NEVER-LOCKOUT (#1918): a loop-registration / t3-master bootstrap turn
-    routinely surfaces a resolvable intent skill (the bare word ``loops`` is a
-    hard intent trigger) in ``<session>.pending`` while doing genuine code work
-    during teatree's own Django setup. Blocking that to demand an unrelated
-    ``/loops`` load deadlocks the bootstrap. The skill-load gate is a UX nudge,
-    not a safety gate, so it exempts the turn — keyed on the SAME short-lived
-    ``<session>.loop-pending`` marker the loop gates use (written by
-    :func:`handle_enforce_loop_on_prompt`, cleared once the loop registers), so
-    there is one source of truth for "this session is mid loop-bootstrap".
-
-    ``.is_file()`` never raises, so a missing/unreadable marker preserves the
-    gate (fails to "not exempt"), never crashes — per the hooks crash-proof
-    contract.
-    """
-    return _state_file(session_id, "loop-pending").is_file()
-
-
 def _skill_loading_gate_enabled() -> bool:
     """Whether the skill-loading gate is enabled (default True).
 
@@ -1140,7 +924,6 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     if (
         not session_id
         or not _skill_gate_targets_code_work(data)
-        or _skill_loading_exempt(session_id)
         # Last, because it is the only clause that reads the config store.
         or not _skill_loading_gate_enabled()
     ):
@@ -1162,11 +945,9 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     enforceable = [s for s in unloaded if _skill_resolves(s, search_dirs)]
     stale = [s for s in unloaded if s not in enforceable]
 
-    config_path = os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml"))
     for name in stale:
         sys.stderr.write(
-            f"WARNING: skill-loading gate skipped unresolvable skill '{name}' "
-            f"(not found in any skill dir; check the keyword→skill mapping in {config_path}).\n"
+            f"WARNING: skill-loading gate skipped unresolvable skill '{name}' (not found in any skill dir).\n"
         )
 
     if not enforceable:
@@ -1182,7 +963,7 @@ def handle_enforce_skill_loading(data: dict) -> bool:
         "Call the Skill tool for each one BEFORE calling Bash/Edit/Write. "
         "If this is a false trigger, add `[skill-load-ok: <reason>]` to the command/args to proceed."
     )
-    return _fail_open_or_deny(data, reason)
+    return _fail_open_or_deny(data, reason, gate_id="skill-loading-enforcement")
 
 
 # ── PreToolUse/Agent: enforce-skill-loading-on-dispatch (#1488) ───────
@@ -1261,6 +1042,7 @@ def handle_protect_default_branch(data: dict) -> bool:
         data,
         f"BLOCKED: file is on protected branch '{branch}' in a teatree-managed repo. "
         "Create a worktree first with `t3 teatree workspace ticket`.",
+        gate_id="protect_default_branch",
     )
 
 
@@ -1357,12 +1139,10 @@ def _handle_broken_validate_env(data: dict) -> bool:
     if os.environ.get("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "").strip().lower() in {"1", "true", "yes"}:
         warn_gate_skipped("MR-metadata", _MR_VALIDATE_BROKEN_ENV_SKIP)
         return False
-    return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY)
+    return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY, gate_id="mr_metadata")
 
 
-def _mr_validator_verdict(
-    data: dict, result: "subprocess.CompletedProcess[str] | ValidatorTimedOut | GateSkipped | None"
-) -> bool:
+def _mr_validator_verdict(data: dict, result: "CompletedRun | ValidatorTimedOut | GateSkipped | None") -> bool:
     """Map a validator run (or its failure to run) to the gate's block decision."""
     if isinstance(result, ValidatorTimedOut | GateSkipped):
         return announce_cannot_evaluate("MR-metadata", result)
@@ -1381,7 +1161,7 @@ def _mr_validator_verdict(
         )
         return False
     if outcome is GateOutcome.DENY:
-        return emit_pretooluse_deny(mr_deny_reason(data, result.stderr or result.stdout))
+        return emit_pretooluse_deny(mr_deny_reason(data, result.stderr or result.stdout or ""), gate_id="mr_metadata")
     return False
 
 
@@ -1580,12 +1360,10 @@ def _run_block_ai_signature(data: dict) -> bool:
     if payload is None or argv is None:
         return False
 
-    allowance = validator_timeout_seconds()
-    try:
-        result = run_t3(argv, timeout=allowance, stdin_text=payload)
-    except subprocess.TimeoutExpired:
-        return announce_cannot_evaluate("AI-signature", ValidatorTimedOut(allowance))
-    except FileNotFoundError:
+    result = run_validator(argv, stdin_text=payload)
+    if isinstance(result, ValidatorTimedOut | GateSkipped):
+        return announce_cannot_evaluate("AI-signature", result)
+    if result is None:
         return False
 
     finding = _ai_sig_finding(result.stdout or "")
@@ -1611,22 +1389,6 @@ def _run_block_ai_signature(data: dict) -> bool:
 # ── PreToolUse: pre-publish quote-scanner gate (#1213) ──────────────
 
 
-def _mcp_privacy_gate_enabled() -> bool:
-    """Whether the Slack-MCP arm of the publish-privacy gates is enabled (default True).
-
-    Canary off-switch for the newly-reachable Slack-MCP arm of the #1213
-    quote-scanner and #1218 bare-reference gates (#171): until the Slack
-    matcher was added to ``hooks.json`` these handlers never fired on a
-    Slack MCP write, so this flag lets the operator disable that arm alone
-    without a code edit if the now-live gate misfires. Fails OPEN to enabled
-    on a missing/broken config (the arm is the same risk class as the
-    already-live Bash arm of the same gate), an explicit ``false`` disables
-    it. The Bash arm of both gates is unaffected by this flag. See
-    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
-    """
-    return _teatree_bool_setting("mcp_privacy_gate_enabled", default=True)
-
-
 def handle_quote_scanner_pretool(data: dict) -> bool:
     """Refuse a publish whose body carries a verbatim user-quote pattern.
 
@@ -1636,13 +1398,13 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
     that publish to GitHub/GitLab/Slack/git itself (``gh issue create``,
     ``glab mr update``, ``git commit -m``, ``curl … chat.postMessage``
     and siblings), the per-overlay t3 publish family (``review
-    post-comment``, ``review post-draft-note``, ``notify send``,
+    post-comment``, ``notify send``,
     ``ticket create-issue``, ``t3 slack react``), and the Slack MCP
     ``send_message`` tools.
 
     HIGH match ⇒ refuse via ``permissionDecision: deny`` + a reason that
-    names the matched patterns and points at the ``--quote-ok`` /
-    ``QUOTE_OK=1`` override. MEDIUM-only ⇒ stderr warning, publish
+    names the matched patterns and directs a false match to the owner, who may
+    approve a per-call override. MEDIUM-only ⇒ stderr warning, publish
     proceeds. Every decision (including overrides) lands in the
     quote-scanner JSONL ledger so cold review can audit what the gate
     saw.
@@ -1654,12 +1416,8 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
     importable, #1314) and swallows any exception, returning ``False``
     so the tool use proceeds unchanged.
 
-    The Slack-MCP arm (newly reachable via the ``mcp__.*[Ss]lack.*``
-    matcher, #171) is governed by the ``[teatree]
-    mcp_privacy_gate_enabled`` canary off-switch; the Bash arm always runs.
+    The Slack-MCP arm is reached via the ``mcp__.*[Ss]lack.*`` matcher (#171).
     """
-    if is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
-        return False
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
     try:
@@ -1708,18 +1466,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     if payload is None:
         return False
 
-    override = quote_scanner.has_quote_ok_override(tool_name, tool_input)
     result = quote_scanner.scan_text(payload)
-
-    if override:
-        quote_scanner.log_decision(
-            tool_name=tool_name,
-            decision="allow-override",
-            result=result,
-            override=True,
-        )
-        return False
-
     if result.has_high:
         command = tool_input.get("command", "")
         verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
@@ -1757,20 +1504,15 @@ _SELF_DM_MCP_WRITE_TOOLS: frozenset[str] = frozenset(
 )
 
 
-def _self_dm_gate_enabled() -> bool:
-    """Whether the self-DM gate is enabled (default True).
-
-    Fails OPEN to enabled on a missing/broken config; an explicit ``false``
-    is the one-line kill-switch. See :func:`_teatree_bool_setting` for the
-    shared bare-boolean semantics.
-    """
-    return _teatree_bool_setting("self_dm_gate_enabled", default=True)
-
-
 def _self_dm_destination_ids() -> _SelfDmDestinations:
     # DB-only: the overlay registry and the global ``slack_user_id`` resolve from the
     # DB-home ``ConfigSetting`` store, so the gate self-identifies the operator there.
     return _read_self_dm_destinations()
+
+
+def _self_dm_gate_enabled() -> bool:
+    """Keep a cold-read, default-on escape for an unreadable or wrong DM registry."""
+    return _teatree_bool_setting("self_dm_gate_enabled", default=True)
 
 
 def handle_block_self_dm_via_mcp(data: dict) -> bool:
@@ -1798,8 +1540,9 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
     subprocess, and the tool-schema text is not part of the hook input), so an
     unreachable config store DENIES with an error naming the fix. A
     genuinely-empty configuration (store readable, nothing declared) is a real
-    state, not an error, so it allows silently. The ``self_dm_gate_enabled = false``
-    setting is the sanctioned explicit escape hatch (never a silent one).
+    state, not an error, so it allows silently. A stored
+    ``self_dm_gate_enabled = false`` is the operator's escape when this
+    classification misfires.
     """
     if not _self_dm_gate_enabled():
         return False
@@ -1817,10 +1560,11 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
             "from the config store (the DB is missing, locked, or unreadable), so this gate "
             "cannot confirm the Slack MCP write is not a self-DM under the USER's OAuth "
             "token. Declare the per-overlay slack_dm_channel_id / slack_user_id keys via "
-            "`t3 <overlay> config_setting set`, or set self_dm_gate_enabled to false to "
-            "disable this gate explicitly (`t3 <overlay> config_setting set "
-            "self_dm_gate_enabled false`). To DM the user now, use the bot-token path: "
-            "`t3 teatree notify send -` (reads the body from stdin)."
+            "`t3 <overlay> config_setting set`, or disable this gate with "
+            "`t3 <overlay> config_setting set self_dm_gate_enabled false`. "
+            "To DM the user now, use the bot-token path: "
+            "`t3 teatree notify send -` (reads the body from stdin).",
+            gate_id="self_dm",
         )
 
     destination = _self_dm_destination(tool_input, destinations.ids)
@@ -1832,24 +1576,12 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
         f"bot↔user DM ({destination}) under the USER's OAuth token, so it renders "
         f"as user-authored and the loop's scanners will react to the agent's own message. "
         f"Use the bot-token path instead: `t3 teatree notify send -` (reads the body from "
-        f"stdin). Posts to colleague channels are unaffected by this gate."
+        f"stdin). Posts to colleague channels are unaffected by this gate.",
+        gate_id="self_dm",
     )
 
 
 # ── PreToolUse: pre-dispatch quote-scanner gate (#1401) ─────────────
-
-
-def _dispatch_quote_scan_enabled() -> bool:
-    """Whether the pre-dispatch quote scan is enabled (default True, #1564).
-
-    Fails OPEN to enabled on a missing/broken config so the gate keeps its
-    protective default; an explicit bare ``false`` is the one-line kill-switch
-    (``t3 <overlay> config_setting set dispatch_quote_scan_enabled false``). An
-    UNKNOWN (non-boolean) value warns loudly and keeps the default — the
-    misconfiguration is surfaced, not silently swallowed. See
-    :func:`_teatree_bool_setting_loud` for the fail-loud semantics.
-    """
-    return _teatree_bool_setting_loud("dispatch_quote_scan_enabled", default=True)
 
 
 def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
@@ -1870,21 +1602,14 @@ def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
     false-deny on an ordinary brief is costlier here than a warn. The
     opt-out is an in-prompt ``[quote-ok: <reason>]`` token (reason
     mandatory), mirroring the ``[skill-load-ok: <reason>]`` convention —
-    the publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env have no
-    analogue inside a prompt body.
+    a prompt body has no command line or env to carry a flag.
 
     Fail-open on any internal error (a crashing gate is worse than no
     scan): the ``sys.path`` bootstrap + exception swallow mirror the #1314
     posture of the publish gate. Every decision lands in the shared
     quote-scanner ledger so cold review can audit what the gate saw.
 
-    Disabled entirely (pass-through) when
-    ``[teatree] dispatch_quote_scan_enabled = false`` — the one-line
-    kill-switch (#1564); an unknown (non-boolean) value warns loudly and
-    keeps the protective default (enabled).
     """
-    if not _dispatch_quote_scan_enabled():
-        return False
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
     try:
@@ -1957,18 +1682,6 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
 # ── TaskCreated: quote-scanner gate (#171, task-list arm) ─────────
 
 
-def _dispatch_quote_gate_on_task_create_enabled() -> bool:
-    """Whether the task-list quote gate is enabled.
-
-    The PreToolUse dispatch-quote gate (:func:`handle_dispatch_prompt_quote_scanner`)
-    keys on ``Agent``/``Task`` and is the ONLY interception point a sub-agent
-    dispatch has (#4216). The task-LIST tools reach ``PreToolUse`` only for the
-    visible-plan gate, so a quote pasted into a task-list ENTRY is judged on
-    ``TaskCreated`` — the concern this arm covers. Opt-in: an explicit true enables it.
-    """
-    return _teatree_bool_setting("dispatch_quote_gate_on_task_create_enabled", default=False)
-
-
 def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
     """Deny a new ``Task`` whose subject/description carries a HIGH verbatim quote.
 
@@ -1985,16 +1698,15 @@ def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
     NEVER-LOCKOUT:
     this does NOT route through ``_fail_open_or_deny`` / ``_is_self_rescue``
     (those are PreToolUse/Bash-command-shaped; a ``TaskCreated`` event carries no
-    command). The gate ships enabled. The off-ramps that keep the operator from
-    being locked out are: an explicit ``false``, the ``[quote-ok: <reason>]`` token
-    in the subject/description (reuses :func:`quote_scanner.dispatch_quote_ok_reason`),
-    a missing ``session_id`` (fail-open), an unreadable config store, and ``main``'s
-    per-handler exception swallow. The master
+    command). The gate is always on. The off-ramps that keep the operator from
+    being locked out are: the ``[quote-ok: <reason>]`` token in the
+    subject/description (reuses :func:`quote_scanner.dispatch_quote_ok_reason`),
+    a missing ``session_id`` (fail-open), and ``main``'s per-handler exception swallow. The master
     ``danger_gate_fail_open`` switch still protects the operator because rescue
     commands run as ``Bash``, never as task-list entries.
     """
     session_id = data.get("session_id", "")
-    if not session_id or not _dispatch_quote_gate_on_task_create_enabled():
+    if not session_id:
         return False
 
     src_dir = Path(__file__).resolve().parents[2] / "src"
@@ -2132,6 +1844,7 @@ def handle_block_uncovered_diff(data: dict) -> bool:
         "changed symbol is not imported by a changed test — it reads name-level imports only, not `mod.sym()` "
         "attribute access. If the symbol is already exercised, add `from <module> import <symbol>` to a changed "
         "test to make the reference visible, then re-mark the PR ready (resolve the finding first).\n" + finding,
+        gate_id="diff_coverage",
     )
 
 
@@ -2345,6 +2058,7 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
         "Memory rule: "
         "feedback_always_run_in_background_for_sub_agent_dispatch "
         "(RED CARD recurrence).",
+        gate_id="orchestrator_foreground_dispatch",
     )
 
 
@@ -2448,6 +2162,7 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
         "or — if this is a false positive — set the DB-home "
         "`orchestrator_bash_gate_enabled` to false "
         "(`t3 <overlay> config_setting set orchestrator_bash_gate_enabled false`) to disable the gate.",
+        gate_id="orchestrator_bash",
     )
 
 
@@ -2481,7 +2196,7 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     return tool_name == "Bash" and _deny_heavy_main_agent_bash(data)
 
 
-# ── UserPromptSubmit + PreToolUse: orchestrator turn-budget nudge ────
+# ── Stop + PreToolUse: orchestrator turn-budget nudge ────
 #
 # The orchestrator stays responsive only if its TURNS stay short — a turn
 # that fires 20 tool calls before yielding makes the session feel dead to
@@ -2500,7 +2215,7 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
 #                      slow-but-few-calls failure the count dimension misses
 #                      (a handful of long-blocking calls tying the session up).
 # Either crossing nudges once per turn; both thresholds are config-driven and
-# fail-open, and both re-arm every user turn.
+# fail-open, and both re-arm when the turn ends.
 #
 # Only the main agent is governed (a sub-agent's turn is its whole job and
 # must run to completion). Pure-orchestration tool calls — talking to the
@@ -2542,12 +2257,7 @@ def _orchestrator_turn_wall_clock_threshold() -> int:
 
 
 def handle_reset_turn_tool_budget(data: dict) -> None:
-    """UserPromptSubmit: reset the per-turn responsiveness counters and nudge marker.
-
-    A fresh user turn re-arms BOTH responsiveness dimensions — the orchestrator
-    gets its full count budget and a fresh wall-clock window. Advisory only;
-    never blocks the prompt.
-    """
+    """Stop: re-arm both responsiveness dimensions for the next turn. Advisory only."""
     if not isinstance(data, dict):
         return
     session_id = data.get("session_id", "")
@@ -2594,14 +2304,7 @@ def _bump_turn_tool_count(session_id: str) -> int:
 
 
 def _turn_elapsed_seconds(session_id: str) -> int:
-    """Wall-clock seconds since this turn started (the last user-visible action).
-
-    The turn-start monotonic timestamp is stamped lazily on the first tool call
-    of a turn (and cleared every user prompt by
-    :func:`handle_reset_turn_tool_budget`). Returns ``0`` when the start cannot
-    be read/written — the wall-clock dimension then never fires this call rather
-    than crashing the hook.
-    """
+    """Wall-clock seconds since the turn's first tool call; ``0`` when the start cannot be read or written."""
     start_file = _state_file(session_id, _TURN_START_SUFFIX)
     now = time.monotonic()
     if start_file.is_file():
@@ -2623,7 +2326,7 @@ def _emit_turn_budget_nudge_once(session_id: str, message: str) -> None:
         nudged_marker.write_text("1", encoding="utf-8")
     except OSError:
         return
-    print(json.dumps({"additionalContext": message + _TURN_BUDGET_NUDGE_TAIL}))  # noqa: T201 — hook writes its protocol output to stdout
+    emit_additional_context("PreToolUse", message + _TURN_BUDGET_NUDGE_TAIL)
 
 
 def handle_orchestrator_turn_budget_nudge(data: dict) -> None:
@@ -2657,6 +2360,8 @@ def handle_orchestrator_turn_budget_nudge(data: dict) -> None:
     if budget <= 0 and wall_clock_threshold <= 0:
         return
     _ensure_state_dir()
+    if owner_prompted_since(_state_file(session_id, "turn-transcript-cursor"), str(data.get("transcript_path", ""))):
+        handle_reset_turn_tool_budget(data)
     elapsed = _turn_elapsed_seconds(session_id)
     count = _bump_turn_tool_count(session_id)
     if budget > 0 and count >= budget:
@@ -3025,13 +2730,12 @@ def _write_precompact_snapshot(session_id: str, data: dict | None = None) -> Non
 
 
 def handle_pre_compact(data: dict) -> None:
-    """Snapshot durable state, then nudge retro if lifecycle skills are active.
+    """Snapshot durable state for the post-compaction ``SessionStart`` to recover — and write nothing to stdout.
 
-    The snapshot is unconditional and behavior-independent (issue #778):
-    background sub-agents have no lifecycle skill loaded and would hit
-    the retro-directive early return below, so the snapshot must be
-    written BEFORE that return for them to recover post-compaction. The
-    main-session retro directive is preserved unchanged after it.
+    The snapshot is unconditional and behavior-independent (issue #778), so a
+    background sub-agent with no lifecycle skill recovers too. Claude Code appends
+    a PreCompact hook's stdout to the summarizer's compaction instructions, so
+    anything printed here would steer the summary rather than reach the agent.
 
     Note: *when* auto-compaction fires is governed by the Claude Code
     harness env var ``CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`` (not a teatree
@@ -3043,27 +2747,6 @@ def handle_pre_compact(data: dict) -> None:
 
     _write_precompact_snapshot(session_id, data)
     _run_prepare_stop_best_effort(session_id, data)
-
-    skills_file = _state_file(session_id, "skills")
-    loaded: set[str] = set()
-    if skills_file.is_file():
-        loaded = {line.strip() for line in skills_file.read_text(encoding="utf-8").splitlines() if line.strip()}
-
-    lifecycle_skills = {"t3:code", "t3:debug", "t3:test", "t3:ship", "t3:review", "t3:ticket"}
-    if not (loaded & lifecycle_skills):
-        return
-
-    json.dump(
-        {
-            "additionalContext": (
-                "COMPACTION IMMINENT — lifecycle skills were active this session "
-                f"({', '.join(sorted(loaded & lifecycle_skills))}). "
-                "Run /t3:retro NOW to persist session learnings to memory before "
-                "context is compressed. After retro completes, compaction will proceed."
-            ),
-        },
-        sys.stdout,
-    )
 
 
 # ── Post-compaction snapshot recovery ─────────────────────────────
@@ -3149,43 +2832,8 @@ def _recover_snapshot_context(session_id: str) -> str | None:
 # SessionEnd hook additionally clears the entry on a clean exit, so the
 # registry self-heals on both crash (pid dies) and graceful shutdown.
 
-# #786 WS3: the immortal-roster name tuple (t3-main/review/cross-review/
-# bug-hunt) is RETIRED — there is no fixed set of long-lived loop
-# sub-agents. ``_OWNER_LOOP`` remains only as the single registry key
-# identifying which *session* is the tick-owner (the Django-free anchor
-# the #758/#810 Stop self-pump gates on).
-_OWNER_LOOP = "t3-loop-tick-owner"
-
 # Overridable for tests; the controlling terminal otherwise.
 _TTY_PATH = "/dev/tty"
-
-
-def _loop_registry_path() -> Path:
-    """Return the machine-wide loop-registry JSON path.
-
-    Sits alongside the existing ``*.pid`` flock files in the teatree
-    data dir. ``T3_LOOP_REGISTRY_DIR`` overrides the directory (tests).
-    Resolved without importing Django-heavy ``teatree.paths`` — the
-    canonical default mirrors ``paths._TRUE_CANONICAL_DATA_DIR``.
-    """
-    override = os.environ.get("T3_LOOP_REGISTRY_DIR", "")
-    base = (
-        Path(override)
-        if override
-        else Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))) / "teatree"
-    )
-    return base / "loop-registry.json"
-
-
-def _read_loop_registry() -> dict[str, dict]:
-    path = _loop_registry_path()
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _registry_lock_path() -> Path:
@@ -3540,7 +3188,7 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
     ``session_id``. The file registry's ``t3-loop-tick-owner`` slot is
     rewritten to the new id, but the DB ``LoopLease`` row name=
     ``t3-master`` still carries the OLD id with an unexpired
-    ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
+    ``lease_expires_at``. ``CLAUDE_CODE_SESSION_ID`` is empty in Bash-tool
     subprocesses (#1107) so the next ``t3 loops tick`` resolves the NEW
     id via the registry fallback and the ``claim_ownership`` CAS fails
     (DB row's session != new session, lease not expired) — the same
@@ -3638,27 +3286,25 @@ def _mcp_connectivity_advisory() -> str | None:
         return None
 
 
-def _merge_session_start_context(context: str, session_id: str, source: str) -> str:
-    """Prepend recovery snapshot + session hand-off, append the autocompact advisory.
+def _start_session(context: str, session_id: str, source: str) -> None:
+    claims = StartClaims()
+    claims.deliver(_merge_session_start_context(context, session_id, source, claims))
 
-    All merged into the ONE SessionStart stdout write — a second chained
-    handler writing JSON would emit invalid concatenated JSON on stdout.
 
-    #845: a ``source == "compact"`` resume reads back the PreCompact durable
-    snapshot (the only post-compaction event whose ``additionalContext`` the
-    harness honours). Session hand-off: a fresh / non-owner session claims an
-    unclaimed hand-off (targeted at it, or parked for "next session") and
-    injects the handing session's full durable state — ``claim_next`` excludes
-    the session's own hand-off, so a same-session compact resume never
-    re-injects its own snapshot. #980: surfaces the harness auto-compact kill-switch
-    advisory when the env-var combo would silently disable auto-compaction.
+def _merge_session_start_context(context: str, session_id: str, source: str, claims: StartClaims) -> str:
+    """Merge what a starting session needs into the ONE SessionStart stdout write (a second JSON write is invalid).
+
+    #845: a compact resume reads back the PreCompact snapshot. A fresh or non-owner session claims an
+    unclaimed hand-off (``claim_next`` excludes its own, so a compact never re-injects it). Answers handed
+    back to this session and the #980 auto-compact kill-switch advisory ride along. Each claim registers its
+    hand-back on *claims*, so a write that never reaches the session loses none of them.
     """
     if source == "compact":
         recovered = _recover_snapshot_context(session_id)
         if recovered is not None:
             context = f"{recovered}\n\n---\n\n{context}"
 
-    handover = _claim_session_handover(session_id)
+    handover = _claim_session_handover(session_id, claims)
     if handover is not None:
         context = f"{handover}\n\n---\n\n{context}"
 
@@ -3668,6 +3314,7 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
         _mcp_connectivity_advisory(),
         session_start_hook_budget_advisory(),
         resume_admission_advisory(session_id, source),
+        hand_back_context(session_id, claims),
     )
     if autocompact:
         context = f"{context}\n\n---\n\n{autocompact}"
@@ -3675,20 +3322,6 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
         if advisory:
             context = f"{advisory}\n\n---\n\n{context}"
     return context
-
-
-def _emit_session_start_context(context: str) -> None:
-    # #1452: the harness silently drops the legacy flat top-level
-    # ``{"additionalContext": ...}`` form for SessionStart; the documented schema
-    # (Agent SDK ``SessionStartHookSpecificOutput``) requires the nested envelope.
-    # An empty merge (a not-engaged compact resume with no recovery context)
-    # emits nothing (#256).
-    if not context.strip():
-        return
-    json.dump(
-        {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}},
-        sys.stdout,
-    )
 
 
 def handle_session_start_bootstrap(data: dict) -> None:
@@ -3740,7 +3373,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         engage(session_id, seed_skills=True)
     elif not _teatree_active(session_id):
         advisory = "" if source in {"compact", "resume"} else _session_start_advisory()
-        _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
+        _start_session(advisory, session_id, source)
         return
     if not _loop_auto_load_active(session_id):
         # The loop gate decides whether this session ARMS the loop machinery. It
@@ -3749,7 +3382,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         # any session that did not arm loops silently stranded the whole queue.
         # Every SessionStart path now merges, so exactly one thing gates the
         # drain — a session starting.
-        _emit_session_start_context(_merge_session_start_context(skill_context, session_id, source))
+        _start_session(skill_context, session_id, source)
         return
     agent_id = data.get("agent_id", "")
 
@@ -3822,10 +3455,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
 
     # The skill directive leads: it is what the FIRST turn must act on, and the loop
     # bootstrap below it is orientation the agent does not act on immediately.
-    context = _merge_session_start_context(
-        "\n\n".join(part for part in (skill_context, context) if part), session_id, source
-    )
-    _emit_session_start_context(context)
+    _start_session("\n\n".join(part for part in (skill_context, context) if part), session_id, source)
 
 
 def handle_session_end_loop_registry(data: dict) -> None:
@@ -3891,11 +3521,6 @@ def _consolidated_pending_work() -> list[dict]:
     except json.JSONDecodeError:
         return []
     return parsed if isinstance(parsed, list) else []
-
-
-def _session_owns_loop(session_id: str) -> bool:
-    owner = _prune_dead_owner(_read_loop_registry()).get(_OWNER_LOOP)
-    return owner is not None and owner.get("session_id") == session_id
 
 
 def _session_drives_loop(session_id: str) -> bool:
@@ -4084,21 +3709,6 @@ def _loop_self_pump(data: dict) -> bool | None:
     )
     json.dump({"decision": "block", "reason": reason}, sys.stdout)
     return True
-
-
-def handle_session_end_self_pump(data: dict) -> None:
-    """Release the per-agent consolidation slot + marker on session exit.
-
-    Counterpart to the Stop self-pump (#786 WS4): a clean exit drops both
-    the actor-keyed anti-spin marker and this session's consolidation
-    registry entries, so a fresh session of the same agent can re-claim
-    immediately instead of waiting for pid-liveness to expire.
-    """
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-    _state_file(_actor_key(data), "pump-armed").unlink(missing_ok=True)
-    _release_agent_consolidation_slot(session_id)
 
 
 # ── Stop: structured-question gate (#807) ───────────────────────────
@@ -4332,7 +3942,7 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     # (`gh api graphql -F query=@file` / `--input`) moves the text out of argv and
     # is NOT inspected — an accepted residual, not a silent miss.
     if _GLAB_GH_API_RE.search(command) and _GRAPHQL_MERGE_MUTATION_RE.search(command):
-        return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON)
+        return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON, gate_id="out_of_band_merge")
     if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
         return False
     # Tri-state target classification (#3343): a managed target → BLOCK regardless
@@ -4346,7 +3956,7 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
         target_state = not (cwd is not None and _cwd_is_teatree_managed(cwd) is False)
     if target_state is False:
         return False
-    return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON)
+    return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON, gate_id="out_of_band_merge")
 
 
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
@@ -4362,26 +3972,18 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
 
     Runs LAST in the PreToolUse chain. Two arms — live user turn / attended
     non-owner turn: nothing leaves the box, the question renders in-client
-    (#2058 slides the live window forward on the live arm, the #189 escape) and
-    any older pending row for this (session, run) is superseded so the owner is
+    (the #189 escape) and any older pending row for this (session, run) is superseded so the owner is
     not nagged for a decision they just made; loop-driven / autonomous turn:
     capture a generation-stamped ``DeferredQuestion``, deduped against a harness
     retry of the SAME denied call, kick its delivery, then deny so the agent
-    narrates the deferral and proceeds — the answer arrives later via
-    ``additionalContext``.
+    narrates the deferral and proceeds — the answer comes back at the session's next turn end.
 
     A Claude Code question is never asked twice: an attended session's question
     exists only in the terminal the owner is already looking at.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
-    live = _is_live_user_turn(data)
-    if live or not _session_drives_loop(str(data.get("session_id", ""))):
-        if live:
-            # #2058: an already-live turn rendering in-client is fresh evidence the user
-            # is still driving, so the NEXT question in the same walk-through stays live
-            # across an intervening notification turn (which never stamps a heartbeat).
-            _refresh_live_turn(data)
+    if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
         _supersede_pending_questions(data)
         return False
     queue_id, ref = _capture_and_defer_question(data, dedupe=True)
@@ -4391,11 +3993,10 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     _kick_question_drain(ref)
     reason = (
         f"Your question was captured durably as DeferredQuestion #{queue_id} and is being delivered to "
-        "the user's Slack DM. A loop-driven AskUserQuestion cannot block here — the suspended session "
-        "has no path to receive a Slack reply. Proceed with any work that does not depend on the "
-        "answer; the user's reply will surface in a future turn's additionalContext."
+        "the user's Slack DM. A loop-driven AskUserQuestion cannot block here. Proceed with any work that "
+        f"does not depend on the answer; the reply comes back to this session at its next turn end (row #{queue_id})."
     )
-    return emit_pretooluse_deny(reason)
+    return emit_pretooluse_deny(reason, gate_id="deferred_question")
 
 
 def _supersede_pending_questions(data: dict) -> None:
@@ -4507,234 +4108,8 @@ def _capture_and_defer_question(data: dict, *, dedupe: bool = False) -> tuple[in
 
 
 def _is_live_user_turn(data: dict) -> bool:
-    """True when the user typed a prompt THIS turn in this session (#189).
-
-    The user-driven escape for away-mode: ``/checking`` (and "shoot me
-    questions from here") work because a question raised on a live user
-    turn renders in-client even under a manual-away override — no
-    availability flip needed. Crash-proof and FAIL-SAFE: a missing
-    ``teatree`` import, an unreadable heartbeat, or any error returns
-    ``False`` so an autonomous turn always falls through to the durable
-    deferral path (BLUEPRINT §17.1 invariant 9 unweakened).
-    """
-    if not bootstrap_teatree_django():
-        return False
-    try:
-        from teatree.live_presence import PRESENCE  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
-
-        return PRESENCE.is_live_user_turn(session_id=str(data.get("session_id", "")))
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return False
-
-
-def _refresh_live_turn(data: dict) -> None:
-    """Slide the live-turn window forward when an already-live question renders.
-
-    Keeps a multi-question user-driven walk-through (``/checking``) live across
-    an intervening background task-notification turn, which never refreshes the
-    presence heartbeat (#2058). Crash-proof and best-effort: any error is
-    swallowed so a failed slide never blocks the in-client render. The
-    underlying primitive only re-stamps an ALREADY-live same-session turn, so
-    this can never promote an autonomous turn to live (invariant 9 intact).
-    """
-    if not bootstrap_teatree_django():
-        return
-    try:
-        from teatree.live_presence import PRESENCE  # noqa: PLC0415 — deferred: cold-hook import after sys.path setup
-
-        PRESENCE.refresh_live_turn(session_id=str(data.get("session_id", "")))
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return
-
-
-# ── UserPromptSubmit: inject pending-question backlog into context ────────────
-
-
-def handle_inject_pending_questions(data: dict) -> None:
-    """Inject resolved answers and the still-pending backlog into ``additionalContext``.
-
-    Two halves, both fail-open if teatree is unavailable:
-
-    - Apply leg (#1174): every ``DeferredQuestion`` answered (on Slack or
-    via ``t3 teatree questions answer``) but not yet delivered is emitted
-    as a "your AskUserQuestion was answered — apply it now" line and
-    stamped ``applied_at`` (single-use CAS) so it surfaces exactly once.
-    This is the success state that closes the loop, and it also delivers
-    away-mode answers that previously had no injection path.
-    - Backlog leg (#58): the still-pending questions are listed so the
-    agent prioritises work that does NOT depend on those answers.
-    """
-    # Django-free pre-check (#22): skip the ~8s django.setup() on the common
-    # empty-backlog turn (the has-work probe short-circuits the boot). Fails OPEN
-    # (boots Django) on any unreadable-DB error, so a row is never dropped.
-    if not (has_pending_question_work() and bootstrap_teatree_django()):
-        return
-    try:
-        from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415 — deferred: ORM/app-registry
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return
-    session_id = str(data.get("session_id", ""))
-    try:
-        answered = list(DeferredQuestion.answered_not_applied(session_id=session_id)[:5])
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        answered = []
-    for row in answered:
-        with contextlib.suppress(Exception):
-            if DeferredQuestion.mark_applied(row.pk):
-                print(  # noqa: T201 — hook writes its protocol output to stdout
-                    f"Your AskUserQuestion (#{row.pk}) was answered by the user on Slack: "
-                    f'"{row.answer_text}". Apply it now.'
-                )
-    try:
-        count = DeferredQuestion.pending().count()
-        if count == 0:
-            return
-        rows = list(DeferredQuestion.pending()[:5])
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return
-    lines = [f"You have {count} deferred question(s) awaiting user answer:"]
-    lines.extend(f"  #{row.pk} — {row.question[:120]}" for row in rows)
-    print("\n".join(lines))  # noqa: T201 — hook writes its protocol output to stdout
-
-
-# ── UserPromptSubmit: inject pending Slack-DM backlog into context ─────────────
-#
-# Inbound half of the Slack ↔ Claude-Code bidirectional bridge (#1014,
-# BLUEPRINT §17.1 invariant 2 / §5.6). The user only reads Slack DMs;
-# their reply to the overlay bot lands here as a ``PendingChatInjection``
-# row. The next ``UserPromptSubmit`` drain reads unconsumed rows for the
-# t3-master session and emits them into ``additionalContext`` — the
-# agent sees the message as if the user had typed it in chat.
-
-
-def handle_inject_pending_chat(data: dict) -> None:
-    """Append unconsumed Slack-DM messages to the next prompt's ``additionalContext``.
-
-    **Drain eligibility:** ANY interactive Claude Code session that
-    receives a ``UserPromptSubmit`` event may drain the queue. The
-    original implementation gated on ``_session_owns_loop`` (mirroring
-    the §5.6 ``handle_loop_self_pump`` discipline), but the t3-master
-    record points at the autonomous ``t3 loop start`` session — which
-    never receives ``UserPromptSubmit`` events — so the gate prevented
-    the queue from ever draining (32 unconsumed rows observed in
-    production). The self-pump owner-gate is correct for self-pump
-    (must be singleton); it was the wrong invariant for the inbound
-    bridge, where the *whole point* is that the user's queued replies
-    must reach an interactive session.
-
-    At-most-once delivery is preserved by primitives other than the
-    owner-gate: ``PendingChatInjection.consume()`` is a single-use
-    durable transition (``UPDATE … WHERE consumed_at IS NULL``) so a
-    concurrent second drain sees the row already stamped and emits
-    nothing, and the ``(overlay, slack_ts)`` ``UniqueConstraint``
-    deduplicates the ingest side so over-polling is safe.
-
-    Fails open: if teatree is unavailable, just skip — the queue
-    survives to the next tick.
-    """
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-    # Django-free pre-check (#22): skip the ~8s django.setup() when the drain
-    # queue is empty (the has-work probe short-circuits the boot). Fails OPEN
-    # (boots Django) on any unreadable-DB error, so a queued reply is never dropped.
-    if not (has_pending_chat_work() and bootstrap_teatree_django()):
-        return
-    try:
-        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415 — lazy ORM import
-    except Exception:  # noqa: BLE001 — fail open: queue survives to the next tick
-        return
-    try:
-        rows = list(PendingChatInjection.pending())
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return
-    drained: list[str] = [f"User replied on Slack at {row.slack_ts}: {row.text}" for row in rows if row.consume()]
-    if not drained:
-        return
-    header = f"You have {len(drained)} new Slack DM reply(ies) from the user:"
-    print("\n".join([header, *drained]))  # noqa: T201 — hook writes its protocol output to stdout
-
-
-# ── Stop: enforce-answered-questions gate (#1063) ───────────────────
-#
-# ``consumed_at`` proves the agent *read* the row into ``additionalContext``;
-# it does NOT prove the agent *replied*. Empirically (2026-05-19) the
-# drain mechanism worked perfectly for 6 hours while ~22 of 25 user
-# questions sat silently ignored — the agent treated the drained content
-# as background and continued executing its loop directive. This Stop
-# hook is the structural fix: it queries the model's
-# ``unanswered_questions_since(1h)`` and emits a prominent
-# ``additionalContext`` BLOCKING REMINDER listing each unanswered
-# question. The user might genuinely be done, so we deliberately soft-
-# block via ``additionalContext`` rather than hard-blocking via
-# ``decision: block``.
-#
-# Hook contract: must be crash-proof (#810 — a Stop hook must NEVER raise
-# to the session). A broad boundary guard contains any unexpected error
-# to a stderr line and a clean ``None``.
-
-_ANSWERED_GATE_WINDOW_HOURS = 1
-
-
-def handle_enforce_answered_questions(data: dict) -> bool | None:
-    """Emit a BLOCKING REMINDER for user questions still unanswered (#1063).
-
-    Returns ``None`` always — never hard-blocks (the user may have
-    genuinely typed "ok thanks" and meant for the turn to end). The
-    nag is in ``additionalContext`` so it lands in the NEXT turn's
-    system context, deterministically visible.
-    """
-    try:
-        return _enforce_answered_questions(data)
-    except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
-        print(  # noqa: T201 — hook stderr is the module's logging channel
-            f"[hook_router] enforce-answered-questions skipped (unexpected error: {exc})",
-            file=sys.stderr,
-        )
-        return None
-
-
-def _enforce_answered_questions(data: dict) -> bool | None:
-    if data.get("stop_hook_active"):
-        return None
-    if not bootstrap_teatree_django():
-        return None
-    try:
-        from datetime import timedelta  # noqa: PLC0415 — deferred: off the fast hook's load path
-
-        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415 — lazy ORM import
-    except Exception:  # noqa: BLE001 — fail open: nag re-tries next turn
-        return None
-    try:
-        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=_ANSWERED_GATE_WINDOW_HOURS))
-    except Exception:  # noqa: BLE001 — crash-proof hook: any failure degrades silently, never breaks the tool call
-        return None
-    if not rows:
-        return None
-    bullets = [f"  - ts={row.slack_ts}: {row.text.strip()}" for row in rows]
-    body = (
-        f"BLOCKING REMINDER — {len(rows)} user question(s) from the last hour are unanswered. "
-        "The Slack-DM drain stamped consumed_at but you have not replied. "
-        "The turn cannot end cleanly until each question is answered (post via "
-        "`notify_user(..., kind=NotifyKind.ANSWER, idempotency_key='answer-<short>-<ts>')` "
-        "or `t3 teatree pending_chat mark-answered <ts>`).\n"
-        "Unanswered:\n" + "\n".join(bullets)
-    )
-    # Stop hooks may NOT carry ``hookSpecificOutput.additionalContext`` —
-    # the Claude Code schema reserves that field for ``UserPromptSubmit`` /
-    # ``PostToolUse`` / ``PostToolBatch``. Emitting it for ``Stop`` makes
-    # the validator reject the JSON ("Hook JSON output validation failed —
-    # (root): Invalid input") and the nag is lost. The schema-valid soft-
-    # block channel is the top-level ``systemMessage`` string, which
-    # surfaces the body to the agent without hard-blocking the turn.
-    json.dump({"systemMessage": body}, sys.stdout)
-    # Return True to break the Stop chain — we want the systemMessage
-    # nag delivered intact, and we want to preempt any subsequent handler
-    # (notably loop_self_pump) that would also write to stdout and either
-    # corrupt the JSON or override our soft-block with a hard-block
-    # continuation directive. Soft-block intent is preserved by emitting
-    # only ``systemMessage``, never ``decision: block``.
-    return True
+    """The owner typed or answered in this transcript moments ago (#189, #2058); unreadable is not live."""
+    return is_live_user_turn(str(data.get("transcript_path", "")))
 
 
 # ── Consideration gate (#1129): promote framework-shaped edits ──────
@@ -5010,20 +4385,6 @@ def _consideration_gate(data: dict) -> bool | None:
 
 
 _HANDLERS: dict[str, list] = {
-    "UserPromptSubmit": [
-        handle_clear_classifier_deny_marker,
-        handle_reset_turn_tool_budget,
-        handle_record_presence,
-        handle_record_operator_message,
-        handle_enforce_loop_on_prompt,
-        handle_todo_freshness_nudge,
-        handle_inject_pending_questions,
-        handle_inject_pending_chat,
-        handle_user_prompt_submit,
-        # LAST: cold-tier memory recall injection (#2746) — runs after skill
-        # loading so it never delays the load-first suggestion.
-        handle_recall_cold_memory,
-    ],
     "PreToolUse": [
         handle_allow_classifier_relax_settings_write,
         handle_enforce_visible_plan_before_tools,
@@ -5053,6 +4414,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_unknown_repo_push,
         handle_block_foreign_branch_push,
         handle_block_raw_review_post,
+        handle_block_raw_issue_write,
         handle_validate_mr_metadata,
         handle_block_glab_stale_base_remote,
         handle_block_self_reviewer_assign,
@@ -5092,17 +4454,20 @@ _HANDLERS: dict[str, list] = {
     # runs in handle_session_start_bootstrap on source=="compact".
     "SessionEnd": [handle_session_end, handle_session_end_loop_registry, handle_session_end_self_pump],
     "Stop": [
+        # FIRST: a later handler that breaks the chain must not leave the next turn on this turn's counters.
+        handle_reset_turn_tool_budget,
         handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
         handle_answer_first_gate,
         handle_completion_claim_gate,
         handle_unbacked_claim_gate,
         handle_standing_goal_stop,
-        handle_enforce_answered_questions,
         handle_closure_reverify_stop,
         handle_consideration_gate,
         handle_speak_all_on_stop,
         handle_stop_snapshot_slot,
+        # After every gate that can refuse the stop, before the loop pump that blocks every loop-driven stop.
+        handle_hand_back_answers,
         handle_loop_self_pump,
     ],
     "SubagentStop": [handle_subagent_stop_no_commit, handle_subagent_stop_track_agent, handle_subagent_stop_release],
@@ -5116,7 +4481,7 @@ _HANDLERS: dict[str, list] = {
 # its deny is only honoured at exit code 2 (#1447), so it is deliberately absent
 # here and keeps exiting 2.
 _JSON_DECISION_EVENTS: frozenset[str] = frozenset(
-    {"Stop", "SubagentStop", "UserPromptSubmit", "PostToolUse", "PreCompact"},
+    {"Stop", "SubagentStop", "PostToolUse", "PreCompact"},
 )
 
 # Events where a block is DATA DESTRUCTION, not prevention: ``TaskCreate``

@@ -16,23 +16,12 @@ from teatree.core.models import ConfigSetting, PullRequest, Ticket
 from teatree.core.models.directive import Directive
 from teatree.loops.directive_loop.revert import resolve_revert
 from teatree.loops.directive_loop.verify import VerifySeams
-from tests.integration.directive_dogfood.exemplar import (
-    SCOPE,
-    SETTING_KEY,
-    drive_activation_only_to_verifying,
-    enable_directive_loop_in_test_db,
-    seed_critic_liveness,
-    tick,
-)
+from tests.integration.directive_dogfood.exemplar import SCOPE, SETTING_KEY, drive_activation_only_to_verifying, tick
 
 _SKIP_ACCEPTANCE = VerifySeams(acceptance_reader=lambda _d: True)
 
 
 class TestRevertOnViolation(TestCase):
-    def setUp(self) -> None:
-        enable_directive_loop_in_test_db()
-        seed_critic_liveness()
-
     def test_probe_violation_reverts_and_rolls_back_instantly(self) -> None:
         directive = drive_activation_only_to_verifying()
         assert directive.state == Directive.State.VERIFYING

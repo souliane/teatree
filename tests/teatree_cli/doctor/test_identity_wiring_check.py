@@ -117,8 +117,8 @@ class TestAuthoringFaultsAreRepoKeyedNotAmbient:
 
     An ambient-only read reports a clean bill on precisely the repo whose author is wrong: the
     overlay that DECLARES the bot is not the one the entrypoint happens to run under, so its
-    unreachable credential is invisible and every MR is opened by the owner — the one identity
-    the forge then refuses an approval from.
+    unreachable credential goes unseen and the refusal never fires — the owner would then author
+    the MR, the one identity the forge refuses an approval from.
     """
 
     def test_another_overlays_unreachable_declaration_is_reported(self) -> None:

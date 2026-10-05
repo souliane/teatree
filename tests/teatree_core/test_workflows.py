@@ -34,6 +34,7 @@ from teatree.core.overlay import (
 )
 from teatree.core.overlay_loader import reset_overlay_cache
 from tests.factories import record_test_plan
+from tests.teatree_core.conftest import record_maker_review_for_test, record_review_context_for_test
 
 pytestmark = [
     pytest.mark.filterwarnings(
@@ -490,6 +491,8 @@ class TestTaskWorkflow(TestCase):
         assert review_task.status == Task.Status.CLAIMED
         assert review_task.claimed_by == "review-agent"
 
+        record_review_context_for_test(ticket)
+        record_maker_review_for_test(ticket, "a" * 40)
         review_task.complete_with_attempt(artifact_path="/tmp/review.md", exit_code=0)
 
         ticket.refresh_from_db()

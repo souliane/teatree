@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+import posixpath
 import re
 from collections.abc import Callable
 from html import escape
@@ -36,6 +37,7 @@ from teatree.eval.models import (
     Matcher,
     PlanBeforeToolMatcher,
     SuccessfulToolCallMatcher,
+    ToolCallCountMatcher,
     canonicalize_tool,
 )
 from teatree.eval.successful_call_matcher import assert_successful_tool_call_before
@@ -56,6 +58,7 @@ class JudgeOutcome:
     passed: bool
     skipped: bool
     rationale: str
+    coverage_incomplete: bool = False
 
 
 #: An injected judge grader: maps a spec + its captured run to a verdict.
@@ -69,6 +72,25 @@ class ScenarioResult:
     matcher_results: tuple[MatcherResult, ...]
     skipped: bool
     judge: JudgeOutcome | None = None
+
+    @property
+    def coverage_incomplete(self) -> bool:
+        return self.run.coverage_incomplete or (self.judge is not None and self.judge.coverage_incomplete)
+
+    @property
+    def measured_failure(self) -> bool:
+        if self.skipped:
+            return False
+        if self.judge is not None and not self.judge.skipped and not self.judge.passed:
+            return True
+        if self.coverage_incomplete:
+            if not self.run.coverage_incomplete:
+                return self.run.is_error or any(not result.passed for result in self.matcher_results)
+            return any(
+                not result.passed and isinstance(result.matcher, Matcher) and result.matcher.kind == "negative"
+                for result in self.matcher_results
+            )
+        return not self.passed
 
     @property
     def passed(self) -> bool:
@@ -89,6 +111,10 @@ class ScenarioResult:
 
     @property
     def verdict(self) -> str:
+        if self.measured_failure:
+            return "fail"
+        if self.coverage_incomplete:
+            return "incomplete"
         if self.skipped:
             return "skip"
         return "pass" if self.passed else "fail"
@@ -180,17 +206,8 @@ def _dispatch(matcher: ExpectItem, run: EvalRun) -> None:
     if isinstance(matcher, AnyOf):
         _dispatch_any_of(matcher, run)
         return
-    if isinstance(matcher, SuccessfulToolCallMatcher):
-        assert_successful_tool_call_before(
-            run,
-            CallPattern(_canonicalize_tool(matcher.tool), matcher.arg_path, _as_regex(matcher.operator, matcher.value)),
-            _as_regex(matcher.result_operator, matcher.result_value),
-            CallPattern(
-                _canonicalize_tool(matcher.before_tool),
-                matcher.before_arg_path,
-                _as_regex(matcher.before_operator, matcher.before_value),
-            ),
-        )
+    if isinstance(matcher, SuccessfulToolCallMatcher | ToolCallCountMatcher):
+        _dispatch_special(matcher, run)
         return
     if isinstance(matcher, FinalStateMatcher):
         _dispatch_final_state(matcher, run)
@@ -217,6 +234,42 @@ def _dispatch(matcher: ExpectItem, run: EvalRun) -> None:
         return
     msg = f"unsupported matcher operator: kind={matcher.kind!r}, operator={matcher.operator!r}"
     raise NotImplementedError(msg)
+
+
+def _dispatch_special(matcher: SuccessfulToolCallMatcher | ToolCallCountMatcher, run: EvalRun) -> None:
+    if isinstance(matcher, SuccessfulToolCallMatcher):
+        assert_successful_tool_call_before(
+            run,
+            CallPattern(_canonicalize_tool(matcher.tool), matcher.arg_path, _as_regex(matcher.operator, matcher.value)),
+            _as_regex(matcher.result_operator, matcher.result_value),
+            CallPattern(
+                _canonicalize_tool(matcher.before_tool),
+                matcher.before_arg_path,
+                _as_regex(matcher.before_operator, matcher.before_value),
+            ),
+        )
+        return
+    count = 0
+    for call in run.tool_calls:
+        if call.name == "Edit" and not _edit_is_in_round(str(call.input.get("file_path", "")), matcher.round_files):
+            break
+        if canonicalize_tool(call.name) == canonicalize_tool(matcher.tool):
+            count += len(re.findall(matcher.pattern, str(call.input.get(matcher.arg_path, ""))))
+    if count != matcher.equals:
+        msg = f"expected {matcher.equals} in-round push(es), found {count}"
+        raise AssertionError(msg)
+
+
+def _edit_is_in_round(file_path: str, round_files: tuple[str, ...]) -> bool:
+    observed = posixpath.normpath(file_path.replace("\\", "/"))
+    for round_file in round_files:
+        allowed = posixpath.normpath(round_file.replace("\\", "/"))
+        if allowed.startswith("/"):
+            if observed == allowed:
+                return True
+        elif observed.split("/")[-len(allowed.split("/")) :] == allowed.split("/"):
+            return True
+    return False
 
 
 def _dispatch_negative(matcher: Matcher, run: EvalRun, tool: str) -> None:
@@ -300,10 +353,10 @@ _CAP_TRUNCATED_NOTE = (
 def render_text(results: list[ScenarioResult]) -> str:
     lines: list[str] = []
     for result in results:
-        if result.skipped:
+        if result.verdict == "skip":
             lines.append(f"SKIP {result.spec.name}: {result.run.terminal_reason}")
             continue
-        status = "PASS" if result.passed else "FAIL"
+        status = result.verdict.upper()
         judge_tag = " [judge]" if result.judge is not None and not result.judge.skipped else ""
         gate_tag = " (gate-assisted)" if result.gate_assisted else ""
         cap_tag = " (cap-truncated)" if result.cap_truncated_matchers_satisfied else ""
@@ -339,6 +392,8 @@ def render_json(results: list[ScenarioResult]) -> str:
                 "is_error": r.run.is_error,
                 "skipped": r.skipped,
                 "passed": r.passed,
+                "verdict": r.verdict,
+                "coverage_incomplete": r.coverage_incomplete,
                 "gate_assisted": r.gate_assisted,
                 "cap_truncated_matchers_satisfied": r.cap_truncated_matchers_satisfied,
                 "gate_events": [
@@ -382,15 +437,18 @@ h1 { font-size: 1.4rem; }
 .summary .pass { color: #1a7f37; }
 .summary .fail { color: #cf222e; }
 .summary .skip { color: #6e7781; }
+.summary .incomplete { color: #9a6700; }
 details { border: 1px solid #d0d7de; border-radius: 6px; margin: 0.5rem 0; padding: 0.5rem 0.75rem; }
 details.pass { border-left: 4px solid #1a7f37; }
 details.fail { border-left: 4px solid #cf222e; }
 details.skip { border-left: 4px solid #6e7781; }
+details.incomplete { border-left: 4px solid #9a6700; }
 summary { cursor: pointer; font-weight: 600; }
 .verdict { font-size: 0.8rem; padding: 0.1rem 0.45rem; border-radius: 999px; margin-right: 0.5rem; color: #fff; }
 .verdict.pass { background: #1a7f37; }
 .verdict.fail { background: #cf222e; }
 .verdict.skip { background: #6e7781; }
+.verdict.incomplete { background: #9a6700; }
 .reason { color: #6e7781; font-weight: 400; }
 ul.matchers { margin: 0.5rem 0 0; }
 pre { white-space: pre-wrap; background: rgba(127,127,127,0.1); padding: 0.5rem; border-radius: 4px; }
@@ -411,7 +469,8 @@ def render_html(results: list[ScenarioResult]) -> str:
         f'<p class="summary">'
         f'<span class="pass">{counts["passed"]} passed</span>, '
         f'<span class="fail">{counts["failed"]} failed</span>, '
-        f'<span class="skip">{counts["skipped"]} skipped</span> '
+        f'<span class="skip">{counts["skipped"]} skipped</span>, '
+        f'<span class="incomplete">{counts["incomplete"]} incomplete</span> '
         f"(of {counts['total']})</p>"
     )
     rows = "\n".join(_html_scenario(result) for result in results)
@@ -459,7 +518,7 @@ def _summary(results: list[ScenarioResult]) -> str:
     counts = _summary_dict(results)
     return (
         f"summary: {counts['passed']} passed, {counts['failed']} failed, "
-        f"{counts['skipped']} skipped (of {counts['total']})"
+        f"{counts['skipped']} skipped, {counts['incomplete']} incomplete (of {counts['total']})"
     )
 
 
@@ -500,9 +559,10 @@ def _cost_basis(results: list[ScenarioResult]) -> str:
 
 def _summary_dict(results: list[ScenarioResult]) -> dict[str, int | float]:
     total = len(results)
-    skipped = sum(1 for r in results if r.skipped)
+    skipped = sum(1 for r in results if r.verdict == "skip")
     passed = sum(1 for r in results if r.passed and not r.skipped)
-    failed = total - passed - skipped
+    failed = sum(1 for r in results if r.measured_failure)
+    incomplete = sum(1 for r in results if r.verdict == "incomplete")
     total_cost_usd = sum(r.run.cost_usd for r in results)
     priced_runs = sum(1 for r in results if r.run.cost_usd > 0)
     cost_unknown_runs = sum(1 for r in results if not r.skipped and r.run.cost_source == COST_SOURCE_UNKNOWN)
@@ -511,6 +571,7 @@ def _summary_dict(results: list[ScenarioResult]) -> dict[str, int | float]:
         "passed": passed,
         "failed": failed,
         "skipped": skipped,
+        "incomplete": incomplete,
         "total_cost_usd": total_cost_usd,
         "priced_runs": priced_runs,
         # Executed runs whose cost could not be established at all. A consumer summing

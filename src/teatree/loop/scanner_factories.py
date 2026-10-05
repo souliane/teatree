@@ -75,8 +75,7 @@ __all__ = ["_competing_url_prefixes", "_jobs_for_backend_hosts"]
 
 
 def _resolve_broadcast_channels(config: object) -> list[tuple[str, str]]:
-    """Read overlay broadcast-channel list with legacy fallback (#1295 cap A)."""
-    pairs: list[tuple[str, str]] = []
+    """Read the overlay's broadcast channels."""
     multi_getter = getattr(config, "get_review_broadcast_channels", None)
     if callable(multi_getter):
         try:
@@ -84,14 +83,8 @@ def _resolve_broadcast_channels(config: object) -> list[tuple[str, str]]:
         except TypeError:
             raw = None
         if isinstance(raw, list):
-            pairs = [pair for pair in raw if isinstance(pair, tuple) and len(pair) == _TUPLE_PAIR]
-    if not pairs:
-        legacy_getter = getattr(config, "get_review_channel", None)
-        if callable(legacy_getter):
-            legacy = legacy_getter()
-            if isinstance(legacy, tuple) and len(legacy) == _TUPLE_PAIR and legacy[1]:
-                pairs = [legacy]
-    return pairs
+            return [pair for pair in raw if isinstance(pair, tuple) and len(pair) == _TUPLE_PAIR]
+    return []
 
 
 def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsScanner | None:
@@ -201,16 +194,13 @@ def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScann
     namespaced ``"<overlay>:<repo>"`` so two overlays that share a repo
     basename keep independent cadence ledgers.
 
-    Returns ``None`` when the overlay has no Python class, when
-    ``pull_main_clone_disabled = true`` (the escape hatch), or when no
-    workspace repo resolves to a clone.
+    Returns ``None`` when the overlay has no Python class or no workspace
+    repo resolves to a clone.
     """
     overlay = backend.overlay
     if overlay is None:
         return None
     settings = _effective_settings_for_overlay(backend.name)
-    if settings.pull_main_clone_disabled:
-        return None
     workspace = clone_root()
     repos: list[tuple[str, Path]] = []
     for repo_name in overlay.get_workspace_repos():
@@ -270,26 +260,23 @@ def _self_pr_review_scanner_for(backend: OverlayBackends) -> "ClaudeSelfPrReview
     return ClaudeSelfPrReviewScanner(repos=repos, api=api, overlay=backend.name)
 
 
-def _task_sweep_scanner_for(backend: OverlayBackends) -> TaskSweepScanner | None:
+def _task_sweep_scanner_for(backend: OverlayBackends, *, recheck_interval_hours: int) -> TaskSweepScanner | None:
     """Build a per-overlay task-sweep scanner (#129).
 
     Verifies open teatree Task rows against their artifact's terminal state via
     the overlay's ``is_issue_done`` hook. Returns ``None`` when the overlay has
     no Python class (the scanner needs the overlay object as its terminal-state
-    oracle) or when ``task_sweep_disabled = true`` (the escape hatch). The
+    oracle). The
     per-task recheck/idempotency window comes from
     ``task_sweep_recheck_interval_hours``.
     """
     overlay = backend.overlay
     if overlay is None:
         return None
-    settings = _effective_settings_for_overlay(backend.name)
-    if settings.task_sweep_disabled:
-        return None
     return TaskSweepScanner(
         overlay=overlay,
         overlay_name=backend.name,
-        recheck_interval_hours=settings.task_sweep_recheck_interval_hours,
+        recheck_interval_hours=recheck_interval_hours,
     )
 
 
@@ -360,7 +347,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
     # while the pipeline was down never leaves ``dispatched``/``ticket_created``,
     # so it strands its slot and the budget gate reads false forever.
     ImplementedIssueMarker.objects.reconcile_stale(backend.name)
-    limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent, overlay=backend.name)
+    limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent)
     static_limit = settings.issue_implementer_max_concurrent
     budget = read_intake_budget(backend.name, limit, static_limit=static_limit)
     # #4389: a budget held entirely by claims going nowhere used to be detected, reported
@@ -410,9 +397,7 @@ def _issue_intake_scanner_for(backend: OverlayBackends) -> IssueIntakeScanner | 
 def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDispositionScanner | None:
     """Build the issue-disposition scanner for the canonical core overlay (#2122).
 
-    Returns a scanner ONLY for the canonical core overlay, and only once
-    ``auto_disposition_enabled`` opts it in: closing issues is an owner decision, so it
-    ships off. Closing an issue is a judgement
+    Returns a scanner ONLY for the canonical core overlay. Closing an issue is a judgement
     about someone's backlog, and this loop may make it only about repos teatree itself
     owns — the owner's rule is "only for t3-teatree owned repos", and it is
     POSTURE-INDEPENDENT: it holds in ``present`` exactly as it holds under an egress
@@ -434,9 +419,6 @@ def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDisposition
     own repo, and a repo with no local clone is unjudgeable and keeps its issue open.
     """
     if backend.name != CANONICAL_CORE_OVERLAY:
-        return None
-    settings = _effective_settings_for_overlay(backend.name)
-    if not settings.auto_disposition_enabled:
         return None
     code_host = backend.host
     if code_host is None:
@@ -469,9 +451,9 @@ def _triage_assessor_scanner_for(backend: OverlayBackends) -> TriageAssessorScan
 
 
 def _mr_triage_scanner_for(backend: OverlayBackends, *, ci_enricher: CiEnricher) -> MrTriageScanner | None:
-    """Build the MR-triage surveyor for an overlay that opted in with ``mr_triage_enabled``.
+    """Build the MR-triage surveyor for an overlay with a code host.
 
-    ``None`` when the overlay has not opted in, or has no code host (no MRs to read). The nag-patience
+    ``None`` when the overlay has no code host (no MRs to read). The nag-patience
     inputs are resolved from the same overlay hook the review nag uses, so the two can
     never disagree about how long a repo waits.
 
@@ -480,9 +462,6 @@ def _mr_triage_scanner_for(backend: OverlayBackends, *, ci_enricher: CiEnricher)
     forge. The caller passes the enricher it already holds so the per-tick read budget
     stays one shared bound rather than one per scanner.
     """
-    settings = _effective_settings_for_overlay(backend.name)
-    if not settings.mr_triage_enabled:
-        return None
     code_host = backend.host
     if code_host is None:
         return None
@@ -497,17 +476,13 @@ def _mr_triage_scanner_for(backend: OverlayBackends, *, ci_enricher: CiEnricher)
     )
 
 
-def _mr_conflict_scanner_for(backend: OverlayBackends, code_host: CodeHostBackend) -> MrConflictScanner | None:
-    """Build the per-host merge-conflict sweep once ``mr_conflict_scan_enabled`` opts in.
+def _mr_conflict_scanner_for(backend: OverlayBackends, code_host: CodeHostBackend) -> MrConflictScanner:
+    """Build the per-host merge-conflict sweep.
 
-    It costs one forge merge-state read per open merge request, so it ships off. Per
-    HOST rather than per overlay because the conflict probe is a forge call: it must go
-    to the host that lists the merge request, and an overlay with both a GitHub and a
-    GitLab credential lists on both.
+    Per HOST rather than per overlay because the conflict probe is a forge call:
+    it must go to the host that lists the merge request, and an overlay with both
+    a GitHub and a GitLab credential lists on both.
     """
-    settings = _effective_settings_for_overlay(backend.name)
-    if not settings.mr_conflict_scan_enabled:
-        return None
     return MrConflictScanner(
         host=code_host,
         identities=backend.identities,

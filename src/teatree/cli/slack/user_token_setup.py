@@ -27,15 +27,9 @@ from collections.abc import Callable
 import httpx
 import typer
 
-# Re-export under the local underscored name for backward-compat with prior
-# imports inside this module. Source of truth lives in
-# ``teatree.backends.slack.token_validation`` so the runtime gate at
-# backend construction (#1285) and the capture-time gate here agree on
-# the exact regex — drift between the two would let a token shape pass
-# capture but fail at construction, or vice versa.
-from teatree.backends.slack.token_validation import USER_TOKEN_RE as _USER_TOKEN_RE
+from teatree.backends.slack.token_validation import USER_TOKEN_RE
 from teatree.cli.slack.app_resolve import derive_app_id_from_token, read_overlay_registry
-from teatree.cli.slack.setup import _USER_SCOPES
+from teatree.cli.slack.manifest import _USER_SCOPES
 from teatree.cli.slack.token_store import BOT_TOKEN_SLOT, USER_TOKEN_SLOT, SlackTokenWriteError, store_slack_token
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
@@ -65,7 +59,7 @@ class TokenScopeError(RuntimeError):
 def _prompt_user_token() -> str:
     while True:
         value = typer.prompt("Paste xoxp user token from OAuth & Permissions", hide_input=True).strip()
-        if _USER_TOKEN_RE.match(value):
+        if USER_TOKEN_RE.match(value):
             return value
         typer.echo("      Invalid xoxp token format — must look like 'xoxp-…'. Try again.")
 
@@ -200,13 +194,6 @@ def _detect_and_backup_xoxb_mis_install(*, echo: Callable[[str], None]) -> None:
         echo(f"WARN  Could not preserve the mis-installed bot token: {exc}")
 
 
-# Source of truth for the derive-from-token chain is
-# ``teatree.cli.slack.app_resolve`` so ``slack-bot``, ``slack-provision`` and
-# this command share one implementation (#1686). Re-exported under the local
-# name for backward-compat with callers and tests that import it from here.
-_derive_app_id_from_bot = derive_app_id_from_token
-
-
 def slack_user_token_setup(
     *,
     reset: bool = typer.Option(False, "--reset", help="Overwrite the existing token without prompting."),
@@ -217,7 +204,7 @@ def slack_user_token_setup(
     previous_scopes = _read_existing_scopes()
     overlay_app_id = _resolve_overlay_app_id()
     if not overlay_app_id:
-        overlay_app_id = _derive_app_id_from_bot(read_pass(USER_TOKEN_PASS_KEY) or read_pass(BOT_TOKEN_PASS_KEY))
+        overlay_app_id = derive_app_id_from_token(read_pass(USER_TOKEN_PASS_KEY) or read_pass(BOT_TOKEN_PASS_KEY))
     _print_reauthorize_instructions(overlay_app_id)
 
     if not _confirm_overwrite(reset=reset):

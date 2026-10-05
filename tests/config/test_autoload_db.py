@@ -96,7 +96,7 @@ def _make_config_db(path: Path, *, autoload: object) -> None:
 class TestColdAutoloadEnabled:
     """The Django-free cold reader ``hooks.scripts.teatree_settings.autoload_enabled``.
 
-    The SessionStart / UserPromptSubmit hooks consult this pre-Django to decide
+    The SessionStart hook consults this pre-Django to decide
     default-off engagement: ``T3_AUTOLOAD`` env first, else the canonical sqlite
     (via ``cold_reader``), else OFF.
     """

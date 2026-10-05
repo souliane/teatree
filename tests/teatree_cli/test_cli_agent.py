@@ -23,7 +23,6 @@ from teatree.llm.credentials import ANTHROPIC_BASE_URL_ENV, CredentialError
 
 
 class _Settings:
-    claude_chrome = False
     contribute_plugin_dir = ""
 
 

@@ -358,4 +358,4 @@ def handle_block_main_clone_mutation(data: dict) -> bool:
         finding = _git_finding(core, data) or _bash_write_finding(core, data)
     if finding is None:
         return False
-    return _fail_open_or_deny(data, core.deny_reason(finding))
+    return _fail_open_or_deny(data, core.deny_reason(finding), gate_id="main_clone")

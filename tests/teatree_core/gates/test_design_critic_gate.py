@@ -9,25 +9,19 @@ gate mirrors the FAIL items into ``CriticFinding(transition="plan")`` — it nev
 - a one-off/special-case sketch → ``generality`` FAIL verdict → finding recorded.
 - a clean generic core mechanism → all pass → no finding.
 
-Transition scoping, dark-inert cost-parity, and the ``Ticket.plan()`` wiring are pinned
-alongside — the design critic never fires at mark_delivered/merge, and is a strict no-op
-(no dispatch) while its arming flag ``directive_loop_enabled`` is dark (#104: the
-advisory-only design critic folds into the directive-loop flag).
+Transition scoping and the ``Ticket.plan()`` wiring are pinned alongside — the
+design critic never fires at mark_delivered/merge.
 """
 
 import contextlib
 from collections.abc import Iterator
-from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.config import UserSettings
-from teatree.core.gates import design_critic_gate
 from teatree.core.gates.design_critic_gate import (
     build_design_contract,
     check_design_critic,
     covering_verdict,
-    design_critic_armed,
     plan_head_sha,
     record_design_findings,
 )
@@ -115,37 +109,7 @@ def _one_fail(slug: str, citation: str) -> list[dict]:
 
 @contextlib.contextmanager
 def _live() -> Iterator[None]:
-    # #104: the design critic is armed BY the directive-loop flag — it is advisory-only
-    # and fires only for directive-linked tickets, so it carries no independent switch.
-    with patch.object(
-        design_critic_gate, "get_effective_settings", return_value=UserSettings(directive_loop_enabled=True)
-    ):
-        yield
-
-
-@contextlib.contextmanager
-def _disarmed() -> Iterator[None]:
-    """The arming flag explicitly OFF — the escape hatch, stated not inherited (#3895)."""
-    with patch.object(
-        design_critic_gate, "get_effective_settings", return_value=UserSettings(directive_loop_enabled=False)
-    ):
-        yield
-
-
-class TestArmedResolution(TestCase):
-    def test_disarmed_when_directive_loop_disabled(self) -> None:
-        with _disarmed():
-            assert design_critic_armed("t3-teatree") is False
-
-    def test_armed_when_directive_loop_enabled(self) -> None:
-        with _live():
-            assert design_critic_armed("t3-teatree") is True
-
-    def test_armed_under_the_shipped_default(self) -> None:
-        # #3895 graduated the arming flag ON, so the advisory critic is live out of the
-        # box for a directive-linked ticket. It stays advisory — the deterministic
-        # ``mechanism_conforms`` check is what blocks.
-        assert design_critic_armed("t3-teatree") is True
+    yield
 
 
 class TestPlanHeadSha(TestCase):
@@ -228,13 +192,6 @@ class TestArming(TestCase):
 
 
 class TestNoOpConditions(TestCase):
-    def test_disarmed_flag_is_a_strict_noop_no_dispatch(self) -> None:
-        # Cost parity for the operator who turns it off: no CriticDispatch/Task at all.
-        ticket = _directive_ticket()
-        with _disarmed():
-            check_design_critic(ticket)
-        assert not CriticDispatch.objects.filter(ticket=ticket).exists()
-
     def test_ordinary_ticket_is_a_noop(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLAN_RECORDED)
         with _live():
@@ -309,9 +266,3 @@ class TestPlanTransitionWiring(TestCase):
         with _live(), self.captureOnCommitCallbacks(execute=True):
             ticket.plan()
         assert CriticDispatch.objects.filter(ticket=ticket, transition="plan", head_sha=_FORTY_HEX).exists()
-
-    def test_plan_is_inert_when_disarmed(self) -> None:
-        ticket = self._planned_directive_ticket()
-        with _disarmed(), self.captureOnCommitCallbacks(execute=True):
-            ticket.plan()
-        assert not CriticDispatch.objects.filter(ticket=ticket, transition="plan").exists()

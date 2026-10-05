@@ -6,11 +6,8 @@ beside that suite in git rather than as a forge comment:
 e2e directory, inside the ticket's checkout of the e2e repo. Nothing here is
 configured — the checkout comes from ``overlay.metadata.get_e2e_config()`` and
 both halves of the filename from the ticket, so writer and reader resolve the
-same path and a re-run can only ever land on the file it already wrote. A plan
-already written under the pre-prefix ``<ticket number>.md`` keeps that name for
-the rest of its life, so an in-flight ticket is updated rather than forked.
-
-The record itself is unchanged: the body is the same rendered markdown, with
+same path and a re-run can only ever land on the file it already wrote.
+The body carries
 the same hidden ``t3-e2e-data`` state blob, so :func:`read_plan_state` recovers
 what the previous run persisted and the merge in :mod:`.render` overlays this
 run's side onto it.
@@ -26,7 +23,7 @@ from teatree.core.management.commands._test_plan.state import (
     parse_state_blob,
 )
 from teatree.core.models import Ticket
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 PLAN_DIR_NAME = "test-plans"
@@ -48,15 +45,11 @@ class TestPlanLocationError(TestPlanValidationError):
 def plan_path_for_ticket(ticket: Ticket) -> Path:
     """``<e2e-repo checkout>/…/test-plans/<repo>-<ticket number>.md`` for *ticket*.
 
-    An existing pre-prefix ``<ticket number>.md`` wins instead: reading and
-    rewriting the plan an in-flight ticket already has beats starting a second
-    one whose other environment's evidence is silently gone.
-
     Raises :class:`TestPlanLocationError` when the overlay declares no e2e
     repo, when the ticket has no worktree for it, or when that worktree has not
     been provisioned on disk.
     """
-    e2e_config = get_overlay(ticket.overlay or None).metadata.get_e2e_config()
+    e2e_config = get_overlay_for_ticket(ticket).metadata.get_e2e_config()
     project_path = e2e_config.get("project_path", "").strip()
     repo = project_path.rsplit("/", 1)[-1]
     if not repo:
@@ -67,9 +60,7 @@ def plan_path_for_ticket(ticket: Ticket) -> Path:
         raise TestPlanLocationError(msg)
     plan_dir = _plan_dir(_checkout_for(ticket, repo=repo), e2e_dir=e2e_config.get("e2e_dir", "e2e"))
     # Work-item numbers are allocated per repo, so the number alone cannot say which ticket it names.
-    prefixed = plan_dir / f"{_ticket_repo(ticket, fallback=repo)}-{ticket.ticket_number}.md"
-    legacy = plan_dir / f"{ticket.ticket_number}.md"
-    return legacy if legacy.is_file() and not prefixed.is_file() else prefixed
+    return plan_dir / f"{_ticket_repo(ticket, fallback=repo)}-{ticket.ticket_number}.md"
 
 
 def read_plan_state(path: Path) -> PlanState:

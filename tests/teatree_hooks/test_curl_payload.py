@@ -7,8 +7,8 @@ because the gate cannot read them at PreToolUse scan time. Synthetic term
 ``acmecorp`` only.
 """
 
-from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
 from teatree.hooks._curl_payload import _json_body_fields, _walk_curl_args
+from teatree.hooks._parser_primitives import FAIL_CLOSED_SENTINEL
 
 
 class TestJsonBodyFields:

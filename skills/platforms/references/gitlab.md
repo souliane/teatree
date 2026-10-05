@@ -129,6 +129,8 @@ glab mr view <IID> --output json -R <repo>  # JSON output
 
 ### Create MR
 
+> On a repo whose MRs are authored under a non-owner credential, never run `glab mr create`: it writes as the owner, whom GitLab then bars from approving the MR (HTTP 401). Use `mcp__teatree__pr_create`, or `t3 <overlay> pr create <ticket-id>`; both resolve the repo's declared author.
+
 ```bash
 glab mr create --title '<title>' --description '<description>' \
   --squash-before-merge --remove-source-branch --assignee @me -R <repo>
@@ -216,16 +218,16 @@ Pair with `ScheduleWakeup` to poll at sensible intervals (5-10 min for multi-min
 
 **Always use the `t3 review` CLI.** It handles token extraction, diff refs, position serialization, and added-line validation. Never use raw `glab api` or `curl` for draft notes.
 
-Prefer the `mcp__teatree__review_post_draft_note` MCP tool for **both** inline and MR-level drafts — the same gated seam, colleague-invisible by design. It takes `(repo, mr, finding)`, and the finding carries the CLI's `--file`/`--line` as one `anchor="path/to/file.py:LINE"` value; omit the anchor for the MR-level note the CLI spells `--general`. Fall back to the CLI below when the MCP server is not connected, or the tool is not offered.
+Prefer `mcp__teatree__review_post_comment` with `live=false` for **both** inline and MR-level drafts. It takes `(repo, mr, finding, live)`, and the finding carries the CLI's `--file`/`--line` as one `anchor="path/to/file.py:LINE"` value; omit the anchor for an MR-level note. Fall back to the CLI below when the MCP server is not connected, or the tool is not offered.
 
 ```bash
 # Inline comment on a specific file and line
-t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
+t3 review post-comment <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
 
 # General (non-inline) comment — --general is REQUIRED (souliane/teatree#72)
 # Without --general, the CLI refuses the call rather than silently degrading an
 # intended-inline draft into a general note.
-t3 review post-draft-note <REPO> <MR_IID> "Comment text" --general
+t3 review post-comment <REPO> <MR_IID> "Comment text" --general
 
 # List existing draft notes
 t3 review list-draft-notes <REPO> <MR_IID>

@@ -152,7 +152,8 @@ class FactoryIssueTelemetryTests(TestCase):
 
             rows = recent_factory_observations(directory=Path(directory), now=timezone.now())
             assert rows
-            assert all(set(item) == {"epoch", "kind", "cause", "severity", "count", "incident_id"} for item in rows)
+            expected_fields = {"epoch", "trace_id", "span_id", "kind", "cause", "severity", "count", "incident_id"}
+            assert all(set(item) == expected_fields for item in rows)
             assert rows[0]["kind"] == "inbound_unanswered"
             assert "secret task" not in str(rows)
             assert rows[0]["incident_id"] == rows[1]["incident_id"]

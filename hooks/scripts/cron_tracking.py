@@ -15,14 +15,14 @@ the handler, so a test patching ``router.STATE_DIR`` still steers this handler.
 
 Cold-import safe: the live hook is a bare ``python3`` subprocess with no
 guarantee ``teatree`` is importable, so the module top imports only stdlib plus
-the already-extracted ``loop_registrations`` sibling — never Django / ``teatree``.
+the already-extracted ``loop_prompt_shape`` sibling — never Django / ``teatree``.
 """
 
 import json
 import time
 from pathlib import Path
 
-from hooks.scripts.loop_registrations import loop_name_from_prompt
+from hooks.scripts.loop_prompt_shape import loop_name_from_prompt
 
 _LOOP_NAME_MAX = 20
 _CRON_FIELD_COUNT = 5
@@ -125,7 +125,6 @@ def handle_track_cron_jobs(data: dict) -> None:
             "cadence": cadence,
             "created_at": now,
         }
-        _state_file(session_id, "loop-pending").unlink(missing_ok=True)
     elif tool_name == "CronDelete":
         job_id = tool_input.get("id", "")
         state["jobs"].pop(job_id, None)

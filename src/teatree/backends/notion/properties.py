@@ -32,6 +32,7 @@ from typing import cast
 from teatree.backends.notion.blocks import literal_rich_text
 from teatree.backends.notion.client import NotionClient, option_name
 from teatree.backends.notion.errors import (
+    NotionBlockChangedError,
     NotionPropertyNotFoundError,
     NotionUnwritablePropertyError,
     NotionWriteNotLandedError,
@@ -113,10 +114,26 @@ class PagePropertyWriter:
     def __init__(self, client: NotionClient) -> None:
         self._client = client
 
-    def write(self, page_id: str, *, name: str, value: str) -> PropertyWriteResult:
+    def write(
+        self,
+        page_id: str,
+        *,
+        name: str,
+        value: str,
+        expected_type: str | None = None,
+        expected_previous: str | None = None,
+    ) -> PropertyWriteResult:
         before = page_property(self._client.get_page(page_id), name)
+        if (expected_type is not None and property_type(before) != expected_type) or (
+            expected_previous is not None and plain_property_value(before) != expected_previous
+        ):
+            msg = (
+                f"property {name!r} on page {page_id} changed after the dry run. "
+                "Re-run and approve its current value. Nothing was written."
+            )
+            raise NotionBlockChangedError(msg)
         intended = build_property_write(before, value)
-        self._client.update_page_properties(page_id, {name: intended.payload})
+        self._client.update_page(page_id, {"properties": {name: intended.payload}})
         after = page_property(self._client.get_page(page_id), name)
         landed = plain_property_value(after)
         if landed != intended.expected_plain:

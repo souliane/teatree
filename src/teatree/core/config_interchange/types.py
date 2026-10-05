@@ -3,7 +3,7 @@
 Held apart from ``migration`` (which produces them) so the CLI, the dashboard and the tests
 can name a disposition without importing the interchange itself, and so the two directions'
 vocabularies sit side by side: what an export withheld or omitted, and what an import wrote,
-skipped, folded, left unchanged or refused.
+skipped, left unchanged or refused.
 """
 
 from dataclasses import dataclass
@@ -24,7 +24,7 @@ class OmittedRow:
 
     scope: str
     key: str
-    reason: str  # `stored_row_kind`: "internal state — …" / "retired — …" / "unknown — …"
+    reason: str  # `stored_row_kind`: "internal state — …" / "unknown — …"
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,7 @@ class RejectedRow:
 
     scope: str
     key: str
-    reason: str  # "unknown key" / "secret (<class>)" / "removed (<why>)" / "invalid: <msg>" / "safety-posture"
+    reason: str  # "unknown key" / "secret (<class>)" / "invalid: <msg>" / "safety-posture"
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ class ImportedRow:
 
 @dataclass(frozen=True)
 class ConfigImport:
-    """The outcome of an ``import_toml_to_db`` run — all five dispositions, plus the mode.
+    """The outcome of an ``import_toml_to_db`` run — four dispositions, plus the mode.
 
     ``rejected`` non-empty means the import was REFUSED wholesale: nothing was written,
     even the clean rows, so a partial store can never result from one bad key.
@@ -99,7 +99,6 @@ class ConfigImport:
 
     written: tuple[ImportedRow, ...]
     skipped_default: tuple[ImportedRow, ...]
-    folded: tuple[tuple[str, str], ...]  # (retired alias, canonical replacement)
     rejected: tuple[RejectedRow, ...]
     dry_run: bool
     unchanged: tuple[ImportedRow, ...] = ()

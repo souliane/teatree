@@ -178,6 +178,7 @@ def _distill_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOption
     """
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
+    from teatree.agents.claude_cli_spawn import with_account_skills_off  # noqa: PLC0415 — deferred: heavy SDK dep
     from teatree.agents.compaction_guard import with_compaction_off  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
     options = ClaudeAgentOptions(
@@ -189,7 +190,7 @@ def _distill_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOption
     )
     if env is not None:
         options.env = env
-    return with_compaction_off(options)
+    return with_account_skills_off(with_compaction_off(options))
 
 
 async def _collect_turn(prompt: str, *, env: dict[str, str] | None = None) -> str:

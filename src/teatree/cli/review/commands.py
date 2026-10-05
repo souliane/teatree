@@ -58,8 +58,7 @@ _EVIDENCE_JSON_HELP = (
 
 _ALLOW_LONG_REVIEW_HELP = (
     "Escape the colleague-MR review-shape cap (souliane/teatree#1114) for ONE "
-    "post — the documented over-deny escape (#126), consistent with the sibling "
-    "--quote-ok / --allow-banned-term overrides. Use only when a long-form review "
+    "post — the documented over-deny escape (#126). Use only when a long-form review "
     "on a colleague's MR is genuinely authorized; the cap still fires by default."
 )
 
@@ -118,85 +117,6 @@ def _parse_evidence(raw: str) -> "FindingEvidence | None":
         raise typer.Exit(code=1) from e
 
 
-@review_app.command(name="post-draft-note")
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general/evidence-json + the #126 gate escapes incl. --force-general). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. `--force-general` is the #72-round-2 escape for a genuinely MR-wide note that the multi-finding general-note gate would otherwise refuse. `--evidence-json` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-    note: str = typer.Argument(help="Comment text (markdown)"),
-    file: str = typer.Option(
-        "",
-        help="File path for inline comment — REQUIRED unless --general is passed.",
-    ),
-    line: int | None = typer.Option(
-        None,
-        help="Line number in the new file (must be an added line) — REQUIRED unless --general is passed.",
-    ),
-    *,
-    general: bool = typer.Option(
-        False,
-        "--general",
-        help=(
-            "Post a general (MR-wide) note instead of an inline one. Mutually exclusive "
-            "with --file/--line. Without this flag, --file AND --line are both required "
-            "— omitting either is refused upfront so a missed-flag invocation can no "
-            "longer silently degrade an intended-inline draft into a general note "
-            "(souliane/teatree#72)."
-        ),
-    ),
-    evidence_json: str = typer.Option("", "--evidence-json", help=_EVIDENCE_JSON_HELP),
-    allow_long_review: bool = typer.Option(False, "--allow-long-review", help=_ALLOW_LONG_REVIEW_HELP),
-    allow_todo_blocker: bool = typer.Option(False, "--allow-todo-blocker", help=_ALLOW_TODO_BLOCKER_HELP),
-    force_general: bool = typer.Option(False, "--force-general", help=_FORCE_GENERAL_HELP),
-    allow_bloat: bool = typer.Option(False, "--allow-bloat", help=_ALLOW_BLOAT_HELP),
-) -> None:
-    """Post a draft note on a GitLab MR (inline or general).
-
-    The inline-vs-general decision is explicit: pass ``--general`` for an
-    MR-wide note, or pass both ``--file`` and ``--line`` for an inline
-    draft. A missing flag pair would otherwise degrade into a general note,
-    silently dropping the line anchor the draft was meant to carry:
-    :func:`teatree.cli.review.drafts.validate_inline_or_general` refuses
-    both half-specified-inline and contradictory invocations before any
-    GitLab API call is attempted.
-
-    A deliberate ``--general`` note that crams 2+ distinct per-line
-    findings (``foo.py:42``/``bar.ts:9`` cites, or a numbered per-file
-    list) is refused by the #72-round-2 gate
-    (:func:`teatree.cli.review.general_inline_gate.check_general_inline_findings`)
-    — post each one inline instead. Pass ``--force-general`` to override
-    for a genuinely MR-wide (verdict-only) note.
-    """
-    import sys  # noqa: PLC0415 — deferred: loaded only when this command runs
-
-    from teatree.cli.review.drafts import validate_inline_or_general  # noqa: PLC0415 — deferred: lazy CLI import
-
-    sys.stderr.write(
-        "DeprecationWarning: `t3 review post-draft-note` is deprecated (#1207). "
-        "`t3 review post-comment` now defaults to creating a draft — use it instead. "
-        "This subcommand routes through the same draft path and will be removed in a "
-        "follow-up.\n"
-    )
-    service = _require_token(repo)
-    validate_inline_or_general(file=file, line=line, general=general)
-    evidence = _parse_evidence(evidence_json)
-    msg, code = service.post_draft_note(
-        repo,
-        mr,
-        note,
-        file=file,
-        line=line or 0,
-        evidence=evidence,
-        allow_long_review=allow_long_review,
-        allow_todo_blocker=allow_todo_blocker,
-        force_general=force_general,
-        allow_bloat=allow_bloat,
-    )
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
 _BODY_OPTION_HELP = (
     "Inline comment body (markdown). The short -m mirrors the sibling forge comment "
     "commands. Mutually exclusive with the positional NOTE and --body-file; exactly "
@@ -243,8 +163,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
 ) -> None:
     """Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack approval.
 
-    Default behaviour (#1207): create a draft note via the same path as
-    ``post-draft-note`` and DM the user the link, so the agent's job
+    Default behaviour (#1207): create a draft note and DM the user the link, so the agent's job
     ends at the draft and the user submits. Pass ``--live`` to publish
     the comment directly — gated on a Slack-recorded
     :class:`~teatree.core.models.live_post_approval.LivePostApproval`
@@ -359,4 +278,4 @@ from teatree.cli.review import checkout as _review_checkout  # noqa: E402, F401 
 from teatree.cli.review import merge_tree as _review_merge_tree  # noqa: E402, F401 — registration side-effect
 from teatree.cli.review import run as _review_run  # noqa: E402, F401 — registration side-effect
 
-__all__ = ["approve", "post_comment", "post_draft_note", "reply_to_discussion", "unapprove"]
+__all__ = ["approve", "post_comment", "reply_to_discussion", "unapprove"]

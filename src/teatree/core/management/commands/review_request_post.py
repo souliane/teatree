@@ -17,8 +17,7 @@ The post-half of #1084/#1094. One classifier-legible transaction:
 1b. R1 ``review_request_batch_gate`` — a member of a multi-merge-request unit
     of work waits until every open sibling is review-ready, so a reviewer is
     never handed a third of a change. Refuses before the dedup claim for the
-    same orphan-claim reason as the draft gate; inert until
-    ``require_work_group_batch`` is on.
+    same orphan-claim reason as the draft gate.
 2.  #1094 ``review_request_guard`` live-channel dedup
     (``should_post_review_request`` — takes the atomic ``ReviewRequestPost``
     claim internally). ``suppress`` → no post.
@@ -55,7 +54,7 @@ from teatree.core.gates.review_request_guard import (
     resolve_guard_target,
     should_post_review_request,
 )
-from teatree.core.gates.review_request_state_gate import check_reviewed_state, reviewed_state_required
+from teatree.core.gates.review_request_state_gate import check_reviewed_state
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.models import Ticket
 from teatree.core.on_behalf_gate_recorded import (
@@ -190,8 +189,7 @@ class Command(TyperCommand):
 
         # #1829 anti-vacuity gate runs before the dedup claim and any
         # wire call — so a missing attestation refuses without leaving an
-        # orphan ``ReviewRequestPost`` claim to roll back. NO-OP when
-        # ``require_anti_vacuity_attestation`` is off (opt-in default).
+        # orphan ``ReviewRequestPost`` claim to roll back.
         anti_vacuity_block = self._anti_vacuity_block(ticket_id, head_sha)
         if anti_vacuity_block:
             self.stdout.write(anti_vacuity_block)
@@ -201,9 +199,7 @@ class Command(TyperCommand):
             )
 
         # PR-08 review-state gate: refuse a broadcast unless the ticket is
-        # SELF_REVIEWED with a recorded review-evidence artifact. NO-OP when
-        # ``require_reviewed_state_for_review_request`` is off (opt-in default),
-        # so a normal reviewed-and-cleared flow is never blocked.
+        # SELF_REVIEWED with a recorded review-evidence artifact.
         reviewed_state_block = self._reviewed_state_block(ticket_id)
         if reviewed_state_block:
             self.stdout.write(reviewed_state_block)
@@ -244,8 +240,7 @@ class Command(TyperCommand):
 
         # R1 batch gate: a member of a work group waits for its siblings. Like the
         # draft gate it refuses BEFORE the dedup claim, so a held batch leaves no
-        # orphan ``ReviewRequestPost`` row to roll back. NO-OP while
-        # ``require_work_group_batch`` is off (inert default).
+        # orphan ``ReviewRequestPost`` row to roll back.
         batch_refusal = work_group_batch_refusal(canonical, overlay_name=overlay_name)
         if batch_refusal is not None:
             self._emit(refusal_payload(batch_refusal, mr_url=canonical), exit_code=2)
@@ -411,29 +406,21 @@ class Command(TyperCommand):
 
     @staticmethod
     def _anti_vacuity_block(ticket_id: str, head_sha: str) -> str:
-        """The #1829 block message, or ``""`` when allowed / the gate is off.
+        """The #1829 block message, or ``""`` when allowed.
 
-        NO-OP (returns ``""``) when ``require_anti_vacuity_attestation`` is off.
-        When on, a ``--ticket-id`` + ``--head-sha`` is required (the gate reads
+        A ``--ticket-id`` + ``--head-sha`` is required (the gate reads
         the attestation off the ticket and binds it to the head); a missing one
         is itself a block with actionable steering, since the request-review
         transition must be SHA-bound.
         """
         from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415 — deferred: keeps command import light
             AntiVacuityAttestationError,
-            anti_vacuity_required,
             check_anti_vacuity_attestation,
         )
 
-        # Without a ticket-id there is no ticket overlay to read, so the ambient
-        # overlay decides whether the gate is even on; once a ticket resolves, the
-        # gate is re-evaluated under the TICKET's own overlay (a per-overlay opt-in
-        # binds even from an env-less process — the #F2.3 fail-toward-green hole).
         if not ticket_id.strip() or not head_sha.strip():
-            if not anti_vacuity_required():
-                return ""
             return (
-                "request review refused (require_anti_vacuity_attestation): pass --ticket-id and "
+                "request review refused: pass --ticket-id and "
                 "--head-sha so the anti-vacuity attestation can be verified SHA-bound. Record it first "
                 "with `lifecycle record-anti-vacuity <ticket> --head-sha <sha> --ac-coverage <...> "
                 "--proven-test <test::id>` (or `--no-new-tests`)."
@@ -442,8 +429,6 @@ class Command(TyperCommand):
             ticket = Ticket.objects.resolve(ticket_id)
         except Ticket.DoesNotExist:
             return f"request review refused: ticket {ticket_id!r} not found (anti-vacuity gate needs a ticket)."
-        if not anti_vacuity_required(ticket.overlay or None):
-            return ""
         try:
             check_anti_vacuity_attestation(ticket, head_sha, transition="request review")
         except AntiVacuityAttestationError as exc:
@@ -452,21 +437,15 @@ class Command(TyperCommand):
 
     @staticmethod
     def _reviewed_state_block(ticket_id: str) -> str:
-        """The PR-08 review-state block message, or ``""`` when allowed / off.
+        """The PR-08 review-state block message, or ``""`` when allowed.
 
-        NO-OP (returns ``""``) when ``require_reviewed_state_for_review_request``
-        is off. When on, a ``--ticket-id`` is required (the gate reads the
+        A ``--ticket-id`` is required (the gate reads the
         ticket's FSM state and its review-evidence artifact); a missing or
         unknown ticket is itself a block with actionable steering.
         """
-        # Without a ticket-id there is no ticket overlay to read, so the ambient
-        # overlay decides whether the gate is even on; once a ticket resolves, the
-        # gate is re-evaluated under the TICKET's own overlay (#F2.3).
         if not ticket_id.strip():
-            if not reviewed_state_required():
-                return ""
             return (
-                "request review refused (require_reviewed_state_for_review_request): pass --ticket-id so "
+                "request review refused: pass --ticket-id so "
                 "the gate can verify the ticket is SELF_REVIEWED with a recorded review-evidence artifact."
             )
         try:

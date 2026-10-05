@@ -9,7 +9,7 @@ ten agent cycles across nine tickets and ~800 uncommitted lines that could never
 be landed, because the honest thing for each of those runs to do was stop.
 
 This is the seam's sibling to
-:mod:`~teatree.core.gates.plan_dispatch_gate`: the same pre-harness chokepoint,
+:mod:`~teatree.core.models.plan_decision`: the same pre-harness chokepoint,
 the same "return a reason rather than raise" contract so the refusal is recorded
 as the attempt's own failure text, and the same reuse of ``IMPLEMENTING_PHASES``
 so a read-only or coordinating agent is never refused.
@@ -33,8 +33,7 @@ from typing import TYPE_CHECKING, cast
 
 from teatree.core.backend_registry import get_backend_provider
 from teatree.core.forge_url import is_forge_url
-from teatree.core.gates.plan_dispatch_gate import IMPLEMENTING_PHASES, SUBAGENT_BY_IMPLEMENTING_PHASE
-from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.modelkit.phases import IMPLEMENTING_PHASES, SUBAGENT_BY_IMPLEMENTING_PHASE, normalize_phase
 from teatree.core.overlay_loader import get_overlay_for_ticket
 
 if TYPE_CHECKING:

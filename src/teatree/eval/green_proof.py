@@ -33,6 +33,7 @@ class GreenProof:
     passed: int
     failed: int
     skipped: int
+    incomplete: int
     reds: tuple[RedScenario, ...]
     advisory: tuple[RedScenario, ...] = ()
     expected: Mapping[str, str] = dataclasses.field(default_factory=dict)
@@ -54,10 +55,11 @@ class GreenProof:
             and self.expected_sha == self.actual_sha
             and actual == expected
             and self.rows == self.total
-            and self.total == self.passed + self.failed + self.skipped
+            and self.total == self.passed + self.failed + self.skipped + self.incomplete
             and self.passed == self.verdict_counts.get("pass", 0)
             and self.failed == self.verdict_counts.get("fail", 0)
             and self.skipped == self.verdict_counts.get("skip", 0)
+            and self.incomplete == self.verdict_counts.get("incomplete", 0)
         )
 
     @property
@@ -70,7 +72,7 @@ class GreenProof:
         :attr:`reds` by :func:`_partition`, so they are reported here without ever
         withholding the proof.
         """
-        return self.covers_the_catalog and not self.reds
+        return self.covers_the_catalog and self.incomplete == 0 and not self.reds
 
     @property
     def summary(self) -> str:
@@ -100,7 +102,8 @@ class GreenProof:
             )
         return (
             f"NOT A GREEN PROOF: {len(self.reds)} red scenario(s) "
-            f"({self.passed}/{self.total} passed, {self.failed} failed, {self.skipped} skipped)"
+            f"({self.passed}/{self.total} passed, {self.failed} failed, "
+            f"{self.skipped} skipped, {self.incomplete} incomplete)"
         )
 
 
@@ -123,31 +126,16 @@ def _partition(scenarios: Sequence[Any]) -> tuple[tuple[RedScenario, ...], tuple
         if not isinstance(scenario, Mapping):
             reds.append(RedScenario(name="", lane="", triage_class=UNCLASSIFIED))
             continue
-        if "triage_class" not in scenario:
-            # Unclassified is GATING whatever the advisory flag says: the exemption
-            # is an opt-in the grader writes alongside the class, so it can never
-            # rescue a row whose grading this gate cannot read.
-            reds.append(
-                RedScenario(name=_str(scenario, "name"), lane=_str(scenario, "lane"), triage_class=UNCLASSIFIED)
-            )
-            continue
         outcome = scenario.get("outcome")
-        if outcome not in {"PASS", "FLAKY", "BEHAVIOR_FAIL", "INFRA_BLOCKED", "UNVERIFIED"}:
+        verdict = scenario.get("verdict")
+        if _is_unclassified(scenario):
             reds.append(
                 RedScenario(name=_str(scenario, "name"), lane=_str(scenario, "lane"), triage_class=UNCLASSIFIED)
             )
             continue
-        verdict = scenario.get("verdict")
-        if (outcome == "PASS" and verdict != "pass") or (outcome == "FLAKY" and verdict != "fail"):
-            reds.append(
-                RedScenario(name=_str(scenario, "name"), lane=_str(scenario, "lane"), triage_class=UNCLASSIFIED)
-            )
+        if verdict == "incomplete":
             continue
         if outcome == "FLAKY":
-            if scenario["triage_class"] is None:
-                reds.append(
-                    RedScenario(name=_str(scenario, "name"), lane=_str(scenario, "lane"), triage_class=UNCLASSIFIED)
-                )
             continue
         triage_class = scenario["triage_class"]
         if triage_class is None and outcome == "PASS":
@@ -161,6 +149,20 @@ def _partition(scenarios: Sequence[Any]) -> tuple[tuple[RedScenario, ...], tuple
         )
         (advisory if bool(scenario.get("advisory")) and outcome == "BEHAVIOR_FAIL" else reds).append(row)
     return tuple(reds), tuple(advisory)
+
+
+def _is_unclassified(scenario: Mapping[str, Any]) -> bool:
+    if "triage_class" not in scenario:
+        return True
+    outcome = scenario.get("outcome")
+    verdict = scenario.get("verdict")
+    if outcome not in {"PASS", "FLAKY", "BEHAVIOR_FAIL", "INFRA_BLOCKED", "UNVERIFIED"}:
+        return True
+    if (outcome == "PASS" and verdict != "pass") or (outcome == "FLAKY" and verdict != "fail"):
+        return True
+    if verdict == "incomplete" and outcome != "UNVERIFIED":
+        return True
+    return outcome == "FLAKY" and scenario["triage_class"] is None
 
 
 def _str(scenario: Mapping[str, Any], key: str) -> str:
@@ -182,6 +184,7 @@ def evaluate_green_proof(payload: Mapping[str, Any], *, expected: Mapping[str, s
         passed=int(totals.get("passed", 0)),
         failed=int(totals.get("failed", 0)),
         skipped=int(totals.get("skipped", 0)),
+        incomplete=int(totals.get("incomplete", 0)),
         reds=reds,
         advisory=advisory,
         expected=expected,

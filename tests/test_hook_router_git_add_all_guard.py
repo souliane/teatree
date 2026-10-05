@@ -65,6 +65,40 @@ class TestWholeTreeStageIsDenied:
             "git -C /repo add -A",
             "git add --no-ignore-removal .",
             "cd src && git add -A && git commit -m 'wip'",
+            "bash -c 'git add -A'",
+            "/bin/zsh -lc 'git add .'",
+            "cd /repo && sh -c 'git add --all' && echo done",
+            "timeout 60 bash -lc 'git -C /repo add -A'",
+            "bash -c \"bash -c 'git add -A'\"",
+            "if true; then bash -c 'git add -A'; fi",
+            "for f in a b; do bash -c 'git add -A'; done",
+            "! bash -c 'git add -A'",
+            "{ bash -c 'git add -A'; }",
+            "( bash -c 'git add -A' )",
+            "ksh -c 'git add -A'",
+            "bash -c $'git add -A'",
+            "bash --rcfile /dev/null -c 'git add -A'",
+            "sudo bash -c 'git add -A'",
+            "exec bash -c 'git add .'",
+            "sudo git add -A",
+            "timeout 60 git add -A",
+            "exec git add -A",
+            "if git add -A; then echo staged; fi",
+            "while true; do git add .; done",
+            "nice -n 5 bash -c 'git add -A'",
+            "sudo -u deploy bash -c 'git add -A'",
+            "env -i bash -c 'git add -A'",
+            "env -u HOME bash -lc 'git add .'",
+            "sudo -u deploy nice -n 5 bash -c 'git add .'",
+            "nice -n 5 git add -A",
+            "sudo -u root git add .",
+            "env -i git add --all",
+            "sudo -n git add -A",
+            "sudo -n bash -c 'git add -A'",
+            "sudo -n -u deploy git add .",
+            "sudo -C 3 git add -A",
+            "sudo -D /tmp git add -A",
+            "sudo -p prompt: bash -c 'git add -A'",
         ],
     )
     def test_denied(self, command: str) -> None:
@@ -104,6 +138,27 @@ class TestNarrowlyScoped:
             "git add -An",
             "git add -nA",
             "git add --all --dry-run",
+            "bash -c 'git add src/app/models.py'",
+            "bash -c 'git add -p'",
+            "bash ./stage.sh",
+            "git commit -m \"bash -c 'git add -A'\"",
+            "echo \"zsh -lc 'git add .'\"",
+            "python3 -c \"print('git add -A')\"",
+            "echo $(git status --short)",
+            "if git add src/a.py; then echo staged; fi",
+            "sudo git add src/a.py",
+            "timeout 60 git add src/a.py",
+            "exec git add -p",
+            "for f in a b; do bash -c 'git add \"$f\"'; done",
+            "bash -c 'echo hello'",
+            "nice -n 5 git add src/a.py",
+            "sudo -u root git status",
+            "env -i bash -c 'echo hi'",
+            "nice -n 5 bash -c 'echo hi'",
+            "sudo -n git status",
+            "sudo -n bash -c 'echo hi'",
+            "sudo -C 3 git status",
+            "sudo -D /tmp bash -c 'echo hi'",
         ],
     )
     def test_allowed(self, command: str) -> None:
@@ -117,6 +172,12 @@ class TestNarrowlyScoped:
         assert blocked is False
         assert payload is None
 
+    def test_a_wrapped_script_in_a_heredoc_body_is_text(self) -> None:
+        command = "gh issue comment 1 --body-file - <<'EOF'\nbash -c 'git add -A'\nEOF\n"
+        blocked, payload = _run(command)
+        assert blocked is False
+        assert payload is None
+
     def test_non_bash_tool_is_ignored(self) -> None:
         blocked, payload = _run("git add -A")
         assert blocked is True
@@ -126,6 +187,10 @@ class TestNarrowlyScoped:
 
 
 class TestNeverLockout:
+    def test_a_token_inside_the_wrapped_script_allows(self) -> None:
+        blocked, _payload = _run("bash -c 'git add -A # [add-all-ok: first commit of a scaffold]'")
+        assert blocked is False
+
     def test_per_call_token_allows(self) -> None:
         blocked, payload = _run("git add -A  # [add-all-ok: first commit on a scaffolded dir]")
         assert blocked is False

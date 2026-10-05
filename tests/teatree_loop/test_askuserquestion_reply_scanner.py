@@ -17,10 +17,11 @@ from dataclasses import dataclass, field
 import pytest
 
 from teatree.agents.session_lineage import resume_session_id
-from teatree.core.models import DmContext, PendingChatInjection, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import DmContext, PendingChatInjection, Session, Task, TaskAttempt
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.types import RawAPIDict
+from tests.factories import planned_ticket
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -217,7 +218,7 @@ class TestParkedTaskHeadlessResume:
     """
 
     def _parked_task(self) -> Task:
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
         parked = Task.objects.create(
             ticket=ticket,
@@ -231,7 +232,7 @@ class TestParkedTaskHeadlessResume:
         parked = self._parked_task()
         question = DeferredQuestion.record(
             "Which DB host?",
-            session_id=str(parked.session_id),
+            task_session=parked.session,
             slack_channel=_CHANNEL,
             slack_ts="100.0",
             parked_task=parked,
@@ -251,7 +252,7 @@ class TestParkedTaskHeadlessResume:
         parked = self._parked_task()
         DeferredQuestion.record(
             "Which DB host?",
-            session_id=str(parked.session_id),
+            task_session=parked.session,
             slack_channel=_CHANNEL,
             slack_ts="100.0",
             parked_task=parked,

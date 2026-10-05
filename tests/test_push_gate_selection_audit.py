@@ -16,15 +16,12 @@ from scripts.ci import push_gate_selection_audit as audit
 from scripts.ci.push_gate_selection_audit import audit_scope
 from teatree.quality.push_gate import WHOLE_TREE_DOCTEST, PushGatePlan
 
-_FULL = PushGatePlan(
-    is_full=True, reason="full", doctest_targets=(WHOLE_TREE_DOCTEST,), astgrep_scope=None, enabled=True
-)
+_FULL = PushGatePlan(is_full=True, reason="full", doctest_targets=(WHOLE_TREE_DOCTEST,), astgrep_scope=None)
 _SCOPED = PushGatePlan(
     is_full=False,
     reason="scoped",
     doctest_targets=(Path("src/teatree/a.py"),),
     astgrep_scope=(Path("src/teatree/a.py"), Path("tests/teatree_x/test_a.py")),
-    enabled=True,
 )
 
 

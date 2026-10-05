@@ -10,6 +10,7 @@ LOC cap) — the thin ``Task`` call sites delegate here. The functions take a
 """
 
 from teatree.core.models.deferred_question import DeferredQuestion, is_tool_lack_selfreport, question_fingerprint
+from teatree.core.models.plan_decision import refuse_unplanned_mint
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 
@@ -63,7 +64,7 @@ def record_deferred_question(task: Task) -> DeferredQuestion:
     ``INTERNAL`` (logged / statusline-only, never DM'd) — a mis-provisioned phase
     must never nag the owner to compensate for its own missing tools.
     """
-    last = task.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+    last = task.attempts.order_by("-pk").first()
     reason = str(last.result.get("user_input_reason", _DEFAULT_REASON)) if last else "Agent needs input"
     agent_session_id = last.agent_session_id if last else ""
     audience = (
@@ -75,7 +76,7 @@ def record_deferred_question(task: Task) -> DeferredQuestion:
     # failures) to one queued question via a normalized-text fingerprint.
     return DeferredQuestion.record(
         reason,
-        session_id=str(task.session_id or ""),  # ty: ignore[unresolved-attribute]
+        task_session=task.session,
         run_id=agent_session_id or "",
         dedupe_marker=f"needs-input:{question_fingerprint(reason)}",
         parked_task=task,
@@ -93,14 +94,16 @@ def schedule_resume(task: Task, *, answer: str) -> Task:
     decision point, it does not restart from scratch. The answer is prepended to
     the work prompt via ``execution_reason``; :func:`dispatch_reason` adds the
     continue-where-you-left-off instruction for as long as the retry really does.
-    Idempotent: a resume already queued for this task is returned, never duplicated.
+    Idempotent: a resume already queued for this task is returned, never duplicated. An
+    implementing phase on a ticket with no plan decision raises ``NoPlanArtifactError``.
     """
     existing = task.child_tasks.filter(  # ty: ignore[unresolved-attribute]
         status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
     ).first()
     if existing is not None:
         return existing
-    last = task.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+    refuse_unplanned_mint(task.ticket, phase=task.phase)
+    last = task.attempts.order_by("-pk").first()
     agent_session_id = last.agent_session_id if last else ""
     session = Session.objects.create(ticket=task.ticket, agent_id=agent_session_id or "headless-resume")
     reason = f"{RESUME_ANSWER_PREFIX} {answer}."

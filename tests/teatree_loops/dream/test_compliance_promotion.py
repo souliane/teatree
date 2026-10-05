@@ -46,7 +46,10 @@ def _extract_for(_cluster: DistilledCluster) -> ConsolidationExtract:
                 path=Path(_MEMORY_PATH),
                 kind="memory",
                 weight=90,
-                text=f"name: {_SLUG}\nDo not fire AskUserQuestion for routine obstacles.\n",
+                text=(
+                    f"---\nname: {_SLUG}\nmetadata:\n  type: feedback\n---\n"
+                    "Do not fire AskUserQuestion for routine obstacles.\n"
+                ),
             ),
         ),
     )

@@ -14,26 +14,20 @@ skill repos and any external skill packages) plus this plugin's own ``skills/``
 tree. A reference name is canonical when its bare ``:``-stripped segment is one
 of those directory names.
 
-Reference sites enumerated:
-
-* the ``.teatree-skills.yml`` keyword->skill routing config in the home dir (and
-    any ``T3_SUPPLEMENTARY_SKILLS`` override location) — the file that carried the
-    real ``ac-reviewing-skills`` dangling name the owner caught;
-* ``agents/*.md`` frontmatter ``skills:`` and ``companion_skills`` lists.
+The reference site is ``agents/*.md`` frontmatter ``skills:`` / ``companion_skills`` /
+``requires`` lists.
 
 Runnable via ``t3 tool validate-skill-refs``.
 """
 
 import difflib
 import os
-import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 _SUGGESTION_CUTOFF = 0.6
 _MAX_SUGGESTIONS = 3
-_CONFIG_LINE_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9_-]+):\s+(.*)")
 _FRONTMATTER_LIST_KEYS = ("skills", "companion_skills", "requires")
 
 
@@ -126,41 +120,6 @@ def _suggest(name: str, canonical: set[str]) -> list[str]:
     )
 
 
-def validate_supplementary_config(config_path: Path, canonical: set[str]) -> list[DanglingReference]:
-    """Flag dangling skill names in the home-dir ``.teatree-skills.yml`` routing config.
-
-    A missing config file is *not* a failure (fail-open) — the file is
-    optional. Comments and blank lines are skipped, matching the hook's own
-    parser (:func:`scripts.lib.skill_loader.read_supplementary_skills`).
-    """
-    if not config_path.is_file():
-        return []
-    findings: list[DanglingReference] = []
-    try:
-        text = config_path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    for number, raw_line in enumerate(text.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        match = _CONFIG_LINE_RE.match(line)
-        if not match:
-            continue
-        name = match.group(1)
-        if not resolves_to_canonical(name, canonical):
-            findings.append(
-                DanglingReference(
-                    path=config_path,
-                    line=number,
-                    name=name,
-                    site="supplementary-config",
-                    suggestions=_suggest(name, canonical),
-                )
-            )
-    return findings
-
-
 def validate_agent_frontmatter(agent_path: Path, canonical: set[str]) -> list[DanglingReference]:
     """Flag dangling skill names in an ``agents/*.md`` frontmatter list field.
 
@@ -209,26 +168,18 @@ def _agent_files(agents_dir: Path) -> list[Path]:
 def validate_skill_refs(
     *,
     search_dirs: list[Path] | None = None,
-    supplementary_config: Path | None = None,
     agents_dir: Path | None = None,
 ) -> list[DanglingReference]:
     """Validate every skill-reference site against the canonical skill set.
 
     Returns the aggregated list of dangling references (empty == clean). The
-    caller decides the exit code. ``search_dirs`` / ``supplementary_config`` /
-    ``agents_dir`` default to the real install locations when omitted.
+    caller decides the exit code. ``search_dirs`` / ``agents_dir`` default to the real install locations when omitted.
     """
     dirs = search_dirs if search_dirs is not None else default_search_dirs()
     canonical = canonical_skill_names(dirs)
-
-    config = (
-        supplementary_config
-        if supplementary_config is not None
-        else Path(os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml")))
-    )
     agents = agents_dir if agents_dir is not None else Path(__file__).resolve().parents[3] / "agents"
 
-    findings = validate_supplementary_config(config, canonical)
+    findings: list[DanglingReference] = []
     for agent in _agent_files(agents):
         findings.extend(validate_agent_frontmatter(agent, canonical))
     return findings
@@ -238,10 +189,7 @@ def validate_repo_refs(repo_root: Path) -> list[DanglingReference]:
     """Validate the repo's OWN reference sites against its plugin skill set.
 
     Scoped to the repo: the canonical set is the plugin's ``skills/`` tree
-    (CI-portable — no dependence on a developer's ``~/.claude/skills``), and
-    the only reference site is ``agents/*.md`` frontmatter. The personal
-    home-dir ``.teatree-skills.yml`` lives outside the repo and is validated by the
-    runnable ``t3 tool validate-skill-refs`` command, not this repo gate.
+    (CI-portable — no dependence on a developer's ``~/.claude/skills``).
     """
     canonical = canonical_skill_names([repo_root / "skills"])
     findings: list[DanglingReference] = []

@@ -7,6 +7,7 @@ from django.test import TestCase, override_settings
 
 from teatree.core.models import Ticket
 from teatree.core.tasks import STRANDED_JOB_GRACE_SECONDS, TeardownDispatch
+from tests.teatree_core.conftest import record_confirmed_merge_for_test
 
 IMMEDIATE_BACKEND = {
     "TASKS": {
@@ -228,6 +229,7 @@ class TestTeardownEnqueueIsIdempotentInSideEffects(TestCase):
         from teatree.core.models import Worktree  # noqa: PLC0415 - deferred: local import
 
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        record_confirmed_merge_for_test(ticket)
         Worktree.objects.create(
             ticket=ticket, overlay="test", repo_path="r", branch="b", extra={"worktree_path": "/tmp/wt"}
         )

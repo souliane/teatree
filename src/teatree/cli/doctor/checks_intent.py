@@ -37,8 +37,7 @@ import typer
 from django.utils import timezone
 
 if TYPE_CHECKING:
-    from teatree.loops.directive_loop.guards import DirectiveLoopSettings
-    from teatree.loops.outer_loop.guards import GuardSeams
+    from teatree.loops.shared.guards import GuardSeams
 
 #: One directive-loop cadence. The directive loop — and the daily intent-consuming
 #: loops generally — run on an 86400s / 24h cron, so an intent item older than one
@@ -139,14 +138,13 @@ def intent_freshness_findings(
 def _directive_consumer_liveness(
     *,
     loop_admits: bool,
-    settings: "DirectiveLoopSettings | None",
     seams: "GuardSeams | None",
 ) -> tuple[bool, str]:
     """Whether the directive queue has a live consumer, and what must change if not.
 
     An unmasked loop row is only half the gate: every directive tick first runs the
-    fail-closed guard chain (the ``directive_loop_enabled`` flag, signal trust, the
-    self-improve budget), any arm of which refuses on its own — so a queue whose loop row
+    fail-closed guard chain (signal trust and the self-improve budget), whose
+    refusals can leave a queue whose loop row
     is enabled can still have no consumer at all. The remediation names every blocker, so
     following it cannot silence the finding while directives still never advance.
 
@@ -159,15 +157,11 @@ def _directive_consumer_liveness(
     The chain probed is the INTAKE one: this queue holds the pre-admission arc — the rows
     the tick interprets before stopping at the structural human ratify gate. The
     post-admission ``evaluate_execution_guards`` additionally gates on
-    ``factory_score_enabled``, on a live critic and on signal trust, none of which blocks
+    signal trust, which does not block
     intake, so probing that chain would report a consumer as dead while it is in fact
     draining this queue.
     """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: DB read at call time
-    from teatree.loops.directive_loop.guards import (  # noqa: PLC0415 — deferred: ORM-backed probes
-        FLAG_OFF,
-        evaluate_intake_guards,
-    )
+    from teatree.loops.directive_loop.guards import evaluate_intake_guards  # noqa: PLC0415 — deferred ORM probe
     from teatree.loops.directive_loop.loop import DIRECTIVE_LOOP_NAME  # noqa: PLC0415 — deferred: loop-package import
     from teatree.loops.loop_staleness import driverless_loops  # noqa: PLC0415 — deferred: registry walk at call time
 
@@ -178,13 +172,10 @@ def _directive_consumer_liveness(
             "so no live tick, timer chain or driver chain can ever call it"
         )
     if not loop_admits:
-        blockers.append("unmask the loop row: t3 loop enable directive_loop --emergency")
-    verdict = evaluate_intake_guards(
-        settings=settings if settings is not None else get_effective_settings(None), seams=seams
-    )
+        blockers.append("unmask the loop row: t3 loop resume directive_loop --emergency")
+    verdict = evaluate_intake_guards(seams=seams)
     if not verdict.ok:
-        remedies = {FLAG_OFF: "turn `directive_loop_enabled` back on — it ships ON, so an override put it off"}
-        remedy = remedies.get(verdict.reason, f"clear the {verdict.reason.split(':', 1)[0]} refusal")
+        remedy = f"clear the {verdict.reason.split(':', 1)[0]} refusal"
         blockers.append(f"clear the guard refusal {verdict.reason!r} — {remedy}")
     return not blockers, "To restore the consumer: " + "; ".join(blockers) + "."
 
@@ -221,7 +212,6 @@ def _drainable_directives() -> tuple[IntentItem, ...]:
 def _gather_intent_queues(
     loop_admits: dict[str, bool],
     *,
-    settings: "DirectiveLoopSettings | None" = None,
     seams: "GuardSeams | None" = None,
 ) -> list[IntentQueue]:
     """The concrete consumable intent queues, read from the ORM (#no-owner-intent-rots).
@@ -241,12 +231,10 @@ def _gather_intent_queues(
         IntentItem(ref=f"question #{pk}", created_at=created_at)
         for pk, created_at in DeferredQuestion.unmirrored_pending().values_list("pk", "created_at")
     )
-    # The guard chain probes the critic, the factory signals and the budget, so only
+    # The guard chain probes the factory signals and the budget, so only
     # pay for it when there is a directive whose liveness verdict could matter.
     directive_live, directive_remediation = (
-        _directive_consumer_liveness(
-            loop_admits=loop_admits.get("directive_loop", False), settings=settings, seams=seams
-        )
+        _directive_consumer_liveness(loop_admits=loop_admits.get("directive_loop", False), seams=seams)
         if directives
         else (True, "")
     )
@@ -263,7 +251,7 @@ def _gather_intent_queues(
             consumer_loop="dispatch",
             remediation=(
                 "To restore the consumer: unmask the loop row: "
-                "t3 loop enable dispatch --emergency (see `t3 loop list` for the masking layer)."
+                "t3 loop resume dispatch --emergency (see `t3 loop list` for the masking layer)."
             ),
             consumer_live=loop_admits.get("dispatch", False),
             pending=questions,
@@ -273,7 +261,6 @@ def _gather_intent_queues(
 
 def _check_intent_freshness(
     *,
-    settings: "DirectiveLoopSettings | None" = None,
     seams: "GuardSeams | None" = None,
 ) -> bool:
     """Fail loud when a non-empty intent queue has no live consumer (owner intent rot).
@@ -281,8 +268,8 @@ def _check_intent_freshness(
     HARD-FAILs (gates the exit code) when a consumable intent queue is non-empty while
     its consumer is not live — the exact silent-freeze the directive-loop incident
     produced. WARNs (surfacing-only) when a live consumer has let an item age past the
-    freshness threshold. *settings* / *seams* are the directive guard chain's injection
-    points, exactly as on ``directive_loop.run_tick``; doctor passes neither. Crash-proof:
+    freshness threshold. *seams* is the directive guard chain's injection point,
+    exactly as on ``directive_loop.run_tick``; doctor passes none. Crash-proof:
     any error (DB offline, unmigrated self-DB) degrades to OK so a doctor run never
     aborts on this check — same posture as the other DB-reading doctor checks.
     """
@@ -291,7 +278,7 @@ def _check_intent_freshness(
 
         now = timezone.now()
         loop_admits = {verdict.name: verdict.admitted for verdict in effective_verdicts(now)}
-        queues = _gather_intent_queues(loop_admits, settings=settings, seams=seams)
+        queues = _gather_intent_queues(loop_admits, seams=seams)
         findings = intent_freshness_findings(queues, now=now)
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Intent-freshness check crashed: {exc.__class__.__name__}: {exc}")

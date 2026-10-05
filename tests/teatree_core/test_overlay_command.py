@@ -16,7 +16,6 @@ class TestOverlayConfig:
             result = call_command("overlay", "config")
 
         assert "mr_close_ticket:" in result
-        assert "require_ticket:" in result
 
     def test_returns_single_key_value(self) -> None:
         with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):

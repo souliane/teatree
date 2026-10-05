@@ -9,14 +9,15 @@ Mirrors dod_gate.py: a standalone module with a single check function so the
 gate has one non-bypassable chokepoint and is independently testable.
 
 It governs one FSM EDGE, which a synthetic corrective re-entry never takes — the
-DISPATCH-seam sibling that refuses an implementing agent on a ticket carrying
-neither satisfying signal is ``plan_dispatch_gate`` (#4409).
+dispatch and fresh-mint seams read the same predicate,
+:func:`~teatree.core.models.plan_decision.has_plan_decision` (#4409).
 """
 
 from typing import TYPE_CHECKING
 
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import NoPlanArtifactError
+from teatree.core.models.plan_decision import has_plan_decision
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -47,12 +48,7 @@ def check_plan_artifact(ticket: "Ticket") -> bool:
     The carve-out is scoped to a ticket that explicitly carries the marker, so it
     cannot leak to an ordinary unmarked ticket.
     """
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415 — deferred: ORM/app-registry
-    from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip  # noqa: PLC0415 — deferred: ORM/app-registry
-
-    if PlanArtifact.objects.filter(ticket=ticket).exists():
-        return True
-    if is_trivial_plan_skip(ticket):
+    if has_plan_decision(ticket):
         return True
     msg = (
         f"Ticket {ticket.pk} has no PlanArtifact and no trivial-skip marker — "

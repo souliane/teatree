@@ -80,6 +80,14 @@ def _pass_at_k(
 
 
 class TestRendersPerTrialTranscript:
+    def test_incomplete_trial_is_not_reported_as_a_pass(self) -> None:
+        spec = _spec("incomplete_one")
+        trial = _scenario_result(spec, passed=True, text=("partial evidence",))
+        trial = dataclasses.replace(trial, run=dataclasses.replace(trial.run, coverage_incomplete=True))
+        html = render_pass_at_k_html([_pass_at_k(spec, passes=1, trials=1, trial_results=(trial,))])
+        assert "INCOMPLETE" in html
+        assert "1 incomplete" in html
+
     def test_reasoning_text_block_appears_in_the_output(self) -> None:
         spec = _spec("verify_target_before_cherry_pick")
         trial = _scenario_result(spec, passed=True, text=("First I read the source branch to find the real SHA.",))

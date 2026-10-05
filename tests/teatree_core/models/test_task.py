@@ -13,8 +13,10 @@ from django.utils import timezone
 
 import teatree.utils.singleton as singleton_mod
 from teatree.core.models import DeferredQuestion, InvalidTransitionError, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_attempt import TaskAttemptQuerySet
 from teatree.core.worktree.occupancy import WorktreeOccupiedError, acquire, occupancy_holder, task_holder_id
+from tests.factories import planned_ticket
 
 _FAKE_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
@@ -275,7 +277,7 @@ class TestTaskAttemptQuerySet(TestCase):
 
 class TestChildTaskSpawning(TestCase):
     def test_spawn_child_tasks_creates_per_repo_tasks(self) -> None:
-        ticket = Ticket.objects.create()
+        ticket = planned_ticket()
         session = Session.objects.create(ticket=ticket, agent_id="worker")
         parent = Task.objects.create(ticket=ticket, session=session, phase="coding")
 
@@ -289,22 +291,6 @@ class TestChildTaskSpawning(TestCase):
             "Repo: frontend",
             "Repo: translations",
         ]
-
-    def test_all_children_done(self) -> None:
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket)
-        parent = Task.objects.create(ticket=ticket, session=session)
-        children = parent.spawn_child_tasks(["a", "b"])
-
-        assert not parent.all_children_done()
-
-        children[0].status = Task.Status.COMPLETED
-        children[0].save(update_fields=["status"])
-        assert not parent.all_children_done()
-
-        children[1].status = Task.Status.FAILED
-        children[1].save(update_fields=["status"])
-        assert parent.all_children_done()
 
 
 class TestBuildTaskDetail(TestCase):
@@ -340,6 +326,17 @@ class TestBuildTaskDetail(TestCase):
         from teatree.core.selectors import build_task_detail  # noqa: PLC0415
 
         assert build_task_detail(999999) is None
+
+
+class TestChildTaskSpawningNeedsAPlan(TestCase):
+    def test_an_implementing_parent_on_an_unplanned_ticket_spawns_nothing(self) -> None:
+        ticket = Ticket.objects.create()
+        parent = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        with pytest.raises(NoPlanArtifactError, match="plan_missing"):
+            parent.spawn_child_tasks(["backend", "frontend"])
+
+        assert not parent.child_tasks.exists()
 
 
 class TaskOccupancyReleaseTests(TestCase):
@@ -406,9 +403,14 @@ class TaskOccupancyReleaseTests(TestCase):
     def test_third_party_fail_of_a_dead_holders_claim_releases_it(self) -> None:
         task = Task.objects.create(ticket=self.ticket, session=self.session)
         task.claim(claimed_by="worker-1", claimed_by_session="sess-1")
+        task.owner_pid_namespace = "test-namespace"
+        task.save(update_fields=["owner_pid_namespace"])
         acquire(self.worktree, holder=task_holder_id(task), holder_session=task.claimed_by_session)
 
-        with mock.patch.object(singleton_mod, "pid_alive", return_value=False):
+        with (
+            mock.patch("teatree.core.loop_lease_liveness.reader_pid_namespace", return_value="test-namespace"),
+            mock.patch.object(singleton_mod, "pid_alive", return_value=False),
+        ):
             task.fail(reason="test: cancelled by a third party", by_holder=False)
 
         assert occupancy_holder(self.fresh_worktree()) is None

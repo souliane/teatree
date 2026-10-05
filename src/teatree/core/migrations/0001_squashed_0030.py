@@ -13,8 +13,13 @@ import django.utils.timezone
 import django_fsm
 from django.db import migrations, models
 
-from teatree.config.retired_settings import RENAMED_SETTING_KEYS
 from teatree.core.models.ticket_number import derive_issue_number
+
+RENAMED_SETTING_KEYS = {
+    "orca_router_pass_path": "openai_compatible_credential_entry",
+    "orca_router_name": "openai_compatible_model",
+    "orca_router_lane": "openai_compatible_lane",
+}
 
 # --- ported verbatim from 0001_initial — _seed_default_loops (fresh-install seed of default Loop + Prompt rows) ---
 # Fresh-install seed of the default autonomous loops + prompts, folded into the
@@ -33,8 +38,8 @@ from teatree.core.models.ticket_number import derive_issue_number
 # intentionally absent (no registry MiniLoop; it runs only via its dedicated
 # ``loop-slack-answer`` ``/loop`` slot).
 _ARCH_REVIEW_PROMPT_BODY = (
-    "Run an architectural review of the codebase using the ac-reviewing-codebase skill. "
-    "Dispatch a sub-agent that loads /ac-reviewing-codebase and performs a holistic, "
+    "Run an architectural review of the codebase using the architectural-review skill. "
+    "Dispatch a sub-agent that loads /t3:architectural-review and performs a holistic, "
     "codebase-wide architectural review, surfacing findings as the skill prescribes."
 )
 
@@ -113,7 +118,7 @@ _DEFAULT_LOOPS = (
         300,
         None,
         None,
-        "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. Ships DISABLED; once enabled the away-gate never skips it (colleague_facing = false), so self-review keeps going while the owner is unreachable.",
+        "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. The away-gate never skips it (colleague_facing = false), so self-review keeps going while the owner is unreachable.",
         False,
         False,
     ),
@@ -194,7 +199,7 @@ _DEFAULT_LOOPS = (
         86400,
         datetime.time(4, 0),
         _ARCH_REVIEW_PROMPT_BODY,
-        "Dispatches a sub-agent at 04:00 to run a holistic, codebase-wide architectural review via the ac-reviewing-codebase skill; the scanner enforces architectural_review_cadence_hours (168) and the merge-count backstop, so this row is only how often that gate is CHECKED — and, because a failed review leaves that clock untouched, how soon a failed one retries.",
+        "Dispatches a sub-agent at 04:00 to run a holistic, codebase-wide architectural review via the architectural-review skill; the scanner enforces architectural_review_cadence_hours (168) and the merge-count backstop, so this row is only how often that gate is CHECKED — and, because a failed review leaves that clock untouched, how soon a failed one retries.",
         False,
         False,
     ),
@@ -257,7 +262,7 @@ _DEFAULT_LOOPS = (
         86400,
         None,
         None,
-        "Advances at most one T4 autoresearch experiment one step per day (propose, ratify, implement, measure, keep-only-if-better), off the live tick; ships disabled behind the outer_loop_enabled flag and the critic-live guard.",
+        "Advances at most one T4 autoresearch experiment one step per day (propose, ratify, implement, measure, keep-only-if-better), off the live tick; requires trustworthy score signals.",
         False,
         False,
     ),
@@ -266,7 +271,7 @@ _DEFAULT_LOOPS = (
         3600,
         None,
         None,
-        "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); directive_loop_enabled ships ON, so this Loop row is the remaining switch, and the execution arc additionally needs the factory-score and critic-live guards.",
+        "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); the execution arc additionally needs trusted score signals.",
         False,
         False,
     ),
@@ -275,7 +280,7 @@ _DEFAULT_LOOPS = (
         300,
         None,
         None,
-        "Advances operator-opened CI-eval heal sessions every 5m (observe-only): dispatch the behavioral eval in CI, poll, and GREEN or HALT+escalate on any red — never a fix. Default-OFF (autonomous CI mutation); an operator opens sessions and enables the row.",
+        "Advances operator-opened CI-eval heal sessions every 5m: dispatch the behavioral eval in CI, poll, and fix confirmed reds within the session budget and anti-cheat gate. The loop row controls the cadence.",
         False,
         False,
     ),
@@ -284,7 +289,7 @@ _DEFAULT_LOOPS = (
         1800,
         None,
         None,
-        "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair. Observe-only: it writes nothing and opens nothing. Default-OFF.",
+        "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair. Observe-only: it writes nothing and opens nothing.",
         False,
         False,
     ),
@@ -293,7 +298,7 @@ _DEFAULT_LOOPS = (
         604800,
         None,
         None,
-        "Skims the Claude memories weekly and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF.",
+        "Skims the Claude memories weekly and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week.",
         False,
         False,
     ),
@@ -425,27 +430,29 @@ _PIN_TO_BOOLEANS = {
 def _backfill_mode_booleans(apps, schema_editor):
     """Back-fill the three intrinsic booleans on every existing LoopPreset (fail-open, idempotent)."""
     LoopPreset = apps.get_model("core", "LoopPreset")
-    for preset in LoopPreset.objects.all():
+    presets = LoopPreset.objects.using(schema_editor.connection.alias)
+    for preset in presets.all():
         recommended = _RECOMMENDED_POSTURE.get(preset.name)
         if recommended is not None:
             defers, pauses, sensitive = recommended
         else:
             defers, pauses = _PIN_TO_BOOLEANS.get((preset.availability_mode or "").strip(), (False, False))
             sensitive = True
-        preset.defers_questions = defers
-        preset.pauses_self_pump = pauses
-        preset.presence_sensitive = sensitive
-        preset.save(update_fields=["defers_questions", "pauses_self_pump", "presence_sensitive"])
+        presets.filter(pk=preset.pk).update(
+            defers_questions=defers, pauses_self_pump=pauses, presence_sensitive=sensitive
+        )
 
 
 def _seed_offline_mode(apps, schema_editor):
     """Create the NEW ``offline`` holiday-away mode if absent (idempotent)."""
     LoopPreset = apps.get_model("core", "LoopPreset")
     Loop = apps.get_model("core", "Loop")
-    if LoopPreset.objects.filter(name="offline").exists():
+    db = schema_editor.connection.alias
+    presets = LoopPreset.objects.using(db)
+    if presets.filter(name="offline").exists():
         return
-    all_off = dict.fromkeys(Loop.objects.values_list("name", flat=True), False)
-    LoopPreset.objects.create(
+    all_off = dict.fromkeys(Loop.objects.using(db).values_list("name", flat=True), False)
+    presets.create(
         name="offline",
         description=_OFFLINE_DESCRIPTION,
         entries=all_off,
@@ -489,9 +496,8 @@ def _restore_reviewer_delivered(apps, schema_editor):
 
 
 # --- ported verbatim from 0027_generic_openai_compatible_backend — _carry_configured_values / _restore_provider_specific_values ---
-# The #3666 retirements this migration carries, and the provider VALUE that moved
-# with them. Read off the one retired-settings registry rather than re-listed, so a
-# renamed key cannot be recorded there and forgotten here.
+# The #3666 provider keys this migration converts, and the provider value that moved
+# with them. Migration history keeps these names fixed after the runtime keys are removed.
 _BACKEND_KEYS = ("orca_router_pass_path", "orca_router_name", "orca_router_lane")
 _PROVIDER_KEY = "agent_harness_provider"
 _OLD_PROVIDER = "orca_router_byok"
@@ -590,15 +596,16 @@ def _normalize(identity: str) -> str:
 
 def _backfill_and_dedup(apps, schema_editor):
     review_verdict = apps.get_model("core", "reviewverdict")
+    rows = review_verdict.objects.using(schema_editor.connection.alias)
 
-    for row in review_verdict.objects.all().only("pk", "reviewer_identity", "reviewer_identity_normalized"):
+    for row in rows.all().only("pk", "reviewer_identity", "reviewer_identity_normalized"):
         normalized = _normalize(row.reviewer_identity)
         if row.reviewer_identity_normalized != normalized:
-            review_verdict.objects.filter(pk=row.pk).update(reviewer_identity_normalized=normalized)
+            rows.filter(pk=row.pk).update(reviewer_identity_normalized=normalized)
 
     seen: set[tuple[str, int, str, str]] = set()
     to_delete: list[int] = []
-    ordered = review_verdict.objects.order_by("-recorded_at", "-pk").only(
+    ordered = rows.order_by("-recorded_at", "-pk").only(
         "pk", "slug", "pr_id", "reviewed_sha", "reviewer_identity_normalized"
     )
     for row in ordered:
@@ -608,7 +615,7 @@ def _backfill_and_dedup(apps, schema_editor):
         else:
             seen.add(key)
     if to_delete:
-        review_verdict.objects.filter(pk__in=to_delete).delete()
+        rows.filter(pk__in=to_delete).delete()
 
 
 class Migration(migrations.Migration):

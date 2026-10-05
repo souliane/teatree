@@ -10,6 +10,7 @@ historical edit: editing the tier must never retroactively change what this ran.
 """
 
 from django.db import migrations
+from django.utils import timezone
 
 _LOAD_BEARING = ("housekeeping", "idle_stack_reaper", "inbox", "local_stack_queue", "resource_pressure")
 _LOW_POWER_SETTING = "low_power_preset_name"
@@ -46,10 +47,10 @@ def _admit_load_bearing_loops(apps, schema_editor) -> None:
         stale_description = bool(shipped) and preset.description == shipped
         if not quieted and not stale_description:
             continue
-        preset.entries = {**entries, **dict.fromkeys(quieted, True)}
+        updated = {"entries": {**entries, **dict.fromkeys(quieted, True)}, "updated_at": timezone.now()}
         if stale_description:
-            preset.description = restated
-        preset.save(update_fields=["entries", "description", "updated_at"])
+            updated["description"] = restated
+        mode.filter(pk=preset.pk).update(**updated)
 
 
 class Migration(migrations.Migration):

@@ -184,12 +184,12 @@ class TestShipExecutorIntegration:
 
     def test_banned_namespace_strips_trailer_from_pr_description(self) -> None:
         ticket = Ticket.objects.create(
-            overlay="",
+            overlay="t3-teatree",
             state=Ticket.State.SELF_REVIEWED,
             issue_url="https://example.com/issues/1",
         )
         Worktree.objects.create(
-            overlay="",
+            overlay="t3-teatree",
             ticket=ticket,
             repo_path="eng-group/product",
             branch="feat-x",
@@ -219,6 +219,10 @@ class TestShipExecutorIntegration:
                 return_value="tester",
             ),
             patch(
+                "teatree.core.runners.ship.git.remote_url",
+                return_value="https://gitlab.com/eng-group/product.git",
+            ),
+            patch(
                 "teatree.core.runners.ship.get_overlay_publish_gates",
                 return_value=["eng-group/*"],
             ),
@@ -236,12 +240,12 @@ class TestShipExecutorIntegration:
 
     def test_non_banned_namespace_keeps_trailer(self) -> None:
         ticket = Ticket.objects.create(
-            overlay="",
+            overlay="t3-teatree",
             state=Ticket.State.SELF_REVIEWED,
             issue_url="https://example.com/issues/2",
         )
         Worktree.objects.create(
-            overlay="",
+            overlay="t3-teatree",
             ticket=ticket,
             repo_path="souliane/teatree",
             branch="feat-y",
@@ -266,6 +270,10 @@ class TestShipExecutorIntegration:
             patch(
                 "teatree.core.runners.ship.git.config_value",
                 return_value="tester",
+            ),
+            patch(
+                "teatree.core.runners.ship.git.remote_url",
+                return_value="https://github.com/souliane/teatree.git",
             ),
             patch(
                 "teatree.core.runners.ship.get_overlay_publish_gates",

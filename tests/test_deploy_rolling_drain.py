@@ -36,10 +36,80 @@ _BASH = shutil.which("bash") or "bash"
 #: (276.8s / 280.0s), i.e. the idle window the transport is known NOT to outlive.
 _OBSERVED_IDLE_TEARDOWN_SECONDS = 276
 
+
+def test_deploy_env_rewrite_preserves_unmanaged_keys(tmp_path: Path) -> None:
+    workflow = _DEPLOY_YML.read_text(encoding="utf-8")
+    match = re.search(r"\} \| \$SSH \"\$TARGET\" '([^']+)'", workflow)
+    assert match is not None
+    deploy_dir = tmp_path / "teatree-deploy" / "deploy"
+    deploy_dir.mkdir(parents=True)
+    env_file = deploy_dir / "teatree.env"
+    env_file.write_text(
+        "T3_WORKER_QUIESCING=true\nTEATREE_TRANSCRIPT_SOURCE=/srv/owner-sessions\n"
+        "CUSTOM_BOX_KEY=keep-me\nT3_ADMIN_USER=old\nCLAUDE_CODE_OAUTH_TOKEN=old-token\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [_BASH, "-c", match.group(1)],
+        input="T3_ADMIN_USER=new\nGIT_AUTHOR_NAME=author\nGIT_AUTHOR_EMAIL=author@example.com\n",
+        text=True,
+        capture_output=True,
+        env={"HOME": str(tmp_path), "PATH": os.environ["PATH"]},
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text(encoding="utf-8").splitlines() == [
+        "T3_WORKER_QUIESCING=true",
+        "TEATREE_TRANSCRIPT_SOURCE=/srv/owner-sessions",
+        "CUSTOM_BOX_KEY=keep-me",
+        "T3_ADMIN_USER=new",
+        "GIT_AUTHOR_NAME=author",
+        "GIT_AUTHOR_EMAIL=author@example.com",
+    ]
+    assert env_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_transcript_source_in_teatree_env_renders_as_compose_bind(tmp_path: Path) -> None:
+    deploy_source = _DEPLOY_SH.read_text(encoding="utf-8")
+    assert deploy_source.index("\nexport_transcript_source\n") < deploy_source.index("DEPLOY_COMMIT=")
+    env_file = tmp_path / "teatree.env"
+    env_file.write_text("TEATREE_TRANSCRIPT_SOURCE=/srv/owner-sessions\n", encoding="utf-8")
+    # Compose reads the variable from its own environment, so it has to reach a child process.
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    docker = stub_bin / "docker"
+    docker.write_text('#!/bin/sh\nprintf %s "$TEATREE_TRANSCRIPT_SOURCE"\n', encoding="utf-8")
+    docker.chmod(0o755)
+    shell = (
+        f'ENV_FILE="{env_file}"\n'
+        f"{_extract_shell_function('export_transcript_source')}\n"
+        "export_transcript_source\ndocker compose config"
+    )
+    result = subprocess.run(
+        [_BASH, "-c", shell],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{stub_bin}{os.pathsep}{os.environ['PATH']}"},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    source = result.stdout
+    assert source == "/srv/owner-sessions"
+    compose = _COMPOSE_YML.read_text(encoding="utf-8").replace(
+        "${TEATREE_TRANSCRIPT_SOURCE:-teatree_claude_projects}", source
+    )
+    volumes = yaml.safe_load(compose)["x-teatree-common"]["volumes"]
+    assert f"{source}:/home/teatree/.claude/projects" in volumes
+
+
 #: Anchors bounding deploy.sh's stranded-gate fail-safe, so the signal probe below runs
 #: the SHIPPED code rather than a re-typed copy of it.
 _FAIL_SAFE_START = "_DRAINED=false"
-_FAIL_SAFE_END = "trap '_clear_quiescing_if_stranded; _release_deploy_record' EXIT"
+_FAIL_SAFE_END = (
+    "trap '_restart_contained_worker; _clear_quiescing_if_stranded; _release_deploy_record; _remove_build_context' EXIT"
+)
 
 #: Anchors bounding deploy.sh's `compose` helper, which the fail-safe calls (#4193 wired
 #: the host-identity overlay behind it). Lifted verbatim for the same reason the

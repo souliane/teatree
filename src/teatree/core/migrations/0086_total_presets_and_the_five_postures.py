@@ -198,11 +198,11 @@ _SCHEDULE_DESCRIPTION = "AFK all week: the factory keeps taking work and never p
 def _totalize(mode, loop_states: dict[str, bool]) -> None:
     for preset in mode.all():
         stored = preset.entries if isinstance(preset.entries, dict) else {}
-        preset.entries = {
+        entries = {
             name: stored[name] if isinstance(stored.get(name), bool) else enabled
             for name, enabled in sorted(loop_states.items())
         }
-        preset.save(update_fields=["entries"])
+        mode.filter(pk=preset.pk).update(entries=entries)
 
 
 def _repoint(apps, db: str, old: str, new: str) -> None:

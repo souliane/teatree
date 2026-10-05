@@ -18,9 +18,9 @@ def backfill_deadlines(apps, schema_editor):
     """
     for model_name in ("CriticDispatch",):
         model = apps.get_model("core", model_name)
-        for row in model.objects.filter(deadline__isnull=True).iterator():
-            row.deadline = row.dispatched_at + timedelta(hours=2)
-            row.save(update_fields=["deadline"])
+        rows = model.objects.using(schema_editor.connection.alias)
+        for row in rows.filter(deadline__isnull=True).iterator():
+            rows.filter(pk=row.pk).update(deadline=row.dispatched_at + timedelta(hours=2))
 
 
 class Migration(migrations.Migration):

@@ -10,7 +10,7 @@ Class                        Exit  What the operator must do
 :class:`NotionTokenMissingError`     3  create the integration, store its token
 :class:`NotionBadTokenError`         4  the token is rejected — rotate/replace it
 :class:`NotionCapabilityDeniedError` 5  grant the integration the capability
-:class:`NotionNotSharedError`        6  share the page WITH the integration
+:class:`NotionNotSharedError`        6  the bot cannot see the id — check the share, the id, the workspace
 :class:`NotionObjectNotFoundError`   7  the reference is not a Notion object at all
 :class:`NotionRateLimitedError`      8  back off — Notion is throttling
 :class:`NotionWriteNotLandedError`   9  the write reported success but did not land
@@ -21,19 +21,27 @@ Class                        Exit  What the operator must do
 :class:`NotionPageNotLiveError`      14  the page is dead (or unprovable) — read the current one
 :class:`NotionSectionNotFoundError`  15  --after-heading named no heading the page carries — supply an existing one
 :class:`NotionUncopyableBlockError`  16  the block cannot be re-posted — copy without it
+:class:`NotionWriteRefusedError`     17  the write guard refused the target — write only under an allowed root
+:class:`NotionIncompleteEnumerationError` 18  part of the page was unreadable — the set is not the whole set
+:class:`NotionAnchorError`           19  the replace anchor is not one editable span — narrow or widen the old text
+:class:`NotionBlockChangedError`     20  the block changed after it was read — re-plan against its current text
+:class:`NotionDiscussionNotFoundError` 21  the reply's discussion is not under the page — list them with `comments`
+:class:`NotionWriteUnverifiedError`  22  a write was sent but its outcome is unknown — re-read before retrying
+:class:`NotionWriteNotApprovedError` 23  no recorded approval covers this write — record one, then re-run
 ===========================  ====  =============================================
 
-The distinction that costs the most to get wrong is **not-shared vs bad-token**.
-Notion answers an unshared page with ``404 object_not_found`` — the same shape a
+The distinction that costs the most to get wrong is **cannot-see vs bad-token**.
+Notion answers an unseen page with ``404 object_not_found`` — the same shape a
 bad token would eventually produce downstream — so :class:`NotionErrorClassifier`
 resolves it by probing the token's own identity (``GET /v1/users/me``) before
-deciding: a token that authenticates proves the failure is a sharing grant, and
-the message can then name the integration the human has to add.
+deciding: a token that authenticates proves the bot cannot see this id, and the
+message names that bot and the checks that separate the three causes the API
+cannot: not shared with the integration, the id no longer exists, another workspace.
 
-Not-shared and object-not-found stay separate on purpose even though Notion
-collapses them: ``NotionObjectNotFoundError`` is raised only where non-existence is
-PROVEN locally (the reference is not a Notion id) or by Notion's own
-``validation_error``, never inferred from a 404 whose real cause is unknowable.
+That 404 and :class:`NotionObjectNotFoundError` stay separate on purpose:
+``NotionObjectNotFoundError`` is raised only where non-existence is PROVEN locally
+(the reference is not a Notion id) or by Notion's own ``validation_error``, never
+inferred from a 404 whose real cause is unknowable.
 """
 
 import re
@@ -88,10 +96,11 @@ class NotionCapabilityDeniedError(NotionError):
 
 
 class NotionNotSharedError(NotionError):
-    """The object is not shared with this integration (HTTP 404, token verified).
+    """The bot cannot see this id (HTTP 404, token verified).
 
-    Sharing is a per-page/per-database grant a human makes in the Notion UI; an
-    integration sees nothing until it is made. Raised only after the token has
+    Notion answers 404 alike for an object not shared with the integration, an id
+    that no longer exists, and an object in another workspace, so the cause is
+    never asserted: the message lists all three. Raised only after the token has
     been proven to authenticate, so this is never a disguised bad-token failure.
     """
 
@@ -102,8 +111,8 @@ class NotionObjectNotFoundError(NotionError):
     """The reference is not a Notion object id (proven, not inferred).
 
     Either the string carries no 32-hex id at all, or Notion answered the id with
-    ``validation_error``. Distinct from :class:`NotionNotSharedError`, which is a
-    reachable-but-ungranted object.
+    ``validation_error``. Distinct from :class:`NotionNotSharedError`, which is an
+    id Notion answered 404 and the bot therefore cannot see.
     """
 
     exit_code = 7
@@ -225,6 +234,59 @@ class NotionWriteRefusedError(NotionError):
     exit_code = 17
 
 
+class NotionIncompleteEnumerationError(NotionError):
+    """An enumeration could not read part of what it walked, so its result is a subset.
+
+    Its own condition rather than a shorter list, because the two are otherwise
+    indistinguishable: a caller asking "what discussions are on this page?" acts
+    on whatever comes back, and a partial answer that reads as complete is how a
+    requirement gets written from a comment nobody could see.
+    """
+
+    exit_code = 18
+
+
+class NotionAnchorError(NotionError):
+    """The text a replace anchors on does not resolve to exactly one span that can be edited safely.
+
+    Zero or several occurrences, a span that crosses blocks, or one that crosses runs formatted
+    differently — each would make the write guess where to land or silently flatten formatting, so
+    the replace stops and names what it found.
+    """
+
+    exit_code = 19
+
+
+class NotionBlockChangedError(NotionError):
+    """The block a replace planned against changed before the write, so the write would overwrite that edit."""
+
+    exit_code = 20
+
+
+class NotionDiscussionNotFoundError(NotionError):
+    """A reply named a discussion the enumeration did not find under the page."""
+
+    exit_code = 21
+
+
+class NotionWriteUnverifiedError(NotionError):
+    """A write reached Notion, or may have, but its response or the read-back failed, so it may have landed."""
+
+    exit_code = 22
+
+
+class NotionWriteNotApprovedError(NotionError):
+    """The MCP write path found no unconsumed recorded approval scoped to exactly this write."""
+
+    exit_code = 23
+
+
+def describe_failure(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return f"{type(exc).__name__}: {exc}"
+
+
 def normalize_object_id(reference: str) -> str:
     """Return the dashed Notion id for a page/database *reference*.
 
@@ -253,8 +315,8 @@ class NotionErrorClassifier:
     """Turn an ``httpx`` failure into the taxonomy above, or re-raise it.
 
     *identity* is a zero-arg probe of the token's own identity
-    (``GET /v1/users/me``) used ONLY on the 404 branch, to separate "the page is
-    not shared with this integration" from "the token is bad". It is called
+    (``GET /v1/users/me``) used ONLY on the 404 branch, to separate "the bot cannot
+    see this id" from "the token is bad", and to name the bot. It is called
     lazily so the happy path never pays for it, and a probe that itself fails
     with 401 turns the verdict into :class:`NotionBadTokenError`.
 
@@ -308,10 +370,13 @@ class NotionErrorClassifier:
         except NotionBadTokenError as exc:
             return exc
         return NotionNotSharedError(
-            f"{target} is not shared with this integration ({who}). Notion answers an "
-            "ungranted object with HTTP 404 — the token itself authenticates fine. "
-            "Open the page in Notion, use ••• → Connections, and add the integration; "
-            "a database needs the same grant on the database itself."
+            f"{who} cannot see {target} (Notion answers 404). "
+            "Possible causes: it is not shared with this integration, its id no longer exists, "
+            "or it is in another workspace. "
+            "Check: ••• → Connections includes this integration (match name and workspace above; "
+            "`t3 notion whoami` shows the bot id); "
+            "the URL's id is current (duplicating or recreating a page changes it); "
+            "its parent is visible to this bot."
         )
 
     @staticmethod

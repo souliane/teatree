@@ -1,6 +1,6 @@
 """GitLab conflict-signal detection for the followup sweep.
 
-``is_conflicted`` reads the three signals the MR list payload exposes and
+``is_conflicted`` reads the current signals the MR list payload exposes and
 must never cry wolf on a still-computing (``unchecked``) or clean state.
 ``collect_conflicted_mrs`` translates only the conflicted raw MRs into the
 overlay-agnostic ``ConflictedMR`` shape.
@@ -14,18 +14,15 @@ class TestIsConflicted:
     def test_has_conflicts_flag(self) -> None:
         assert is_conflicted({"has_conflicts": True}) is True
 
-    def test_deprecated_merge_status(self) -> None:
-        assert is_conflicted({"merge_status": "cannot_be_merged"}) is True
-
     def test_detailed_merge_status(self) -> None:
         assert is_conflicted({"detailed_merge_status": "conflict"}) is True
 
     def test_clean_can_be_merged(self) -> None:
-        assert is_conflicted({"has_conflicts": False, "merge_status": "can_be_merged"}) is False
+        assert is_conflicted({"has_conflicts": False, "detailed_merge_status": "mergeable"}) is False
 
     def test_unchecked_is_not_a_conflict(self) -> None:
         # Still-computing mergeability must not raise a false alarm.
-        assert is_conflicted({"merge_status": "unchecked", "detailed_merge_status": "checking"}) is False
+        assert is_conflicted({"detailed_merge_status": "checking"}) is False
 
     def test_non_conflict_detailed_status_is_not_conflict(self) -> None:
         # ci_must_pass / not_approved / broken_status are NOT merge conflicts.

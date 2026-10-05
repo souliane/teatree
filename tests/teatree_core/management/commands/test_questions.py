@@ -77,3 +77,25 @@ class TestQuestionsListShowsEscalations(TestCase):
         call_command("questions", "list", stderr=err)
 
         assert "1 past the age ceiling" in err.getvalue()
+
+
+class TestQuestionsListShowsTheAnswer(TestCase):
+    """An answer given on Slack is read on demand; nothing pushes it into a session."""
+
+    def test_json_carries_the_answer_of_a_resolved_row(self) -> None:
+        row = DeferredQuestion.record("Ship to staging or prod?")
+        assert DeferredQuestion.consume(row.pk, answer="staging") is not None
+
+        out = io.StringIO()
+        call_command("questions", "list", "--all", "--json", stdout=out)
+
+        payload = {entry["id"]: entry for entry in json.loads(out.getvalue())}
+        assert payload[row.pk]["answer"] == "staging"
+
+    def test_a_pending_row_carries_an_empty_answer(self) -> None:
+        row = DeferredQuestion.record("Merge it?")
+
+        out = io.StringIO()
+        call_command("questions", "list", "--json", stdout=out)
+
+        assert {entry["id"]: entry for entry in json.loads(out.getvalue())}[row.pk]["answer"] == ""

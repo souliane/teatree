@@ -8,23 +8,19 @@ read chokepoint without a backwards import to this orchestration layer. This
 module re-exports them so the loop scanners keep one stable import path.
 
 :func:`filter_self_messages` and :func:`drop_on_behalf_messages` are the
-lowest common helpers that BOTH downstream consumers of
-:class:`PendingChatInjection` inherit:
+lowest common helpers the downstream consumer of
+:class:`PendingChatInjection` inherits:
 
 * The reactive Slack-answer cycle (``run_slack_answer_cycle``) — which
     spawns ``t3:answerer`` sub-agents against unanswered rows.
-* The ``UserPromptSubmit`` injection hook (``handle_inject_pending_chat``
-    in ``hook_router.py``) — which surfaces unconsumed rows as
-    ``additionalContext`` to the next interactive prompt.
 
 The Slack Socket Mode receiver only drops ``subtype=bot_message`` events;
 the bot's own outbound posts from ``chat.postMessage`` arrive as plain
 ``message`` events whose ``user`` matches the bot's posted-as user id and
 whose ``bot_id`` matches the bot's bot id. Without a self-filter the bot
-ends up "answering" its own outbound DMs (#1346) and the UserPromptSubmit
-hook injects them as user replies. Both filters are applied inside
+ends up "answering" its own outbound DMs (#1346). Both filters are applied inside
 :class:`SlackDmInboundScanner.scan` so rows that fail either one never
-reach the DB and both downstream consumers benefit for free.
+reach the DB and the consumer benefits for free.
 
 **Fail-closed (identity filter only).** When the bot's own identity cannot
 be resolved (``auth.test`` returned ``ok:false``, no bot token configured,

@@ -207,6 +207,12 @@ class TestBothEntryPointsExportTheEnvironment:
         # deploy/t3 needs it too: with the stack down it starts a one-off worker itself.
         assert _GID_BLOCK.search(script.read_text(encoding="utf-8")) is not None
 
+    @pytest.mark.parametrize("script", [_DEPLOY_SH, _T3], ids=["deploy.sh", "t3"])
+    def test_exports_the_host_os_the_containers_judge_host_proc_by(self, script: Path) -> None:
+        # Unset, a container refuses /host-proc: it cannot tell the host's table from a VM's.
+        body = script.read_text(encoding="utf-8")
+        assert 'TEATREE_HOST_OS="${TEATREE_HOST_OS:-$(uname -s)}"\nexport TEATREE_HOST_OS\n' in body
+
     def test_the_two_resolvers_are_byte_identical(self) -> None:
         # Deliberate duplication — each script is copied and run standalone, so a
         # sourced sibling would be a new way for either to die. This pins the copies.

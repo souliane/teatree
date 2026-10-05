@@ -500,3 +500,37 @@ class TestAlreadyMigrated:
     def test_a_different_tool_above_does_not_clear_the_site(self) -> None:
         body = "Prefer `mcp__teatree__task_list`.\n\n```bash\nt3 <overlay> pr create x\n```\n"
         assert [c.signature for c in raw_calls_in(body, "skills/x.md")] == ["t3 pr create"]
+
+
+_AUTHOR_CARVE_OUT = "authored under a non-owner credential"
+
+
+def _recipes_missing_the_author_carve_out(root: Path) -> list[str]:
+    recipes = {call.path for call in find_raw_calls(root) if call.signature == "glab mr create"}
+    return sorted(path for path in recipes if _AUTHOR_CARVE_OUT not in (root / path).read_text(encoding="utf-8"))
+
+
+class TestARawMrCreateRecipeCarriesTheAuthorCarveOut:
+    """``glab`` writes as the machine's default login (the owner), and a forge bars an author approving their own MR.
+
+    A skill that documents the raw create therefore says, in the same file, that a repo whose MRs
+    are authored under a non-owner credential never takes it; without that, the recipe is read as
+    the way to open an MR on such a repo, and the MR is one nobody can approve.
+    """
+
+    def test_every_live_skill_documenting_the_raw_create_names_the_carve_out(self) -> None:
+        assert _recipes_missing_the_author_carve_out(_REPO_ROOT) == []
+
+    def test_the_live_scan_does_find_a_raw_create_recipe(self) -> None:
+        assert any(call.signature == "glab mr create" for call in find_raw_calls(_REPO_ROOT))
+
+    def test_a_recipe_without_the_carve_out_is_named(self, tmp_path: Path) -> None:
+        _plant_skill(tmp_path, "ship.md", "```bash\nglab mr create --title t\n```\n")
+
+        assert _recipes_missing_the_author_carve_out(tmp_path) == ["skills/ship.md"]
+
+    def test_a_recipe_beside_the_carve_out_passes(self, tmp_path: Path) -> None:
+        body = f"On a repo {_AUTHOR_CARVE_OUT}, never run `glab mr create`.\n```bash\nglab mr create --title t\n```\n"
+        _plant_skill(tmp_path, "ship.md", body)
+
+        assert _recipes_missing_the_author_carve_out(tmp_path) == []

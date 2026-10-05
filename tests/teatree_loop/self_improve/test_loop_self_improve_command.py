@@ -136,6 +136,26 @@ class LoopSelfImproveCommandTests(TestCase):
         assert "report_count" in payload
         assert "action_count" in payload
 
+    def test_scoped_owner_runs_from_worker_cwd_without_ambient_overlay(self) -> None:
+        result = TierResult(tier="cheap", budget=BudgetVerdict.allow())
+        out = io.StringIO()
+        with (
+            tempfile.TemporaryDirectory() as worker_cwd,
+            patch.dict(os.environ, {"T3_SELF_IMPROVE_OWNER_OVERLAY": "t3-teatree"}),
+            patch("teatree.loop.self_improve.schedule.run_tier", return_value=result) as run_tier,
+        ):
+            os.environ.pop("T3_OVERLAY_NAME", None)
+            original_cwd = Path.cwd()
+            try:
+                os.chdir(worker_cwd)
+                call_command("loop_self_improve", tier="cheap", stdout=out, stderr=out)
+            finally:
+                os.chdir(original_cwd)
+            assert "T3_OVERLAY_NAME" not in os.environ
+
+        assert "OK" in out.getvalue()
+        assert run_tier.call_args.kwargs["delivery"].overlay_name == "t3-teatree"
+
     def test_unknown_scan_is_visible_in_json_and_human_output(self) -> None:
         result = TierResult(
             tier="cheap",

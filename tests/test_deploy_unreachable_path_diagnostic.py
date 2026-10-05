@@ -19,6 +19,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from _deploy_wrapper_paths import copy_wrapper
 
 WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 
@@ -51,7 +52,7 @@ def _run(tmp_path: Path, *args: str, source_mount: Path | None = None) -> subpro
 
     entry = tmp_path / "teatree-deploy" / "deploy" / "t3"
     entry.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(WRAPPER, entry)
+    copy_wrapper(WRAPPER, entry)
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR)
 
     env = {k: v for k, v in os.environ.items() if not k.startswith(("GITLAB_", "GITHUB_", "T3_", "TEATREE_"))}

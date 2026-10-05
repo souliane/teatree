@@ -13,7 +13,11 @@ instead of raising — the gate is what makes them pass.
 """
 
 import json
-from contextlib import AbstractContextManager
+import sqlite3
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, closing, contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
@@ -23,12 +27,12 @@ from teatree.core.merge import execution
 from teatree.core.merge.authorization import assert_merge_provenance_trusted
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.execution import execute_bound_merge, merge_ticket_pr
-from teatree.core.models import MergeClear, Ticket, TrustedIdentity
+from teatree.core.models import MergeClear, PullRequest, Ticket, TrustedIdentity
 from teatree.core.review import author_trust
 from teatree.utils.pr_ref import PrRef
 from tests._forge_stub import changed_files_stdout
 from tests.factories import waive_rubric
-from tests.teatree_core.conftest import CommandOverlay, seed_merge_safe_verdict
+from tests.teatree_core.conftest import CommandOverlay, record_merge_prerequisites_for_test, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -58,7 +62,9 @@ def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
         "blast_class": MergeClear.BlastClass.DOCS,
     }
     defaults.update(overrides)
-    return MergeClear.objects.create(**defaults)
+    clear = MergeClear.objects.create(**defaults)
+    record_merge_prerequisites_for_test(ticket, clear.reviewed_sha)
+    return clear
 
 
 class _GhStub:
@@ -194,6 +200,25 @@ class TestProvenanceGateUnit(TestCase):
     def setUp(self) -> None:
         _seed_known()
 
+    @contextmanager
+    def _private_repos(self, entries: list[str]) -> Iterator[None]:
+        with TemporaryDirectory() as temporary:
+            config_db = Path(temporary) / "config.sqlite3"
+            with closing(sqlite3.connect(config_db)) as conn, conn:
+                conn.execute(
+                    "CREATE TABLE teatree_config_setting "
+                    "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+                )
+                conn.execute(
+                    "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
+                    (json.dumps(entries),),
+                )
+            with (
+                patch.dict("os.environ", {"T3_CONFIG_DB": str(config_db)}),
+                patch("teatree.hooks._repo_visibility.slug_visibility", return_value=None),
+            ):
+                yield
+
     def _patches(self, *, author: str, same_repo: bool | None) -> tuple[AbstractContextManager[object], ...]:
         return (
             patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_author", return_value=author),
@@ -227,6 +252,69 @@ class TestProvenanceGateUnit(TestCase):
             patch.object(author_trust, "repo_is_internal", return_value=True),
         ):
             assert_merge_provenance_trusted(slug="souliane/teatree", pr_id=1)
+
+    def test_stored_gitlab_url_reaches_internal_repo_decision(self) -> None:
+        url = "https://gitlab.example.test/acme/widget/-/merge_requests/7"
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        PullRequest.objects.create(ticket=ticket, url=url, repo="acme/widget", iid="7")
+        with (
+            self._private_repos(["gitlab.example.test/acme/widget"]),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_author", return_value="external"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
+        ):
+            assert_merge_provenance_trusted(slug="acme/widget", pr_id=7, host_kind="gitlab")
+
+    def test_stored_gitlab_url_does_not_match_private_repo_on_another_host(self) -> None:
+        url = "https://gitlab.example.test/acme/widget/-/merge_requests/7"
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        PullRequest.objects.create(ticket=ticket, url=url, repo="acme/widget", iid="7")
+        with (
+            self._private_repos(["gitlab.com/acme/widget"]),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_author", return_value="external"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
+            pytest.raises(MergePreconditionError, match="not trusted to auto-merge"),
+        ):
+            assert_merge_provenance_trusted(slug="acme/widget", pr_id=7, host_kind="gitlab")
+
+    def test_no_recorded_gitlab_url_does_not_make_repo_internal(self) -> None:
+        with (
+            self._private_repos(["gitlab.example.test/acme/widget"]),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_author", return_value="external"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
+            pytest.raises(MergePreconditionError, match="not trusted to auto-merge"),
+        ):
+            assert_merge_provenance_trusted(slug="acme/widget", pr_id=7, host_kind="gitlab")
+
+    def test_other_forge_record_cannot_make_repo_internal(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree")
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://github.com/acme/widget/pull/7",
+            repo="acme/widget",
+            iid="7",
+        )
+        with (
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_author", return_value="external"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
+            patch.object(author_trust, "repo_is_internal", side_effect=lambda _slug, *, pr_url: bool(pr_url)) as probe,
+            pytest.raises(MergePreconditionError, match="not trusted to auto-merge"),
+        ):
+            assert_merge_provenance_trusted(slug="acme/widget", pr_id=7, host_kind="gitlab")
+        probe.assert_called_once_with("acme/widget", pr_url="")
+
+    def test_ticket_recorded_url_reaches_internal_repo_decision(self) -> None:
+        url = "https://gitlab.example.test/acme/widget/-/merge_requests/7"
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            extra={"pr_urls": ["https://github.com/acme/widget/pull/7"]},
+        )
+        Ticket.objects.create(overlay="t3-teatree", extra={"pr_url_by_branch": {"feature": url}})
+        with (
+            self._private_repos(["gitlab.example.test/acme/widget"]),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_author", return_value="external"),
+            patch("teatree.core.merge.ci_rollup.CodeHostQuery.pr_same_repo", return_value=True),
+        ):
+            assert_merge_provenance_trusted(slug="acme/widget", pr_id=7, host_kind="gitlab")
 
     def test_unknown_provenance_falls_back_and_denies_untrusted(self) -> None:
         p1, p2, p3 = self._patches(author="evilhacker", same_repo=None)

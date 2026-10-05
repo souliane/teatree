@@ -2,7 +2,8 @@
 
 Integration-first: drives the real command via ``call_command`` and asserts the
 resolver's own view of the result, because "the slot stops being delivered" is the
-behaviour, not "a row was written".
+behaviour, not "a row was written". The hooks deliver what is published, so the
+publication is asserted too.
 """
 
 import io
@@ -11,6 +12,7 @@ import django.test
 import pytest
 from django.core.management import call_command
 
+from teatree import standing_directives_cache
 from teatree.core.models import Prompt
 from teatree.loop.standing_directives import STANDING_DIRECTIVES, override_prompt_name, resolve_standing_directives
 
@@ -21,6 +23,32 @@ def _run(*args: str, **kwargs: object) -> None:
 
 def _resolved_slots() -> list[str]:
     return [directive.slot_id for directive in resolve_standing_directives()]
+
+
+def _published_slots() -> list[str] | None:
+    published = standing_directives_cache.read()
+    return None if published is None else [directive["slot_id"] for directive in published]
+
+
+class TestTheSwitchReachesTheHooks(django.test.TestCase):
+    def test_a_disable_is_published_at_once(self) -> None:
+        _run("disable", "standing-pr-board")
+
+        assert _published_slots() == ["standing-golden-rule", "standing-todo-consolidate"]
+
+    def test_an_enable_is_published_at_once(self) -> None:
+        _run("disable", all_slots=True)
+        assert _published_slots() == []
+
+        _run("enable", "standing-golden-rule")
+
+        assert _published_slots() == ["standing-golden-rule"]
+
+    def test_a_refused_switch_publishes_nothing(self) -> None:
+        with pytest.raises(SystemExit):
+            call_command("loop_directive_set", "disable", "standing-nope", stderr=io.StringIO())
+
+        assert _published_slots() is None
 
 
 class TestDisable(django.test.TestCase):

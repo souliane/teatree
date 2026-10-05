@@ -230,13 +230,16 @@ class TestPreCompactSessionStartRoundTrip:
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
 
 
-class TestMainSessionRetroPathUnaffected:
-    def test_lifecycle_skill_session_still_gets_retro_directive(self, capsys: pytest.CaptureFixture[str]) -> None:
+class TestTheCompactionInstructionsStayTheOwners:
+    """Claude Code appends PreCompact stdout to the summarizer's compaction instructions, so teatree writes none."""
+
+    def test_a_lifecycle_session_adds_nothing_to_the_compaction_and_still_gets_its_snapshot(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         session_id = "main-session"
         (router.STATE_DIR / f"{session_id}.skills").write_text("t3:code\n", encoding="utf-8")
 
         handle_pre_compact({"session_id": session_id})
 
-        output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
-        assert "/t3:retro" in output["additionalContext"]
+        assert capsys.readouterr().out == ""
+        assert _snapshot_for(session_id).is_file()

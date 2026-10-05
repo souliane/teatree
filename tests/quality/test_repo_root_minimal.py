@@ -48,7 +48,6 @@ ALLOWED_ROOT = frozenset(
         ".gitignore",
         ".gitattributes",  # `generated` merge driver for generated docs (souliane/teatree#3582)
         ".dockerignore",  # headless-deploy build-context ignore (deploy/README.md is the SOT)
-        ".gitlab-ci.yml",
         "requirements.audit.ignore",  # per-CVE pip-audit allowlist (CI security gate)
         ".github",
         ".editorconfig",

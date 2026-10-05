@@ -76,6 +76,9 @@ _SYNTH_PROMPT_TEMPLATE = (
     '      {{"tool_call_succeeded": "Bash", "args.command": "~ \\"pytest\\"", '
     '"result": "contains \\"passed\\"", '
     '"before_first": "Bash.command ~ \\"git push\\""}}\n'
+    "  - tool_call_count — count matching commands before editing outside round files:\n"
+    '      {{"tool_call_count": "Bash", "args.command": "~ \\"git push\\"", '
+    '"equals": 1, "until_edit_outside": ["src/app.py"]}}\n'
     "  - no_tool_call_matching — a single inner mapping holding EXACTLY ONE "
     "`<tool>.<arg>` key (the key MUST contain a dot):\n"
     '      {{"no_tool_call_matching": {{"Bash.command": "~ \\"rm -rf\\""}}}}\n'
@@ -157,6 +160,7 @@ def _synth_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOptions"
     """
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
+    from teatree.agents.claude_cli_spawn import with_account_skills_off  # noqa: PLC0415 — deferred: heavy SDK dep
     from teatree.agents.compaction_guard import with_compaction_off  # noqa: PLC0415 — deferred: optional heavy SDK dep
 
     options = ClaudeAgentOptions(
@@ -168,7 +172,7 @@ def _synth_options(*, env: dict[str, str] | None = None) -> "ClaudeAgentOptions"
     )
     if env is not None:
         options.env = env
-    return with_compaction_off(options)
+    return with_account_skills_off(with_compaction_off(options))
 
 
 async def _collect_synth_turn(prompt: str, *, env: dict[str, str] | None = None) -> str:

@@ -176,7 +176,7 @@ class NoConfiguredSecretReachesTheLiveResponseTestCase(TestCase):
     """The live page renders dispatch facts, never an attempt's free-text error body."""
 
     def setUp(self) -> None:
-        env = patch.dict(os.environ, {"T3_BANNED_TERMS": _SECRET})
+        env = patch.dict(os.environ, {"TEATREE_TERM_REGISTRY": '{"leak":[],"prose_collider":["' + _SECRET + '"]}'})
         env.start()
         self.addCleanup(env.stop)
 

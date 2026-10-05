@@ -1,15 +1,11 @@
 """Identity-group dedup on the ticket-disposition scanner (#1015).
 
-The legacy ``user_identity_aliases`` is a flat list — it conflates all
-configured handles into one set, which works when only one human is on the
-overlay. ``identity_alias_groups`` is the explicit grouped shape: each
+``identity_alias_groups`` is the grouped shape: each
 inner tuple is one human's aliases. A reassignment is suppressed when some
 group contains both ``old_owner`` and every ``new_owner`` — i.e. one human
 just swapped between their own handles. Cross-group reassigns (human A's
 handle → human B's handle) still surface.
 
-Backwards compatibility: a non-empty ``user_identity_aliases`` is treated
-as one group, so existing config stays valid.
 """
 
 from dataclasses import dataclass, field
@@ -84,14 +80,12 @@ class TicketDispositionIdentityGroupTests(TestCase):
         host: _Host,
         *,
         groups: tuple[tuple[str, ...], ...] = GROUPS,
-        flat_aliases: tuple[str, ...] = (),
     ) -> TicketDispositionScanner:
         return TicketDispositionScanner(
             host=host,
             ready_labels=("ready",),
             overlay_name=self.OVERLAY,
             identity_alias_groups=groups,
-            user_identity_aliases=flat_aliases,
         )
 
     def _ticket(self) -> Ticket:
@@ -156,8 +150,7 @@ class TicketDispositionIdentityGroupTests(TestCase):
         signal = next(s for s in self._scanner(host).scan() if s.payload["reason"] == "unassigned")
         assert signal.payload["new_owners"] == ["souliane", "stranger"]
 
-    def test_flat_aliases_treated_as_one_group_when_no_groups_set(self) -> None:
-        """Legacy flat-list config still suppresses intra-list reassigns."""
+    def test_empty_groups_do_not_suppress_a_reassignment(self) -> None:
         self._ticket()
         host = _Host(
             user="acme-gh",
@@ -167,10 +160,9 @@ class TicketDispositionIdentityGroupTests(TestCase):
             host=host,
             ready_labels=("ready",),
             overlay_name=self.OVERLAY,
-            user_identity_aliases=("acme-gh", "souliane"),
         )
         signals = scanner.scan()
-        assert [s.payload["reason"] for s in signals if s.payload["reason"] == "unassigned"] == []
+        assert [s.payload["reason"] for s in signals if s.payload["reason"] == "unassigned"] == ["unassigned"]
 
     def test_chained_reassignments_only_emit_cross_group_handoff(self) -> None:
         """The brief's scenario: only the cross-group handoff emits.
@@ -204,12 +196,8 @@ class TicketDispositionIdentityGroupTests(TestCase):
         assert emit[0].payload["old_owner"] == "souliane"
         assert emit[0].payload["new_owners"] == ["stranger"]
 
-    def test_groups_override_flat_when_both_are_set(self) -> None:
-        """Explicit groups take precedence; flat aliases are ignored if groups present."""
+    def test_cross_group_reassignment_is_reported(self) -> None:
         self._ticket()
-        # The flat list would mark `acme-gh -> stranger` as a self-handoff,
-        # but the explicit group does not include `stranger`, so the signal
-        # must surface.
         host = _Host(
             user="acme-gh",
             issues_by_url={self.URL: self._issue(assignees=[{"username": "stranger"}])},
@@ -219,7 +207,6 @@ class TicketDispositionIdentityGroupTests(TestCase):
             ready_labels=("ready",),
             overlay_name=self.OVERLAY,
             identity_alias_groups=(("acme-gh", "souliane"),),
-            user_identity_aliases=("acme-gh", "souliane", "stranger"),
         )
         signal = next(s for s in scanner.scan() if s.payload["reason"] == "unassigned")
         assert signal.payload["new_owners"] == ["stranger"]

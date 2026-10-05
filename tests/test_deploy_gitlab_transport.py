@@ -7,8 +7,8 @@ repo at all, while the same clone from the worker's own loop succeeded:
     operator's private key inside a container that already holds the docker socket), so a
     hard-coded ``git@gitlab.com:`` remote dies on ``cannot run ssh``; and
 * ``GITLAB_TOKEN`` is exported by ``deploy/entrypoint.sh`` into the ROLE's process tree
-    only, so the baked https credential helper answers an exec'd process with an empty
-    password. The entrypoint's mitigation for that — persisting the login into ``glab``'s
+    only, so the baked https credential helper has no token to answer an exec'd process
+    with. The entrypoint's mitigation for that — persisting the login into ``glab``'s
     config — is dead code, because ``glab`` is deliberately absent from the image.
 
 The measured consequence was not a loud failure: a tool four layers down reported its
@@ -54,15 +54,12 @@ class TestImageRewritesSshRemotesToHttps:
         assert "credential.https://gitlab.com.helper" in dockerfile
 
 
-class TestTheHelperAnswersEvenWithoutAToken:
-    """An unset token does NOT make the helper stand down — it authenticates as nobody.
+class TestTheHelperStandsDownWithoutAToken:
+    """With no token the helper must answer nothing, never a blank password.
 
-    The comment above the ``RUN`` used to claim the helper "emits nothing and git falls
-    through exactly as if it were not registered". Measured, an unset ``GITLAB_TOKEN``
-    yields the same 26 bytes as an empty one — ``username=oauth2`` with an empty
-    ``password=`` — which GitLab answers with ``HTTP Basic: Access denied``. A reader who
-    believed the fall-through would look for the missing helper rather than the missing
-    token, which is the whole cost of the wrong claim.
+    A blank ``password=`` is answered by GitLab with ``HTTP Basic: Access denied``, which
+    reads as a missing branch. Answering nothing leaves git to report the missing
+    credential itself (``could not read Username``), which names the actual fault.
     """
 
     HELPER_RE = re.compile(r"'!(f\(\) \{.*?\}; f)'", re.DOTALL)
@@ -79,35 +76,21 @@ class TestTheHelperAnswersEvenWithoutAToken:
             ["sh", "-c", f"{helper_body} get"],  # noqa: S607 — `sh` from PATH is the helper's own interpreter
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
             env=env,
             timeout=30,
         ).stdout
 
-    def test_an_unset_token_still_answers_with_an_empty_password(self, helper_body: str) -> None:
-        answer = self._answer(helper_body, env={"PATH": os.environ.get("PATH", "")})
+    def test_an_unset_token_answers_nothing(self, helper_body: str) -> None:
+        assert self._answer(helper_body, env={"PATH": os.environ.get("PATH", "")}) == ""
 
-        assert answer == "username=oauth2\npassword=\n", repr(answer)
+    def test_an_empty_token_answers_nothing(self, helper_body: str) -> None:
+        assert self._answer(helper_body, env={"PATH": os.environ.get("PATH", ""), "GITLAB_TOKEN": ""}) == ""
 
-    def test_the_unset_answer_is_byte_identical_to_the_empty_one(self, helper_body: str) -> None:
-        """So no caller downstream can tell "no credential" from "a blank credential"."""
-        base = {"PATH": os.environ.get("PATH", "")}
-
-        assert self._answer(helper_body, env=base) == self._answer(helper_body, env={**base, "GITLAB_TOKEN": ""})
-
-    def test_a_present_token_is_what_actually_changes_the_answer(self, helper_body: str) -> None:
-        """The control: the helper is not simply inert."""
-        base = {"PATH": os.environ.get("PATH", "")}
-        answer = self._answer(helper_body, env={**base, "GITLAB_TOKEN": "a-value"})
+    def test_a_present_token_is_answered_as_the_oauth2_password(self, helper_body: str) -> None:
+        answer = self._answer(helper_body, env={"PATH": os.environ.get("PATH", ""), "GITLAB_TOKEN": "a-value"})
 
         assert answer == "username=oauth2\npassword=a-value\n", repr(answer)
-
-    def test_the_comment_does_not_promise_a_fall_through(self) -> None:
-        """The prose is what a reader debugging `Access denied` consults first."""
-        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
-
-        assert "emits nothing" not in dockerfile, "the helper emits 26 bytes with no token — it never stands down"
-        assert "falls through" not in dockerfile
 
 
 class TestExecVenueResolvesTheToken:

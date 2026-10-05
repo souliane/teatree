@@ -3,7 +3,7 @@
 ``requires`` is enforced (pulled into the transitive load chain); ``companions``
 is only surfaced. These pin that distinction end-to-end: at the resolver
 (:func:`resolve_requires` vs :func:`companion_suggestions`) and at the loading
-policy (``select_for_prompt_hook`` returns companions in ``companion_suggestions``,
+policy (``select_for_session_start`` returns companions in ``companion_suggestions``,
 never in the demanded ``skills``).
 """
 
@@ -52,7 +52,7 @@ class TestPromptHookSurfacesCompanionsSoftly:
     def test_companion_is_surfaced_but_not_a_hard_demand(self, tmp_path: Path) -> None:
         (tmp_path / "manage.py").write_text("# django project\n", encoding="utf-8")
         index = [{"skill": "ac-django", "requires": [], "companions": ["ac-python"]}]
-        result = SkillLoadingPolicy().select_for_prompt_hook(
+        result = SkillLoadingPolicy().select_for_session_start(
             cwd=tmp_path,
             overlay_skill_metadata={},
             loaded_skills=set(),

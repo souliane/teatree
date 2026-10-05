@@ -21,14 +21,15 @@ the acquire race's winner count jumps from 1 to N — the same red the local-onl
 counter-proof already pins.
 
 Backend under test: a real ``git init --bare`` origin on ``tmp_path``, real
-``git`` subprocesses, real ``multiprocessing`` (fork context, so the guarantee
-holds identically on the Linux/CI fork default and a local macOS run).
+``git`` subprocesses, real ``multiprocessing`` (fork on Linux; spawn on macOS,
+where forking a pytest process with native threads can crash SQLite).
 """
 
 import json
 import multiprocessing
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -36,7 +37,7 @@ import pytest
 
 from teatree.core.fleet import claim as fleet_claim
 
-_CTX = multiprocessing.get_context("fork")
+_CTX = multiprocessing.get_context("spawn" if sys.platform == "darwin" else "fork")
 _WORK_KEY = "https://github.com/souliane/teatree/issues/4242"
 _GATE_TIMEOUT_S = 30.0
 
@@ -281,3 +282,20 @@ def test_chaos_dead_holder_is_stolen_after_ttl_and_revived_original_is_fenced(tm
     beat = fleet_claim.heartbeat(stolen, repo=str(survivor), remote="origin", now=2002.0)
     assert isinstance(beat, fleet_claim.Claim)
     assert fleet_claim.is_held_by_me(_WORK_KEY, beat, repo=str(survivor), remote="origin")
+
+
+def test_refused_steal_push_is_an_infra_fault_not_a_contended_loss(tmp_path: Path) -> None:
+    bare = tmp_path / "origin.git"
+    _init_bare(bare)
+    holder = tmp_path / "holder"
+    stealer = tmp_path / "stealer"
+    _init_client(holder, bare)
+    _init_client(stealer, bare)
+    claimed = fleet_claim.acquire(_WORK_KEY, repo=str(holder), now=1000.0, ttl_seconds=10.0)
+    assert claimed is not None
+    hook = bare / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    with pytest.raises(fleet_claim.FleetClaimUnavailableError, match="ref is unchanged"):
+        fleet_claim.steal_if_expired(_WORK_KEY, repo=str(stealer), now=2000.0)

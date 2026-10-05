@@ -27,7 +27,7 @@ From "code is done" to "PR is merged."
 
 When the orchestrator dispatches a `t3:shipper` sub-agent, the brief MUST carry the **exact MR/PR title** and a **description skeleton** — never leave the subject for the sub-agent to improvise. The title format is gated (the active overlay's `validate_pr` rejects a non-conforming first line at push), so an improvised subject is the real cause of off-target titles and failed pre-push validation: the sub-agent guesses a subject, it fails the gate, and the run burns a retry. Compose the title in the orchestrator from the ticket data and hand it over verbatim.
 
-- **Title** — supply the full first line in the active overlay's format: `type(scope): description [flag] (TICKET_URL)`. Use only the overlay's allowed `type` values and include the trailing reference only where the overlay's `require_ticket` demands it (§ 0); the orchestrator reads `TICKET_URL` from `.t3-env.cache`, never the sub-agent.
+- **Title** — supply the full first line in the active overlay's format: `type(scope): description [flag] (TICKET_URL)`. Use only the overlay's allowed `type` values and include the trailing reference when the overlay's `validate_pr` requires it; the orchestrator reads `TICKET_URL` from `.t3-env.cache`, never the sub-agent.
 - **Description skeleton** — supply the headers the overlay expects (e.g. What / Why, plus `Open questions & assumptions`) pre-filled with the ticket's intent, so the sub-agent fills prose, not structure.
 - The sub-agent may refine wording but MUST NOT change the `type(scope)`, the trailing reference, or invent a new subject.
 
@@ -37,20 +37,13 @@ When the orchestrator dispatches a `t3:shipper` sub-agent, the brief MUST carry 
 
 ## Workflow
 
-### 0. Ticket-Required Overlay Gate
+### 0. Ticket Reference
 
-When the active overlay has `require_ticket = True`, refuse to commit or push without a ticket reference.
-
-- **Detection:** check `overlay.config.require_ticket`. Overlays that dogfood their own workflow enable this flag.
-- **Every commit must include** an issue reference. Default to a ticket-URL parenthetical at the end of the subject line (`type(scope): description (TICKET_URL)`) — that is the linking mechanism the active overlay's `OverlayMetadata.validate_pr(title, description)` enforces (surfaced as the `t3 tool validate-mr` CLI command and the PreToolUse hook in § "PR / MR Creation"). When the active overlay sets `mr_close_ticket = True` (the teatree overlay does), the ship path keeps `Closes/Fixes #<number>` so a merged PR auto-closes its issue **by default** — `should_close_ticket` rewrites it to `Relates to #N` only when `Ticket.extra['more_prs_coming']` is set (a declared partial, or an umbrella with remaining tracked scope). Overlays that leave `mr_close_ticket = False` (the class default) never auto-close.
-- **If no ticket context exists:** ask "Which ticket is this for?" Do not proceed without a ticket reference. The full procedure for resolving a missing reference — and when you may create one vs. when you must ask — is the **Missing Issue Reference Policy** in § 0a below.
-- **Exception:** commits from `/t3:retro` (format `fix(<skill>): ...`) are exempt — retro findings are small tactical fixes committed directly on the current branch.
+Use the active overlay's `validate_pr(title, description)` policy for title and ticket-reference requirements (surfaced as `t3 tool validate-mr`). When `mr_close_ticket = True`, the ship path keeps `Closes/Fixes #<number>` unless `Ticket.extra['more_prs_coming']` asks for `Relates to #N`. Resolve a missing reference with the policy in § 0a below.
 
 ### 0a. Missing Issue Reference Policy (Non-Negotiable)
 
-When a commit or MR/PR needs an issue/ticket reference and you have none in hand, **never improvise** — do not invent a dummy/placeholder reference, and do not auto-file an issue on a tracker you do not own. Follow this two-step policy. It is encoded in the DB-home `missing_issue_ref_policy` setting (set it with the `mcp__teatree__config_setting_set` MCP tool, or `t3 <overlay> config_setting set missing_issue_ref_policy <value>` when the MCP server isn't connected, `--overlay <name>` for the per-overlay scope; `T3_MISSING_ISSUE_POLICY` env var) and resolved deterministically by `teatree.missing_issue_policy.resolve_missing_issue_verdict(colleague_facing=…, existing_found=…)`; this prose is the agent-facing contract the setting enforces.
-
-1. **Find the ORIGINAL existing issue first (always, every policy tier).** Before anything else, look for the issue that already covers this work — the one that introduced the bug, or the one that left the scope unimplemented. Search the repo's issues (open **and** closed) and the introducing commit's linked issue:
+1. **Find the original existing issue first.** Before anything else, look for the issue that already covers this work — the one that introduced the bug, or the one that left the scope unimplemented. Search the repo's issues (open **and** closed) and the introducing commit's linked issue:
 
    ```bash
    git log -S '<the buggy line/symbol>' --oneline       # find the introducing commit
@@ -65,10 +58,10 @@ When a commit or MR/PR needs an issue/ticket reference and you have none in hand
 
 2. **If no existing issue is found, the fallback depends on the repo class** (the same colleague-facing-vs-own distinction the [`../rules/SKILL.md`](../rules/SKILL.md) § "Three Orthogonal Repo Axes" tracks):
 
-   - **Colleague-facing / external repos** (a shared product repo of an org — one the user does **not** own): under the default policy you must **ASK the user** for the reference (via `AskUserQuestion`). NEVER auto-create an issue and NEVER use a dummy/placeholder reference on a tracker the user does not control.
+   - **Colleague-facing / external repos** (a shared product repo of an org — one the user does **not** own): **ASK the user** for the reference (via `AskUserQuestion`). NEVER auto-create an issue and NEVER use a dummy/placeholder reference on a tracker the user does not control.
    - **The user's own repos** (teatree itself, the user's solo overlay repos): creating an issue is allowed without asking — the user owns the tracker, so a created issue is self-bookkeeping, not noise on a colleague's surface.
 
-**Default (`find_existing_then_ask`):** find-existing-first, then ask on colleague repos / create on own repos, never a dummy. `create` and `dummy` are **opt-in only** (`config_setting set missing_issue_ref_policy create` / `dummy`, or with `--overlay <name>`) — they authorise auto-create / a placeholder reference even on a colleague-facing repo, and are OFF by default. When the resolver returns `ASK_USER`, surface the blocker and wait — do not fill the gap yourself.
+Find the existing issue first, then ask on a colleague-facing repo or create on the user's own repo. Never use a dummy reference. When you need to ask, surface the blocker and wait.
 
 ### 1. Commit
 
@@ -130,7 +123,7 @@ prek keeps every patch it writes rather than deleting it on restore, so
 `git apply ~/.cache/prek/patches/<ts>-<pid>.patch`, newest timestamp first.
 
 - **Carry an `Open questions & assumptions` section in the commit message body** (one bullet per item, status `decided-by-user` / `assumed` / `open`; `- none` when there is nothing to flag). Same content also goes in the PR description — see § 5 "Open Questions & Assumptions" for the canonical rule.
-- **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) **when the active overlay has `require_ticket = True`** (see § 0). Overlays with the default `require_ticket = False` (teatree itself) do NOT need the URL — a plain `type(scope): description` subject is correct and the overlay's `validate_pr` (the base-class no-op for teatree) will not reject it. With `mr_close_ticket = True` the ship path keeps a `Closes/Fixes #<number>` body keyword by default (the issue auto-closes on merge); set `Ticket.extra['more_prs_coming']` to suppress that for a declared partial or an umbrella with remaining scope (`should_close_ticket` then emits `Relates to #N`).
+- **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) when the active overlay's `validate_pr` requires it. With `mr_close_ticket = True`, the ship path keeps a `Closes/Fixes #<number>` body keyword by default; set `Ticket.extra['more_prs_coming']` to emit `Relates to #N` for a declared partial.
 - Read `TICKET_URL` from `.t3-env.cache` (the per-worktree symlink to `.t3-cache/.t3-env.cache`) — never construct it from the branch name.
 - **No commit-type bypass for the quality gates.** The teatree `quality-gates` and `module-health` hooks have no `relax:` escape hatch (souliane/teatree#525). When the gate fires, fix the architecture: split the file by concern, refactor module-level functions onto a class, replace `dict[str, object]` with a typed dataclass, or delegate the suppressed import/call to a module the hook already exempts (`tests/`, `scripts/hooks/`, `e2e/`, `skills/`, `docs/`). The legitimate house pattern around `subprocess` (`# noqa: S404` on the import, `# noqa: S603` on each call) belongs in a CLI helper module that already lives under one of those exempt paths — not in newly suppressed source files.
 
@@ -262,7 +255,7 @@ A bare `git push` is fine only in a venue whose credential helper you have alrea
 
 **A non-zero `t3 push` means NOT pushed — never report a branch as delivered on an exit code you did not read.** Success means the remote itself was read back (`git ls-remote`) and holds the branch at the local tip; an rc=0 `git push` is a claim, not delivery ([#4088](https://github.com/souliane/teatree/issues/4088)). Each failure kind carries its own exit status — `t3 push --help` lists them, `--json` carries `failure` and `exit_code` — so the fix is named rather than guessed: a refusing gate, a missing credential and a stale branch are three different repairs ([#4076](https://github.com/souliane/teatree/issues/4076)).
 
-**A public-repo privacy refusal is judged per commit, never on the tip.** The `refuse-public-push-with-leak` pre-push gate scans every commit the remote does not have yet — each one's own patch and message — so a fix-up commit that deletes or annotates the flagged line does not clear it; the refusal labels such a finding `(earlier than the pushed tip)`. Cut a fresh branch from the remote's tip and re-create the unpushed commits on it with generic placeholders (one combined commit is fine): that fast-forwards the remote, so nothing pushed or reviewed is rewritten. A deliberate fake value (a test-fixture email) carries the inline `privacy-scan:allow <reason>` marker in the commit that introduces it.
+**A public-repo privacy refusal is judged per commit, never on the tip.** Full text: `skills/ship/references/merge-and-history-mechanics.md`.
 
 ### 4a1. A Hook-Opened PR Must Be on Its Ticket's Ledger (Non-Negotiable)
 
@@ -323,6 +316,8 @@ Agent(
 
 ### 5. Create MR/PR
 
+Budget an MR for one concern and about 600 net lines. Split larger work by concern before opening MRs; state the net line count when requesting review.
+
 **`t3 <overlay> pr create` is mandatory (Non-Negotiable).** Raw `gh pr create` / `glab mr create` is forbidden whenever the active overlay exposes a `pr create` subcommand. The CLI is not a convenience wrapper — it is the **only** path that runs the shipping gate (§ 4b: testing + reviewing phases visited), the visual-QA gate (§ 4c), the title/description format validator, the ticket URL injection, the assignee defaults, and the fork-vs-upstream remote resolution. Bypassing it ships PRs that look published but have skipped every guard — exactly the failure mode that produced souliane/teatree#545 (PR pushed via `gh pr create`, shipping gate never ran, six rounds of follow-up review fixes).
 
 **Allowed exceptions (must hold all):**
@@ -331,11 +326,13 @@ Agent(
 2. You are fixing the `t3 <overlay> pr create` command itself and need a one-shot bypass to land the fix.
 3. You explicitly state the bypass and the reason in the response, so the user can stop you if the assumption is wrong.
 
+None of these exceptions covers a repo whose MRs are authored under a non-owner credential: a raw `gh pr create` / `glab mr create` writes as the owner, whom the forge then bars from approving the MR. Use `mcp__teatree__pr_create`, or `t3 <overlay> pr create`; both resolve the declared author.
+
 If `t3 <overlay> pr create` errors, **fix the error** (create the missing session, run the reviewer, set the missing env var) — do not work around it with raw `gh`/`glab`. Treating the CLI as optional is the same anti-pattern as "Fix the CLI, Never Work Around It" in [`../workspace/SKILL.md`](../workspace/SKILL.md), applied to the shipping flow.
 
 **Never hand-name a `/tmp` PR-body path — the CLI owns the temp file (Non-Negotiable).** The PR/MR body flows through `t3 <overlay> pr create` as *content*; the CLI writes it to a unique per-invocation temp file it owns (`teatree.utils.pr_body.pr_body_tempfile` → `gh pr create --body-file`). Do **not** write a shared, fixed path like `/tmp/pr-body.md` / `/tmp/pr_body.md` — two concurrent shippers race that path, one clobbers the other's body mid-create (re-injecting a default AI-authorship trailer that then trips the banned-terms gate). And never `cp` a body file **into the worktree** (`cp /tmp/pr-body.md pr-body.md`) — a `pr-body.*` / `pr_body.*` file staged in the repo is committable junk, refused by the `check_pr_body_stray` pre-commit gate. When a scratch body file is genuinely needed, mint it with `mktemp` (or the `pr_body_tempfile` helper); never a path you name yourself.
 
-**If the PR/MR needs an issue reference and you have none, do NOT improvise a dummy ref or auto-file on a tracker you do not own** — follow § 0a "Missing Issue Reference Policy": recover the original existing issue first, then ask on a colleague-facing repo (or create on the user's own repo) per the resolved `missing_issue_ref_policy`.
+**If the PR/MR needs an issue reference and you have none, do NOT improvise a dummy ref or auto-file on a tracker you do not own** — follow § 0a "Missing Issue Reference Policy": recover the original existing issue first, then ask on a colleague-facing repo (or create on the user's own repo).
 
 #### Scope-Match Gate Before `Closes/Fixes #N` (Non-Negotiable)
 
@@ -355,11 +352,11 @@ t3 <overlay> config_setting set ban_close_trailers_on_namespaces '["my-group/*"]
 
 When the target PR/MR repo matches one of these fnmatch patterns and the body still carries a `Closes|Fixes|Resolves` trailer (the `part of` and full-URL variants too), `ShipExecutor._build_pr_spec` silently strips those lines before opening the PR — the publish proceeds, the issue does not auto-close on merge. Default empty list keeps legacy behaviour. This is the user-scoped sibling of the overlay-scoped `forbid_close_keywords` gate (#1012) which refuses the publish entirely.
 
-**STOP — resolve the ticket URL before typing the glab command.**
+**STOP — resolve the ticket URL before creating the MR.**
 
-Before composing any `glab mr create` or `glab mr update` call, answer these two questions:
+Before calling `mcp__teatree__pr_create` (or `t3 <overlay> pr create`) or composing a `glab mr create` or `glab mr update` call, answer these two questions:
 
-1. **What is the ticket URL?** Find the GitLab issue/work item URL from context. If none exists, create one now (`glab issue create`) and copy the URL. Do NOT proceed without a URL.
+1. **What is the ticket URL?** Find the GitLab issue/work item URL from context. If none exists, create one now through `mcp__teatree__gitlab_issue_create` (never a raw `glab issue create` — it skips the #162 dedupe, and the ticket you are about to open a PR against may already exist) and copy the URL. Do NOT proceed without a URL.
 2. **Is the title in the exact format?** `type(scope): description (ticket_url)` — both `--title` and the first line of `--description` must be identical and match this format exactly.
 
 This gate exists because the overlay's own CI MR-title validator (the validating overlay mirrors the same `validate_pr` rules in its `release_notes/validate_mr.py`, packaged as `src/<overlay>/mr_validation.py`) fails on every PR that skips the ticket URL, causing a red pipeline that requires a separate fix push. The CI validator is the safety net — not the first line of defence. **Always resolve the URL before creating the PR.**

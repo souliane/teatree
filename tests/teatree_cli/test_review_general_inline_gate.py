@@ -202,7 +202,7 @@ class TestGeneralNoteMultiFindingGate:
     def test_post_draft_note_general_with_multi_cite_is_refused(self) -> None:
         """The gate also fires on ``post_draft_note`` (the #72 sibling path).
 
-        ``post-draft-note --general`` is the path the #72 validator governs
+        ``post-comment`` is the path the #72 validator governs
         for the inline-vs-general split; this gate adds the multi-finding
         refusal on the same general path.
         """
@@ -280,7 +280,7 @@ _runner = CliRunner()
 class TestForceGeneralReachesGateViaCLI:
     """The ``--force-general`` flag is plumbed through the typer commands.
 
-    Drives the full ``t3 review post-comment`` / ``post-draft-note`` typer
+    Drives the full ``t3 review post-comment`` typer
     surface (not just the service method) so a regression that drops the
     flag from the CLI wiring turns this red. The GitLab token + API are
     stubbed so the command runs end to end without network.
@@ -320,14 +320,5 @@ class TestForceGeneralReachesGateViaCLI:
     def test_post_comment_force_general_proceeds_via_cli(self) -> None:
         """``--force-general`` on ``post-comment`` lets the multi-cite note proceed."""
         result = _runner.invoke(app, ["review", "post-comment", "org/repo", "7", "-m", self._MULTI, "--force-general"])
-        assert result.exit_code == 0, result.output
-        assert any(c[0] == "post_json" for c in self.stub.calls), "POST must fire with --force-general"
-
-    def test_post_draft_note_force_general_proceeds_via_cli(self) -> None:
-        """``--force-general`` on ``post-draft-note --general`` lets the multi-cite note proceed."""
-        result = _runner.invoke(
-            app,
-            ["review", "post-draft-note", "org/repo", "7", self._MULTI, "--general", "--force-general"],
-        )
         assert result.exit_code == 0, result.output
         assert any(c[0] == "post_json" for c in self.stub.calls), "POST must fire with --force-general"

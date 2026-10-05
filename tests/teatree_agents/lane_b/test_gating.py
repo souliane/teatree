@@ -6,19 +6,13 @@ from types import SimpleNamespace
 import pytest
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, ToolResultBlock
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ApprovalRequired, ModelRetry, UnexpectedModelBehavior
+from pydantic_ai.exceptions import ModelRetry, UnexpectedModelBehavior
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets.function import FunctionToolset
 
 from teatree.agents.harness import PydanticAiHarness, PydanticAiHarnessSession
-from teatree.agents.lane_b.gating import (
-    _MAX_TRACKED_RUNS,
-    HardDenyToolset,
-    hard_deny_reason,
-    make_soft_gate_predicate,
-    raise_if_soft_gated,
-)
+from teatree.agents.lane_b.gating import _MAX_TRACKED_RUNS, HardDenyToolset, hard_deny_reason, make_soft_gate_predicate
 from teatree.hooks import _repo_visibility
 from tests._git_repo import make_git_repo, run_git
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
@@ -332,13 +326,6 @@ class TestSoftGate:
         predicate = make_soft_gate_predicate(frozenset({"Bash"}))
         assert predicate(None, _def("Bash"), {}) is True
         assert predicate(None, _def("Read"), {}) is False
-
-    def test_raise_if_soft_gated_raises_approval_required(self) -> None:
-        with pytest.raises(ApprovalRequired):
-            raise_if_soft_gated("Bash", frozenset({"Bash"}))
-
-    def test_ungated_name_does_not_raise(self) -> None:
-        raise_if_soft_gated("Read", frozenset({"Bash"}))  # must not raise
 
 
 def _def(name: str) -> ToolDefinition:

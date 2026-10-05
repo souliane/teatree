@@ -1,7 +1,7 @@
 """``manage.py directive`` (north-star PR-6 + PR-7): intake, drive, and inspection.
 
 ``capture`` records a directive verbatim as a CAPTURED row — always available (the
-explicit operator path is not gated by the dark loop flag). ``list`` / ``status`` /
+explicit operator path is always available). ``list`` / ``status`` /
 ``history`` are read-only inspection. ``tick`` is the off-live-tick cron (SKIPs while
 the ``directive_loop`` Loop row is disabled — the shipped state). ``resolve-revert``
 closes a REVERT_PENDING directive to terminal REVERTED with the config rolled back.
@@ -92,17 +92,6 @@ class TestTickCommand(TestCase):
         out = StringIO()
         call_command("directive", "tick", stdout=out)
         assert "SKIP" in out.getvalue()
-
-    def test_a_guard_refusal_prints_warn_not_ok(self) -> None:
-        # #3643: a refused tick is a distinct outcome an operator must be able to see.
-        # The master flag is turned OFF to produce a refusal, since #3895 ships it ON.
-        seed_default_loops_and_prompts()
-        Loop.objects.set_manual_override(DIRECTIVE_LOOP_NAME, runs=True, reason="pinned by the test")
-        ConfigSetting.objects.set_value("directive_loop_enabled", value=False)
-        out = StringIO()
-        call_command("directive", "tick", stdout=out)
-        assert out.getvalue().startswith("WARN")
-        assert "refused" in out.getvalue()
 
 
 class TestResolveRevertCommand(TestCase):

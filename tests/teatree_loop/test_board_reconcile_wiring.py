@@ -19,6 +19,7 @@ from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain
 from teatree.loop.scanners.board_reconcile import BoardReconcileScanner
 from teatree.loops.housekeeping.loop import MINI_LOOP as HOUSEKEEPING_LOOP
+from teatree.loops.preset_seed import default_preset_specs
 from teatree.loops.seed import DEFAULT_LOOPS
 
 _HOST_LOOP = "housekeeping"
@@ -52,5 +53,7 @@ class TestBoardReconcileHost(TestCase):
     def test_the_host_loop_ships_enabled_and_not_colleague_facing(self) -> None:
         spec = next(loop for loop in DEFAULT_LOOPS if loop.name == _HOST_LOOP)
 
-        assert spec.default_enabled
+        assert spec.name == "housekeeping"
+        present = next(mode for mode in default_preset_specs() if mode.name == "present")
+        assert present.entries[spec.name] is True
         assert not spec.colleague_facing

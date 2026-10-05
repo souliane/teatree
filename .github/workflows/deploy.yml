@@ -119,7 +119,7 @@ jobs:
           # 1. Ensure the build-context checkout exists on the box.
           $SSH "$TARGET" 'set -e; REMOTE_DIR="$HOME/teatree-deploy"; if [ ! -d "$REMOTE_DIR/.git" ]; then git clone https://github.com/souliane/teatree.git "$REMOTE_DIR"; fi; mkdir -p "$REMOTE_DIR/deploy"'
 
-          # 2. Write the env file (piped over stdin — never on argv or in logs; mode 600).
+          # 2. Merge managed keys into the env file (piped over stdin — never on argv or in logs; mode 600).
           # The GitHub token and admin password are NOT written here: the box
           # sources them from its `pass` store at boot (#3454), keeping the
           # no-secret-on-disk invariant. The Anthropic env token is written only
@@ -133,7 +133,7 @@ jobs:
             printf 'T3_ADMIN_USER=%s\n' "$T3_ADMIN_USER"
             printf 'GIT_AUTHOR_NAME=%s\n' "$GIT_AUTHOR_NAME"
             printf 'GIT_AUTHOR_EMAIL=%s\n' "$GIT_AUTHOR_EMAIL"
-          } | $SSH "$TARGET" 'umask 077; cat > "$HOME/teatree-deploy/deploy/teatree.env"'
+          } | $SSH "$TARGET" 'set -e; umask 077; file="$HOME/teatree-deploy/deploy/teatree.env"; tmp=$(mktemp "${file}.XXXXXX"); trap "rm -f \"$tmp\"" EXIT; if [ -f "$file" ]; then grep -v -E "^(CLAUDE_CODE_OAUTH_TOKEN|T3_ADMIN_USER|GIT_AUTHOR_NAME|GIT_AUTHOR_EMAIL)=" "$file" > "$tmp" || [ "$?" -eq 1 ]; fi; cat >> "$tmp"; mv -f "$tmp" "$file"'
 
           # 3. Converge the stack (deploy.sh reads no secrets — compose's env_file does).
           $SSH "$TARGET" 'cd "$HOME/teatree-deploy" && bash deploy/deploy.sh'

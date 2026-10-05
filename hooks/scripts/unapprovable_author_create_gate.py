@@ -13,7 +13,6 @@ Deliberately narrower in SCOPE than the sibling out-of-band-MERGE gate. That gat
 block on repo MANAGED-ness — an out-of-band merge bypasses the FSM on any managed repo
 regardless of who authors it. A raw create's defect is identity-specific: it only produces an
 unapprovable MR on a repo that DECLARES a non-owner author
-(:func:`teatree.core.authoring_credential.declared_distinct_author`). A managed repo with no
 such declaration (teatree's own upstream, ``souliane/teatree``, chief among them) is authored
 by the owner regardless of which surface opens the MR, so a raw create there is not this
 gate's business — blocking it there denies the documented upstream-contribution flow for a
@@ -106,7 +105,6 @@ def _cwd_remote(cwd: Path) -> str | None:
     ``git`` binary needed inside the restricted PreToolUse subprocess) but returns a
     HOST-QUALIFIED slug (``host/owner/repo``) — a shape ``slug_from_remote`` does not strip
     (its host-prefix regexes all require a scheme or ``git@``), so passing it to
-    ``declared_distinct_author`` as-is would never match a declared slug. Re-prefixing with
     ``https://`` puts it back through the SAME normalization the ``-R``/``--repo`` flag path
     already relies on, rather than teaching a second, divergent slug comparison.
     """
@@ -185,4 +183,4 @@ def handle_block_unapprovable_author_create(data: dict) -> bool:
         return False
     if not _target_declares_distinct_author(command, _resolve_cwd_repo(data)):
         return False
-    return _fail_open_or_deny(data, f"{_DENY_PREFIX}{shape_reason}{_DENY_SUFFIX}")
+    return _fail_open_or_deny(data, f"{_DENY_PREFIX}{shape_reason}{_DENY_SUFFIX}", gate_id="unapprovable_author_create")

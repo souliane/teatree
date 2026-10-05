@@ -172,7 +172,7 @@ class TestFileDomainMapsToLanguageSkill:
 
     def test_python_file_domain_requires_language_skill(self, tmp_path: Path) -> None:
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'synthpkg'\n", encoding="utf-8")
-        result = SkillLoadingPolicy().select_for_prompt_hook(
+        result = SkillLoadingPolicy().select_for_session_start(
             cwd=tmp_path,
             overlay_skill_metadata={},
             loaded_skills=set(),
@@ -182,7 +182,7 @@ class TestFileDomainMapsToLanguageSkill:
 
     def test_django_change_domain_requires_framework_skill(self, tmp_path: Path) -> None:
         (tmp_path / "manage.py").touch()
-        result = SkillLoadingPolicy().select_for_prompt_hook(
+        result = SkillLoadingPolicy().select_for_session_start(
             cwd=tmp_path,
             overlay_skill_metadata={},
             loaded_skills=set(),
@@ -192,7 +192,7 @@ class TestFileDomainMapsToLanguageSkill:
     def test_no_domain_marker_requires_no_framework_skill(self, tmp_path: Path) -> None:
         # ANTI-VACUITY TOOTH: a directory with NO Python/Django marker yields
         # no framework skill — so the two positives above depend on the marker.
-        result = SkillLoadingPolicy().select_for_prompt_hook(
+        result = SkillLoadingPolicy().select_for_session_start(
             cwd=tmp_path,
             overlay_skill_metadata={},
             loaded_skills=set(),
@@ -219,7 +219,7 @@ class TestFileDomainMapsToLanguageSkill:
         # framework skill ac-django <-> ac-python, proving the assertion's
         # discriminating part is the domain marker, not a constant.
         (tmp_path / "pyproject.toml").write_text(f"[project]\n{dependency}\n", encoding="utf-8")
-        result = SkillLoadingPolicy().select_for_prompt_hook(
+        result = SkillLoadingPolicy().select_for_session_start(
             cwd=tmp_path,
             overlay_skill_metadata={},
             loaded_skills=set(),

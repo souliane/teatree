@@ -19,7 +19,7 @@ changed policy needed a code change and a merge — an escape hatch that did not
 escape.
 
 Matching reuses :func:`teatree.hooks._repo_visibility.slug_namespace_matches` —
-the host-stripped leading-segment-prefix grammar ``private_repos`` and
+the host-stripped leading-segment-prefix grammar ``slug_namespace_matches`` and
 :mod:`teatree.core.review.mr_reminder`'s channel routing already share — so a
 repo pattern means one thing wherever it is written, negation included. A
 namespace pattern covers every repo under it; a sibling repo outside the

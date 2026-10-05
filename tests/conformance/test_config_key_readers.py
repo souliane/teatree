@@ -45,7 +45,6 @@ _DECLARATION_MODULES: frozenset[Path] = frozenset(
         "known_settings.py",
         "overlay_code_defaults.py",
         "host_projection.py",
-        "retired_settings.py",
     )
 )
 
@@ -104,7 +103,7 @@ def test_every_key_string_config_key_has_a_reader() -> None:
     dead = sorted(_key_names() - _keys_with_a_reader())
     assert dead == [], (
         f"config keys with no reader anywhere in src/ or hooks/: {dead}. "
-        "Either wire the reader or retire the key through teatree.config.retired_settings."
+        "Either wire the reader or remove the dead setting."
     )
 
 

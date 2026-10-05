@@ -139,7 +139,7 @@ def _messaging_from_toml(cfg: OverlayTomlConfig) -> MessagingBackend | None:
     if bot_token:
         # Loop construction path — a malformed user token degrades to
         # bot-only instead of crashing the tick (see ``get_messaging``).
-        backend = get_backend_provider().build_slack_messaging(
+        return get_backend_provider().build_slack_messaging(
             SlackMessagingSpec(
                 bot_token=bot_token,
                 app_token=app_token or "",
@@ -149,30 +149,7 @@ def _messaging_from_toml(cfg: OverlayTomlConfig) -> MessagingBackend | None:
                 owner_dm_only=parse_slack_scope_profile(cfg.get("slack_scope_profile", "")) == "dm_only",
             )
         )
-        _apply_voice_classifier_mode(backend)
-        return backend
     return None
-
-
-def _apply_voice_classifier_mode(backend: "MessagingBackend | None") -> None:
-    """Resolve the voice/token classifier mode from config (#1395).
-
-    Reads the effective setting (env / per-overlay / global) and
-    threads it into a :class:`SlackBotBackend` via its setter. Noop
-    backends and missing-credentials cases are skipped. Tolerates
-    fake configs that don't carry a ``user`` attribute (path-only TOML
-    fallback test fixtures) by leaving the backend on its default
-    :attr:`SlackVoiceClassifierMode.WARN`.
-    """
-    setter = getattr(backend, "set_voice_classifier_mode", None)
-    if setter is None or not callable(setter):
-        return
-    try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-        setter(get_effective_settings().slack_voice_classifier_mode)
-    except (AttributeError, ImportError):
-        return
 
 
 def _toml_messaging_backend(overlay_name: str) -> str:

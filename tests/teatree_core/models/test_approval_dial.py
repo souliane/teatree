@@ -112,7 +112,6 @@ class TestAutoReTighten:
         SendAudit.objects.create(
             channel="github",
             action="post_comment",
-            mode="enforce",
             allowlist_verdict=SendAudit.Verdict.DENIED,
         )
         assert policy_dial(ON_BEHALF_POST) is Decision.ASK
@@ -122,7 +121,6 @@ class TestAutoReTighten:
         SendAudit.objects.create(
             channel="slack",
             action="post_comment",
-            mode="enforce",
             allowlist_verdict=SendAudit.Verdict.ALLOWED,
             redaction_applied=True,
         )

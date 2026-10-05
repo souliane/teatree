@@ -32,13 +32,20 @@ from teatree.core.telemetry.admission import (
     record_factory_issue,
     record_lifecycle_transition,
 )
+from teatree.loop.scanners.resource_pressure import ResourceReading
 from teatree.loop.self_improve.detectors.base import ActionRung
 from teatree.loop.self_improve.detectors.pressure_incident import PressureIncidentDetector
 
+HEALTHY_RESOURCES = ResourceReading(disk_free_gb=100.0, ram_avail_gb=20.0)
 
-def _exported_now() -> dt.datetime:
-    """The exporter prunes by the REAL clock, so a row it writes must be dated inside its retention."""
+
+@pytest.fixture
+def now() -> dt.datetime:
     return dt.datetime.now(tz=dt.UTC)
+
+
+def _detector(directory: Path, *, now: dt.datetime) -> PressureIncidentDetector:
+    return PressureIncidentDetector(directory=directory, now=lambda: now, read_resources=lambda: HEALTHY_RESOURCES)
 
 
 def _emit(provider: TracerProvider, *, cause: str, epoch: int, pressure: float = 1.1) -> None:
@@ -53,10 +60,9 @@ def _emit(provider: TracerProvider, *, cause: str, epoch: int, pressure: float =
         span.set_attribute("teatree.observed_epoch", epoch)
 
 
-def test_span_exporter_persists_bounded_safe_observations(tmp_path) -> None:
+def test_span_exporter_persists_bounded_safe_observations(tmp_path, now: dt.datetime) -> None:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=tmp_path)))
-    now = _exported_now()
     _emit(provider, cause="load", epoch=int(now.timestamp()))
     provider.shutdown()
 
@@ -65,7 +71,7 @@ def test_span_exporter_persists_bounded_safe_observations(tmp_path) -> None:
     assert rows[0]["cause"] == "load"
     assert rows[0]["pressure"] == pytest.approx(1.1)
     assert rows[0]["admit"] is False
-    assert set(rows[0]) == {"epoch", "cause", "pressure", "band", "admit", "reason", "lane"}
+    assert set(rows[0]) == {"epoch", "trace_id", "span_id", "cause", "pressure", "band", "admit", "reason", "lane"}
     assert latest_admission_reason(directory=tmp_path, now=now) == "load 10 at/over the 50 watermark on 10 core(s)"
 
 
@@ -103,7 +109,6 @@ def test_metered_denial_is_exported_with_its_safe_cause_and_reason(
     provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=tmp_path)))
     machine = MachineSignal(cores=8, load1=1.0, ram_available_gb=20.0)
     with (
-        patch("teatree.core.admission_governor._quota_brake_enabled", return_value=True),
         patch("teatree.core.admission_governor._shed_at", return_value=0.9),
     ):
         decision = decide_admission(
@@ -121,18 +126,16 @@ def test_metered_denial_is_exported_with_its_safe_cause_and_reason(
     assert rows[0]["reason"] == pressure.reason
 
 
-def test_numeric_prefix_quota_cause_is_not_dropped(tmp_path) -> None:
+def test_numeric_prefix_quota_cause_is_not_dropped(tmp_path, now: dt.datetime) -> None:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=tmp_path)))
-    now = _exported_now()
     _emit(provider, cause="5h-quota", epoch=int(now.timestamp()))
 
     assert [row["cause"] for row in recent_pressure_observations(directory=tmp_path, now=now)] == ["5h-quota"]
     provider.shutdown()
 
 
-def test_old_admission_file_cannot_surface_untrusted_reason_or_lane(tmp_path) -> None:
-    now = dt.datetime(2026, 9, 23, 12, tzinfo=dt.UTC)
+def test_old_admission_file_cannot_surface_untrusted_reason_or_lane(tmp_path, now: dt.datetime) -> None:
     row = {
         "epoch": int(now.timestamp()),
         "cause": "load",
@@ -142,7 +145,7 @@ def test_old_admission_file_cannot_surface_untrusted_reason_or_lane(tmp_path) ->
         "reason": "token=supersecret /private/agent-home",
         "lane": "headless",
     }
-    path = tmp_path / "admission-2026-09-23.jsonl"
+    path = tmp_path / f"admission-{now.date().isoformat()}.jsonl"
     path.write_text(json.dumps(row) + "\n", encoding="utf-8")
 
     result = checked_pressure_observations(directory=tmp_path, now=now)
@@ -175,15 +178,14 @@ def test_admission_span_with_array_attributes_is_rejected_or_sanitized() -> None
     assert _safe_observation(span) is None
 
 
-def test_detector_clusters_repeated_denials_by_cause(tmp_path) -> None:
+def test_detector_clusters_repeated_denials_by_cause(tmp_path, now: dt.datetime) -> None:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=tmp_path)))
-    now = _exported_now()
     epoch = int(now.timestamp())
     for _ in range(2):
         _emit(provider, cause="load", epoch=epoch)
     _emit(provider, cause="weekly-quota", epoch=epoch)
-    detector = PressureIncidentDetector(directory=tmp_path, now=lambda: now)
+    detector = _detector(tmp_path, now=now)
     assert detector.detect() == []
 
     _emit(provider, cause="load", epoch=epoch)
@@ -209,19 +211,19 @@ def test_detector_clusters_repeated_denials_by_cause(tmp_path) -> None:
     provider.shutdown()
 
 
-def test_stale_spans_do_not_make_a_live_incident(tmp_path) -> None:
+def test_stale_spans_do_not_make_a_live_incident(tmp_path, now: dt.datetime) -> None:
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(PressureSpanExporter(directory=tmp_path)))
-    now = _exported_now()
     for _ in range(3):
         _emit(provider, cause="memory", epoch=int((now - dt.timedelta(hours=1)).timestamp()))
-    assert PressureIncidentDetector(directory=tmp_path, now=lambda: now).detect() == []
+    assert len(recent_pressure_observations(directory=tmp_path, now=now, window=dt.timedelta(hours=2))) == 3
+    assert _detector(tmp_path, now=now).detect() == []
     provider.shutdown()
 
 
-def test_inert_cgroup_probe_is_a_direct_owner_alert_not_a_pressure_span(tmp_path) -> None:
+def test_inert_cgroup_probe_is_a_direct_owner_alert_not_a_pressure_span(tmp_path, now: dt.datetime) -> None:
     with patch("teatree.loop.self_improve.detectors.pressure_incident.cgroup_memory_probe_inert", return_value=True):
-        reports = PressureIncidentDetector(directory=tmp_path).detect()
+        reports = _detector(tmp_path, now=now).detect()
 
     assert len(reports) == 1
     assert reports[0].payload["kind"] == "cgroup_probe_inert"
@@ -229,9 +231,9 @@ def test_inert_cgroup_probe_is_a_direct_owner_alert_not_a_pressure_span(tmp_path
     assert reports[0].payload["requires_delivery"] is True
 
 
-def test_intentionally_unlimited_cgroup_has_no_alert(tmp_path) -> None:
+def test_intentionally_unlimited_cgroup_has_no_alert(tmp_path, now: dt.datetime) -> None:
     with patch("teatree.loop.self_improve.detectors.pressure_incident.cgroup_memory_probe_inert", return_value=False):
-        assert PressureIncidentDetector(directory=tmp_path).detect() == []
+        assert _detector(tmp_path, now=now).detect() == []
 
 
 def test_telemetry_failure_never_blocks_admission() -> None:
@@ -391,7 +393,7 @@ class YieldCauseTelemetryTests(TestCase):
             now = dt.datetime.now(tz=dt.UTC)
             rows = recent_pressure_observations(directory=root, now=now)
             assert {row["cause"] for row in rows} == {"yield-collapse"}
-            reports = PressureIncidentDetector(directory=root, now=lambda: now).detect()
+            reports = _detector(root, now=now).detect()
             assert len(reports) == 1
             assert reports[0].payload["cause"] == "yield-collapse"
             provider.shutdown()

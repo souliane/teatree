@@ -33,6 +33,7 @@ from django.test import TestCase, override_settings
 
 import teatree.core.management.commands.pr as pr_mod
 from teatree.core.models import BotPing, OnBehalfApproval, OnBehalfAudit
+from tests._send_gate import allow_forge_repos
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture, seed_permitting_posture
 from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, SETTINGS, _patch_overlays
 
@@ -63,8 +64,12 @@ def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_
 class TestPostEvidenceOnBehalfGate(TestCase):
     """A forbidding posture without an approval refuses the post at the command layer."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos("my/repo")
+
     @pytest.fixture(autouse=True)
-    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured_banned_term_registry: None) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
@@ -161,8 +166,12 @@ def _notify_backend() -> MagicMock:
 class TestPostEvidenceAfterReceiptDm(TestCase):
     """#949: a successful post-test-plan comment fires one after-receipt DM."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos("my/repo")
+
     @pytest.fixture(autouse=True)
-    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured_banned_term_registry: None) -> None:
         # ``slack_user_id`` (global) resolves via the Django-free cold reader —
         # seed it in a config-store sqlite the reader resolves via ``T3_CONFIG_DB``.
         _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")

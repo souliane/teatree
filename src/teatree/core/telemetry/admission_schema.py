@@ -2,6 +2,8 @@
 
 import math
 import re
+from collections.abc import Mapping
+from typing import cast
 
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 
@@ -83,6 +85,8 @@ _FACTORY_CAUSES = (
 )
 _FACTORY_FIELDS = frozenset({"epoch", "kind", "cause", "severity", "count", "incident_id"})
 _LIFECYCLE_FIELDS = frozenset({"epoch", "kind", "entity_id", "ticket_id", "task_id", "cause"})
+_TRACE_FIELDS = frozenset({"trace_id", "span_id"})
+_ATTEMPT_FIELDS = frozenset({"iteration", "error_fingerprint", "session_ref"})
 _REASON_NUMBER = r"\d+(?:\.\d+)?(?:e[+-]?\d+)?"
 # Only the governor's fixed, numeric templates may leave the process. An
 # arbitrary decision.reason must never become a remote OTLP span attribute.
@@ -129,8 +133,40 @@ def _valid_identifier(value: object, *, allow_zero: bool = False) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and (value >= 0 if allow_zero else value > 0)
 
 
+def _valid_trace_context(row: dict) -> bool:
+    fields = row.keys() & _TRACE_FIELDS
+    if not fields:
+        return True
+    if fields != _TRACE_FIELDS:
+        return False
+    trace_id = row["trace_id"]
+    span_id = row["span_id"]
+    return (
+        isinstance(trace_id, str)
+        and re.fullmatch(r"[0-9a-f]{32}", trace_id) is not None
+        and int(trace_id, 16) != 0
+        and isinstance(span_id, str)
+        and re.fullmatch(r"[0-9a-f]{16}", span_id) is not None
+        and int(span_id, 16) != 0
+    )
+
+
+def _safe_attempt_evidence(attrs: Mapping[str, object]) -> dict[str, str | int]:
+    row: dict[str, str | int] = {}
+    iteration = attrs.get("teatree.lifecycle.iteration")
+    fingerprint = attrs.get("teatree.lifecycle.error_fingerprint")
+    session_ref = attrs.get("teatree.lifecycle.session_ref")
+    if _valid_identifier(iteration):
+        row["iteration"] = cast("int", iteration)
+    if isinstance(fingerprint, str) and (not fingerprint or re.fullmatch(r"[0-9a-f]{64}", fingerprint)):
+        row["error_fingerprint"] = fingerprint
+    if isinstance(session_ref, str) and re.fullmatch(r"[0-9a-f]{16}", session_ref):
+        row["session_ref"] = session_ref
+    return row
+
+
 def _valid_factory_row(row: object, *, cutoff: int, current: int) -> bool:
-    if not isinstance(row, dict) or row.keys() != _FACTORY_FIELDS:
+    if not isinstance(row, dict) or row.keys() - _TRACE_FIELDS != _FACTORY_FIELDS or not _valid_trace_context(row):
         return False
     epoch = row["epoch"]
     count = row["count"]
@@ -156,7 +192,26 @@ def _valid_factory_row(row: object, *, cutoff: int, current: int) -> bool:
 
 
 def _valid_lifecycle_row(row: object, *, cutoff: int, current: int) -> bool:
-    if not isinstance(row, dict) or row.keys() != _LIFECYCLE_FIELDS:
+    if not isinstance(row, dict) or not _valid_trace_context(row):
+        return False
+    fields = row.keys() - _TRACE_FIELDS
+    if not fields >= _LIFECYCLE_FIELDS or fields - _LIFECYCLE_FIELDS - _ATTEMPT_FIELDS:
+        return False
+    attempt_fields = fields & _ATTEMPT_FIELDS
+    allowed_attempt_fields = _ATTEMPT_FIELDS if row["kind"] == "attempt.finished" else set()
+    if attempt_fields - allowed_attempt_fields or (
+        "iteration" in attempt_fields and not _valid_identifier(row["iteration"])
+    ):
+        return False
+    fingerprint = row.get("error_fingerprint")
+    if "error_fingerprint" in attempt_fields and not (
+        isinstance(fingerprint, str) and (not fingerprint or re.fullmatch(r"[0-9a-f]{64}", fingerprint))
+    ):
+        return False
+    session_ref = row.get("session_ref")
+    if "session_ref" in attempt_fields and not (
+        isinstance(session_ref, str) and re.fullmatch(r"[0-9a-f]{16}", session_ref)
+    ):
         return False
     epoch = row["epoch"]
     entity_id = row["entity_id"]
@@ -177,7 +232,11 @@ def _valid_lifecycle_row(row: object, *, cutoff: int, current: int) -> bool:
 
 
 def _valid_observation(row: object, *, cutoff: int, current: int) -> bool:
-    if not isinstance(row, dict) or row.keys() != {"epoch", "cause", "pressure", "band", "admit", "reason", "lane"}:
+    if (
+        not isinstance(row, dict)
+        or row.keys() - _TRACE_FIELDS != {"epoch", "cause", "pressure", "band", "admit", "reason", "lane"}
+        or not _valid_trace_context(row)
+    ):
         return False
     epoch = row.get("epoch")
     cause = row.get("cause")

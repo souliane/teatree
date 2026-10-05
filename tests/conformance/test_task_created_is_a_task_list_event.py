@@ -338,7 +338,6 @@ class TestATaskListEntryBooksNoAdmissionSeat(TestCase):
 
     def setUp(self) -> None:
         self._stack = ExitStack()
-        self._stack.enter_context(patch.object(dispatch_admission_mod, "governor_enabled", return_value=True))
         self._stack.enter_context(
             patch.object(
                 dispatch_admission_mod,
@@ -436,16 +435,12 @@ class DenyDriver:
     the live registration rather than from a hand-written list of modules.
     """
 
-    #: DB-home flags seeded into a hermetic config store — the REAL resolution path,
-    #: not a patch of the handler's private predicate.
-    settings: Mapping[str, bool]
     #: The event payload that must trip the gate. Synthetic user-voice SHAPES only.
     payload: Mapping[str, str]
 
 
 _DENY_DRIVERS: Final[dict[str, DenyDriver]] = {
     "handle_dispatch_prompt_quote_scanner_on_task_create": DenyDriver(
-        settings={"dispatch_quote_gate_on_task_create_enabled": True},
         payload={
             "session_id": "sess-deny-driver",
             "task_id": "task-deny-1",
@@ -460,7 +455,7 @@ _DENY_DRIVERS: Final[dict[str, DenyDriver]] = {
 #: moves. Unlike the prose ledger it needs no literal anchor in the file that renders
 #: the text, which is why it reaches the shared renderer the ledger is blind to.
 _DENY_TEXT_PEGS: Final[dict[str, str]] = {
-    "handle_dispatch_prompt_quote_scanner_on_task_create": "92b49cdd9eaa8351",
+    "handle_dispatch_prompt_quote_scanner_on_task_create": "73efb1cbf1e95d45",
 }
 
 #: Phrases asserting the premise this event's correction retired. The peg above is the
@@ -476,17 +471,13 @@ _RETIRED_PREMISE_PHRASES: Final[tuple[str, ...]] = (
 
 @contextlib.contextmanager
 def _gate_live(driver: DenyDriver, tmp_path: Path) -> Iterator[None]:
-    """Seed *driver*'s flags into a hermetic config store, ledger pinned under *tmp_path*."""
+    """Use a hermetic config store, with the ledger pinned under *tmp_path*."""
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))
     try:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS teatree_config_setting "
             "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
-        )
-        conn.executemany(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
-            [(key, json.dumps(value)) for key, value in driver.settings.items()],
         )
         conn.commit()
     finally:
@@ -546,10 +537,10 @@ class TestEveryRegisteredHandlersDenyTextIsPinned:
 
     @pytest.mark.parametrize("name", sorted(_DENY_DRIVERS))
     def test_the_driver_is_what_makes_the_deny_happen(self, name: str, tmp_path: Path) -> None:
-        # Control: explicitly disable the shipped-on gate so the same payload is inert.
+        # Control: remove the verbatim user quote so the same gate permits the task.
         inert = dataclasses.replace(
             _DENY_DRIVERS[name],
-            settings={"dispatch_quote_gate_on_task_create_enabled": False},
+            payload={**_DENY_DRIVERS[name].payload, "task_subject": "A routine task"},
         )
         verdict, out, err = _drive_the_deny(name, inert, tmp_path)
         assert verdict is not True

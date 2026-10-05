@@ -20,7 +20,7 @@ The reader (advisory)
     naming the offending design decision — visible to the planner's repair loop and at
     the directive's verify horizon. It NEVER blocks: the deterministic
     ``mechanism_conforms`` gate is the teeth; the design critic surfaces what
-    determinism can't, advisory-first — armed by the ``directive_loop_enabled`` flag.
+    determinism can't, advisory-first.
 
 Wired at :meth:`~teatree.core.models.ticket.Ticket.plan` (via the gate registry, no
 model→gate up-edge) for directive tickets only; an ordinary ticket costs a settings read
@@ -30,7 +30,6 @@ and a directive lookup that finds none, so ordinary planning is untouched.
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import get_effective_settings
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.critic_dispatch import CriticDispatch
@@ -44,16 +43,6 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 logger = logging.getLogger(__name__)
-
-
-def design_critic_armed(overlay_name: str | None) -> bool:
-    """Whether the design critic runs for *overlay_name* (overlay -> global).
-
-    #104: the advisory-only design critic carries no independent switch — it fires only
-    for directive-linked tickets, so it is armed BY ``directive_loop_enabled`` (arming the
-    directive loop is exactly the condition under which the plan-time critic has work).
-    """
-    return bool(get_effective_settings(overlay_name).directive_loop_enabled)
 
 
 def plan_head_sha(ticket: "Ticket") -> str:
@@ -180,15 +169,12 @@ def _run_design_critic(ticket: "Ticket") -> None:
 def check_design_critic(ticket: "Ticket") -> None:
     """Run the ADVISORY design critic at plan time — arm the async judge, record its findings, never block.
 
-    One settings read while ``directive_loop_enabled`` is off; at the shipped default it
-    is on, so an ordinary ticket also pays the directive lookup that finds none and returns
-    there. When the ticket implements a directive: arm the headless critic if no verdict
+    An ordinary ticket pays the directive lookup that finds none and returns there.
+    When the ticket implements a directive: arm the headless critic if no verdict
     covers the plan head, else mirror its FAIL items into
     ``CriticFinding(transition="plan")``. NEVER raises — the deterministic
     ``mechanism_conforms`` gate holds the blocking teeth; this only surfaces findings.
     """
-    if not design_critic_armed(ticket.overlay or None):
-        return
     try:
         _run_design_critic(ticket)
     except Exception as exc:  # noqa: BLE001 — advisory: a design-critic hiccup must never wedge the plan transition.

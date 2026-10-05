@@ -1,8 +1,8 @@
-"""IMPLEMENT — synthetic ticket + schedule_coding, riding the maker pipeline (T4-PR-3)."""
+"""IMPLEMENT — synthetic ticket planned first, then the maker pipeline (T4-PR-3)."""
 
 from django.test import TestCase
 
-from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoopExperiment, ProposalSpec, Ticket
+from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoopExperiment, ProposalSpec, Task, Ticket
 from teatree.loops.outer_loop.implement import schedule_experiment_fix
 
 
@@ -28,6 +28,14 @@ class TestScheduleExperimentFix(TestCase):
         ticket = Ticket.objects.get(pk=reloaded.ticket_id)
         assert f"outer-loop-experiment={exp.pk}" in ticket.issue_url
         assert ticket.extra["outer_loop_experiment_id"] == exp.pk
+
+    def test_the_fresh_ticket_is_planned_first_carrying_the_hypothesis(self) -> None:
+        exp = self._admitted()
+        task = schedule_experiment_fix(exp)
+        assert task is not None
+        assert task.phase == "planning"
+        assert "Improve the review gate." in task.execution_reason
+        assert not Task.objects.filter(ticket=task.ticket, phase="coding").exists()
 
     def test_is_idempotent_on_the_synthetic_issue_url(self) -> None:
         exp = self._admitted()

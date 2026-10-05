@@ -411,7 +411,7 @@ def test_public_harness_uses_shared_server_and_resumes_same_thread(tmp_path: Pat
         command=(sys.executable, str(script)),
         process_env={},
     )
-    harness = CodexAppServerHarness(code_home=code_home)
+    harness = CodexAppServerHarness(refusal=None, code_home=code_home)
 
     async def run() -> tuple[str, str]:
         options = ClaudeAgentOptions(cwd=str(tmp_path), permission_mode="bypassPermissions")

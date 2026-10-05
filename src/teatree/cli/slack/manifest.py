@@ -1,8 +1,7 @@
 """Slack app-manifest helpers — build, compare, and call the Slack manifest API.
 
 Extracted from :mod:`teatree.cli.slack.setup` to keep that module under the
-LOC ceiling.  All public symbols remain importable from ``slack_setup`` via
-explicit re-export for backward compatibility.
+LOC ceiling.
 """
 
 import json

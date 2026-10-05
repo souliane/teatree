@@ -16,8 +16,8 @@ from django.test import TestCase
 
 from teatree.core.models import DeferredQuestion, Task
 from teatree.core.notify import NotifyOutcome, NotifyReason
-from teatree.mcp import build_server
-from tests.factories import TicketFactory
+from teatree.mcp.server import build_server
+from tests.factories import TicketFactory, record_test_plan
 from tests.teatree_mcp._call_tool_result import structured as _structured
 
 
@@ -45,6 +45,7 @@ class TestQuestionList(TestCase):
 class TestTaskCreate(TestCase):
     def test_creates_a_phase_task_for_the_ticket(self) -> None:
         ticket = TicketFactory()
+        record_test_plan(ticket)
 
         result = _call(
             "task_create",
@@ -63,6 +64,12 @@ class TestTaskCreate(TestCase):
         # so this is RED on an unguarded handler.
         with pytest.raises(Exception, match="not found"):
             _call("task_create", {"ticket": 999999, "phase": "coding", "reason": "x"})
+
+    def test_an_implementing_phase_on_an_unplanned_ticket_surfaces_the_plan_missing_refusal(self) -> None:
+        ticket = TicketFactory()
+        with pytest.raises(Exception, match="plan_missing"):
+            _call("task_create", {"ticket": ticket.pk, "phase": "coding", "reason": "Implement the widget."})
+        assert not Task.objects.filter(ticket=ticket).exists()
 
     def test_missing_phase_surfaces_structured_error(self) -> None:
         ticket = TicketFactory()

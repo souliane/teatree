@@ -1,8 +1,10 @@
+# test-path: cross-cutting
+# Drives hooks/scripts/hook_router.py question routing over the transcript reader; no src/teatree mirror.
 """The live-turn escape in ``handle_mirror_question_to_slack`` (#189, #2058, #2155).
 
 Integration-first: the real ``hook_router`` handler is invoked with a PreToolUse payload
-synthesised in-process, driven through the REAL ``handle_record_presence`` recording seam
-and the REAL ``_is_live_user_turn`` predicate. The load-bearing §807 interop test is at
+synthesised in-process whose transcript says what the owner did, read by the REAL
+``_is_live_user_turn`` predicate. The load-bearing §807 interop test is at
 the bottom: a transcript carrying a hook-converted ``AskUserQuestion`` tool_use satisfies
 the structured-question Stop gate, because the call is *structurally complete* — just
 converted at the PreToolUse layer.
@@ -19,11 +21,9 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _LOOP_PROMPT, handle_enforce_structured_question, handle_mirror_question_to_slack
-from teatree import live_presence
 from teatree.core import notify as notify_module
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
-from teatree.live_presence import LIVE_TURN_FRESHNESS, PresenceHeartbeat
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -60,6 +60,34 @@ def _kick_drains_through(backend: MagicMock) -> Iterator[None]:
         yield
 
 
+def _transcript(tmp_path: Path, *entries: dict) -> str:
+    path = tmp_path / "transcript.jsonl"
+    path.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
+    return str(path)
+
+
+def _ago(seconds: float) -> str:
+    return (datetime.now(tz=UTC) - timedelta(seconds=seconds)).isoformat()
+
+
+def _owner_typed(text: str, seconds_ago: float = 1) -> dict:
+    return {
+        "type": "user",
+        "origin": {"kind": "human"},
+        "timestamp": _ago(seconds_ago),
+        "message": {"role": "user", "content": text},
+    }
+
+
+def _owner_answered(seconds_ago: float) -> dict:
+    return {
+        "type": "user",
+        "timestamp": _ago(seconds_ago),
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "A"}]},
+        "toolUseResult": {"answers": {"Approve item 1?": "yes"}},
+    }
+
+
 def _stdout(capsys: pytest.CaptureFixture[str]) -> dict:
     out = capsys.readouterr().out.strip()
     return json.loads(out) if out else {}
@@ -67,26 +95,17 @@ def _stdout(capsys: pytest.CaptureFixture[str]) -> dict:
 
 @pytest.fixture(autouse=True)
 def _loop_driven_session(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A loop-owning session, so only the live-turn predicate decides the verdict.
-
-    #22: ``handle_record_presence`` writes via ``ups_fastpath.record_presence`` to
-    ``primary_data_dir()`` — the DATA dir, not the control DB's parent — so
-    ``XDG_DATA_HOME`` is what pins it, and the PRESENCE read coincides with that write
-    exactly as it does in production.
-    """
+    """A loop-owning session, so only the live-turn predicate decides the verdict."""
     monkeypatch.setattr(router, "_session_drives_loop", lambda _session: True)
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    target = tmp_path / "teatree" / "presence_heartbeat"
-    monkeypatch.setattr(live_presence, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
     monkeypatch.setattr(router, "STATE_DIR", tmp_path)
 
 
 class TestLoopTurnDefersThroughRealPredicateInvariant9:
     """Invariant 9, exercised through the REAL ``_is_live_user_turn``.
 
-    An autonomous / loop-driven turn has no prior same-session ``UserPromptSubmit``
-    heartbeat, so the real predicate returns ``False`` and the question is denied in
-    favour of the durable row plus its Slack mirror.
+    An autonomous / loop-driven turn carries no recent owner prompt in its transcript, so
+    the real predicate returns ``False`` and the question is denied in favour of the
+    durable row plus its Slack mirror.
     """
 
     def test_loop_turn_with_no_heartbeat_defers(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -109,26 +128,28 @@ class TestSelfPumpTurnWithFreshUserPromptRendersLive:
     """#2155: a fresh user prompt during a self-pump loop renders the question live.
 
     The end-to-end reproduction of the reported high-irritation bug, driven through the
-    REAL ``handle_record_presence`` recording seam and the REAL ``_is_live_user_turn``
-    predicate. The loop owner is self-pumping; the user types a genuine fresh prompt the
-    harness delivers prefixed by the loop continuation text. The invariant-9 anchor (a
+    REAL ``_is_live_user_turn`` predicate over the session transcript. The loop owner is
+    self-pumping; the user types a genuine fresh prompt the harness delivers prefixed by
+    the loop continuation text. The invariant-9 anchor (a
     PURE loop tick, no user text → still denies) lives in the second test so the
     must-render escape is proven an escape, not a defanged gate.
     """
 
-    def test_fresh_user_prompt_prefixed_by_loop_text_renders_live(self, capsys: pytest.CaptureFixture[str]) -> None:
-        session_id = "owner"
-        router.handle_record_presence(
-            {"prompt": f"{_LOOP_PROMPT}\n\nactually, ask me which option you prefer", "session_id": session_id}
+    def test_fresh_user_prompt_prefixed_by_loop_text_renders_live(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        transcript = _transcript(tmp_path, _owner_typed(f"{_LOOP_PROMPT}\n\nactually, ask me which option you prefer"))
+        result = handle_mirror_question_to_slack(
+            _ask_payload("Approve A or B?", session_id="owner", transcript_path=transcript)
         )
-        result = handle_mirror_question_to_slack(_ask_payload("Approve A or B?", session_id=session_id))
         assert result is False, "a fresh same-session user prompt this turn must render the question live"
         assert _stdout(capsys) == {}
 
-    def test_pure_loop_tick_still_defers_invariant_9(self, capsys: pytest.CaptureFixture[str]) -> None:
-        session_id = "owner"
-        router.handle_record_presence({"prompt": _LOOP_PROMPT, "session_id": session_id})
-        result = handle_mirror_question_to_slack(_ask_payload("Approve A or B?", session_id=session_id))
+    def test_pure_loop_tick_still_defers_invariant_9(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        transcript = _transcript(tmp_path, _owner_typed(_LOOP_PROMPT))
+        result = handle_mirror_question_to_slack(
+            _ask_payload("Approve A or B?", session_id="owner", transcript_path=transcript)
+        )
         assert result is True
         assert _stdout(capsys)["permissionDecision"] == "deny"
 
@@ -137,41 +158,25 @@ class TestWalkThroughSecondQuestionStaysLive:
     """#2058: a multi-question walk-through keeps EVERY question live.
 
     A user-invoked ``/checking`` walk-through renders its FIRST question live (fresh
-    same-session prompt), the user answers, an intervening background task-notification
-    turn fires (which does NOT refresh the presence heartbeat), and the SECOND question
-    lands past :data:`LIVE_TURN_FRESHNESS` — so the pre-fix code denied it. The fix
-    slides the live window forward each time an already-live question renders.
+    prompt); by the SECOND the prompt is past the window, but the owner's in-client
+    answer to the first is fresh evidence they are still here.
     """
 
-    def test_second_question_after_notification_turn_still_renders_live(
-        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    def test_second_question_after_an_in_client_answer_still_renders_live(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        session_id = "s-checking"
-        t_prompt = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
-        live_presence.PRESENCE.record(session_id=session_id, now=t_prompt)
-
-        # Drive time through the real predicate by patching the clock the hook reads, so
-        # this exercises the production path end to end.
-        clock = {"now": t_prompt + timedelta(seconds=20)}
-        heartbeat = live_presence.PRESENCE
-        real_is_live = heartbeat.is_live_user_turn
-        real_refresh = heartbeat.refresh_live_turn
-        monkeypatch.setattr(
-            heartbeat, "is_live_user_turn", lambda **kw: real_is_live(session_id=kw["session_id"], now=clock["now"])
+        first = _transcript(tmp_path, _owner_typed("/checking", 20))
+        assert (
+            handle_mirror_question_to_slack(_ask_payload("Approve item 1?", session_id="s", transcript_path=first))
+            is False
         )
-        monkeypatch.setattr(
-            heartbeat, "refresh_live_turn", lambda **kw: real_refresh(session_id=kw["session_id"], now=clock["now"])
-        )
-
-        first = handle_mirror_question_to_slack(_ask_payload("Approve item 1?", session_id=session_id))
-        assert first is False, "first question must render live, not deny"
         assert _stdout(capsys) == {}
 
-        clock["now"] = t_prompt + timedelta(seconds=20) + LIVE_TURN_FRESHNESS - timedelta(seconds=10)
-        assert clock["now"] - t_prompt > LIVE_TURN_FRESHNESS
-
-        second = handle_mirror_question_to_slack(_ask_payload("Approve item 2?", session_id=session_id))
-        assert second is False, "second question must still render live, not deny (#2058)"
+        second = _transcript(tmp_path, _owner_typed("/checking", 600), _owner_answered(10))
+        assert (
+            handle_mirror_question_to_slack(_ask_payload("Approve item 2?", session_id="s", transcript_path=second))
+            is False
+        )
         assert _stdout(capsys) == {}
 
 
@@ -183,13 +188,14 @@ class TestAttendedTurnNeverReachesSlack:
     which would reinstate the duplication one cadence later.
     """
 
-    def test_live_turn_posts_nothing_and_records_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
-        session_id = "s-2"
-        router.handle_record_presence({"prompt": "ask me something", "session_id": session_id})
+    def test_live_turn_posts_nothing_and_records_nothing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        live = {"session_id": "s-2", "transcript_path": _transcript(tmp_path, _owner_typed("ask me something"))}
         with patch.object(router, "_kick_question_drain") as kick:
-            first = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id=session_id, tool_use_id="t-1"))
+            first = handle_mirror_question_to_slack(_ask_payload("Ship it?", tool_use_id="t-1", **live))
             capsys.readouterr()
-            second = handle_mirror_question_to_slack(_ask_payload("Ship it?", session_id=session_id, tool_use_id="t-2"))
+            second = handle_mirror_question_to_slack(_ask_payload("Ship it?", tool_use_id="t-2", **live))
             capsys.readouterr()
 
         assert first is False, "a live turn must render in-client, not deny"

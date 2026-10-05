@@ -56,7 +56,6 @@ class TestCaptureTaint(TestCase):
     def test_a_cli_directive_is_owner_taint_trusted(self) -> None:
         directive = Directive.objects.capture("always draft MRs", source=Directive.Source.CLI)
         assert directive.taint == Provenance.OWNER
-        assert directive.taint_is_untrusted is False
 
     def test_an_ambient_directive_inherits_the_events_untrusted_provenance(self) -> None:
         event = IncomingEvent.objects.create(
@@ -70,7 +69,6 @@ class TestCaptureTaint(TestCase):
             "sanitized constraint", source=Directive.Source.INCOMING_EVENT, source_event=event
         )
         assert directive.taint == Provenance.PUBLIC
-        assert directive.taint_is_untrusted is True
 
     def test_an_owner_origin_event_yields_owner_taint(self) -> None:
         event = IncomingEvent.objects.create(
@@ -84,12 +82,10 @@ class TestCaptureTaint(TestCase):
             "sanitized constraint", source=Directive.Source.INCOMING_EVENT, source_event=event
         )
         assert directive.taint == Provenance.OWNER
-        assert directive.taint_is_untrusted is False
 
     def test_a_sourceless_non_cli_directive_is_public_fail_closed(self) -> None:
         directive = Directive.objects.capture("a dream ask", source=Directive.Source.DREAM_ASK)
         assert directive.taint == Provenance.PUBLIC
-        assert directive.taint_is_untrusted is True
 
 
 class TestInterpretationTransition(TestCase):

@@ -66,12 +66,12 @@ def handle_banned_terms_pretool(data: dict) -> bool:
     overlay/customer terms have leaked on this PUBLIC repo. This gate
     reuses the #1213 ``_command_parser`` publish-surface detection + body
     extraction, then delegates the matching to the SAME
-    ``check-banned-terms.sh`` against the DB ``banned_terms`` list
+    ``check-banned-terms.sh`` against the DB ``banned_term_registry``
     (no new term config, no reimplemented matching).
 
     A banned-term match ⇒ refuse via ``permissionDecision: deny`` + a
-    reason naming the matched term and pointing at the
-    ``--allow-banned-term`` / ``ALLOW_BANNED_TERM=1`` override.
+    reason naming the matched term and asking for owner review. Public egress
+    ignores override tokens.
 
     Fail-open on any internal error: a crashing hook is worse than no scan
     (never-lockout). But the fail-open is NOT silent — an unscanned body on the
@@ -146,9 +146,8 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     # A high-confidence secret leaks on EVERY surface -- a title, a short ``-t``
     # flag, a ``gh api -f title=`` field, a ``git -C ... commit`` subject -- not
     # only the description body, and on an internal post the destination gate
-    # would SKIP or a command carrying the --allow-banned-term override. Scan the
-    # WIDE surface set and block before the payload-None early-return and any skip
-    # / override short-circuit (#1672 secrets-always-blocked invariant).
+    # would SKIP. Scan the WIDE surface set and block before the payload-None
+    # early-return and any skip short-circuit (#1672 secrets-always-blocked invariant).
     if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
         return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY, gate_id="banned_terms")
 
@@ -156,9 +155,8 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     if payload is None:
         return False
 
-    skipped = banned_terms_scanner.has_override(tool_name, tool_input) or (
-        tool_name == "Bash" and public_visibility.gate_skips_for_visibility(command, cwd_repo)
-    )
+    nonpublic = tool_name == "Bash" and public_visibility.gate_skips_for_visibility(command, cwd_repo)
+    skipped = nonpublic
     term = None if skipped else banned_terms_scanner.scan_text(payload)
     if term is None:
         return False

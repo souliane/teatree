@@ -79,7 +79,7 @@ class TestSectionForRow(TestCase):
         assert section_for_row("", E2E_REPOS_TABLE) == E2E_REPOS_TABLE
 
     def test_a_seed_row_belongs_to_its_own_family(self) -> None:
-        assert section_for_row("loops.dream", "default_enabled") == "loops"
+        assert section_for_row("loops.dream", "delay_seconds") == "loops"
         assert section_for_row("schedules.standard", "timezone") == "schedules"
 
     def test_an_overlay_sharing_a_family_name_is_still_an_overlay(self) -> None:

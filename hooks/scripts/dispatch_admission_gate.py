@@ -16,10 +16,7 @@ no dispatch reaches it, a todo puts no agent on the box, and the governor has
 nothing to admit or brake there.
 
 The verdict itself lives in :mod:`teatree.core.dispatch_admission`, so all three
-lanes route through the one pure decision function and can never diverge. The
-kill-switch and rollback lever is the EXISTING ``admission_governor_enabled``
-setting (``t3 <overlay> config_setting set admission_governor_enabled false``) —
-deliberately no second flag, which would let the two drift.
+lanes route through the one pure decision function and can never diverge.
 
 An ADMITTED dispatch also takes a durable seat (#4129), because it creates no
 ``Task`` row and so was invisible to the very ceiling it had just cleared — a
@@ -65,10 +62,9 @@ def _block_message(reason: str) -> str:
         f"{reason}.\n"
         "An interactive dispatch adds to the SAME box the factory lanes run on, so it is "
         "governed by the same governor. Wait for the brake to release "
-        "(the load watermark has hysteresis, so it re-admits under the lower one), add an "
+        "(the load watermark has hysteresis, so it re-admits under the lower one), or add an "
         "explicit `[admission-ok: <reason>]` marker to the dispatch for a genuine "
-        "must-run-now dispatch, or disable the governor entirely with "
-        "`t3 <overlay> config_setting set admission_governor_enabled false`."
+        "must-run-now dispatch."
     )
 
 

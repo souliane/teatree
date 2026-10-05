@@ -8,7 +8,7 @@ already carries ``Agent``/``Task`` in its disallow list, so the hook is inert th
 from django.test import TestCase
 
 from teatree.agents._runner_options import _build_options, resolve_spawn_ceiling
-from teatree.agents.subagent_ceiling import DEFAULT_SPAWN_CEILING, SPAWN_TOOL_MATCHER
+from teatree.agents.subagent_ceiling import SPAWN_TOOL_MATCHER
 from teatree.config import UserSettings
 from teatree.core.models import ConfigSetting, Session, Task, Ticket
 
@@ -48,9 +48,6 @@ class TestBuildOptionsArmsTheCeiling(_Dispatch):
 
 
 class TestResolveSpawnCeiling(TestCase):
-    def test_defaults_to_the_shipped_ceiling(self) -> None:
-        assert resolve_spawn_ceiling() == DEFAULT_SPAWN_CEILING
-
     def test_an_operator_row_wins_over_the_shipped_default(self) -> None:
         ConfigSetting.objects.set_value("subagent_spawn_ceiling", 3, scope="")
         assert resolve_spawn_ceiling() == 3

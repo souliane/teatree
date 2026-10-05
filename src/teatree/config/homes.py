@@ -11,9 +11,7 @@ rebuilt bespoke by the resolver (``resolution._BESPOKE_STRUCTURED_FIELDS``);
 ``handover_mirror_path`` / ``statusline_chain`` / ``autoload`` resolve from the
 store on their pre-Django paths via ``cold_reader`` / the ``sqlite3`` CLI.
 
-:data:`DERIVED_FIELDS` is the one value the resolver COMPUTES rather than
-reads (``notify_on_behalf`` derived by the autonomy collapse); it has
-no home and is excluded from the partition.
+There are currently no derived setting fields.
 
 The fitness functions in ``tests/config/test_settings_home_partition.py`` keep
 this exhaustive: every ``UserSettings`` field is in exactly one of
@@ -54,9 +52,8 @@ BOOTSTRAP_ENV_ONLY_SETTINGS: frozenset[str] = frozenset(
 )
 
 
-# The one value the resolver computes rather than reads — no home, excluded
-# from the partition. ``notify_on_behalf`` is ORed in by the autonomy collapse.
-DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
+# Reserved for values the resolver computes rather than reads.
+DERIVED_FIELDS: frozenset[str] = frozenset()
 
 # The TOML-home carve-out is EMPTY — every ``UserSettings`` field is DB-home. Kept
 # as a named empty set so the fitness functions can assert emptiness and a future

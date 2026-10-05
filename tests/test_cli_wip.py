@@ -18,13 +18,13 @@ from typing import NamedTuple
 import pytest
 import typer
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.wip import register_wip_commands
 from teatree.config import Wip, get_effective_settings
 from teatree.core.models import ConfigSetting
-from tests.db_alias import RouteAllToAlias, register_sqlite_alias, teardown_sqlite_alias
+from tests.db_alias import register_migrated_sqlite_alias, teardown_sqlite_alias
 
 runner = CliRunner()
 
@@ -73,11 +73,10 @@ class TestWipSet(TestCase):
         assert result.exit_code == 0
         assert ConfigSetting.objects.get_effective("wip") == Wip.BOOST.value
 
-    def test_set_alias_is_normalised_to_canonical(self) -> None:
+    def test_retired_alias_is_rejected_without_writing(self) -> None:
         result = runner.invoke(_app(), ["wip", "set", "high"])
-        assert result.exit_code == 0
-        # The canonical value is persisted, not the alias.
-        assert ConfigSetting.objects.get_effective("wip") == Wip.FULL.value
+        assert result.exit_code == 1
+        assert not ConfigSetting.objects.filter(key="wip").exists()
 
     def test_set_round_trips_through_resolver(self) -> None:
         runner.invoke(_app(), ["wip", "set", "slow"])
@@ -170,8 +169,8 @@ class SharedEnvAfterSet(NamedTuple):
 class TestWipSetBootstrapsDjangoInRealProcess:
     """``wip set`` / ``show`` work from a process where Django is NOT pre-configured.
 
-    The class-scoped ``shared_env_after_set`` fixture migrates a private,
-    file-backed control DB in-process (the ``schema_guard_alias`` pattern
+    The class-scoped ``shared_env_after_set`` fixture provisions a private,
+    file-backed control DB at head in-process (the ``schema_guard_alias`` pattern
     hoisted to ``tests/db_alias.py``) and runs ONE real ``wip set boost``
     subprocess for the whole class. Both cases below assert only on that
     shared subprocess result / a subsequent ``show`` subprocess read, never on
@@ -224,13 +223,13 @@ class TestWipSetBootstrapsDjangoInRealProcess:
         cls,
         tmp_path_factory: pytest.TempPathFactory,
         django_db_blocker: pytest.FixtureRequest,
+        migrated_db_template: Path | None,
     ) -> SharedEnvAfterSet:
-        """Migrate a private control DB in-process, then run ONE ``set boost`` subprocess.
+        """Provision a private control DB at head in-process, then run ONE ``set boost`` subprocess.
 
-        Migrating via ``call_command`` against a private, file-backed SQLite
-        alias (routed through :class:`~tests.db_alias.RouteAllToAlias` so the
-        ``core`` seed migration's unscoped ORM writes land on the alias, not
-        the shared ``default`` test DB) avoids the ``python -m teatree
+        The control DB is a copy of the session's migrated template (a migrate
+        from zero into a private alias when there is none), so the class never
+        pays a from-zero migrate of its own nor the ``python -m teatree
         migrate`` subprocess cold-start the previous per-class template paid.
         The alias connection is closed before ``set`` runs so its
         ``PRAGMA journal_mode=WAL`` open finds the file flushed. Only the
@@ -243,10 +242,9 @@ class TestWipSetBootstrapsDjangoInRealProcess:
         db_file.parent.mkdir(parents=True, exist_ok=True)
 
         alias = f"wip_{uuid.uuid4().hex}"
-        register_sqlite_alias(alias, db_file)
         try:
-            with django_db_blocker.unblock(), override_settings(DATABASE_ROUTERS=[RouteAllToAlias(alias)]):
-                call_command("migrate", "--no-input", database=alias, verbosity=0)
+            with django_db_blocker.unblock():
+                register_migrated_sqlite_alias(alias, db_file, migrated_db_template)
         finally:
             teardown_sqlite_alias(alias)
 

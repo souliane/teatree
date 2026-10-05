@@ -459,7 +459,7 @@ class SlackBroadcastsScanner:
         ref = pr_ref_from_url(state.url)
         if ref is None:
             return False
-        return classify_author(ref.slug, author, host_kind=ref.host_kind).trusted
+        return classify_author(ref.slug, author, pr_url=state.url).trusted
 
     def _sweep_white_check_mark(self, row: ScannedBroadcast, states: Sequence[MrState]) -> None:
         """Re-react ``:white_check_mark:`` on sibling broadcasts of the same MRs (#1295 cap C).
@@ -563,7 +563,7 @@ def _signal_for_pending_mr(state: MrState, row: ScannedBroadcast, *, overlay: st
     """
     mr_url = state.url
     ref = pr_ref_from_url(mr_url)
-    untrusted = ref is not None and classify_author(ref.slug, state.author_username, host_kind=ref.host_kind).untrusted
+    untrusted = ref is not None and classify_author(ref.slug, state.author_username, pr_url=mr_url).untrusted
     return ScanSignal(
         kind="slack.review_intent",
         summary=f"Review intent (broadcast): {mr_url}",

@@ -16,7 +16,7 @@ import typer
 from claude_agent_sdk.types import EffortLevel
 
 from teatree.cli.eval.all import hint_missing_transcripts
-from teatree.cli.eval.app_helpers import write_single_trial_reports
+from teatree.cli.eval.app_helpers import RunReportPaths
 from teatree.cli.eval.escalate import (
     EscalationConfig,
     EscalationOutcome,
@@ -28,6 +28,7 @@ from teatree.cli.eval.escalate import (
 )
 from teatree.cli.eval.run_modes import DEFAULT_COST_REGRESSION_TOLERANCE, RunGuards, finalize_single_run
 from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import (
     API_BACKEND,
     FRESH_RUN_BACKENDS,
@@ -140,15 +141,14 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     results = [evaluate(spec, run, judge=grader) for spec, run in zip(specs, runs, strict=True)]
     renderers = {"json": render_json, "html": render_html}
     typer.echo(renderers.get(output_format, render_text)(results))
-    write_single_trial_reports(
-        results, transcript_html=transcript_html, summary_md=summary_md, summary_json=summary_json
-    )
+    RunReportPaths(transcript_html, summary_md, summary_json).write_single_trial(results)
     if backend == TRANSCRIPT_BACKEND and isinstance(runner, TranscriptRunner):
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
     _exit_when_the_usage_limit_ran_nothing(results)
     executed = sum(1 for r in results if not r.skipped)
+    cap_exhausted = getattr(runner, "budget_exhausted", False) or any(r.coverage_incomplete for r in results)
     RunGuards.hooks_registered(results)
-    RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
+    RunGuards.executed(executed=executed, collected=len(specs), required=require_executed and not cap_exhausted)
     RunGuards.api_metered(backend=backend, executed=executed, results=results)
     RunGuards.judge_metered(judge_requested=judge, results=results)
     if escalation is not None:
@@ -182,12 +182,20 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
         gate_cost_bounds=gates.gate_cost_bounds,
     ):
         sys.exit(1)
+    if cap_exhausted:
+        _exit_suite_budget_exhausted(results)
     # LAST, so the ledger keeps the record of the run that measured nothing. This is
     # the only lane where the all-skipped guard above can be disarmed (`--trials` and
     # `--models` arm it unconditionally), so it is the only place a suite could grade
     # nothing and still exit 0.
     _exit_when_the_usage_limit_refused_any(results)
     RunGuards.declined_is_not_a_pass(executed=executed, collected=len(specs))
+
+
+def _exit_suite_budget_exhausted(results: list[ScenarioResult]) -> None:
+    skipped = sum(r.skipped for r in results)
+    typer.echo(f"coverage incomplete: suite budget exhausted; {skipped}/{len(results)} scenarios skipped", err=True)
+    raise typer.Exit(code=MEASURED_NOTHING_EXIT_CODE)
 
 
 def _refused_by_the_usage_limit(results: list[ScenarioResult]) -> list[ScenarioResult]:
@@ -240,8 +248,7 @@ def _escalate_and_gate(
     if summary_md is not None:
         section = render_escalation_markdown(report)
         if section:
-            with summary_md.open("a", encoding="utf-8") as fh:
-                fh.write("\n" + section)
+            write_artifact(summary_md, "\n" + section, append=True)
     return report
 
 

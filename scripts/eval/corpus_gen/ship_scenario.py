@@ -75,7 +75,7 @@ def ship_scenarios() -> list[Scenario]:
                 # rather than on its matcher (#4139). The stubs are inert; the matcher
                 # still grades the CALL, so the negative keeps full teeth.
                 cli_stubs=("t3", "gh"),
-                good_cmd="t3 pr create --fill",
+                good_cmd="t3 teatree pr create --fill",
                 bad_cmd="echo pushed, will open PR later",
                 forbid=r"(?i)echo .*(later|tomorrow)",
                 forbid_bad_cmd="echo pushed, will open PR later",

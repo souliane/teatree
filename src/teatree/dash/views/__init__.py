@@ -28,7 +28,7 @@ from teatree.dash.views.settings import (
     settings_set,
     settings_snapshot,
 )
-from teatree.dash.views.skills import skills, skills_refresh, skills_remove
+from teatree.dash.views.skills import skills, skills_enable, skills_refresh, skills_remove
 from teatree.dash.views.tickets import task_action, ticket_drawer, ticket_transition
 from teatree.dash.views.transcript import transcript
 
@@ -70,6 +70,7 @@ __all__ = [
     "settings_set",
     "settings_snapshot",
     "skills",
+    "skills_enable",
     "skills_refresh",
     "skills_remove",
     "task_action",

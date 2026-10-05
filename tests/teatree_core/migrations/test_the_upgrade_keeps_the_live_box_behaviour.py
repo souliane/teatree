@@ -7,8 +7,9 @@ The fixture is the deployed box's own shape: an operator-edited ``maintenance`` 
 "immediate", and dream opt-ins in the nested ``loops`` table. Each assertion names a value
 the pre-fix migrations changed: 0086 raised on the ``tickets`` split, the posture rewrite
 replaced both edited presets and started the default-off loops under ``present``, 0109
-closed the owner's voice after hours, the cadence fold left ``eval_local`` daily, and
-nothing carried the dream opt-ins.
+closed the owner's voice after hours, and the cadence fold left ``eval_local`` daily.
+Migration 0124 removes obsolete gate and dream overrides because those behaviors now run
+unconditionally.
 
 The second class runs the same upgrade with every ``ConfigSetting`` query routed to a
 separate canonical store, the way ``ConfigSettingRouter`` routes it inside a worktree, and
@@ -135,6 +136,21 @@ _DREAM_TABLE = {
     "derive_evals": True,
     "promotion_cap": 5,
 }
+_ALWAYS_ON_GATE_KEYS = (
+    "critic_gate_mode",
+    "dream_derive_evals",
+    "dream_validate_live",
+    "require_anti_vacuity_attestation",
+    "require_debt_delta",
+    "require_executed_repro",
+    "require_integration_review",
+    "require_merge_evidence",
+    "require_merge_quality_verdict",
+    "require_review_context",
+    "require_reviewed_state_for_review_request",
+    "require_work_group_batch",
+    "token_outage_auto_engage",
+)
 
 
 def _seed_the_live_box(state_apps: StateApps, db: str) -> None:
@@ -158,6 +174,13 @@ def _seed_the_live_box(state_apps: StateApps, db: str) -> None:
     config.all().delete()
     config.create(scope="", key="on_behalf_post_mode", value="immediate")
     config.create(scope="", key="loops", value={"dream": _DREAM_TABLE})
+    config.bulk_create(
+        [
+            config.model(scope=scope, key=key, value=False)
+            for key in _ALWAYS_ON_GATE_KEYS
+            for scope in ("", "t3-teatree")
+        ]
+    )
 
 
 def _migrate_to_head() -> StateApps:
@@ -205,17 +228,13 @@ class TestTheUpgradeKeepsTheLiveBoxBehaviour(_UpgradeCase):
 
         assert {row.name: row.egress for row in mode.values()} == dict.fromkeys(mode, "allow")
         assert "on_behalf_post_mode" not in config
+        assert not head.get_model("core", "ConfigSetting").objects.filter(key__in=_ALWAYS_ON_GATE_KEYS).exists()
 
         assert loop.get(name="eval_local").delay_seconds == 168 * _HOUR
         assert loop.get(name="triage_assessor").delay_seconds == 24 * _HOUR
 
         carried = {key: value for key, value in config.items() if key.startswith("dream_")}
-        assert carried == {
-            "dream_compliance_escalate": True,
-            "dream_automation_asks": True,
-            "dream_validate_live": True,
-            "dream_derive_evals": True,
-        }
+        assert carried == {}, "unconditional dream passes have no surviving overrides"
 
 
 class _PinConfigTo:
@@ -273,4 +292,4 @@ class TestAWorktreeMigrateNeverWritesTheCanonicalStore(_UpgradeCase):
         assert self._canonical_rows() == before
         migrated = live_apps.get_model("core", "ConfigSetting").objects.using(connection.alias)
         assert not migrated.filter(key="on_behalf_post_mode").exists()
-        assert migrated.filter(key="dream_derive_evals", value=True).exists()
+        assert not migrated.filter(key__in=_ALWAYS_ON_GATE_KEYS).exists()

@@ -153,27 +153,6 @@ class TestBindingExpireRefusal(TestCase):
         assert row.archive_path == ""
 
 
-class TestCanPruneIndexLine(TestCase):
-    def test_candidate_cannot_be_pruned(self) -> None:
-        row = _record()
-        assert row.can_prune_index_line is False
-
-    def test_promoted_with_destination_can_be_pruned(self) -> None:
-        row = _record()
-        row.mark_verified("cited mistake")
-        row.mark_promoted("memory/home.md")
-
-        assert row.can_prune_index_line is True
-
-    def test_terminal_without_destination_cannot_be_pruned(self) -> None:
-        row = _record()
-        row.expire("archive/path.md")
-
-        assert row.status == ConsolidatedMemory.Status.EXPIRED
-        assert row.durable_destination == ""
-        assert row.can_prune_index_line is False
-
-
 class TestManager(TestCase):
     def test_prunable_returns_only_terminal_rows_with_destination(self) -> None:
         candidate = _record("c1")
@@ -188,17 +167,6 @@ class TestManager(TestCase):
         assert promoted in prunable
         assert candidate not in prunable
         assert terminal_no_dest not in prunable
-
-    def test_verified_for_overlay_scopes_to_verified_and_overlay(self) -> None:
-        verified = _record("v", overlay="acme")
-        verified.mark_verified("m")
-        _record("c", overlay="acme")
-        other_overlay = _record("o", overlay="widgets")
-        other_overlay.mark_verified("m")
-
-        result = list(ConsolidatedMemory.objects.verified_for_overlay("acme"))
-
-        assert result == [verified]
 
 
 class TestDispositionLadder(TestCase):
@@ -371,27 +339,6 @@ class TestSupersedeCoveredBy(TestCase):
         kept.refresh_from_db()
         assert kept.status == ConsolidatedMemory.Status.VERIFIED
 
-    def test_a_superseded_row_is_not_a_durable_home(self) -> None:
-        narrow = ConsolidatedMemory.record_cluster(
-            cluster_key=_key("narrow-with-hint"),
-            rule="Always run the gate before pushing.",
-            source_files=["a.md"],
-            member_count=1,
-            max_member_weight=5,
-            is_binding=False,
-            overlay="acme",
-            durable_destination="feedback/run_gate.md",
-            verified_citation="a cited mistake",
-        )
-        wide = self._row("wide", ["a.md", "b.md"])
-
-        ConsolidatedMemory.objects.supersede_covered_by(wide)
-
-        narrow.refresh_from_db()
-        assert narrow.status == ConsolidatedMemory.Status.SUPERSEDED
-        assert narrow.can_prune_index_line is False
-        assert list(ConsolidatedMemory.objects.prunable()) == []
-
     def test_member_paths_reads_both_stored_member_shapes(self) -> None:
         row = self._row("shapes", ["a.jsonl", {"path": "b.jsonl", "span": [1, 4]}, 7])
 
@@ -475,14 +422,6 @@ class TestDispositionManager(TestCase):
         assert ticketed not in result
         assert untriaged not in result
         assert user_specific not in result
-
-    def test_schema_count_counts_overlay_rows(self) -> None:
-        _record("a", overlay="acme")
-        _record("b", overlay="acme")
-        _record("c", overlay="widgets")
-
-        assert ConsolidatedMemory.objects.schema_count("acme") == 2
-        assert ConsolidatedMemory.objects.schema_count("widgets") == 1
 
 
 class TestStr(TestCase):

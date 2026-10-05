@@ -16,11 +16,18 @@ So a timeout here is a REQUEST against what is left, never an entitlement:
 answers ``None`` once the budget is spent, so the caller skips a subprocess it
 would only be cancelled inside of.
 
+The ceiling covers the whole hook PROCESS, not one handler, so the clock is the
+process's: it starts when the router, loading its handlers, imports this module,
+and every handler after that spends from it. The interpreter start and the imports
+before that point are not on the clock; the emit reserve covers them.
+:func:`remaining_timeout_s` is what an in-hook subprocess asks.
+
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` / Django is importable, so the module top is stdlib only.
 """
 
 import sys
+import time
 from typing import Final
 
 # Alias the bare and ``hooks.scripts.`` identities to ONE module object, as every
@@ -36,14 +43,31 @@ HOOK_CEILING_S: Final[int] = 30
 # subprocess returns; spending the ceiling to the last millisecond loses it.
 _EMIT_RESERVE_S: Final[float] = 1.0
 
+# A subprocess granted less can only time out, after paying for its own start.
+_SHORTEST_USEFUL_S: Final[float] = 1.0
+
+NO_TIME_LEFT: Final[str] = "no time left in the hook budget"
+
+_STARTED_AT: float = time.monotonic()
+
 
 def bounded_timeout_s(preferred: float, elapsed: float) -> float | None:
     """*preferred* seconds, shrunk to what the ceiling still affords after *elapsed*.
 
-    ``None`` means the budget is spent — start no subprocess, because one the
-    harness cancels costs the whole decision rather than just its own result. A
-    backwards *elapsed* (a clock read the caller could not trust) counts as no
-    time spent, which shortens nothing that was already safe.
+    ``None`` means the budget is spent, or too little of it is left to be worth
+    a process start — start no subprocess, because one the harness cancels costs
+    the whole decision rather than just its own result. A backwards *elapsed* (a
+    clock read the caller could not trust) counts as no time spent, which
+    shortens nothing that was already safe.
     """
     remaining = HOOK_CEILING_S - _EMIT_RESERVE_S - max(0.0, elapsed)
-    return min(preferred, remaining) if remaining > 0 else None
+    return min(preferred, remaining) if remaining >= _SHORTEST_USEFUL_S else None
+
+
+def elapsed_s() -> float:
+    return time.monotonic() - _STARTED_AT
+
+
+def remaining_timeout_s(preferred: float) -> float | None:
+    """*preferred* seconds, bounded by what is left of this hook process's ceiling."""
+    return bounded_timeout_s(preferred, elapsed_s())

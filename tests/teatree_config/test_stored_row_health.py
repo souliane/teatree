@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS
 from teatree.config.stored_row_health import (
     INTERNAL_STATE_KEYS,
     internal_state_key,
@@ -25,24 +24,15 @@ class TestStoredRowNote:
         noted = sorted(key for key in ALL_KNOWN_CONFIG_SETTINGS if stored_row_note(key))
         assert not noted
 
-    def test_a_removed_key_is_named_dead_with_the_clear_remedy(self) -> None:
-        key = next(iter(sorted(REMOVED_SETTING_KEYS)))
+    def test_an_unknown_key_has_the_clear_remedy(self) -> None:
+        key = "issue_implementer_require_label"
         note = stored_row_note(key)
-        assert "retired" in note
+        assert "unknown" in note
         assert "config_setting clear" in note
         assert key in note
 
-    def test_a_renamed_alias_says_where_its_value_goes_not_that_it_is_dead(self) -> None:
-        # A renamed key's stored value still resolves — onto the replacement field —
-        # so marking it "not in effect" would be a lie the operator acts on.
-        key = next(iter(sorted(RENAMED_SETTING_KEYS)))
-        note = stored_row_note(key)
-        assert RENAMED_SETTING_KEYS[key] in note
-        assert "not in effect" not in note
-
     def test_an_unrecorded_key_is_still_marked(self) -> None:
-        # The class fix, not the one-key fix: a removal nobody recorded in
-        # RETIRED_SETTINGS must not render as an ordinary setting either.
+        # A row with no declaration must not render as an ordinary setting.
         note = stored_row_note("a_key_no_registry_and_no_retirement_carries")
         assert "not a declared setting" in note
         assert "config_setting clear" in note
@@ -52,14 +42,6 @@ class TestStoredRowNote:
         # graph it never consults, and #3867 printed it beside three keys with live
         # consumers. Only what a registry lookup can support may be said.
         assert "no live consumer" not in stored_row_note("a_key_no_registry_and_no_retirement_carries")
-
-    def test_the_retired_intake_gate_lands_in_the_retired_bucket_not_the_unknown_one(self) -> None:
-        # Asserting only that the note is non-empty passes for EVERY bucket, so it
-        # never noticed a key classified as unknown-orphan rather than retired.
-        note = stored_row_note("issue_implementer_require_label")
-        assert "retired — not in effect" in note
-        assert "config_setting clear issue_implementer_require_label" in note
-        assert "not a declared setting" not in note
 
 
 class TestIsOperatorConfiguration:
@@ -78,11 +60,8 @@ class TestIsOperatorConfiguration:
         assert not kind.startswith("[")
         assert stored_row_note("loop_preset_transition_stamp") == f"[{kind}]"
 
-    def test_a_live_setting_and_a_retired_alias_are_both_configuration(self) -> None:
-        # An alias's value still migrates onto its replacement, so dropping it from an
-        # export would lose an opinion the operator still holds.
+    def test_a_live_setting_is_configuration(self) -> None:
         assert is_operator_configuration(next(iter(sorted(ALL_KNOWN_CONFIG_SETTINGS))))
-        assert is_operator_configuration(next(iter(sorted(RENAMED_SETTING_KEYS))))
 
     @pytest.mark.parametrize(
         "key",
@@ -91,8 +70,8 @@ class TestIsOperatorConfiguration:
     def test_internal_state_and_an_orphan_are_not(self, key: str) -> None:
         assert not is_operator_configuration(key)
 
-    def test_a_removed_key_is_not_configuration_either(self) -> None:
-        assert not is_operator_configuration(next(iter(sorted(REMOVED_SETTING_KEYS))))
+    def test_a_former_setting_is_not_configuration(self) -> None:
+        assert not is_operator_configuration("speed")
 
 
 class TestInternalStateKeysAreNotCalledDead:
@@ -118,7 +97,7 @@ class TestInternalStateKeysAreNotCalledDead:
 
     def test_lookup_returns_none_for_a_key_that_is_not_state(self) -> None:
         assert internal_state_key(self.STAMP) is not None
-        assert internal_state_key("adaptive_intake_concurrency_enabled") is None
+        assert internal_state_key("admit_colleague_prs_to_board") is None
 
     def test_no_registered_key_is_also_a_live_setting(self) -> None:
         registered = {entry.key for entry in INTERNAL_STATE_KEYS}

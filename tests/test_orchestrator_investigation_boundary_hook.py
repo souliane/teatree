@@ -12,15 +12,12 @@ Agent-dispatch DENY.
 It is a WARN, never a deny — the only never-lockout-safe enforcement for a
 boundary this broad. It fires ONLY for the live t3-master session (not
 sub-agents, not a non-owner interactive session), and is suppressed by a per-call
-``[orchestration-ok: <reason>]`` token or the out-of-repo kill-switch ``[teatree]
-orchestrator_investigation_gate_enabled = false``.
+``[orchestration-ok: <reason>]`` token.
 """
 
 import ast
 import contextlib
 import io
-import json
-import sqlite3
 import sys
 from collections.abc import Iterator
 from datetime import timedelta
@@ -35,29 +32,12 @@ import hooks.scripts.hook_router as router
 import hooks.scripts.orchestrator_investigation_gate as gate
 from hooks.scripts.orchestrator_investigation_gate import (
     _investigation_signal,
-    _orchestrator_investigation_gate_enabled,
     _session_is_loop_owner,
     handle_enforce_orchestrator_investigation_boundary,
 )
 from teatree.core.models import LoopLease
 
 _OWNER = "sess-owner"
-
-
-def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
-    """Seed a DB-home ``teatree_config_setting`` store with JSON-encoded rows."""
-    conn = sqlite3.connect(str(path))
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
-        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
-    )
-    for key, value in rows.items():
-        conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
-            (key, json.dumps(value)),
-        )
-    conn.commit()
-    conn.close()
 
 
 @contextlib.contextmanager
@@ -70,13 +50,6 @@ def _capture_stderr() -> Iterator[io.StringIO]:
         yield buffer
     finally:
         sys.stderr = original
-
-
-@pytest.fixture(autouse=True)
-def _gate_enabled_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point ``Path.home`` at a clean tmp dir so the gate is ON by default."""
-    home = tmp_path_factory.mktemp("home")
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
 
 
 def _owner_call(tool_name: str, **tool_input: object) -> dict:
@@ -316,29 +289,6 @@ class TestOrchestrationOkEscapeHatch:
         data = _owner_bash("git show HEAD [orchestration-ok: ]")
         assert handle_enforce_orchestrator_investigation_boundary(data) is False
         assert "[orchestration-boundary]" in capsys.readouterr().err
-
-
-class TestGateKillSwitch:
-    def test_disabled_via_db_suppresses_nudge(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        db = tmp_path / "config.sqlite3"
-        _seed_config_db(db, {"orchestrator_investigation_gate_enabled": False})
-        monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        monkeypatch.setattr(gate, "_session_is_loop_owner", lambda _sid: True)
-        assert _orchestrator_investigation_gate_enabled() is False
-        assert handle_enforce_orchestrator_investigation_boundary(_owner_bash("git show HEAD")) is False
-        assert capsys.readouterr().err.strip() == ""
-
-    def test_enabled_by_default_when_key_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        db = tmp_path / "config.sqlite3"
-        _seed_config_db(db, {})
-        monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        assert _orchestrator_investigation_gate_enabled() is True
-
-    def test_enabled_when_config_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-        assert _orchestrator_investigation_gate_enabled() is True
 
 
 class TestRegisteredAsWarnOnly:

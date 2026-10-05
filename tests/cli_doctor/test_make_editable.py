@@ -10,7 +10,11 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+from typer.testing import CliRunner
+
 from teatree.cli.doctor import DoctorService
+from teatree.cli.doctor.app import doctor_app
+from teatree.utils.run import run_allowed_to_fail
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -41,7 +45,8 @@ def _install_fake_uv(bin_dir: Path) -> None:
     bin_dir.mkdir(parents=True, exist_ok=True)
     fake_uv = bin_dir / "uv"
     fake_uv.write_text(
-        '#!/bin/sh\necho "source = { editable = \\"../teatree\\" }" >> uv.lock\nexit 0\n',
+        '#!/bin/sh\nif [ "$1" = lock ]; then exit 0; fi\n'
+        'echo "source = { editable = \\"../teatree\\" }" >> uv.lock\nexit 0\n',
     )
     fake_uv.chmod(0o755)
 
@@ -61,7 +66,9 @@ class TestMakeEditable:
         ):
             DoctorService.make_editable("teatree", Path("/tmp/teatree"))
 
-        assert "now editable" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "now editable" in out
+        assert f"t3 doctor cleanup-editable-sources {tmp_path}" in out
         assert (tmp_path / ".t3-dev-sources").is_file()
         rewritten = pyproject.read_text()
         assert "path =" in rewritten
@@ -147,7 +154,9 @@ class TestMakeEditableDoesNotLeakLockfile:
         dirty = _git(repo, "status", "--porcelain").stdout
         assert "uv.lock" not in dirty, f"editable install leaked uv.lock into the commit path: {dirty!r}"
 
-    def test_restore_sources_unhides_lockfile(self, tmp_path):
+    def test_restore_sources_unhides_lockfile(self, tmp_path, monkeypatch):
+        _install_fake_uv(tmp_path / "bin")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
         repo = tmp_path / "host"
         repo.mkdir()
         _init_git_repo(repo)
@@ -163,3 +172,118 @@ class TestMakeEditableDoesNotLeakLockfile:
         # No skip-worktree / assume-unchanged bit should remain on uv.lock.
         lsfiles = _git(repo, "ls-files", "-v", "uv.lock").stdout
         assert lsfiles.startswith("H "), f"uv.lock still hidden after restore: {lsfiles!r}"
+
+    def test_restore_sources_leaves_untracked_lockfile_and_finishes(self, tmp_path, monkeypatch):
+        _install_fake_uv(tmp_path / "bin")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        repo = tmp_path / "host"
+        repo.mkdir()
+        _init_git_repo(repo)
+        (repo / "pyproject.toml").write_text('[project]\nname = "host"\n')
+        _git(repo, "add", "pyproject.toml")
+        _git(repo, "commit", "-q", "-m", "init")
+        lockfile = repo / "uv.lock"
+        lockfile.write_text("untracked = true\n")
+        marker = repo / ".t3-dev-sources"
+        marker.write_text("teatree=/repos/teatree\n")
+
+        DoctorService.restore_sources(repo)
+
+        assert lockfile.read_text() == "untracked = true\n"
+        assert not marker.exists()
+
+    def test_doctor_cleanup_restores_marked_source_files(self, tmp_path, monkeypatch):
+        _install_fake_uv(tmp_path / "bin")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        repo = tmp_path / "host"
+        repo.mkdir()
+        _init_git_repo(repo)
+        pyproject = repo / "pyproject.toml"
+        lockfile = repo / "uv.lock"
+        pyproject.write_text('[project]\nname = "host"\n')
+        lockfile.write_text('[[package]]\nname = "teatree"\n')
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "init")
+        pyproject.write_text('[project]\nname = "host"\n[tool.uv.sources]\nteatree = { path = "/repos/teatree" }\n')
+        lockfile.write_text('[[package]]\nname = "teatree"\nsource = { path = "/repos/teatree" }\n')
+        _git(repo, "update-index", "--assume-unchanged", "pyproject.toml", "uv.lock")
+        marker = repo / ".t3-dev-sources"
+        marker.write_text("teatree=/repos/teatree\n")
+
+        result = CliRunner().invoke(doctor_app, ["cleanup-editable-sources", str(repo)])
+
+        assert result.exit_code == 0, result.output
+        assert pyproject.read_text() == '[project]\nname = "host"\n'
+        assert lockfile.read_text() == '[[package]]\nname = "teatree"\n'
+        assert not marker.exists()
+
+    def test_cleanup_keeps_unrelated_edits_in_both_files(self, tmp_path, monkeypatch):
+        _install_fake_uv(tmp_path / "bin")
+        monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+        repo = tmp_path / "host"
+        repo.mkdir()
+        _init_git_repo(repo)
+        pyproject = repo / "pyproject.toml"
+        lockfile = repo / "uv.lock"
+        pyproject.write_text(
+            '[project]\nname = "host"\n\n[tool.uv.sources]\nteatree = { git = "https://example.test/t3" }\n'
+        )
+        lockfile.write_text('[[package]]\nname = "teatree"\nsource = { registry = "https://pypi.org" }\n')
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "init")
+        pyproject.write_text(
+            '[project]\nname = "host"\nversion = "1.2.3"\n\n[tool.uv.sources]\n'
+            'teatree = { path = "/repos/teatree", editable = true }\n'
+        )
+        lockfile.write_text(
+            '[[package]]\nname = "teatree"\nsource = { editable = "/repos/teatree" }\n'
+            'dependencies = [{ name = "extra" }]\n'
+        )
+        (repo / ".t3-dev-sources").write_text("teatree=/repos/teatree\n")
+
+        result = CliRunner().invoke(doctor_app, ["cleanup-editable-sources", str(repo)])
+
+        assert result.exit_code == 0, result.output
+        assert 'version = "1.2.3"' in pyproject.read_text()
+        assert 'teatree = { git = "https://example.test/t3" }' in pyproject.read_text()
+        assert 'dependencies = [{ name = "extra" }]' in lockfile.read_text()
+        assert 'source = { registry = "https://pypi.org" }' in lockfile.read_text()
+
+    def test_restore_relocks_package_metadata_after_pyproject_restore(self, tmp_path):
+        repo = tmp_path / "host"
+        repo.mkdir()
+        _init_git_repo(repo)
+        pyproject = repo / "pyproject.toml"
+        lockfile = repo / "uv.lock"
+        pyproject.write_text(
+            '[project]\nname = "host"\n\n[tool.uv.sources]\nteatree = { git = "https://example.test/t3" }\n'
+        )
+        lockfile.write_text(
+            '[[package]]\nname = "host"\n[package.metadata]\n'
+            'requires-dist = [{ name = "teatree", git = "https://example.test/t3" }]\n'
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "init")
+        pyproject.write_text(
+            '[project]\nname = "host"\n\n[tool.uv.sources]\nteatree = { path = "/repos/teatree", editable = true }\n'
+        )
+        lockfile.write_text(
+            '[[package]]\nname = "host"\n[package.metadata]\n'
+            'requires-dist = [{ name = "teatree", path = "/repos/teatree" }]\n'
+        )
+        (repo / ".t3-dev-sources").write_text("teatree=/repos/teatree\n")
+
+        def relock(argv, **kwargs):
+            if argv == ["uv", "lock"]:
+                assert 'git = "https://example.test/t3"' in pyproject.read_text()
+                lockfile.write_text(
+                    '[[package]]\nname = "host"\n[package.metadata]\n'
+                    'requires-dist = [{ name = "teatree", git = "https://example.test/t3" }]\n'
+                )
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            return run_allowed_to_fail(argv, **kwargs)
+
+        with patch("teatree.cli.doctor.service.run_allowed_to_fail", side_effect=relock) as runner:
+            DoctorService.restore_sources(repo)
+        assert any(call.args[0] == ["uv", "lock"] for call in runner.call_args_list)
+        assert 'git = "https://example.test/t3"' in lockfile.read_text()

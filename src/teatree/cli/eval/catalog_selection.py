@@ -34,7 +34,7 @@ def select_specs(
     try:
         resolution = resolve_rotating_shard(shard)
         if resolution.reason:
-            typer.echo(f"eval shard: {resolution.reason}")
+            typer.echo(f"eval shard: {resolution.reason}", err=True)
         return filter_specs_by_shard(specs, resolution.token)
     except ShardSpecError as exc:
         typer.echo(str(exc), err=True)

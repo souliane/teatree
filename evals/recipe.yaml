@@ -1,4 +1,4 @@
-# The committed factory-score recipe — the metric-to-beat the T4 outer loop reads.
+# The committed factory-score recipe.
 #
 # It names the SIG-PR-1 SIGNALS registry ids and assigns each a `weight` (the
 # five sum to 1.0), an optional `red_when` hard floor (in the signal's natural

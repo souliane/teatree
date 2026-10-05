@@ -112,9 +112,6 @@ class ScopeCache:
         self._missing: dict[tuple[str, str], str] = {}
         self._notifier = notifier if notifier is not None else _notify_user_deferred
 
-    def is_missing(self, token_id: str, scope: str) -> bool:
-        return (token_id, scope) in self._missing
-
     def raise_if_cached(self, token_id: str, scope: str) -> None:
         """Short-circuit to ``ScopeMissingError(cached=True)`` for a known-missing pair.
 

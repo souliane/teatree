@@ -35,8 +35,8 @@ The methods return the raw Slack body so callers keep their existing
 transport exceptions propagate to each caller's existing ``try``/``except``.
 
 Scope is *only* colleague Slack post/react. It does not own bot→user DM
-sinks (``notify_user``, ``reply_transport.post_dm``, the daily digest,
-``speak``) — already correct and ungated by design — the FSM
+sinks (``notify_user``, ``reply_transport.post_dm``, ``speak``) — already
+correct and ungated by design — the FSM
 ``signals.py`` reactions (already gate+audit-correct on the separate
 ``slack_reactions`` single-bot-token transport), or the GitLab
 approve/comment paths (already gated via ``check_on_behalf``).
@@ -47,9 +47,14 @@ here, and ``MessagingBackend``/``RawAPIDict`` are owned by ``teatree.core``
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from enum import StrEnum
 
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.egress_transport import EgressKind, run_egress_transport, suppress_on_behalf_egress
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, route_send
@@ -57,6 +62,102 @@ from teatree.on_behalf_gate import OnBehalfContext
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
+
+
+class EgressOutcome(StrEnum):
+    POSTED = "posted"
+    REFUSED = "refused"
+
+
+@dataclass(frozen=True, slots=True)
+class EgressDestination:
+    """Where a Slack call landed — bundled so ``_observe_egress`` stays under the arg-count cap."""
+
+    channel: str = ""
+    thread: str = ""
+
+
+_NO_DESTINATION = EgressDestination()
+
+
+@dataclass(frozen=True, slots=True)
+class EgressAttempt:
+    target: str
+    action: str
+    kind: EgressKind
+    outcome: EgressOutcome
+    reason: str
+    channel: str = ""
+    thread: str = ""
+
+
+type EgressObserver = Callable[[EgressAttempt], None]
+
+_EGRESS_OBSERVER: ContextVar[EgressObserver | None] = ContextVar("on_behalf_egress_observer", default=None)
+
+
+@contextmanager
+def observe_on_behalf_egress(observer: EgressObserver) -> Iterator[None]:
+    token = _EGRESS_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _EGRESS_OBSERVER.reset(token)
+
+
+def _observe_egress(
+    target: str,
+    action: str,
+    kind: EgressKind,
+    response: RawAPIDict,
+    *,
+    destination: EgressDestination = _NO_DESTINATION,
+) -> RawAPIDict:
+    landed = bool(response.get("ok")) or response.get("error") == "already_reacted"
+    if observer := _EGRESS_OBSERVER.get():
+        reason = (
+            "all live checks passed; final transport suppressed"
+            if landed
+            else str(response.get("error") or "no response")
+        )
+        observer(
+            EgressAttempt(
+                target=target,
+                action=action,
+                kind=kind,
+                outcome=EgressOutcome.POSTED if landed else EgressOutcome.REFUSED,
+                reason=reason,
+                channel=destination.channel,
+                thread=destination.thread,
+            ),
+        )
+    return response
+
+
+@contextmanager
+def _observe_egress_errors(
+    target: str,
+    action: str,
+    kind: EgressKind,
+    *,
+    destination: EgressDestination = _NO_DESTINATION,
+) -> Iterator[None]:
+    try:
+        yield
+    except Exception as exc:
+        if observer := _EGRESS_OBSERVER.get():
+            observer(
+                EgressAttempt(
+                    target=target,
+                    action=action,
+                    kind=kind,
+                    outcome=EgressOutcome.REFUSED,
+                    reason=" ".join(str(exc).splitlines()),
+                    channel=destination.channel,
+                    thread=destination.thread,
+                ),
+            )
+        raise
 
 
 class _PublishDidNotLandError(Exception):
@@ -143,29 +244,48 @@ class OnBehalfSlackEgress:
         notice only when the reaction *really* landed (``ok`` truthy — never
         on ``already_reacted`` or ``ok:false``). Returns the raw Slack body.
         """
-        if self._is_self_dm(channel):
-            return self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji)
-        _route_colleague_send(channel=channel, payload=f":{emoji}:", action=action, target=target)
-        try:
-            response = require_on_behalf_approval(
-                target=target,
-                action=action,
-                context=context,
-                publish=lambda: _publish_or_rollback(
-                    lambda: self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji)
-                ),
-            )
-        except _PublishDidNotLandError as unlanded:
-            return unlanded.response
-        if response.get("ok"):
-            notify_user_on_behalf_post(
-                target=target,
-                action=action,
-                destination=destination or channel,
-                artifact_url=artifact_url or channel,
-                summary=summary or f":{emoji}:",
-            )
-        return response
+        egress_location = EgressDestination(channel=channel, thread=ts)
+        with _observe_egress_errors(target, action, EgressKind.REACTION, destination=egress_location):
+            if self._is_self_dm(channel):
+                response = run_egress_transport(
+                    target,
+                    action,
+                    EgressKind.REACTION,
+                    lambda: self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji),
+                )
+                return _observe_egress(target, action, EgressKind.REACTION, response, destination=egress_location)
+            _route_colleague_send(channel=channel, payload=f":{emoji}:", action=action, target=target)
+            try:
+                response = require_on_behalf_approval(
+                    target=target,
+                    action=action,
+                    context=context,
+                    publish=lambda: _publish_or_rollback(
+                        lambda: run_egress_transport(
+                            target,
+                            action,
+                            EgressKind.REACTION,
+                            lambda: self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji),
+                        ),
+                    ),
+                )
+            except _PublishDidNotLandError as unlanded:
+                return _observe_egress(
+                    target,
+                    action,
+                    EgressKind.REACTION,
+                    unlanded.response,
+                    destination=egress_location,
+                )
+            if response.get("ok"):
+                notify_user_on_behalf_post(
+                    target=target,
+                    action=action,
+                    destination=destination or channel,
+                    artifact_url=artifact_url or channel,
+                    summary=summary or f":{emoji}:",
+                )
+            return _observe_egress(target, action, EgressKind.REACTION, response, destination=egress_location)
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def post(  # noqa: PLR0913 — colleague-egress chokepoint; each kwarg is a documented gate/route/audit input, kwargs-only.
@@ -204,45 +324,56 @@ class OnBehalfSlackEgress:
         a colleague surface is never read aloud. Returns the raw Slack body
         so callers keep inspecting ``ok`` / ``error`` / ``ts``.
         """
-        if self._is_self_dm(channel):
-            from teatree.core.speak import deliver_user_dm  # noqa: PLC0415 — deferred: call-time import, kept lazy
+        egress_location = EgressDestination(channel=channel, thread=thread_ts)
+        with _observe_egress_errors(target, action, EgressKind.POST, destination=egress_location):
+            if self._is_self_dm(channel):
 
-            response = deliver_user_dm(self._messaging, channel=channel, text=text, thread_ts=thread_ts)
-            if response.get("ok") and response.get("ts"):
-                _retire_threaded_answer(thread_ts)
-            return response
-        text = _route_colleague_send(channel=channel, payload=text, action=action, target=target)
-        try:
-            response = require_on_behalf_approval(
-                target=target,
-                action=action,
-                context=context,
-                publish=lambda: _publish_or_rollback(
-                    lambda: self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts)
-                ),
-            )
-        except _PublishDidNotLandError as unlanded:
-            return unlanded.response
-        if response.get("ok"):
-            notify_user_on_behalf_post(
-                target=target,
-                action=action,
-                destination=destination or channel,
-                artifact_url=channel,
-                summary=summary or text[:120],
-            )
-        return response
+                def publish_self_dm() -> RawAPIDict:
+                    from teatree.core.speak import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
+                        deliver_user_dm,
+                    )
+
+                    return deliver_user_dm(self._messaging, channel=channel, text=text, thread_ts=thread_ts)
+
+                response = run_egress_transport(target, action, EgressKind.POST, publish_self_dm)
+                if response.get("ok") and response.get("ts"):
+                    _retire_threaded_answer(thread_ts)
+                return _observe_egress(target, action, EgressKind.POST, response, destination=egress_location)
+            text = _route_colleague_send(channel=channel, payload=text, action=action, target=target)
+            try:
+                response = require_on_behalf_approval(
+                    target=target,
+                    action=action,
+                    context=context,
+                    publish=lambda: _publish_or_rollback(
+                        lambda: run_egress_transport(
+                            target,
+                            action,
+                            EgressKind.POST,
+                            lambda: self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts),
+                        ),
+                    ),
+                )
+            except _PublishDidNotLandError as unlanded:
+                return _observe_egress(target, action, EgressKind.POST, unlanded.response, destination=egress_location)
+            if response.get("ok"):
+                notify_user_on_behalf_post(
+                    target=target,
+                    action=action,
+                    destination=destination or channel,
+                    artifact_url=channel,
+                    summary=summary or text[:120],
+                )
+            return _observe_egress(target, action, EgressKind.POST, response, destination=egress_location)
 
 
 def _route_colleague_send(*, channel: str, payload: str, action: str, target: str) -> str:
     """Route a colleague-surface Slack send through the #117 send-proxy.
 
-    Returns the (possibly redacted, in ``enforce`` mode) payload to post. Raises
-    :class:`~teatree.core.send_proxy.SendBlockedError` when the proxy refuses the
-    destination (``enforce`` mode, destination absent from the allowlist) — a
-    pre-wire block that composes with the on-behalf gate below it. On the ``warn``
-    ship default the proxy always allows and returns the payload unchanged, so
-    this is an audit-only pass.
+    Returns the possibly redacted payload to post. Raises
+    :class:`~teatree.core.send_proxy.SendBlockedError` when the destination is
+    absent from the allowlist — a pre-wire block that composes with the
+    on-behalf gate below it.
     """
     verdict = route_send(
         SendRequest(
@@ -267,11 +398,11 @@ def _retire_threaded_answer(thread_ts: str) -> None:
     is a genuine "this DM answers that question" signal (unlike the shared
     :func:`teatree.core.speak.deliver_user_dm` chokepoint, which carries the
     most-recent active DM thread for any INFO/status DM). The matching
-    :class:`PendingChatInjection` row is stamped on BOTH gates in one CAS —
+    :class:`PendingChatInjection` row is stamped on BOTH columns in one CAS —
     ``loop_replied_at`` so the reactive cycle stops re-delegating a
-    ``t3:answerer`` Task, and ``answered_at`` so the #1063 Stop-hook gate
-    stops nagging. Best-effort: a top-level self-DM (no ``thread_ts``) is a
-    no-op and any DB failure is logged and swallowed so the DM is never lost.
+    ``t3:answerer`` Task, and ``answered_at`` (the agent personally replied).
+    Best-effort: a top-level self-DM (no ``thread_ts``) is a no-op and any DB
+    failure is logged and swallowed so the DM is never lost.
     """
     if not thread_ts:
         return
@@ -283,4 +414,13 @@ def _retire_threaded_answer(thread_ts: str) -> None:
         logger.debug("retire-answered-question stamp failed for thread_ts=%s: %s", thread_ts, exc)
 
 
-__all__ = ["NO_TOKEN_FOR_DESTINATION", "OnBehalfPostBlockedError", "OnBehalfSlackEgress"]
+__all__ = [
+    "NO_TOKEN_FOR_DESTINATION",
+    "EgressAttempt",
+    "EgressKind",
+    "EgressOutcome",
+    "OnBehalfPostBlockedError",
+    "OnBehalfSlackEgress",
+    "observe_on_behalf_egress",
+    "suppress_on_behalf_egress",
+]

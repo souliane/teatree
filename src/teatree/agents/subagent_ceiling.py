@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 #: one run, which is strictly tighter: twenty parallel agents per wave, repeated,
 #: is the runaway this exists to bound. Twenty is roughly double the widest fan-out
 #: any recorded dispatch has needed, so it refuses runaways without refusing work.
-DEFAULT_SPAWN_CEILING = 20
 
 #: The SDK tool names the ``dispatch_subtask`` capability grants, as an SDK hook
 #: matcher. Derived from the capability map rather than spelled out, so a change to

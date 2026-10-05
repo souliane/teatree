@@ -22,9 +22,7 @@ a bespoke structured table nor a dict-literal ``{"<key>": ...}`` key, both
 coincidental collisions), or the field on a
 non-comment line of a ``hooks/*.sh`` cold-read script. A field read by none is dead config, unless named in
 ``FIELDS_WITHOUT_SRC_READER`` — the reviewable allowlist of fields consumed by
-agent-prose / documentation rather than ``src`` code, or documented reader-less -
-or in ``FIELDS_AWAITING_DECLARED_CONSUMER``, declared ahead of the change that
-reads it and forced back out of the allowlist as soon as that reader lands.
+agent-prose / documentation rather than ``src`` code, or documented reader-less.
 """
 
 import ast
@@ -33,7 +31,6 @@ from collections.abc import Callable
 from functools import cache
 
 from teatree.config import UserSettings
-from teatree.config.setting_registries import CODE_PINNED_SETTINGS
 from teatree.quality.setting_readership import file_settings_reads
 from tests.conformance._src_tree import REPO_ROOT, SRC_DIR, parsed_modules
 
@@ -43,29 +40,11 @@ _PY_ROOTS = (SRC_DIR, _REPO_ROOT / "hooks")
 _SH_ROOT = _REPO_ROOT / "hooks"
 
 
-# Fields whose ONLY consumer is not ``src`` Python — documented, reviewable.
-# ``e2e_confidence_threshold`` is documentation-driven by design (BLUEPRINT §
-# configuration: "the typed field is the shared source of truth for the doc value
-# and any future programmatic consumer"); the ``/t3:e2e`` verify↔review loop is
-# agent prose, not a deterministic gate, so it reads the value from the skill.
-# The other three entries this list carried — ``issue_implementer_cadence_hours``,
-# ``privacy``, ``timezone`` — were reader-less rather than prose-consumed, so #4203
-# retired them instead of excusing them. A NEW dead field is NOT on this list and
-# fails until it gains a real reader or a conscious allowlist entry.
-FIELDS_WITHOUT_SRC_READER: frozenset[str] = frozenset({"e2e_confidence_threshold"})
+# Every retained field now needs a source reader; there is no waiver for
+# documentation-only or planned consumers.
+FIELDS_WITHOUT_SRC_READER: frozenset[str] = frozenset()
 
-# Fields DECLARED ahead of the change that reads them, every one INERT by default
-# (empty list / false / a bound nothing evaluates yet), so no behaviour depends on
-# the reader not being there yet. Distinct from the allowlist above: those are
-# reader-less by design, these are waiting on a consumer that is being written.
-# NOT a resting place: ``test_allowlisted_fields_genuinely_lack_a_src_reader`` fails the
-# moment an entry gains a real reader, so wiring one forces its removal from here.
-# Read from the registry the dash renders its refusal from, so a key cannot be pinned in
-# code on one surface and read as ordinarily-owned on the other.
-FIELDS_AWAITING_DECLARED_CONSUMER: frozenset[str] = frozenset(CODE_PINNED_SETTINGS)
-
-#: Every field the lane excuses, whichever reason it was excused for.
-_ALLOWLISTED_FIELDS: frozenset[str] = FIELDS_WITHOUT_SRC_READER | FIELDS_AWAITING_DECLARED_CONSUMER
+_ALLOWLISTED_FIELDS: frozenset[str] = FIELDS_WITHOUT_SRC_READER
 
 
 @cache

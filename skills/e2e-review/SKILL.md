@@ -163,7 +163,7 @@ The reviewer returns a structured result:
 - **HOLD** — below threshold, or a hard gate failed for a reason the maker can fix (a missing-AC assertion, a brittle locator, a fixed sleep, a vacuous precondition, an unrouted or never-run scenario, a carried-over capture, a spec asserting a superseded rule, an assertion no PRD requirement asks for, a PRD never fetched, an outward-issued document that drops an item the test concept requires or volunteers a caveat it never asked for, a document whose rendered page count was never stated or that carries prose a list would carry). The `findings` are the punch-list the next verify pass works through; the loop continues.
 - **BLOCKED** — a hard gate fails for a reason **no spec edit can fix** (see below).
 
-The threshold is configurable — `[teatree] e2e_confidence_threshold`, default **90**, per-overlay overridable (see `/t3:e2e` § "Verify–Review Loop to Threshold" → Configuration). A stricter overlay raises it; the rubric and the loop read the same knob.
+The rubric pass bar is **90/100**, with every hard gate satisfied (see `/t3:e2e` § "Verify–Review Loop to Threshold" → Pass bar). A programme can specify a stricter bar in its E2E specification.
 
 ### Recording Your Verdict
 

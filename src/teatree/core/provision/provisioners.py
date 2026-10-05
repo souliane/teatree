@@ -138,35 +138,3 @@ def start_services(
             results[name] = True
 
     return results
-
-
-# ── Settings Injector ───────────────────────────────────────────────
-
-
-def inject_settings(target_file: Path, settings: dict[str, str], *, header: str = "") -> None:
-    """Append or update key=value pairs in a settings file.
-
-    If *header* is provided, settings are written under that header comment.
-    Existing keys are updated in place; new keys are appended.
-    """
-    existing_lines: list[str] = []
-    if target_file.is_file():
-        existing_lines = target_file.read_text(encoding="utf-8").splitlines()
-
-    existing_keys = {}
-    for i, line in enumerate(existing_lines):
-        if "=" in line and not line.strip().startswith("#"):
-            key = line.split("=", 1)[0].strip()
-            existing_keys[key] = i
-
-    for key, value in settings.items():
-        new_line = f"{key}={value}"
-        if key in existing_keys:
-            existing_lines[existing_keys[key]] = new_line
-        else:
-            header_line = f"# {header}"
-            if header and not any(line.strip() == header_line for line in existing_lines):
-                existing_lines.append(f"\n# {header}")
-            existing_lines.append(new_line)
-
-    target_file.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")

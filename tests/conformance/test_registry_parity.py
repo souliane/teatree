@@ -290,7 +290,7 @@ class TestPhaseToolsTotalityParity:
         assert "edit_file" not in tools
 
     def test_architectural_review_is_an_explicit_shell_and_write_policy(self) -> None:
-        # The periodic ac-reviewing-codebase pass walks the tree, does git archaeology
+        # The periodic architectural-review pass walks the tree, does git archaeology
         # and runs `t3 tool verify-gates`, then IMPLEMENTS what it finds and pushes a
         # PR — so shell AND write/edit are both load-bearing: a NO-shell grant stalled
         # a dispatched review, and a no-write grant leaves the phase told to implement

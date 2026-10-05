@@ -21,17 +21,6 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/codex_hook_adapter.py --event UserPromptSubmit",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "*",

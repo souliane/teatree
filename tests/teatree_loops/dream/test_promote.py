@@ -138,6 +138,16 @@ class PromoteCandidateCreatesRunnableScenarioTestCase(TestCase):
             candidate, scenarios_dir=self.scenarios, fixtures_dir=self.fixtures, live_gate=_PASS_GATE
         )
 
+    def test_explicit_output_paths_inside_running_install_are_refused(self) -> None:
+        with pytest.raises(ValueError, match="running install"):
+            promote.promote_candidate(
+                _GROUNDED_CANDIDATE,
+                scenarios_dir=SCENARIOS_DIR.parent.parent / "scratch-scenarios",
+                fixtures_dir=self.fixtures,
+                live_gate=_PASS_GATE,
+            )
+        assert not self.fixtures.exists()
+
     def test_promotion_writes_a_loadable_scenario_and_two_fixtures(self) -> None:
         outcome = self._promote(_GROUNDED_CANDIDATE)
         assert outcome.promoted is True

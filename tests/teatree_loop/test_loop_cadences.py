@@ -3,19 +3,12 @@
 The three always-on reactive infra loops (Slack-answer, self-improve,
 drain-queue) have no DB ``Loop`` row: their sub-minute cadence cannot be a
 minute-granular cron, so each is its OWN ``/loop`` on a *duration* cadence. This
-seam is the single source of truth both ``t3 loop <slot> start`` and the
-owner-session bootstrap (``hooks.scripts.loop_registrations``) read, so they can
-never disagree on a reactive slot's cadence or run command.
+seam is the single source of truth ``t3 loop <slot> start`` reads.
 """
 
 import pytest
 
-from teatree.loop.loop_cadences import (
-    REACTIVE_SLOTS,
-    reactive_slot,
-    reactive_slot_directives,
-    slack_answer_cadence_seconds,
-)
+from teatree.loop.loop_cadences import REACTIVE_SLOTS, reactive_slot, slack_answer_cadence_seconds
 
 
 class TestSlackAnswerFallbackCadence:
@@ -56,10 +49,8 @@ class TestReactiveSlotCadence:
 
 
 class TestReactiveSlotRegistry:
-    def test_reactive_slot_directives_covers_all_three_slots(self) -> None:
-        directives = reactive_slot_directives()
-        assert len(directives) == len(REACTIVE_SLOTS) == 3
-        assert all(directive.startswith("/loop ") for directive in directives)
+    def test_the_registry_covers_all_three_slots(self) -> None:
+        assert all(slot.loop_directive().startswith("/loop ") for slot in REACTIVE_SLOTS)
         assert {slot.slot_id for slot in REACTIVE_SLOTS} == {
             "loop-slack-answer",
             "loop-self-improve",

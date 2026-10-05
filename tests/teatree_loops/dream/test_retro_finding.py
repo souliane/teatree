@@ -1,22 +1,22 @@
 """Retro's synchronous entry into the gap drain (the ledger, not a memory file).
 
 A retro finding is recorded as a VERIFIED core-gap ``ConsolidatedMemory`` row and
-promoted through the shared umbrella ledger verbatim. These tests drive that with
-real rows and an INJECTED fake code host — no LLM, no live forge.
+queued on the umbrella host's pending ledger for the backlog sweep. These tests drive that with
+real rows — no LLM, no live forge.
 
-The umbrella write is the default-OFF ``memory_promote`` mechanism whoever fires it,
+The queueing is the ``memory_promote`` mechanism whoever fires it,
 so every promoting case here opts in explicitly; the OFF case is its own class.
 """
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.task import Task
+from teatree.core.models.ticket import Ticket
 from teatree.loops.dream.destination import points_at_core_fix
 from teatree.loops.dream.retro_finding import finding_cluster_key, promote_finding, record_finding
 from teatree.loops.dream.umbrella_ledger import is_promotion_anchor
@@ -26,13 +26,6 @@ UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
 _RULE = "Run the tree-wide health gate before any push."
 _CITATION = "pushed without running the gate, CI went red"
 _DESTINATION = "skills/ship/SKILL.md"
-
-
-def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
-    host = MagicMock(spec=CodeHostBackend)
-    host.get_issue.return_value = {"body": body}
-    host.update_issue.return_value = {"number": 2663}
-    return host
 
 
 def _record() -> ConsolidatedMemory:
@@ -83,47 +76,49 @@ class RecordFindingTestCase(TestCase):
         assert list(ConsolidatedMemory.objects.needs_ticket()) == [row]
 
 
+def _pending() -> list[dict[str, str]]:
+    return Ticket.objects.get(issue_url=UMBRELLA).extra.get("dream_gap_pending", [])
+
+
 @patch.dict(os.environ, {"T3_DREAM_MEMORY_PROMOTE": "1"})
 class PromoteFindingTestCase(TestCase):
-    def test_a_finding_upserts_one_checkbox_and_schedules_one_fix(self) -> None:
-        outcome = promote_finding(_fake_host(), rule=_RULE, umbrella_url=UMBRELLA)
-        assert outcome.checkbox_added is True
-        assert outcome.scheduled is True
-        assert Task.objects.count() == 1
+    def setUp(self) -> None:
+        Ticket.objects.create(issue_url=UMBRELLA)
 
-    def test_promoting_the_same_rule_twice_adds_nothing_the_second_time(self) -> None:
-        promote_finding(_fake_host(), rule=_RULE, umbrella_url=UMBRELLA)
-        already = f"## Open gaps\n- [ ] anything <!-- dream-gap {finding_cluster_key(_RULE)} -->\n"
-        outcome = promote_finding(_fake_host(body=already), rule=_RULE, umbrella_url=UMBRELLA)
-        assert outcome.checkbox_added is False
-        assert outcome.scheduled is False
-        assert Task.objects.count() == 1
+    def test_a_finding_is_queued_once_and_schedules_nothing(self) -> None:
+        outcome = promote_finding(rule=_RULE, umbrella_url=UMBRELLA)
+        assert outcome.queued is True
+        assert [entry["gap_key"] for entry in _pending()] == [finding_cluster_key(_RULE)]
+        assert Task.objects.count() == 0
+
+    def test_promoting_the_same_rule_twice_queues_nothing_the_second_time(self) -> None:
+        promote_finding(rule=_RULE, umbrella_url=UMBRELLA)
+        outcome = promote_finding(rule=_RULE, umbrella_url=UMBRELLA)
+        assert outcome.queued is False
+        assert len(_pending()) == 1
 
     def test_promotion_stamps_the_row_with_its_batch_anchor_so_it_leaves_the_queue(self) -> None:
         row = _record()
-        promote_finding(_fake_host(), rule=_RULE, umbrella_url=UMBRELLA)
+        promote_finding(rule=_RULE, umbrella_url=UMBRELLA)
         row.refresh_from_db()
         assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
         assert is_promotion_anchor(row.ticket_url)
         assert list(ConsolidatedMemory.objects.needs_ticket()) == []
 
-    def test_a_dry_run_writes_nothing_and_schedules_nothing(self) -> None:
-        host = _fake_host()
-        outcome = promote_finding(host, rule=_RULE, umbrella_url=UMBRELLA, dry_run=True)
-        assert (outcome.checkbox_added, outcome.scheduled) == (False, False)
-        host.update_issue.assert_not_called()
-        assert Task.objects.count() == 0
+    def test_a_dry_run_queues_nothing(self) -> None:
+        outcome = promote_finding(rule=_RULE, umbrella_url=UMBRELLA, dry_run=True)
+        assert outcome.queued is False
+        assert _pending() == []
 
 
 @patch.dict(os.environ, {"T3_DREAM_MEMORY_PROMOTE": "0"})
 class PromotionToggleTestCase(TestCase):
-    """A checkbox + a scheduled fix is the ``memory_promote`` mechanism, however it is fired."""
+    """Queueing for the sweep is the ``memory_promote`` mechanism, however it is fired."""
 
-    def test_the_toggle_off_records_the_gap_and_writes_nothing(self) -> None:
-        host = _fake_host()
+    def test_the_toggle_off_records_the_gap_and_queues_nothing(self) -> None:
+        Ticket.objects.create(issue_url=UMBRELLA)
         row = _record()
-        outcome = promote_finding(host, rule=_RULE, umbrella_url=UMBRELLA)
+        outcome = promote_finding(rule=_RULE, umbrella_url=UMBRELLA)
         assert outcome.deferred is True
-        host.update_issue.assert_not_called()
-        assert Task.objects.count() == 0
+        assert _pending() == []
         assert list(ConsolidatedMemory.objects.needs_ticket()) == [row]

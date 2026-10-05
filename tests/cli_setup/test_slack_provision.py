@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 from teatree.cli.setup import setup_app
 from teatree.cli.slack.channel_provisioning import ChannelJoinResult, JoinStatus
 from teatree.cli.slack.dm_provisioning import ProvisionResult
+from teatree.cli.slack.manifest import SlackManifestError
 from teatree.cli.slack.provision import (
     OverlayProvisionReport,
     _broadcast_channels,
@@ -29,7 +30,6 @@ from teatree.cli.slack.provision import (
     overlay_scope_profile,
     provision_overlay,
 )
-from teatree.cli.slack.setup import SlackManifestError
 from teatree.cli.slack.user_token_setup import REQUIRED_USER_SCOPES
 from teatree.config import OverlayEntry
 from teatree.core.backend_registry import UnknownSlackScopeProfileError

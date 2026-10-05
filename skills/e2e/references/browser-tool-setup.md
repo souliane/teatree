@@ -5,9 +5,7 @@ The setup mechanics behind `/t3:e2e` § "Browser tool: chrome-devtools-mcp (defa
 **Register it (default on):**
 
 ```bash
-t3 mcp browser-diagnosis   # prints the `claude mcp add` line; the flag ships ON by default
-# turn OFF only on a host that cannot run the server:
-# t3 <overlay> config_setting set chrome_devtools_mcp_enabled false
+t3 mcp browser-diagnosis   # prints the `claude mcp add` line
 ```
 
 The registration is `claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --headless=true`, so the tools surface as `mcp__chrome-devtools__*` — `navigate_page`, `click`, `fill` / `fill_form`, `type_text`, `upload_file`, `wait_for`, `take_snapshot`, `take_screenshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`. Browser-visible breakage (a blank render, a failed XHR, a console error, a wrong DOM state) is diagnosed **in the browser** with these before any root-cause claim, not guessed from the server side.

@@ -31,7 +31,7 @@ class TestPrepareStopCommand(TestCase):
         self.addCleanup(os.chdir, Path.cwd())
         env = patch.dict(
             os.environ,
-            {"XDG_STATE_HOME": str(self.tmp / "state"), "CLAUDE_SESSION_ID": "sess-cli"},
+            {"XDG_STATE_HOME": str(self.tmp / "state"), "CLAUDE_CODE_SESSION_ID": "sess-cli"},
         )
         env.start()
         self.addCleanup(env.stop)

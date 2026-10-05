@@ -17,7 +17,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from teatree.backends.types import Service
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
-from teatree.mcp import build_server, services_sharepoint
+from teatree.mcp import services_sharepoint
+from teatree.mcp.server import build_server
 
 
 class _SharePointOverlay:

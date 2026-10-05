@@ -228,4 +228,4 @@ def handle_block_config_overwrite(data: dict) -> bool:
     finding = _find_finding(core, data.get("tool_name", ""), data.get("tool_input", {}), was_read)
     if finding is None:
         return False
-    return _fail_open_or_deny(data, core.deny_reason(finding))
+    return _fail_open_or_deny(data, core.deny_reason(finding), gate_id="config_overwrite")

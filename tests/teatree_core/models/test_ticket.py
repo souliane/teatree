@@ -18,6 +18,7 @@ from teatree.core.models import (
     DeferredQuestion,
     E2eMandatoryRun,
     PullRequest,
+    ReviewEvidence,
     Session,
     Task,
     TaskAttempt,
@@ -27,6 +28,11 @@ from teatree.core.models import (
 from teatree.core.models.ticket_state_sets import TicketStateSetsModel
 from teatree.core.models.ticket_worktree_checks import WorktreeProbeUnverifiableError
 from tests.factories import record_test_plan, waive_rubric
+from tests.teatree_core.conftest import (
+    record_confirmed_merge_for_test,
+    record_maker_review_for_test,
+    record_review_context_for_test,
+)
 from tests.teatree_core.models._shared import (
     _advance_ticket_to_tested,
     _advance_work_started_to_plan_recorded,
@@ -243,6 +249,8 @@ class TestTicketTransitions(TestCase):
         # phases the ``pr create`` path always required.
         testing_session = Session.objects.create(ticket=ticket, agent_id="testing")
         testing_session.visit_phase("testing", agent_id="testing")
+        record_review_context_for_test(ticket)
+        record_maker_review_for_test(ticket, "a" * 40)
 
         # test() auto-scheduled a reviewing task — complete it to unlock review()
         _complete_phase_task(ticket, "reviewing")
@@ -256,11 +264,20 @@ class TestTicketTransitions(TestCase):
 
         ticket.request_review()
         ticket.save()
+        record_confirmed_merge_for_test(ticket)
         ticket.mark_merged()
         ticket.save()
         ticket.retrospect()
         ticket.save()
         waive_rubric(ticket)
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.INTEGRATION_REVIEW,
+            reviewer_identity="fixture-independent-reviewer",
+            verdict="pass",
+            head_sha="a" * 40,
+            repos=ticket.repos,
+        )
         ticket.mark_delivered()
         ticket.save()
 

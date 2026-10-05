@@ -24,18 +24,21 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DEPLOY_SH = _ROOT / "deploy" / "deploy.sh"
+_DEPLOY_LOCK_SH = _ROOT / "deploy" / "deploy-lock.sh"
 _BASH = shutil.which("bash") or "/bin/bash"
 
 #: Anchors bounding the acquisition + release + trap install, so every probe below runs
 #: the shipped code rather than a re-typed copy of it.
 _LOCK_START = 'DEPLOY_LOCK="${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}"'
 _FAIL_SAFE_START = "_DRAINED=false"
-_LOCK_END = "trap '_clear_quiescing_if_stranded; _release_deploy_record' EXIT"
+_LOCK_END = (
+    "trap '_restart_contained_worker; _clear_quiescing_if_stranded; _release_deploy_record; _remove_build_context' EXIT"
+)
 
 #: Everything the lock block shells out to. flock is deliberately absent.
 #: `ps` is the one optional member — absent it, the lock degrades to `kill -0` alone,
 #: which is what the EPERM probes below skip on.
-_LOCK_BLOCK_TOOLS = ("mkdir", "cat", "find", "rm", "sleep")
+_LOCK_BLOCK_TOOLS = ("mkdir", "cat", "find", "rm", "sleep", "date", "ln", "readlink")
 
 _HOLD_SECONDS = 2
 _RUN_TIMEOUT = 20
@@ -65,9 +68,9 @@ def _shipped_int(name: str) -> int:
 
 
 def _shipped_function(name: str) -> str:
-    body = _DEPLOY_SH.read_text(encoding="utf-8")
+    body = _DEPLOY_LOCK_SH.read_text(encoding="utf-8")
     start = body.find(f"{name}() {{")
-    assert start != -1, f"deploy.sh no longer defines {name}() — re-anchor this probe"
+    assert start != -1, f"deploy-lock.sh no longer defines {name}() — re-anchor this probe"
     end = body.find("\n}\n", start)
     assert end > start, f"{name}() is no longer brace-terminated — re-anchor this probe"
     return body[start : end + len("\n}\n")]
@@ -99,6 +102,7 @@ def _write_acquirer(tmp_path: Path, *, prelude: str = "", hold_seconds: int = 0)
     script = tmp_path / "acquire.sh"
     script.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\nCOMPOSE_FILE=/dev/null\n"
+        f'. "{_DEPLOY_LOCK_SH}"\n'
         f"{prelude}"
         f"{_shipped(_LOCK_START)}"
         'echo "CONVERGED"\n'
@@ -284,6 +288,56 @@ class TestAgeBoundsTheLock:
         assert result.returncode == 0, result.stderr
         assert "already holds" in result.stderr, result.stderr
         assert "CONVERGED" not in result.stdout
+
+
+class TestAReclaimNeverRemovesALockAnotherJustTook:
+    def test_a_reclaimer_waits_its_turn_and_rejudges_the_lock_it_then_finds(
+        self, tmp_path: Path, flockless_path: Path, lock_path: Path, reaped_pid: int, live_pid: int
+    ) -> None:
+        lock_dir = _seed_lock(lock_path, pid=f"{reaped_pid}\n")
+        another_reclaimer = Path(f"{lock_path}.reclaim")
+        another_reclaimer.symlink_to(str(live_pid))
+        waiting = subprocess.Popen(
+            [_BASH, str(_write_acquirer(tmp_path))],
+            env=_acquire_env(flockless_path, lock_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+        )
+        time.sleep(1.5)
+        (lock_dir / "pid").write_text(f"{live_pid}\n", encoding="utf-8")
+        another_reclaimer.unlink()
+
+        stdout, stderr = waiting.communicate(timeout=_RUN_TIMEOUT)
+
+        assert waiting.returncode == 0, stderr
+        assert "CONVERGED" not in stdout
+        assert "already holds" in stderr
+        assert (lock_dir / "pid").read_text(encoding="utf-8").strip() == str(live_pid)
+
+    def test_waiting_on_a_live_reclaimer_does_not_use_up_the_reclaim_budget(
+        self, tmp_path: Path, flockless_path: Path, lock_path: Path, reaped_pid: int, live_pid: int
+    ) -> None:
+        lock_dir = _seed_lock(lock_path, pid=f"{reaped_pid}\n")
+        another_reclaimer = Path(f"{lock_path}.reclaim")
+        another_reclaimer.symlink_to(str(live_pid))
+        waiting = subprocess.Popen(
+            [_BASH, str(_write_acquirer(tmp_path))],
+            env=_acquire_env(flockless_path, lock_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+        )
+        time.sleep(_shipped_int("DEPLOY_LOCK_MAX_RECLAIMS") + 2)
+        (lock_dir / "pid").write_text(f"{live_pid}\n", encoding="utf-8")
+        another_reclaimer.unlink()
+
+        stdout, stderr = waiting.communicate(timeout=_RUN_TIMEOUT)
+
+        assert waiting.returncode == 0, stderr
+        assert "keeps reappearing" not in stderr
+        assert "already holds" in stderr
+        assert "CONVERGED" not in stdout
 
 
 class TestTheReclaimLoopIsBoundedAndDiagnosed:

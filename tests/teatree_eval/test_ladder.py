@@ -8,6 +8,7 @@ the dispatch record itself — no metered run, no API.
 
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -17,7 +18,7 @@ from teatree.eval.models import EvalRun, EvalSpec, Matcher
 from teatree.eval.report import MatcherResult, ScenarioResult
 from teatree.llm.anthropic_limits import CreditExhaustedError
 
-_HAIKU = TIER_MODELS["cheap"]
+_HAIKU = "claude-haiku-4-5"
 _SONNET = TIER_MODELS["balanced"]
 _OPUS = TIER_MODELS["frontier"]
 _LADDER = [_HAIKU, _SONNET, _OPUS]
@@ -90,7 +91,12 @@ class _RecordingTrial:
 
 class TestLadderedTierModels:
     def test_orders_the_three_tier_models_cheapest_first(self) -> None:
-        assert laddered_tier_models() == [_HAIKU, _SONNET, _OPUS]
+        with patch.dict(TIER_MODELS, {"frontier": _OPUS, "balanced": _SONNET, "cheap": _HAIKU}):
+            assert laddered_tier_models() == [_HAIKU, _SONNET, _OPUS]
+
+    def test_tiers_sharing_one_model_are_one_rung(self) -> None:
+        with patch.dict(TIER_MODELS, {"frontier": _OPUS, "balanced": _SONNET, "cheap": _SONNET}):
+            assert laddered_tier_models() == [_SONNET, _OPUS]
 
 
 class TestNoDispatchAboveTheFirstPass:

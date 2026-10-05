@@ -37,8 +37,10 @@ import ast
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
+from pathlib import Path
+from unittest.mock import patch
 
-from tests.conformance._src_tree import REPO_ROOT, SRC_DIR, parsed_modules, src_modules
+from tests.conformance._src_tree import REPO_ROOT, SRC_DIR, iter_parsed_modules, parsed_modules, src_modules
 
 _TESTS_DIR = REPO_ROOT / "tests"
 
@@ -184,7 +186,7 @@ def exercised_tests() -> tuple[ScopeAwareTest, ...]:
     openers = frozenset(scope_openers())
     shared = _fixtures_opening_a_scope(_conftest_tree(), openers)
     found: list[ScopeAwareTest] = []
-    for path, tree in parsed_modules(_TESTS_DIR):
+    for path, tree in iter_parsed_modules(_TESTS_DIR):
         module = str(path.relative_to(_TESTS_DIR))
         local = _fixtures_opening_a_scope(tree, openers) | shared
         for node in ast.walk(tree):
@@ -278,6 +280,20 @@ class TestScopeDependenceIsDerivedFromTheTree:
     def test_reader_and_test_indexes_are_densely_populated(self) -> None:
         assert len(scope_readers()) >= 10, sorted(scope_readers())
         assert len(exercised_tests()) >= 2000
+
+
+class TestTheTestsTreeIsStreamedNotMemoised:
+    """The tests tree parses to ~0.9 GiB of ASTs; memoised, it outlived the lane in every worker that ran it."""
+
+    def test_building_the_test_index_caches_no_parse_of_the_tests_tree(self, tmp_path: Path) -> None:
+        (tmp_path / "test_probe.py").write_text("def test_it():\n    read()\n", encoding="utf-8")
+        scope_openers()
+        _conftest_tree()
+        misses = parsed_modules.cache_info().misses
+        with patch(f"{__name__}._TESTS_DIR", tmp_path):
+            found = exercised_tests.__wrapped__()
+        assert [(test.module, test.name) for test in found] == [("test_probe.py", "test_it")]
+        assert parsed_modules.cache_info().misses == misses
 
 
 _SYNTHETIC_READERS = {"synthetic_reader": "synthetic.py", "other_reader": "synthetic.py"}

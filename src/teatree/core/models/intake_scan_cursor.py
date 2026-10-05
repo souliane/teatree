@@ -78,6 +78,7 @@ class IntakeScanCursor(models.Model):
     objects: ClassVar[IntakeScanCursorManager] = IntakeScanCursorManager()
 
     class Meta:
+        db_table = "teatree_intake_scan_cursor"
         verbose_name = "intake scan cursor"
 
     def __str__(self) -> str:

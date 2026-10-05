@@ -55,10 +55,18 @@ RESUME_LOAD_PER_CORE = 3.0
 RAM_BRAKE_FLOOR_GB = 4.0
 RAM_RESUME_FLOOR_GB = 6.0
 
-# Host swap is a lagging but decisive sign of thrash on macOS: Docker's VM may
-# still claim many GiB free while the physical machine has paged out heavily.
-SWAP_BRAKE_USED_FRACTION = 0.25
-SWAP_RESUME_USED_FRACTION = 0.10
+#: Host paging rate (swap-ins + swap-outs) in MiB/s, the same brake/resume shape as load.
+#: Swap OCCUPANCY is no signal on macOS — it stays allocated long after the pressure that
+#: filled it (82% used while nothing paged at 0.00-0.05 MiB/s, measured 2026-09-26) — so
+#: only activity is judged. A thrashing box pages tens of MiB/s; resume sits well above
+#: the idle noise floor so the brake lifts once paging has actually stopped.
+SWAP_BRAKE_MIB_PER_S = 8.0
+SWAP_RESUME_MIB_PER_S = 1.0
+
+#: ``kern.memorystatus_vm_pressure_level`` — the kernel's own verdict, hysteresis included.
+VM_PRESSURE_NORMAL = 1
+VM_PRESSURE_WARN = 2
+VM_PRESSURE_CRITICAL = 4
 
 #: A 5h window this spent is an imminent hard rate-limit; retrying into one is pure burn.
 SHORT_WINDOW_BRAKE = 0.95
@@ -90,10 +98,13 @@ BRAKE_PRECEDENCE = (
     "weekly-pace",
     "metered-lane-parked",
     "metered-spend",
+    "memory-pressure",
     "load",
     "memory",
     "swap",
 )
+#: The machine causes the cheap lane is exempt from. Kernel memory pressure is not one:
+#: at critical the kernel is already reclaiming, and every lane adds to it.
 MACHINE_BRAKE_CAUSES = frozenset(("load", "memory", "swap"))
 
 
@@ -156,7 +167,15 @@ class MachineSignal:
     load1: float
     ram_available_gb: float | None
     memory_cap_gb: float | None = None
-    swap_used_fraction: float | None = None
+    swap_mib_per_s: float | None = None
+    vm_pressure_level: int | None = None
+    #: The cores ``load1`` was measured across, when that differs from the execution
+    #: capacity in ``cores`` — a host load average read from inside a CPU-capped container.
+    load_cores: int | None = None
+
+    @property
+    def load_scope_cores(self) -> int:
+        return max(1, self.load_cores or self.cores)
 
 
 @dataclass(frozen=True)
@@ -412,7 +431,9 @@ def admission_pressure(
     if metered is not None and metered.fresh:
         components.extend(_metered_components(metered))
     if load_brake.applies:
-        components.extend(_machine_components(machine, braked=load_brake.braked))
+        components.extend(_machine_components(machine, braked=load_brake.braked, shed_at=shed_at))
+    elif machine.vm_pressure_level is not None and machine.vm_pressure_level >= VM_PRESSURE_CRITICAL:
+        components.append(_kernel_component(machine.vm_pressure_level, shed_at=shed_at))
     return AdmissionPressure(components=tuple(components), shed_at=shed_at)
 
 
@@ -449,8 +470,8 @@ def _metered_components(metered: MeteredSignal) -> list[PressureComponent]:
     ]
 
 
-def _machine_components(machine: MachineSignal, *, braked: bool) -> list[PressureComponent]:
-    cores = max(1, machine.cores)
+def _machine_components(machine: MachineSignal, *, braked: bool, shed_at: float) -> list[PressureComponent]:
+    cores = machine.load_scope_cores
     watermark = _load_watermark(cores=cores, braked=braked)
     components = [
         PressureComponent(
@@ -473,16 +494,28 @@ def _machine_components(machine: MachineSignal, *, braked: bool) -> list[Pressur
                 detail=f"{detail} ({conflict})" if conflict else detail,
             )
         )
-    if machine.swap_used_fraction is not None:
-        swap_watermark = SWAP_RESUME_USED_FRACTION if braked else SWAP_BRAKE_USED_FRACTION
+    if machine.swap_mib_per_s is not None:
+        swap_watermark = SWAP_RESUME_MIB_PER_S if braked else SWAP_BRAKE_MIB_PER_S
         components.append(
             PressureComponent(
                 name="swap",
-                value=_clamp(machine.swap_used_fraction / swap_watermark),
-                detail=f"host swap {machine.swap_used_fraction:.0%} at/over the {swap_watermark:.0%} watermark",
+                value=_clamp(machine.swap_mib_per_s / swap_watermark),
+                detail=f"host paging {machine.swap_mib_per_s:.1f} MiB/s at/over the {swap_watermark:g} MiB/s watermark",
             )
         )
+    if machine.vm_pressure_level is not None:
+        components.append(_kernel_component(machine.vm_pressure_level, shed_at=shed_at))
     return components
+
+
+def _kernel_component(level: int, *, shed_at: float) -> PressureComponent:
+    """Warn sheds the expensive class and keeps the drain; critical halts every lane."""
+    value = HALT_AT if level >= VM_PRESSURE_CRITICAL else shed_at if level >= VM_PRESSURE_WARN else 0.0
+    return PressureComponent(
+        name="memory-pressure",
+        value=value,
+        detail=f"kernel memory pressure level {level} (1 normal, 2 warn, 4 critical)",
+    )
 
 
 def _load_watermark(*, cores: int, braked: bool) -> float:
@@ -521,8 +554,13 @@ __all__ = [
     "RESUME_LOAD_PER_CORE",
     "SHED_AT_DEFAULT",
     "SHORT_WINDOW_BRAKE",
+    "SWAP_BRAKE_MIB_PER_S",
+    "SWAP_RESUME_MIB_PER_S",
     "UNBRAKED",
     "UNREAD_QUOTA",
+    "VM_PRESSURE_CRITICAL",
+    "VM_PRESSURE_NORMAL",
+    "VM_PRESSURE_WARN",
     "WEEKLY_WINDOW_BRAKE",
     "WEEKLY_WINDOW_SECONDS",
     "AdmissionPressure",

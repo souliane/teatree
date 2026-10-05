@@ -72,9 +72,6 @@ def dispatch_answering(signal: ScanSignal) -> list[DispatchAction]:
     fallback — auto ticket creation from inbound chat is a separate
     decision pass (see ``IncomingEventsScanner``).
     """
-    # NOTE(#963): a bot→user Slack notification channel (`teatree.core.notify.notify_user`,
-    # setting `notify_user_via_bot`) is slated so agent answers / questions / important
-    # info also reach the user's configured Slack via the bot. See souliane/teatree#963.
     require_approval = get_effective_settings().require_human_approval_to_answer
     payload: ActionPayload = {**signal.payload, "require_human_approval_to_answer": require_approval}
     return [

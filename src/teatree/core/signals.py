@@ -6,6 +6,7 @@ from django_fsm.signals import post_transition
 
 from teatree.core.admission.dispatch_mask import headless_admission_block_reason
 from teatree.core.issue_title import fetch_issue_title
+from teatree.core.merge.refusal_settlement import connect_merge_refusal_settlement
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.loop import Loop
 from teatree.core.models.loop_preset import Mode
@@ -497,4 +498,5 @@ def register_signals() -> None:
     post_save.connect(_auto_enqueue_task, sender=Task, dispatch_uid="auto_enqueue_task")
     post_save.connect(_close_session_on_terminal_task, sender=Task, dispatch_uid="close_session_on_terminal_task")
     post_save.connect(_stamp_issue_title_on_create, sender=Ticket, dispatch_uid="ticket_stamp_issue_title")
+    connect_merge_refusal_settlement()
     post_save.connect(_quiet_new_loop_in_every_preset, sender=Loop, dispatch_uid="loop_backfill_presets")

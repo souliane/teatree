@@ -21,7 +21,6 @@ from teatree.agents.dispatch_preflight import (
     rubric_brief_lines,
 )
 from teatree.agents.skill_injection import _explicit_load_name
-from teatree.config.agent_spawn import resolve_agent_config
 from teatree.core.answering.work_intent import owes_work_item
 from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
@@ -202,6 +201,10 @@ _FIX_RECORD_RETURN_LINES: tuple[str, ...] = (
     "Every field is required and non-blank — a PARTIAL object is REFUSED and records nothing,",
     "so omit the key entirely rather than guessing at a field you cannot honestly fill.",
     "A merged manifestation patch with no stated root cause is not done.",
+    (
+        "Before editing, run `repro record-red` on the pre-fix HEAD; coding completion requires it "
+        "and testing records GREEN automatically."
+    ),
 )
 
 _REVIEWER_LIFECYCLE_SKILL = "t3:review"
@@ -246,17 +249,15 @@ def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: li
 
 
 def _phase_fanout_directive(task: Task) -> str:
-    """Render the opt-in fan-out directive for *task*'s ``(role, phase)``, or ``""``.
+    """Render the registered fan-out directive for *task*'s ``(role, phase)``.
 
     Headless parity with the interactive composer
     (``loop_dispatch._task_to_dict``): both routes call the single chokepoint
     ``core.phases.resolve_fanout_directive`` so switching the harness
     between interactive and a headless runtime keeps the directive identical.
-    Empty by default — ``resolve_fanout_directive`` renders nothing until the
-    user opts the pair in via ``[agent.phase_fanout]`` — so a agent dispatch
-    is byte-identical to today out of the box.
+    A pair absent from the registry renders the empty string.
     """
-    return resolve_fanout_directive(task.ticket.role, task.phase, resolve_agent_config())
+    return resolve_fanout_directive(task.ticket.role, task.phase)
 
 
 def _intake_landscape_lines(task: Task) -> tuple[str, ...]:
@@ -306,11 +307,9 @@ def embedded_intake_survey_json(task: Task) -> str:
 
 
 def _planning_phase_lines(task: Task) -> tuple[str, ...]:
-    """The ``PHASE: planning`` block — intake survey (#2541), envelope directive (#3584), opted-in fan-out."""
+    """The ``PHASE: planning`` block — intake survey (#2541), envelope directive (#3584)."""
     lines = list(_intake_landscape_lines(task))
     lines.extend(_PLAN_RETURN_LINES)
-    if fanout := _phase_fanout_directive(task):
-        lines.extend(("", "PHASE: planning", fanout))
     return tuple(lines)
 
 
@@ -320,11 +319,23 @@ def _scanning_news_phase_lines() -> tuple[str, ...]:
 
 
 def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
-    """The ``PHASE: reviewing`` block, plus an opted-in fan-out directive."""
+    """The ``PHASE: reviewing`` block and its review evidence instructions."""
     lines = [
         "",
         "PHASE: reviewing",
         "1. Do a thorough code review of all changes on this ticket's branch.",
+        (
+            "Return `review_context` with the fetched work_item URL, downloaded documents, "
+            "and analysis; the phase cannot complete without it."
+        ),
+        (
+            "Return `anti_vacuity` with AC coverage and each revert-fix -> RED test "
+            "(or an honest no_new_tests claim); maker review of shippable work cannot complete without it."
+        ),
+        (
+            "For a multi-repo ticket, inspect the combined changeset and return "
+            "`integration_review.repos` listing every reviewed repo."
+        ),
         "2. Run /t3:next when done — it handles retro + structured result + handoff.",
         *_VERIFICATION_BRIEF_LINES,
         *_green_proof_binding_lines(task),
@@ -333,8 +344,6 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
         *declared_seams_brief_lines(task),
         *review_diff_brief_lines(task),
     ]
-    if fanout := _phase_fanout_directive(task):
-        lines.append(fanout)
     return tuple(lines)
 
 
@@ -432,8 +441,8 @@ def phase_specific_lines(
     """The per-phase trailing block for ``build_system_context``, or ``()``.
 
     Dispatches on the canonical phase token. coding/shipping carry their
-    existing directives; planning/reviewing additionally surface an opted-in
-    fan-out directive (default-OFF). One ``(role, phase)`` pair maps to one
+    existing directives; any registered ``(role, phase)`` additionally surfaces
+    its fan-out directive. One ``(role, phase)`` pair maps to one
     block — they are mutually exclusive on the canonical phase. *stage_exclude*
     keeps the phase's stage skills out of the coding force-load block (they are
     embedded in full instead).
@@ -449,6 +458,8 @@ def phase_specific_lines(
     else:
         builder = _PHASE_BLOCK_BUILDERS.get(phase)
         block = builder(task) if builder is not None else ()
+    if fanout := _phase_fanout_directive(task):
+        block = (*block, fanout) if phase == "reviewing" else (*block, "", f"PHASE: {phase}", fanout)
     return (*block, *_fix_record_lines(task, phase))
 
 

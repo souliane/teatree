@@ -83,6 +83,24 @@ class TestFailureRecordsItsSpend(SpendRecordingCase):
         assert attempt.cost_usd == pytest.approx(0.9)
 
 
+class TestTheRecordedModelIsTheMainModel(SpendRecordingCase):
+    def test_claude_codes_auxiliary_haiku_listed_first_is_not_the_recorded_model(self) -> None:
+        model_usage = {
+            "claude-haiku-4-5-20251001": {"inputTokens": 900, "outputTokens": 40},
+            "claude-sonnet-5-5": {"outputTokens": 17000, "cacheReadInputTokens": 400000},
+        }
+        outcome = HarnessOutcome(
+            agent_text=json.dumps({"summary": "done"}),
+            result_message=result_message(usage=_USAGE, total_cost_usd=0.3, model_usage=model_usage),
+            stuck_reason=None,
+        )
+
+        attempt = _record_success(self.make_task(), outcome, phase="coding", lane=TaskAttempt.Lane.SUBSCRIPTION)
+
+        attempt.refresh_from_db()
+        assert attempt.model == "claude-sonnet-5-5"
+
+
 class TestPostTurnParkRecordsItsSpend(SpendRecordingCase):
     """A usage-limit park is reached AFTER the SDK returned a result — it billed a turn.
 

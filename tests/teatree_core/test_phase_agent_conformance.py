@@ -264,8 +264,7 @@ class TestFanoutRegistryConformance(TestCase):
             )
 
     def test_directive_template_substitutes_n(self) -> None:
-        # Every template must consume the {n} placeholder so an int override
-        # actually renders the requested width (not a hard-coded number).
+        # Every template must consume the registered width, rather than hard-code it.
         for key, spec in FANOUT_BY_PHASE.items():
             rendered = spec.directive_template.format(n=4)
             assert "N=4" in rendered or " 4 " in rendered or "4 " in rendered, (
@@ -288,12 +287,8 @@ class TestFanoutRegistryConformance(TestCase):
 class TestCorePhasesImportIsolation(TestCase):
     """``core.phases`` keeps NO runtime import of ``config.agent_spawn`` (teatree#2229).
 
-    The fan-out resolver takes a resolved ``AgentConfig`` as a parameter so the
-    domain ``core`` layer never imports UP into the platform ``config.agent_spawn``
-    module at runtime — the ``AgentConfig`` annotation is ``TYPE_CHECKING``-only.
-    tach's layered config would actually permit a domain->platform edge, so this
-    deterministic guard (not tach) is what upholds the decoupling the module's
-    docstring + comment claim.
+    The fan-out resolver reads the registry directly, so the domain ``core``
+    layer has no reason to import the platform ``config.agent_spawn`` module.
     """
 
     def test_core_phases_has_no_runtime_config_agent_import(self) -> None:

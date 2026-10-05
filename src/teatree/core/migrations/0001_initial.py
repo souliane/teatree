@@ -24,8 +24,8 @@ from django.db import migrations, models
 # intentionally absent (no registry MiniLoop; it runs only via its dedicated
 # ``loop-slack-answer`` ``/loop`` slot).
 _ARCH_REVIEW_PROMPT_BODY = (
-    "Run an architectural review of the codebase using the ac-reviewing-codebase skill. "
-    "Dispatch a sub-agent that loads /ac-reviewing-codebase and performs a holistic, "
+    "Run an architectural review of the codebase using the architectural-review skill. "
+    "Dispatch a sub-agent that loads /t3:architectural-review and performs a holistic, "
     "codebase-wide architectural review, surfacing findings as the skill prescribes."
 )
 
@@ -104,7 +104,7 @@ _DEFAULT_LOOPS = (
         300,
         None,
         None,
-        "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. Ships DISABLED; once enabled the away-gate never skips it (colleague_facing = false), so self-review keeps going while the owner is unreachable.",
+        "Reviews open PRs every 5m and posts inline findings via t3:reviewer — your OWN PRs always (per-SHA deduped), plus colleague-authored PRs when admit_colleague_prs_to_board is on. The away-gate never skips it (colleague_facing = false), so self-review keeps going while the owner is unreachable.",
         False,
         False,
     ),
@@ -185,7 +185,7 @@ _DEFAULT_LOOPS = (
         86400,
         datetime.time(4, 0),
         _ARCH_REVIEW_PROMPT_BODY,
-        "Dispatches a sub-agent at 04:00 to run a holistic, codebase-wide architectural review via the ac-reviewing-codebase skill; the scanner enforces architectural_review_cadence_hours (168) and the merge-count backstop, so this row is only how often that gate is CHECKED — and, because a failed review leaves that clock untouched, how soon a failed one retries.",
+        "Dispatches a sub-agent at 04:00 to run a holistic, codebase-wide architectural review via the architectural-review skill; the scanner enforces architectural_review_cadence_hours (168) and the merge-count backstop, so this row is only how often that gate is CHECKED — and, because a failed review leaves that clock untouched, how soon a failed one retries.",
         False,
         False,
     ),
@@ -248,7 +248,7 @@ _DEFAULT_LOOPS = (
         86400,
         None,
         None,
-        "Advances at most one T4 autoresearch experiment one step per day (propose, ratify, implement, measure, keep-only-if-better), off the live tick; ships disabled behind the outer_loop_enabled flag and the critic-live guard.",
+        "Advances at most one T4 autoresearch experiment one step per day (propose, ratify, implement, measure, keep-only-if-better), off the live tick; requires trustworthy score signals.",
         False,
         False,
     ),
@@ -257,7 +257,7 @@ _DEFAULT_LOOPS = (
         3600,
         None,
         None,
-        "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); directive_loop_enabled ships ON, so this Loop row is the remaining switch, and the execution arc additionally needs the factory-score and critic-live guards.",
+        "Hourly, off the live tick: interprets captured owner directives up to directive_intake_per_tick per pass and stops at the human ratify gate, then advances one ratified directive one step (implement, configure, verify, keep-only-if-verified, else human-asked revert); the execution arc additionally needs trusted score signals.",
         False,
         False,
     ),
@@ -266,7 +266,7 @@ _DEFAULT_LOOPS = (
         300,
         None,
         None,
-        "Advances operator-opened CI-eval heal sessions every 5m (observe-only): dispatch the behavioral eval in CI, poll, and GREEN or HALT+escalate on any red — never a fix. Default-OFF (autonomous CI mutation); an operator opens sessions and enables the row.",
+        "Advances operator-opened CI-eval heal sessions every 5m: dispatch the behavioral eval in CI, poll, and fix confirmed reds within the session budget and anti-cheat gate. The loop row controls the cadence.",
         False,
         False,
     ),
@@ -275,7 +275,7 @@ _DEFAULT_LOOPS = (
         1800,
         None,
         None,
-        "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair. Observe-only: it writes nothing and opens nothing. Default-OFF.",
+        "Reads the teatree core clone every 30m and reports reference-ratchet pins the tree no longer resolves, naming the one-command repair. Observe-only: it writes nothing and opens nothing.",
         False,
         False,
     ),
@@ -284,7 +284,7 @@ _DEFAULT_LOOPS = (
         604800,
         None,
         None,
-        "Skims the Claude memories weekly and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week. Default-OFF.",
+        "Skims the Claude memories weekly and raises ONE promote-or-drop question naming every memory that reads as factory behaviour; the scanner dedupes on the ISO week.",
         False,
         False,
     ),

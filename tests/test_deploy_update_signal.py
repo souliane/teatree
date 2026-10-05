@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from _deploy_wrapper_paths import copy_wrapper
 
 _WRAPPER = Path(__file__).resolve().parents[1] / "deploy" / "t3"
 _FLOCK = shutil.which("flock")
@@ -92,7 +93,7 @@ def wrapper(tmp_path: Path) -> Path:
     deploy = tmp_path / "checkout" / "deploy"
     deploy.mkdir(parents=True)
     entry = deploy / "t3"
-    shutil.copy2(_WRAPPER, entry)
+    copy_wrapper(_WRAPPER, entry)
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR)
     return entry
 

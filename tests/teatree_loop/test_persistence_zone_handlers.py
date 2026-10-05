@@ -26,6 +26,7 @@ from teatree.loop.persistence import _FIX_REASON_BY_KIND, persist_agent_actions
 from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
+from tests.factories import planned_ticket
 
 
 def _agent_actions(signal: ScanSignal) -> list[DispatchAction]:
@@ -43,12 +44,20 @@ class TestDebugZoneRevived(TestCase):
             payload={"pr_url": pr_url, "head_sha": head_sha, "overlay": "acme"},
         )
 
-    def test_creates_author_debugging_task(self) -> None:
+    def test_a_fresh_fix_ticket_is_planned_first_carrying_the_remedy(self) -> None:
         created = persist_agent_actions(_agent_actions(self._signal()))
         assert len(created) == 1
         task = created[0]
-        assert task.phase == "debugging"
+        assert task.phase == "planning"
+        assert "Auto-scheduled red-MR fix — debug https://example.com/o/r/pull/5" in task.execution_reason
         assert task.ticket.role == Ticket.Role.AUTHOR
+
+    def test_a_planned_fix_ticket_gets_its_debugging_task(self) -> None:
+        planned_ticket(
+            issue_url="https://x/pr/8", overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED
+        )
+        created = persist_agent_actions(_agent_actions(self._signal(pr_url="https://x/pr/8", head_sha="sha-8")))
+        assert [task.phase for task in created] == ["debugging"]
 
     def test_claims_red_mr_fix_marker_at_persist_time(self) -> None:
         persist_agent_actions(_agent_actions(self._signal(pr_url="https://x/pr/9", head_sha="sha-9")))
@@ -60,7 +69,7 @@ class TestDebugZoneRevived(TestCase):
         second = persist_agent_actions(_agent_actions(self._signal(pr_url="https://x/pr/10", head_sha="sha-10")))
         assert len(first) == 1
         assert second == []
-        assert Task.objects.filter(ticket__issue_url="https://x/pr/10", phase="debugging").count() == 1
+        assert Task.objects.filter(ticket__issue_url="https://x/pr/10", phase="planning").count() == 1
         assert RedMrFixAttempt.objects.filter(pr_url="https://x/pr/10").count() == 1
 
     def test_role_conflict_does_not_burn_marker(self) -> None:
@@ -76,7 +85,7 @@ class TestDebugZoneRevived(TestCase):
         # Force the Task write to fail AFTER the marker claim: the shared atomic
         # block must roll the RedMrFixAttempt row back so the dropped action does
         # not burn its idempotency marker (#1 blocker — markers survive for retry).
-        with patch("teatree.loop.persistence.create_phase_task", side_effect=RuntimeError("boom")):
+        with patch.object(Ticket, "schedule_implementing", side_effect=RuntimeError("boom")):
             errors: dict[str, str] = {}
             created = persist_agent_actions(
                 _agent_actions(self._signal(pr_url="https://x/pr/12", head_sha="sha-12")),
@@ -270,6 +279,9 @@ class TestSelfPrReviewZoneRevived(TestCase):
         # even after the first review task completes, the same SHA does NOT re-fire.
         first = persist_agent_actions(_agent_actions(self._signal(pr_id=201, head_sha="selfsha-201")))
         assert len(first) == 1
+        from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
+
+        record_review_context_for_test(first[0].ticket)
         first[0].complete()
         second = persist_agent_actions(_agent_actions(self._signal(pr_id=201, head_sha="selfsha-201")))
         assert second == []
@@ -278,6 +290,9 @@ class TestSelfPrReviewZoneRevived(TestCase):
     def test_force_push_new_sha_re_reviews(self) -> None:
         first = persist_agent_actions(_agent_actions(self._signal(pr_id=202, head_sha="selfsha-202a")))
         assert len(first) == 1
+        from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
+
+        record_review_context_for_test(first[0].ticket)
         first[0].complete()
         second = persist_agent_actions(_agent_actions(self._signal(pr_id=202, head_sha="selfsha-202b")))
         assert len(second) == 1
@@ -333,7 +348,8 @@ class TestRedCardZoneRevived(TestCase):
         created = persist_agent_actions(_agent_actions(self._signal(row_id=42)))
         assert len(created) == 1
         task = created[0]
-        assert task.phase == "coding"
+        assert task.phase == "planning"
+        assert "Auto-scheduled RED CARD corrective action" in task.execution_reason
         assert task.ticket.role == Ticket.Role.AUTHOR
         assert task.ticket.extra["red_card_signal_id"] == 42
         assert task.ticket.issue_url == "redcard://signal/42"
@@ -345,13 +361,8 @@ class TestRedCardZoneRevived(TestCase):
         assert second == []
 
 
-class TestAutoStartOrchestratorMarksAutoImplement(TestCase):
-    """#10: the auto-start orchestrator stamps the auto_implement marker before scheduling.
-
-    Kept after #4578 moved the scheduled phase to ``planning``: ``code_direct`` is
-    conditioned on the marker and is still the only edge that can advance a coding
-    completion landing before the ladder reached PLAN_RECORDED.
-    """
+class TestAutoStartOrchestratorSchedulesPlanning(TestCase):
+    """An auto-started issue is routed to planning (#4578); no coding task is minted on it."""
 
     def _signal(self, *, url: str = "https://x/issue/900") -> ScanSignal:
         return ScanSignal(
@@ -360,17 +371,14 @@ class TestAutoStartOrchestratorMarksAutoImplement(TestCase):
             payload={"url": url, "auto_start": True, "overlay": "acme"},
         )
 
-    def test_auto_start_ticket_is_marked_auto_implement(self) -> None:
-        from teatree.core.models.auto_implement import is_auto_implement  # noqa: PLC0415
-
+    def test_auto_start_ticket_gets_a_planning_task(self) -> None:
         created = persist_agent_actions(_agent_actions(self._signal()))
 
         assert len(created) == 1
         task = created[0]
         assert task.phase == "planning"
         assert task.ticket.role == Ticket.Role.AUTHOR
-        task.ticket.refresh_from_db()
-        assert is_auto_implement(task.ticket) is True, "the orchestrator must mark the direct-coding path"
+        assert not Task.objects.filter(ticket=task.ticket, phase="coding").exists()
 
 
 class TestE2eFixZoneRevived(TestCase):
@@ -381,10 +389,11 @@ class TestE2eFixZoneRevived(TestCase):
             payload={"spec": spec, "test_title": "login flow", "skill_overlay": "acme", "ts": "1.2"},
         )
 
-    def test_creates_author_e2e_task(self) -> None:
+    def test_creates_author_planning_task_carrying_the_e2e_fix(self) -> None:
         created = persist_agent_actions(_agent_actions(self._signal()))
         assert len(created) == 1
-        assert created[0].phase == "e2e"
+        assert created[0].phase == "planning"
+        assert "Auto-scheduled E2E fix — e2e/specs/login.spec.ts" in created[0].execution_reason
         assert created[0].ticket.role == Ticket.Role.AUTHOR
 
     def test_idempotent_across_ticks(self) -> None:
@@ -401,10 +410,11 @@ class TestSkillDriftZoneRevived(TestCase):
             payload={"repo": repo, "file_path": file_path, "finding_fingerprint": "fp1", "overlay": "acme"},
         )
 
-    def test_creates_author_coding_task(self) -> None:
+    def test_creates_author_planning_task_carrying_the_drift_fix(self) -> None:
         created = persist_agent_actions(_agent_actions(self._signal()))
         assert len(created) == 1
-        assert created[0].phase == "coding"
+        assert created[0].phase == "planning"
+        assert "Auto-scheduled skill-drift fix — code/SKILL.md" in created[0].execution_reason
         assert created[0].ticket.role == Ticket.Role.AUTHOR
 
 

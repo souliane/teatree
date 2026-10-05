@@ -3,8 +3,7 @@
 AI/trajectory evals are non-deterministic and reach the network/model API, so a
 transient infra flake used to red-fail the pipeline and force a manual rerun.
 The GitHub eval workflow wraps the eval and ``uv sync`` steps in
-``nick-fields/retry`` and the GitLab eval-suite carries a bounded ``retry:``.
-These tests pin both, and assert the attempt cap so an unbounded retry can never
+``nick-fields/retry``. These tests assert the attempt cap so an unbounded retry can never
 mask a real regression.
 """
 
@@ -13,11 +12,8 @@ from typing import Any, cast
 
 import yaml
 
-from tests._ci_config import gitlab_ci_path
-
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
-_GITLAB_CI = gitlab_ci_path()
 
 _RETRY_ACTION = "nick-fields/retry"
 _MAX_RETRY_ATTEMPTS = 5
@@ -27,12 +23,6 @@ def _gh_eval_steps() -> list[dict[str, Any]]:
     jobs = cast("dict[str, Any]", yaml.safe_load(_GH_EVAL.read_text(encoding="utf-8"))["jobs"])
     assert "eval" in jobs, "the eval workflow must define the metered behavioral-eval job."
     return cast("list[dict[str, Any]]", jobs["eval"]["steps"])
-
-
-def _gitlab_eval_suite() -> dict[str, Any]:
-    config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
-    assert ".eval-suite" in config, "GitLab CI must define the shared eval-suite template."
-    return cast("dict[str, Any]", config[".eval-suite"])
 
 
 def _step_using_retry_for(command_fragment: str) -> dict[str, Any]:
@@ -63,22 +53,4 @@ class TestGitHubEvalRetry:
         step = _step_using_retry_for("t3 eval run")
         assert int(step["with"].get("retry_wait_seconds", 0)) > 0, (
             "Retry must wait between attempts so a transient outage has time to clear."
-        )
-
-
-class TestGitLabEvalRetry:
-    def test_eval_job_defines_bounded_retry(self) -> None:
-        retry = _gitlab_eval_suite().get("retry")
-        assert retry is not None, "GitLab eval-suite must declare a retry policy for transient flakes."
-        assert isinstance(retry, dict), "retry must specify max + when (not a bare integer that retries on anything)."
-        assert 1 <= int(retry["max"]) <= _MAX_RETRY_ATTEMPTS, (
-            "GitLab eval retry must be bounded so a deterministic miss fails fast."
-        )
-
-    def test_retry_targets_transient_failure_classes(self) -> None:
-        when = set(_gitlab_eval_suite()["retry"]["when"])
-        # Retrying on transient signals, not a blanket `always` that masks bugs.
-        assert "always" not in when, "retry must not be 'always' — that masks deterministic eval regressions."
-        assert {"runner_system_failure", "stuck_or_timeout_failure"} <= when, (
-            "retry must cover the runner/system + timeout transient classes."
         )

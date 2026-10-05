@@ -166,11 +166,6 @@ class LandscapeSurvey:
     warnings: list[str] = field(default_factory=list)
 
     @property
-    def in_flight_worktrees(self) -> list[WorktreeState]:
-        """Worktrees holding uncommitted or unpushed work."""
-        return [wt for wt in self.worktrees if wt.in_flight]
-
-    @property
     def actionable(self) -> list[IssueRecommendation]:
         """Issues whose recommended action is not a plain ``KEEP``."""
         return [r for r in self.recommendations if r.action is not RecommendedAction.KEEP]

@@ -30,7 +30,6 @@ import contextlib
 import dataclasses
 import hashlib
 import inspect
-import io
 import json
 import os
 import shutil
@@ -67,8 +66,9 @@ from tests._git_repo import make_git_repo, run_git
 
 _SYSTEM_CONTEXT = "You are a TeaTree headless agent executing a task.\n\n[pinned marker]"
 
-_OPTIONS_SHA256 = "9c06f3d6289b5f19c20b73755ddc4300614b4819842a43dabcc8fbb7e8741164"
-_SYSTEM_CONTEXT_SHA256 = "3db17433249f7e4235c970b726539db635c6e81b9d7f7831da7ab755abcc4bf0"
+# The directive_candidate envelope example was removed after the prior pin.
+_OPTIONS_SHA256 = "27acb3ab6c2ded43d3f05cbd5af6918efb2308b2ba14b65f8b9be9cb5bf2fe97"
+_SYSTEM_CONTEXT_SHA256 = "0cf9fa686abd48da9e2835248103340a92df451663820b6c0286de4ac6f9dcb1"
 
 _SKILLS = ["pin-lifecycle", "pin-companion"]
 
@@ -280,7 +280,7 @@ _INTERACTIVE_PINS = {
     "agent": "2d82d45f5ce655a0f852021ae2c20a0b25d3a6a8d03460eb0fe8d1dd4a003b3b",
     "loop": "bbfc5d6f4b4b8bc5d3f524a985ffd41deb11738786f2462d8459c8967cd6eee9",
     "env": "3c24b712e780f1c444411f262b75abbe6f19542d79fffb2f831fbde71e8a7b63",
-    "skill_context": "a54da20397a5927a8579a83249f45593593601ed91a8f912d01195ce19e96b5c",
+    "skill_context": "35646af03ea27eca12e2349114fd66c91d2283442f5b73355f2653d666117265",
 }
 
 _FACTORY_ONLY_MARKER = "factory-only-pin-marker"
@@ -413,15 +413,9 @@ class TestInteractiveSessionsArePinned(TestCase):
     def _skill_context(self) -> dict[str, str]:
         state_dir = self._root / "state"
         state_dir.mkdir(exist_ok=True)
-        (state_dir / "pin-prompt.t3-engaged").touch()
-        prompt_output = io.StringIO()
         with self._world(), patch.object(router, "STATE_DIR", state_dir):
-            with contextlib.redirect_stdout(prompt_output):
-                router.handle_user_prompt_submit({"session_id": "pin-prompt", "prompt": "fix the flaky assertion"})
             session_start = session_start_skill_context("pin-start")
         return {
-            "prompt_submit": prompt_output.getvalue(),
-            "prompt_pending": _read_or_empty(state_dir / "pin-prompt.pending"),
             "session_start": session_start,
             "session_start_pending": _read_or_empty(state_dir / "pin-start.pending"),
         }
@@ -442,7 +436,7 @@ class TestInteractiveSessionsArePinned(TestCase):
     def test_factory_only_settings_reach_no_attended_session(self) -> None:
         factory_only = {
             "agent_phase_models": {"coding": "cheap", "reviewing": "balanced"},
-            "agent_skill_models": {"t3:code": "frontier"},
+            "agent_skill_models": {"t3:code": [{"floor": "frontier"}]},
             "agent_honesty_model": "balanced",
             "agent_max_turns": 7,
             "subagent_spawn_ceiling": 3,

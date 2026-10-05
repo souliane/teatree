@@ -74,7 +74,7 @@ _MISSING_REVIEW_REASON = (
 
 
 def _is_draft(pr: RawAPIDict) -> bool:
-    for name in ("draft", "work_in_progress", "isDraft"):
+    for name in ("draft", "isDraft"):
         value = pr.get(name)
         if isinstance(value, bool):
             return value

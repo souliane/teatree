@@ -7,16 +7,22 @@ runtime so this test file never contains a literal matchable token.
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from subprocess import CompletedProcess
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from teatree.core.authoring_credential import UnapprovableAuthorError, reset_authoring_credential_cache
+from teatree.core.forge_pr_probe import PrProbe
+from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.core.push.fast_push import (
     EMPTY_DELTA_PR_SKIP,
     LEAK_GATES,
+    UNAPPROVABLE_AUTHOR_PR_REFUSAL,
     FastPusher,
     FastPushOutcome,
     GhForge,
@@ -65,8 +71,10 @@ def repo(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def leak_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("T3_BANNED_TERMS", "forbiddenbrand")
-    monkeypatch.setenv("TEATREE_OVERLAY_LEAK_TERMS", "secretoverlay")
+    monkeypatch.setenv(
+        "TEATREE_TERM_REGISTRY",
+        json.dumps({"leak": ["forbiddenbrand"], "prose_collider": ["forbiddenbrand"], "overlay": ["secretoverlay"]}),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -127,7 +135,7 @@ class TestLeakGatesRefuse:
     def test_fails_closed_when_banned_terms_unconfigured(
         self, repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
         (repo / "clean.py").write_text("x = 1\n")
         forge = FakeForge()
@@ -380,12 +388,12 @@ class TestCoreGateClassRouting:
         )
         conn.execute(
             "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
-            (json.dumps({"leak": ["acme"], "tone": ["blunder"]}),),
+            (json.dumps({"leak": ["acme"], "prose_collider": [], "tone": ["blunder"]}),),
         )
         conn.commit()
         conn.close()
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
     def test_leak_class_term_is_flagged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._seed_registry(tmp_path, monkeypatch)
@@ -414,15 +422,14 @@ class TestCoreGateClassRouting:
         conn.commit()
         conn.close()
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
-        monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
-        monkeypatch.delenv("TEATREE_OVERLAY_LEAK_TERMS", raising=False)
+        monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
 
     def test_overlay_gate_reads_the_registry_overlay_class(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # With no overlay env override, the overlay gate must resolve through the
         # registry's ``overlay`` class (not the excluded ``leak``/``prose_collider``).
-        self._seed(tmp_path, monkeypatch, {"leak": ["democorp"], "overlay": ["acme-internal"]})
+        self._seed(tmp_path, monkeypatch, {"leak": ["democorp"], "prose_collider": [], "overlay": ["acme-internal"]})
         findings = LeakGateScan._overlay_leak({"sample.txt": ["uses acme-internal here"]})
         assert [f.detail for f in findings] == ["overlay-scoped term 'acme-internal'"]
         assert LeakGateScan._overlay_leak({"sample.txt": ["mentions democorp"]}) == []
@@ -433,10 +440,10 @@ class TestCoreGateClassRouting:
         # The company-identifier carve-out must come from the registry's ``allow``
         # class: an allow-listed identifier is blanked before matching, so the
         # ``prose_collider`` slug inside it is NOT flagged.
-        self._seed(tmp_path, monkeypatch, {"prose_collider": ["acme"], "allow": ["acme-product"]})
+        self._seed(tmp_path, monkeypatch, {"leak": [], "prose_collider": ["acme"], "allow": ["acme-product"]})
         assert LeakGateScan._banned_terms({"sample.txt": ["the acme-product repo"]}) == []
         # Remove the carve-out and the bare slug flags again — anti-vacuous control.
-        self._seed(tmp_path, monkeypatch, {"prose_collider": ["acme"]})
+        self._seed(tmp_path, monkeypatch, {"leak": [], "prose_collider": ["acme"]})
         assert [f.detail for f in LeakGateScan._banned_terms({"sample.txt": ["the acme-product repo"]})] == [
             "banned term 'acme'"
         ]
@@ -795,3 +802,209 @@ class TestASyntheticPathNameDoesNotDisplaceARealFile:
             for f in outcome.findings
         ), outcome.findings
         assert not outcome.pushed
+
+
+OWNER_TOKEN = "owner-token"
+BOT_TOKEN = "bot-token"
+FACTORY_REMOTE = "git@gitlab.com:org/group/factory.git"
+PLAIN_REMOTE = "git@gitlab.com:org/product.git"
+MR_URL = "https://gitlab.com/org/group/factory/-/merge_requests/9"
+
+
+class _DeclaresABot(OverlayConfig):
+    """An overlay routing the factory remote — and only it — to a bot credential that may not resolve."""
+
+    def __init__(self, *, bot: str = BOT_TOKEN) -> None:
+        super().__init__()
+        self._bot = bot
+
+    def get_gitlab_token(self) -> str:
+        return OWNER_TOKEN
+
+    def get_gitlab_token_for_remote(self, remote: str) -> str:
+        return self._bot if "group/factory" in remote else OWNER_TOKEN
+
+
+class _Glab:
+    """Stands in for ``glab``: answers who a token authenticates as, records every call's argv and token.
+
+    The login follows the token the call runs under, so a read-back made under a different token
+    than the create's reads as a different identity. Anything that is not ``glab`` (the ``git``
+    steps of a whole fast-push) runs for real.
+    """
+
+    def __init__(self, logins: dict[str, str] | None = None) -> None:
+        self._logins = logins or {BOT_TOKEN: "the-bot", OWNER_TOKEN: "the-owner"}
+        self.calls: list[tuple[list[str], str]] = []
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> CompletedProcess[str]:
+        if cmd[0] != "glab":
+            return run_checked(cmd, **kwargs)
+        token = kwargs["env"]["GITLAB_TOKEN"]
+        self.calls.append((cmd, token))
+        if cmd[:3] == ["glab", "api", "user"]:
+            return CompletedProcess(cmd, 0, json.dumps({"username": self._logins[token]}), "")
+        return CompletedProcess(cmd, 0, f"created {MR_URL}\n", "")
+
+    def tokens_that(self, *verb: str) -> list[str]:
+        return [token for cmd, token in self.calls if cmd[: len(verb)] == list(verb)]
+
+
+class TestGlabForgeAuthorsUnderTheRepoCredential:
+    """An MR on a bot-authored repo is opened as the bot, or not at all.
+
+    ``glab mr create`` runs under whatever ``GITLAB_TOKEN`` the caller sets, so the identity
+    was the overlay-wide OWNER slot for every repo: ``t3 fast-push`` and the sub-agent barrier
+    of ``t3 handover create`` opened MRs the owner's account could then never approve.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _owner_token_and_approvers(self, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+        def owner(_repo: str, *, credential: str) -> ForgeTokenResolution:
+            return ForgeTokenResolution(credential, "test", ForgeTokenState.TOKEN, token=OWNER_TOKEN)
+
+        monkeypatch.setattr("teatree.core.push.fast_push.resolve_repo_token", owner)
+        monkeypatch.setattr("teatree.core.authoring_credential.approver_identities", lambda: frozenset({"the-owner"}))
+        self._monkeypatch = monkeypatch
+        reset_authoring_credential_cache()
+        yield
+        reset_authoring_credential_cache()
+
+    def _forge(self, repo: Path, remote: str, *configs: OverlayConfig) -> GlabForge:
+        bare = run_checked(["git", "remote", "get-url", "origin"], cwd=repo).stdout.strip()
+        run_checked(["git", "remote", "set-url", "origin", remote], cwd=repo)
+        run_checked(["git", "config", f"url.{bare}.pushInsteadOf", remote], cwd=repo)
+        overlays = {}
+        for index, config in enumerate(configs):
+            overlays[f"overlay-{index}"] = MagicMock(spec=OverlayBase, config=config)
+        self._monkeypatch.setattr("teatree.core.authoring_credential.get_all_overlays", lambda: overlays)
+        return GlabForge(repo)
+
+    def _whole_fast_push(self, repo: Path, forge: GlabForge, glab: _Glab) -> FastPushOutcome:
+        (repo / "feature.py").write_text("x = 1\n")
+        with (
+            patch("teatree.core.push.fast_push.run_checked", glab),
+            patch("teatree.core.push.fast_push.probe_gitlab_open_pr", return_value=PrProbe.none()),
+        ):
+            return FastPusher(repo=repo, forge=forge, message="feat: clean change").run()
+
+    def test_the_create_runs_under_the_bot_token_not_the_owners(self, repo: Path) -> None:
+        forge = self._forge(repo, FACTORY_REMOTE, _DeclaresABot())
+        glab = _Glab()
+
+        with patch("teatree.core.push.fast_push.run_checked", glab):
+            assert forge.create_pr(branch="b", title="t", body="d") == MR_URL
+
+        assert glab.tokens_that("glab", "mr", "create") == [BOT_TOKEN]
+
+    def test_the_identity_read_back_runs_under_the_token_that_creates(self, repo: Path) -> None:
+        forge = self._forge(repo, FACTORY_REMOTE, _DeclaresABot())
+        glab = _Glab()
+
+        with patch("teatree.core.push.fast_push.run_checked", glab):
+            forge.create_pr(branch="b", title="t", body="d")
+
+        assert glab.tokens_that("glab", "api", "user") == glab.tokens_that("glab", "mr", "create") == [BOT_TOKEN]
+
+    def test_an_unreachable_bot_refuses_by_name_and_creates_nothing(self, repo: Path) -> None:
+        forge = self._forge(repo, FACTORY_REMOTE, _DeclaresABot(bot=""))
+        glab = _Glab()
+
+        with patch("teatree.core.push.fast_push.run_checked", glab), pytest.raises(UnapprovableAuthorError) as refusal:
+            forge.create_pr(branch="b", title="t", body="d")
+
+        assert FACTORY_REMOTE in str(refusal.value)
+        assert glab.calls == []
+
+    def test_a_bot_slot_that_authenticates_as_an_approver_is_refused_before_the_create(self, repo: Path) -> None:
+        forge = self._forge(repo, FACTORY_REMOTE, _DeclaresABot())
+        glab = _Glab({BOT_TOKEN: "the-owner"})
+
+        with patch("teatree.core.push.fast_push.run_checked", glab), pytest.raises(UnapprovableAuthorError) as refusal:
+            forge.create_pr(branch="b", title="t", body="d")
+
+        assert "the-owner" in str(refusal.value)
+        assert glab.tokens_that("glab", "mr", "create") == []
+
+    def test_an_ordinary_repo_keeps_the_owner_token_and_is_never_read_back(self, repo: Path) -> None:
+        forge = self._forge(repo, PLAIN_REMOTE, _DeclaresABot(bot=""))
+        glab = _Glab()
+
+        with patch("teatree.core.push.fast_push.run_checked", glab):
+            assert forge.create_pr(branch="b", title="t", body="d") == MR_URL
+
+        assert glab.tokens_that("glab", "mr", "create") == [OWNER_TOKEN]
+        assert glab.tokens_that("glab", "api", "user") == []
+
+    def test_an_update_never_needs_the_bot(self, repo: Path) -> None:
+        forge = self._forge(repo, FACTORY_REMOTE, _DeclaresABot(bot=""))
+        glab = _Glab()
+
+        with patch("teatree.core.push.fast_push.run_checked", glab):
+            forge.update_pr(url=MR_URL, body="d2")
+
+        assert glab.calls == [(["glab", "mr", "update", "9", "--description", "d2"], OWNER_TOKEN)]
+
+    def test_a_whole_fast_push_pushes_and_opens_no_mr_when_the_bot_is_unreachable(
+        self, repo: Path, leak_env: None
+    ) -> None:
+        forge = self._forge(repo, FACTORY_REMOTE, _DeclaresABot(bot=""))
+        glab = _Glab()
+
+        outcome = self._whole_fast_push(repo, forge, glab)
+
+        assert outcome.pushed
+        assert outcome.pr_action == UNAPPROVABLE_AUTHOR_PR_REFUSAL
+        assert FACTORY_REMOTE in outcome.pr_skip_reason
+        assert glab.calls == []
+
+    def test_conflicting_declarations_are_a_named_outcome_not_a_traceback_after_the_push(
+        self, repo: Path, leak_env: None
+    ) -> None:
+        forge = self._forge(repo, FACTORY_REMOTE, _DeclaresABot(), _DeclaresABot(bot="other-bot-token"))
+        glab = _Glab()
+
+        outcome = self._whole_fast_push(repo, forge, glab)
+
+        assert outcome.pushed
+        assert outcome.pr_action == UNAPPROVABLE_AUTHOR_PR_REFUSAL
+        assert "DIFFERENT" in outcome.pr_skip_reason
+        assert glab.calls == []
+
+
+class TestAMergeRequestRefusedOnItsAuthorKeepsThePushLanded:
+    """Like the empty-delta skip, a withheld MR must never strand the work it was checkpointing."""
+
+    def _refused(self, repo: Path, leak_env: None) -> FastPushOutcome:
+        class RefusingForge(FakeForge):
+            def create_pr(self, *, branch: str, title: str, body: str) -> str:
+                msg = f"{FACTORY_REMOTE} would be authored by the owner"
+                raise UnapprovableAuthorError(msg)
+
+        (repo / "feature.py").write_text("x = 1\n")
+        return run_fast_push(repo, RefusingForge(), message="feat: clean change")
+
+    def test_the_outcome_names_the_refusal_and_carries_no_url(self, repo: Path, leak_env: None) -> None:
+        outcome = self._refused(repo, leak_env)
+
+        assert outcome.pr_action == UNAPPROVABLE_AUTHOR_PR_REFUSAL
+        assert FACTORY_REMOTE in outcome.pr_skip_reason
+        assert outcome.pr_url == ""
+
+    def test_the_push_still_lands(self, repo: Path, leak_env: None) -> None:
+        outcome = self._refused(repo, leak_env)
+
+        assert outcome.ok
+        assert outcome.pushed
+        assert (
+            "refs/heads/feature" in run_checked(["git", "ls-remote", "--heads", "origin", "feature"], cwd=repo).stdout
+        )
+
+    def test_an_existing_mr_is_still_updated(self, repo: Path, leak_env: None) -> None:
+        forge = FakeForge(existing_pr_url=MR_URL)
+        (repo / "feature.py").write_text("x = 1\n")
+
+        outcome = run_fast_push(repo, forge, message="feat: clean change")
+
+        assert outcome.pr_action == "updated"
+        assert forge.updated[0]["url"] == MR_URL

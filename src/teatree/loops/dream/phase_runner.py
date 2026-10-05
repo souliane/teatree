@@ -6,29 +6,22 @@ decay (6) — plus the §4 acceptance gates that grade them are a cohesive conce
 of their own, extracted here as a composed :class:`MemoryPhaseRunner` so the
 command stays focused on the cron loop.
 
-Every phase runs LIVE by default behind its own ``[loops.dream]`` / ``T3_DREAM_*``
-kill-switch and each in its own try/except, so one phase (or one memory dir)
-failing never crashes the tick or stops the other phases. The runner takes a
-``backlog_host_resolver`` so the binding-reconciliation ticket path (Decision-3,
-#2723) reaches the same teatree backlog host the command resolves, without the
-runner importing the command.
+Every phase runs on each pass, with its own try/except so one phase (or one
+memory dir) failing never crashes the tick or stops the other phases.
 """
 
-from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 from django.apps import apps
 
 if TYPE_CHECKING:
-    from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models import ConsolidatedMemory
     from teatree.loops.dream.decay import ArchivedMemory
     from teatree.loops.dream.gates import MemorySnapshot
     from teatree.loops.dream.merge import BindingConflict
 
 #: Resolve the teatree backlog code host + repo slug for ticket filing.
-BacklogHostResolver = Callable[[], "tuple[CodeHostBackend | None, str]"]
 
 
 class _PhaseRunnerOne(Protocol):
@@ -54,14 +47,7 @@ def _broken_citation_warnings(archived: "tuple[ArchivedMemory, ...]") -> list[st
 
 
 class MemoryPhaseRunner:
-    """Runs the file-side dream phases (4 / 4b / 5 / 6) and the §4 acceptance gates.
-
-    Composed by the ``dream`` command; the binding-reconciliation filer reaches the
-    command's backlog host through the injected *backlog_host_resolver*.
-    """
-
-    def __init__(self, *, backlog_host_resolver: BacklogHostResolver) -> None:
-        self._backlog_host_resolver = backlog_host_resolver
+    """Runs the file-side dream phases (4 / 4b / 5 / 6) and the §4 acceptance gates, composed by ``dream``."""
 
     def run_memory_phases(self, *, dry_run: bool) -> str:
         """Run phases 4-6 over every discovered memory dir, then grade any mutation.
@@ -78,7 +64,7 @@ class MemoryPhaseRunner:
         from teatree.loops.dream import gates  # noqa: PLC0415 — deferred: loaded at tick time, not import
         from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415 — deferred: loaded at tick time
 
-        memory_dirs = discover_memory_dirs()
+        memory_dirs = discover_memory_dirs(writable_only=True)
         if not memory_dirs:
             return ""
         before = {d: gates.snapshot_memory_dir(d) for d in memory_dirs}
@@ -116,7 +102,7 @@ class MemoryPhaseRunner:
         from teatree.loops.dream import gates  # noqa: PLC0415 — deferred: loaded at tick time, not import
         from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415 — deferred: loaded at tick time
 
-        memory_dirs = discover_memory_dirs()
+        memory_dirs = discover_memory_dirs(writable_only=True)
         if not memory_dirs:
             return "", True, ""
 
@@ -236,11 +222,8 @@ class MemoryPhaseRunner:
         the hot index back under budget while their signatures persist in MEMORY_ARCHIVE.md.
         """
         from teatree.loops.dream import decay  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
         archived_by_dir: dict[Path, tuple[ArchivedMemory, ...]] = {}
-        if not decay_enabled():
-            return "", archived_by_dir
         total = 0
         warnings: list[str] = []
         budget_policy = decay.DecayPolicy(budget_tier=decay.BudgetTier())
@@ -290,26 +273,20 @@ class MemoryPhaseRunner:
     @staticmethod
     def _cross_link_one(d: Path, *, dry_run: bool) -> int:
         from teatree.loops.dream import cross_link  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        from teatree.loops.dream.loop import cross_link_enabled  # noqa: PLC0415 — deferred: loaded at tick time
 
-        if not cross_link_enabled():
-            return 0
         return cross_link.cross_link_memories(d, dry_run=dry_run).links_added
 
     def _merge_dirs(self, memory_dirs: list[Path], *, dry_run: bool) -> tuple[str, int]:
         """Phase 4b — merge near-duplicate memories per dir, fault-isolated (#2723).
 
         Collapses near-duplicate pairs (the higher-weight survivor keeps binding
-        doctrine) and files a deduped reconciliation ticket for any two-BINDING
+        doctrine) and queues a deduped reconciliation gap for any two-BINDING
         conflict the merge phase refused to collapse (Decision-3). Returns the
         ``(summary_clause, merged_count)`` pair so the count feeds the
         ``maintenance_performed`` gate signal.
         """
         from teatree.loops.dream import merge  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        from teatree.loops.dream.loop import merge_enabled  # noqa: PLC0415 — deferred: loaded at tick time, not import
 
-        if not merge_enabled():
-            return "", 0
         merged = 0
         conflicts: list[merge.BindingConflict] = []
         warnings: list[str] = []
@@ -325,32 +302,28 @@ class MemoryPhaseRunner:
         clause = f"; merged {merged} near-duplicate memory(ies)" if merged else ""
         return f"{clause}{reconciled}{''.join(warnings)}", merged
 
-    def _file_binding_reconciliations(self, conflicts: "list[BindingConflict]", *, dry_run: bool) -> str:
-        """File a deduped reconciliation ticket per two-BINDING conflict, fault-isolated."""
+    @staticmethod
+    def _file_binding_reconciliations(conflicts: "list[BindingConflict]", *, dry_run: bool) -> str:
+        """Queue a deduped reconciliation gap per two-BINDING conflict for the backlog sweep, fault-isolated."""
         if not conflicts or dry_run:
             return ""
         try:
-            from teatree.loops.dream import promote_memory  # noqa: PLC0415 — deferred: loaded at tick time, not import
+            from teatree.core.models import dream_gap_ledger  # noqa: PLC0415 — deferred: tick-time import
+            from teatree.loops.dream import binding_reconcile  # noqa: PLC0415 — deferred: tick-time import
 
-            host, repo = self._backlog_host_resolver()
-            if host is None:
-                return "; WARN binding reconciliation skipped — no teatree code host resolved"
-            outcomes = promote_memory.file_binding_reconciliation_tickets(
-                host, repo=repo, conflicts=conflicts, dry_run=dry_run
+            outcomes = binding_reconcile.queue_binding_reconciliations(
+                umbrella_url=dream_gap_ledger.dream_umbrella_url(), conflicts=conflicts
             )
         except Exception as exc:  # noqa: BLE001 — a binding-reconciliation failure degrades to a WARN clause
             return f"; WARN binding reconciliation raised: {type(exc).__name__}: {exc}"
-        filed = sum(1 for o in outcomes if o.filed)
-        return f"; filed {filed} binding-reconciliation ticket(s)" if filed else ""
+        queued = sum(1 for o in outcomes if o.filed)
+        return f"; queued {queued} binding reconciliation(s) for the backlog sweep" if queued else ""
 
     @staticmethod
     def _reindex_one(d: Path, *, dry_run: bool) -> int:
         from teatree.loops.dream import reindex  # noqa: PLC0415 — deferred: loaded at tick time, not import
-        from teatree.loops.dream.loop import reindex_enabled  # noqa: PLC0415 — deferred: loaded at tick time
 
-        if not reindex_enabled():
-            return 0
         return 1 if reindex.reindex_memory(d, dry_run=dry_run).changed else 0
 
 
-__all__ = ["BacklogHostResolver", "MemoryPhaseRunner"]
+__all__ = ["MemoryPhaseRunner"]

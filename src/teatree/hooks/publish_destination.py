@@ -1,47 +1,10 @@
-"""Publish-destination resolution + classification for the pre-publish gates.
+"""Resolve publish targets and classify their visibility for leak gates.
 
-The banned-terms (#1415), quote-scanner (#1213) and bare-reference (#1530)
-gates exist to stop leaks on PUBLIC surfaces. This module RESOLVES a publish
-command's target repo/namespace and CLASSIFIES it; the visibility-scoped SKIP
-decision the leak gates call lives in :mod:`teatree.hooks.public_visibility`.
-
-:func:`resolve_publish_destination` / :func:`_destination_from_words` extract
-the target repo/namespace from the COMMAND ITSELF (the ``--repo``/``-R`` flag,
-the ``gh``/``glab api`` URL path, a forge URL positional, ``GH_REPO``, the
-``t3 review`` project positional, or the git remote of the dir the segment
-publishes FROM -- :func:`_commit_repo_dir.segment_cwds`, which every ``cd`` in
-the chain re-points, else the ambient hook cwd).
-
-Two classifiers over that target, with OPPOSITE fail directions for two
-consumers:
-
-- :func:`is_public_destination` -- FAIL-CLOSED. A destination is PUBLIC (the
-    caller scans) UNLESS it is PROVABLY internal (an ``internal_publish_namespaces``
-    / ``private_repos`` allowlist match, or a CONFIRMED-PRIVATE probe verdict).
-    An unknown/unresolvable target stays PUBLIC. This conservative classifier is
-    consumed by the FSM-level :mod:`teatree.core.gates.privacy_gate`.
-- :func:`public_visibility.is_affirmatively_public` + the three-valued
-    :func:`public_visibility._destination_visibility` -- the PreToolUse leak-gate
-    scope. A destination is ``PUBLIC`` ONLY on a CONFIRMED-PUBLIC probe verdict
-    for a non-allowlisted slug, ``NON_PUBLIC`` when PROVABLY internal/private
-    (allowlist / internal-namespace / confirmed-private probe), and ``UNKNOWN``
-    when a RESOLVABLE slug's probe cannot confirm visibility. The leak gates
-    (#1415/#1213) SKIP only a ``NON_PUBLIC`` target and FAIL CLOSED (scan) on
-    ``PUBLIC`` and ``UNKNOWN`` -- a probe error on a resolvable target scans, never
-    skips (#3442), agreeing with the fail-closed bash pre-push mirror.
-
-The hook process is overlay-agnostic and cannot import ``OverlayConfig``; it
-reads the internal denylist from the canonical ``ConfigSetting`` DB via the
-Django-free :mod:`teatree.config.cold_reader` (the
-``internal_publish_namespaces`` / ``private_repos`` readers in
-:mod:`teatree.hooks._repo_visibility` and this module).
-
-The shared command-parsing helpers (``_extract_repo_flag``, the
-eligible-verb sets) live in :mod:`teatree.hooks.publish_surface` and the
-repo-target resolution (``slug_for_cwd``) in
-:mod:`teatree.hooks._repo_visibility`; this module reuses them so the
-repo-target resolution stays in one place across the private-repo carve-out,
-the FSM privacy gate, and the affirmative-public leak-gate scope.
+Commands may name a repo through ``--repo``, a forge API path, ``GH_REPO``,
+a work-item URL, or the current git remote. Resolved targets keep their host
+or inherit the command's forge before the shared private-repo verdict runs.
+An unknown target is scanned. A reachable PUBLIC forge answer always wins over
+a ``private_repos`` declaration.
 """
 
 import os
@@ -51,17 +14,11 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 from urllib.parse import urlparse
 
-from teatree.config import cold_reader
+from teatree.hooks import _repo_visibility
 from teatree.hooks._commit_repo_dir import NAVIGATION_VERBS, segment_cwds
 from teatree.hooks._gh_glab_hiding import command_segments, raw_has_live_substitution, token_is_transport_construct
+from teatree.hooks._private_repo_entries import private_repo_visibility, qualified_repo_slug
 from teatree.hooks._python_rest_detection import find_python_forge_rest_urls, is_python_leader
-from teatree.hooks._repo_visibility import (
-    forge_qualified_slug,
-    slug_for_cwd,
-    slug_is_allowlisted_private,
-    slug_is_private,
-    slug_namespace_matches,
-)
 from teatree.hooks.publish_surface import (
     _GH_ELIGIBLE_VERBS,
     _GLAB_ELIGIBLE_VERBS,
@@ -90,8 +47,8 @@ class Destination:
     flagless target to the GitHub probe -- an internal/private GitLab MR was
     then probed via ``gh``, never confirmed private, and the gate over-fired.
     The tool word is known at resolution time, so ``forge`` carries it to
-    :func:`is_public_destination`, which forwards it to the probe (see
-    :func:`_repo_visibility.slug_is_private`). A host-qualified slug already
+    :func:`is_public_destination`, which forwards it to the shared visibility
+    rule. A host-qualified slug already
     pins the forge from its host segment, so the hint only matters for the
     bare-slug case.
     """
@@ -125,7 +82,7 @@ _API_ENDPOINT_PREFIX_RE: Final[re.Pattern[str]] = re.compile(r"^(?:https?://[^/]
 # The ``owner/repo`` of a forge URL positional, before the resource segment
 # (GitLab ``/-/`` infix and nested group paths handled; ``.git`` suffix stripped).
 _FORGE_URL_SLUG_RE: Final[re.Pattern[str]] = re.compile(
-    r"https?://(?:[\w.-]+\.)?(?:github\.com|gitlab\.com)/"
+    r"https?://(?:[^/@\s]+@)?(?P<host>[\w.-]+\.[\w.-]+)(?::\d+)?/"
     r"(?P<slug>[\w.-]+(?:/[\w.-]+)+?)"
     r"(?:/(?:-/)?(?:issues|pull|pulls|merge_requests|commit|tree|blob)\b|\.git\b|/?$)",
 )
@@ -252,14 +209,25 @@ def _destination_from_api(words: list[str], tool: str) -> Destination | None:
     url = _api_url_arg(words)
     if url is None:
         return None
+    host = urlparse(url).hostname if url.startswith(("http://", "https://")) else None
+    if host == "api.github.com":
+        host = "github.com"
     url = _normalize_api_endpoint(url)
     forge = _forge_for_tool(tool)
     if tool == "gh":
         match = _GH_API_REPOS_RE.match(url)
-        return Destination(slug=match.group(1), via="api", forge=forge) if match else None
+        if not match:
+            return None
+        slug = match.group(1)
+        return Destination(slug=f"{host}/{slug}" if host else slug, via="api", forge=forge)
     match = _GLAB_API_PROJECTS_RE.match(url)
     if match:
-        return Destination(slug=match.group(1).replace("%2F", "/").replace("%2f", "/"), via="api", forge=forge)
+        project = match.group(1).replace("%2F", "/").replace("%2f", "/")
+        return Destination(
+            slug=f"{host}/{project}" if host else project,
+            via="api",
+            forge=forge,
+        )
     return None
 
 
@@ -271,7 +239,7 @@ def _destination_from_current_repo(cwd: Path | None, forge: str) -> Destination 
     """
     if cwd is None:
         return None
-    slug = slug_for_cwd(cwd)
+    slug = _repo_visibility.slug_for_cwd(cwd)
     return Destination(slug=slug, via="cwd", forge=forge) if slug else None
 
 
@@ -286,7 +254,9 @@ def _destination_from_forge_url(words: list[str], forge: str) -> Destination | N
     for word in words:
         match = _FORGE_URL_SLUG_RE.search(word)
         if match:
-            return Destination(slug=match.group("slug").removesuffix(".git"), via="url", forge=forge)
+            return Destination(
+                slug=f"{match.group('host')}/{match.group('slug').removesuffix('.git')}", via="url", forge=forge
+            )
     return None
 
 
@@ -310,11 +280,11 @@ def _flagless_destination(words: list[str], tool: str, cwd: Path | None) -> Dest
     return None
 
 
-# ``t3 [overlay] review post-comment`` / ``... post-draft-note`` -- the
+# ``t3 [overlay] review post-comment`` -- the
 # GitLab-only review-post verbs. The FIRST positional after the verb is the
-# project slug (confirmed at ``cli/review/commands.py`` ``post_comment`` /
-# ``post_draft_note``: ``repo`` is the leading ``typer.Argument``).
-_T3_REVIEW_POST_VERBS: Final[frozenset[str]] = frozenset({"post-comment", "post-draft-note"})
+# project slug (confirmed at ``cli/review/commands.py`` ``post_comment``:
+# ``repo`` is the leading ``typer.Argument``).
+_T3_REVIEW_POST_VERBS: Final[frozenset[str]] = frozenset({"post-comment"})
 
 
 def _first_positional(words: list[str]) -> str | None:
@@ -332,7 +302,7 @@ def _first_positional(words: list[str]) -> str | None:
 
 
 def _destination_from_t3_review(words: list[str]) -> Destination | None:
-    """Resolve the destination of a ``t3 [overlay] review post-comment/post-draft-note``.
+    """Resolve the destination of a ``t3 [overlay] review post-comment``.
 
     ``t3 review`` posts a GitLab MR comment / draft note on the user's behalf; its
     destination is the project-slug positional. The resolver never extracted it
@@ -416,7 +386,7 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
     - ``glab api [https://<host>/][api/vN/]projects/<url-encoded ns%2Frepo>/...``
         -- the ``projects/`` path segment, ``%2F``-decoded, after the same
         host + ``api/vN/`` prefix strip.
-    - ``t3 [overlay] review post-comment``/``post-draft-note <ns>/<repo> ...``
+    - ``t3 [overlay] review post-comment <ns>/<repo> ...``
         -- the project-slug positional (forge pinned to gitlab; ``t3 review`` is
         GitLab-only).
     - ``gh``/``glab`` ``pr``/``issue``/``mr`` ``create``/``comment``/``note``
@@ -494,107 +464,23 @@ def _segment_is_skip_inert(words: list[str]) -> bool:
     return rest[0] in _SKIP_INERT_LEADERS and _segment_is_publish_inert(words)
 
 
-def _teatree_list_setting(key: str, env_var: str, config_path: Path | None) -> list[str]:
-    """Return the DB-home ``<key>`` list unioned with the ``<env_var>`` override (lower-cased).
-
-    The env var (comma- or space-separated) SUPPLEMENTS the DB list, mirroring
-    the established ``internal_publish_namespaces`` / ``T3_INTERNAL_PUBLISH_NAMESPACES``
-    shape. Reads the canonical ``ConfigSetting`` store via the Django-free
-    :mod:`teatree.config.cold_reader`; *config_path* overrides the DB path (else
-    the canonical DB / ``T3_CONFIG_DB``).
-    """
-    env_raw = os.environ.get(env_var, "")
-    env_entries = [e.strip().lower() for e in re.split(r"[,\s]+", env_raw) if e.strip()]
-    db_entries = [
-        str(e).strip().lower() for e in cold_reader.list_setting(key, default=[], db_path=config_path) if str(e).strip()
-    ]
-    return env_entries + db_entries
-
-
-def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
-    """Return the DB-home ``internal_publish_namespaces`` denylist (lower-cased).
-
-    The list of host/namespace prefixes that are PROVABLY internal. Read
-    from the ``T3_INTERNAL_PUBLISH_NAMESPACES`` env var first (comma- or
-    space-separated, for a quick per-session override), then the
-    ``internal_publish_namespaces`` row in the canonical ``ConfigSetting`` DB.
-    DEFAULT is empty -- with nothing configured every destination stays PUBLIC
-    (scanned), so behaviour is conservative for unconfigured users.
-
-    No real company/customer namespace is hardcoded here; the denylist lives
-    only in the operator's private DB / env.
-    """
-    return _teatree_list_setting("internal_publish_namespaces", "T3_INTERNAL_PUBLISH_NAMESPACES", config_path)
-
-
 def _host_relative_slug(slug: str) -> str:
-    """Reduce a full forge URL to the host-relative project path the allowlists key on.
-
-    The allowlist matchers key on the host-stripped ``owner/repo`` path
-    (:func:`slug_namespace_matches`), and recognise a host segment only as a
-    LEADING ``/``-segment containing a dot -- so a scheme-qualified
-    ``https://host/ns/repo/...`` leads with ``https:`` and matches nothing,
-    which the fail-closed default then reports as PUBLIC. The bash gates never
-    hit this: their parsers strip the scheme+host before building the
-    :class:`Destination`. The PROGRAMMATIC callers do -- ``t3 ... ticket
-    comment``/``create-sub`` and the on-behalf ``reply_transport`` name their
-    destination by full issue/work-item URL -- so a repo declared in
-    ``private_repos`` / ``internal_publish_namespaces`` was classified PUBLIC and
-    its own internal terms refused. Normalising here (rather than at each
-    caller) is what keeps the two mechanisms answering the same question.
-
-    :func:`teatree.utils.url_slug.project_slug_from_ref` is the one repo-slug
-    extractor, so an issue / work-item / PR / MR URL yields the clean project
-    slug the live visibility probe can also use. A URL it does not recognise
-    falls back to the raw path, which still carries the namespace segments the
-    allowlists match on -- the exact form the bash parsers already produce for
-    the same target. A non-URL slug is returned untouched.
-    """
+    """Keep the host when reducing a full issue or merge-request URL."""
     if not slug.startswith(("http://", "https://")):
         return slug
-    return project_slug_from_ref(slug) or urlparse(slug).path.strip("/")
+    parsed = urlparse(slug)
+    project = project_slug_from_ref(slug) or parsed.path.strip("/")
+    return f"{parsed.hostname}/{project}" if parsed.hostname and project else ""
 
 
 def is_public_destination(dest: Destination | None, *, config_path: Path | None = None) -> bool:
-    """Return True iff ``dest`` should be treated as a PUBLIC publish target.
+    """Treat a destination as public unless its real host is proven private.
 
-    FAIL-CLOSED classification: a destination is PUBLIC (the gate scans and
-    blocks) UNLESS it is PROVABLY internal. The slug is first reduced to its
-    host-relative project path (:func:`_host_relative_slug`), so a bash gate's
-    bare/host-qualified slug and a programmatic caller's full issue/work-item URL
-    for the SAME repo classify identically. A destination is internal when ANY
-    of these resolves that slug to private:
-
-    - the ``internal_publish_namespaces`` /
-        ``T3_INTERNAL_PUBLISH_NAMESPACES`` denylist, as a case-insensitive
-        prefix-SEGMENT match (``internalcorp`` matches ``internalcorp/svc``
-        and ``host/internalcorp/svc`` but not ``other/internalcorp-public``);
-    - the existing ``private_repos`` allowlist that the
-        commit / pure-post carve-out already consults
-        (:func:`_repo_visibility.slug_is_allowlisted_private`), so a user's
-        CURRENT ``private_repos`` config makes their private namespaces skip the
-        public-leak scan without maintaining a second list;
-    - the day-cached ``gh``/``glab`` live-visibility probe
-        (:func:`_repo_visibility.slug_is_private`) returning a CONFIRMED-PRIVATE
-        verdict. Resolving visibility from the COMMAND's target slug (the
-        ``--repo``/``-R`` flag, the ``api`` URL path, or the cwd remote) rather
-        than the harness cwd is what lets a post FROM a public clone TO a
-        provably-private repo skip the public-leak scan instead of over-blocking.
-        The publish tool's forge (``dest.forge`` -- ``github`` for ``gh``,
-        ``gitlab`` for ``glab``) is forwarded to the probe so a BARE GitLab slug
-        is probed via ``glab`` rather than mis-routed to the GitHub default; the
-        probe returns ``None`` (unknown -- tool absent in-hook or auth differs)
-        for an unresolvable target, which stays PUBLIC.
-
-    Every OTHER target stays PUBLIC and is SCANNED: a genuinely-public
-    non-teatree repo (a user's other public repos), a third-party repo, an
-    UNKNOWN-visibility target, a ``None`` destination (unresolvable target), an
-    empty slug, and a slug carrying an unexpanded shell variable (``$``, runtime
-    value unknowable). The public-surface default is fail-closed because an
-    allowlist of "surfaces to scan" would fail OPEN on a public repo nobody
-    remembered to list, leaking an internal term unscanned onto a public surface.
-    A probe that cannot prove the target private leaves it PUBLIC -- detection
-    failure never weakens the gate.
+    Full issue/PR URLs retain their host while their path is reduced to the repo.
+    Bare slugs inherit ``dest.forge`` before the shared host-qualified visibility
+    decision. A reachable PUBLIC probe overrides ``private_repos``; an unknown
+    probe leaves a matching declaration private. Empty or unresolved targets
+    stay public so outbound leak checks run.
     """
     if dest is None:
         return True
@@ -604,12 +490,9 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     slug = _host_relative_slug(slug)
     if not slug:
         return True
-    if any(slug_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
-        return False
-    if slug_is_allowlisted_private(slug, config_path):
-        return False
-    # Qualify a BARE slug UP to its forge's canonical host so the host-keyed
-    # probe routes to the right tool: a ``glab`` post probes via ``glab``, not
-    # the GitHub default. A host-qualified slug is unchanged.
-    probe_slug = forge_qualified_slug(slug, dest.forge)
-    return not slug_is_private(probe_slug)
+    probe_slug = qualified_repo_slug(slug, dest.forge, ops=_repo_visibility)
+    return private_repo_visibility(
+        probe_slug,
+        config_path,
+        ops=_repo_visibility,
+    ) not in {"PRIVATE", "INTERNAL"}

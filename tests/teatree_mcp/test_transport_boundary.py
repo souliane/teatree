@@ -31,12 +31,11 @@ from mcp.types import ToolAnnotations
 import teatree.mcp
 from teatree.backends.types import Service
 from teatree.core.overlay import McpTool, McpToolGroup, OverlayConfig, OverlayConnectors
-from teatree.mcp import build_server
-from teatree.mcp.server import declared_write_tool_seams
+from teatree.mcp.server import build_server, declared_write_tool_seams
 
 _MCP_DIR = Path(teatree.mcp.__file__).parent
 
-_OVERLAY_SERVICES = frozenset({Service.GITHUB, Service.GITLAB, Service.SLACK})
+_OVERLAY_SERVICES = frozenset({Service.GITHUB, Service.GITLAB, Service.SLACK, Service.NOTION})
 
 
 def _overlay_write(subject: str) -> str:
@@ -109,9 +108,9 @@ class TestNoTransportImports:
 
 
 class TestSeamAllowlistCoverage:
-    # Built against a server that declares github + gitlab + slack, so every
+    # Built against a server that declares github + gitlab + slack + notion, so every
     # conditionally-registered per-service write tool (the forge issue writes,
-    # slack_react) is present — otherwise a forge write tool would look "stale"
+    # slack_react, the notion writes) is present — otherwise a forge write tool would look "stale"
     # in an env that happens not to declare its forge.
     def test_every_write_tool_declares_its_seam(self) -> None:
         with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _AllForgeOverlay()}):

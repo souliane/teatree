@@ -26,7 +26,6 @@ from teatree.core.gates.review_request_guard import (
     GuardDecision,
     GuardOptions,
     GuardTarget,
-    _live_matches,
     overlay_for_mr_url,
     resolve_guard_target,
 )
@@ -934,25 +933,66 @@ class TestPostedRowProbesRecordedChannel(TestCase):
         assert params["channel"] == recorded_channel
 
 
-class TestChannelScanPageCap(TestCase):
-    """The page cap reaches the scan spec, so a ~30-day window is reachable (#3292 part 4)."""
+def _busy_channel_history(page_count: int, *, broadcast_on: int = 0, failing_page: int = 0) -> list[dict]:
+    pages: list[dict] = []
+    for number in range(1, page_count + 1):
+        messages = [{"text": f"chatter {number}-{i}", "ts": _ts_now(), "user": _HUMAN_AUTHOR} for i in range(100)]
+        if number == broadcast_on:
+            messages[42] = {"text": f"please review {_MR_URL}", "ts": _ts_now(), "user": _HUMAN_AUTHOR}
+        last = number == page_count
+        page: dict = {"ok": True, "messages": messages, "has_more": not last}
+        if not last:
+            page["response_metadata"] = {"next_cursor": f"cursor-{number + 1}"}
+        pages.append({"ok": False, "error": "internal_error"} if number == failing_page else page)
+    return pages
 
-    def test_live_matches_passes_the_options_page_cap_to_the_scan(self) -> None:
-        captured: dict[str, object] = {}
 
-        class _Provider:
-            @staticmethod
-            def read_recent_review_matches(spec):
-                captured["max_pages"] = spec.max_pages
-                return type("R", (), {"ok": True, "matches": []})()
+class TestChannelScanReadsTheWholeLookbackWindow(TestCase):
+    """A window busier than any fixed page count is still read to its edge."""
 
-        with patch("teatree.core.backend_registry.get_backend_provider", return_value=_Provider()):
-            _live_matches(
-                _MR_URL,
-                GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
-                GuardOptions(max_pages=17),
+    def _peek(self, fake: FakeClient) -> GuardDecision:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack_http.httpx, "get", fake.get)
+            return peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
             )
-        assert captured["max_pages"] == 17
+
+    def _history_params(self, fake: FakeClient) -> list[dict]:
+        return [
+            params
+            for call in fake.get_calls
+            if "conversations.history" in str(call["url"]) and isinstance(params := call["params"], dict)
+        ]
+
+    def test_a_broadcast_on_page_six_of_seven_is_found(self) -> None:
+        fake = FakeClient(pages=_busy_channel_history(7, broadcast_on=6))
+
+        decision = self._peek(fake)
+
+        assert decision.action == "suppress"
+        assert decision.reason == "already_posted"
+        assert decision.permalink.startswith("https://team.slack.com/archives/")
+        assert len(self._history_params(fake)) == 6
+
+    def test_seven_clean_pages_read_to_the_edge_allow_the_post(self) -> None:
+        fake = FakeClient(pages=_busy_channel_history(7))
+
+        decision = self._peek(fake)
+
+        assert decision.action == "post"
+        params = self._history_params(fake)
+        assert len(params) == 7
+        assert all(page["oldest"] for page in params)
+
+    def test_a_page_failing_mid_walk_still_fails_safe(self) -> None:
+        fake = FakeClient(pages=_busy_channel_history(7, broadcast_on=6, failing_page=4))
+
+        decision = self._peek(fake)
+
+        assert decision.action == "suppress"
+        assert decision.reason == "read_failed_failsafe"
+        assert len(self._history_params(fake)) == 4
 
 
 class TestPeekPostedRowVerification(TestCase):

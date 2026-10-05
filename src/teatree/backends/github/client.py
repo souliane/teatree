@@ -350,6 +350,19 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         terms = quote_plus(f"repo:{repo} is:issue is:open {query}")
         return _gh_api_search_paginated(f"search/issues?q={terms}&per_page=100", token=self._token)
 
+    def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]:
+        """Every OPEN issue on ``owner/repo``, all pages — the create-dedupe landscape (#162).
+
+        Uses the repository issues endpoint rather than search: search is
+        eventually consistent and its index lags a just-filed issue by up to a
+        minute, which is precisely the window a retrying filer would create a
+        duplicate in. GitHub returns pull requests from this endpoint too, so
+        entries carrying ``pull_request`` are dropped — an MR is never a
+        candidate for an issue dedupe.
+        """
+        raw = _gh_api_get_paginated(f"repos/{repo}/issues?state=open&per_page=100", token=self._token)
+        return [issue for issue in raw if "pull_request" not in issue]
+
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
         """Close a GitHub issue, optionally leaving an audit-trail comment first.
 

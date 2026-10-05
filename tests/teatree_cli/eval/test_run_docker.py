@@ -2,9 +2,9 @@
 
 The metered ``run`` lane re-invokes ``t3 eval run`` inside the CI container. The
 ``--transcript-html`` host path is translated to a container path under the
-writable ``/artifacts`` bind-mount, so the report the in-container run writes
-lands back on the host for upload. These tests pin that translation and the
-writable-dir resolution.
+writable ``/artifacts`` bind-mount — a fresh staging directory beside the reports —
+and the report the in-container run writes is copied back to the host, redacted,
+for upload. These tests pin that translation, the staging mount and the copy-out.
 """
 
 from pathlib import Path
@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from teatree.cli.eval.docker import ARTIFACTS_MOUNT
 from teatree.cli.eval.run_docker import RunDockerArgs, run_in_docker_or_exit
+from teatree.eval.artifact_redaction import REDACTED
 
 
 def _args(**overrides: object) -> RunDockerArgs:
@@ -111,15 +112,15 @@ class TestSummaryMdPassthrough:
         assert translated == f"{ARTIFACTS_MOUNT}/dash.md"
 
     def test_summary_only_run_still_resolves_an_artifacts_dir(self, tmp_path: Path) -> None:
-        # The summary-md path's PARENT is the writable bind-mount even when no
-        # transcript-html is requested — the summary-only lane must still mount it.
+        # The summary-md path's parent hosts the writable staging mount even when no
+        # transcript-html is requested — the summary-only lane must still mount one.
         host = tmp_path / "step-summary.md"
         with (
             patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
             pytest.raises(typer.Exit),
         ):
             _args(transcript_html=None, summary_md=host).dispatch()
-        assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path
+        assert run_in_docker.call_args.kwargs["artifacts_dir"].parent == tmp_path
 
 
 class TestSummaryJsonPassthrough:
@@ -139,18 +140,18 @@ class TestSummaryJsonPassthrough:
             pytest.raises(typer.Exit),
         ):
             _args(transcript_html=None, summary_md=None, summary_json=host).dispatch()
-        assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path
+        assert run_in_docker.call_args.kwargs["artifacts_dir"].parent == tmp_path
 
 
-class TestDispatchMountsHostParentDir:
-    def test_dispatch_passes_the_host_parent_dir_as_artifacts_dir(self, tmp_path: Path) -> None:
+class TestDispatchMountsAStagingDirBesideTheReports:
+    def test_dispatch_mounts_a_staging_dir_inside_the_reports_dir(self, tmp_path: Path) -> None:
         host = tmp_path / "eval-transcripts.html"
         with (
             patch("teatree.cli.eval.run_docker.run_eval_in_docker", return_value=0) as run_in_docker,
             pytest.raises(typer.Exit),
         ):
             _args(transcript_html=host).dispatch()
-        assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path
+        assert run_in_docker.call_args.kwargs["artifacts_dir"].parent == tmp_path
 
     def test_dispatch_passes_none_artifacts_dir_without_transcript(self) -> None:
         with (
@@ -262,4 +263,74 @@ class TestReportsMustShareOneParentDirectory:
             pytest.raises(typer.Exit),
         ):
             args.dispatch()
-        assert run_in_docker.call_args.kwargs["artifacts_dir"] == tmp_path
+        assert run_in_docker.call_args.kwargs["artifacts_dir"].parent == tmp_path
+
+
+_TOKEN = "fake-oauth-" + "".join(chr(ord("a") + (index * 7) % 26) for index in range(40))
+
+
+class TestTheAgentSeesOnlyAFreshStagingDir:
+    """The container — and the agent under test inside it — never sees the reports' own directory.
+
+    On CI that directory is ``$RUNNER_TEMP``: it also holds the uploaded run log and the
+    checkout's credentials file. The agent gets a fresh, empty staging directory, and only
+    the reports this run asked for leave it, each redacted on the way out.
+    """
+
+    @pytest.fixture
+    def runner_temp(self, tmp_path: Path) -> Path:
+        directory = tmp_path / "runner-temp"
+        directory.mkdir()
+        return directory
+
+    def _dispatch(self, tmp_path: Path, run: object) -> None:
+        with (
+            patch("teatree.cli.eval.run_docker.run_eval_in_docker", side_effect=run),
+            pytest.raises(typer.Exit),
+        ):
+            _args(
+                transcript_html=tmp_path / "eval-transcripts.html", summary_md=tmp_path / "eval-summary.md"
+            ).dispatch()
+
+    def test_the_mount_is_empty_and_never_the_reports_dir(self, runner_temp: Path) -> None:
+        (runner_temp / "eval-run-leg.log").write_text("attempt 1\n", encoding="utf-8")
+        (runner_temp / "checkout-credentials.config").write_text("extraheader\n", encoding="utf-8")
+        seen: dict[str, object] = {}
+
+        def run(_args: list[str], *, artifacts_dir: Path) -> int:
+            seen.update(mount=artifacts_dir, contents=sorted(artifacts_dir.iterdir()))
+            return 0
+
+        self._dispatch(runner_temp, run)
+
+        assert seen["mount"] != runner_temp
+        assert seen["contents"] == []
+        assert not Path(str(seen["mount"])).exists()
+
+    def test_only_the_requested_reports_leave_staging_redacted(
+        self, runner_temp: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", _TOKEN)
+
+        def run(_args: list[str], *, artifacts_dir: Path) -> int:
+            (artifacts_dir / "eval-transcripts.html").write_text(f"<pre>{_TOKEN}</pre>", encoding="utf-8")
+            (artifacts_dir / "eval-transcripts-planted.html").write_text(_TOKEN, encoding="utf-8")
+            (artifacts_dir / "eval-run-leg.log").write_text(_TOKEN, encoding="utf-8")
+            return 1
+
+        self._dispatch(runner_temp, run)
+
+        assert (runner_temp / "eval-transcripts.html").read_text(encoding="utf-8") == f"<pre>{REDACTED}</pre>"
+        assert sorted(path.name for path in runner_temp.iterdir()) == ["eval-transcripts.html"]
+
+    def test_a_symlinked_report_is_not_followed_out_of_staging(self, runner_temp: Path) -> None:
+        host_secret = runner_temp / "checkout-credentials.config"
+        host_secret.write_text("extraheader = AUTHORIZATION: basic Zm9v\n", encoding="utf-8")
+
+        def run(_args: list[str], *, artifacts_dir: Path) -> int:
+            (artifacts_dir / "eval-summary.md").symlink_to(host_secret)
+            return 0
+
+        self._dispatch(runner_temp, run)
+
+        assert not (runner_temp / "eval-summary.md").exists()

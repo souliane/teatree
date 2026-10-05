@@ -122,6 +122,8 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
 
 _MIB_PER_GB = 1024.0
 
+_MIB_PER_GB = 1024.0
+
 #: pytest-xdist resolves ``-n auto`` through this env var, so bounding it bounds every
 #: agent's suite run without touching the addopts (a human running the suite alone still
 #: gets the whole box).
@@ -153,14 +155,11 @@ def with_test_worker_cap(env: dict[str, str] | None, *, active_agents: int) -> d
     come from the governor's signal, so the CPU term is unchanged.
     """
     from teatree.core.admission_governor import (  # noqa: PLC0415 — deferred: avoids a core import at module load
-        governor_enabled,
         per_agent_test_workers,
         read_machine_signal,
     )
     from teatree.utils import ram_scope  # noqa: PLC0415 — deferred: paired with the core import above
 
-    if not governor_enabled():
-        return env
     headroom = ram_scope.read_ram_headroom()
     allocatable_gb = None if headroom.available_mib is None else headroom.available_mib / _MIB_PER_GB
     workers = per_agent_test_workers(

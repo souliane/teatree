@@ -84,7 +84,7 @@ def retain_run_thread(task: Task, thread: "list[ModelMessage] | None") -> None:
 
 def release_finished_thread(task: Task) -> None:
     """Drop *task*'s conversation once it completed without asking for input — nothing will continue it."""
-    last_attempt = task.attempts.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+    last_attempt = task.attempts.order_by("-pk").first()
     if last_attempt is not None and (last_attempt.result or {}).get("needs_user_input"):
         return
     if Task.objects.filter(pk=task.pk, status=Task.Status.COMPLETED).exists():

@@ -24,7 +24,7 @@ from django.utils import timezone
 from teatree.core.mode_resolution import ResolvedMode
 from teatree.core.models import Loop, LoopState, Mode, Prompt
 from teatree.loops.base import MiniLoop
-from teatree.loops.loop_table import build_loop_table_jobs, dispatch_loop_table
+from teatree.loops.loop_table import dispatch_loop_table
 
 _MODE_SEAM = "teatree.loops.enable_verdict.resolve_active_mode"
 
@@ -138,17 +138,6 @@ class TestBlockedLoopsStateTheirReason(django.test.TestCase):
 @django.test.override_settings(USE_TZ=True)
 class TestReasonedPassKeepsTheExistingContracts(django.test.TestCase):
     """The reasoned pass is the same fan-out — job list, cadence CAS and one bulk read."""
-
-    def test_build_loop_table_jobs_still_returns_the_flat_job_list(self) -> None:
-        now = timezone.now()
-        Loop.objects.create(name="bc-flat", delay_seconds=60, prompt=_prompt())
-        with (
-            patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("bc-flat"),)),
-            patch(_MODE_SEAM, return_value=_resolved()),
-        ):
-            jobs = build_loop_table_jobs({}, now=now, only="bc-flat")
-
-        assert jobs == ["job-bc-flat"]
 
     def test_a_blocked_loop_keeps_its_cadence_anchor(self) -> None:
         now = timezone.now()

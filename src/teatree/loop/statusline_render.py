@@ -3,15 +3,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.loop.statusline_palette import (
-    _ANSI_CSI_RE,
-    _ANSI_OSC8_RE,
-    _ANSI_RESET,
-    _OVERLAY_PREFIX_RE,
-    _SECONDS_PER_HOUR,
-    _SECONDS_PER_MINUTE,
-    _ZONE_COLORS,
-)
+from teatree.loop.statusline_palette import _ANSI_CSI_RE, _ANSI_OSC8_RE, _ANSI_RESET, _OVERLAY_PREFIX_RE, _ZONE_COLORS
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,20 +131,6 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
         raise
 
     return target
-
-
-def _format_duration(seconds: int) -> str:
-    """Format ``seconds`` as a compact human duration (``3m12s``, ``45s``, ``1h05m``)."""
-    if seconds < _SECONDS_PER_MINUTE:
-        return f"{seconds}s"
-    if seconds < _SECONDS_PER_HOUR:
-        minutes, remainder = divmod(seconds, _SECONDS_PER_MINUTE)
-        if remainder:
-            return f"{minutes}m{remainder:02d}s"
-        return f"{minutes}m"
-    hours, remainder = divmod(seconds, _SECONDS_PER_HOUR)
-    minutes = remainder // _SECONDS_PER_MINUTE
-    return f"{hours}h{minutes:02d}m"
 
 
 def statusline_for_slack(*, path: Path | None = None) -> str:

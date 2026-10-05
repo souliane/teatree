@@ -37,8 +37,8 @@ is the richer interactive variant carrying the brake-hysteresis sidecar. Both
 route through the one pure decision function, so the two lanes can never diverge
 on the quota/machine/ceiling verdict.
 
-Fail-OPEN by construction: the kill-switch (``admission_governor_enabled`` false)
-or any signal-read failure admits BOTH classes — a governor that cannot read its
+
+Fail-OPEN by construction: any signal-read failure admits BOTH classes — a governor that cannot read its
 own signals must never wedge the factory. A claim-admission refusal (the ``off`` posture,
 a quiescing worker, schema skew) is not a governor signal, so it denies both classes before
 the governor is read. A refusal is never silent: this is the
@@ -54,7 +54,6 @@ from teatree.core.admission_governor import (
     MachineBrake,
     SupplementalAdmissionSignals,
     decide_admission,
-    governor_enabled,
     pressure_for,
     read_machine_signal,
     read_metered_signal,
@@ -171,7 +170,7 @@ class AgentAdmission:
         seat would leave its own admission invisible to every later probe, which is
         exactly how a one-row-at-a-time burst outran the ceiling. The seat is therefore
         taken BEFORE the dispatch, and a dispatch that then fails costs at most one
-        :data:`~teatree.core.managers.ADMITTED_INFLIGHT_WINDOW` of under-admission — the
+        :data:`~teatree.core.managers_admission.ADMITTED_INFLIGHT_WINDOW` of under-admission — the
         direction that is safe, and what that window already exists to recover.
 
         Deciding, booking and announcing are ONE call so a chokepoint cannot skip a row
@@ -356,8 +355,6 @@ def agent_admission_verdict() -> AgentAdmission:
     """
     if blocked := claim_admission_block_reason():
         return AgentAdmission(expensive_denied=blocked, cheap_denied=blocked)
-    if not governor_enabled():
-        return _admit_all()
     task_model = _task_model()
     try:
         quota, metered = _lane_budget()

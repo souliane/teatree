@@ -8,11 +8,10 @@ by the existing ``tests/teatree_loop/`` suite.
 """
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from teatree.config import UserSettings
 from teatree.loops.arch_review.loop import MINI_LOOP as ARCH_REVIEW_LOOP
 from teatree.loops.audit.loop import MINI_LOOP as AUDIT_LOOP
 from teatree.loops.dispatch.loop import MINI_LOOP as DISPATCH_LOOP
@@ -111,7 +110,7 @@ class TestEvalLocalLoopBuildJobs:
 
         from teatree.loop.scanners.eval_local import EvalLocalScanner  # noqa: PLC0415
 
-        fake = EvalLocalScanner(overlay_name="t3-teatree")
+        fake = EvalLocalScanner(overlay_name="t3-teatree", skill="running-evals")
         with patch("teatree.loop.global_scanner_factories._eval_local_scanner", return_value=fake):
             jobs = EVAL_LOCAL_LOOP.build_jobs()
         assert any(j.scanner is fake and j.overlay == "" for j in jobs)
@@ -272,25 +271,11 @@ class TestShipLoopBuildJobs:
         assert len(jobs) == 1
         assert jobs[0].scanner.name == "my_prs"
 
-    def test_backends_path_wires_only_the_own_pr_scanner_by_default(self, stub_backend: Any) -> None:
+    def test_backends_path_wires_every_shipped_scanner(self, stub_backend: Any) -> None:
         host = MagicMock()
         stub_backend.host = host
         stub_backend.hosts = (host,)
         jobs = SHIP_LOOP.build_jobs(backends=[stub_backend])
-        assert [job.scanner.name for job in jobs] == ["my_prs"]
-
-    def test_backends_path_wires_every_opted_in_scanner(self, stub_backend: Any) -> None:
-        host = MagicMock()
-        stub_backend.host = host
-        stub_backend.hosts = (host,)
-        opted_in = UserSettings(
-            gitlab_approval_scanner_enabled=True, mr_conflict_scan_enabled=True, mr_triage_enabled=True
-        )
-        with (
-            patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=opted_in),
-            patch("teatree.loop.scanner_factory_config.get_effective_settings", return_value=opted_in),
-        ):
-            jobs = SHIP_LOOP.build_jobs(backends=[stub_backend])
         assert sorted(job.scanner.name for job in jobs) == [
             "gitlab_approvals",
             "mr_conflict",

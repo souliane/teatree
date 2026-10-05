@@ -27,6 +27,7 @@ from teatree.core.worktree.worktree_env import (
 )
 from teatree.types import BaseImageConfig, DbImportStrategy
 from teatree.utils import secrets
+from teatree.utils.postgres_secret import PostgresPasswordUnavailableError
 from tests.teatree_core.conftest import CommandOverlay
 
 if TYPE_CHECKING:
@@ -276,11 +277,7 @@ class TestRenderEnvCache(TestCase):
     def test_omits_the_pass_key_reference_when_no_entry_answers_it(self) -> None:
         """A render must not name a ``pass`` entry that does not exist.
 
-        The dangling half of the credential defect: the cache advertised
-        ``POSTGRES_PASSWORD_PASS_KEY`` for every worktree while the only writer of that
-        entry was the by-hand ``env migrate-secrets``, so a consumer resolving the
-        reference on a freshly provisioned worktree got a ``pass show`` miss and fell
-        through to whatever literal was in the ambient env — or to no password at all.
+        A cache can advertise only a pass key whose entry resolves.
         """
         with tempfile.TemporaryDirectory() as tmp, _fake_pass_store():
             wt, _ = _make_worktree(tmp, ticket_name="tn", ticket_url="https://ex.com/3", variant="acme")
@@ -304,14 +301,15 @@ class TestWriteEnvCache(TestCase):
             assert f"POSTGRES_PASSWORD_PASS_KEY={wt.pass_key}" in content
             assert "s3cr3t-pw" not in content
 
-    def test_write_leaves_no_reference_when_pass_cannot_hold_the_secret(self) -> None:
-        """``pass`` unavailable degrades to the env_extra literal, never to a dead reference."""
+    def test_write_refuses_when_pass_cannot_hold_the_secret(self) -> None:
+        """A cache must not be written without its required credential."""
         with tempfile.TemporaryDirectory() as tmp, _fake_pass_store(writable=False):
             wt, _ = _make_worktree(tmp, ticket_name="tx", ticket_url="https://ex.com/5", variant="acme")
-            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_POSTGRES_PW):
-                spec = write_env_cache(wt)
-            assert spec is not None
-            assert "POSTGRES_PASSWORD_PASS_KEY" not in spec.path.read_text(encoding="utf-8")
+            with (
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_POSTGRES_PW),
+                pytest.raises(PostgresPasswordUnavailableError),
+            ):
+                write_env_cache(wt)
 
     def test_written_cache_is_not_drifted_against_a_fresh_render(self) -> None:
         """The write stores the secret BEFORE rendering, so the file matches a later render.

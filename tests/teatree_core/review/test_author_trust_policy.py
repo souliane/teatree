@@ -28,17 +28,17 @@ def _public_repo_no_db_trust(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestBothGatesShareOneAnswer:
     @pytest.mark.parametrize("gate", list(AutonomyGate))
     def test_trusted_author_is_autonomous_at_every_gate(self, gate: AutonomyGate) -> None:
-        subject = AuthorSubject(_PUBLIC_SLUG, "owner-handle")
+        subject = AuthorSubject(_PUBLIC_SLUG, "owner-handle", pr_url=f"https://github.com/{_PUBLIC_SLUG}/pull/1")
         assert decide_author_trust(subject, gate=gate, extra_trusted=_TRUSTED) is TrustVerdict.AUTONOMOUS
 
     @pytest.mark.parametrize("gate", list(AutonomyGate))
     def test_stranger_is_held_for_human_review_at_every_gate(self, gate: AutonomyGate) -> None:
-        subject = AuthorSubject(_PUBLIC_SLUG, "a-stranger")
+        subject = AuthorSubject(_PUBLIC_SLUG, "a-stranger", pr_url=f"https://github.com/{_PUBLIC_SLUG}/pull/1")
         assert decide_author_trust(subject, gate=gate, extra_trusted=_TRUSTED) is TrustVerdict.HUMAN_REVIEW
 
     @pytest.mark.parametrize("gate", list(AutonomyGate))
     def test_empty_author_fails_closed_at_every_gate(self, gate: AutonomyGate) -> None:
-        subject = AuthorSubject(_PUBLIC_SLUG, "")
+        subject = AuthorSubject(_PUBLIC_SLUG, "", pr_url=f"https://github.com/{_PUBLIC_SLUG}/pull/1")
         assert decide_author_trust(subject, gate=gate, extra_trusted=_TRUSTED) is TrustVerdict.HUMAN_REVIEW
 
 
@@ -46,12 +46,16 @@ class TestForkHoldsOnlyAtTheMergeGate:
     """A fork head branch always holds for a human — the merge gate's extra conjunct."""
 
     def test_trusted_author_fork_pr_is_held(self) -> None:
-        subject = AuthorSubject(_PUBLIC_SLUG, "owner-handle", same_repo=False)
+        subject = AuthorSubject(
+            _PUBLIC_SLUG, "owner-handle", same_repo=False, pr_url=f"https://github.com/{_PUBLIC_SLUG}/pull/1"
+        )
         verdict = decide_author_trust(subject, gate=AutonomyGate.MERGE, extra_trusted=_TRUSTED)
         assert verdict is TrustVerdict.HUMAN_REVIEW
 
     def test_unreported_provenance_falls_back_to_the_author_check(self) -> None:
-        subject = AuthorSubject(_PUBLIC_SLUG, "owner-handle", same_repo=None)
+        subject = AuthorSubject(
+            _PUBLIC_SLUG, "owner-handle", same_repo=None, pr_url=f"https://github.com/{_PUBLIC_SLUG}/pull/1"
+        )
         verdict = decide_author_trust(subject, gate=AutonomyGate.MERGE, extra_trusted=_TRUSTED)
         assert verdict is TrustVerdict.AUTONOMOUS
 
@@ -62,10 +66,16 @@ class TestIntakeIsStricterOnInternalRepos:
     def test_unlisted_author_on_an_internal_repo_splits_the_two_gates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(author_trust, "repo_is_internal", lambda _slug, **_kw: True)
         intake = decide_author_trust(
-            AuthorSubject("owner/private", "unlisted"), gate=AutonomyGate.INTAKE, extra_trusted=_TRUSTED
+            AuthorSubject("owner/private", "unlisted", pr_url="https://github.com/owner/private/pull/1"),
+            gate=AutonomyGate.INTAKE,
+            extra_trusted=_TRUSTED,
         )
         merge = decide_author_trust(
-            AuthorSubject("owner/private", "unlisted", same_repo=True), gate=AutonomyGate.MERGE, extra_trusted=_TRUSTED
+            AuthorSubject(
+                "owner/private", "unlisted", same_repo=True, pr_url="https://github.com/owner/private/pull/1"
+            ),
+            gate=AutonomyGate.MERGE,
+            extra_trusted=_TRUSTED,
         )
         assert intake is TrustVerdict.HUMAN_REVIEW
         assert merge is TrustVerdict.AUTONOMOUS

@@ -245,7 +245,50 @@ def test_streamed_session_denial_is_recorded_and_model_can_recover(tmp_path: Pat
     assert transcript[3]["message"]["content"][0]["text"] == _PLAN
 
 
-def test_denied_task_create_retry_with_visible_plan_executes_once(tmp_path: Path) -> None:
+def test_denied_retry_with_visible_plan_executes_once(tmp_path: Path) -> None:
+    executed: list[dict[str, object]] = []
+
+    async def stream_fn(messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        if "bash-ran" in str(messages):
+            yield "done"
+            return
+        denied = "TEATREE PLAN-FIRST GATE" in str(messages)
+        if denied:
+            yield _PLAN
+        yield {0: DeltaToolCall(name="Bash", json_args='{"command":"true"}')}
+
+    tools: FunctionToolset[None] = FunctionToolset()
+
+    def bash(**kwargs: object) -> str:
+        executed.append(dict(kwargs))
+        return "bash-ran"
+
+    tools.add_function(bash, name="Bash")
+    spec = dataclasses.replace(_spec(), tools=("Bash",))
+    run = SessionRun.start()
+    with ProductionHookBridge.for_spec(spec, run=run, state_root=tmp_path) as bridge:
+        agent: Agent[None, str] = Agent(
+            FunctionModel(stream_function=stream_fn),
+            toolsets=[ProductionHookToolset(tools, bridge=bridge)],
+        )
+        session = PydanticAiHarnessSession(agent, model_name="offline-model", run=run)
+        session.observe_transport_hooks(bridge.observe, bridge.events)
+
+        async def drive() -> list[object]:
+            await session.query(_PROMPT)
+            return [message async for message in session.receive_response()]
+
+        messages = asyncio.run(drive())
+
+    hooks = [message for message in messages if isinstance(message, HookEventMessage)]
+    assert [hook.data["outcome"] for hook in hooks] == ["block", "allow"]
+    assert hooks[0].data["assistant_text"] == ""
+    assert hooks[1].data["assistant_text"] == _PLAN
+    assert executed == [{"command": "true"}]
+
+
+def test_denied_task_create_retry_can_record_the_plan_itself(tmp_path: Path) -> None:
     executed: list[dict[str, object]] = []
 
     async def stream_fn(messages: object, _info: AgentInfo) -> AsyncIterator[object]:
@@ -253,13 +296,10 @@ def test_denied_task_create_retry_with_visible_plan_executes_once(tmp_path: Path
         if "task-created" in str(messages):
             yield "done"
             return
-        denied = "TEATREE PLAN-FIRST GATE" in str(messages)
-        if denied:
-            yield _PLAN
+        description = _PLAN if "TEATREE PLAN-FIRST GATE" in str(messages) else "Track both tickets"
         yield {
             0: DeltaToolCall(
-                name="TaskCreate",
-                json_args='{"subject":"Plan both tickets","description":"Keep TODO-4 and TODO-6 separate"}',
+                name="TaskCreate", json_args=json.dumps({"subject": "Plan both tickets", "description": description})
             )
         }
 
@@ -288,12 +328,10 @@ def test_denied_task_create_retry_with_visible_plan_executes_once(tmp_path: Path
 
     hooks = [message for message in messages if isinstance(message, HookEventMessage)]
     assert [hook.data["outcome"] for hook in hooks] == ["block", "allow"]
-    assert hooks[0].data["assistant_text"] == ""
-    assert hooks[1].data["assistant_text"] == _PLAN
-    assert executed == [{"subject": "Plan both tickets", "description": "Keep TODO-4 and TODO-6 separate"}]
+    assert executed == [{"subject": "Plan both tickets", "description": _PLAN}]
 
 
-def test_two_denied_task_create_corrections_can_recover_once(tmp_path: Path) -> None:
+def test_two_denied_task_create_corrections_can_recover_with_a_plan_task(tmp_path: Path) -> None:
     executed: list[dict[str, object]] = []
 
     async def stream_fn(messages: object, _info: AgentInfo) -> AsyncIterator[object]:
@@ -301,9 +339,12 @@ def test_two_denied_task_create_corrections_can_recover_once(tmp_path: Path) -> 
         if "task-created" in str(messages):
             yield "done"
             return
-        if str(messages).count("TEATREE PLAN-FIRST GATE") >= 2:
-            yield _PLAN
-        yield {0: DeltaToolCall(name="TaskCreate", json_args='{"subject":"Plan","description":"Both"}')}
+        description = _PLAN if str(messages).count("TEATREE PLAN-FIRST GATE") >= 2 else "Track both tickets"
+        yield {
+            0: DeltaToolCall(
+                name="TaskCreate", json_args=json.dumps({"subject": "Plan both tickets", "description": description})
+            )
+        }
 
     tools: FunctionToolset[None] = FunctionToolset()
 
@@ -330,7 +371,47 @@ def test_two_denied_task_create_corrections_can_recover_once(tmp_path: Path) -> 
 
     hooks = [message for message in messages if isinstance(message, HookEventMessage)]
     assert [hook.data["outcome"] for hook in hooks] == ["block", "block", "allow"]
-    assert executed == [{"subject": "Plan", "description": "Both"}]
+    assert executed == [{"subject": "Plan both tickets", "description": _PLAN}]
+
+
+def test_two_denied_corrections_can_recover_once(tmp_path: Path) -> None:
+    executed: list[dict[str, object]] = []
+
+    async def stream_fn(messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+        await asyncio.sleep(0)
+        if "bash-ran" in str(messages):
+            yield "done"
+            return
+        if str(messages).count("TEATREE PLAN-FIRST GATE") >= 2:
+            yield _PLAN
+        yield {0: DeltaToolCall(name="Bash", json_args='{"command":"true"}')}
+
+    tools: FunctionToolset[None] = FunctionToolset()
+
+    def bash(**kwargs: object) -> str:
+        executed.append(dict(kwargs))
+        return "bash-ran"
+
+    tools.add_function(bash, name="Bash")
+    spec = dataclasses.replace(_spec(), tools=("Bash",))
+    run = SessionRun.start()
+    with ProductionHookBridge.for_spec(spec, run=run, state_root=tmp_path) as bridge:
+        agent: Agent[None, str] = Agent(
+            FunctionModel(stream_function=stream_fn),
+            toolsets=[ProductionHookToolset(tools, bridge=bridge)],
+        )
+        session = PydanticAiHarnessSession(agent, model_name="offline-model", run=run)
+        session.observe_transport_hooks(bridge.observe, bridge.events)
+
+        async def drive() -> list[object]:
+            await session.query(_PROMPT)
+            return [message async for message in session.receive_response()]
+
+        messages = asyncio.run(drive())
+
+    hooks = [message for message in messages if isinstance(message, HookEventMessage)]
+    assert [hook.data["outcome"] for hook in hooks] == ["block", "block", "allow"]
+    assert executed == [{"command": "true"}]
 
 
 def test_repeated_plan_gate_noncompliance_is_denied_until_the_breaker_relieves_it(tmp_path: Path) -> None:
@@ -342,18 +423,21 @@ def test_repeated_plan_gate_noncompliance_is_denied_until_the_breaker_relieves_i
     """
     executed: list[dict[str, object]] = []
 
-    async def tool_only(_messages: object, _info: AgentInfo) -> AsyncIterator[object]:
+    async def tool_only(messages: object, _info: AgentInfo) -> AsyncIterator[object]:
         await asyncio.sleep(0)
-        yield {0: DeltaToolCall(name="TaskCreate", json_args='{"subject":"Plan","description":"Both"}')}
+        if "must-not-run" in str(messages):
+            yield "done"
+            return
+        yield {0: DeltaToolCall(name="Bash", json_args='{"command":"true"}')}
 
     tools: FunctionToolset[None] = FunctionToolset()
 
-    def task_create(**kwargs: object) -> str:
+    def bash(**kwargs: object) -> str:
         executed.append(dict(kwargs))
         return "must-not-run"
 
-    tools.add_function(task_create, name="TaskCreate")
-    spec = dataclasses.replace(_spec(), tools=("TaskCreate",))
+    tools.add_function(bash, name="Bash")
+    spec = dataclasses.replace(_spec(), tools=("Bash",))
     run = SessionRun.start()
     with ProductionHookBridge.for_spec(spec, run=run, state_root=tmp_path) as bridge:
         agent: Agent[None, str] = Agent(

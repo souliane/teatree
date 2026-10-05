@@ -28,6 +28,7 @@ from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.types import RawAPIDict
 from tests._pr_open_state_stub import mint_open_pr_review, pr_open_state
+from tests.teatree_core.conftest import record_review_context_for_test
 
 _SLUG = "souliane/teatree"
 _HEAD = "782ec2a3" + "0" * 32
@@ -83,6 +84,7 @@ def _reviewing_task(ticket: Ticket, *, status: str = Task.Status.PENDING) -> Tas
 def _review_delivered_ticket(pr_id: int) -> Ticket:
     """A reviewer ticket that reached ``review_delivered`` the real way: a first review completed."""
     ticket = Ticket.objects.create(issue_url=_url(pr_id), role=Ticket.Role.REVIEWER)
+    record_review_context_for_test(ticket)
     mint_open_pr_review(ticket).complete()
     ticket.refresh_from_db()
     assert ticket.state == Ticket.State.REVIEW_DELIVERED

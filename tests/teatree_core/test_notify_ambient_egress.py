@@ -160,17 +160,6 @@ class TestNotifyOutcomeNamesTheReason(TestCase):
         assert row.status == BotPing.Status.NOOP
         assert row.error_message == NotifyReason.NO_MESSAGING_BACKEND.detail
 
-    def test_a_disabled_feature_is_named_rather_than_indistinguishable_from_a_dead_transport(self) -> None:
-        with patch("teatree.core.notify._feature_enabled", return_value=False):
-            outcome = notify_user_outcome(
-                "five reviews are done",
-                kind=NotifyKind.INFO,
-                idempotency_key="disabled",
-                audience=NotifyAudience.OWNER_QUESTION,
-                options=NotifyOptions(backend=_backend(), user_id="U_ME"),
-            )
-        assert outcome.reason is NotifyReason.FEATURE_DISABLED
-
     def test_a_delivered_dm_carries_no_reason(self) -> None:
         outcome = notify_user_outcome(
             "five reviews are done",

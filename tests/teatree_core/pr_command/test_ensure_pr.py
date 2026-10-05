@@ -443,7 +443,6 @@ class TestEnsurePr(TestCase):
             patch.object(pr_command.git, "current_branch", return_value="feat-d"),
             patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
             patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: x", "body")),
-            patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
             patch.object(debt_delta_gate.git, "branch_diff", return_value=new_noqa),
             patch.object(
                 pr_command,
@@ -717,6 +716,7 @@ class TestEnsurePrTargetsTheConfiguredBranch(TestCase):
             patch.object(pr_command.git, "current_branch", return_value=branch),
             patch.object(ensure_pr_mod.git, "remote_url", return_value=f"git@github.com:{repo_slug}.git"),
             patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: cool thing", "body")),
+            patch.object(debt_delta_gate.git, "branch_diff", return_value=""),
             patch.object(
                 pr_command,
                 "classify_branch",

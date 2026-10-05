@@ -16,11 +16,6 @@ from typing import SupportsInt, cast
 from teatree.backends.gitlab.sync_prs import extract_repo_path
 from teatree.types import ConflictedMR, RawAPIDict, SyncResult
 
-#: GitLab ``merge_status`` value for a hard conflict. The field is deprecated
-#: in favour of ``detailed_merge_status`` but is still returned on the MR list
-#: payload, so both are read (either signal flags the MR as conflicted).
-_MERGE_STATUS_CONFLICT = "cannot_be_merged"
-
 #: GitLab ``detailed_merge_status`` value for a hard merge conflict (16.x+).
 #: ``broken_status`` / ``ci_must_pass`` / ``not_approved`` are NOT conflicts —
 #: only a genuine ``conflict`` is surfaced, so the warning never cries wolf.
@@ -30,16 +25,12 @@ _DETAILED_MERGE_STATUS_CONFLICT = "conflict"
 def is_conflicted(raw: RawAPIDict) -> bool:
     """True iff GitLab reports the open MR as a hard merge conflict.
 
-    Reads the three signals the MR list payload exposes: ``has_conflicts``
-    (the authoritative boolean), the deprecated ``merge_status ==
-    cannot_be_merged``, and ``detailed_merge_status == conflict``. An
+    Reads ``has_conflicts`` and ``detailed_merge_status == conflict``. An
     ``unchecked`` / ``can_be_merged`` / empty status is never a conflict — a
     still-computing mergeability state is left for a later sweep rather than
     raising a false alarm.
     """
     if raw.get("has_conflicts") is True:
-        return True
-    if raw.get("merge_status") == _MERGE_STATUS_CONFLICT:
         return True
     return raw.get("detailed_merge_status") == _DETAILED_MERGE_STATUS_CONFLICT
 

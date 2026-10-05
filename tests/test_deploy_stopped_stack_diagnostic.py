@@ -11,12 +11,12 @@ intended path there and works, so it must keep dispatching.
 """
 
 import os
-import shutil
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
+from _deploy_wrapper_paths import copy_wrapper
 
 DEPLOY_DIR = Path(__file__).resolve().parents[1] / "deploy"
 WRAPPER = DEPLOY_DIR / "t3"
@@ -64,7 +64,7 @@ def wrapper(tmp_path: Path) -> Path:
     deploy = tmp_path / "checkout" / "deploy"
     deploy.mkdir(parents=True, exist_ok=True)
     entry = deploy / "t3"
-    shutil.copy2(WRAPPER, entry)
+    copy_wrapper(WRAPPER, entry)
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR)
     return entry
 

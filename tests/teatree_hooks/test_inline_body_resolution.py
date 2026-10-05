@@ -8,8 +8,8 @@ unavailable-body-source sentinel. Synthetic term ``acmecorp`` only.
 
 import pytest
 
-from teatree.hooks._command_parser import UNAVAILABLE_BODY_SOURCE_SENTINEL, is_unavailable_body_source_sentinel
 from teatree.hooks._inline_body_resolution import _var_ref_is_live, resolve_inline_body_value
+from teatree.hooks._parser_primitives import UNAVAILABLE_BODY_SOURCE_SENTINEL, is_unavailable_body_source_sentinel
 
 
 class TestVarRefIsLive:

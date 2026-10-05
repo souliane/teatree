@@ -16,7 +16,6 @@ The next-fire instant comes from :func:`teatree.loops.live.build_report` — the
 same live snapshot ``t3 loop list`` renders (#1744), computed from the ``Loop``
 table's ``last_run_at`` cadence anchor — so the statusline countdown,
 ``t3 loop list``, and the loop-table fan-out gate
-(:func:`teatree.loops.loop_table.build_loop_table_jobs` via ``Loop.is_due``) all read
 one source of truth: a loop reads ``due`` exactly when the gate would fire it.
 """
 

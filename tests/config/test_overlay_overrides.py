@@ -75,8 +75,6 @@ class TestOverlayDbHomeOverrides(TestCase):
         for env in (
             "T3_MODE",
             "T3_OVERLAY_NAME",
-            "T3_HOOK_FETCH_TITLES",
-            "T3_ORCHESTRATE_CLAIM_ENABLED",
         ):
             monkeypatch.delenv(env, raising=False)
         self.monkeypatch = monkeypatch
@@ -127,35 +125,10 @@ class TestOverlayDbHomeOverrides(TestCase):
         self._activate()
         assert get_effective_settings().require_human_approval_to_answer is False
 
-    def test_overlay_can_override_notify_user_via_bot(self) -> None:
-        ConfigSetting.objects.set_value("notify_user_via_bot", value=False, scope="my-overlay")
-        self._activate()
-        assert get_effective_settings().notify_user_via_bot is False
-
-    def test_overlay_can_override_notify_on_post_on_behalf(self) -> None:
-        ConfigSetting.objects.set_value("notify_on_post_on_behalf", value=False, scope="my-overlay")
-        self._activate()
-        assert get_effective_settings().notify_on_post_on_behalf is False
-
-    def test_overlay_can_override_require_review_context(self) -> None:
-        ConfigSetting.objects.set_value("require_review_context", value=True, scope="my-overlay")
-        self._activate()
-        assert get_effective_settings().require_review_context is True
-
-    def test_overlay_can_override_require_merge_evidence(self) -> None:
-        ConfigSetting.objects.set_value("require_merge_evidence", value=True, scope="my-overlay")
-        self._activate()
-        assert get_effective_settings().require_merge_evidence is True
-
     def test_overlay_can_override_max_concurrent_local_stacks(self) -> None:
         ConfigSetting.objects.set_value("max_concurrent_local_stacks", value=1, scope="my-overlay")
         self._activate()
         assert get_effective_settings().max_concurrent_local_stacks == 1
-
-    def test_overlay_can_override_orchestrate_claim_enabled(self) -> None:
-        ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True, scope="my-overlay")
-        self._activate()
-        assert get_effective_settings().orchestrate_claim_enabled is True
 
     def test_overlay_can_override_orchestrator_bash_gate_enabled(self) -> None:
         ConfigSetting.objects.set_value("orchestrator_bash_gate_enabled", value=False, scope="my-overlay")
@@ -167,22 +140,6 @@ class TestOverlayDbHomeOverrides(TestCase):
         self._activate()
         assert get_effective_settings().dashboard_instance_label == "per-overlay"
 
-    def test_overlay_can_override_issue_implementer_settings(self) -> None:
-        ConfigSetting.objects.set_value("hook_fetch_titles", value=True, scope="my-overlay")
-        ConfigSetting.objects.set_value("issue_implementer_label", "auto-implement", scope="my-overlay")
-        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", value=3, scope="my-overlay")
-        self._activate()
-        effective = get_effective_settings()
-        assert effective.hook_fetch_titles is True
-        assert effective.issue_implementer_label == "auto-implement"
-        assert effective.issue_implementer_max_concurrent == 3
-
-    def test_env_kill_switch_beats_overlay_db_override(self) -> None:
-        ConfigSetting.objects.set_value("hook_fetch_titles", value=True, scope="my-overlay")
-        self.monkeypatch.setenv("T3_HOOK_FETCH_TITLES", "false")
-        self._activate()
-        assert get_effective_settings().hook_fetch_titles is False
-
     def test_overlay_can_override_positive_int_settings(self) -> None:
         ConfigSetting.objects.set_value("db_backup_retention_days", value=60, scope="my-overlay")
         self._activate()
@@ -192,12 +149,6 @@ class TestOverlayDbHomeOverrides(TestCase):
         ConfigSetting.objects.set_value("mr_title_regex", r"^JIRA-\d+: .+", scope="my-overlay")
         self._activate()
         assert get_effective_settings().mr_title_regex == r"^JIRA-\d+: .+"
-
-    def test_e2e_mandatory_gate_default_on_and_overlay_can_disable(self) -> None:
-        assert get_effective_settings().e2e_mandatory_gate_enabled is True
-        ConfigSetting.objects.set_value("e2e_mandatory_gate_enabled", value=False, scope="my-overlay")
-        self._activate()
-        assert get_effective_settings().e2e_mandatory_gate_enabled is False
 
     def test_positive_int_overlay_override_non_positive_fails_safe(self) -> None:
         ConfigSetting.objects.set_value("db_backup_retention_days", "garbage", scope="my-overlay")

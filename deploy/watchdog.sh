@@ -47,9 +47,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/generation-topology.sh"
 SELF="${BASH_SOURCE[0]}"
 COMPOSE_FILE="${TEATREE_WATCHDOG_COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
-PROJECT="${TEATREE_WATCHDOG_PROJECT:-teatree}"
+PROJECT="$(generation_compose_project "${TEATREE_WATCHDOG_PROJECT:-teatree}")"
 OVERLAY="${TEATREE_WATCHDOG_OVERLAY:-teatree}"
 INTERVAL="${TEATREE_WATCHDOG_INTERVAL:-300}"
 PASS_TIMEOUT="${TEATREE_WATCHDOG_PASS_TIMEOUT:-300}"
@@ -101,10 +102,8 @@ TEMP_TRIM_MIN_AGE_MIN="${TEATREE_WATCHDOG_TEMP_TRIM_MIN_AGE_MIN:-720}"
 DEPLOY_LOCK="${TEATREE_WATCHDOG_DEPLOY_LOCK:-${TEATREE_DEPLOY_LOCK:-/tmp/teatree-deploy.lock}}"
 DEPLOY_RECREATE_WINDOW="${TEATREE_WATCHDOG_DEPLOY_RECREATE_WINDOW:-$INTERVAL}"
 DEPLOY_PENDING_STATE="${TEATREE_WATCHDOG_DEPLOY_PENDING_STATE:-/var/tmp/teatree-watchdog-deploy-sensitive.state}"
-# How long deploy.sh's own in-progress record (written into the lock FILE, see
-# deploy_marker_fresh) counts as a live holder. A convergence takes minutes; past the
-# ceiling the record is a hard-killed deploy's leftover, not a holder.
-DEPLOY_MARKER_MAX_AGE="${TEATREE_WATCHDOG_DEPLOY_MARKER_MAX_AGE:-1800}"
+# Three missed beats of deploy.sh's 60s heartbeat (see deploy_marker_fresh).
+DEPLOY_HEARTBEAT_STALE_AFTER=180
 
 # Re-surface ledger: "<episode> <digest>" of the LAST observed red finding set. The
 # episode counts green→red transitions, so a finding set that CLEARS and later returns
@@ -141,7 +140,11 @@ log() { printf '%s watchdog: %s\n' "$(date -uIseconds)" "$*" >&2; }
 # so the multi-day re-surface behaviour is testable without waiting a day.
 day_bucket() { printf '%s' "${TEATREE_WATCHDOG_DAY_BUCKET:-$(date -u +%Y%m%d)}"; }
 
-compose() { docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"; }
+COMPOSE_FILES=(-f "$COMPOSE_FILE")
+# An image generation repairs in its own image-only layout, never the source-mounted default.
+[ -z "${TEATREE_GENERATION:-}" ] || COMPOSE_FILES+=(-f "$(dirname "$COMPOSE_FILE")/docker-compose.generation.yml")
+generation_needs_host_identity "$COMPOSE_FILE" && COMPOSE_FILES+=(-f "$(dirname "$COMPOSE_FILE")/docker-compose.host-identity.yml")
+compose() { docker compose -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 
 # Echo the init service's compose state as "<State> <ExitCode>" (e.g. "exited 0"),
 # or empty when it cannot be determined (never created, docker unreachable, jq
@@ -616,22 +619,27 @@ _rfc3339_epoch() {
   python3 -c 'import datetime, sys; print(int(datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp()))' "$1" 2>/dev/null
 }
 
-# True when deploy.sh's own in-progress record is present and fresh. It writes
-# "<pid> <epoch>" into the lock FILE under the flock and clears it on exit, so an
-# ordinary exit retires it and a crash loop cannot forge it. This is the signal that
+# True when deploy.sh's own in-progress record carries a recent heartbeat and its deadline
+# has not passed. deploy.sh writes "<pid> <heartbeat> <deadline>" into the lock FILE under
+# the flock, refreshes the heartbeat while it runs and clears the record on exit, so a crash
+# loop cannot forge it and a killed deploy's leftover goes stale. This is the signal that
 # crosses a pid-namespace boundary the kernel lock does not (see deploy_lock_held).
-# The age ceiling is what makes a record outliving its holder read as NOT held.
 deploy_marker_fresh() {
-  local now pid stamp age
+  local now pid beat deadline age
   now="$(date -u +%s 2>/dev/null)" || return 1
-  read -r pid stamp <<<"$(head -n1 "$DEPLOY_LOCK" 2>/dev/null || true)"
-  case "${stamp:-}" in "" | *[!0-9]*) return 1 ;; esac
-  age=$((now - stamp))
-  if [ "$age" -ge "$DEPLOY_MARKER_MAX_AGE" ]; then
-    log "deploy record in $DEPLOY_LOCK is ${age}s old (pid $pid) — no live holder, not a convergence"
+  read -r pid beat deadline _ <<<"$(head -n1 "$DEPLOY_LOCK" 2>/dev/null || true)"
+  case "${beat:-}" in "" | *[!0-9]*) return 1 ;; esac
+  case "${deadline:-}" in *[!0-9]*) return 1 ;; esac
+  age=$((now - beat))
+  if [ "$age" -ge "$DEPLOY_HEARTBEAT_STALE_AFTER" ]; then
+    log "deploy record in $DEPLOY_LOCK last beat ${age}s ago (pid $pid) — no live holder, not a convergence"
     return 1
   fi
-  log "deploy record in $DEPLOY_LOCK is fresh (pid $pid, ${age}s) — a convergence is in flight"
+  if [ -n "${deadline:-}" ] && [ "$now" -ge "$deadline" ]; then
+    log "deploy record in $DEPLOY_LOCK is past its deadline (pid $pid) — not a convergence"
+    return 1
+  fi
+  log "deploy record in $DEPLOY_LOCK beat ${age}s ago (pid $pid) — a convergence is in flight"
   return 0
 }
 

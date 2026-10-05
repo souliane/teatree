@@ -114,7 +114,7 @@ def _identity_alias_groups_for_overlay(
     overlay class that reads from its own ``config`` sees the same value.
     TOML-defined overlays that never instantiate a Python overlay class fall
     back to ``[overlays.<name>] identity_aliases`` via ``discover_overlays``.
-    Defaults to ``()`` so legacy single-group setups behave unchanged.
+    Falls back to the backend's operator identities when no group is configured.
     """
     if backend is not None and backend.overlay is not None:
         groups = _normalize_alias_groups(getattr(backend.overlay.config, "identity_aliases", None))
@@ -124,10 +124,14 @@ def _identity_alias_groups_for_overlay(
         for entry in discover_overlays():
             if entry.name != overlay_name:
                 continue
-            return _normalize_alias_groups(entry.overrides.get("identity_aliases"))
+            groups = _normalize_alias_groups(entry.overrides.get("identity_aliases"))
+            if groups:
+                return groups
     except Exception:  # noqa: BLE001 — never break a tick on a config read.
         logger.warning("Failed to resolve identity_aliases for %r; defaulting to empty", overlay_name)
-    return ()
+        return ()
+    identities = backend.identities if backend is not None else ()
+    return (tuple(identities),) if identities else ()
 
 
 def _normalize_alias_groups(raw: object) -> tuple[tuple[str, ...], ...]:

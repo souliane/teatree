@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
@@ -96,12 +97,11 @@ class TestRenderEnvCacheResolvesWorktreeOverlay(_MultiOverlayEnvTest):
         assert spec is not None
         assert f"MARKER={OVERLAY_B}" in spec.content
 
-    def test_render_falls_back_to_ticket_overlay_when_field_blank(self) -> None:
+    def test_render_rejects_blank_worktree_overlay_even_when_ticket_is_named(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             wt = self._worktree(tmp, overlay="", ticket_overlay=OVERLAY_A)
-            spec = render_env_cache(wt)
-        assert spec is not None
-        assert f"MARKER={OVERLAY_A}" in spec.content
+            with pytest.raises(ImproperlyConfigured, match="has no overlay"):
+                render_env_cache(wt)
 
     def test_explicit_overlay_argument_short_circuits_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

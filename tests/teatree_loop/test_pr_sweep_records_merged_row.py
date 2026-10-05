@@ -15,19 +15,22 @@ uv-audit fallback that raw-merges when the keystone refuses on that same path.
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from unittest.mock import patch
 
 import pytest
 
-from teatree.core.models import ImplementedIssueMarker, PullRequest, Ticket
+from teatree.core.merge.execution import merge_ticket_pr
+from teatree.core.models import AutoReviewDispatch, ImplementedIssueMarker, PullRequest, Ticket
+from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
-from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient, NullMergeNotifier
+from teatree.loop.scanners.pr_sweep_adapters import AutoReviewTaskDispatcher, GhPrApiClient, NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_ports import MergeKeystone, PrApiClient
 from teatree.loop.scanners.pr_sweep_types import BoundMergeResult
 from teatree.types import RawAPIDict
 from tests.factories import waive_rubric
+from tests.teatree_core.conftest import record_merge_prerequisites_for_test
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -129,9 +132,11 @@ class _GhStub:
 
     def __init__(self, *, checks: str) -> None:
         self.answers = {
+            "author": "durations-refresh[bot]",
             "baseRefName": "main",
             "required_status_checks": json.dumps({"contexts": []}),
             "headRefOid": HEAD,
+            "isCrossRepository": "false",
             "isDraft": "false",
             "statusCheckRollup": checks,
         }
@@ -149,6 +154,7 @@ class _GhStub:
 def _seed_ledger() -> tuple[Ticket, PullRequest]:
     ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED, issue_url=ISSUE_URL)
     waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
+    record_merge_prerequisites_for_test(ticket, HEAD)
     row = PullRequest.objects.create(
         ticket=ticket,
         overlay="t3-teatree",
@@ -182,6 +188,64 @@ def _sweep(api: PrApiClient, keystone: MergeKeystone, *, gh: _GhStub) -> list[st
     )
     with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=gh):
         return [signal.kind for signal in scanner.scan()]
+
+
+class TestTicketlessBotMerge:
+    def test_same_repo_bot_without_a_verdict_queues_cold_review(self) -> None:
+        api = _SweepApi(prs=(replace(_open_pr(), author="durations-refresh[bot]", same_repo=True),))
+        scanner = PrSweepScanner(
+            repos=(SLUG,),
+            api=api,
+            keystone=_RefusingKeystone(),
+            notifier=NullMergeNotifier(),
+            overlay="t3-teatree",
+            solo_overlay=True,
+            self_identities=("souliane",),
+            auto_review_dispatch=True,
+            review_dispatcher=AutoReviewTaskDispatcher(),
+        )
+
+        signals = scanner.scan()
+
+        assert [signal.kind for signal in signals] == ["pr_sweep.flag_no_review"]
+        assert signals[0].payload["review_dispatched"] is True
+        assert AutoReviewDispatch.objects.filter(slug=SLUG, pr_id=PR_ID, head_sha=HEAD).exists()
+        assert PullRequest.objects.owning_ticket(slug=SLUG, pr_id=PR_ID) is None
+
+    def test_same_repo_bot_merges_through_sweep_without_creating_an_owner(self) -> None:
+        _record_cold_review()
+        api = _SweepApi(prs=(replace(_open_pr(), author="durations-refresh[bot]", same_repo=True),))
+
+        kinds = _sweep(api, _RefusingKeystone(), gh=_GhStub(checks=json.dumps([{"conclusion": "SUCCESS"}])))
+
+        assert kinds == ["pr_sweep.merged"]
+        assert api.merge_calls == [(SLUG, PR_ID, HEAD)]
+        assert not Ticket.objects.exists()
+        assert not PullRequest.objects.exists()
+
+    def test_ticketless_clear_merges_through_keystone_without_creating_an_owner(self) -> None:
+        _record_cold_review()
+        clear = MergeClear.issue(
+            ClearRequest(
+                pr_id=PR_ID,
+                slug=SLUG,
+                reviewed_sha=HEAD,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
+            )
+        )
+
+        with patch(
+            "teatree.backends.forge_merge_rpc.gh_runner",
+            return_value=_GhStub(checks=json.dumps([{"conclusion": "SUCCESS"}])),
+        ):
+            outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert outcome.merged_sha == MERGED_SHA
+        assert outcome.ticket_state == ""
+        assert not Ticket.objects.exists()
+        assert not PullRequest.objects.exists()
 
 
 class TestSoloOverlayBypassRecordsTheMerge:

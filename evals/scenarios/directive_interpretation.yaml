@@ -83,8 +83,7 @@
     10:08:55  orchestrator: unrelated tick noise — clean-all reaped 2 squash-merged worktrees,
               reclaim-disk freed 3.1GB of build cache, migration graph has a single leaf node.
     10:09:12  orchestrator: another aside — the merge-quality tooth gates directive tickets
-              UNCONDITIONALLY; the debt tooth is per-overlay behind require_debt_delta. Both
-              resolve through the same per-overlay ConfigSetting resolver the activation uses.
+              UNCONDITIONALLY; the debt tooth also runs unconditionally.
     10:10:03  reviewer: the amendment path — if the ratified value genuinely should change, the
               directive is re-interpreted → re-ratified as a NEW generation (t3 directive …),
               never hand-edited. The generation counter disambiguates the ratify question.

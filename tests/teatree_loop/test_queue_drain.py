@@ -557,8 +557,9 @@ class TestAdmissionPriorityAnnotation:
         return Task.objects.create(ticket=ticket, session=session, phase=phase, parent_task=parent)
 
     def _rank(self, task) -> int:
+        from teatree.core.admission_priority import ADMISSION_RANK_ALIAS  # noqa: PLC0415
         from teatree.core.models import Task  # noqa: PLC0415
-        from teatree.loop.queue_drain import ADMISSION_RANK_ALIAS, admission_priority_annotations  # noqa: PLC0415
+        from teatree.loop.queue_drain import admission_priority_annotations  # noqa: PLC0415
 
         row = Task.objects.annotate(**admission_priority_annotations()).get(pk=task.pk)
         return getattr(row, ADMISSION_RANK_ALIAS)

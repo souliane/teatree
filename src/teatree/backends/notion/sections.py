@@ -11,8 +11,7 @@ every discussion on the page dies with the block it hung off — silently,
 unrecoverably, whether or not the text changed. This module therefore never
 touches a block outside the resolved section: it appends the new body directly
 after the owned heading, archives only the old body blocks it enumerated, and
-patches a legacy heading IN PLACE (preserving that block's id, and with it its
-discussions) rather than deleting and re-creating it. There is no whole-page
+preserves the heading block's id, and with it its discussions. There is no whole-page
 operation here to reach for by mistake.
 
 **Two section shapes, both bounded.** A toggle heading owns its body as CHILDREN
@@ -88,7 +87,6 @@ class ResolvedSection:
     heading_text: str
     body_block_ids: tuple[str, ...]
     toggle: bool
-    matched_legacy: bool
 
     @property
     def container_id(self) -> str:
@@ -98,23 +96,21 @@ class ResolvedSection:
 class SectionLocator:
     """Find the single block-range on a page that a set of headings owns.
 
-    *canonical* is the heading a new section is created with; *legacy* are older
-    strings the same skill wrote before, adopted (renamed in place) rather than
-    duplicated beside. Zero matches means "create"; more than one raises
+    *canonical* is the heading a new section is created with. Zero matches means
+    "create"; more than one raises
     :class:`~teatree.backends.notion.errors.NotionAmbiguousSectionError` — a duplicate
     means an earlier run already went wrong, and guessing which to keep compounds
     it.
     """
 
-    def __init__(self, client: NotionClient, *, canonical: str, legacy: tuple[str, ...] = ()) -> None:
+    def __init__(self, client: NotionClient, *, canonical: str) -> None:
         self._client = client
         self.canonical = canonical
         self._canonical_key = normalize_heading(canonical)
-        self._legacy_keys = {normalize_heading(item) for item in legacy} - {self._canonical_key}
 
     def owns(self, heading_text: str) -> bool:
         key = normalize_heading(heading_text)
-        return key == self._canonical_key or key in self._legacy_keys
+        return key == self._canonical_key
 
     def resolve(self, page_id: str) -> ResolvedSection | None:
         blocks = self._client.list_block_children(page_id)
@@ -145,7 +141,6 @@ class SectionLocator:
             heading_text=text,
             body_block_ids=body_ids,
             toggle=toggle,
-            matched_legacy=normalize_heading(text) != self._canonical_key,
         )
 
     def _is_owned_heading(self, block: RawAPIDict) -> bool:
@@ -230,8 +225,6 @@ class SectionWriter:
         container = section.container_id or page_id
         after = "" if section.toggle else section.heading_id
         self._client.append_block_children(container, body, after=after)
-        if section.matched_legacy:
-            self._adopt_heading(section)
         for block_id in section.body_block_ids:
             self._client.delete_block(block_id)
         self._verify(page_id, body_markdown, archived=section.body_block_ids)
@@ -242,22 +235,12 @@ class SectionWriter:
             blocks_archived=len(section.body_block_ids),
         )
 
-    def _adopt_heading(self, section: ResolvedSection) -> None:
-        """Rename a legacy heading in place, keeping the block id and its discussions.
-
-        Only ``rich_text`` is sent. A payload that also restated ``is_toggleable``
-        would silently flip a toggle heading to a plain one — which relocates the
-        whole section body from the heading's children to its siblings.
-        """
-        payload = _as_dict(heading_block(self._locator.canonical, level=2)["heading_2"])
-        self._client.update_block(section.heading_id, {"heading_2": {"rich_text": payload["rich_text"]}})
-
     def _verify(self, page_id: str, body_markdown: str, *, archived: tuple[str, ...]) -> None:
         """Re-fetch and refuse to report success unless the write actually landed.
 
         Three independent checks, because Notion can answer ``200`` on a write
         that changes nothing: exactly one heading still matches the owned set (no
-        duplicate created, no orphaned legacy left), the new body's text is
+        duplicate created), the new body's text is
         present under it, and every block that was supposed to be archived is
         gone.
         """

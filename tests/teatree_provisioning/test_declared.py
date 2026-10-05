@@ -12,6 +12,7 @@ from teatree.provisioning.declared import (
     integrations_declared_in_claude_settings,
     skills_declared_in_apm_manifest,
 )
+from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
 _DEFAULT_SPECS = (
     "vendor/bundle#1f20bef",
@@ -58,6 +59,12 @@ class TestSkillsDeclaredInApmManifest:
             f"obra/superpowers/skills/{name}#{_SUPERPOWERS_SHA}" for name in _METHODOLOGY_SKILLS
         }
         assert not any(dependency.source.startswith("souliane/teatree/skills/") for dependency in declared)
+
+    def test_repository_manifest_declares_every_framework_skill_the_loader_can_mandate(self) -> None:
+        manifest = Path(__file__).resolve().parents[2] / "apm.yml"
+        declared = {dependency.name for dependency in skills_declared_in_apm_manifest(manifest)}
+
+        assert FRAMEWORK_SKILL_NAMES - declared == set()
 
     def test_named_skill_dependencies_are_enumerated(self, tmp_path: Path) -> None:
         declared = skills_declared_in_apm_manifest(_write_manifest(tmp_path))

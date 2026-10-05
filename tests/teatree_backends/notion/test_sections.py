@@ -8,13 +8,12 @@ from teatree.backends.notion.sections import SectionLocator, SectionWriter, norm
 from tests.teatree_backends.notion._fake_notion import FakeNotion
 
 CANONICAL = "🔧 /prd-agent — engineering delivery notes"
-LEGACY = ("🔧 Engineering delivery notes", "🔧 Engineering verification notes")
 BODY = "### Delivered in\n\n- MR !1, 12 files\n\n### NOT verified\n\nThe live deployment push."
 
 
 def _writer(notion: FakeNotion) -> tuple[SectionWriter, SectionLocator, NotionClient]:
     client = NotionClient(token="good")
-    locator = SectionLocator(client, canonical=CANONICAL, legacy=LEGACY)
+    locator = SectionLocator(client, canonical=CANONICAL)
     return SectionWriter(client, locator), locator, client
 
 
@@ -65,18 +64,9 @@ class TestSectionResolution:
         assert section.heading_id == heading
         assert section.body_block_ids == (first, second)
 
-    def test_a_legacy_heading_is_adopted_not_duplicated(self, notion: FakeNotion) -> None:
-        notion.heading(LEGACY[0], toggle=True)
-
-        _, locator, _ = _writer(notion)
-        section = locator.resolve(notion.page_id)
-
-        assert section is not None
-        assert section.matched_legacy is True
-
     def test_two_matching_headings_stop_the_write(self, notion: FakeNotion) -> None:
         notion.heading(CANONICAL, toggle=True)
-        notion.heading(LEGACY[1], toggle=True)
+        notion.heading(CANONICAL, toggle=True)
 
         _, locator, _ = _writer(notion)
 
@@ -124,18 +114,6 @@ class TestSectionReplace:
         resolved = locator.resolve(notion.page_id)
         assert resolved is not None
         assert resolved.heading_id == heading
-
-    def test_adopting_a_legacy_heading_renames_it_in_place(self, notion: FakeNotion) -> None:
-        heading = notion.heading(LEGACY[0], toggle=True)
-        notion.paragraph("stale", parent=heading)
-
-        writer, locator, _ = _writer(notion)
-        section = locator.resolve(notion.page_id)
-        assert section is not None
-        writer.replace(notion.page_id, section, BODY)
-
-        assert heading not in notion.archived, "renaming must not re-create the block"
-        assert notion.text_of(heading) == CANONICAL
 
     def test_a_plain_section_body_lands_between_its_own_headings(self, notion: FakeNotion) -> None:
         heading = notion.heading(CANONICAL)

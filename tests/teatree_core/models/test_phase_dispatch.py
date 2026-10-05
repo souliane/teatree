@@ -1,12 +1,15 @@
 """Per-phase auto-dispatch tests (souliane/teatree#443 split of test_models.py)."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.backend_protocols import PrMergeState
+from teatree.core.gates.merge_evidence_gate import record_confirmed_forge_merge
+from teatree.core.models import PullRequest, Session, Task, Ticket
 from tests.factories import record_test_plan
 from tests.teatree_core.models._shared import (
     _advance_ticket_to_tested,
@@ -280,6 +283,12 @@ class TestPhaseAutoDispatch(TestCase):
         # by also marking that task COMPLETED before review() — but the bug
         # would surface if a second reviewing task were left pending.
         first_review = ticket.tasks.get(phase="reviewing")
+        ticket.record_review_context(
+            work_item="https://example.test/issues/123",
+            documents=["specification.pdf"],
+            analysis="Compared the reviewed change with the specification.",
+        )
+        ticket.record_anti_vacuity_attestation("a" * 40, "AC covered", [], no_new_tests=True)
         first_review.claim(claimed_by="t")
         first_review.complete()
         # A second reviewing task could exist (e.g. retry); simulate one.
@@ -344,12 +353,20 @@ class TestPhaseAutoDispatch(TestCase):
         ticket = Ticket.objects.create()
         ticket.state = Ticket.State.REVIEW_REQUESTED
         ticket.save(update_fields=["state"])
+        PullRequest.objects.record_opened(ticket=ticket, url="https://github.com/souliane/teatree/pull/140")
 
         fake_task = MagicMock()
         with (
             self.captureOnCommitCallbacks(execute=True),
             patch.object(tasks_mod, "execute_teardown", fake_task),
+            patch(
+                "teatree.core.merge.ci_rollup.CodeHostQuery.for_ref",
+                return_value=SimpleNamespace(
+                    pr_merge_state=lambda: PrMergeState(state="MERGED", merge_commit_oid="a" * 40)
+                ),
+            ),
         ):
+            assert record_confirmed_forge_merge(ticket)
             ticket.mark_merged()
             ticket.save()
 

@@ -13,7 +13,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.cli.review.send_routing import route_forge_send
-from teatree.core.models import SendAudit
+from teatree.core.models import ConfigSetting, SendAudit
 
 
 class TestRouteForgeSendLeakScan(TestCase):
@@ -33,6 +33,7 @@ class TestRouteForgeSendLeakScan(TestCase):
         assert SendAudit.objects.count() == 0
 
     def test_clean_comment_passes_and_writes_a_send_audit_row(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", ["gitlab:souliane/teatree"])
         with patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False):
             note, refusal = route_forge_send(repo="souliane/teatree", mr=7, action="post_comment", note="all green")
         assert refusal == ""

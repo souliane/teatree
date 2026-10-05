@@ -20,11 +20,26 @@ from teatree.cli.doctor.dev_sources import (
     _find_host_project_root,
     _find_teatree_pyproject_from_cwd,
     _patch_uv_source,
+    _restore_source_entry,
     _write_dev_sources_marker,
 )
 from teatree.utils.run import run_allowed_to_fail
 
 _CLAUDE_PLUGIN_ID = "t3@souliane"
+
+
+class EditableSourceRestoreError(RuntimeError):
+    def __init__(self, tracked: str, detail: str) -> None:
+        super().__init__(f"could not restore editable source {tracked}: {detail}")
+
+
+def _relock_restored_sources(project_root: Path) -> None:
+    if not (project_root / "uv.lock").is_file():
+        return
+    relock = run_allowed_to_fail(["uv", "lock"], cwd=project_root, expected_codes=None)
+    if relock.returncode != 0:
+        tracked = "uv.lock"
+        raise EditableSourceRestoreError(tracked, relock.stderr.strip())
 
 
 AGENT_SKILL_RUNTIMES: tuple[str, ...] = ("claude", "codex")
@@ -127,45 +142,14 @@ class DoctorService:
 
         results: list[tuple[Path, str]] = []
         for entry in discover_overlays():
-            if not entry.project_path or not entry.project_path.is_dir():
-                continue
-            # Resolve the skills root through the ``skill_root`` seam (#3355), so an
-            # overlay whose skills live off the ``<project>/skills`` default is not
-            # silently reported clean.
-            skills_root = overlay_skills_root(overlay_skill_metadata(entry.name), entry.project_path.expanduser())
+            project_path = entry.project_path.expanduser() if entry.project_path is not None else None
+            skills_root = overlay_skills_root(overlay_skill_metadata(entry.name), project_path)
             if skills_root is not None and skills_root.is_dir():
                 results.extend(
                     (skill, skill.name) for skill in sorted(skills_root.iterdir()) if (skill / "SKILL.md").is_file()
                 )
 
         return results
-
-    @staticmethod
-    def repair_symlinks(skills_dir: Path, claude_skills: Path) -> tuple[int, int]:
-        """Create or fix symlinks for core and overlay skills. Returns (created, fixed)."""
-        created = 0
-        fixed = 0
-
-        def _ensure(target: Path, link: Path) -> None:
-            nonlocal created, fixed
-            if link.is_symlink():
-                if link.resolve() == target.resolve():
-                    return
-                link.unlink()
-                fixed += 1
-            elif link.exists():
-                return  # real directory, don't touch
-            link.symlink_to(target)
-            created += 1
-
-        for skill in sorted(skills_dir.iterdir()):  # pragma: no branch
-            if (skill / "SKILL.md").is_file():
-                _ensure(skill, claude_skills / skill.name)
-
-        for target, link_name in DoctorService.collect_overlay_skills():
-            _ensure(target, claude_skills / link_name)
-
-        return created, fixed
 
     @staticmethod
     def check_editable_sanity() -> list[str]:
@@ -311,7 +295,10 @@ class DoctorService:
                 expected_codes=None,
             )
             if result.returncode == 0:
-                typer.echo(f"OK    {package} is now editable from {repo_path} (persisted in .t3-dev-sources)")
+                typer.echo(
+                    f"OK    {package} is now editable from {repo_path} (persisted in .t3-dev-sources); "
+                    f"clean up with `t3 doctor cleanup-editable-sources {project_root}`"
+                )
             else:
                 typer.echo(f"FAIL  uv sync failed after patching sources: {result.stderr.strip()}")
         else:
@@ -322,29 +309,48 @@ class DoctorService:
 
     @staticmethod
     def restore_sources(project_root: Path) -> None:
-        """Revert editable source overrides recorded in ``.t3-dev-sources``.
-
-        Unhides and restores both the patched ``pyproject.toml`` and the
-        ``uv sync``-mutated ``uv.lock`` so neither carries dev-only editable
-        state after cleanup.
-        """
+        """Undo editable source overrides recorded in the host project's marker."""
         marker = project_root / ".t3-dev-sources"
         if not marker.is_file():
             return
-
+        packages = [line.partition("=")[0] for line in marker.read_text(encoding="utf-8").splitlines() if "=" in line]
         for tracked in _DEV_HIDDEN_FILES:
-            run_allowed_to_fail(
+            check = run_allowed_to_fail(
+                ["git", "ls-files", "--error-unmatch", "--", tracked],
+                cwd=project_root,
+                expected_codes=None,
+            )
+            if check.returncode != 0:
+                continue
+            original = run_allowed_to_fail(
+                ["git", "show", f"HEAD:{tracked}"],
+                cwd=project_root,
+                expected_codes=None,
+            )
+            if original.returncode != 0:
+                raise EditableSourceRestoreError(tracked, original.stderr.strip())
+            path = project_root / tracked
+            current = path.read_text(encoding="utf-8")
+            try:
+                restored_text = current
+                for package in packages:
+                    restored_text = _restore_source_entry(
+                        restored_text, original.stdout, package, lockfile=tracked == "uv.lock"
+                    )
+            except ValueError as exc:
+                raise EditableSourceRestoreError(tracked, str(exc)) from exc
+            unhide = run_allowed_to_fail(
                 ["git", "update-index", "--no-assume-unchanged", tracked],
                 cwd=project_root,
                 expected_codes=None,
             )
-            run_allowed_to_fail(
-                ["git", "checkout", "--", tracked],
-                cwd=project_root,
-                expected_codes=None,
-            )
-        marker.unlink(missing_ok=True)
-        typer.echo("OK    Restored original [tool.uv.sources] from git")
+            if unhide.returncode != 0:
+                raise EditableSourceRestoreError(tracked, unhide.stderr.strip())
+            if restored_text != current:
+                path.write_text(restored_text, encoding="utf-8")
+        _relock_restored_sources(project_root)
+        marker.unlink()
+        typer.echo("OK    Removed recorded editable-source entries")
 
 
 class IntrospectionHelpers:

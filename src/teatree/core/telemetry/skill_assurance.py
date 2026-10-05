@@ -9,6 +9,8 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 
 
+from teatree.core.telemetry.admission_schema import _TRACE_FIELDS, _valid_trace_context
+
 SKILL_SPAN_NAME = "teatree.factory.skill_assurance"
 SKILL_STATUSES = frozenset({"missing", "injection_gap", "unverified", "declared"})
 SKILL_NAME_LIMIT = 16
@@ -47,7 +49,7 @@ def _valid_name_list(names: object, count: object) -> bool:
 
 
 def valid_skill_row(row: object, *, cutoff: int, current: int) -> bool:
-    if not isinstance(row, dict) or row.keys() != _ROW_FIELDS:
+    if not isinstance(row, dict) or row.keys() - _TRACE_FIELDS != _ROW_FIELDS or not _valid_trace_context(row):
         return False
     epoch = row["epoch"]
     return (

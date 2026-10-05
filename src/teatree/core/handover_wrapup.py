@@ -218,4 +218,6 @@ def _push_remaining(push: "SubagentPush") -> str:
         return "no outcome was recorded"
     if not outcome.ok:
         return "; ".join(finding.detail for finding in outcome.findings) or "the push was refused"
+    if outcome.author_refusal:
+        return f"no merge request: {outcome.author_refusal}"
     return "nothing"

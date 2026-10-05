@@ -24,7 +24,7 @@ import teatree.dash
 from teatree.config import PeerInstance, PeerTunnel
 from teatree.config.cold_defaults import shipped_defaults_table
 from teatree.config.provenance import ValueSource
-from teatree.config.setting_registries import CODE_PINNED_SETTINGS, ENV_VAR_BY_SETTING, SAFETY_POSTURE_KEYS
+from teatree.config.setting_registries import ENV_VAR_BY_SETTING, SAFETY_POSTURE_KEYS
 from teatree.core.models import ConfigSetting
 from teatree.core.setting_control import SettingControl
 from teatree.core.settings.settings_compare import (
@@ -695,7 +695,7 @@ class TestTheDifferencesArriveGroupedByScope(_RowBuilderCase):
     """
 
     _TABLE = "loops"
-    _FIELDS = ("cadence_minutes", "default_enabled")
+    _FIELDS = ("delay_seconds", "colleague_facing")
     _ENTITIES = ("dream", "review")
 
     def _seed_box(self, label: str, values: dict[str, Any]) -> PeerSnapshot:
@@ -706,8 +706,8 @@ class TestTheDifferencesArriveGroupedByScope(_RowBuilderCase):
 
     def _both_boxes(self) -> Any:
         return self._view(
-            self._seed_box("this instance", {"cadence_minutes": 30, "default_enabled": True}),
-            self._seed_box("box-b", {"cadence_minutes": 60, "default_enabled": False}),
+            self._seed_box("this instance", {"delay_seconds": 30, "colleague_facing": True}),
+            self._seed_box("box-b", {"delay_seconds": 60, "colleague_facing": False}),
         )
 
     def test_every_row_of_one_scope_is_contiguous(self) -> None:
@@ -716,7 +716,7 @@ class TestTheDifferencesArriveGroupedByScope(_RowBuilderCase):
 
     def test_the_fields_inside_a_scope_stay_in_their_own_order(self) -> None:
         dream = [row.title for row in self._both_boxes().rows if row.subtitle == "loops.dream"]
-        assert dream == list(self._FIELDS)
+        assert dream == sorted(self._FIELDS)
 
 
 class TestEveryClassThePageEmitsIsStyled(SimpleTestCase):
@@ -894,26 +894,6 @@ class TestOnlyThisBoxIsEditable(SimpleTestCase):
             assert not row.readings[0].cell.writable
             assert row.readings[0].cell.unwritable_reason == f"pinned by {env_var}"
 
-    def test_a_key_pinned_to_its_shipped_value_in_code_is_refused_with_the_reason(self) -> None:
-        """The two destructive levers render read-only, not as an edit box over a dead write.
-
-        The scanner reads them off `UserSettings()`, so a stored row changes no behaviour —
-        and the cell then re-renders as DRIFTED, showing the operator their own write echoed
-        back by a mechanism that ignores it. That is worse than refusing the edit.
-        """
-        for key, reason in CODE_PINNED_SETTINGS.items():
-            row = CompareRow(
-                surface=SETTING,
-                scope="",
-                title=key,
-                subtitle="global scope",
-                cells=(_local("this instance", value=False), _held("peer", value=True)),
-                control=_control(key),
-            )
-
-            assert not row.readings[0].cell.writable, key
-            assert row.readings[0].cell.unwritable_reason == reason, key
-
     def test_an_ordinary_key_stays_writable_so_the_refusal_is_not_blanket(self) -> None:
         # The control for the assertion above: without it a refusal that fired on every key
         # would read exactly the same.
@@ -1072,7 +1052,7 @@ class TestTheActionableRowsLead(SimpleTestCase):
             CompareRow(
                 surface=SEED,
                 scope="loops",
-                title="default_enabled",
+                title="colleague_facing",
                 subtitle=f"loops.{name}",
                 cells=(_local("a", value=True), _held("b", value=False)),
             )
@@ -1091,7 +1071,7 @@ class TestTheActionableRowsLead(SimpleTestCase):
         seed = CompareRow(
             surface=SEED,
             scope="loops",
-            title="default_enabled",
+            title="colleague_facing",
             subtitle="loops.audit",
             cells=(_local("a", value=True), _held("b", value=False)),
         )

@@ -17,6 +17,7 @@ from django.test import TestCase
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict, ScannerError, ScannerErrorClass
+from tests.teatree_loop._fleet_claim_stub import FleetClaimStub
 
 ADMIT_LABEL = "t3-auto"
 OWNER = "souliane"
@@ -146,6 +147,9 @@ class TestTheFailureDetailIsRedacted(TestCase):
 
 class TestPartialDiscoveryFailure(TestCase):
     """One failing query must NOT take the tick down — the #3508 isolation still holds."""
+
+    def setUp(self) -> None:
+        FleetClaimStub().install(self)
 
     def test_a_surviving_query_still_yields_its_candidates(self) -> None:
         issue: RawAPIDict = {

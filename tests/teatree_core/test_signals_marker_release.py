@@ -12,6 +12,7 @@ from django.test import TestCase
 
 from teatree.core.models import ImplementedIssueMarker, Ticket
 from tests.factories import ImplementedIssueMarkerFactory, TicketFactory, waive_rubric
+from tests.teatree_core.conftest import record_confirmed_merge_for_test
 
 URL = "https://github.com/souliane/teatree/issues/3205"
 
@@ -19,6 +20,8 @@ URL = "https://github.com/souliane/teatree/issues/3205"
 class TestMarkerReleaseOnCompletion(TestCase):
     def _ticket_with_marker(self, *, state: Ticket.State, overlay: str = "t3-teatree"):
         ticket = TicketFactory(overlay=overlay, issue_url=URL, state=state)
+        if state == Ticket.State.REVIEW_REQUESTED:
+            record_confirmed_merge_for_test(ticket)
         return ImplementedIssueMarkerFactory(overlay=overlay, issue_url=URL, ticket=ticket, ticket_created=True)
 
     def test_merge_releases_the_marker_and_frees_the_budget(self) -> None:
@@ -45,6 +48,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
     def test_delivered_releases_the_marker(self) -> None:
         marker = self._ticket_with_marker(state=Ticket.State.RETRO_RECORDED)
         waive_rubric(marker.ticket)
+        record_confirmed_merge_for_test(marker.ticket)
 
         marker.ticket.mark_delivered()
         marker.ticket.save()
@@ -75,6 +79,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
     def test_abandoned_marker_is_not_resurrected_to_completed(self) -> None:
         """ABANDONED (give-up / fleet-steal) is terminal — completion must not overwrite it."""
         ticket = TicketFactory(overlay="t3-teatree", issue_url=URL, state=Ticket.State.REVIEW_REQUESTED)
+        record_confirmed_merge_for_test(ticket)
         marker = ImplementedIssueMarkerFactory(overlay="t3-teatree", issue_url=URL, ticket=ticket, abandoned=True)
 
         ticket.reconcile_merged()
@@ -86,6 +91,7 @@ class TestMarkerReleaseOnCompletion(TestCase):
     def test_declined_marker_is_not_resurrected_to_completed(self) -> None:
         """DECLINED records WHY the attempt ended — a blanket rewrite would erase it (#4105)."""
         ticket = TicketFactory(overlay="t3-teatree", issue_url=URL, state=Ticket.State.REVIEW_REQUESTED)
+        record_confirmed_merge_for_test(ticket)
         marker = ImplementedIssueMarkerFactory(
             overlay="t3-teatree",
             issue_url=URL,

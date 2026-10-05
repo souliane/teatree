@@ -43,7 +43,6 @@ from teatree.llm.openai_compatible import OpenAICompatibleCredential, resolve_op
 _X_LANE_HEADER = "x-lane"
 LANE_FACTORY = "factory"
 LANE_EVAL = "eval"
-LANE_BULK = "bulk"
 #: The placeholder an ``openai_compatible_extra_headers`` value may carry; each run substitutes its session id.
 SESSION_PLACEHOLDER = "{session}"
 
@@ -122,8 +121,6 @@ class OpenAICompatibleLaneConfig:
     *   ``extra_headers`` — the ``openai_compatible_extra_headers`` map every request carries
         beside ``x-lane``; :data:`SESSION_PLACEHOLDER` in a value becomes the run's session id. A header off
         :data:`~teatree.config.extra_headers.ALLOWED_EXTRA_HEADERS` is refused here, so no construction sends one.
-    *   ``sends_prompt_cache_key`` — the ``openai_compatible_sends_prompt_cache_key`` declaration that the
-        endpoint accepts ``prompt_cache_key``; off, the parameter is never sent.
     """
 
     lane: str = LANE_FACTORY
@@ -132,7 +129,6 @@ class OpenAICompatibleLaneConfig:
     credential_entry: str | None = None
     model: str | None = None
     extra_headers: Mapping[str, str] = field(default_factory=dict)
-    sends_prompt_cache_key: bool = False
 
     def __post_init__(self) -> None:
         headers = dict(self.extra_headers)
@@ -157,6 +153,7 @@ class PydanticAiModelConfig:
         is a base ``ModelSettings`` key both bindings honour), so it lives here rather than on
         the router-only :class:`OpenAICompatibleLaneConfig`. Resolved SYNCHRONOUSLY by :func:`resolve_harness`
         from the ``pydantic_ai_max_tokens`` setting; ``None`` leaves the binding's own default.
+    *   ``tier`` — the winning abstract spawn tier, preserved when tiers share a concrete model id.
     *   ``regulated_path`` — the regulated-lane allowlist gate's policy, resolved SYNCHRONOUSLY by
         :func:`resolve_harness` (:class:`~teatree.agents.regulated_path.RegulatedPathPolicy`, #3980).
         Binding-agnostic for the same reason ``max_tokens`` is: both bindings gate their model id
@@ -187,6 +184,7 @@ class PydanticAiModelConfig:
     backend: OpenAICompatibleLaneConfig = field(default_factory=OpenAICompatibleLaneConfig)
     binding: PydanticAiBinding = PydanticAiBinding.ROUTER
     max_tokens: int | None = None
+    tier: str | None = None
     regulated_path: RegulatedPathPolicy | None = None
     anthropic_credential: Credential | None = None
 
@@ -255,7 +253,6 @@ def build_model_settings(
     *,
     binding: PydanticAiBinding,
     max_tokens: int | None,
-    prompt_cache_key: str | None = None,
 ) -> ModelSettings | None:
     """The model settings for *binding*: the base ``max_tokens`` ceiling plus the reasoning effort.
 
@@ -282,7 +279,6 @@ def build_model_settings(
     :func:`~pydantic_ai.profiles.anthropic.resolve_anthropic_effort`, which also owns
     the per-model ``xhigh`` passthrough decision — never a vocabulary re-invented here.
 
-    ``prompt_cache_key`` is OpenAI-shaped, so only the router binding sends it.
     """
     # Built as a plain mapping rather than the per-binding ``…ModelSettings`` TypedDicts: the
     # ``AnthropicModelSettings`` symbol lives in ``pydantic_ai.models.anthropic``, which imports
@@ -301,8 +297,6 @@ def build_model_settings(
                 )
         else:
             settings["openai_reasoning_effort"] = effort
-    if prompt_cache_key and binding is PydanticAiBinding.ROUTER:
-        settings["openai_prompt_cache_key"] = prompt_cache_key
     return cast("ModelSettings", settings) if settings else None
 
 

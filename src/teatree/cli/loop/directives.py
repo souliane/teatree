@@ -35,11 +35,11 @@ def show_command(
     *,
     json_output: bool = typer.Option(False, "--json", help="Emit the standing directives as JSON."),
 ) -> None:
-    """Print the standing directives, their scope, their delivery cost and the turn budget.
+    """Print the standing directives with their resolved cadence, scope and text.
 
-    Read-only. The ``--json`` payload — ``{slot_id, cadence_seconds, text, scope,
-    wakes_session}`` per directive — is the harness-neutral contract: a non-Claude
-    harness reads it and writes only its own delivery adapter.
+    Read-only. The ``--json`` payload — ``{slot_id, cadence_seconds, text, scope}``
+    per directive — is the harness-neutral contract: a non-Claude harness reads it
+    and writes only its own delivery adapter.
     """
     kwargs: dict[str, bool] = {}
     if json_output:

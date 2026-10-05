@@ -38,7 +38,6 @@ from hooks.scripts.hook_router import (
     handle_enforce_orchestrator_boundary,
     handle_enforce_skill_loading,
     handle_quote_scanner_pretool,
-    handle_user_prompt_submit,
     handle_validate_mr_metadata,
 )
 
@@ -431,102 +430,6 @@ class TestSkillLoadingLockoutDimension:
         assert blocked is False, "OVER-BLOCK regression — AskUserQuestion was gated (must NEVER be gated)."
 
 
-class TestSkillLoadingGateExemptDuringLoopBootstrap:
-    """The skill-load gate must NOT fire during a loop-registration bootstrap turn (#1918).
-
-    When the loop-registration / t3-master bootstrap turn surfaces a resolvable
-    intent skill (the bare word ``loops`` is a hard intent trigger), it lands in
-    ``<session>.pending``. The very next genuine code-work call in the same turn
-    (``uv run pytest``, ``manage.py``, a ``.py`` edit — routine during teatree's
-    own Django setup) would then hard-deny demanding ``/loops``, a skill unrelated
-    to the work and unsatisfiable mid-setup — a deadlock. The skill-load gate is a
-    UX nudge, not a safety gate, so it must exempt the loop-bootstrap turn.
-
-    The exemption keys strictly on the existing ``<session>.loop-pending`` marker
-    (written by the loop-registration gate, cleared once the loop registers), so it
-    is the canonical "this session is mid loop-bootstrap" signal both loop gates
-    already key on. The must-DENY ANCHOR (same skill pending, NO marker → still
-    blocked) proves the must-ALLOW is an escape, not a defanged gate.
-    """
-
-    @pytest.fixture
-    def skill_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        original_state = router.STATE_DIR
-        router.STATE_DIR = tmp_path / "state"
-        router.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        skills_dir = tmp_path / "skills"
-        skill = skills_dir / "loops"
-        skill.mkdir(parents=True, exist_ok=True)
-        (skill / "SKILL.md").write_text("---\nname: loops\n---\n", encoding="utf-8")
-        monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(skills_dir))
-        yield
-        router.STATE_DIR = original_state
-
-    def _write(self, session_id: str, suffix: str, names: list[str]) -> None:
-        (router.STATE_DIR / f"{session_id}.{suffix}").write_text("\n".join(names) + "\n", encoding="utf-8")
-
-    def _marker(self, session_id: str) -> None:
-        (router.STATE_DIR / f"{session_id}.loop-pending").write_text("1", encoding="utf-8")
-
-    def test_must_deny_anchor_no_loop_marker(self, skill_gate: None) -> None:
-        self._write("sess-loop-anchor", "pending", ["loops"])
-        blocked = handle_enforce_skill_loading(
-            {"session_id": "sess-loop-anchor", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
-        )
-        assert blocked is True, (
-            "ANCHOR regression — the skill-load gate no longer fires for code work with a resolvable "
-            "unloaded skill pending and NO loop-bootstrap marker; the must-ALLOW row below would be vacuous."
-        )
-
-    def test_must_allow_during_loop_bootstrap(self, skill_gate: None) -> None:
-        self._write("sess-loop-boot", "pending", ["loops"])
-        self._marker("sess-loop-boot")
-        blocked = handle_enforce_skill_loading(
-            {"session_id": "sess-loop-boot", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
-        )
-        assert blocked is False, (
-            "DEADLOCK regression (#1918) — code work during a loop-registration bootstrap turn "
-            "(loop-pending marker present) was blocked demanding an unrelated skill load."
-        )
-
-
-class TestDefaultOffSessionNeverHardBlocks:
-    """#256: a default-off (not-engaged) session never hard-blocks Bash/Edit/Write.
-
-    With the DB-home ``autoload`` switch unset and no teatree/``t3:`` skill loaded,
-    ``handle_user_prompt_submit`` suppresses the suggester and writes an EMPTY
-    ``<session>.pending``. The PreToolUse skill-loading gate then has nothing to
-    demand, so a plain ``.py`` Edit and a Python-tooling Bash both pass. A
-    regression that wrote a non-empty pending for a default-off session — or that
-    blocked here — would brick a fresh install on its first code-touching call.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        state = tmp_path / "state"
-        state.mkdir()
-        monkeypatch.setattr(router, "STATE_DIR", state)
-        # Hermetic, default-OFF: clean HOME (no autoload override) and no env opt-in.
-        home = tmp_path / "home"
-        home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
-
-    def test_default_off_prompt_then_py_edit_not_blocked(self, tmp_path: Path) -> None:
-        handle_user_prompt_submit({"session_id": "off-edit", "prompt": "fix the bug in foo.py and run ruff check"})
-        blocked = handle_enforce_skill_loading(
-            {"session_id": "off-edit", "tool_name": "Edit", "tool_input": {"file_path": str(tmp_path / "wk" / "x.py")}}
-        )
-        assert blocked is False, "LOCKOUT regression (#256) — a default-off session hard-blocked a .py Edit."
-
-    def test_default_off_prompt_then_bash_not_blocked(self) -> None:
-        handle_user_prompt_submit({"session_id": "off-bash", "prompt": "please run the test suite"})
-        blocked = handle_enforce_skill_loading(
-            {"session_id": "off-bash", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
-        )
-        assert blocked is False, "LOCKOUT regression (#256) — a default-off session hard-blocked a Bash command."
-
-
 class TestMustDenyMerge:
     """Merge commands on teatree-managed repos must be blocked."""
 
@@ -596,11 +499,7 @@ class TestPublishPrivacyGatesDoNotOverBlock:
         monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
         self._db = home / "config.sqlite3"
 
-    def _enable(self, key: str) -> None:
-        _seed_config_db(self._db, {key: True})
-
     def test_clean_slack_mcp_send_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
-        self._enable("mcp_privacy_gate_enabled")
         data = {
             "session_id": "sess-corpus",
             "tool_name": "mcp__claude_ai_Slack__slack_send_message",
@@ -611,7 +510,6 @@ class TestPublishPrivacyGatesDoNotOverBlock:
         assert capsys.readouterr().out.strip() == ""
 
     def test_clean_task_list_entry_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
-        self._enable("dispatch_quote_gate_on_task_create_enabled")
         data = {
             "session_id": "sess-corpus",
             "task_subject": "implement the export endpoint",

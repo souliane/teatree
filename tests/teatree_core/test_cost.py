@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree.agents.model_tiering import TIER_MODELS
 from teatree.core.cost import (
     DEFAULT_MONTHLY_CREDIT_USD,
     ET_MODEL_MULTIPLIER,
@@ -16,7 +17,6 @@ from teatree.core.cost import (
     CostBreakdown,
     CostReport,
     ModelPrice,
-    attempt_cost_usd,
     compute_effective_tokens,
     cycle_start,
     price_for_model,
@@ -65,13 +65,14 @@ class TestTierResolution:
         assert tier_of_model("claude-sonnet-4-6") == "sonnet"
         assert tier_of_model("claude-haiku-4-5") == "haiku"
 
-    def test_sonnet_5_maps_to_sonnet_tier_and_price(self) -> None:
-        # The balanced tier's model is now Sonnet 5; the substring-keyed lookup
-        # resolves it to the ``sonnet`` tier (same $3/$15 sticker) with no new
-        # PRICE_TABLE entry.
-        assert tier_of_model("claude-sonnet-5") == "sonnet"
-        assert price_for_model("claude-sonnet-5").input_per_mtok == pytest.approx(3.0)
-        assert price_for_model("claude-sonnet-5").output_per_mtok == pytest.approx(15.0)
+    def test_balanced_tier_model_maps_to_sonnet_price(self) -> None:
+        assert tier_of_model(TIER_MODELS["balanced"]) == "sonnet"
+        assert price_for_model(TIER_MODELS["balanced"]) == ModelPrice(input_per_mtok=2.0, output_per_mtok=10.0)
+
+    def test_older_sonnet_id_keeps_historical_estimate(self) -> None:
+        usage = AttemptUsage("claude-sonnet-4-6", None, 1_000_000, 1_000_000, 0, 0)
+        assert price_table_cost_usd(usage) == pytest.approx(18.0)
+        assert ModelPrice.known_for(usage.model) == ModelPrice(input_per_mtok=3.0, output_per_mtok=15.0)
 
     def test_opus_5_maps_to_opus_tier_and_price(self) -> None:
         # The frontier tier's model is now Opus 5; the substring-keyed lookup
@@ -95,13 +96,9 @@ class TestTierResolution:
         assert tier_of_model("gpt-9") == UNPRICED_TIER
         assert tier_of_model("deepseek/deepseek-v4-pro") == UNPRICED_TIER
 
-    def test_no_special_cased_fable_tier(self) -> None:
-        # #2237 removal: no PRICE_TABLE entry recognises "fable" any more — a
-        # Fable-named model id falls into the unpriced bucket, same as any other
-        # unrecognised id (not a Claude tier).
-        assert "fable" not in PRICE_TABLE
-        assert tier_of_model("fable") == UNPRICED_TIER
-        assert tier_of_model("claude-fable-5") == UNPRICED_TIER
+    def test_unknown_family_is_unpriced(self) -> None:
+        assert tier_of_model("unknown-family") == UNPRICED_TIER
+        assert tier_of_model("claude-unknown-5") == UNPRICED_TIER
 
 
 class TestPriceEtParity:
@@ -201,31 +198,6 @@ class TestTierRank:
 
     def test_empty_string_ranks_as_default_reasoning_tier(self) -> None:
         assert tier_rank("") == tier_rank("opus")
-
-
-class TestAttemptCost:
-    def test_prefers_reported_cli_cost(self) -> None:
-        usage = AttemptUsage(
-            model="claude-opus-4-8",
-            reported_cost_usd=0.42,
-            input_tokens=999_999,
-            output_tokens=999_999,
-            cache_read_tokens=0,
-            cache_write_tokens=0,
-        )
-        assert attempt_cost_usd(usage) == pytest.approx(0.42)
-
-    def test_falls_back_to_price_table_when_cost_absent(self) -> None:
-        usage = AttemptUsage(
-            model="sonnet",
-            reported_cost_usd=None,
-            input_tokens=1_000_000,
-            output_tokens=0,
-            cache_read_tokens=0,
-            cache_write_tokens=0,
-        )
-        assert attempt_cost_usd(usage) == pytest.approx(3.0)
-        assert price_table_cost_usd(usage) == pytest.approx(3.0)
 
 
 class TestEffectiveTokens:

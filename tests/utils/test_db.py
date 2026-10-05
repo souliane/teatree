@@ -268,14 +268,16 @@ def test_db_restore_detects_truncated_psql(monkeypatch: pytest.MonkeyPatch, dump
         db.db_restore("wt_71", dump)
 
 
-def test_pg_env_includes_port_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pg_env_includes_port_but_ignores_literal_password(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POSTGRES_PORT", "5433")
     monkeypatch.setenv("POSTGRES_PASSWORD", "secret")
+    monkeypatch.delenv("POSTGRES_PASSWORD_PASS_KEY", raising=False)
+    monkeypatch.delenv("PGPASSWORD", raising=False)
 
     env = db.pg_env()
 
     assert env["PGPORT"] == "5433"
-    assert env["PGPASSWORD"] == "secret"
+    assert "PGPASSWORD" not in env
 
 
 def test_pg_env_omits_port_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:

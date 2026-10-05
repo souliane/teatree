@@ -68,9 +68,7 @@ class DjangoDbImporter:
         self.cfg = cfg
         self.stdout: TextIO = stdout if stdout is not None else sys.stdout
         self.stderr: TextIO = stderr if stderr is not None else sys.stderr
-        self.dslr_cmd: list[str] = (
-            _dslr.find_dslr_cmd(cfg.snapshot_tool, cfg.main_repo_path) if cfg.snapshot_tool else []
-        )
+        self.dslr_cmd: list[str] = _dslr.find_dslr_cmd(cfg.snapshot_tool) if cfg.snapshot_tool else []
         self.dslr_env: dict[str, str] = _dslr.dslr_env(cfg.ref_db_name) if self.dslr_cmd else {}
         pg_host, pg_user, pg_env = _pg_args()
         self.pg_host = pg_host

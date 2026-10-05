@@ -4,6 +4,7 @@ Two things are pinned here. The phase-alias regression (integration audit #20): 
 stored with the accepted short verb ``"plan"`` recorded no ``PlanArtifact``, so the plan
 gate refused ``WORK_STARTED -> PLAN_RECORDED`` and the ticket wedged at ``WORK_STARTED``.
 
+
 And the functional contract this file exists for: a REAL planning envelope, carrying the
 five-section manifest a planner emits, driven through ``record_result_envelope`` produces
 BOTH the plan row and the ticket's rubric — the acceptance criteria have one home, and the

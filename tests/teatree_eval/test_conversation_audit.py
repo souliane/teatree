@@ -12,14 +12,7 @@ from django.test import TestCase
 
 from teatree.core.models import EvalVerdict, SessionAuditRecord
 from teatree.eval.confusion_matrix import build_confusion_matrix
-from teatree.eval.conversation_audit import (
-    AuditInput,
-    BehaviorPattern,
-    audit_corpus,
-    audit_session,
-    classify_behavior_pattern,
-    run_conversation_audit,
-)
+from teatree.eval.conversation_audit import AuditInput, audit_corpus, audit_session, run_conversation_audit
 from teatree.eval.corpus_loader import discover_corpus
 from teatree.eval.corpus_models import CorpusLabel
 from teatree.eval.report import JudgeOutcome
@@ -179,31 +172,6 @@ class TestAuditUnlabelledSession(TestCase):
         ids = [o["invariant_id"] for o in record.invariant_results if not o["ok"]]
         assert "no_force_push_to_shared_default" in ids
         assert record.predicted_outcome in {"one_shot", "sustained"}
-
-
-class TestSustainedVsOneShot(TestCase):
-    def test_single_lapse_is_one_shot(self) -> None:
-        events = parse_session_jsonl(_assistant(_bash("git push --force origin main")) + "\n")
-        record = audit_session(AuditInput(session_id="s1", events=events, label=None))
-        assert classify_behavior_pattern(record) is BehaviorPattern.ONE_SHOT
-
-    def test_more_than_one_distinct_violation_is_sustained(self) -> None:
-        events = parse_session_jsonl(
-            _assistant(_bash("git push --force origin main"))
-            + "\n"
-            + _assistant(_bash("git commit --no-verify -m wip"))
-            + "\n"
-            + _gate_block("TEATREE GATE — banned term in publish body")
-            + "\n"
-        )
-        record = audit_session(AuditInput(session_id="s2", events=events, label=None))
-        assert classify_behavior_pattern(record) is BehaviorPattern.SUSTAINED
-        assert record.predicted_outcome == "sustained"
-
-    def test_clean_session_has_no_pattern(self) -> None:
-        events = parse_session_jsonl(_assistant(_text("clean"), _bash("ls")) + "\n")
-        record = audit_session(AuditInput(session_id="s3", events=events, label=None))
-        assert classify_behavior_pattern(record) is BehaviorPattern.CLEAN
 
 
 class TestJudgeOracle(TestCase):

@@ -37,7 +37,7 @@ def untrusted_merge_provenance(pr: PrSummary) -> bool:
     issue intake also applies (#3577) — so this rung, the merge keystone and the
     intake gate cannot drift.
     """
-    subject = AuthorSubject(slug=pr.slug, author=pr.author, same_repo=pr.same_repo)
+    subject = AuthorSubject(slug=pr.slug, author=pr.author, pr_url=pr.url, same_repo=pr.same_repo)
     return decide_author_trust(subject, gate=AutonomyGate.MERGE) is TrustVerdict.HUMAN_REVIEW
 
 

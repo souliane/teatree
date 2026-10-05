@@ -11,6 +11,193 @@ so a fresh box boots deterministically and offline; see
 This is **teatree-only** — no customer or product overlays. The only registered
 overlay is the built-in `t3-teatree`.
 
+## Rolling to an image generation
+
+Alongside the source-mounted stack below, a stack can run an **immutable image
+generation**: `teatree-factory:<sha>`, whose source, locked venv, prek and
+entrypoint are baked read-only and whose `org.opencontainers.image.revision` label
+and `TEATREE_GENERATION` both name `<sha>`. Nothing a checkout on the host does — a
+commit, a pull, a dirty file — reaches a container of that stack.
+
+```bash
+deploy/roll.sh                                   # roll to origin's default branch tip
+deploy/roll.sh <rev> --drain-timeout 600         # a given revision, roller options after it
+```
+
+The generation is built in two layers. `generation-base` holds the interpreter, the
+locked dependencies and prek, and is built only from the dependency inputs (the
+Dockerfile, `locked-version.sh`, `uv.lock`, each workspace member's `pyproject.toml`);
+it is tagged `<repository>:base-<hash of those inputs>` and reused as-is by every
+commit whose inputs match. The per-commit `generation` layer on top adds only the
+source and installs the workspace's own packages, so a code-only commit reruns no apt
+and no dependency install. No layer carries a secret: tokens reach containers at
+runtime through `teatree.env` and the password store, never as build arguments.
+
+To build once and run elsewhere, point both hosts at one registry repository:
+
+```bash
+export TEATREE_IMAGE_REPOSITORY=registry.example.com/team/teatree-factory
+TEATREE_PUSH_IMAGES=1 deploy/build-generation.sh "$(git rev-parse HEAD)"   # build host: builds, pushes base + generation
+deploy/roll.sh <sha>                                                         # run host: pulls both, builds nothing
+```
+
+`deploy/build-generation.sh` pulls a generation (or its base) that the registry
+already has before building anything; with the default local repository
+(`teatree-factory`, no registry host) it never pulls. After a build it untags the
+generation images and bases older than the newest three by build time, skipping — by
+image id — every image a container (running or stopped) was created from and the one the
+promoted tag names, so the serving generation and a rollback target keep their tags.
+Nothing is ever forced.
+
+`deploy/roll.sh` fetches, builds the generation with `deploy/build-generation.sh
+<sha>` (from `git archive <sha>`, idempotent on tag + label), holds the deploy lock
+— flock, or on a host without it the mkdir lock in `deploy/deploy-lock.sh`, which
+reclaims a lock left by a dead pid or held longer than any roll can run, one reclaimer
+at a time — and its `<pid> <heartbeat> <deadline>` record, whose deadline covers the
+`--drain-timeout` the roller receives. It then runs `t3 deploy roll --to <sha>` from the
+**new** image as the one-shot `teatree-roller` service (profile `roll`: docker socket,
+control DB, the deploy checkout and the host tmp read-only), passing its own pid.
+`t3 deploy roll` refuses to run unless the record beating in the lock carries that pid,
+so a roll runs only inside the `roll.sh` that holds the lock, never during another
+convergence.
+
+Before each roll, take an online SQLite `.backup` of the control DB as described in
+[Exporting the DB by hand](#exporting-the-db-by-hand), and record the serving image
+SHA. For a database rollback, stop every container in the Compose project, including
+the watchdog, and confirm none is running. Restore the pre-roll snapshot to the
+control DB volume, then redeploy the previous image:
+
+```bash
+(
+set -e
+project=${TEATREE_COMPOSE_PROJECT:-teatree}
+previous_sha=REPLACE_WITH_SERVING_COMMIT_SHA
+snapshot="$HOME/.local/share/teatree/backups/REPLACE_WITH_PRE_ROLL_SNAPSHOT.sqlite3"
+[ -f "$snapshot" ]
+docker ps -q --filter "label=com.docker.compose.project=$project" |
+  while IFS= read -r container; do docker stop "$container"; done
+docker ps --filter "label=com.docker.compose.project=$project"
+[ -z "$(docker ps -q --filter "label=com.docker.compose.project=$project")" ]
+docker volume inspect "${project}_teatree_control_db"
+docker run --rm --pull never --network none \
+  --mount "type=volume,src=${project}_teatree_control_db,dst=/db" \
+  --mount "type=bind,src=$snapshot,dst=/snapshot,readonly" \
+  --entrypoint sh "${TEATREE_IMAGE_REPOSITORY:-teatree-factory}:$previous_sha" \
+  -c 'cp /snapshot /db/db.sqlite3 && rm -f /db/db.sqlite3-wal /db/db.sqlite3-shm'
+deploy/roll.sh "$previous_sha"
+)
+```
+
+The second `docker ps` must list no containers before the restore. Keep the
+project stopped until the snapshot is in place. Never migrate core backwards:
+the reverse operations in migrations 0124 and 0125 do not restore their data.
+
+The roller takes the serving generation N to be what the running worker container
+carries — its revision label — not what the registry last recorded: a `deploy.sh`
+run replaces the containers without touching the registry, so every other active
+registry row is failed as displaced. It drains N (its own claims only; the global
+drain when N is the legacy source-mounted stack or a generation the registry does
+not list as serving), stops N's worker and listener, runs N+1's init (migrate,
+setup, seed — no fetch, no installs), brings N+1 up, verifies every runtime
+container's label, the worker's activation and the admin answering inside its
+container, then promotes N+1 (retags `teatree-headless:latest`) and retires N.
+
+Every required service must also keep ONE container start (unchanged `RestartCount`
+and `StartedAt`) for `--stable-seconds` (default 30) before the roll counts it as
+up, so a crash-looping container that happens to read "running" at one instant
+fails the roll. A service a stack legitimately runs without — the Slack listener on
+a stack with no Slack overlay — is declared with `--optional-service <name>` (e.g.
+`deploy/roll.sh origin/main --optional-service teatree-slack-listener`); the worker
+and the admin can never be optional.
+
+A failure, a SIGTERM or a SIGHUP once N's drain has started rolls back: N+1 is
+marked failed, N is reinstated (a draining row resumes, a failed or retired one starts
+again), comes back up from its own image and must verify exactly as N+1 had to — a
+restore that does not verify exits 1 rather than claiming N serves. A failure before
+N started draining leaves N — legacy or generation — serving untouched, marks N+1
+failed and reports the original error. Promotion comes after verification and never undoes it: if the tag
+cannot be moved (after one retry), N+1 keeps serving, N stays draining, the roll
+exits 1, and re-running the same roll brings up anything missing, verifies, promotes
+and retires N. A
+failure after N+1's init applied a migration is **not** rolled back: N's code would
+refuse every claim on the newer schema, so the roll marks N+1 failed, leaves the
+stack as it is, exits 1 naming the migrations, and the fix is a roll forward — or, once
+the cause is fixed outside the image (an admin that answered late), re-running the same
+roll: a generation that runs but is failed is registered again and restarted, so its
+worker activates it. A
+generation a killed roll left draining is still the one the next roll starts from,
+and it re-opens by itself the next time its worker claims once its drain deadline
+passed with no successor serving; a successor still `starting` ten minutes after
+that deadline (or its own start, whichever is later) was abandoned by a lost roller
+and is marked failed, and a worker booting a failed generation never revives it.
+A second SIGTERM while a restore runs
+is ignored, so the restore finishes; an interrupt that lands after N+1 verified says
+N+1 serves unpromoted and exits 1 (re-run the roll to finish). Exit codes: 0 rolled or
+already serving, 3 rolled back or stopped before the drain (N serves), 1 refused, not
+undone, or interrupted after verification, 75 another deploy holds the lock, 64 a
+deploy lock the watchdog could not see, a `--drain-timeout` that is not whole seconds
+(a leading zero is read in base 10), or a deploy checkout at or around the tree the
+image bakes (the checkout is bind-mounted at its own path and would shadow it).
+
+**Rolling back to a previous generation.** `deploy/roll.sh <previous sha>` rolls to
+it like any other generation: a retired (or still draining) registry row starts
+again and verifies as usual. A generation whose code is behind the applied schema —
+a migration was applied after it was built — is refused before anything is drained
+or stopped, because every one of its processes would refuse every claim; roll
+forward to a generation that carries the migration instead.
+
+**When a roll exits 1 with "refusing to roll back".** N+1 is marked failed and
+whatever runs is left as it is. That may be no claiming worker at all: N's code
+refuses the newer schema, and N+1 did not verify. The factory claims nothing until
+a fixed generation is rolled forward (`deploy/roll.sh <fixed rev>`). Never restart
+N by hand to "get something serving": it will refuse every claim against the newer
+schema.
+
+A generation's init migrates before it runs `t3 setup`, which reads the config
+table. The baked tree carries no `.git`: the build stamps
+`/home/teatree/teatree/.teatree-generation` with the commit sha, and `t3 setup` and
+every other "where is the teatree project" lookup (skills root, merge tooling)
+resolve to that baked tree instead of requiring a git checkout. An overlay's
+`t3 <overlay> …` commands run `manage.py` under the image's own interpreter there
+(the tree is read-only, so there is no project `.venv` to create). The marker
+counts only when it names the running `TEATREE_GENERATION`.
+
+The first roll off a legacy stack finds no generation registry. It drains and stops
+the legacy stack like any roll, lets N+1's init create the registry, and registers
+N+1 only then, so nothing migrates under a worker that is still claiming.
+
+For the first roll on an existing source-mounted installation, export
+`TEATREE_HOST_OS=$(uname -s)` in the deploy shell before starting it. The checked-out
+`deploy.sh` can still be the old version when it reads the new Compose file, which
+needs this value. Once the checkout advances, run the new `deploy.sh` under supervision
+before relying on an unattended deploy.
+
+`deploy/docker-compose.yml` stays the source-mounted stack `deploy.sh` and
+`deploy/t3` run. A generation's topology is that file plus
+`deploy/docker-compose.generation.yml`, both read out of the generation's own image
+(host identity merges on top): every runtime role runs the image's entrypoint with
+`pull_policy: never`, no build, no source or `teatree_uv` mount and the image's own
+`TEATREE_CLONE_DIR`. `deploy/generation-topology.sh` is the one reader of that
+topology (plus host identity when the host home differs) for `roll.sh`, the
+generation's watchdog, and `deploy/t3`'s one-off containers. A one-off runs the image
+its service's container was created from, or the promoted tag when no container
+exists, with that generation's topology whenever the image carries a revision label,
+caching the three files per revision. Every read runs `docker run --pull never`; a
+failed read leaves nothing half-written in the cache and stops with a message naming the
+file and the image.
+Rolling back to the legacy stack uses this checkout's compose, with
+`TEATREE_CLONE_DIR` and `TEATREE_SOURCE_MOUNT` derived from the layout exactly as
+`deploy.sh` derives them.
+
+A second stack can be rolled on the same daemon without touching the live one:
+
+| Variable | Default (the live stack) | What it scopes |
+|---|---|---|
+| `TEATREE_COMPOSE_PROJECT` | `teatree` | containers, named volumes (so the control DB), watchdog, and host `t3` routing |
+| `TEATREE_PROMOTED_TAG` | `teatree-headless:latest` | the tag a verified generation is promoted to |
+| `TEATREE_ADMIN_PORT` | `8000` | the admin's loopback bind and the roller's probe |
+| `TEATREE_DEPLOY_LOCK` | `/tmp/teatree-deploy.lock` | the deploy lock; must sit under `TEATREE_HOST_TMP` |
+
 ## How the one-click deploy works
 
 `Actions → Deploy teatree → Run workflow` (`.github/workflows/deploy.yml`):
@@ -20,8 +207,8 @@ overlay is the built-in `t3-teatree`.
    directly-reachable box works, not just a Hetzner Cloud one.
 2. Writes the SSH key + known_hosts from secrets, connects with strict host-key
    checking.
-3. Writes the box secrets file `deploy/teatree.env` over SSH (piped over stdin,
-   mode 600 — never on a command line or in logs).
+3. Merges managed keys into the box secrets file `deploy/teatree.env` over SSH,
+   preserving other keys (piped over stdin, mode 600 — never on a command line or in logs).
 4. Runs `deploy/deploy.sh` on the box, which brings the checkout current and
    converges the stack one service at a time — see
    [Staged convergence](#staged-convergence-the-control-plane-never-goes-fully-down-4214).
@@ -59,7 +246,7 @@ source == target (path identity).
 | GPG home | `/home/teatree/.gnupg` | `$TEATREE_HOST_HOME/.gnupg` | **host bind mount** | the private key that decrypts the pass store |
 | GPG runtime home | `/home/teatree/.gnupg-run` | — | `tmpfs` | the container-local GPG home, when the bind mount above cannot host a socket (see below) |
 | Claude home | `/home/teatree/.claude` | — | named volume `teatree_claude_home` | factory-only settings and plugins <!-- privacy-scan:allow — the box's public, documented deploy home --> |
-| Claude session plane | `/home/teatree/.claude/projects` | `$TEATREE_HOST_HOME/.claude/projects` | **host bind mount** | session transcripts and the per-project memory corpus the dream pass reads and maintains <!-- privacy-scan:allow — the box's public, documented deploy home --> |
+| Claude session plane | `/home/teatree/.claude/projects` | `teatree_claude_projects` by default; `$TEATREE_TRANSCRIPT_SOURCE` when set to an absolute path | **factory-owned named volume** by default; optional host bind | session transcripts; dream maintains memory only in the factory-owned volume |
 | Codex home | `/home/teatree/.codex` | — | named volume `teatree_codex_home` | factory-only Codex settings, TeaTree-installed skills/plugins, sessions, and guarded auth cache |
 | universal skills | `/home/teatree/.agents` | — | named volume `teatree_agents_home` | skills.sh front doors installed by `t3 setup` |
 | interpreter plane | `$TEATREE_HOST_HOME/.local/share/uv/python` | `$TEATREE_HOST_HOME/.local/share/uv/python` | **host bind mount** (identity) | the uv-managed CPython interpreters every worktree venv is built against — the ONE row whose container path is the host's, see below |
@@ -70,6 +257,17 @@ source == target (path identity).
 same dirs by construction. Both also **create** every host source first: dockerd
 auto-creates a missing bind source root-owned, which locks the non-root container
 out of it.
+
+The transcript source is a separate installation value. Leave `TEATREE_TRANSCRIPT_SOURCE`
+unset for the factory-owned volume. To ingest an existing transcript corpus, set it
+to an absolute host path in `deploy/teatree.env` (or in `deploy/.env` for direct
+Compose use; see `deploy/.env.example`). `deploy.sh` exports the value from
+`teatree.env` before its Compose calls, so the mount is rendered as a bind. In that bind
+topology dream reads transcripts but skips memory decay and merge, so it cannot
+rewrite the operator's Claude memories. Create that directory on the host before
+starting Compose; `deploy.sh` creates it when `teatree.env` provides the value.
+For direct `docker compose` or `deploy/t3` calls, export the value or put it in
+`deploy/.env` as well; Compose does not read `teatree.env` for interpolation.
 
 The **credential plane** (`~/.password-store` + `~/.gnupg`) is a dedicated pair of
 bind mounts, deliberately decoupled from the data dir: the container's
@@ -185,7 +383,9 @@ one-shot, replaying the whole ~minute init.
 
 If either drain of a running worker fails, `deploy.sh` first proves the admin is
 answering before it stops that worker; otherwise it aborts with the worker still
-serving. A non-zero `compose stop` always aborts. After a successful stop, the
+serving. The admin is probed from inside `teatree-admin` (`compose exec … curl`),
+because under Docker Desktop `network_mode: host` is the VM's network and the host's
+own loopback never reaches the dashboard. A non-zero `compose stop` always aborts. After a successful stop, the
 deploy reads the stopped container through `compose ps --all --quiet` and proceeds
 only when its state is `exited`/`dead` or the container is absent. That containment
 is an explicit alternate path through stages 5–6: after init, the deploy recreates
@@ -466,6 +666,11 @@ sqlite3 ~/.local/share/teatree/backups/<artifact>.sqlite3 \
 The unattended `db_backup` loop drives the same online-backup engine
 (`teatree.paths._sqlite_snapshot`), so its artifacts carry the same guarantee.
 
+### Importing settings
+
+An imported settings file that uses a renamed key reports the current key in
+its error. Update the file to that name before importing it again.
+
 ### Running a host working tree
 
 The container executes whatever is mounted at `/home/teatree/teatree`. By default
@@ -495,6 +700,8 @@ shadows the image-baked install):
 ```bash
 docker compose -f deploy/docker-compose.yml up -d --force-recreate teatree-init
 ```
+
+Only `init` compares the tool venv with the lockfile's boot constraints (and refuses to start on skew); the worker, listener and admin trust what init verified, so a venv changed after init is caught at the next init, not by the running roles.
 
 `docker compose build` is only required when the *image* itself must change (a new
 system package, a new baked stage) — not for source or dependency edits.
@@ -535,6 +742,9 @@ default in `deploy/Dockerfile`, and the `${TEATREE_UID:-1001}` default in
 `ubuntu` user, so `teatree` takes the next free id, 1001). `deploy.sh` also
 pre-creates every bind-mount source owned by the deploy user before the stack
 starts.
+
+`deploy/build-generation.sh` passes the same host UID (`id -u`, or an exported
+`TEATREE_UID`) when it builds an image generation.
 
 A bare `docker compose build` (no `deploy.sh`) uses that 1001 default. To build for
 a different deploy user by hand, export or pass the UID explicitly:
@@ -725,11 +935,11 @@ verify the fingerprint out of band).
 No plaintext GitHub token or admin password ever lands on the box disk. Both live
 in the box's gpg-encrypted [`pass`](https://www.passwordstore.org/) store — the same
 credential plane (`~/.password-store` + `~/.gnupg`, bind-mounted into every app
-service) that holds the Anthropic OAuth tokens. `deploy/entrypoint.sh` resolves the
+service) that holds the Anthropic OAuth tokens. `deploy/entrypoint.sh` sources the
 GitHub token from the first of: an exported `TEATREE_GH_TOKEN`, the entry
 `TEATREE_GH_TOKEN_PASS_PATH` names, or the entry the deploy repo's owning overlay routes
 through `github_token_pass_key` — read read-only from the control DB, so it works before
-`init` migrates and survives the deploy workflow rewriting `teatree.env`. The admin
+`init` migrates and survives the deploy workflow updating `teatree.env`. The admin
 password keeps its deployment-level default. Both reads happen before the token
 preflight and `t3 setup`.
 
@@ -746,9 +956,8 @@ path, resolved by `deploy/deploy.sh`). They are the secrets that
 must survive into a `docker exec`, and an entrypoint `export` cannot: an exec
 starts from the container's create-time environment, so a process launched that way
 saw an unset token while the role process had it. The baked GitLab credential helper
-then interpolated the empty value and authenticated with an EMPTY password, which
-GitLab reports as `HTTP Basic: Access denied` — a message easily read as a missing
-branch rather than a missing credential. An explicitly configured
+then answers nothing and git stops at `could not read Username`, which names the missing
+credential. An explicitly configured
 `TEATREE_GITLAB_TOKEN_PASS_PATH` remains the bootstrap fallback for a container
 created with no host value (the watchdog cannot reach the host's pass store).
 
@@ -794,7 +1003,7 @@ pass init teatree@localhost
 printf '%s' "<github-pat>"      | pass insert -m -f github/souliane/pat
 printf '%s' "<admin-password>"  | pass insert -m -f teatree/admin-password
 # A fresh box has no control DB yet, so name the GitHub entry for the FIRST boot
-# (the deploy workflow rewrites teatree.env, so this line does not outlive it):
+# (the deploy workflow preserves this key until the operator removes it):
 printf '%s\n' 'TEATREE_GH_TOKEN_PASS_PATH=github/souliane/pat' >> deploy/teatree.env
 # ...and route it durably once init has run, which every later boot reads:
 #   deploy/t3 teatree config_setting set github_token_pass_key github/souliane/pat --overlay t3-teatree
@@ -898,13 +1107,12 @@ looks like three unrelated failures at once — see `deploy/gnupg-lock-doctor.sh
   ```
 
   There is **no admin login prompt**: the auto-login middleware authenticates the
-  first superuser on a `/admin/` request, but only when BOTH the
-  `admin_autologin_enabled` setting is on (the init role seeds it `true`) AND the
-  request originates from loopback. The box binds the admin to its real loopback,
-  so the SSH-tunnelled request arrives as `127.0.0.1` and clears the loopback
-  check — the **SSH tunnel to the loopback, not an admin password, is the security
-  boundary**. A non-loopback request is never auto-logged-in, even with the flag
-  on, so exposing the port off-loopback cannot open the admin. `T3_ADMIN_USER` /
+  first superuser on a `/admin/` request from loopback. The box binds the admin
+  to its real loopback, so the SSH-tunnelled request arrives as `127.0.0.1` and
+  clears the loopback check. The **SSH tunnel to the loopback, not an admin
+  password, is the security boundary**. A non-loopback request is never
+  auto-logged-in, so exposing the port off-loopback cannot open the admin.
+  `T3_ADMIN_USER` /
   `T3_ADMIN_PASSWORD` still seed that superuser row deterministically (they matter
   as a password only when auto-login does not apply). Because the boundary is
   *loopback identity*, any same-host process — or a same-host reverse proxy — that
@@ -988,10 +1196,7 @@ cwd, so `t3` means the same teatree from every directory and from every caller �
 an interactive shell, a script, a git hook, cron, a sub-agent. A `PATH` executable
 already covers all of them, so **no shell alias is installed**: an alias reached
 interactive shells only and could name a different checkout than the launcher,
-which is the split-brain it appeared to solve. `t3 setup` REMOVES the managed
-alias block an earlier version wrote, touching only the fenced region — and
-`deploy/t3` does the same on the host, because that is where the operator's rc
-files are and the container running `t3 setup` cannot see them.
+which would make command resolution depend on the caller's shell.
 
 The write is atomic and verified: the launcher is staged beside its target and
 renamed over it, so a reader resolving `t3` mid-install sees the old launcher or
@@ -1025,8 +1230,7 @@ silently resolves from shipped defaults. Docker being unavailable therefore make
 to.
 
 `t3 doctor` gates on both regressions. The host `t3` not being a managed launcher
-for the current checkout is a hard FAIL — that covers the console script a
-`uv tool install`/`upgrade` restores AND a launcher left naming a checkout that
+for the current checkout is a hard FAIL — that covers a launcher left naming a checkout that
 moved or was deleted. An unreadable control-DB directory is the other; a native
 checkout pointed at its own real database passes, since the invariant is that
 config resolves from a database rather than from shipped defaults. Both name the
@@ -1035,10 +1239,9 @@ either side of the boundary, reading the host launcher through the bin mount whe
 it runs inside a container. Override the target service with
 `TEATREE_DOCKER_CLI_SERVICE` if needed.
 `t3 doctor` verifies the wiring once you have opted in (compose stack present, the
-`deploy/t3` entry executable, `docker` on PATH, and the alias not pointing at a
-stale clone path) and WARNs with the fix — re-run `t3 setup` — when a piece is
-missing. The alias install and the doctor check both no-op **inside** a container
-(there the container *is* the CLI). Override the preferred service with
+`deploy/t3` entry executable, and `docker` on PATH) and WARNs with the fix —
+re-run `t3 setup` — when a piece is missing. The launcher check runs inside
+the container through the host bin mount. Override the preferred service with
 `TEATREE_DOCKER_CLI_SERVICE`, and the ordered fallbacks with
 `TEATREE_DOCKER_CLI_FALLBACK_SERVICES`.
 
@@ -1203,13 +1406,15 @@ A convergence is detected three ways, any one sufficient:
   instant see it as busy, and `deploy.sh` exits 0 on a busy lock (a silently
   skipped deploy). The host `/tmp` is mounted read-only at `/host-tmp` so the lock
   is visible; without that mount the probe degrades to the signals below.
-- **The deploy's own in-progress record.** `deploy.sh` writes `<pid> <epoch>` into
-  that same lock file once it holds the flock and truncates it on exit. `/proc/locks`
-  is filtered by pid namespace, so the flock itself is invisible from the watchdog
-  *container*; this record is what crosses the boundary, and a crash loop cannot
-  write it. It counts as a live holder only while it is younger than
-  `TEATREE_WATCHDOG_DEPLOY_MARKER_MAX_AGE` (default 1800s), so a hard-killed deploy's
-  leftover record — a lock file with no live holder — reads as **not held**.
+- **The deploy's own in-progress record.** `deploy.sh` writes `<pid> <heartbeat> <deadline>`
+  into that same lock file once it holds the flock, refreshes the heartbeat every 60s
+  from a background loop that stops with it, and truncates the record on exit.
+  `/proc/locks` is filtered by pid namespace, so the flock itself is invisible from the
+  watchdog *container*; this record is what crosses the boundary, and a crash loop cannot
+  write it. It counts as a live holder while its heartbeat is under 180s old (three
+  missed beats) and its deadline — the lock's own reclaim age — has not passed, so a
+  long legal drain stays live and a hard-killed deploy's leftover reads as **not held**
+  within three minutes.
 - **Very-recent container creation**, read from the docker socket, **provided the
   container is not crash-looping**. The row is
   `inspect --format '{{.Created}}\t{{.RestartCount}}\t{{.State.Status}}'`: a container

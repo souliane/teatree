@@ -246,14 +246,11 @@ def _superseded_parked_questions(questions: Sequence[DeferredQuestion]) -> froze
     * it was created after the question, so an in-flight sibling that happened to
         finish later cannot stand in for a re-run.
     """
-    parked = {q.pk: q for q in questions if q.parked_task_id is not None}  # ty: ignore[unresolved-attribute]
+    parked = {q.pk: q for q in questions if q.parked_task_id is not None}
     if not parked:
         return frozenset()
 
-    tasks = {
-        task.pk: task
-        for task in Task.objects.filter(pk__in={q.parked_task_id for q in parked.values()})  # ty: ignore[unresolved-attribute]
-    }
+    tasks = {task.pk: task for task in Task.objects.filter(pk__in={q.parked_task_id for q in parked.values()})}
     still_parked = set(
         DeferredQuestion.objects.filter(
             answered_at__isnull=True, dismissed_at__isnull=True, parked_task__isnull=False
@@ -271,7 +268,7 @@ def _superseded_parked_questions(questions: Sequence[DeferredQuestion]) -> froze
     return frozenset(
         pk
         for pk, question in parked.items()
-        if _lane_moved_on(question, tasks.get(question.parked_task_id), latest_run, still_parked)  # ty: ignore[unresolved-attribute]
+        if _lane_moved_on(question, tasks.get(question.parked_task_id), latest_run, still_parked)
     )
 
 

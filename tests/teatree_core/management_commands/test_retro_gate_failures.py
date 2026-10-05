@@ -14,16 +14,19 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.backends import loader as loader_mod
 from teatree.core import overlay_loader as overlay_loader_mod
 from teatree.core.review import review_findings as rf_mod
+from tests._send_gate import allow_forge_repos
 from tests.teatree_core.conftest import CommandOverlay
 
 _PR_URL = "https://github.com/souliane/teatree/pull/2024"
 _REPO = "souliane/teatree"
+pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 _RUNNER = "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event Stop"
@@ -93,6 +96,10 @@ def _session_file(tmp: Path, *lines: str, session_id: str = "session") -> Path:
 
 
 class RetroGateFailuresTest(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos(_REPO)
+
     def _run(self, *args: str, store_dir: Path, **kwargs: object) -> dict[str, object]:
         with patch.object(rf_mod, "get_data_dir", return_value=store_dir):
             output = call_command("retro", "gate-failures", *args, stdout=StringIO(), **kwargs)

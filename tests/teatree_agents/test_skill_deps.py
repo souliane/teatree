@@ -73,20 +73,9 @@ def test_agent_launch_status_without_lifecycle_asks_user(tmp_path: Path) -> None
     assert result.ask_user is True
 
 
-def test_prompt_hook_with_supplementary_skills(tmp_path: Path) -> None:
+def test_session_start_no_context(tmp_path: Path) -> None:
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
-        cwd=tmp_path,
-        overlay_skill_metadata={},
-        loaded_skills=set(),
-        supplementary_skills=["custom-skill"],
-    )
-    assert "custom-skill" in result.skills
-
-
-def test_prompt_hook_no_context(tmp_path: Path) -> None:
-    policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_session_start(
         cwd=tmp_path,
         overlay_skill_metadata={},
         loaded_skills=set(),
@@ -95,11 +84,11 @@ def test_prompt_hook_no_context(tmp_path: Path) -> None:
     assert result.skills == []
 
 
-def test_prompt_hook_does_not_surface_overlay_skill(tmp_path: Path) -> None:
-    # The prompt hook surfaces framework/cwd skills only; the overlay's own
-    # skill loads through the dispatch paths, never the prompt hook.
+def test_session_start_does_not_surface_overlay_skill(tmp_path: Path) -> None:
+    # The SessionStart suggester surfaces framework/cwd skills only; the overlay's
+    # own skill loads through the dispatch paths.
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_session_start(
         cwd=tmp_path,
         overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": ["*"]},
         loaded_skills=set(),

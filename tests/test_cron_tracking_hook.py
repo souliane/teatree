@@ -7,6 +7,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_track_cron_jobs
+from hooks.scripts.loop_prompt_shape import loop_name_from_prompt
 
 
 @pytest.fixture(autouse=True)
@@ -119,6 +120,17 @@ class TestTrackCronJobs:
 
 
 class TestDeriveLoopName:
+    @pytest.mark.parametrize(
+        ("prompt", "expected"),
+        [
+            ("Run `t3 loops tick --loop dispatch` in Bash, then briefly report the tick summary.", "dispatch"),
+            ("Run `t3 loops tick --loop housekeeping` in Bash, then briefly report the tick summary.", "housekeeping"),
+            ("Run `t3 loops tick` in Bash, then briefly report the tick summary.", None),
+        ],
+    )
+    def test_loop_name_from_prompt(self, prompt: str, expected: str | None) -> None:
+        assert loop_name_from_prompt(prompt) == expected
+
     @pytest.mark.parametrize(
         ("prompt", "expected"),
         [

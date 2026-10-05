@@ -15,16 +15,30 @@ from unittest.mock import patch
 
 import pytest
 
+from teatree.eval.models import EvalRun, EvalToolCall
 from teatree.eval.negative_control import (
     NEGATIVE_CONTROL_SCENARIO,
     NegativeControlOutcome,
-    build_compliant_run,
     build_violating_run,
     main,
     render_outcome,
     run_negative_control,
 )
 from teatree.eval.report import ScenarioResult, render_json, render_text
+
+
+def build_compliant_run() -> EvalRun:
+    return EvalRun(
+        spec_name=NEGATIVE_CONTROL_SCENARIO,
+        tool_calls=(
+            EvalToolCall(name="Bash", input={"command": "git worktree add /workspace/ac/fix/example HEAD"}, turn=1),
+        ),
+        text_blocks=(),
+        terminal_reason="success",
+        is_error=False,
+        raw_stdout="",
+        raw_stderr="",
+    )
 
 
 class TestNegativeControl:

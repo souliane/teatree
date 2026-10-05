@@ -31,6 +31,9 @@ _ALLOWED: dict[str, str] = {
     "core/worktree/branch_classification.py": "the canonical three-layer detector itself",
     "utils/git_branch.py": "the thin `branch_merged` wrapper the canonical detector's layer (c) calls",
     "core/management/commands/repro.py": "proves a RED sha is an ancestor of a GREEN sha — provenance, not landed-ness",
+    "agents/repro_phase_recorder.py": (
+        "proves the recorded RED sha precedes the GREEN run — repro provenance, not branch landed-ness"
+    ),
     "core/merge/conflict_only.py": "proves a merge's second parent is an ancestor of a FRESH base — review currency",
     "core/management/commands/_workspace/cleanup.py": (
         "the branch-prune pass's plain-merge class; the squash class in the same loop goes through `is_squash_merged`"

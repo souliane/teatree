@@ -14,9 +14,7 @@ process registry, no platform autostart.
 """
 
 import asyncio
-import contextlib
 import logging
-import os
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -46,8 +44,6 @@ from teatree.agents.harness_registry import (
 from teatree.agents.model_tiering import resolve_spawn_effort
 from teatree.agents.phase_handoff import delivered_phase_handoff
 from teatree.agents.pydantic_ai_resume import release_finished_thread, retain_run_thread
-from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
-from teatree.agents.runner_budget import TicketBudget
 from teatree.agents.runner_failure_taxonomy import limit_match as _limit_match  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_heartbeat import HeartbeatRuntime, drive_with_heartbeat, renew_lease_closing_connection
 from teatree.agents.runner_interruption import CeilingSalvage, _record_failure, _record_occupancy_deferred
@@ -69,15 +65,12 @@ from teatree.agents.runner_route_recording import fallback_reason_for_outcome as
 from teatree.agents.runner_route_recording import learn_route_failure as _learn_route_failure
 from teatree.agents.runner_route_recording import record_route_failure_attempt as _record_route_failure_attempt
 from teatree.agents.runner_route_recording import selected_fallback_reason as _selected_fallback_reason
+from teatree.agents.runner_skill_staging import stage_skills_or_refusal
 from teatree.agents.runner_stream import HarnessOutcome, _collect  # noqa: F401 — compatibility re-export
 from teatree.agents.runner_usage import DispatchProvenance, resolve_provenance_effort
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage, _sample_usage_closing_connection
 from teatree.agents.skill_assurance import SkillDispatchError
-from teatree.agents.skill_bundle import (
-    ArchitecturalReviewSkillMissingError,
-    resolve_skill_bundle,
-    stage_skills_for_dispatch,
-)
+from teatree.agents.skill_bundle import resolve_skill_bundle, stage_skills_for_dispatch
 from teatree.agents.skill_routing import (
     AmbiguousSkillRouteError,
     ConflictingHarnessRoutingError,
@@ -164,6 +157,24 @@ def _retry_route_exception(
     route_retry: _RouteRetry,
     route_fallback: _RouteFallback,
 ) -> TaskAttempt | None:
+    if (
+        isinstance(exc, HarnessFallbackError)
+        and exc.kind is HarnessFallbackKind.QUOTA_EXHAUSTED
+        and route_retry.phase in {"codex_reviewing", "codex_adversarial_reviewing"}
+        and preflight.dispatch.name == "codex_app_server"
+    ):
+        from teatree.core.review.backend_cooldown import record_quota_exhaustion  # noqa: PLC0415 — ORM at call time
+
+        try:
+            record_quota_exhaustion(
+                backend="codex",
+                overlay=task.ticket.overlay or "",
+                returncode=1,
+                stderr=str(exc),
+                failure_kind=exc.kind.value,
+            )
+        except Exception:
+            logger.warning("Could not persist Codex review quota cooldown", exc_info=True)
     fallback = _RouteFallback(
         _selected_fallback_reason(route_fallback, preflight.dispatch),
         route_fallback.source_attempt_id,
@@ -337,13 +348,7 @@ def _run_agent(
     # ``asyncio.run`` silently returns shipped defaults on every dispatch instead of failing.
     watchdog = LoopWatchdog.from_settings()
     try:
-        # The quarantined reader (#116) also spawns inside ``reader_env_hermetic`` so its
-        # ``os.environ`` is reduced to the allowlist: the SDK merges ``os.environ`` under
-        # ``options.env`` and cannot delete an omitted key, so scrubbing here is the only
-        # point the child is guaranteed credential-free (belt; ``options.env`` is the
-        # suspenders). A no-op ``nullcontext`` for every non-reader phase.
-        reader_scrub = reader_env_hermetic() if is_reader_phase(phase) else contextlib.nullcontext()
-        with agent_spawn_env(), reader_scrub:
+        with agent_spawn_env():
             outcome = asyncio.run(
                 _drive_with_heartbeat(
                     task,
@@ -477,24 +482,7 @@ def _restore_unconsumed_resume_thread(harness: Harness) -> None:
 
 
 def _stage_skills_or_refusal(task: Task, *, phase: str) -> list[str] | TaskAttempt:
-    """Every reason to refuse before the harness, then the dispatch's stage skills.
-
-    Both refusals precede harness resolution (souliane/teatree#2916): for a resumed
-    pydantic_ai task, resolving the harness destructively pops the parked ancestor's
-    thread, so a run that will never start must not reach it or the conversation is
-    lost. The skills are resolved ONCE here and threaded into every consumer (#3206);
-    re-resolving per prompt builder re-warns on a misconfigured skill and re-reads its
-    SKILL.md path for nothing.
-    """
-    budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
-    if budget_breach is not None:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
-        return _record_failure(task, error=budget_breach)  # no-usage: refused on budget — no turn billed
-    try:
-        return stage_skills_for_dispatch(phase)
-    except ArchitecturalReviewSkillMissingError as exc:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
-        return _record_failure(task, error=str(exc))  # no-usage: the skills never staged, so nothing was dispatched
+    return stage_skills_or_refusal(task, phase=phase, stage_skills=stage_skills_for_dispatch)
 
 
 def _resolve_backend_or_failure(
@@ -563,12 +551,6 @@ def _resolve_child_env_or_failure(
             raise HarnessFallbackError(str(exc), kind=kind) from exc
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))  # no-usage: the credential gap is pre-dispatch — no turn billed
-    if is_reader_phase(context.phase):
-        # A ``None`` env means "provider unset → use ambient os.environ"; the reader
-        # instead pins exactly the allowlist (inference credential survives if ambiently
-        # present, everything else dropped).
-        ambient = resolved.env if resolved.env is not None else dict(os.environ)
-        return replace(resolved, env=reader_child_env(ambient))
     capped = with_test_worker_cap(resolved.env, active_agents=_active_agent_count())
     return replace(resolved, env=with_routed_github_token(capped, overlay=_overlay_scope(task)))
 

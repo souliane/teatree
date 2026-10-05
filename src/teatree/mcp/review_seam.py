@@ -1,6 +1,6 @@
 """Review-post seam for the MCP write tools (#3076).
 
-``t3 review post-comment`` / ``post-draft-note`` live in ``teatree.cli.review``
+``t3 review post-comment`` lives in ``teatree.cli.review``
 — ABOVE ``teatree.mcp`` in the layer graph — so, exactly like
 :mod:`teatree.mcp.command_catalogue`, the dependency is INVERTED:
 ``teatree.cli`` registers a factory at import time via
@@ -46,8 +46,6 @@ class SeamNote:
 
 
 class ReviewPostSeam(Protocol):
-    def post_draft_note(self, repo: str, mr: int, note: SeamNote) -> tuple[str, int]: ...
-
     def post_comment(self, repo: str, mr: int, note: SeamNote, *, live: bool = False) -> tuple[str, int]: ...
 
     def post_comments(

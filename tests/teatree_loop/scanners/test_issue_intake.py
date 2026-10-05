@@ -2,9 +2,8 @@
 
 The scanner is the discovery + claim half of the factory's intake. Two scoped
 discovery queries (per trusted author, and per admit label) feed one top-down
-decision function; claims go through the TOCTOU-safe
-:meth:`ImplementedIssueMarker.claim` so a re-tick — or a concurrent overlay —
-never double-dispatches the same issue.
+decision function; claims go through the cross-instance fleet claim ref so a
+re-tick — or a concurrent overlay — never double-dispatches the same issue.
 """
 
 import datetime as dt
@@ -29,6 +28,7 @@ from teatree.loop.scanners.issue_intake import (
     issue_url,
 )
 from teatree.types import RawAPIDict
+from tests.teatree_loop._fleet_claim_stub import FleetClaimStub
 
 OWNER = "souliane"
 COLLEAGUE = "trusted-colleague"
@@ -141,6 +141,7 @@ class _PublicRepoTestCase(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.fleet = FleetClaimStub().install(self)
 
     def _scanner(self, host: _Host, **overrides: object) -> IssueIntakeScanner:
         kwargs: dict[str, object] = {
@@ -914,7 +915,7 @@ class IssueIntakeStarvationVisibilityTests(_PublicRepoTestCase):
 
     def test_a_claim_refused_by_an_existing_holder_is_not_reported_as_starved(self) -> None:
         """A refused claim means somebody holds the issue — that is not a passed-over candidate."""
-        ImplementedIssueMarker.objects.claim(self.OLD, overlay=self.OVERLAY)
+        self.fleet.held.add(self.OLD)
         host = _Host(authored={OWNER: [_issue(self.OLD, author=OWNER, created_at="2026-08-01T09:00:00Z")]})
 
         assert self._scanner(host, max_concurrent=0).scan() == []

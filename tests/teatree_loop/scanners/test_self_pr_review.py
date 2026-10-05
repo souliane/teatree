@@ -118,10 +118,12 @@ class TestAdversarialClassifier:
     """The shared ``is_adversarial_review`` predicate the self-PR scanner routes on."""
 
     def test_high_stakes_path_is_adversarial(self) -> None:
-        assert is_adversarial_review(("src/app/migrations/0002.py",)) is True
+        assert (
+            is_adversarial_review(("src/app/migrations/0002.py",), pr_url=f"https://github.com/{SLUG}/pull/1") is True
+        )
 
     def test_ordinary_path_is_not_adversarial(self) -> None:
-        assert is_adversarial_review(("src/app/views.py",)) is False
+        assert is_adversarial_review(("src/app/views.py",), pr_url=f"https://github.com/{SLUG}/pull/1") is False
 
 
 class TestSkipPaths:

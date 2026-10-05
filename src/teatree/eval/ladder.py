@@ -1,16 +1,17 @@
-"""Escalation-ladder baseline generation — dispatch opus ONLY on sonnet's failures.
+"""Escalation-ladder baseline generation — dispatch frontier ONLY on the cheaper tiers' failures.
 
 The cheapest-green baseline (``evals/presets/baseline.yaml``) records, per
 scenario, the cheapest model tier that PASSES it. The full-matrix path
 (``t3 eval benchmark`` / a 3-tier ``t3 eval run --models``) measures every model
-on every scenario to derive that map — but a scenario haiku already passes never
-needs sonnet or opus measured, so the full matrix over-pays for the baseline
+on every scenario to derive that map — but a scenario the cheap tier already passes
+never needs a costlier tier measured, so the full matrix over-pays for the baseline
 question.
 
 This module is the loss-free alternative. :func:`run_escalation_ladder` walks
 each scenario up the tier ladder cheapest-first (cheap → balanced → frontier) and
-STOPS at the first tier it passes: sonnet is dispatched only for the scenarios
-haiku failed, and opus only for the scenarios that failed BOTH. The output is the
+STOPS at the first tier it passes: balanced is dispatched only for the scenarios
+cheap failed, and frontier only for the scenarios that failed BOTH. Tiers sharing
+one model id are one rung. The output is the
 flat :class:`~teatree.eval.matrix.MatrixRow` list of the cells that actually ran —
 fed through :func:`~teatree.eval.matrix.render_matrix_json` to the exact matrix
 JSON ``t3 eval set-baseline`` already consumes, so the tier-derivation authority
@@ -20,7 +21,7 @@ surfaces it as a genuine failure, never silently tiers it to frontier).
 
 CI SHAPE. Escalation is per-scenario and orthogonal to the shard-parallel CI
 model: each metered shard runs its OWN subset of scenarios through the ladder
-in-process (haiku → sonnet → opus for each of its scenarios), so the whole run
+in-process (cheap → balanced → frontier for each of its scenarios), so the whole run
 stays inside one account's usage window with no cross-pass orchestration and no
 auto-rotation. The sharded fan-out still parallelises across scenarios exactly
 like the full-matrix benchmark.
@@ -65,8 +66,8 @@ _DEFAULT_LADDER_POLICY = LadderPolicy()
 
 
 def laddered_tier_models() -> list[str]:
-    """The three tier model ids ordered cheapest-first (cheap < balanced < frontier)."""
-    return sorted(TIER_MODELS.values(), key=_model_rank)
+    """The distinct tier model ids ordered cheapest-first (cheap < balanced < frontier)."""
+    return sorted(dict.fromkeys(TIER_MODELS.values()), key=_model_rank)
 
 
 def _model_rank(model: str) -> int:
@@ -85,8 +86,8 @@ def run_escalation_ladder(
 
     *models* is the tier model id list in cheapest-first order (see
     :func:`laddered_tier_models`). For each spec, a tier is dispatched ONLY when
-    every cheaper tier FAILED the scenario — so a scenario haiku already passes
-    never dispatches sonnet or opus. Escalation stops on a pass, a skip (a skip
+    every cheaper tier FAILED the scenario — so a scenario the cheap tier already
+    passes never dispatches a costlier tier. Escalation stops on a pass, a skip (a skip
     is "not provisioned", never a capability failure), or an error (an
     unexpected runner exception survives bounded retries — infra noise, not a
     capability signal); only a graded FAIL climbs to the next tier. Returns the

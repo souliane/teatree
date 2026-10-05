@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
+from teatree.generation import current_generation, is_generation_sha
 from teatree.sqlite_snapshot import _exclusive_lock, _sqlite_snapshot
 
 _TRUE_CANONICAL_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
@@ -185,6 +186,10 @@ def teatree_source_root() -> Path:
     callers that need the surrounding git working tree resolve it from here.
     """
     return Path(__file__).resolve().parents[2]
+
+
+#: Written by deploy/Dockerfile's generation target at the root of the archived tree it bakes.
+GENERATION_MARKER = ".teatree-generation"
 
 
 #: Where teatree's own root sits inside a fork that VENDORS core, as a path
@@ -370,9 +375,9 @@ class ControlDb:
 
         Resolved against the primary-clone sentinel, so it is also deliberately NOT
         the auto-isolated per-worktree :data:`DATA_DIR`: an artifact describing the
-        *operator* rather than a checkout (the live-presence heartbeat) has exactly
-        one instance, and giving one keyboard two heartbeats is how a fast path and
-        a Django path come to disagree about the same fact.
+        *operator* rather than a checkout (the availability override) has exactly
+        one instance, and giving it two homes is how a fast path and a Django path
+        come to disagree about the same fact.
         """
         home = self.home if self.home is not None else Path.home()
         return resolve_data_dir(env=dict(self.env), home=home, repo_root=PRIMARY_CLONE_SENTINEL).path
@@ -509,6 +514,21 @@ class PathHelpers:
         reaper deletes it.
         """
         return _TRUE_CANONICAL_DATA_DIR
+
+    @staticmethod
+    def within_baked_generation(path: Path) -> bool:
+        """*path* lies in an image generation's sealed tree, whose environment the image already installed."""
+        return any(PathHelpers.is_baked_generation_root(parent) for parent in (path, *path.resolve().parents))
+
+    @staticmethod
+    def is_baked_generation_root(path: Path) -> bool:
+        """*path* is the baked tree of the generation this process runs, which carries no ``.git`` by design."""
+        try:
+            stamped = (path / GENERATION_MARKER).read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        running = current_generation()
+        return is_generation_sha(stamped) and (not running or stamped == running)
 
     @staticmethod
     def core_repo_root(*, root: Path | None = None) -> Path | None:

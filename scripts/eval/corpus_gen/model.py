@@ -92,7 +92,11 @@ def positive(target: Branch, *, pass_call: Call, fail_call: Call) -> Expect:
 
 
 def negative(
-    target: Branch, *, fail_call: Call, unless: Branch | None = None, before_first: Branch | None = None
+    target: Branch,
+    *,
+    fail_call: Call,
+    unless: Branch | None = None,
+    before_first: Branch | None = None,
 ) -> Expect:
     return Expect(
         kind=NEGATIVE,

@@ -10,7 +10,8 @@ The disable is VERSIONED and reversible because it goes through
 :meth:`~teatree.core.models.Prompt.revise`, which snapshots the superseded body as a
 ``PromptVersion`` before writing the empty one. So ``enable`` restores what the owner
 actually had, not merely the compiled default, and the edit history says who turned
-what off and when.
+what off and when. Each switch is published at once, so the hooks stop (or resume)
+delivering the slot without waiting for the worker's next publish.
 
 Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 ``call_command``, where a ``typer.Exit`` is swallowed and the process reports success
@@ -23,7 +24,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Prompt
-from teatree.loop.standing_directives import STANDING_DIRECTIVES, override_prompt_name
+from teatree.loop.standing_directives import STANDING_DIRECTIVES, override_prompt_name, publish
 
 _SlotArgument = Annotated[
     list[str] | None,
@@ -68,6 +69,7 @@ class Command(TyperCommand):
             if not created:
                 prompt.revise(body="")
             self.stderr.write(f"  {slot_id}: off")
+        publish()
 
     @command()
     def enable(self, slot_ids: _SlotArgument = None, *, all_slots: _AllOption = False) -> None:
@@ -97,3 +99,4 @@ class Command(TyperCommand):
                 continue
             prompt.revise(body=restored.body)
             self.stderr.write(f"  {slot_id}: on (restored v{restored.version})")
+        publish()

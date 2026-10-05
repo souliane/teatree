@@ -1,33 +1,4 @@
-"""Bounded, anti-cheat-gated autonomous fixer for the CI-eval self-healing loop (#3201 PR-3b).
-
-PR-3a's observe loop can only dispatch a behavioral eval, poll, and GREEN or
-HALT+escalate on any red — it NEVER writes a fix. This module is the PR-3b
-follow-up: when a run comes back with a BEHAVIORAL red (not infra) AND the fixer
-is armed, the driver dispatches a bounded autonomous fix through a
-:class:`CiEvalHealFixer`.
-
-Two guardrails are structural, not left to prose:
-
-* **Both switches, or observe-only.** :func:`autofix_armed` is true ONLY when the
-    ``ci_eval_heal_autofix_enabled`` DARK feature flag is on AND the ``ci_eval_heal``
-    ``Loop`` row is enabled. Either off ⇒ the loop stays observe-only (a red HALTs
-    and escalates exactly as PR-3a). Autonomous CI mutation needs a deliberate
-    double opt-in.
-* **The gate runs BEFORE the push.** A fixer only PROPOSES — it writes and commits
-    a fix in a THROWAWAY worktree and returns the changed paths, but pushes NOTHING.
-    The driver runs the #3282 anti-cheat gate (``record_fix``) over those paths and
-    calls :meth:`~CiEvalHealFixer.publish` only when the gate passes, so a diff that
-    edits a scenario (``evals/scenarios/**``) or the eval harness
-    (``src/teatree/eval/**``) is REJECTED and the
-    cheating commit is DISCARDED, never reaching the PR branch. A genuinely-failing
-    eval can never be greened by editing its test.
-
-The fix budget (``max_fix_attempts``, default 2 at open time) makes "un-greenable"
-decidable: once exhausted, the driver HALTs and escalates rather than looping
-forever. The single unstoppable external — the ``claude`` write turn — is injected
-(:func:`_run_fix_turn`) so the worktree / commit / diff / push orchestration is
-exercised for real under a tmp-path git repo, mocking only the LLM.
-"""
+"""Bounded CI eval fixer: harness dispatch, anti-cheat proposal, and PR publish."""
 
 import logging
 import tempfile
@@ -37,21 +8,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from teatree.agents.write_turn import run_bounded_write_turn
 from teatree.loops.enable_verdict import EnablePlanes
 from teatree.utils.git_worktree import worktree_add_at_ref, worktree_remove
 from teatree.utils.run import CommandFailedError, run_checked
 
 if TYPE_CHECKING:
-    from claude_agent_sdk import ClaudeAgentOptions
-
-    from teatree.agents.compaction_guard import CompactionGuard
     from teatree.core.models import CiEvalHealSession
 
 logger = logging.getLogger(__name__)
-
-#: The loop whose ``Loop`` row must ALSO be enabled before the fixer arms — the
-#: second of the two switches (:func:`autofix_armed`).
-_LOOP_NAME = "ci_eval_heal"
 
 #: The scenario tree and eval-harness paths the fixer is told, in-prompt, it may
 #: NEVER touch. Mirrors the authority in
@@ -109,24 +74,18 @@ class CiEvalHealFixer(Protocol):
         ...
 
 
-def autofix_armed(session: "CiEvalHealSession") -> bool:
-    """True only when BOTH the DARK flag AND the ``ci_eval_heal`` loop's verdict are on.
+_LOOP_NAME = "ci_eval_heal"
 
-    Either switch off ⇒ observe-only (the caller HALTs + escalates a red exactly as
-    PR-3a). The flag resolves per-overlay so an overlay can trial the fixer on its
-    own budget; the verdict keeps even a by-hand ``t3 eval ci-heal advance`` from
-    mutating CI unless the active layering actually admits the autonomous loop.
 
-    The verdict, not ``Loop.enabled``: that column is the manual-override layer, empty
-    until a human intervenes, so reading it would leave the fixer permanently disarmed
-    on a box whose preset admits the loop. An unreadable control plane RAISES rather
-    than answering — a gate that cannot read its own input must not arm.
+def fix_turn_admitted() -> bool:
+    """True only when the loop row exists and the active preset admits it.
+
+    Keeps a by-hand ``t3 eval ci-heal advance`` from mutating CI under a preset that
+    masks the loop off (token-outage, off). An unreadable control plane raises rather
+    than answering, so a gate that cannot read its input never arms.
     """
-    from teatree.config.resolution import get_effective_settings  # noqa: PLC0415 — deferred: config resolve reaches DB
     from teatree.core.models import Loop  # noqa: PLC0415 — deferred: ORM needs the app registry
 
-    if not get_effective_settings(session.overlay or None).ci_eval_heal_autofix_enabled:
-        return False
     if not Loop.objects.filter(name=_LOOP_NAME).exists():
         return False
     return EnablePlanes.resolve().admits(_LOOP_NAME)
@@ -145,41 +104,20 @@ def build_fixer_prompt(session: "CiEvalHealSession") -> str:
         "You are the CI-eval self-healing FIXER. A behavioral eval graded these scenarios RED on "
         f"PR branch {session.pr_ref!r}: {reds}.\n\n"
         "Fix the PRODUCT behaviour the scenario asserts — skill prose, hooks, or core code — with the "
-        "SMALLEST change that makes the agent behave as the scenario expects. Then stage and commit it "
-        "with a clear message naming the scenarios.\n\n"
+        "SMALLEST change that makes the agent behave as the scenario expects. Leave the changes "
+        "uncommitted; the fixer records one private commit for anti-cheat review.\n\n"
         f"You may NEVER edit the eval TEST: {_FORBIDDEN_HINT}. Editing any of those would suppress the "
         "red without changing behaviour — it is rejected by an anti-cheat gate and the fix is discarded. "
         "If the ONLY way to make the scenario pass would be to change the test, make NO change and do not "
         "commit: that is a human decision to escalate, never a self-edit of the test.\n\n"
         "Be conservative and auditable: touch as few files as possible, add no unrelated changes, and "
-        "leave the working tree clean apart from your single fix commit."
+        "leave only the minimal product edit in the working tree."
     )
 
 
-def _run_fix_turn(prompt: str, cwd: Path) -> None:  # pragma: no cover
-    """Run ONE bounded, WRITE-capable headless ``claude`` turn in *cwd* (the unstoppable external).
-
-    The write twin of the dream distiller turn: the ``claude_code`` preset +
-    ``bypassPermissions`` (a headless agent has no human to grant tool permissions),
-    the credential child-env resolved in THIS sync frame (Django forbids the DB read
-    inside the async turn), and one :func:`asyncio.timeout` bounding the WHOLE turn
-    (connect + query + drain) so a stalled spawn can never wedge the loop. Raises when
-    ``claude`` is unavailable or the turn fails, so a broken fixer surfaces loud
-    rather than as a silent no-op the driver would misread as "un-fixable".
-    """
-    # The literal ``claude`` subprocess spawn is the one unstoppable external (a
-    # third-party subprocess + an off-box LLM), never exercised in the suite; the
-    # fixer's whole orchestration is tested with an injected ``turn_runner`` instead.
-    import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
-    import shutil  # noqa: PLC0415 — deferred: loaded only on this code path
-
-    from teatree.agents._runner_env import system_child_env  # noqa: PLC0415 — deferred: avoids the SDK-heavy runner
-
-    if shutil.which("claude") is None:
-        msg = "claude is not installed — the CI-eval heal fixer cannot run"
-        raise RuntimeError(msg)
-    env = system_child_env()
-    asyncio.run(_drive_fix_turn(prompt, cwd=cwd, env=env))
+def _run_fix_turn(prompt: str, cwd: Path) -> None:
+    """Run one bounded write turn through the configured coding harness."""
+    run_bounded_write_turn(prompt, cwd, timeout_seconds=_FIX_TURN_WATCHDOG_SECONDS)
 
 
 #: Where a stopped turn's committed work is pinned, so removing its worktree cannot destroy the fix.
@@ -197,51 +135,6 @@ class Salvage:
 
     ref: str = ""
     failed: bool = False
-
-
-def _fix_turn_options(
-    prompt: str, *, cwd: Path, env: dict[str, str] | None, guard: "CompactionGuard | None" = None
-) -> "ClaudeAgentOptions":
-    """The write-capable options for one fix turn, with compaction switched off like every factory run."""
-    from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415 — deferred: optional heavy SDK dep
-    from claude_agent_sdk.types import SystemPromptPreset  # noqa: PLC0415 — deferred: optional heavy SDK dep
-
-    from teatree.agents.compaction_guard import with_compaction_off  # noqa: PLC0415 — deferred: optional heavy SDK dep
-
-    options = ClaudeAgentOptions(
-        system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=prompt),
-        cwd=str(cwd),
-        add_dirs=[str(cwd)],
-        permission_mode="bypassPermissions",
-        disallowed_tools=["AskUserQuestion"],
-        max_turns=0,
-    )
-    if env is not None:
-        options.env = env
-    return with_compaction_off(options, guard)
-
-
-async def _drive_fix_turn(prompt: str, *, cwd: Path, env: dict[str, str] | None) -> None:  # pragma: no cover
-    import asyncio  # noqa: PLC0415 — deferred: loaded only on this code path
-
-    from claude_agent_sdk import (  # noqa: PLC0415 — deferred: optional heavy SDK dep, imported only at turn time
-        ClaudeSDKClient,
-    )
-
-    from teatree.agents.compaction_guard import (  # noqa: PLC0415 — deferred: optional heavy SDK dep
-        COMPACTION_BLOCKED_REASON,
-        CompactionGuard,
-    )
-
-    guard = CompactionGuard()
-    options = _fix_turn_options(prompt, cwd=cwd, env=env, guard=guard)
-    async with asyncio.timeout(_FIX_TURN_WATCHDOG_SECONDS), ClaudeSDKClient(options=options) as client:
-        guard.arm(client.interrupt)
-        await client.query(prompt)
-        async for _message in client.receive_response():
-            pass
-    if guard.stopped_run:
-        raise RuntimeError(COMPACTION_BLOCKED_REASON)
 
 
 @dataclass(slots=True)
@@ -373,6 +266,8 @@ class _HeadlessFixer:
 
     @staticmethod
     def _commit(wt_path: str, base_sha: str) -> tuple[tuple[str, ...], str]:
+        if run_checked(["git", "rev-parse", "HEAD"], cwd=wt_path).stdout.strip() != base_sha:
+            run_checked(["git", "reset", "--soft", base_sha], cwd=wt_path)
         run_checked(["git", "add", "-A"], cwd=wt_path)
         status = run_checked(["git", "status", "--porcelain"], cwd=wt_path).stdout.strip()
         if not status:
@@ -394,7 +289,6 @@ __all__ = [
     "FixProposal",
     "Salvage",
     "TurnRunner",
-    "autofix_armed",
     "build_fixer_prompt",
     "default_fixer",
 ]

@@ -136,7 +136,6 @@ def format_on_behalf_block_message(target: str, action: str) -> str:
     permitting posture durably, or approve just this once — and never the wrong
     "bypass the gate or do it yourself" pair (``/t3:rules`` § "Anticipate a
     Predictable Gate"). Best used *proactively*: a caller that can foresee the
-    block via :func:`teatree.on_behalf_gate.on_behalf_post_will_block` surfaces
     this choice to the owner BEFORE attempting the post, so the reactive raise is
     rarely reached.
     """

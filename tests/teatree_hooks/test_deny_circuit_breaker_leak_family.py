@@ -24,6 +24,7 @@ import pytest
 import hooks.scripts.banned_terms.gate as banned_terms_gate
 import hooks.scripts.deny_circuit_breaker as dcb
 import hooks.scripts.hook_router as router
+from hooks.scripts import gate_result
 from teatree.hooks import ai_signature_gate, banned_terms_scanner, quote_gate_messages, quote_scanner
 
 # An AWS-key-shaped literal that matches ``publish_surface._SECRET_PATTERNS`` while
@@ -39,6 +40,7 @@ _AI_SIG_COMMIT = 'git commit -m "feat: x\n\nCo-Authored-By: a <b@c>"'
 def _stub_ai_sig_scanner(monkeypatch: pytest.MonkeyPatch, stdout: str, stderr: str = "") -> None:
     completed = subprocess.CompletedProcess([], 1, stdout, stderr)
     monkeypatch.setattr(router, "run_t3", lambda *_a, **_k: completed)
+    monkeypatch.setattr(gate_result, "run_t3", lambda *_a, **_k: completed)
 
 
 def _high_quote_result() -> quote_scanner.ScanResult:
@@ -70,8 +72,8 @@ _LEAK_DENY_MESSAGES: dict[str, tuple[str, str]] = {
         "banned_terms",
     ),
     "banned_terms_scanner._STORE_UNREADABLE_DENY": (banned_terms_scanner._STORE_UNREADABLE_DENY, "banned_terms"),
-    "banned_terms_scanner._TERMS_REQUIRED_UNSET_DENY": (
-        banned_terms_scanner._TERMS_REQUIRED_UNSET_DENY,
+    "banned_terms_scanner._TERMS_UNSET_DENY": (
+        banned_terms_scanner._TERMS_UNSET_DENY,
         "banned_terms",
     ),
     "banned_terms_scanner.marker_deny_message": (
@@ -239,7 +241,9 @@ class TestEveryLeakHandlerStampsALeakGateId:
     def _deny_gate_id(self, monkeypatch: pytest.MonkeyPatch, handler, data: dict) -> str | None:
         stamped: list[str | None] = []
         monkeypatch.setattr(
-            router, "_write_pretooluse_deny", lambda reason, *, gate_id=None: bool(stamped.append(gate_id)) or True
+            router,
+            "_write_pretooluse_deny",
+            lambda reason, *, gate_id=None, context=None: bool(stamped.append(gate_id)) or True,
         )
         assert handler(data) is True, "the handler did not deny — the probe proves nothing"
         return stamped[0]

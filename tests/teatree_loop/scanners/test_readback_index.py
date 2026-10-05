@@ -169,7 +169,7 @@ class TestReadbackIndexCost:
         index = build_readback_index([], prs)
         inspected = 0
         for number in range(5000, 5200):
-            inspected += index.candidates_for(str(number))
+            inspected += len(index.buckets.get(str(number), ()))
         assert inspected == 0
 
     def test_a_candidate_only_reads_the_prs_that_cite_its_number(self) -> None:
@@ -177,4 +177,4 @@ class TestReadbackIndexCost:
             _github_pr(url=f"https://github.com/souliane/teatree/pull/{n}", head=f"{n}-branch") for n in range(1, 301)
         ]
         index = build_readback_index([], prs)
-        assert index.candidates_for("150") == 1
+        assert len(index.buckets.get("150", ())) == 1

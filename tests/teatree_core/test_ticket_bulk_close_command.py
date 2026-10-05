@@ -17,6 +17,7 @@ from teatree.config import UserSettings
 from teatree.core.gates.fix_dod_gate import FixRecordDodError
 from teatree.core.models import Ticket
 from tests.factories import waive_rubric
+from tests.teatree_core.conftest import record_confirmed_merge_for_test
 
 
 def _tickets(n: int) -> list[Ticket]:
@@ -127,6 +128,7 @@ class TicketFixRecordOverrideTest(TestCase):
     def test_the_override_unblocks_delivery(self) -> None:
         """The whole point: the gate passes on a fix-ticket carrying no FixRecord."""
         ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX, state=Ticket.State.RETRO_RECORDED)
+        record_confirmed_merge_for_test(ticket)
         waive_rubric(ticket)
         with pytest.raises(FixRecordDodError):
             ticket.mark_delivered()

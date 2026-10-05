@@ -68,3 +68,61 @@ def _write_dev_sources_marker(marker: Path, package: str, repo_path: Path) -> No
         lines = [ln for ln in marker.read_text(encoding="utf-8").splitlines() if not ln.startswith(f"{package}=")]
     lines.append(f"{package}={repo_path}")
     marker.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class SourceEntryChangedError(ValueError):
+    """The editable source entry was changed after the doctor wrote it."""
+
+    def __init__(self, tracked: str) -> None:
+        super().__init__(f"{tracked} source changed after editable repair")
+
+
+def _package_block(text: str, package: str) -> tuple[int, int, str] | None:
+    starts = [match.start() for match in re.finditer(r"(?m)^\[\[package\]\]$", text)]
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(text)
+        block = text[start:end]
+        if re.search(rf'(?m)^name = "{re.escape(package)}"$', block):
+            return start, end, block
+    return None
+
+
+def _restore_lock_source_entry(current: str, original: str, package: str) -> str:
+    old_block = _package_block(original, package)
+    new_block = _package_block(current, package)
+    if new_block is None:
+        return current
+    old_source = re.search(r"(?m)^source = .+$", old_block[2]) if old_block else None
+    new_source = re.search(r"(?m)^source = .+$", new_block[2])
+    if new_source is None:
+        return current
+    if "editable =" not in new_source.group() and "path =" not in new_source.group():
+        tracked = "uv.lock"
+        raise SourceEntryChangedError(tracked)
+    source_end = new_source.end() + new_block[2][new_source.end() :].startswith("\n")
+    replacement = f"{old_source.group()}\n" if old_source else ""
+    changed = new_block[2][: new_source.start()] + replacement + new_block[2][source_end:]
+    return current[: new_block[0]] + changed + current[new_block[1] :]
+
+
+def _restore_pyproject_source_entry(current: str, original: str, package: str) -> str:
+    pattern = re.compile(rf"(?m)^({re.escape(package)}\s*=\s*)\{{[^\n}}]+\}}")
+    old_entry = pattern.search(original)
+    new_entry = pattern.search(current)
+    if new_entry is None:
+        return current
+    if "editable = true" not in new_entry.group() and "path =" not in new_entry.group():
+        tracked = "pyproject.toml"
+        raise SourceEntryChangedError(tracked)
+    if old_entry is not None:
+        return current[: new_entry.start()] + old_entry.group() + current[new_entry.end() :]
+    entry_end = new_entry.end() + current[new_entry.end() :].startswith("\n")
+    restored = current[: new_entry.start()] + current[entry_end:]
+    return re.sub(r"(?m)^\[tool\.uv\.sources\]\n(?=\[|\Z)", "", restored)
+
+
+def _restore_source_entry(current: str, original: str, package: str, *, lockfile: bool) -> str:
+    """Restore one package's source line while retaining every unrelated edit."""
+    if lockfile:
+        return _restore_lock_source_entry(current, original, package)
+    return _restore_pyproject_source_entry(current, original, package)

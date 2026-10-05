@@ -2,11 +2,9 @@
 """Runtime advice naming ``config_setting set <key>`` must name a SETTABLE key (#4008).
 
 A gate that refuses an action and prints "fix it with
-``t3 <overlay> config_setting set <key> <value>``" is only useful if that command works. The
-banned-terms scanner printed exactly that advice for ``banned_terms_required`` — a key read
-straight from the ``ConfigSetting`` store but never registered in any config registry — so the CLI
-answered ``refusing: 'banned_terms_required' is not a known config setting`` and the operator had
-no way to follow the instruction at the moment it mattered.
+``t3 <overlay> config_setting set <key> <value>``" is only useful if that command works.
+The scanner once advised an unset-list mode that the CLI could not set. That mode
+is gone; the rule still guards every live remediation key.
 
 This is the whole class, not the one key: any in-code string that tells an operator to set a key
 is checked against :data:`ALL_KNOWN_CONFIG_SETTINGS`, the same union ``config_setting set``
@@ -44,7 +42,7 @@ def test_enumeration_is_not_vacuous() -> None:
     advised = _advised_keys()
     assert _SRC.is_dir()
     assert len(advised) >= 20
-    assert "banned_terms_required" in advised
+    assert "worker_quiescing" in advised
 
 
 def test_every_advised_key_is_settable() -> None:

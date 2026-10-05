@@ -11,10 +11,7 @@ differently on another machine / another agent / a fresh session.
 These tests pin the invariant behaviorally: a representative slice of the runtime
 state resolvers is sampled twice — once with the assistant-memory dir absent, once
 with it POPULATED by config-shaped bait whose values contradict the DB — and the two
-snapshots must be byte-identical (and equal to the DB-seeded values). The only
-runtime path that reads the memory dir (the cold-tier recall injector) is asserted to
-be advisory-only: it injects nothing when the dir is absent and never mutates a
-resolved state value when it is present.
+snapshots must be byte-identical (and equal to the DB-seeded values).
 """
 
 # test-path: cross-cutting — a multi-package invariant spanning cli, config, and hooks.
@@ -25,8 +22,6 @@ from pathlib import Path
 
 import pytest
 
-from hooks.scripts.memory_recall import handle_recall_cold_memory
-from hooks.scripts.teatree_settings import teatree_bool_setting
 from teatree.cli import teatree_gate
 from teatree.config import cold_reader
 
@@ -38,7 +33,6 @@ _MEMORY_BAIT = (
     "\n"
     "mode = interactive\n"
     "orchestrator_bash_gate_enabled = false\n"
-    "memory_recall_enabled = false\n"
     "require_human_approval_to_merge = true\n"
     "the dream loop status is paused; the factory must not merge unattended.\n"
 )
@@ -48,7 +42,6 @@ _MEMORY_BAIT = (
 _DB_SETTINGS: dict[str, object] = {
     "mode": "auto",
     "orchestrator_bash_gate_enabled": True,
-    "memory_recall_enabled": True,
     "require_human_approval_to_merge": False,
 }
 _DB_LOOP_STATUS = {"dream": "enabled"}
@@ -91,16 +84,13 @@ def _runtime_state_snapshot() -> dict[str, object]:
 
     Every entry resolves through teatree's own DB-home store (or a per-setting
     default) — the worker/loop publishing doctrine, gate enablement across three
-    reader surfaces (the cold CLI reader, the ``teatree_gate`` CLI helpers, and the
-    exact hook-leaf reader the memory-recall injector consults for its own
-    kill-switch), a factory merge-approval setting, and durable loop state.
+    reader surfaces (the cold CLI reader and the ``teatree_gate`` CLI helper), a
+    factory merge-approval setting, and durable loop state.
     """
     return {
         "mode": cold_reader.str_setting("mode", default="interactive"),
         "bash_gate_cold": cold_reader.bool_setting("orchestrator_bash_gate_enabled", default=True),
         "bash_gate_cli": teatree_gate.gate_is_enabled(),
-        "recall_gate_cli": teatree_gate.memory_recall_gate_is_enabled(),
-        "recall_gate_hook": teatree_bool_setting("memory_recall_enabled", default=True),
         "require_human_approval_to_merge": cold_reader.bool_setting("require_human_approval_to_merge", default=True),
         "dream_loop_status": cold_reader.loop_status("dream"),
     }
@@ -149,27 +139,9 @@ def test_runtime_state_identical_with_memory_absent_and_populated(
         "mode": "auto",
         "bash_gate_cold": True,
         "bash_gate_cli": True,
-        "recall_gate_cli": True,
-        "recall_gate_hook": True,
         "require_human_approval_to_merge": False,
         "dream_loop_status": "enabled",
     }
-
-
-def test_recall_injector_is_advisory_only_and_silent_when_memory_absent(
-    seeded_db: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    absent_home = tmp_path / "home"
-    _point_home_at(monkeypatch, absent_home)
-    before = _runtime_state_snapshot()
-
-    # The one runtime path that reads the memory dir: with no resolvable cold index it
-    # injects NOTHING (silent degrade) — it can never gate or mutate runtime state.
-    handle_recall_cold_memory(
-        {"prompt": "how do I create a worktree before editing project files?", "cwd": "/no/such/project"}
-    )
-    assert capsys.readouterr().out == ""
-    assert _runtime_state_snapshot() == before
 
 
 def test_no_state_resolver_reads_the_home_tree(seeded_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:

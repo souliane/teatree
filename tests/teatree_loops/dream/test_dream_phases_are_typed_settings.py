@@ -16,27 +16,13 @@ seam's own later default: batching bounds a pass to one ticket, so it ships ON.
 import django.test
 import pytest
 
-from teatree.config import UserSettings, get_effective_settings
+from teatree.config import UserSettings
 from teatree.config.schema import TeatreeSettingsSchema
 from teatree.core.models import ConfigSetting
 from teatree.loops.dream import loop as dream_loop
-from teatree.loops.dream import pass_config
 
-#: Each phase's reader paired with the setting that now answers it, and the value the
-#: pre-retyping seam resolved to.
-PHASES = (
-    ("dream_propose_evals", dream_loop.propose_evals_enabled, True),
-    ("dream_cross_link", dream_loop.cross_link_enabled, True),
-    ("dream_merge", dream_loop.merge_enabled, True),
-    ("dream_reindex", dream_loop.reindex_enabled, True),
-    ("dream_decay", dream_loop.decay_enabled, True),
-    ("dream_compliance_measure", dream_loop.compliance_measure_enabled, True),
-    ("dream_memory_promote", dream_loop.memory_promote_enabled, True),
-    ("dream_derive_evals", dream_loop.derive_evals_enabled, False),
-    ("dream_compliance_escalate", dream_loop.compliance_escalate_enabled, False),
-    ("dream_automation_asks", dream_loop.automation_asks_enabled, False),
-    ("dream_validate_live", pass_config.validate_live_enabled, False),
-)
+#: Each phase's reader paired with its shipped default.
+PHASES = (("dream_memory_promote", dream_loop.memory_promote_enabled, True),)
 
 
 @pytest.mark.parametrize("phase", PHASES, ids=[key for key, _, _ in PHASES])
@@ -47,7 +33,7 @@ def test_each_phase_toggle_is_a_declared_setting(phase: tuple) -> None:
 
 
 @pytest.mark.parametrize("phase", PHASES, ids=[key for key, _, _ in PHASES])
-def test_the_shipped_default_is_the_value_the_old_seam_resolved(phase: tuple) -> None:
+def test_the_shipped_default_matches_the_declared_phase(phase: tuple) -> None:
     key, _reader, shipped = phase
     assert getattr(UserSettings(), key) is shipped
 
@@ -66,41 +52,8 @@ class TestThePhaseReadersConsultTheStore(django.test.TestCase):
                 assert reader() is (not shipped)
 
 
-class TestTheMeteredValidatorStaysOffUntilAskedFor(django.test.TestCase):
-    """Without the validator every clearing candidate is WITHHELD, so OFF is the safe ship."""
-
-    def test_it_ships_off(self) -> None:
-        assert UserSettings().dream_validate_live is False
-        assert get_effective_settings().dream_validate_live is False
-
-
-class TestTheEnvLayerStillWinsOverTheStore(django.test.TestCase):
-    """The ``T3_DREAM_*`` overrides survive the retyping — they are now the ordinary env tier."""
-
-    def test_a_falsy_env_beats_a_stored_true(self) -> None:
-        ConfigSetting.objects.set_value("dream_cross_link", value=True)
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setenv("T3_DREAM_CROSS_LINK", "0")
-            assert dream_loop.cross_link_enabled() is False
-
-    def test_a_truthy_env_beats_a_stored_false(self) -> None:
-        ConfigSetting.objects.set_value("dream_derive_evals", value=False)
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setenv("T3_DREAM_DERIVE_EVALS", "1")
-            assert dream_loop.derive_evals_enabled() is True
-
-
 class TestAReadFailureNeverStopsThePass:
     """A settings read that RAISES falls back to the shipped default, loudly, never up."""
-
-    def test_a_phase_falls_back_to_its_shipped_default(self) -> None:
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "teatree.config.get_effective_settings",
-                lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db blip")),
-            )
-            assert dream_loop.cross_link_enabled() is True
-            assert dream_loop.derive_evals_enabled() is False
 
     def test_a_ticket_filing_phase_fails_closed_when_the_read_fails(self) -> None:
         """A stored ``false`` cannot be read either, so the shipped ``true`` must not promote in its place."""
@@ -110,13 +63,3 @@ class TestAReadFailureNeverStopsThePass:
                 lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db blip")),
             )
             assert dream_loop.memory_promote_enabled() is False
-
-    def test_a_memory_rewriting_phase_fails_closed_when_the_read_fails(self) -> None:
-        """Decay archives and merge rewrites memory files, so an unreadable stored ``false`` must not run them."""
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(
-                "teatree.config.get_effective_settings",
-                lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db blip")),
-            )
-            assert dream_loop.decay_enabled() is False
-            assert dream_loop.merge_enabled() is False

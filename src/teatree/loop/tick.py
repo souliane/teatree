@@ -37,13 +37,7 @@ from teatree.loop.scanner_factories import _jobs_for_backend_hosts
 from teatree.loop.scanner_factory_config import _user_identity_aliases_for_overlay, _user_slack_id_for_overlay
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
-from teatree.loop.tick_freshness import (
-    _canonical_overlay_names,
-    _collect_repo_freshness,
-    _repo_freshness,
-    _repos_from_toml,
-    _write_tick_meta,
-)
+from teatree.loop.tick_freshness import _collect_repo_freshness, _repo_freshness, _repos_from_toml, _write_tick_meta
 from teatree.loop.tick_recovery import _execute_mechanical, _persist_agent_dispatches, _reap_stale_task_claims
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
 
@@ -55,7 +49,6 @@ __all__ = [
     "TickRequest",
     "_ScannerJob",
     "_allowed_url_prefixes_for_host",
-    "_canonical_overlay_names",
     "_collect_repo_freshness",
     "_execute_mechanical",
     "_identity_alias_groups_for_overlay",
@@ -140,7 +133,6 @@ def run_tick(
     defaults to ``True`` unless ``NO_COLOR`` is set. *jobs_builder* is the
     source of scanner jobs for the no-``scanners`` path: the ``loops_tick``
     per-loop command injects the DB ``Loop``-table fan-out
-    (:func:`teatree.loops.loop_table.build_loop_table_jobs`) so each enabled,
     due ``Loop`` row is the single source of which scanners run a live tick;
     the default falls back to :func:`build_default_jobs`. The seam keeps
     :mod:`teatree.loop` from importing :mod:`teatree.loops` up-stack.

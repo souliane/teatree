@@ -31,6 +31,7 @@ from teatree.core.gates.rubric_gate import RubricNotVerifiedError, check_rubric_
 from teatree.core.models import Rubric, Ticket
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.rubric import PHASE_CRITERIA
+from tests.factories import MergeAuditFactory, record_test_plan
 
 _SHA = "a" * 40
 _FAILING_CRITERION = "the verifier's FAIL outranks the audited bypass"
@@ -192,6 +193,8 @@ class TestFsmWiring(TestCase):
     def test_mark_delivered_passes_a_graded_rubric(self) -> None:
         ticket = _retrospected()
         _graded(ticket, texts=["the FSM delivers a graded rubric"])
+        record_test_plan(ticket)
+        MergeAuditFactory(clear__ticket=ticket)
         ticket.mark_delivered()
         assert ticket.state == Ticket.State.DELIVERED
 
@@ -224,5 +227,6 @@ class TestTheCliProducerSatisfiesTheGateEndToEnd(TestCase):
         )
 
         ticket.refresh_from_db()
+        MergeAuditFactory(clear__ticket=ticket)
         ticket.mark_delivered()
         assert ticket.state == Ticket.State.DELIVERED

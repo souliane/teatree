@@ -29,8 +29,10 @@ from teatree.loop.dispatch import dispatch
 from teatree.loop.persistence import persist_agent_actions
 from teatree.loop.persistence_reviewer import _already_reviewed_at_head
 from teatree.loop.scanners.reviewed_pr_head import _discharged_sha
-from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner, mark_reviewed
+from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from tests._pr_open_state_stub import pr_open_state
+from tests.teatree_core.conftest import record_review_context_for_test
+from tests.teatree_loop._review_cache import seed_review_state
 from tests.teatree_loop.test_scanners import FakeCodeHost
 
 _URL = "https://gitlab/x/-/merge_requests/7057"
@@ -48,6 +50,7 @@ def _discharged_reviewer_ticket(*, url: str = _URL, sha: str = _SHA) -> Ticket:
     )
     session = Session.objects.create(ticket=ticket, agent_id="t")
     Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
+    record_review_context_for_test(ticket)
     ticket.mark_reviewed_externally()
     return ticket
 
@@ -102,7 +105,7 @@ class DischargeIsNotReadBackAsAForgeApproval(TestCase):
 
     def test_genuine_forge_approval_later_dismissed_still_emits(self) -> None:
         """Anti-over-correction: a real approval that the forge drops must still re-review."""
-        mark_reviewed(url=_URL, sha=_SHA, state=ReviewState.APPROVED.value)
+        seed_review_state(url=_URL, sha=_SHA, state=ReviewState.APPROVED.value)
         host = FakeCodeHost(
             user="alice",
             review_requested_prs=[{"web_url": _URL, "sha": _SHA}],

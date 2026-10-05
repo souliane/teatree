@@ -16,6 +16,7 @@ import math
 import os
 import re
 import time
+from dataclasses import dataclass
 from functools import lru_cache, partial
 from operator import itemgetter
 from pathlib import Path
@@ -28,12 +29,22 @@ from teatree.core.telemetry.admission_schema import (
     _LIFECYCLE_CAUSES,
     _LIFECYCLE_KINDS,
     _safe_admission_reason,
+    _safe_attempt_evidence,
     _valid_factory_row,
     _valid_identifier,
     _valid_lifecycle_row,
     _valid_observation,
 )
-from teatree.core.telemetry.observation_read import ObservationRead, ReadPeriod, read_recent_observations
+from teatree.core.telemetry.gate_schema import checked_gate_observations
+from teatree.core.telemetry.observation_read import (
+    DEFAULT_WINDOW,
+    READ_LIMIT_BYTES,
+    RETENTION_DAYS,
+    ObservationRead,
+    ReadPeriod,
+    RowValidator,
+    read_recent_observations,
+)
 from teatree.core.telemetry.skill_assurance import emit_skill_assurance, safe_skill_observation, valid_skill_row
 from teatree.utils.hook_registry import loop_registry_dir
 
@@ -52,13 +63,19 @@ logger = logging.getLogger(__name__)
 SPAN_NAME = "teatree.admission.decision"
 FACTORY_SPAN_NAME = "teatree.factory.issue"
 LIFECYCLE_SPAN_NAME = "teatree.factory.lifecycle"
-WINDOW = dt.timedelta(minutes=30)
-# Two daily files can be needed for one window. The 32 MiB aggregate read
-# limit is split into 16 MiB per daily file: over twice a full day of
-# 5-second admissions even with the longest safe reason.
-# A larger file remains explicitly incomplete rather than proving false recovery.
-READ_LIMIT_BYTES = 32 * 1024 * 1024
-RETENTION_DAYS = 7
+WINDOW = DEFAULT_WINDOW
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleEvent:
+    kind: str
+    entity_id: int
+    ticket_id: int = 0
+    task_id: int = 0
+    cause: str = "none"
+    iteration: int | None = None
+    error_fingerprint: str = ""
+    session_ref: str = ""
 
 
 def _directory() -> Path:
@@ -163,7 +180,7 @@ def _safe_lifecycle_observation(span: "ReadableSpan") -> dict[str, str | int] | 
         return None
     if not isinstance(cause, str) or cause not in _LIFECYCLE_CAUSES:
         return None
-    return {
+    row: dict[str, str | int] = {
         "epoch": epoch,
         "kind": kind,
         "entity_id": cast("int", entity_id),
@@ -171,6 +188,9 @@ def _safe_lifecycle_observation(span: "ReadableSpan") -> dict[str, str | int] | 
         "task_id": cast("int", task_id),
         "cause": cause,
     }
+    if kind == "attempt.finished":
+        row.update(_safe_attempt_evidence(attrs))
+    return row
 
 
 class PressureSpanExporter:
@@ -204,6 +224,10 @@ class PressureSpanExporter:
                     file_for = _skill_file_for
                 if row is None:
                     continue
+                context = span.get_span_context()
+                if context is not None and context.is_valid:
+                    row["trace_id"] = f"{context.trace_id:032x}"
+                    row["span_id"] = f"{context.span_id:016x}"
                 payload = (json.dumps(row, separators=(",", ":")) + "\n").encode()
                 fd = os.open(file_for(directory, int(row["epoch"])), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
                 try:
@@ -246,16 +270,22 @@ class PressureSpanExporter:
         self._last_pruned_day = today
 
 
-def checked_pressure_observations(
-    *, directory: Path | None = None, now: dt.datetime | None = None, window: dt.timedelta = WINDOW
+def _checked_observations(
+    prefix: str, validator: RowValidator, directory: Path | None, now: dt.datetime | None, window: dt.timedelta
 ) -> ObservationRead:
     return read_recent_observations(
         directory=directory or _directory(),
-        prefix="admission",
-        validator=_valid_observation,
+        prefix=prefix,
+        validator=validator,
         period=ReadPeriod(now or dt.datetime.now(tz=dt.UTC), window),
-        tail_limit=READ_LIMIT_BYTES // 2,
+        read_limit=READ_LIMIT_BYTES,
     )
+
+
+def checked_pressure_observations(
+    *, directory: Path | None = None, now: dt.datetime | None = None, window: dt.timedelta = WINDOW
+) -> ObservationRead:
+    return _checked_observations("admission", _valid_observation, directory, now, window)
 
 
 def recent_pressure_observations(
@@ -274,13 +304,7 @@ def latest_admission_reason(*, directory: Path | None = None, now: dt.datetime |
 def checked_factory_observations(
     *, directory: Path | None = None, now: dt.datetime | None = None, window: dt.timedelta = WINDOW
 ) -> ObservationRead:
-    return read_recent_observations(
-        directory=directory or _directory(),
-        prefix="factory",
-        validator=_valid_factory_row,
-        period=ReadPeriod(now or dt.datetime.now(tz=dt.UTC), window),
-        tail_limit=READ_LIMIT_BYTES // 2,
-    )
+    return _checked_observations("factory", _valid_factory_row, directory, now, window)
 
 
 def recent_factory_observations(
@@ -292,13 +316,7 @@ def recent_factory_observations(
 def checked_lifecycle_observations(
     *, directory: Path | None = None, now: dt.datetime | None = None, window: dt.timedelta = WINDOW
 ) -> ObservationRead:
-    return read_recent_observations(
-        directory=directory or _directory(),
-        prefix="lifecycle",
-        validator=_valid_lifecycle_row,
-        period=ReadPeriod(now or dt.datetime.now(tz=dt.UTC), window),
-        tail_limit=READ_LIMIT_BYTES // 2,
-    )
+    return _checked_observations("lifecycle", _valid_lifecycle_row, directory, now, window)
 
 
 def recent_lifecycle_observations(
@@ -310,13 +328,7 @@ def recent_lifecycle_observations(
 def checked_skill_assurance_observations(
     *, directory: Path | None = None, now: dt.datetime | None = None, window: dt.timedelta = WINDOW
 ) -> ObservationRead:
-    return read_recent_observations(
-        directory=directory or _directory(),
-        prefix="skill",
-        validator=valid_skill_row,
-        period=ReadPeriod(now or dt.datetime.now(tz=dt.UTC), window),
-        tail_limit=READ_LIMIT_BYTES // 2,
-    )
+    return _checked_observations("skill", valid_skill_row, directory, now, window)
 
 
 def recent_skill_assurance_observations(
@@ -405,23 +417,38 @@ class LocalSpanRecorder:
     def record_lifecycle_transition(
         *, kind: str, entity_id: int, ticket_id: int = 0, task_id: int = 0, cause: str = "none"
     ) -> None:
-        if kind not in _LIFECYCLE_KINDS or not all(
-            (
-                _valid_identifier(entity_id),
-                _valid_identifier(ticket_id, allow_zero=True),
-                _valid_identifier(task_id, allow_zero=True),
-            )
-        ):
-            logger.warning("factory lifecycle telemetry rejected an invalid event")
-            return
+        LocalSpanRecorder.record_lifecycle_event(
+            LifecycleEvent(kind=kind, entity_id=entity_id, ticket_id=ticket_id, task_id=task_id, cause=cause)
+        )
+
+    @staticmethod
+    def record_lifecycle_event(event: LifecycleEvent) -> None:
         try:
+            if event.kind not in _LIFECYCLE_KINDS or not all(
+                (
+                    _valid_identifier(event.entity_id),
+                    _valid_identifier(event.ticket_id, allow_zero=True),
+                    _valid_identifier(event.task_id, allow_zero=True),
+                )
+            ):
+                logger.warning("factory lifecycle telemetry rejected an invalid event")
+                return
+            cause = event.cause if isinstance(event.cause, str) and event.cause in _LIFECYCLE_CAUSES else "unknown"
             with _provider().get_tracer(__name__).start_as_current_span(LIFECYCLE_SPAN_NAME) as span:
-                span.set_attribute("teatree.lifecycle.kind", kind)
-                span.set_attribute("teatree.lifecycle.entity_id", entity_id)
-                span.set_attribute("teatree.lifecycle.ticket_id", ticket_id)
-                span.set_attribute("teatree.lifecycle.task_id", task_id)
-                safe_cause = cause if isinstance(cause, str) and cause in _LIFECYCLE_CAUSES else "unknown"
-                span.set_attribute("teatree.lifecycle.cause", safe_cause)
+                span.set_attribute("teatree.lifecycle.kind", event.kind)
+                span.set_attribute("teatree.lifecycle.entity_id", event.entity_id)
+                span.set_attribute("teatree.lifecycle.ticket_id", event.ticket_id)
+                span.set_attribute("teatree.lifecycle.task_id", event.task_id)
+                span.set_attribute("teatree.lifecycle.cause", cause)
+                if event.kind == "attempt.finished":
+                    if re.fullmatch(r"[0-9a-f]{16}", event.session_ref):
+                        span.set_attribute("teatree.lifecycle.session_ref", event.session_ref)
+                    if event.iteration is not None and _valid_identifier(event.iteration):
+                        span.set_attribute("teatree.lifecycle.iteration", event.iteration)
+                    if isinstance(event.error_fingerprint, str) and (
+                        not event.error_fingerprint or re.fullmatch(r"[0-9a-f]{64}", event.error_fingerprint)
+                    ):
+                        span.set_attribute("teatree.lifecycle.error_fingerprint", event.error_fingerprint)
                 span.set_attribute("teatree.observed_epoch", int(time.time()))
         except Exception as exc:  # noqa: BLE001 — observability cannot change a committed lifecycle transition
             logger.warning(
@@ -445,13 +472,16 @@ class LocalSpanRecorder:
 
 record_admission_decision = LocalSpanRecorder.record_admission_decision
 record_factory_issue = LocalSpanRecorder.record_factory_issue
+record_lifecycle_event = LocalSpanRecorder.record_lifecycle_event
 record_lifecycle_transition = LocalSpanRecorder.record_lifecycle_transition
 record_skill_assurance = LocalSpanRecorder.record_skill_assurance
 
 
 __all__ = [
+    "LifecycleEvent",
     "PressureSpanExporter",
     "checked_factory_observations",
+    "checked_gate_observations",
     "checked_lifecycle_observations",
     "checked_pressure_observations",
     "checked_skill_assurance_observations",
@@ -462,6 +492,7 @@ __all__ = [
     "recent_skill_assurance_observations",
     "record_admission_decision",
     "record_factory_issue",
+    "record_lifecycle_event",
     "record_lifecycle_transition",
     "record_skill_assurance",
 ]

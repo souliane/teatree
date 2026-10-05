@@ -183,11 +183,13 @@ def make_runner(
         from teatree.eval.anthropic_api_runner import (  # noqa: PLC0415 — lazy: keeps the eval CLI import chain Django-/anthropic-free until an anthropic_api run is requested.
             build_anthropic_api_eval_runner,
         )
+        from teatree.eval.cost_observation import suite_budget_from_env  # noqa: PLC0415 — same lazy boundary
 
         return build_anthropic_api_eval_runner(
             max_turns_override=params.max_turns_override,
             effort=params.effort,
             require_executed=params.require_executed,
+            suite_budget=suite_budget_from_env(),
         )
     if backend == TRANSCRIPT_BACKEND:
         return TranscriptRunner(transcript_dir=transcript_dir or Path.cwd())

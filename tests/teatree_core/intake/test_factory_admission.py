@@ -12,7 +12,6 @@ from teatree.core.intake.factory_admission import (
     decide_issue_intake,
     payload_body,
     payload_labels,
-    resolve_admit_label,
     resolve_umbrella_labels,
 )
 from teatree.core.models import ConfigSetting
@@ -296,15 +295,6 @@ class TestPayloadBody:
     def test_a_missing_or_null_body_is_empty(self) -> None:
         assert payload_body({}) == ""
         assert payload_body({"body": None}) == ""
-
-
-class TestResolveAdmitLabel(TestCase):
-    def test_defaults_to_the_shipped_t3_auto_label(self) -> None:
-        assert resolve_admit_label("") == "t3-auto"
-
-    def test_reads_the_issue_implementer_label_setting(self) -> None:
-        ConfigSetting.objects.set_value("issue_implementer_label", "admit-me")
-        assert resolve_admit_label("") == "admit-me"
 
 
 class TestResolveUmbrellaLabels(TestCase):

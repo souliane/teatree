@@ -40,7 +40,7 @@ class _LoopFlagAndCredentialSettings:
     # needs a recorded human approver).
     trusted_issue_authors: list[str] = field(default_factory=list)
     # The FALLBACK in-flight ceiling when the resource loop has no adaptive
-    # opinion (kill-switch off, no reading yet, or stale) — see #3992's
+    # opinion (no reading yet, or stale) — see #3992's
     # resolve_intake_concurrency, which otherwise derives the live limit from
     # observed headroom and may exceed this number.
     issue_implementer_max_concurrent: int = 3
@@ -48,61 +48,6 @@ class _LoopFlagAndCredentialSettings:
     # constant, because which marker a deployment uses is its own policy. Emptying it
     # turns the LABEL half off; the structural half still declines an unlabelled epic.
     umbrella_issue_labels: list[str] = field(default_factory=lambda: ["epic", "umbrella", "tracking"])
-    # Fleet-safety Stage 2 kill-switch (default OFF). When ON, the cross-instance
-    # MUTEX (``teatree.core.fleet.claim`` — a GitHub claim ref as a server-side CAS)
-    # governs the whole in-flight lifecycle: the issue-implementer dispatch WINS the
-    # ref before granting a marker (the marker is a CACHE, not the authority); a
-    # per-tick HEARTBEAT sweep re-affirms every in-flight claim so it can never
-    # expire and be stolen mid-dispatch (a stolen claim ABANDONS the marker so the
-    # work aborts); and every outward write is FENCED fail-closed against
-    # ``is_held_by_me`` — the sync pre-ship gate, the async ``execute_ship`` (before
-    # BOTH the branch push and the PR-open), and the orphan-branch PR-create.
-    # (The §17.4 merge keystone fence is a scoped follow-up.) When OFF the behaviour
-    # is byte-for-byte today's local-only get_or_create. If the ref infra is
-    # unreachable while ON the claim/fence fails SAFE (does not claim / does not
-    # push under an unconfirmable claim, logs loudly); turning the switch OFF
-    # restores today's behaviour. DB-home (#1775), per-overlay overridable;
-    # ``T3_FLEET_CLAIM_ENABLED`` env wins over both.
-    fleet_claim_enabled: bool = False
-    # #1796 / agent-teams Track-A PR#1: opt-in, default-OFF arm for the
-    # dispatch loop's ``orchestrate_phase`` claim. The phase is wired dormant
-    # (``claim=False``) in ``run_tick`` — it computes the deterministic fan-out
-    # manifest from ``wip`` + ``max_concurrent_auto_starts`` but never claims
-    # or spawns. When this is flipped on, the tick runs ``orchestrate_phase``
-    # with ``claim=True`` so the lead does the thin per-unit claim+spawn the
-    # manifest already computes (the #786-N4 claim-is-the-spawn boundary). When
-    # off (the default) the dormant ``claim=False`` path is kept EXACTLY, so the
-    # loop's behaviour is unchanged. Per-overlay overridable, and
-    # ``T3_ORCHESTRATE_CLAIM_ENABLED`` env wins over both.
-    orchestrate_claim_enabled: bool = False
-    # T4-PR-1 — the OFF switch the autoresearch outer-loop runtime ships behind,
-    # and the canonical first entry of the ``FEATURE_FLAGS`` lifecycle registry
-    # (``config/feature_flags.py``, stage=DARK). Ships behaviorally inert: NOTHING
-    # reads it in this PR — the later outer-loop runtime wires its scanner behind
-    # ``get_effective_settings().outer_loop_enabled``, so the governed OFF switch
-    # exists before the risky code lands. DB-home (#1775): resolved from the
-    # ``ConfigSetting`` store (global + overlay rows); a ``[teatree]`` /
-    # ``[overlays.<name>]`` TOML value is ignored on read. The conformance suite
-    # pins stage=DARK => this default == its off_value (False), so the outer loop
-    # can never be flipped default-ON without a code-reviewed stage demotion.
-    outer_loop_enabled: bool = False
-    # North-star PR-6 — the master gate for the directive-driven self-modification
-    # front-end (intake + interpret + ratify), graduated DARK -> SETTLING by #3895.
-    # Default ON: a captured directive IS interpreted, and the intake arc terminates at
-    # the structural human ratify gate. The EXECUTION arc past that gate additionally
-    # needs ``factory_score_enabled`` (default OFF) and a live critic, so nothing
-    # self-modifies at default resolution. DB-home (#1775), per-overlay overridable —
-    # flip OFF to disable directive intake entirely.
-    directive_loop_enabled: bool = True
-    # T4-PR-2 — the SIG-PR-2 recipe/score seam OFF switch (a DARK ``FEATURE_FLAGS``
-    # entry). Ships OFF: ``t3 <overlay> recipe score`` still COMPUTES read-only (for
-    # calibrating recipe weights against real ledger data pre-enable), but ``--record``
-    # refuses, NO ``FactoryScoreSnapshot`` row is ever written, NO ``DeferredQuestion``
-    # is queued, and ``build_server()`` does not register the MCP ``factory_score`` tool
-    # — the outer loop physically has no metric surface. DB-home, per-overlay overridable.
-    factory_score_enabled: bool = False
-    # Opt-in colleague nagging, read by more than one loop; ships off until its owner decides.
-    review_nag_enabled: bool = False
     # T4-PR-2 — the human-approved recipe sha (``config/factory_recipe.recipe_sha``).
     # A scored read stamps ``recipe_approved`` by comparing the committed recipe's sha
     # to this; unset (the default) means no recipe is approved, so every payload is
@@ -123,23 +68,6 @@ class _LoopFlagAndCredentialSettings:
     # away to 0 (which would prune every backup immediately). The cadence is the Loop
     # row's ``daily_at`` anchor, not a second setting. DB-home, per-overlay overridable.
     db_backup_retention_days: int = 7
-    # #3201 PR-3b — the OFF switch the CI-eval self-heal AUTONOMOUS FIXER ships
-    # behind, and a DARK ``FEATURE_FLAGS`` entry. Ships behaviorally inert: the
-    # ``ci_eval_heal`` loop stays OBSERVE-ONLY (dispatch a behavioral eval, poll,
-    # GREEN or HALT+escalate on any red — never a fix) exactly as PR-3a, UNLESS
-    # this flag is on AND the ``ci_eval_heal`` ``Loop`` row is enabled (BOTH gates
-    # required). When armed, a behavioral (non-infra) red triggers a BOUNDED
-    # autonomous fixer dispatch (``begin_fix`` -> a headless coding sub-agent whose
-    # pushed diff must pass the #3282 anti-cheat gate), capped at the session's
-    # ``max_fix_attempts`` (default 2 at open time) before it HALTs and escalates —
-    # never a loop-forever. The anti-cheat invariant is untouched: a genuinely
-    # failing eval can NEVER be marked green, a fixer that edits a scenario/matcher
-    # file is REJECTED, and an exhausted-budget session HALTs rather than greens.
-    # DB-home (#1775), per-overlay overridable — an overlay can trial the fixer on
-    # its own budget. The conformance suite pins stage=DARK => this default == its
-    # off_value (False), so autonomous CI mutation can never ship default-ON without
-    # a code-reviewed stage demotion.
-    ci_eval_heal_autofix_enabled: bool = False
     # Human-readable mirror of the latest session hand-off. The
     # ``SessionHandover`` DB row is the source of truth; this file mirrors
     # the payload for human-readability and for bootstrapping a brand-new
@@ -164,11 +92,6 @@ class _LoopFlagAndCredentialSettings:
     # Pass ``--plugin-dir`` to the launched Claude Code agent so retro may edit
     # core plugin files (formerly ``T3_CONTRIBUTE``). ``T3_CONTRIBUTE`` env wins.
     contribute_plugin_dir: bool = False
-    # Fetch PR/issue titles to enrich a prompt before trigger matching (formerly
-    # ``T3_HOOK_FETCH_TITLES``). Default on. ``T3_HOOK_FETCH_TITLES`` env wins;
-    # the UserPromptSubmit hook runs pre-Django, so there the DB tier is skipped
-    # (fail-safe) and env + this default govern — identical to legacy behaviour.
-    hook_fetch_titles: bool = True
     # Per-account ``pass`` routing for the two Anthropic credentials
     # (``teatree.llm.credentials``): an ORDERED LIST of ``pass`` entries the routing
     # selector (``teatree.credential_config.PassPathSelector``) fans out over per

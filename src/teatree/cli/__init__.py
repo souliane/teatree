@@ -53,6 +53,7 @@ from teatree.cli.ci import ci_app
 from teatree.cli.codex import codex_app
 from teatree.cli.command_tree import command_catalogue
 from teatree.cli.config import config_app
+from teatree.cli.deploy import deploy_app
 from teatree.cli.directive import directive_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.dogfood import dogfood_app
@@ -239,6 +240,7 @@ app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(loop_app, name="loop")
 app.add_typer(goal_app, name="goal")
 app.add_typer(worker_app, name="worker")
+app.add_typer(deploy_app, name="deploy")
 app.add_typer(loops_app, name="loops")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(notion_app, name="notion")

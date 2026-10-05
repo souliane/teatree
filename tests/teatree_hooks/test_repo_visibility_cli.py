@@ -27,9 +27,12 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+
+from teatree.hooks._repo_visibility import slug_for_remote_url
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -97,6 +100,19 @@ def _run_cli(
     data_dir: Path | None = None,
     config_db: Path | None = None,
 ) -> str:
+    result = _cli_process(remote, tmp_path, bin_dir, data_dir=data_dir, config_db=config_db)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout.strip()
+
+
+def _cli_process(
+    remote: str,
+    tmp_path: Path,
+    bin_dir: Path,
+    *,
+    data_dir: Path | None = None,
+    config_db: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
         "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -107,16 +123,17 @@ def _run_cli(
         # rows can never hand a probe row its verdict for free.
         "T3_CONFIG_DB": str(config_db if config_db is not None else _seed_config_db(tmp_path / "empty.db", {})),
         "PYTHONPATH": str(REPO_ROOT / "src"),
+        # No host projection either, so an unreadable store cannot borrow the
+        # developer's own published settings as its fallback.
+        "XDG_DATA_HOME": str(tmp_path / "xdg"),
     }
-    result = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-m", "teatree.hooks.repo_visibility_cli", remote],
         capture_output=True,
         text=True,
         check=False,
         env=env,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    return result.stdout.strip()
 
 
 class TestVisibilityRoutesToTheRemotesOwnForge:
@@ -194,7 +211,7 @@ def _failing_forge_shims(bin_dir: Path) -> Path:
     return log
 
 
-_ALLOWLIST = {"private_repos": ["acme-eng"]}
+_ALLOWLIST = {"private_repos": ["gitlab.com/acme-eng"]}
 
 
 class TestDeclaredPrivateNeedsNoNetwork:
@@ -217,7 +234,7 @@ class TestDeclaredPrivateNeedsNoNetwork:
         verdict = _run_cli(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=config_db)
 
         assert verdict == "PRIVATE"
-        assert not log.exists(), f"probed the network for an already-declared-private repo: {log.read_text()}"
+        assert log.exists(), "a reachable PUBLIC answer must be able to override the declaration"
 
     def test_allowlisted_remote_resolves_private_when_the_probe_never_answers(self, tmp_path: Path) -> None:
         """The incident: the forge call exceeds its budget, and the repo is still private."""
@@ -258,3 +275,146 @@ class TestVerdictDoesNotDependOnWhichCheckoutAsks:
         loaded_box = _run_cli(_GITLAB_REMOTE, tmp_path, silent, data_dir=tmp_path / "wt-b", config_db=config_db)
 
         assert idle_box == loaded_box == "PRIVATE"
+
+
+def _corrupt_store(path: Path) -> Path:
+    path.write_bytes(b"this is not an sqlite database" * 64)
+    return path
+
+
+def _empty_store(path: Path) -> Path:
+    path.touch()
+    return path
+
+
+def _store_without_the_table(path: Path) -> Path:
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE unrelated (x)")
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _store_with_a_scalar_allowlist(path: Path) -> Path:
+    return _seed_config_db(path, {"private_repos": "acme-eng"})
+
+
+class TestAnUnreadableAllowlistIsNamedNotEmpty:
+    """A ``private_repos`` store that could not be READ is reported as such, never as "none declared".
+
+    The cold read fails open to an empty list, so a locked, corrupt or missing store
+    made a declared-private remote resolve exactly like an undeclared one: UNKNOWN,
+    and a refusal telling the operator to declare a repo that already was. The
+    verdict stays fail-closed (``ALLOWLIST_UNREADABLE`` is enforced like UNKNOWN);
+    it only stops lying about why.
+    """
+
+    @pytest.mark.parametrize(
+        "store",
+        [_corrupt_store, _empty_store, _store_without_the_table, _store_with_a_scalar_allowlist],
+        ids=["corrupt", "zero-byte", "no-table", "scalar-value"],
+    )
+    def test_unreadable_store_with_no_probe_answer_is_named(
+        self, store: Callable[[Path], Path], tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        _failing_forge_shims(bin_dir)
+        db = store(tmp_path / "config.sqlite3")
+
+        result = _cli_process(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=db)
+
+        assert result.stdout.strip() == "ALLOWLIST_UNREADABLE", result.stdout + result.stderr
+        assert "could not read private_repos" in result.stderr
+        assert str(db) in result.stderr
+
+    def test_a_store_locked_by_a_writer_is_named(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        _failing_forge_shims(bin_dir)
+        db = _seed_config_db(tmp_path / "config.sqlite3", _ALLOWLIST)
+        writer = sqlite3.connect(str(db), isolation_level=None)
+        writer.execute("PRAGMA locking_mode=EXCLUSIVE")
+        writer.execute("BEGIN EXCLUSIVE")
+        try:
+            result = _cli_process(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=db)
+        finally:
+            writer.execute("ROLLBACK")
+            writer.close()
+
+        assert result.stdout.strip() == "ALLOWLIST_UNREADABLE", result.stdout + result.stderr
+        assert "could not read private_repos" in result.stderr
+
+    def test_no_store_at_all_is_named(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        _failing_forge_shims(bin_dir)
+        missing = tmp_path / "nowhere" / "db.sqlite3"
+
+        result = _cli_process(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=missing)
+
+        assert result.stdout.strip() == "ALLOWLIST_UNREADABLE", result.stdout + result.stderr
+        assert f"no config DB at {missing}" in result.stderr
+
+    def test_a_probe_that_answers_still_decides(self, tmp_path: Path) -> None:
+        """The unreadable store only names an undecided verdict; a forge answer is still evidence."""
+        bin_dir = tmp_path / "bin"
+        _forge_shims(bin_dir, glab_visibility="private")
+
+        result = _cli_process(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=_corrupt_store(tmp_path / "c.sqlite3"))
+
+        assert result.stdout.strip() == "PRIVATE", result.stdout + result.stderr
+
+    def test_a_readable_store_without_the_repo_stays_unknown(self, tmp_path: Path) -> None:
+        """Anti-vacuity: a store that was READ and simply does not list the repo is UNKNOWN."""
+        bin_dir = tmp_path / "bin"
+        _failing_forge_shims(bin_dir)
+        db = _seed_config_db(tmp_path / "config.sqlite3", {"private_repos": ["gitlab.com/other-org"]})
+
+        result = _cli_process(_GITLAB_REMOTE, tmp_path, bin_dir, config_db=db)
+
+        assert result.stdout.strip() == "UNKNOWN", result.stdout + result.stderr
+        assert "could not read" not in result.stderr
+
+
+class TestUrlRemotesRouteOnTheirHostAlone:
+    """A ``scheme://`` remote's userinfo and port are not part of the repo's identity.
+
+    ``ssh://git@gitlab.com/...`` normalised to ``git@gitlab.com/...``, a host
+    segment no forge route recognises, so a private GitLab remote spelled that way
+    (or ``ssh://...:2222/...`` on a self-hosted forge, or a credentialed
+    ``https://`` CI remote) never reached ``glab`` and stayed UNKNOWN, while the
+    SCP spelling of the very same remote resolved PRIVATE.
+    """
+
+    @pytest.mark.parametrize(
+        "remote",
+        [
+            "ssh://git@gitlab.com/acme-eng/inner/widget.git",
+            "ssh://git@gitlab.example.org:2222/acme-eng/inner/widget.git",
+            "https://oauth2:tok3n-placeholder@gitlab.com/acme-eng/inner/widget.git",  # privacy-scan:allow fixture
+        ],
+        ids=["ssh-url", "ssh-url-port", "https-userinfo"],
+    )
+    def test_private_gitlab_url_remote_resolves_via_glab(self, remote: str, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        log = _forge_shims(bin_dir, glab_visibility="private")
+
+        assert _run_cli(remote, tmp_path, bin_dir) == "PRIVATE"
+        assert "glab api projects/acme-eng%2Finner%2Fwidget" in log.read_text(encoding="utf-8")
+
+    def test_a_credential_in_the_url_never_reaches_the_cache(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        _forge_shims(bin_dir, glab_visibility="private")
+
+        _run_cli(
+            "https://oauth2:tok3n-placeholder@gitlab.com/acme-eng/inner/widget.git", tmp_path, bin_dir
+        )  # privacy-scan:allow fixture
+
+        cache = (tmp_path / "state" / "repo-visibility-cache.json").read_text(encoding="utf-8")
+        assert "tok3n-placeholder" not in cache
+        assert "gitlab.com/acme-eng/inner/widget" in json.loads(cache)
+
+    @pytest.mark.parametrize(
+        "remote", ["file:///srv/git/widget.git", "ssh://[::1/widget.git"], ids=["no-host", "malformed"]
+    )
+    def test_a_url_without_a_parsable_host_keeps_its_verbatim_slug(self, remote: str) -> None:
+        """Anti-vacuity: only a real network host is rewritten; anything else is left exactly as it was."""
+        assert slug_for_remote_url(remote) == remote.split("://", 1)[1].removesuffix(".git")

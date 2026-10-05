@@ -91,7 +91,7 @@ A session-less branch still gets a session at ship time (see [`../ship/SKILL.md`
 
 When the repo you are about to code in is **managed by an overlay** (a product/service repo the overlay's workspace wiring owns, not teatree core itself), the overlay's playbook skill carries this repo's worktree/run/test/lint commands, tenant rules, and conventions. The generic dev skill is **not** enough on its own. Per `/t3:rules` § "Invoke Skills Before ANY Response", do X — never Y:
 
-1. **Do** self-load the overlay's playbook skill **before touching any code** — unconditionally, before asking for the ticket URL, before reading any diff. If the `UserPromptSubmit` loader did not fire, load it yourself: `/t3-<overlay>` (the overlay's named playbook skill).
+1. **Do** self-load the overlay's playbook skill **before touching any code** — unconditionally, before asking for the ticket URL, before reading any diff. If no loader named it, load it yourself: `/t3-<overlay>` (the overlay's named playbook skill).
 2. **Never** issue the first `Edit`/`Write` against an overlay-repo source file until that skill is loaded alongside this one.
 
 ```text
@@ -114,21 +114,14 @@ Features benefit from a scoping pass (intent discovery, acceptance-criteria fram
 
 The goal is to surface the missed step so the user can redirect early, not to add friction to every coding session.
 
-### 0. Ticket-Required Overlay Check
-
-When the active overlay has `require_ticket = True` in its configuration, a tracked issue must exist before writing any code.
-
-- **Detection:** check `overlay.config.require_ticket`. Overlays that dogfood their own workflow (e.g., the teatree overlay) enable this flag.
-- **If no ticket context exists:** ask "Which ticket is this for?" or offer to create one. Do not proceed without a ticket reference.
-- **Use the overlay** for worktree creation and lifecycle management.
-- **Exception:** changes from `/t3:retro` are exempt. Retro findings are small tactical fixes committed directly on the current branch by design.
-
 ### 0d. Dream Gap-Batch Tickets — Claim Only What You Delivered (Non-Negotiable)
+
+A ticket carrying `extra['dream_gap_batch']` hosts dream gaps the backlog sweep folded into it ([#4776](https://github.com/souliane/teatree/issues/4776)); each gap's substance is folded into the issue body under `## Folded in: dream-gap <gap_key>`. Fix each gap independently, and record each one with `t3 dream gap-disposition <id> <gap_key> --citation "<evidence>"` (addressed) or `--reject "<why>"` — the host's rubric refuses merge until `t3 dream gap-coverage --ticket <id>` exits 0.
 
 A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#4776](https://github.com/souliane/teatree/issues/4776)): `ticket.context` lists every gap the pass queued, each with its `gap_key` and, when its ledger row exists, its full `Rule:` / `Evidence:` / `Fix in:` lines — work from those, never the truncated title. A pass with 300 pending gaps mints ONE such ticket, not 300 — fix each gap in the manifest independently.
 
 - **Drop, never stretch.** A gap you cannot deliver in this change is OMITTED from the PR, not padded in with a thin/partial fix. It stays unchecked on the umbrella and the next pass re-offers it — dropping it costs nothing; claiming it falsely is a review HOLD.
-- **Record exactly what you delivered, before shipping:** `ticket.merge_extra(set_keys={'dream_gap_claimed_delivered': [<gap_key>, ...]})` — only the keys you actually fixed. The reconcile step checks off and retires ONLY the gaps in this list, intersected with the manifest; an out-of-manifest key is ignored.
+- **Record exactly what you delivered, before shipping:** an addressed disposition joins `dream_gap_claimed_delivered` — only for the keys you actually fixed. The reconcile step retires ONLY the gaps in this list, intersected with the manifest; an out-of-manifest key is ignored.
 - **A batched PR that claims 9 of 10 gaps but delivers fewer is worse than one that delivers 1 honestly** — the unfixed gap's checkbox would get ticked and vanish from the ledger. Never claim a gap the diff does not actually address.
 
 ### 1. Plan First
@@ -137,9 +130,11 @@ A ticket carrying `extra['dream_gap_batch']` is a dream-loop promotion batch ([#
 
 An engaged session is re-reminded of this on a cadence rather than expected to recall it — the `standing-golden-rule` directive ([`../interactive/SKILL.md`](../interactive/SKILL.md) § "Standing directives", readable with `t3 loop directives show`). It arrives as context on a turn you were already taking, so it costs nothing. The reminder is advisory; the rule below is the rule.
 
-**"Just fix it fast" is NOT a license to skip the plan — your single next action is the plan, never an edit/commit/push (do X, never Y).** Under urgency, especially across **multiple unrelated tickets** ("both tickets are tiny, just fix them both fast and push"), the drift is to start editing/committing/pushing with no plan. The plan-first step holds precisely when the user is in a hurry — a do-it-now directive changes nothing about ordering: plan first, then code. So when you are told to fix N tickets fast, your first assistant content block must be ordinary user-visible text containing the per-ticket plan and naming every ticket or its concrete target path, before any tool call — including read-only Bash investigation. Extended thinking, internal planning, a tool payload, and a later claim that the plans were “above” do not count as the presented response. **Delegation is downstream of planning:** an orchestrator-only boundary constrains who executes the plan, never whether or when the orchestrator presents it. Surface both provisional plans before attempting any `Agent`/`Task` dispatch. Never use placeholder Bash to stand in for unavailable delegation or planning. If delegation is unavailable, repeat both provisional plans in the final response and ask only the minimal unblock question; do not probe with Bash or ask about dispatch before the plans are visible. You may then **record the plan as tasks** (`TaskCreate` naming the tickets/scope), or **surface the two-ticket split** as a structured `AskUserQuestion` (which ticket first / keep them separate). If a target worktree is empty, missing, or unreadable, that does not suppress the required response: present a provisional plan for every named target first, then ask how to resolve access without inventing code details; if you stop as blocked, repeat those ticket identifiers or exact target paths with the provisional plans in the final response. It is **never** an `Edit`/`Write` on a ticket's source, and never `git commit` / `git push` / `gh pr create` / `gh pr merge`, before any plan is presented.
+**"Just fix it fast" is NOT a license to skip the plan.** Under urgency, especially across multiple tickets, plan first, then code. Present a per-target plan in ordinary user-visible text, or record it in a `TaskCreate`/`TaskUpdate` whose subject and description together name every target and give each its own implementation and verification actions. A placeholder task is denied until the plan exists. Read, Grep, Glob, and Bash commands classified read-only stay open while preparing the plan; an unclassifiable command or classifier error is treated as an action. A `[visible-plan-ok: <reason>]` escape needs a non-empty reason. Internal planning alone does not count. Ask questions, edit, commit, push, and dispatch only after every target is covered. If a target is unreadable, state a provisional plan for it before asking the smallest unblock question.
 
-**Mechanical ordering for urgent multi-ticket work:** before an ambiguity question, read, task record, or dispatch, emit one target-labeled provisional plan block per ticket. Each block names the target and states the prospective sequence: inspect the target, implement the change, add/run the focused test and verify it, then commit/push separately. Treat unknown details as explicit plan assumptions to verify; ambiguity is not a reason to defer planning. Only after every block is visible may you ask one minimal question, read files, or delegate. If you accidentally reach a tool first, do not close with a status summary of the question/read — the final response must repeat every target-labeled plan block.
+**Ordering for urgent multi-ticket work:** before an ambiguity question, write, or dispatch, emit one target-labeled provisional plan block per ticket. Each block names the target and states the prospective sequence: inspect the target, implement the change, add/run the focused test and verify it, then commit/push separately. Treat unknown details as explicit plan assumptions to verify; ambiguity is not a reason to defer planning. Read-only investigation and task recording remain available while drafting the plan. Only after every block is visible may you ask one minimal question or delegate. If you read or record tasks first, still present every target-labeled plan block before changing code.
+
+Delegation is downstream of planning. Never use placeholder Bash to occupy a tool slot while drafting the plans. If an earlier reply omitted them, repeat both provisional plans in visible text before dispatch. If delegation is unavailable, continue the planned targets yourself in sequence.
 
 ```text
 # First assistant content — ordinary visible text, not a tool payload:
@@ -148,11 +143,12 @@ Plan — TODO-4
 Plan — TODO-6
 - Inspect its own target; implement its independent change; add/run its focused test; verify; commit/push separately.
 
-# Only after those blocks are visible may TaskCreate/AskUserQuestion/Read/Bash run.
-# Never start with placeholder Bash, a clarification question, Edit/Write, commit, or push.
+# Read/Grep/Glob and classified read-only Bash may run while drafting the blocks.
+# TaskCreate/TaskUpdate may run only when they record both target plans.
+# AskUserQuestion, Edit/Write, commit, push and dispatch wait for the visible blocks.
 ```
 
-Two unrelated tickets are never bundled into one unplanned edit-spree; each gets its own planned, worktree-isolated change. After the user-visible plan, read-only investigation (`git fetch`, reading files) is exempt — it is part of planning.
+Two unrelated tickets each get a planned, worktree-isolated change. Classified read-only investigation stays open while planning.
 
 - **Verify the codebase matches expectations.** Run `git fetch origin main` and check: (1) are any ticket items already implemented on main? (2) does the current architecture match what the ticket assumes? Read the actual files before assuming the ticket description is current. Tickets derived from external analysis (source code leaks, competitor research, blog posts) are especially prone to stale assumptions.
 - **Check for prior work:** Search git history (`git log --grep`, PR list) for previous attempts at this task. Existing research, rejected approaches, and partial implementations save hours.
@@ -321,7 +317,7 @@ are in [`docs/module-health.md`](../../docs/module-health.md).
   t3 <overlay> test run                 # runs the repo's regression suite under its config
   ```
 
-  Scoping never means under-running: the lane is fail-safe **to FULL**. A migration, a `conftest.py` / `factories.py` / test-settings edit, an unclassifiable executable path, a missing merge-base, or an edit to the selection machinery itself all run the whole suite on their own. The `--full` flag is the exception a cross-cutting change declares, not the default every ticket pays. Pinned by `tests/teatree_quality/test_local_verification.py` (logic in `teatree.quality.local_verification`).
+  Scoping never means under-running: the lane is fail-safe **to FULL**. A migration, a `conftest.py` / `factories.py` / test-settings edit, an unclassifiable executable path, a missing merge-base, or an edit to the selection machinery itself all run the whole suite on their own. The `--full` flag is the exception a cross-cutting change declares, not the default every ticket pays. Pinned by `tests/teatree_quality/test_local_verification.py`.
 
 - **Run the language convention skill's review checklist** (if loaded) before declaring implementation complete.
 - **100% test coverage is part of the implementation (Non-Negotiable).** New code ships with tests in the same commit. Never lower coverage thresholds, add files to coverage omit lists, or exclude code from coverage measurement without **explicit user approval**. If you can't reach 100% coverage, the implementation scope is too large — break it into smaller pieces.
@@ -342,7 +338,7 @@ are in [`docs/module-health.md`](../../docs/module-health.md).
 
 ### Delegating Code to Sub-Agents
 
-When launching parallel agents to write code (especially tests), the dispatch prompt MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
+When you write a brief for a coding sub-agent by hand (including Codex or parallel agents), the brief MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
 
 ```text
 NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments that restate the code. NO comments referencing MRs/tickets/workstreams/Slack threads. Rationale belongs in the commit message, never inline.
@@ -350,6 +346,11 @@ NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments tha
 
 Then include these requirements in every prompt:
 
+- **Wire new variants into every consumer** (readers, guards, vacuity and anchor checks); grep for them and include a consumer table.
+- **Preserve verdict precedence:** measured failure beats incomplete, and incomplete never reports green.
+- **Keep machine-readable stdout pure:** send diagnostics to stderr and test parsing of the real artifact.
+- **Prove guard parity** when replacing a hook or sandbox lane; exercise tests through the real entry point from the real prior state, including the previous migration state.
+- **Before handoff, apply the reviewer's rubric to your own diff and run CI-equivalent checks:** `t3 tool verify-gates` (prek at commit and pre-push stages) and affected tests with CI's xdist parallelism; report the commands and results.
 - **Run `uv run ruff check <files>` and fix all violations** before declaring done
 - **Run `uv run ruff format <files>`** to ensure formatting matches the project
 - **Check type annotations** — if the project uses a type checker (ty, mypy), the code must pass

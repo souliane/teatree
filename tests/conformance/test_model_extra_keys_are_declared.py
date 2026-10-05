@@ -20,12 +20,13 @@ receiver rule than writes — ``Directive``, ``OutboundClaim`` and
 ``OuterLoopExperiment`` carry their own ``extra`` JSON that no TypedDict
 constrains, so only a receiver provably naming a Ticket/Worktree one counts.
 
-Whole-tree by construction: the write and the declaration sit in different
-modules, so no diff-scoped lane sees both ends.
+Whole-runtime-tree by construction: the write and the declaration sit in
+different modules, so no diff-scoped lane sees both ends. Historical migrations
+may read keys that the current model contract intentionally removed.
 """
 
 import ast
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 from teatree.core.models.types import TicketExtra, WorktreeExtra
@@ -274,7 +275,7 @@ def _undeclared_read_lines(path: Path, tree: ast.Module) -> list[str]:
 
 
 def test_every_model_extra_key_written_in_src_is_declared() -> None:
-    findings = [finding for path, tree in src_modules() for finding in _undeclared_writes(path, tree)]
+    findings = [finding for path, tree in _runtime_modules() for finding in _undeclared_writes(path, tree)]
 
     assert not findings, (
         "Undeclared model ``extra`` key(s) — validated_*_extra will drop these on the next transition:\n"
@@ -283,12 +284,17 @@ def test_every_model_extra_key_written_in_src_is_declared() -> None:
 
 
 def test_every_model_extra_key_read_in_src_is_declared() -> None:
-    findings = [finding for path, tree in src_modules() for finding in _undeclared_read_lines(path, tree)]
+    findings = [finding for path, tree in _runtime_modules() for finding in _undeclared_read_lines(path, tree)]
 
     assert not findings, (
         "Undeclared model ``extra`` key(s) read — no write of these survives a transition, so the read is dead:\n"
         + "\n".join(findings)
     )
+
+
+def _runtime_modules() -> Iterator[tuple[Path, ast.Module]]:
+    """Historical data conversions may read keys removed from the current model contract."""
+    return ((path, tree) for path, tree in src_modules() if "migrations" not in path.relative_to(REPO_ROOT).parts)
 
 
 def test_the_walk_detects_every_write_shape() -> None:

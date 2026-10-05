@@ -4,8 +4,7 @@ The quote-scanner (#1213) and banned-terms (#1415) gates exist to stop
 leaks on PUBLIC surfaces -- public-repo issues/PRs, Slack, public REST
 posts. A ``git commit`` to a PRIVATE repo is not a public surface: a
 private repo's own customer/domain terms are exactly what its commits are
-supposed to carry, and hard-blocking them forced an
-``--allow-banned-term`` / ``--quote-ok`` override on every commit.
+supposed to carry, and hard-blocking them would refuse every commit there.
 
 This module decides whether a banned/quoted match on a Bash command should
 DOWNGRADE from hard-block to warn, for two private surfaces ONLY -- a
@@ -52,9 +51,9 @@ resolves to no repo and fail-opens the carve-out (a banned-term leak to the
 public repo), and a relative private target only resolves by accident.
 
 ``commit_targets_private_repo`` decides whether the commit's resolved repo
-is known-private. The "is this repo private?" question (offline
-``[teatree] private_repos`` allowlist first, then a cached ``gh``/``glab``
-visibility probe) lives in :mod:`teatree.hooks._repo_visibility`. Detection
+is known-private. The shared visibility rule (cached ``gh``/``glab`` probe,
+then a host-qualified ``[teatree] private_repos`` declaration if it cannot
+answer) lives in :mod:`teatree.hooks._repo_visibility`. Detection
 is conservative and offline-first; an unknown/unresolvable repo is treated
 as NOT private so the gate stays hard-blocking, never weakened by a
 detection failure.
@@ -75,7 +74,7 @@ import re
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks import _commit_carve_out, _commit_repo_dir, _gh_glab_hiding, _repo_visibility
+from teatree.hooks import _commit_carve_out, _commit_repo_dir, _gh_glab_hiding, _private_repo_entries, _repo_visibility
 
 # Repo-visibility / privacy resolution lives in ``_repo_visibility``; the
 # structural purity primitives (segment splitting, per-token classification)
@@ -243,20 +242,20 @@ def is_gh_glab_posting_command(command: str) -> bool:
 def commit_targets_private_repo(cwd: Path | None, *, config_path: Path | None = None) -> bool:
     """Return True iff a commit in ``cwd`` targets a known-private repo.
 
-    Offline-first: the ``[teatree] private_repos`` slug-namespace allowlist is
-    consulted before any network probe, so a fully-offline session still gets
-    the carve-out for declared repos. The cached ``gh``/``glab`` visibility
-    probe is the fallback. An unresolvable repo is NOT private -- detection
-    failure never weakens the gate.
+    The shared verdict probes the forge first; a PUBLIC answer wins. A matching
+    host-qualified declaration stays private when the probe cannot answer.
+    An unresolvable repo remains non-private, so the gate enforces.
     """
     if cwd is None:
         return False
     slug = _repo_visibility.slug_for_cwd(cwd)
     if not slug:
         return False
-    if _repo_visibility.slug_is_allowlisted_private(slug, config_path):
-        return True
-    return _repo_visibility.slug_is_private(slug)
+    return _private_repo_entries.private_repo_visibility(
+        slug,
+        config_path,
+        ops=_repo_visibility,
+    ) in {"PRIVATE", "INTERNAL"}
 
 
 def _extract_repo_flag(words: list[str]) -> str:
@@ -309,9 +308,17 @@ def _segment_target_slug(words: list[str], cwd: Path | None) -> str:
     """
     explicit_repo = _extract_repo_flag(words)
     if explicit_repo:
-        return explicit_repo
+        return _private_repo_entries.qualified_repo_slug(
+            explicit_repo,
+            "github" if words[0] == "gh" else "gitlab",
+            ops=_repo_visibility,
+        )
     if words[0] == "gh" and os.environ.get("GH_REPO", ""):
-        return os.environ["GH_REPO"]
+        return _private_repo_entries.qualified_repo_slug(
+            os.environ["GH_REPO"],
+            "github",
+            ops=_repo_visibility,
+        )
     if cwd is not None:
         return _repo_visibility.slug_for_cwd(cwd)
     return ""
@@ -320,19 +327,19 @@ def _segment_target_slug(words: list[str], cwd: Path | None) -> str:
 def segment_target_is_private(words: list[str], cwd: Path | None, *, config_path: Path | None) -> bool:
     """Return True iff this posting segment's resolved target is known-private.
 
-    An explicit ``--repo owner/name`` slug has no host prefix; it is matched
-    against the allowlist as-is, then passed to the visibility probe directly
-    (``gh`` probe for GitHub slugs, ``glab`` probe requires the host to detect
-    GitLab; a bare ``owner/name`` defaults to the GitHub probe path).
+    An explicit ``--repo owner/name`` slug inherits the posting tool's forge
+    host before either the visibility probe or the private declaration match.
 
     Unknown/unresolvable target => NOT private (default-deny preserved).
     """
     slug = _segment_target_slug(words, cwd)
     if not slug:
         return False
-    if _repo_visibility.slug_is_allowlisted_private(slug, config_path):
-        return True
-    return _repo_visibility.slug_is_private(slug)
+    return _private_repo_entries.private_repo_visibility(
+        slug,
+        config_path,
+        ops=_repo_visibility,
+    ) in {"PRIVATE", "INTERNAL"}
 
 
 def command_is_pure_private_gh_glab_post(
@@ -499,7 +506,7 @@ def carve_out_applies(
     Ineligible regardless: ``gh api`` / ``glab api`` raw REST, ``curl``,
     Slack, and any non-structured verb. Public/unknown targets stay blocked.
     """
-    from teatree.hooks._command_parser import is_fail_closed_sentinel  # noqa: PLC0415 — deferred: call-time import
+    from teatree.hooks._parser_primitives import is_fail_closed_sentinel  # noqa: PLC0415 — deferred: call-time import
 
     if tool_name != "Bash" or is_fail_closed_sentinel(payload) or contains_secret(payload):
         return False
@@ -576,8 +583,14 @@ def visibility_unknown_for_block(
         if _segment_is_posting_verb(words)
     )
     for slug in slugs:
-        if not slug or _repo_visibility.slug_is_allowlisted_private(slug, config_path):
-            continue
-        if _repo_visibility.probe_visibility(slug) is None:
+        if (
+            slug
+            and _private_repo_entries.private_repo_visibility(
+                slug,
+                config_path,
+                ops=_repo_visibility,
+            )
+            is None
+        ):
             return slug
     return None

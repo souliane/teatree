@@ -36,11 +36,11 @@ def _run(stdin: str) -> subprocess.CompletedProcess[str]:
 def _run_env(stdin: str, env_overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """Invoke the script with a hermetic env: real banned-terms sources cleared first.
 
-    Clearing the inherited ``T3_BANNED_TERMS`` env and ``T3_CONFIG_DB`` keeps a
+    Clearing the inherited ``TEATREE_TERM_REGISTRY`` env and ``T3_CONFIG_DB`` keeps a
     developer's real DB / env out of the assertion, so the test exercises only
     the seeded DB / env it sets.
     """
-    env = {k: v for k, v in os.environ.items() if k not in {"T3_BANNED_TERMS", "T3_CONFIG_DB"}}
+    env = {k: v for k, v in os.environ.items() if k not in {"TEATREE_TERM_REGISTRY", "T3_CONFIG_DB"}}
     env.update(env_overrides)
     return subprocess.run(
         [sys.executable, str(SCRIPT), "-"],
@@ -417,11 +417,11 @@ class TestPrivateIpIsAFullDottedQuad:
 
 
 class TestPrivacyScanBannedTermsSource:
-    """The banned-terms source is DB-home ``banned_terms``.
+    """The banned-terms source is DB-home ``banned_term_registry``.
 
-    The public-leak pre-push gate reads the SAME ``banned_terms`` list the
-    commit/posting gates do: ``T3_BANNED_TERMS`` env override → the
-    ``banned_terms`` ``ConfigSetting`` row → fail-closed (never a SILENT empty
+    The public-leak pre-push gate reads the SAME ``banned_term_registry`` classes the
+    commit/posting gates do: ``TEATREE_TERM_REGISTRY`` env override → the
+    ``banned_term_registry`` ``ConfigSetting`` row → fail-closed (never a SILENT empty
     ban list). All terms are SYNTHETIC, so this public test leaks nothing.
     """
 
@@ -433,8 +433,8 @@ class TestPrivacyScanBannedTermsSource:
             "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
         )
         conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
-            (json.dumps(terms),),
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps({"leak": [], "prose_collider": terms}),),
         )
         conn.commit()
         conn.close()
@@ -457,7 +457,7 @@ class TestPrivacyScanBannedTermsSource:
         db = self._seed(tmp_path, ["fromdb"])
         result = _run_env(
             "a line mentioning envterm here\n",
-            {"T3_CONFIG_DB": str(db), "T3_BANNED_TERMS": "envterm"},
+            {"T3_CONFIG_DB": str(db), "TEATREE_TERM_REGISTRY": json.dumps({"leak": [], "prose_collider": ["envterm"]})},
         )
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "envterm" in result.stdout
@@ -477,11 +477,11 @@ class TestPrivacyScanBannedTermsSource:
         assert "banned-terms" in result.stderr.lower()
         assert "inert" in result.stderr.lower()
 
-    def test_explicit_empty_list_is_a_silent_deliberate_no_op(self, tmp_path: Path) -> None:
+    def test_explicit_empty_classed_registry_warns_that_the_scan_is_inert(self, tmp_path: Path) -> None:
         db = self._seed(tmp_path, [])
         result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "inert" not in result.stderr.lower()
+        assert "inert" in result.stderr.lower()
 
     def test_unreadable_store_reports_could_not_be_read_not_present_but_unset(self, tmp_path: Path) -> None:
         # A store that could not be READ (locked/corrupt/table-less) is a DISTINCT
@@ -516,14 +516,14 @@ class TestPrivacyScanAllowlistFromRegistry:
         return db
 
     def test_registry_allow_class_carves_out_the_identifier(self, tmp_path: Path) -> None:
-        db = self._seed_registry(tmp_path, {"prose_collider": ["acme"], "allow": ["acme-product"]})
+        db = self._seed_registry(tmp_path, {"leak": [], "prose_collider": ["acme"], "allow": ["acme-product"]})
         result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == 0, result.stdout + result.stderr
         assert "banned_term" not in result.stdout
 
     def test_without_allow_class_the_bare_slug_is_flagged(self, tmp_path: Path) -> None:
         # Anti-vacuous control: drop the allow class and the same line flags the slug.
-        db = self._seed_registry(tmp_path, {"prose_collider": ["acme"]})
+        db = self._seed_registry(tmp_path, {"leak": [], "prose_collider": ["acme"]})
         result = _run_env("the acme-product repo\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "banned_term" in result.stdout

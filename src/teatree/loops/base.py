@@ -4,7 +4,6 @@ A :class:`MiniLoop` is a typed contract every domain package exposes via a
 module-level ``MINI_LOOP: MiniLoop`` constant. The loop-table fan-out discovers
 these constants via :func:`teatree.loops.registry.iter_loops` and fans out
 the unified-verdict-admitted subset on each loop's DB-configured cadence
-(:func:`teatree.loops.loop_table.build_loop_table_jobs`).
 
 The ``build_jobs`` callable returns the list of :class:`_ScannerJob`
 records (the :mod:`teatree.loop.job_identity` shape) that the fan-out hands
@@ -82,7 +81,6 @@ class MiniLoop:
     install seeds. Cadence is stored in ONE place — the ``[loops.<name>]`` table of
     ``config/defaults.toml``, which seeds the DB ``Loop`` row's ``delay_seconds`` /
     ``daily_at``, and that row is the single source the loop-table fan-out
-    (``build_loop_table_jobs`` via ``Loop.is_due``) reads. Read the row, never this
     field: they routinely disagree (``arch_review`` and ``news`` declare 3600 here
     while the shipped row is a daily ``daily_at``), and only the row is live. The one
     thing this field still decides is the ``cadence_is_floor`` ceiling below
@@ -103,7 +101,6 @@ class MiniLoop:
     the interval and refuses a once-a-day wall-clock time.
 
     ``off_live_tick`` excludes the loop from the live work loop's scanner fan-out
-    (:func:`teatree.loops.loop_table.build_loop_table_jobs` skips it) and from the
     loop-timer chains — it is driven by its own ``off_tick_command`` instead, gating on
     the same ``Loop.is_due`` / ``last_run_at`` ledger. Reserved for the heavy passes
     (``dream``, ``directive_loop``, ``outer_loop``) that must not run on or re-arm the
@@ -128,7 +125,6 @@ class MiniLoop:
     ``declared_reach`` and ``determinism`` are the loop's visible tags, and they live
     HERE rather than on the mutable ``Loop`` DB row so no surface can render a
     classification that disagrees with what the code does. Both default to ``None``
-    — *undeclared*, which :func:`teatree.loops.classification.unclassified_loops`
     rejects — which keeps an empty ``declared_reach`` available as the real answer
     for a loop touching only this box's own state. Read :attr:`reach`, never
     ``declared_reach``: the property applies the colleague⇒egress implication.

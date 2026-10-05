@@ -200,6 +200,133 @@ class TestSubdirectoryRepoRoot:
         assert (clone / "uv.lock").read_text(encoding="utf-8") == "hand-written local work\n"
 
 
+class TestFetchOnlyProvesTheFastForwardCanHappen:
+    """The fetch step runs before the build and the drain, so it must refuse what the later ff cannot do."""
+
+    @staticmethod
+    def _fetch_only(clone: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [_BASH, str(_SCRIPT), "--fetch-only", str(clone)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=git_identity_env(),
+        )
+
+    def test_a_unique_edit_to_an_incoming_file_is_refused_and_kept(self, repos: tuple[Path, Path]) -> None:
+        clone, _ = repos
+        (clone / "uv.lock").write_text("hand-written local work\n", encoding="utf-8")
+
+        result = self._fetch_only(clone)
+
+        assert result.returncode == 1
+        assert result.stdout == "", "no commit may be named for a deploy that cannot fast-forward"
+        assert "uv.lock" in result.stderr
+        assert (clone / "uv.lock").read_text(encoding="utf-8") == "hand-written local work\n"
+
+    def test_an_untracked_file_the_merge_would_overwrite_is_refused(self, repos: tuple[Path, Path]) -> None:
+        clone, _ = repos
+        (clone / "added-upstream.txt").write_text("different local content\n", encoding="utf-8")
+
+        result = self._fetch_only(clone)
+
+        assert result.returncode == 1
+        assert "added-upstream.txt" in result.stderr
+
+    def test_a_local_edit_to_a_file_upstream_renamed_is_refused(self, repos: tuple[Path, Path]) -> None:
+        clone, work = repos
+        _git(work, "mv", "keep.txt", "renamed.txt")
+        _git(work, "commit", "-m", "rename")
+        _git(work, "push")
+        (clone / "keep.txt").write_text("local work on the old name\n", encoding="utf-8")
+
+        result = self._fetch_only(clone)
+
+        assert result.returncode == 1
+        assert "keep.txt" in result.stderr
+        assert (clone / "keep.txt").read_text(encoding="utf-8") == "local work on the old name\n"
+
+    def test_a_diverged_checkout_is_refused(self, repos: tuple[Path, Path]) -> None:
+        clone, _ = repos
+        (clone / "local.txt").write_text("a local commit\n", encoding="utf-8")
+        _git(clone, "add", "local.txt")
+        _git(clone, "commit", "-m", "local")
+
+        result = self._fetch_only(clone)
+
+        assert result.returncode == 1
+        assert "diverged" in result.stderr
+
+    def test_lossless_and_unrelated_dirt_still_pass_untouched(self, repos: tuple[Path, Path]) -> None:
+        clone, work = repos
+        (clone / "uv.lock").write_text('version = "0.4.11"\n', encoding="utf-8")
+        (clone / "keep.txt").write_text("local work in progress\n", encoding="utf-8")
+
+        result = self._fetch_only(clone)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == _git(work, "rev-parse", "HEAD")
+        assert (clone / "uv.lock").read_text(encoding="utf-8") == 'version = "0.4.11"\n'
+        assert (clone / "keep.txt").read_text(encoding="utf-8") == "local work in progress\n"
+
+
+class TestFetchNowFastForwardLater:
+    """deploy.sh builds the fetched revision first and moves the live tree only after the drain."""
+
+    def test_fetch_only_prints_the_upstream_tip_and_leaves_the_tree_alone(self, repos: tuple[Path, Path]) -> None:
+        clone, work = repos
+        before = _git(clone, "rev-parse", "HEAD")
+
+        result = subprocess.run(
+            [_BASH, str(_SCRIPT), "--fetch-only", str(clone)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=git_identity_env(),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == _git(work, "rev-parse", "HEAD")
+        assert _git(clone, "rev-parse", "HEAD") == before
+        assert not (clone / "added-upstream.txt").exists()
+
+    def test_fetch_only_without_an_upstream_names_head(self, repos: tuple[Path, Path]) -> None:
+        repo, _ = repos
+        _git(repo, "checkout", "-q", "-b", "no-upstream")
+
+        result = subprocess.run(
+            [_BASH, str(_SCRIPT), "--fetch-only", str(repo)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=git_identity_env(),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == _git(repo, "rev-parse", "HEAD")
+
+    def test_a_named_revision_is_reached_exactly_even_when_origin_moved_on(self, repos: tuple[Path, Path]) -> None:
+        clone, work = repos
+        _git(clone, "fetch", "-q", "origin")
+        built = _git(work, "rev-parse", "HEAD")
+        (work / "later.txt").write_text("merged after the build\n", encoding="utf-8")
+        _git(work, "add", "-A")
+        _git(work, "commit", "-m", "later")
+        _git(work, "push")
+
+        result = subprocess.run(
+            [_BASH, str(_SCRIPT), str(clone), built],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=git_identity_env(),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git(clone, "rev-parse", "HEAD") == built
+        assert not (clone / "later.txt").exists()
+
+
 class TestAmbientAutostashCannotOverrideTheVerdict:
     """`merge.autostash` in the operator's own config must not silently merge retained dirt.
 

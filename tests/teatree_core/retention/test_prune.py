@@ -340,14 +340,6 @@ class TicketTransitionLaneTestCase(TestCase):
         assert first.total_rows == 3
         assert second.total_rows == 0
 
-    def test_the_kill_switch_disables_the_lane(self) -> None:
-        _ticket_with_transitions(state=Ticket.State.MERGED, count=4)
-        plan = plan_retention(settings=UserSettings(ticket_transition_prune_disabled=True))
-        (lane,) = (t for t in plan.tables if t.table == "TicketTransition")
-        assert lane.disabled is True
-        assert lane.reason == "ticket_transition_prune_disabled"
-        assert TicketTransition.objects.count() == 4
-
     def test_batching_deletes_the_whole_set(self) -> None:
         _ticket_with_transitions(state=Ticket.State.MERGED, count=8)
         plan = apply_retention(batch_size=2)

@@ -152,7 +152,8 @@ class TestPresentLoopDrivenTurnDeniesAndCaptures(_CapturedStdoutTestCase):
         assert out["permissionDecision"] == "deny"
         row = DeferredQuestion.objects.latest("created_at")
         assert f"#{row.pk}" in out["permissionDecisionReason"]
-        assert "additionalContext" in out["permissionDecisionReason"]
+        assert "comes back to this session" in out["permissionDecisionReason"]
+        assert "no path to receive" not in out["permissionDecisionReason"]
         assert row.slack_ts == "", "the hook must not post; the drain stamps the coordinates"
         assert row.generation == 1
         assert row in DeferredQuestion.unmirrored_pending()

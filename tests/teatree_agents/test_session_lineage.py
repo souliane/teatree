@@ -22,8 +22,9 @@ from django.test import TestCase
 from teatree.agents._runner_options import _build_options
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.agents.prompt import build_system_context
-from teatree.core.models import HonestyEscalation, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import HonestyEscalation, Session, Task, TaskAttempt
 from teatree.core.models.task_handoff import schedule_resume
+from tests.factories import planned_ticket
 
 _PLANNING_SESSION = "11111111-1111-4111-8111-111111111111"
 _CODING_SESSION = "22222222-2222-4222-8222-222222222222"
@@ -47,7 +48,7 @@ def _phase_models(models: dict[str, str]) -> Iterator[None]:
 
 class _Lineage(TestCase):
     def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
+        self.ticket = planned_ticket()
 
     def _task(self, phase: str, *, parent: Task | None = None, **kwargs: object) -> Task:
         session = Session.objects.create(ticket=self.ticket, agent_id=phase)

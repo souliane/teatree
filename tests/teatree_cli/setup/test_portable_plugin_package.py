@@ -13,7 +13,6 @@ _CODEX_EVENTS = {
     "SessionStart",
     "Stop",
     "SubagentStop",
-    "UserPromptSubmit",
 }
 _CODEX_EVENTS_WITHOUT_SHARED_POLICY = {"Interrupt", "PermissionRequest", "PostCompact", "SubagentStart"}
 

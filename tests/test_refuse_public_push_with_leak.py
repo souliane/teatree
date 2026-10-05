@@ -13,7 +13,10 @@ the ``origin`` remote, and a real ``gh`` shim on ``PATH`` that returns a
 fixed visibility. Nothing about git or the filesystem is mocked.
 """
 
+import json
 import os
+import re
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -408,7 +411,7 @@ class TestRefusePublicPushWithLeak:
         this proves the message-scan dimension, not the diff scan.
         """
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        env["T3_BANNED_TERMS"] = "democorp"
+        env["TEATREE_TERM_REGISTRY"] = '{"leak":[],"prose_collider":["democorp"]}'
         (work / "feature.txt").write_text("a perfectly clean feature line\n", encoding="utf-8")
         _git(work, "add", "feature.txt")
         _git(work, "commit", "-m", "feat: onboard democorp customer")
@@ -423,12 +426,12 @@ class TestRefusePublicPushWithLeak:
     def test_allows_public_push_with_clean_message_under_banned_terms_config(self, tmp_path: Path) -> None:
         """Anti-vacuity for the message-banned-term block.
 
-        Same public remote and the SAME ``T3_BANNED_TERMS`` config, but a clean
+        Same public remote and the SAME ``TEATREE_TERM_REGISTRY`` config, but a clean
         message with no configured term still passes — proving the block above
         measures the term, not the mere presence of the banned-terms config.
         """
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        env["T3_BANNED_TERMS"] = "democorp"
+        env["TEATREE_TERM_REGISTRY"] = '{"leak":[],"prose_collider":["democorp"]}'
         (work / "feature.txt").write_text("a perfectly clean feature line\n", encoding="utf-8")
         _git(work, "add", "feature.txt")
         _git(work, "commit", "-m", "feat: onboard the new customer pipeline")
@@ -1252,7 +1255,7 @@ class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
     def _run(self, hook: Path, work: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             # `bash <hook>` is git's real pre-push invocation shape; test-only driver.
-            ["bash", str(hook), "origin", _PROBE_REMOTE_URL],  # noqa: S607 — the hook's real invocation shape
+            ["/bin/bash", str(hook), "origin", _PROBE_REMOTE_URL],
             cwd=work,
             input=_push_stdin(work),
             capture_output=True,
@@ -1287,6 +1290,85 @@ class TestVisibilityProbeResolvesCoreAndReportsItsFailures:
         assert "privacy" in (result.stdout + result.stderr).lower()
 
 
+def _make_envless_uv_shim(bin_dir: Path) -> None:
+    """A ``uv`` whose project env runs a modern interpreter that does NOT carry core.
+
+    The shape of ``uv run --project <root> --no-sync`` in a fresh worktree (uv
+    creates an empty ``.venv`` on the spot) or in a vendoring fork whose env never
+    installed core: ``-S`` drops site-packages, so only ``PYTHONPATH`` can supply
+    ``teatree``.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "uv"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'while [ "$#" -gt 0 ] && [ "$1" != python ]; do shift; done\n'
+        "shift\n"
+        f'exec "{sys.executable}" -S "$@"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _make_unusable_bare_pythons(bin_dir: Path) -> None:
+    """Version-explicit interpreters absent, and a bare ``python3`` too old to import core (the Mac stub)."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("python3.13", "python3.14", "python3"):
+        shim = bin_dir / name
+        shim.write_text("#!/usr/bin/env bash\necho 'SyntaxError: python 3.9 stub' >&2\nexit 1\n", encoding="utf-8")
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+class TestResolverRunsInACheckoutWhoseEnvLacksCore:
+    """The resolver must not depend on which checkout's project env happens to carry core.
+
+    ``uv run --project <root> --no-sync`` got no ``PYTHONPATH``, so in a fresh
+    worktree (an empty ``.venv``) it could not import ``teatree``, and on a host whose
+    bare ``python3`` is the old Mac stub every fallback failed too: one allowlisted
+    remote resolved PRIVATE in the worktree that had a venv and UNKNOWN in the one
+    that did not, with no cache involved.
+    """
+
+    def _push(self, tmp_path: Path, *, core_src: str, uv: str) -> subprocess.CompletedProcess[str]:
+        root = tmp_path / "checkout"
+        root.mkdir()
+        hook = _relocate_hook(root)
+        _fake_core_package(root / core_src, verdict="PRIVATE")
+        work, _env = _clone_with_remote(tmp_path, "PUBLIC")
+        bin_dir = tmp_path / "bin"
+        (_make_envless_uv_shim if uv == "envless" else _make_failing_uv_shim)(bin_dir)
+        _make_unusable_bare_pythons(bin_dir)
+        env = _hermetic_env()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        env["T3_PRIVACY_SCAN_CMD"] = str(_make_always_finding_scanner(tmp_path / "scanbin"))
+        env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path))
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+        return subprocess.run(
+            ["bash", str(hook), "origin", _PROBE_REMOTE_URL],  # noqa: S607 — the hook's real invocation shape
+            cwd=work,
+            input=_push_stdin(work),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    @pytest.mark.parametrize("core_src", ["src", "vendor/teatree/src"], ids=["standalone", "vendored"])
+    def test_uv_env_without_core_still_resolves_from_the_checkout(self, core_src: str, tmp_path: Path) -> None:
+        result = self._push(tmp_path, core_src=core_src, uv="envless")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "could not" not in (result.stdout + result.stderr).lower()
+
+    def test_a_resolver_that_cannot_start_says_so_and_fails_closed(self, tmp_path: Path) -> None:
+        result = self._push(tmp_path, core_src="src", uv="failing")
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "could not run the visibility resolver" in result.stdout, result.stdout
+        assert "uv sync" in result.stdout, result.stdout
+        assert "config_setting set private_repos" not in result.stdout, result.stdout
+
+
 def _make_visibility_shim(bin_dir: Path, verdict: str) -> Path:
     """A ``T3_REPO_VISIBILITY_CMD`` stand-in that pins the gate's visibility verdict."""
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -1308,7 +1390,7 @@ _REWRITE_VERBS = ("filter-branch", "filter-repo", "rebase", "--force", "-f ", "a
 
 
 class TestUnconfirmedVisibilityKeepsTheIdentityGuard:
-    """Unknown visibility is treated as public: the #730 identity guard still refuses.
+    """Unknown visibility leaves the #730 identity guard in its refusing posture.
 
     An UNKNOWN verdict is "could not confirm private", so a real email bound for
     a remote nobody could classify is refused exactly as on a confirmed-public
@@ -1353,6 +1435,184 @@ class TestUnconfirmedVisibilityKeepsTheIdentityGuard:
 
         assert result.returncode == 1, result.stdout + result.stderr
         assert "noreply" in result.stdout
+
+
+def _seed_private_repos(db: Path, entries: list[str]) -> Path:
+    """A ``teatree_config_setting`` store holding one global ``private_repos`` row."""
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)", (json.dumps(entries),)
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _make_unreachable_forge_shims(bin_dir: Path) -> Path:
+    """``gh``/``glab`` that log every call and never answer: the probe is unavailable."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    log = bin_dir / "forge-calls.log"
+    for tool in ("gh", "glab"):
+        shim = bin_dir / tool
+        shim.write_text(f'#!/usr/bin/env bash\necho "{tool} $*" >> "{log}"\nexit 1\n', encoding="utf-8")
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return log
+
+
+_PRIVATE_GITLAB_REMOTE = "git@gitlab.com:acme-eng/inner/widget.git"
+
+
+class TestDeclaredPrivateRemotePassesTheIdentityGuardOffline:
+    """A remote declared in ``private_repos`` is PROVEN private, with no probe, from any checkout.
+
+    This is what lets the identity guard stay fail-closed on an undetermined
+    verdict: the operator's own private forge never reaches that branch. The
+    resolver answers from the offline allowlist before any probe, and nothing
+    about the answer is cached per checkout, so two worktrees of one repo pushing
+    to one remote get one verdict. The forge CLIs here log every call and never
+    answer, so a pass can only come from the allowlist.
+    """
+
+    def _pushes_from(self, tmp_path: Path, entries: list[str]) -> tuple[list[subprocess.CompletedProcess[str]], Path]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _git(work, "remote", "set-url", "origin", _PRIVATE_GITLAB_REMOTE)
+        _git(work, "worktree", "add", "-b", "second", str(tmp_path / "work-b"))
+        second = tmp_path / "work-b"
+        _git(second, "config", "user.email", _NOREPLY_EMAIL)
+        log = _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", entries))
+        results = []
+        for checkout, ref in ((work, "refs/heads/main"), (second, "refs/heads/second")):
+            _commit_as(checkout, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+            checkout_env = {**env, "T3_DATA_DIR": str(_isolated_state_dir(tmp_path / checkout.name))}
+            results.append(
+                _run_hook(checkout, checkout_env, _push_stdin(checkout, ref), remote_url=_PRIVATE_GITLAB_REMOTE)
+            )
+        return results, log
+
+    def test_allowlisted_private_gitlab_remote_passes_from_two_worktrees(self, tmp_path: Path) -> None:
+        results, log = self._pushes_from(tmp_path, ["gitlab.com/acme-eng"])
+
+        assert [r.returncode for r in results] == [0, 0], [r.stdout + r.stderr for r in results]
+        assert log.exists(), "the forge was asked first; its unreachable answer leaves the declaration standing"
+
+    def test_the_same_remote_outside_the_allowlist_is_refused(self, tmp_path: Path) -> None:
+        """Anti-vacuity: the pass above is the allowlist's, not a gate that stopped asking."""
+        results, _log = self._pushes_from(tmp_path, ["gitlab.com/other-org"])
+
+        assert [r.returncode for r in results] == [1, 1], [r.stdout + r.stderr for r in results]
+        assert all(_REAL_EMAIL in r.stdout and "visibility could not be confirmed" in r.stdout for r in results)
+
+
+class TestUnreadableAllowlistRefusesByName:
+    """A ``private_repos`` store the resolver could not READ is named in the refusal.
+
+    The cold read used to fail open to an empty allowlist, so a declared-private
+    remote behind a locked or corrupt config DB was refused as "visibility could not
+    be confirmed" with a hint to declare it in ``private_repos`` — which it already
+    was. The gate stays fail-closed; the refusal now says what actually failed.
+    """
+
+    def _push(self, tmp_path: Path, *, email: str) -> tuple[subprocess.CompletedProcess[str], Path]:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _git(work, "remote", "set-url", "origin", _PRIVATE_GITLAB_REMOTE)
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        store = tmp_path / "config.sqlite3"
+        store.write_bytes(b"this is not an sqlite database" * 64)
+        env["T3_CONFIG_DB"] = str(store)
+        env["XDG_DATA_HOME"] = str(tmp_path / "xdg")
+        _commit_as(work, "Dev", email, "feature.txt", "clean feature line\n")
+        return _run_hook(work, env, _push_stdin(work), remote_url=_PRIVATE_GITLAB_REMOTE), store
+
+    def test_unreadable_allowlist_refuses_with_its_own_reason(self, tmp_path: Path) -> None:
+        result, store = self._push(tmp_path, email=_REAL_EMAIL)
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "could not read private_repos" in result.stdout, result.stdout
+        assert "visibility could not be confirmed" not in result.stdout, result.stdout
+        assert str(store) in result.stderr, result.stderr
+
+    def test_unreadable_allowlist_still_passes_a_clean_noreply_push(self, tmp_path: Path) -> None:
+        """Fail closed means "enforce", not "block": nothing to refuse, nothing refused."""
+        result, _store = self._push(tmp_path, email=_NOREPLY_EMAIL)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "could not read private_repos" in result.stderr, result.stderr
+
+
+class TestUrlSpelledPrivateRemoteIsProbedOnItsHost:
+    """``ssh://git@host[:port]/...`` is the same private remote as ``git@host:...``.
+
+    The URL spelling kept its userinfo and port in the slug, so the probe could not
+    route it and the identity guard refused a push the SCP spelling of the very same
+    remote let through. The forge is reachable and answers PRIVATE here; only the
+    remote's spelling differs from the passing case.
+    """
+
+    @pytest.mark.parametrize(
+        "remote",
+        ["git@gitlab.com:acme-eng/inner/widget.git", "ssh://git@gitlab.com/acme-eng/inner/widget.git"],
+        ids=["scp", "ssh-url"],
+    )
+    def test_private_gitlab_remote_passes_whatever_its_spelling(self, remote: str, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _git(work, "remote", "set-url", "origin", remote)
+        _make_glab_shim(tmp_path / "glabbin", "private")
+        env["PATH"] = f"{tmp_path / 'glabbin'}{os.pathsep}{env['PATH']}"
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", []))
+        env["XDG_DATA_HOME"] = str(tmp_path / "xdg")
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+
+        result = _run_hook(work, env, _push_stdin(work), remote_url=remote)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+_SUGGESTED_ENTRY = re.compile(r"private_repos '\[\"(?P<entry>[^\"]+)\"\]'")
+
+
+class TestTheSuggestedAllowlistEntryUnblocksThePush:
+    """Following the refusal's own ``private_repos`` advice must actually resolve the remote.
+
+    The hint printed the host-stripped label. The matcher strips exactly one leading
+    dotted segment as a host, so for a GitLab namespace that itself carries a dot the
+    suggested ``my.group/widget`` stripped to ``widget`` and never matched: the
+    operator declared the repo exactly as told and was refused again.
+    """
+
+    @pytest.mark.parametrize(
+        "remote",
+        [
+            "git@gitlab.com:my.group/widget.git",
+            "https://gitlab.com/my.group/sub/widget.git",
+            "git@gitlab.com:acme-eng/inner/widget.git",
+            "ssh://git@gitlab.example.org:2222/acme-eng/inner/widget.git",
+        ],
+        ids=["dotted-ns-scp", "dotted-ns-https", "scp", "ssh-url-port"],
+    )
+    def test_declaring_the_suggested_entry_lets_the_same_push_through(self, remote: str, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _git(work, "remote", "set-url", "origin", remote)
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "before.sqlite3", []))
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+        refused = _run_hook(work, env, _push_stdin(work), remote_url=remote)
+        assert refused.returncode == 1, refused.stdout + refused.stderr
+        suggested = _SUGGESTED_ENTRY.search(refused.stdout)
+        assert suggested, refused.stdout
+
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "after.sqlite3", [suggested["entry"]]))
+        env["T3_DATA_DIR"] = str(_isolated_state_dir(tmp_path / "second-push"))
+        result = _run_hook(work, env, _push_stdin(work), remote_url=remote)
+
+        assert result.returncode == 0, f"declared {suggested['entry']!r} as advised:\n{result.stdout}{result.stderr}"
 
 
 class TestRefusalNeverRecommendsRewritingThePushedBranch:
@@ -1485,7 +1745,7 @@ class TestRefusePublicPushWithLeakingRefName:
 
     def _public_clone_with_banned_term(self, tmp_path: Path) -> tuple[Path, dict[str, str]]:
         work, env = _clone_with_remote(tmp_path, "PUBLIC")
-        env["T3_BANNED_TERMS"] = "democorp"
+        env["TEATREE_TERM_REGISTRY"] = '{"leak":[],"prose_collider":["democorp"]}'
         (work / "feature.txt").write_text("a perfectly clean feature line\n", encoding="utf-8")
         _git(work, "add", "feature.txt")
         _git(work, "commit", "-m", "add feature")
@@ -1670,6 +1930,22 @@ class TestCommitMessagesAreScannedAsText:
 
         assert result.returncode == 1, result.stdout + result.stderr
         assert f"commit {leak} (commit message):" in result.stdout, result.stdout
+
+
+class TestHostQualifiedPrivateDeclarationNeverSkipsPublicPush:
+    def test_gitlab_group_does_not_exempt_same_github_owner(self, tmp_path: Path) -> None:
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        _git(work, "remote", "set-url", "origin", "https://github.com/acme-eng/oss-lib.git")
+        _make_unreachable_forge_shims(tmp_path / "offline-bin")
+        env["PATH"] = f"{tmp_path / 'offline-bin'}{os.pathsep}{env['PATH']}"
+        env["T3_CONFIG_DB"] = str(_seed_private_repos(tmp_path / "config.sqlite3", ["gitlab.com/acme-eng"]))
+        _commit_as(work, "Real Dev", _REAL_EMAIL, "feature.txt", "clean feature line\n")
+
+        result = _run_hook(work, env, _push_stdin(work), remote_url="https://github.com/acme-eng/oss-lib.git")
+
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert _REAL_EMAIL in result.stdout
+        assert "visibility could not be confirmed" in result.stdout
 
 
 if __name__ == "__main__":

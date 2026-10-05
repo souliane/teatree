@@ -91,7 +91,7 @@ class TestScan:
         assert rows[0].user_id == "U0DEMOUSER1"
         assert rows[0].channel == "D0DEMOTEAM1"
         assert rows[0].overlay == "demo"
-        assert rows[0].is_pending is True
+        assert rows[0].loop_replied_at is None
 
     def test_empty_dm_queue_yields_no_signals_or_rows(self) -> None:
         backend = FakeMessaging(dms=[])

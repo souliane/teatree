@@ -91,20 +91,25 @@ _ALLOW_MARKER = "privacy-scan:allow"
 
 
 def _banned_allowlist() -> tuple[str, ...]:
-    return allowlist_terms()
+    try:
+        return allowlist_terms()
+    except BannedTermsUnreadableError:
+        # The detector already reports the unreadable store; the optional
+        # carve-out must not crash the rest of the privacy scan.
+        return ()
 
 
-def _resolve_scan_terms(env_value: str) -> tuple[str, ...]:
+def _resolve_scan_terms() -> tuple[str, ...]:
     """Resolve the banned-terms list from the canonical source, fail-closed.
 
     Reuses the shared :func:`resolve_banned_terms` so the public-leak scan reads
-    the SAME DB-home ``banned_terms`` list the commit/posting gates do (the
-    ``T3_BANNED_TERMS`` env value still overrides). A present-but-unset row is the
+    the SAME registry as the commit/posting gates. An unset registry is the
     load-bug-shaped UNSET that must NOT silently degrade to an empty ban list
     (that would quietly disable the gate on a config typo): the banned-terms
     detector is reported INERT on stderr — the other detectors still run, so the
     pre-push gate is never wedged — instead of going silently inert.
-    ``banned_terms = []`` is the deliberate, silent opt-out.
+    A classed registry still needs a nonempty scan list; an empty registry is
+    reported as inert rather than being mistaken for a completed scan.
 
     A store that could not be READ at all (:class:`BannedTermsUnreadableError`,
     locked/corrupt/table-less) is reported with its OWN distinct message rather
@@ -116,20 +121,20 @@ def _resolve_scan_terms(env_value: str) -> tuple[str, ...]:
     silently unscanned end to end.
     """
     try:
-        return resolve_banned_terms(env_value=env_value)
+        return resolve_banned_terms()
     except BannedTermsUnreadableError:
         print(
-            "Privacy scan: WARNING — banned-terms detector INERT: the DB-home `banned_terms` "
-            "list could not be READ (locked, corrupt, or missing its table) — indistinguishable "
+            "Privacy scan: WARNING — banned-terms detector INERT: the DB-home `banned_term_registry` "
+            "could not be READ (locked, corrupt, or missing its table) — indistinguishable "
             "from unset, so this detector sits out (the other detectors still run).",
             file=sys.stderr,
         )
         return ()
     except BannedTermsUnsetError:
         print(
-            "Privacy scan: WARNING — banned-terms detector INERT: the DB-home `banned_terms` "
-            "list is present-but-unset (the other detectors still run; set `banned_terms = []` "
-            "to opt out deliberately).",
+            "Privacy scan: WARNING — banned-terms detector INERT: `banned_term_registry` "
+            "is unset or has no scan terms (the other detectors still run; configure "
+            "a classed registry with at least one scan term).",
             file=sys.stderr,
         )
         return ()
@@ -368,17 +373,12 @@ def _plain_summary(findings: list[dict[str, str | int]]) -> str:
 @app.command()
 def main(
     input_file: str = typer.Argument("-", help="File to scan (- for stdin, or a file path)"),
-    banned_terms: str = typer.Option(
-        "",
-        envvar="T3_BANNED_TERMS",
-        help="Comma-separated banned terms (overrides the DB-home banned_terms source).",
-    ),
     *,
     strict: bool = typer.Option(True, help="Strict mode (exit 1 on any finding). Use --no-strict for warnings only."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Scan text for privacy-sensitive patterns."""
-    terms = _resolve_scan_terms(banned_terms)
+    terms = _resolve_scan_terms()
     allowlist = _banned_allowlist()
     target = None if input_file == "-" else Path(input_file)
     if target is not None and target.is_dir():

@@ -16,8 +16,6 @@ patterns.
 """
 
 import json
-import os
-import sqlite3
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -257,43 +255,17 @@ def _run_task(description: str, *, subject: str = "do work", session_id: str = "
     return blocked, (json.loads(raw) if raw else None)
 
 
-def _seed_gate_flag(*, value: bool) -> None:
-    """Seed the DB-home ``dispatch_quote_gate_on_task_create_enabled`` flag in the hermetic config DB."""
-    db = Path(os.environ["T3_CONFIG_DB"])
-    db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db))
-    try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
-            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
-        )
-        conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) "
-            "VALUES ('', 'dispatch_quote_gate_on_task_create_enabled', ?)",
-            (json.dumps(value),),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _enable_task_gate() -> None:
-    _seed_gate_flag(value=True)
-
-
 class TestOnTaskCreateGate:
     """The TaskCreated quote arm (#171): scans the new task's subject/description.
 
     The PreToolUse dispatch-quote gate keys on ``Agent``/``Task``; the task-LIST
     tools reach ``PreToolUse`` only for the visible-plan gate, so ``TaskCreated`` judges them,
     and that event has one producer, so this arm never sees a sub-agent dispatch
-    (#4216). It rides that event. It ships default-OFF (opt-in, a #1640-class
-    gate whose live behavior is unvalidated) and emits the ``TaskCreated`` teammate-stop
+    (#4216). It rides that event and emits the ``TaskCreated`` teammate-stop
     envelope (``continue: false``), NOT the PreToolUse deny.
     """
 
-    def test_high_quote_denies_when_enabled(self, tmp_path: Path) -> None:
-        _enable_task_gate()
+    def test_high_quote_denies(self, tmp_path: Path) -> None:
         blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
         assert blocked is True
         assert payload is not None
@@ -308,21 +280,18 @@ class TestOnTaskCreateGate:
         assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
 
     def test_high_quote_in_subject_denies(self, tmp_path: Path) -> None:
-        _enable_task_gate()
         blocked, payload = _run_task("ordinary brief", subject="## User ask (verbatim, 2026-05-20)")
         assert blocked is True
         assert payload is not None
         assert payload["continue"] is False
 
     def test_clean_task_is_allowed(self, tmp_path: Path) -> None:
-        _enable_task_gate()
         blocked, payload = _run_task("Implement the export endpoint per the spec.")
         assert blocked is False
         assert payload is None
         assert _ledger_lines(tmp_path)[-1]["decision"] == "allow"
 
     def test_quote_ok_token_clears_high_match(self, tmp_path: Path) -> None:
-        _enable_task_gate()
         blocked, payload = _run_task(f"[quote-ok: exact-wording-required]\n\n{_HIGH_VOICE_PROMPT}")
         assert blocked is False
         assert payload is None
@@ -330,28 +299,7 @@ class TestOnTaskCreateGate:
         assert ledger[-1]["decision"] == "allow-override"
         assert ledger[-1]["override"] is True
 
-    def test_default_off_passes_through_even_on_high_quote(self, tmp_path: Path) -> None:
-        blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
-        assert blocked is False
-        assert payload is None
-        assert _ledger_lines(tmp_path) == []
-
-    def test_explicit_false_disables(self, tmp_path: Path) -> None:
-        _seed_gate_flag(value=False)
-        blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
-        assert blocked is False
-        assert payload is None
-
-    def test_broken_config_fails_disabled(self, tmp_path: Path) -> None:
-        db = Path(os.environ["T3_CONFIG_DB"])
-        db.parent.mkdir(parents=True, exist_ok=True)
-        db.write_bytes(b"not a sqlite database at all")
-        blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
-        assert blocked is False
-        assert payload is None
-
     def test_missing_session_id_passes_through(self, tmp_path: Path) -> None:
-        _enable_task_gate()
         blocked, payload = _run_task(_HIGH_VOICE_PROMPT, session_id="")
         assert blocked is False
         assert payload is None

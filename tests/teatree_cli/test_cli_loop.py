@@ -165,7 +165,7 @@ class TestStartCommand:
         # PR-28: the worker owns the cadence; the guidance points at the worker status
         # + per-loop enable/disable, NOT the retired claude-spec cron-mirror path.
         assert "t3 worker status" in result.stdout
-        assert "t3 loop enable|disable" in result.stdout
+        assert "t3 loop resume|disable" in result.stdout
         assert "reactive infra loops" in result.stdout
         assert "--slot" not in result.stdout
 
@@ -200,7 +200,7 @@ class TestStartCommand:
         assert execv_mock.call_count == 1
         argv = execv_mock.call_args.args[1]
         assert argv[0] == "/usr/bin/claude"
-        # #2650: no single fat `/loop` slot is passed — the owner hook registers per-loop.
+        # #2650: no single fat `/loop` slot is passed — the worker drives each loop.
         assert not any(str(a).startswith("/loop") for a in argv)
 
 
@@ -339,15 +339,7 @@ class TestStopCommand:
 
 
 class TestClaimNextCommand:
-    """#1107 Prong C — ``t3 loop claim-next`` must exist and delegate.
-
-    The ``loop_dispatch`` mgmt command DOES expose a ``claim-next``
-    subcommand (the #786 WS1 atomic claim), and the BLUEPRINT, the
-    Stop-hook self-pump, ``cli/loop.py`` help, and ``slack_answer/cycle``
-    all standardise on ``t3 loop claim-next`` — but ``cli/loop.py`` only
-    wired ``pending-spawn``/``spawn-claim``, so the canonical command
-    errored "No such command".
-    """
+    """``t3 loop claim-next`` delegates to the atomic claim command."""
 
     def test_loop_claim_next_command_exists_and_delegates(self) -> None:
         with (
@@ -561,7 +553,7 @@ class TestLoopOwnerCli:
     def test_claim_happy_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "cli-session")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "cli-session")
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 0, result.stdout
@@ -569,7 +561,7 @@ class TestLoopOwnerCli:
         assert LoopLease.objects.get(name="t3-master").session_id == "cli-session"
 
     def test_claim_without_session_id_exits_2(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+        for key in ("CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "no-registry"))
         result = runner.invoke(loop_app, ["claim"])
@@ -596,7 +588,7 @@ class TestLoopOwnerCli:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         LoopLease.objects.claim_ownership("t3-master", session_id="other-session")
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "me")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "me")
         result = runner.invoke(loop_app, ["release"])
 
         assert result.exit_code == 0
@@ -606,7 +598,7 @@ class TestLoopOwnerCli:
     def test_release_clears_when_holder(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "me")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "me")
         LoopLease.objects.claim_ownership("t3-master", session_id="me")
         result = runner.invoke(loop_app, ["release"])
 
@@ -618,7 +610,7 @@ class TestLoopOwnerCli:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         LoopLease.objects.claim_ownership("t3-master", session_id="hijacker")
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "main")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "main")
         result = runner.invoke(loop_app, ["claim", "--take-over"])
 
         assert result.exit_code == 0
@@ -629,7 +621,7 @@ class TestLoopOwnerCli:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         LoopLease.objects.claim_ownership("t3-master", session_id="hijacker")
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "main")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "main")
         result = runner.invoke(loop_app, ["claim"])
 
         assert result.exit_code == 0
@@ -652,7 +644,7 @@ class TestLoopOwnerCli:
     def test_custom_slot_is_independent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "answer-sess")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "answer-sess")
         result = runner.invoke(loop_app, ["claim", "--slot", "loop-slack-answer-owner"])
 
         assert result.exit_code == 0
@@ -662,14 +654,14 @@ class TestLoopOwnerCli:
         # The exact shape of the DRIVERLESS remediation `t3 loop claim --slot <slot> --driver external`.
         from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred
 
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "ext-session")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "ext-session")
         result = runner.invoke(loop_app, ["claim", "--slot", "loop:dispatch", "--driver", "external"])
 
         assert result.exit_code == 0, result.stdout
         assert LoopLease.objects.get(name="loop:dispatch").driver == "external"
 
     def test_claim_invalid_driver_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "ext-session")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "ext-session")
         result = runner.invoke(loop_app, ["claim", "--driver", "bogus"])
 
         assert result.exit_code == 2
@@ -678,7 +670,7 @@ class TestLoopOwnerCli:
     def test_claim_json_success_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import json  # noqa: PLC0415
 
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "json-claimer")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "json-claimer")
         monkeypatch.setattr("teatree.loop.driver_detection.detect_driver", lambda _s: "")
         result = runner.invoke(loop_app, ["claim", "--json"])
 
@@ -695,7 +687,7 @@ class TestLoopOwnerCli:
     def test_claim_json_no_session_id_error_shape(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         import json  # noqa: PLC0415
 
-        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
+        for key in ("CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "no-registry"))
         result = runner.invoke(loop_app, ["claim", "--json"])
@@ -710,7 +702,7 @@ class TestLoopOwnerCli:
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "rel-sess")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "rel-sess")
         LoopLease.objects.claim_ownership("t3-master", session_id="rel-sess")
         result = runner.invoke(loop_app, ["release", "--json"])
 

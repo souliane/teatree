@@ -2,7 +2,7 @@
 
 This is the bot asking its own operator about the operator's own work. It is
 NOT a post made as the user to a colleague, so it must never be routed through
-or gated by the posture / ``notify_on_post_on_behalf`` — those
+or gated by the on-behalf posture — those
 govern the user's colleague-facing voice. Arming the publish gate (the shipped
 default) would otherwise swallow every one of these questions at exactly the
 moment the operator is most careful about what leaves their machine.
@@ -27,7 +27,9 @@ re-offered on a later tick once a slot frees.
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from teatree.core.gates.review_request_guard import canonical_mr_url
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -35,6 +37,24 @@ from teatree.core.models.deferred_question import DeferredQuestion
 logger = logging.getLogger(__name__)
 
 _MARKER_PREFIX = "mr-state:"
+_OWNER_QUESTION_OBSERVER: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "owner_question_observer",
+    default=None,
+)
+
+#: Open state questions the owner is asked to hold at once, so a backlog of undecidable
+#: merge requests arrives as a pair rather than a flood nobody answers.
+MAX_OPEN_QUESTIONS = 2
+
+
+@contextmanager
+def observe_owner_question_creation(observer: Callable[[str], None]) -> Iterator[None]:
+    token = _OWNER_QUESTION_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _OWNER_QUESTION_OBSERVER.reset(token)
+
 
 #: Open state questions the owner is asked to hold at once, so a backlog of undecidable
 #: merge requests arrives as a pair rather than a flood nobody answers.
@@ -73,12 +93,15 @@ def ask_mr_state(*, mr_url: str, reason: str, options: Sequence[str] = ()) -> De
         )
         return None
 
-    return DeferredQuestion.record(
+    question = DeferredQuestion.record(
         _question_text(mr_url=mr_url, reason=reason),
         options_json=_options_json(options),
         dedupe_marker=marker,
         audience=DeferredQuestion.Audience.OWNER_QUESTION,
     )
+    if (observer := _OWNER_QUESTION_OBSERVER.get()) is not None:
+        observer(mr_url)
+    return question
 
 
 def _question_text(*, mr_url: str, reason: str) -> str:

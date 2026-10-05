@@ -1,8 +1,8 @@
 """Tests for the no-overlay-leak gate (BLUEPRINT § 1).
 
 The hook loads forbidden tokens at runtime from
-``$TEATREE_OVERLAY_LEAK_TERMS`` (comma-separated), else the DB-home
-``overlay_leak_terms`` ``ConfigSetting`` row. These tests inject a small set of
+``$TEATREE_TERM_REGISTRY`` JSON secret, else the DB-home
+``banned_term_registry`` ``ConfigSetting`` row. These tests inject a small set of
 placeholder tokens via that env var (and a seeded DB) and assert the hook
 catches them and ignores false positives.
 
@@ -38,8 +38,8 @@ def _seed_overlay_leak_db(tmp_path: Path, terms: list[str]) -> Path:
         "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
     )
     conn.execute(
-        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlay_leak_terms', ?)",
-        (json.dumps(terms),),
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+        (json.dumps({"leak": [], "prose_collider": [], "overlay": terms}),),
     )
     conn.commit()
     conn.close()
@@ -60,11 +60,11 @@ FAKE_TERMS = (
     "stub-platform",
     "demo-savings",
 )
-TERMS_ENV = ",".join(FAKE_TERMS)
+TERMS_ENV = json.dumps({"leak": [], "prose_collider": [], "overlay": FAKE_TERMS})
 
 
 def _run(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "TEATREE_OVERLAY_LEAK_TERMS": TERMS_ENV}
+    env = {**os.environ, "TEATREE_TERM_REGISTRY": TERMS_ENV}
     return subprocess.run(
         [sys.executable, str(HOOK), *args],
         cwd=cwd,
@@ -136,21 +136,11 @@ class TestNoOverlayLeakHook:
 
         assert result.returncode == 0, result.stdout
 
-    def test_passes_when_no_terms_configured(self, tmp_path: Path) -> None:
+    def test_refuses_when_no_terms_configured(self, tmp_path: Path) -> None:
         _seed(tmp_path, "src/teatree/foo.py", "anything goes here\n")
-
-        env = {k: v for k, v in os.environ.items() if k != "TEATREE_OVERLAY_LEAK_TERMS"}
-        env.setdefault("HOME", str(tmp_path))  # avoid reading the operator's real config
-        result = subprocess.run(
-            [sys.executable, str(HOOK)],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=env,
-        )
-
-        assert result.returncode == 0, result.stdout + result.stderr
+        result = _run_no_terms(tmp_path)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "MISCONFIGURED" in result.stdout
 
     @pytest.mark.parametrize("term", FAKE_TERMS)
     def test_each_configured_term_is_caught(self, tmp_path: Path, term: str) -> None:
@@ -217,7 +207,10 @@ class TestNoOverlayLeakHook:
     def test_single_word_term_embedded_in_camelcase_is_blocked(self, tmp_path: Path, camel_variant: str) -> None:
         # A single-word term (here the synthetic ``acme``) is matched once a
         # camelCase identifier splits it out as its own whole token.
-        env = {**os.environ, "TEATREE_OVERLAY_LEAK_TERMS": "acme"}
+        env = {
+            **os.environ,
+            "TEATREE_TERM_REGISTRY": json.dumps({"leak": [], "prose_collider": [], "overlay": ["acme"]}),
+        }
         _seed(tmp_path, "src/teatree/foo.py", f"value = {camel_variant}\n")
 
         result = subprocess.run(
@@ -236,7 +229,7 @@ class TestNoOverlayLeakHook:
     def test_operator_style_single_word_is_not_blocked(self, tmp_path: Path, clean_word: str) -> None:
         # A short single-word term (synthetic ``op``) must not surface inside a
         # longer unbroken word — the operator-class false positive stays clean.
-        env = {**os.environ, "TEATREE_OVERLAY_LEAK_TERMS": "op"}
+        env = {**os.environ, "TEATREE_TERM_REGISTRY": json.dumps({"leak": [], "prose_collider": [], "overlay": ["op"]})}
         _seed(tmp_path, "src/teatree/foo.py", f"# notes about {clean_word}\n")
 
         result = subprocess.run(
@@ -261,7 +254,7 @@ class TestNoOverlayLeakHook:
 
 def _run_no_terms(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Invoke the hook with NO terms configured (env unset, HOME isolated)."""
-    env = {k: v for k, v in os.environ.items() if k not in {"TEATREE_OVERLAY_LEAK_TERMS", "T3_CONFIG_DB"}}
+    env = {k: v for k, v in os.environ.items() if k not in {"TEATREE_TERM_REGISTRY", "T3_CONFIG_DB"}}
     env["HOME"] = str(cwd)  # isolate HOME so no host config DB is resolved
     return subprocess.run(
         [sys.executable, str(HOOK), *args],
@@ -273,43 +266,32 @@ def _run_no_terms(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-class TestRequireTermsFlag:
-    """Fix #2: ``--require-terms`` makes an UNSET term list a LOUD failure.
+class TestRequiredOverlayTerms:
+    """The overlay term scan requires a populated list on every run."""
 
-    The gate is silently inert when neither ``TEATREE_OVERLAY_LEAK_TERMS``
-    nor the ``overlay_leak_terms`` DB row is populated — a real leak sits
-    unguarded and the job stays green. ``--require-terms`` (the form CI passes)
-    turns that misconfiguration into exit 2; local dev omits the flag and stays
-    green, mirroring the brand backstop's ``--require-brands``.
-    """
-
-    def test_require_terms_hard_fails_when_unset(self, tmp_path: Path) -> None:
+    def test_unset_terms_hard_fail(self, tmp_path: Path) -> None:
         _seed(tmp_path, "src/teatree/foo.py", "clean = True\n")
-        result = _run_no_terms(tmp_path, "--require-terms")
+        result = _run_no_terms(tmp_path)
         assert result.returncode == 2, result.stdout + result.stderr
         assert "MISCONFIGURED" in result.stdout
 
-    def test_without_flag_unset_terms_stays_green(self, tmp_path: Path) -> None:
-        # Anti-vacuity: the SAME unset-terms tree that exits 2 under
-        # --require-terms exits 0 without it (with a loud inert warning).
+    def test_empty_overlay_list_hard_fails(self, tmp_path: Path) -> None:
         _seed(tmp_path, "src/teatree/foo.py", "clean = True\n")
-        result = _run_no_terms(tmp_path)
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "INERT" in result.stdout
+        env = {**os.environ, "TEATREE_TERM_REGISTRY": json.dumps({"leak": ["brand"], "overlay": []})}
+        result = subprocess.run(
+            [sys.executable, str(HOOK)], cwd=tmp_path, capture_output=True, text=True, check=False, env=env
+        )
+        assert result.returncode == 2, result.stdout + result.stderr
 
-    def test_require_terms_with_terms_configured_runs_normally(self, tmp_path: Path) -> None:
-        # The flag only hard-fails on the unset state; a populated term list
-        # scans normally — a clean tree exits 0 even with the flag.
+    def test_configured_terms_run_normally(self, tmp_path: Path) -> None:
         _seed(tmp_path, "src/teatree/foo.py", "clean = True\n")
-        result = _run(tmp_path, "--require-terms")
+        result = _run(tmp_path)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "MISCONFIGURED" not in result.stdout
 
-    def test_require_terms_with_terms_still_reports_findings_as_exit_1(self, tmp_path: Path) -> None:
-        # A dirty tree under --require-terms is exit 1 (findings), NOT exit 2 —
-        # the two failure modes stay distinct.
+    def test_configured_terms_still_report_findings_as_exit_1(self, tmp_path: Path) -> None:
         _seed(tmp_path, "src/teatree/foo.py", '"""See t3-fake-overlay."""\n')
-        result = _run(tmp_path, "--require-terms")
+        result = _run(tmp_path)
         assert result.returncode == 1
         assert "t3-fake-overlay" in result.stdout
 
@@ -358,13 +340,18 @@ class TestOpaqueIdDetection:
         assert "C0ZX91QWERT" in result.stdout
 
     def test_real_shaped_id_caught_even_with_no_terms_configured(self, tmp_path: Path) -> None:
-        # The opaque-ID pass is ALWAYS-ON — it does not need a configured term
-        # list, unlike the overlay-leak terms. A real-shaped id trips even when
-        # no terms are set (the gate is otherwise inert).
+        # The configured overlay class lets the scan run; the separate opaque-ID
+        # pass must still catch an id absent from the term list.
         _seed(tmp_path, "src/teatree/foo.py", "DM = 'D0KP47MNBVC'\n")
-        result = _run_no_terms(tmp_path)
+        result = _run(tmp_path)
         assert result.returncode == 1, result.stdout + result.stderr
         assert "D0KP47MNBVC" in result.stdout
+
+    def test_no_terms_refuses_as_misconfigured(self, tmp_path: Path) -> None:
+        _seed(tmp_path, "src/teatree/foo.py", "DM = 'D0KP47MNBVC'\n")
+        result = _run_no_terms(tmp_path)
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "MISCONFIGURED" in result.stdout
 
     @pytest.mark.parametrize("placeholder", ["C0DEMOCHAN1", "U01ABCD1234", "D0CACHED", "U0AAAAAAAAA"])
     def test_synthetic_placeholder_id_is_not_caught(self, tmp_path: Path, placeholder: str) -> None:
@@ -380,16 +367,16 @@ class TestOpaqueIdDetection:
 
 
 class TestDbSourcedTerms:
-    """The term list is DB-home: an ``overlay_leak_terms`` row drives the gate.
+    """The term list is DB-home: a ``banned_term_registry`` row drives the gate.
 
     The env override still WINS, but with no env the reader falls back to the
-    canonical ``overlay_leak_terms`` ``ConfigSetting`` row (via
+    canonical ``banned_term_registry`` ``ConfigSetting`` row (via
     ``teatree.config.cold_reader``). Tests seed a DB and point the subprocess at
     it with ``T3_CONFIG_DB``.
     """
 
     def _run_with_db(self, cwd: Path, db: Path, *args: str) -> subprocess.CompletedProcess[str]:
-        env = {k: v for k, v in os.environ.items() if k != "TEATREE_OVERLAY_LEAK_TERMS"}
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
         env["HOME"] = str(cwd)
         env["T3_CONFIG_DB"] = str(db)
         return subprocess.run(
@@ -404,14 +391,14 @@ class TestDbSourcedTerms:
     def test_db_term_is_caught(self, tmp_path: Path) -> None:
         db = _seed_overlay_leak_db(tmp_path, ["alpha-tenant"])
         _seed(tmp_path, "src/teatree/foo.py", "# Reference to alpha-tenant\n")
-        result = self._run_with_db(tmp_path, db, "--require-terms")
+        result = self._run_with_db(tmp_path, db)
         assert result.returncode == 1, result.stdout + result.stderr
         assert "alpha-tenant" in result.stdout.lower()
 
-    def test_db_terms_populated_satisfies_require_terms(self, tmp_path: Path) -> None:
+    def test_db_terms_populated_satisfy_gate(self, tmp_path: Path) -> None:
         db = _seed_overlay_leak_db(tmp_path, ["alpha-tenant"])
         _seed(tmp_path, "src/teatree/foo.py", "clean = True\n")
-        result = self._run_with_db(tmp_path, db, "--require-terms")
+        result = self._run_with_db(tmp_path, db)
         assert result.returncode == 0, result.stdout + result.stderr
         assert "MISCONFIGURED" not in result.stdout
 
@@ -420,7 +407,11 @@ class TestDbSourcedTerms:
         # names ONLY a DB-only term (absent from the env list) is not flagged.
         db = _seed_overlay_leak_db(tmp_path, ["from-db-only"])
         _seed(tmp_path, "src/teatree/foo.py", "# only names from-db-only here\n")
-        env = {**os.environ, "TEATREE_OVERLAY_LEAK_TERMS": "beta-tenant", "T3_CONFIG_DB": str(db)}
+        env = {
+            **os.environ,
+            "TEATREE_TERM_REGISTRY": json.dumps({"leak": [], "prose_collider": [], "overlay": ["beta-tenant"]}),
+            "T3_CONFIG_DB": str(db),
+        }
         result = subprocess.run(
             [sys.executable, str(HOOK)],
             cwd=tmp_path,
@@ -458,7 +449,7 @@ class TestRegistrySourcedTerms:
     """The consolidated registry's ``overlay`` class drives the gate, registry-first."""
 
     def _run_with_db(self, cwd: Path, db: Path, *args: str) -> subprocess.CompletedProcess[str]:
-        env = {k: v for k, v in os.environ.items() if k != "TEATREE_OVERLAY_LEAK_TERMS"}
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_TERM_REGISTRY"}
         env["HOME"] = str(cwd)
         env["T3_CONFIG_DB"] = str(db)
         return subprocess.run(
@@ -473,7 +464,7 @@ class TestRegistrySourcedTerms:
     def test_registry_overlay_term_is_caught(self, tmp_path: Path) -> None:
         db = _seed_registry_db(tmp_path, overlay=["alpha-tenant"])
         _seed(tmp_path, "src/teatree/foo.py", "# Reference to alpha-tenant\n")
-        result = self._run_with_db(tmp_path, db, "--require-terms")
+        result = self._run_with_db(tmp_path, db)
         assert result.returncode == 1, result.stdout + result.stderr
         assert "alpha-tenant" in result.stdout.lower()
 
@@ -486,10 +477,10 @@ class TestRegistrySourcedTerms:
         assert result.returncode == 0, result.stdout + result.stderr
 
 
-class TestOverlayLeakCiPassesRequireTerms:
-    """Fix #2 (CI side): the overlay-leak full-tree CI job passes ``--require-terms``."""
+class TestOverlayLeakCiRequiresTerms:
+    """The overlay-leak full-tree CI job uses the unconditional gate."""
 
-    def test_ci_step_runs_full_tree_scan_with_require_terms(self) -> None:
+    def test_ci_steps_run_full_tree_scan_without_a_flag(self) -> None:
         import yaml  # noqa: PLC0415
 
         ci_path = Path(__file__).resolve().parent.parent / ".github/workflows/ci.yml"
@@ -497,7 +488,4 @@ class TestOverlayLeakCiPassesRequireTerms:
         steps = ci["jobs"]["overlay-leak-tree"]["steps"]
         joined = " ".join(s.get("run", "") for s in steps if isinstance(s, dict))
         assert "check_no_overlay_leak.py" in joined, "The overlay-leak-tree CI step must run the full-tree scan."
-        assert "--require-terms" in joined, (
-            "The overlay-leak-tree CI step must pass --require-terms so a missing "
-            "TEATREE_OVERLAY_LEAK_TERMS secret reds the job (fail-loud), not a silent no-op."
-        )
+        assert "--require-terms" not in joined

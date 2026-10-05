@@ -26,7 +26,8 @@ from pathlib import Path
 import pytest
 
 from teatree.hooks import _repo_visibility, banned_terms_scanner, public_visibility, publish_surface
-from teatree.hooks._command_parser import extract_bash_payload, is_fail_closed_sentinel, is_publish_command
+from teatree.hooks._command_parser import extract_bash_payload, is_publish_command
+from teatree.hooks._parser_primitives import is_fail_closed_sentinel
 
 _FAKE_SECRET = "ghp_" + "A" * 40
 
@@ -40,9 +41,18 @@ def _seed_config_db(tmp_path: Path, **rows: object) -> Path:
             "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
         )
         for key, value in rows.items():
+            stored_value = (
+                [
+                    f"{host}/{entry}" if "." not in entry.split("/", 1)[0] else entry
+                    for entry in value
+                    for host in (("github.com", "gitlab.com") if "." not in entry.split("/", 1)[0] else ("",))
+                ]
+                if key == "private_repos" and isinstance(value, list)
+                else value
+            )
             conn.execute(
                 "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
-                (key, json.dumps(value)),
+                (key, json.dumps(stored_value)),
             )
         conn.commit()
     finally:
@@ -55,8 +65,7 @@ def config(tmp_path: Path) -> Path:
     return _seed_config_db(
         tmp_path,
         private_repos=["acme-internal", "internalcorp"],
-        internal_publish_namespaces=["acme-internal", "internalcorp"],
-        banned_terms=["acmecorp", "acmewidget"],
+        banned_term_registry={"leak": [], "prose_collider": ["acmecorp", "acmewidget"]},
     )
 
 
@@ -80,9 +89,7 @@ def _verdict(command: str, config_path: Path, cwd: Path | None = None) -> str:
     payload = banned_terms_scanner.extract_publish_payload("Bash", tool_input)
     if payload is None:
         return "allow"
-    skipped = banned_terms_scanner.has_override("Bash", tool_input) or public_visibility.gate_skips_for_visibility(
-        command, cwd, config_path=config_path
-    )
+    skipped = public_visibility.gate_skips_for_visibility(command, cwd, config_path=config_path)
     if skipped or banned_terms_scanner.scan_text(payload, config_path=config_path) is None:
         return "allow"
     if publish_surface.carve_out_applies("Bash", command, payload, cwd, config_path=config_path):

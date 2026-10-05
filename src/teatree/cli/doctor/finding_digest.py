@@ -17,9 +17,7 @@ the re-surface cadence (a daily heartbeat, a clear-and-return episode) is the
 watchdog's ledger to own; this module answers only "is this the same finding?".
 """
 
-import hashlib
 import re
-from collections.abc import Iterable
 
 #: Every maximal digit run collapses to one placeholder. Counters, ages, id lists and
 #: timestamps are the volatile parts of a doctor FAIL line; the surrounding prose is
@@ -40,16 +38,3 @@ def finding_identity(message: str) -> str:
         # registration category, not a new box condition worth paging for.
         return "FAIL Registered worktree never was a git checkout"
     return _DIGITS.sub("#", normalized)
-
-
-def findings_digest(messages: Iterable[str]) -> str:
-    """A stable short digest of the SET of finding identities — ``""`` when there are none.
-
-    Set-valued and sorted, so re-ordering the doctor's echoes never re-pages the owner
-    while a finding appearing or clearing always does.
-    """
-    identities = sorted({finding_identity(m) for m in messages if m.strip()})
-    if not identities:
-        return ""
-    joined = "\n".join(identities).encode("utf-8")
-    return hashlib.sha256(joined).hexdigest()[:_DIGEST_CHARS]

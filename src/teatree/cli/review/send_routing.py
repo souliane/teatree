@@ -20,12 +20,11 @@ def route_forge_send(*, repo: str, mr: int, action: str, note: str) -> tuple[str
     colleague surface on a laxer path than the MCP / CLI forge writers.
 
     Returns ``(routed_note, refusal)``: ``refusal`` is ``""`` when the seam
-    allows the send (the ``warn`` ship default always allows and returns ``note``
-    unchanged — audit-only) and a human-readable message when the seam refuses —
+    allows the send and a human-readable message when the seam refuses —
     a public-repo leak (:class:`~teatree.core.send_proxy.OutboundLeakError`) or a
-    non-allowlisted destination in ``enforce`` mode
+    non-allowlisted destination
     (:class:`~teatree.core.send_proxy.SendBlockedError`). ``routed_note`` is the
-    body to post (redacted in ``enforce`` mode). An empty note is a no-op
+    body to post (with matching terms redacted). An empty note is a no-op
     pass-through (no scan, no audit). ``t3 review`` is a GitLab-only surface, so
     the forge is pinned to GitLab for the visibility probe and the audit channel.
     """

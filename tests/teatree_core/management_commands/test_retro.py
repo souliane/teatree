@@ -9,12 +9,14 @@ counts + links.
 """
 
 import json
+import os
 import sqlite3
 from io import StringIO
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -22,6 +24,7 @@ from teatree.backends import loader as loader_mod
 from teatree.core import overlay_loader as overlay_loader_mod
 from teatree.core.review import review_findings as rf_mod
 from teatree.core.review.review_findings import ReviewFinding
+from tests._send_gate import allow_forge_repos
 from tests.teatree_core.conftest import CommandOverlay
 
 
@@ -44,6 +47,7 @@ def _seed_cold_config(db: Path, key: str, value: object) -> None:
 
 _PR_URL = "https://github.com/souliane/teatree/pull/1573"
 _REPO = "souliane/teatree"
+_CUSTOM_REGISTRY = {"leak": ["acmecorp"], "prose_collider": ["acmecorp"]}
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 
 _COMMENTS = [
@@ -77,7 +81,12 @@ def _verdicts_file(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.mark.usefixtures("configured_banned_term_registry")
 class RetroReviewFindingsTest(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos(_REPO)
+
     def _run(self, *args: str, store_dir: Path, **kwargs: object) -> dict[str, object]:
         with patch.object(rf_mod, "get_data_dir", return_value=store_dir):
             output = call_command("retro", "review-findings", *args, stdout=StringIO(), **kwargs)
@@ -101,7 +110,7 @@ class RetroReviewFindingsTest(TestCase):
         verdicts = _verdicts_file(store_dir)
         host = MagicMock()
         host.list_pr_comments.return_value = _COMMENTS
-        host.search_open_issues.return_value = []
+        host.list_repo_open_issues.return_value = []
         host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/2000"}
         with (
             patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
@@ -129,7 +138,7 @@ class RetroReviewFindingsTest(TestCase):
         verdicts = _verdicts_file(store_dir)
         host = MagicMock()
         host.list_pr_comments.return_value = _COMMENTS
-        host.search_open_issues.return_value = []
+        host.list_repo_open_issues.return_value = []
         host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/2000"}
         with (
             patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
@@ -139,8 +148,8 @@ class RetroReviewFindingsTest(TestCase):
             filed_body = host.create_issue.call_args.kwargs["body"]
             host.reset_mock()
             host.list_pr_comments.return_value = _COMMENTS
-            # The second run sees the already-filed issue via search.
-            host.search_open_issues.return_value = [
+            # The second run sees the already-filed issue in the open backlog.
+            host.list_repo_open_issues.return_value = [
                 {"html_url": "https://github.com/souliane/teatree/issues/2000", "body": filed_body}
             ]
             result = self._run(_PR_URL, classification=str(verdicts), store_dir=store_dir)
@@ -172,7 +181,7 @@ class RetroReviewFindingsTest(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db = tmp_path / "config.sqlite3"
-            _seed_cold_config(db, "banned_terms", ["acmecorp"])
+            _seed_cold_config(db, "banned_term_registry", _CUSTOM_REGISTRY)
             verdicts = tmp_path / "verdicts.json"
             verdicts.write_text(
                 json.dumps({_FP_C: {"class": "C", "enforcement": "Add a structural-design review test."}}),
@@ -180,9 +189,13 @@ class RetroReviewFindingsTest(TestCase):
             )
             host = MagicMock()
             host.list_pr_comments.return_value = _COMMENTS
-            host.search_open_issues.return_value = []
+            host.list_repo_open_issues.return_value = []
             host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/2000"}
             with (
+                patch.dict(
+                    os.environ,
+                    {"T3_CONFIG_DB": str(db), "TEATREE_TERM_REGISTRY": json.dumps(_CUSTOM_REGISTRY)},
+                ),
                 patch.object(rf_mod, "get_data_dir", return_value=tmp_path / "store"),
                 patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(loader_mod, "get_code_host_for_url", return_value=host),
@@ -212,7 +225,7 @@ class RetroReviewFindingsTest(TestCase):
         verdicts.write_text(json.dumps({fp: {"class": "C", "enforcement": "Add a gate."}}), encoding="utf-8")
         host = MagicMock()
         host.list_pr_comments.return_value = comments
-        host.search_open_issues.return_value = []
+        host.list_repo_open_issues.return_value = []
         host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/2001"}
         with (
             patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
@@ -227,7 +240,6 @@ class RetroReviewFindingsTest(TestCase):
 
     def test_untrusted_finding_with_banned_term_is_withheld(self) -> None:
         """A finding whose body carries a banned term is withheld — never filed."""
-        import os  # noqa: PLC0415
         import tempfile  # noqa: PLC0415
 
         comments = [
@@ -242,14 +254,17 @@ class RetroReviewFindingsTest(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             db = tmp_path / "config.sqlite3"
-            _seed_cold_config(db, "banned_terms", ["acmecorp"])
+            _seed_cold_config(db, "banned_term_registry", _CUSTOM_REGISTRY)
             verdicts = tmp_path / "verdicts.json"
             verdicts.write_text(json.dumps({fp: {"class": "C", "enforcement": "Add a gate."}}), encoding="utf-8")
             host = MagicMock()
             host.list_pr_comments.return_value = comments
-            host.search_open_issues.return_value = []
+            host.list_repo_open_issues.return_value = []
             with (
-                patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}),
+                patch.dict(
+                    os.environ,
+                    {"T3_CONFIG_DB": str(db), "TEATREE_TERM_REGISTRY": json.dumps(_CUSTOM_REGISTRY)},
+                ),
                 patch.object(rf_mod, "get_data_dir", return_value=tmp_path / "store"),
                 patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(loader_mod, "get_code_host_for_url", return_value=host),

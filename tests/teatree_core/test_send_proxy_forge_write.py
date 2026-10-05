@@ -14,7 +14,6 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.config.enums import SendProxyMode
 from teatree.core.models import ConfigSetting, SendAudit
 from teatree.core.send_proxy import (
     REDACTION_PLACEHOLDER,
@@ -56,6 +55,7 @@ class TestRouteForgeWriteCleanPath(TestCase):
         assert SendAudit.objects.count() == 0
 
     def test_clean_body_to_a_private_target_passes_through_and_audits(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", ["github:souliane/teatree"])
         with patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False):
             out = route_forge_write(
                 forge="github", repo="souliane/teatree", text="a clean note", action="issue_create", target="t"
@@ -63,7 +63,7 @@ class TestRouteForgeWriteCleanPath(TestCase):
         assert out == "a clean note"
         row = SendAudit.objects.get()
         assert row.channel == SendChannel.GITHUB.value
-        assert row.destination == "souliane/teatree"
+        assert row.destination == "github:souliane/teatree"
         assert row.action == "issue_create"
 
 
@@ -112,6 +112,7 @@ class TestRouteForgeWriteBannedTermsLeakGate(TestCase):
         assert SendAudit.objects.count() == 0
 
     def test_clean_body_passes_when_banned_terms_set(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", ["github:souliane/teatree"])
         with (
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
             patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
@@ -127,6 +128,7 @@ class TestRouteForgeWriteBannedTermsLeakGate(TestCase):
         assert out == "rolling out a routine migration"
 
     def test_private_target_not_blocked_by_banned_term(self) -> None:
+        ConfigSetting.objects.set_value("send_proxy_allowlist", ["github:acme/private"])
         with (
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False),
             patch("teatree.hooks.banned_terms_cli.resolve_banned_terms", return_value=("acme",)),
@@ -158,34 +160,14 @@ class TestRouteForgeWriteBannedTermsLeakGate(TestCase):
                 target="souliane/teatree",
             )
 
-    def test_unset_not_required_is_a_dev_noop(self) -> None:
+    def test_unset_fails_closed_on_public_target(self) -> None:
         with (
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
             patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
             patch(
                 "teatree.hooks.banned_terms_cli.resolve_banned_terms",
-                side_effect=BannedTermsUnsetError.for_key("banned_terms"),
+                side_effect=BannedTermsUnsetError.for_key("banned_term_registry", "TEATREE_TERM_REGISTRY"),
             ),
-            patch("teatree.hooks.banned_terms_cli.banned_terms_required", return_value=False),
-        ):
-            out = route_forge_write(
-                forge="github",
-                repo="souliane/teatree",
-                text="a perfectly ordinary note",
-                action="github_issue_create",
-                target="souliane/teatree",
-            )
-        assert out == "a perfectly ordinary note"
-
-    def test_unset_required_fails_closed_on_public_target(self) -> None:
-        with (
-            patch("teatree.core.gates.privacy_gate._target_is_public", return_value=True),
-            patch("teatree.core.gates.privacy_gate.overlay_privacy_rules", return_value=([], [])),
-            patch(
-                "teatree.hooks.banned_terms_cli.resolve_banned_terms",
-                side_effect=BannedTermsUnsetError.for_key("banned_terms"),
-            ),
-            patch("teatree.hooks.banned_terms_cli.banned_terms_required", return_value=True),
             pytest.raises(OutboundLeakError, match="banned-terms-unresolvable"),
         ):
             route_forge_write(
@@ -198,8 +180,7 @@ class TestRouteForgeWriteBannedTermsLeakGate(TestCase):
 
 
 class TestRouteForgeWriteSendProxy(TestCase):
-    def test_enforce_mode_non_allowlisted_destination_raises_and_audits_denied(self) -> None:
-        ConfigSetting.objects.set_value("send_proxy_mode", SendProxyMode.ENFORCE.value)
+    def test_non_allowlisted_destination_raises_and_audits_denied(self) -> None:
         with (
             patch("teatree.core.gates.privacy_gate._target_is_public", return_value=False),
             pytest.raises(SendBlockedError, match="allowlist"),
@@ -207,8 +188,7 @@ class TestRouteForgeWriteSendProxy(TestCase):
             route_forge_write(forge="github", repo="acme/blocked", text="body", action="a", target="t")
         assert SendAudit.objects.get().allowlist_verdict == SendAudit.Verdict.DENIED.value
 
-    def test_enforce_mode_redacts_an_allowlisted_send(self) -> None:
-        ConfigSetting.objects.set_value("send_proxy_mode", SendProxyMode.ENFORCE.value)
+    def test_redacts_an_allowlisted_send(self) -> None:
         ConfigSetting.objects.set_value("send_proxy_allowlist", ["acme/widgets"])
         with (
             patch("teatree.core.send_proxy._redact_terms", lambda _overlay: ["SECRETCORP"]),

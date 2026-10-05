@@ -33,17 +33,18 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.config import UserSettings
 from teatree.core.gates.schema_guard import SelfDbMigrationError
 from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.schema_readiness import invalidate_schema_readiness
+from teatree.loop.global_scanner_factories import _self_update_scanner
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.self_update import CI_UNVERIFIED_REASON, CI_VERIFIED_REASON, SelfUpdateScanner
 from teatree.loop.scanners.self_update_ci import CiVerdict, MainCiStatus
 from teatree.loop.scanners.self_update_schema import SchemaReconcile, SchemaReconcileState
 
 _READINESS_PROBE = "teatree.core.schema_readiness.pending_migrations"
-_GATE_ENABLED = "teatree.core.schema_readiness.schema_readiness_gate_enabled"
 _SELF_DB_MIGRATE = "teatree.loop.scanners.self_update_schema.migrate_self_db"
 _SCHEMA_NOTIFY = "teatree.loop.scanners.self_update_schema.notify_user"
 
@@ -313,7 +314,6 @@ class SelfUpdateCiGateTests(TestCase):
             repos=(("teatree", self.clone),),
             ci_status=ci_status,
             require_green_main=require_green_main,
-            auto_update_reinstall=True,
         )
         return scanner.scan()
 
@@ -411,7 +411,7 @@ class SelfUpdateCiGateTests(TestCase):
 
 
 class SelfUpdateDeferredReinstallQueueTests(TestCase):
-    """#1760: with ``auto_update_reinstall`` on, an actual update queues a deferred reinstall."""
+    """#1760: an actual update queues a deferred reinstall; nothing else does."""
 
     def setUp(self) -> None:
         import tempfile  # noqa: PLC0415 — test-local
@@ -427,14 +427,7 @@ class SelfUpdateDeferredReinstallQueueTests(TestCase):
         return SelfUpdateScanner(
             repos=(("teatree", self.clone),),
             ci_status=_StubCiStatus(CiVerdict.GREEN),
-            auto_update_reinstall=True,
         )
-
-    def test_an_update_queues_nothing_until_the_reinstall_is_opted_into(self) -> None:
-        SelfUpdateScanner(repos=(("teatree", self.clone),), ci_status=_StubCiStatus(CiVerdict.GREEN)).scan()
-
-        assert _head_sha(self.clone) != self.old_sha
-        assert not PendingReinstall.objects.filter(repo_label="teatree").exists()
 
     def test_an_actual_update_queues_the_pending_reinstall(self) -> None:
         self._scanner().scan()
@@ -625,26 +618,6 @@ class SelfUpdateSchemaRetryTests(TestCase):
         migrate.assert_not_called()
         assert [signal.kind for signal in signals] == ["self_update.up_to_date"]
 
-    def test_the_kill_switch_stands_the_retry_down_with_the_rest_of_the_gate(self) -> None:
-        """``schema_readiness_gate_enabled=false`` must disable this mechanism too.
-
-        The switch exists for a box whose PROBE misfires. If the retry gated on the
-        raw verdict it would keep migrating and keep filing an ``action_needed`` row
-        every tick off that same bad verdict, on exactly the box the operator just
-        stood the gate down on.
-        """
-        with (
-            patch(_GATE_ENABLED, return_value=False),
-            patch(_READINESS_PROBE, return_value=["core.0042_widget"]),
-            patch(_SELF_DB_MIGRATE) as migrate,
-            patch(_SCHEMA_NOTIFY) as notify,
-        ):
-            signals = self._scan()
-
-        migrate.assert_not_called()
-        notify.assert_not_called()
-        assert [signal.kind for signal in signals] == ["self_update.up_to_date"]
-
 
 def _rmtree_safe(path: str) -> None:
     import shutil  # noqa: PLC0415 — test-local
@@ -653,14 +626,7 @@ def _rmtree_safe(path: str) -> None:
 
 
 class SelfUpdateScannerWiringTests(TestCase):
-    """The wiring layer honours the escape hatch and enumerates target repos."""
-
-    def test_self_update_disabled_setting_defaults_off(self) -> None:
-        """``self_update_disabled`` defaults to ``False`` — scanner is on by default."""
-        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
-
-        settings = UserSettings()
-        assert settings.self_update_disabled is False
+    """The wiring layer enumerates target repos."""
 
     def test_require_green_main_defaults_on(self) -> None:
         """``auto_update_require_green_main`` defaults ON — fail closed (#1760)."""
@@ -717,20 +683,6 @@ class SelfUpdateScannerWiringTests(TestCase):
             scanner = _self_update_scanner()
         assert scanner is not None
         assert scanner.repos == (("teatree", Path("/x/teatree")),)
-
-    def test_wiring_returns_none_when_disabled(self) -> None:
-        """Escape hatch — ``self_update_disabled=True`` → no scanner."""
-        from unittest.mock import patch  # noqa: PLC0415 — test-local
-
-        from teatree.config import UserSettings  # noqa: PLC0415 — test-local
-        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415 — test-local
-
-        with patch(
-            "teatree.loop.global_scanner_factories.get_effective_settings",
-            return_value=UserSettings(self_update_disabled=True),
-        ):
-            scanner = _self_update_scanner()
-        assert scanner is None
 
     def test_wiring_returns_none_when_no_repos(self) -> None:
         """No editable clones discovered → nothing to scan, no scanner needed."""
@@ -872,3 +824,17 @@ class OffDefaultReasonRoundTripTests(TestCase):
         from teatree.loop.scanners.self_update import _off_default_reason  # noqa: PLC0415 — test-local
 
         assert _off_default_reason("feature", "main") == "branch=feature!=main"
+
+
+class SelfUpdateInAnImageGenerationTests(TestCase):
+    def test_an_image_generation_builds_no_scanner_and_runs_no_git(self) -> None:
+        with (
+            patch.dict(os.environ, {"TEATREE_GENERATION": "e" * 40}),
+            patch("teatree.loop.global_scanner_factories.get_effective_settings", return_value=UserSettings()),
+            patch("teatree.utils.run.run_allowed_to_fail") as run,
+            self.assertLogs("teatree.loop.global_scanner_factories", level="DEBUG") as logs,
+        ):
+            assert _self_update_scanner() is None
+
+        run.assert_not_called()
+        assert any("image generation eeeeeeeeeeee: code changes by roll, not in place" in line for line in logs.output)

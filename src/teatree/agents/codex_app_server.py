@@ -2,38 +2,52 @@
 
 import asyncio
 import json
+import logging
 import shutil
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock
+from claude_agent_sdk import ClaudeAgentOptions
 
+from teatree.agents import codex_app_server_events
 from teatree.agents.codex_app_server_env import codex_command, codex_process_env
 from teatree.agents.codex_app_server_errors import (
     auth_persist_error,
     managed_auth_error,
     request_error,
     transport_error,
-    turn_error,
 )
-from teatree.agents.codex_app_server_messages import tool_blocks, translate_usage
+from teatree.agents.codex_app_server_events import CodexToolEvents
+from teatree.agents.codex_app_server_messages import CodexEventTranslator
 from teatree.agents.codex_app_server_options import (
     CodexAppServerError,
     CodexAppServerOptions,
+    codex_container_unavailable_reason,
     codex_phase_policy_unavailable_reason,
+    container_is_the_sandbox,
 )
+from teatree.agents.codex_approval_gate import APPROVAL_METHODS, approval_decision
 from teatree.agents.codex_auth_cache import CodexAuthCache, CodexAuthCacheError, resolve_codex_home
-from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallbackError, HarnessSpec
+from teatree.agents.codex_mcp_probe import refuse_unjudged_mcp_servers
+from teatree.agents.harness_registry import HarnessCapabilities, HarnessFallbackError, HarnessFallbackKind, HarnessSpec
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 
 if TYPE_CHECKING:
-    from claude_agent_sdk.types import ModelUsage
-
     from teatree.agents.harness import HarnessSession
     from teatree.agents.harness_registry import HarnessBuildContext
+
+logger = logging.getLogger(__name__)
+
+TERMINATE_SECONDS = 5.0
+
+
+def transport_close_seconds() -> float:
+    """The longest close() can take: the report drain, then terminate, then kill."""
+    return codex_app_server_events.POST_SETTLE_SECONDS + 2 * TERMINATE_SECONDS
+
 
 CODEX_APP_SERVER_CAPABILITIES = HarnessCapabilities(
     hooks=False,
@@ -45,6 +59,12 @@ CODEX_APP_SERVER_CAPABILITIES = HarnessCapabilities(
     metered_lane=False,
     managed_lane=True,
 )
+
+_METHOD_NOT_FOUND = -32601
+
+
+def codex_capabilities() -> HarnessCapabilities:
+    return replace(CODEX_APP_SERVER_CAPABILITIES, mcp=not container_is_the_sandbox())
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,11 +99,9 @@ class CodexAppServerSession:
         self._stderr_task: asyncio.Task[None] | None = None
         self._stream_failure: CodexAppServerError | HarnessFallbackError | None = None
         self._closing = False
-        self._text_by_item: dict[str, list[str]] = {}
-        self._emitted_items: set[str] = set()
-        self._text: list[str] = []
-        self._usage: dict[str, Any] | None = None
-        self._side_effects_started = False
+        self.translator = CodexEventTranslator()
+        self._tool_events = CodexToolEvents()
+        self._server_request_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self, *, open_thread: bool = True) -> None:
         command = self.command or codex_command()
@@ -133,17 +151,21 @@ class CodexAppServerSession:
         self.model = str(response.get("model") or self.model)
         if not self.thread_id:
             raise CodexAppServerError.missing_thread_id()
+        await refuse_unjudged_mcp_servers(self._request, self.thread_id, self.options)
+        self.register_thread(self.thread_id, self.options)
+
+    def register_thread(self, thread_id: str, options: CodexAppServerOptions) -> None:
+        self._tool_events.register(thread_id, options)
+
+    def unregister_thread(self, thread_id: str) -> None:
+        self._tool_events.unregister(thread_id)
 
     async def query(self, prompt: str) -> None:
         # The previous completed turn is no longer evidence that this request has
         # been accepted. Only the fresh turn/start response may make a subsequent
         # transport failure replay-ambiguous.
         self.turn_id = ""
-        self._text_by_item.clear()
-        self._emitted_items.clear()
-        self._text.clear()
-        self._usage = None
-        self._side_effects_started = False
+        self.translator.reset()
         params: dict[str, Any] = {
             "threadId": self.thread_id,
             "input": [{"type": "text", "text": prompt}],
@@ -163,39 +185,11 @@ class CodexAppServerSession:
     async def receive_response(self) -> AsyncIterator[object]:
         while True:
             event = await self._next_event()
-            messages, completed = self._translate_event(event)
+            messages, completed = self.translator.translate(event, thread_id=self.thread_id, model=self.model)
             for message in messages:
                 yield message
             if completed:
                 return
-
-    def _translate_event(self, event: Mapping[str, Any]) -> tuple[list[object], bool]:
-        method = event.get("method")
-        params = event.get("params")
-        if not isinstance(params, dict) or params.get("threadId") != self.thread_id:
-            return [], False
-        if method == "item/agentMessage/delta":
-            self._record_delta(params)
-        elif method == "item/started":
-            self._record_possible_side_effect(params.get("item"))
-        elif method == "item/completed":
-            self._record_possible_side_effect(params.get("item"))
-            message = self._completed_item_message(params.get("item"))
-            return ([message] if message is not None else []), False
-        elif method == "thread/tokenUsage/updated":
-            self._usage = translate_usage(params.get("tokenUsage"))
-        elif method == "turn/completed":
-            turn = params.get("turn")
-            if not isinstance(turn, dict):
-                raise CodexAppServerError.missing_turn()
-            if turn.get("error") is not None:
-                raise turn_error(
-                    turn.get("error"),
-                    side_effects_started=self._side_effects_started,
-                    agent_session_id=self.thread_id,
-                )
-            return [*self._remaining_turn_messages(turn), self._result_message(turn)], True
-        return [], False
 
     async def interrupt(self) -> None:
         if self.thread_id and self.turn_id:
@@ -208,6 +202,7 @@ class CodexAppServerSession:
         process = self.process
         if process is None:
             return
+        await self._tool_events.drain_post_tasks()
         if process.stdin is not None and not process.stdin.is_closing():
             process.stdin.close()
             with suppress(BrokenPipeError, ConnectionResetError):
@@ -215,7 +210,7 @@ class CodexAppServerSession:
         if process.returncode is None:
             process.terminate()
             try:
-                await asyncio.wait_for(process.wait(), timeout=5)
+                await asyncio.wait_for(process.wait(), timeout=TERMINATE_SECONDS)
             except TimeoutError:
                 process.kill()
                 await process.wait()
@@ -223,6 +218,11 @@ class CodexAppServerSession:
             if task is not None:
                 with suppress(asyncio.CancelledError, CodexAppServerError):
                     await task
+        for task in tuple(self._server_request_tasks):
+            task.cancel()
+        for task in tuple(self._server_request_tasks):
+            with suppress(asyncio.CancelledError):
+                await task
         self._fail_pending(CodexAppServerError.stopped())
 
     async def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -294,8 +294,10 @@ class CodexAppServerSession:
         if not isinstance(message, dict):
             raise CodexAppServerError.invalid_protocol()
         if "method" in message and "id" in message:
-            raise CodexAppServerError.invalid_protocol()
+            self._route_server_request(message)
+            return
         if "method" in message:
+            self._tool_events.observe(message)
             self._events.put_nowait(message)
             return
         request_id = message.get("id")
@@ -318,6 +320,54 @@ class CodexAppServerSession:
         result = message.get("result")
         future.set_result(result if isinstance(result, dict) else {})
 
+    def _route_server_request(self, message: dict[str, Any]) -> None:
+        method = message["method"]
+        is_approval = isinstance(method, str) and method in APPROVAL_METHODS
+        task = asyncio.create_task((self._respond_approval if is_approval else self._refuse_server_request)(message))
+        self._server_request_tasks.add(task)
+        task.add_done_callback(self._server_request_done)
+
+    def _server_request_done(self, task: asyncio.Task[None]) -> None:
+        self._server_request_tasks.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.warning("Codex server request could not be answered: %s", type(error).__name__)
+
+    async def _refuse_server_request(self, message: dict[str, Any]) -> None:
+        if not self._closing:
+            await self._write(
+                {"id": message["id"], "error": {"code": _METHOD_NOT_FOUND, "message": "Unsupported server request."}}
+            )
+
+    async def _respond_approval(self, message: dict[str, Any]) -> None:
+        params = message.get("params")
+        params = params if isinstance(params, dict) else {}
+        method = message["method"]
+        raw_thread_id = params.get("threadId")
+        thread_id = raw_thread_id if isinstance(raw_thread_id, str) else ""
+        options = self._tool_events.approval_options.get(thread_id)
+        changes = self._tool_events.file_changes.pop((thread_id, str(params.get("itemId", ""))), None)
+        decision, reason = "decline", "TeaTree PreToolUse router could not evaluate the action."
+        try:
+            if options is not None:
+                await self._tool_events.wait_for_post(thread_id)
+            decision, reason = await approval_decision(method, params, options, changes)
+        finally:
+            if not self._closing:
+                try:
+                    turn_id = params.get("turnId")
+                    if options is not None and reason and isinstance(turn_id, str):
+                        await self._steer_refusal(thread_id, turn_id, reason)
+                finally:
+                    await self._write({"id": message["id"], "result": {"decision": decision}})
+
+    async def _steer_refusal(self, thread_id: str, turn_id: str, reason: str) -> None:
+        steer = {
+            "threadId": thread_id,
+            "expectedTurnId": turn_id,
+            "input": [{"type": "text", "text": f"TeaTree PreToolUse refused the action: {reason}"}],
+        }
+        await asyncio.wait_for(self._request("turn/steer", steer), timeout=5)
+
     async def _drain_stderr(self) -> None:
         process = self.process
         if process is None or process.stderr is None:
@@ -326,14 +376,22 @@ class CodexAppServerSession:
             pass
 
     async def _next_event(self) -> dict[str, Any]:
-        event = await self._events.get()
+        event = await self.next_transport_event()
         if isinstance(event, _StreamFailure):
             raise event.error
+        await self.settle_turn(event)
         return event
 
     async def next_transport_event(self) -> dict[str, Any] | _StreamFailure:
-        """Read one raw event for a worker-owned multi-thread dispatcher."""
+        """Read one raw event for a worker-owned multi-thread dispatcher; it never waits on a thread's reports."""
         return await self._events.get()
+
+    async def settle_turn(self, event: Mapping[str, Any]) -> None:
+        """Let a completed turn's PostToolUse reports land before its own thread reads the completion."""
+        params = event.get("params")
+        thread_id = params.get("threadId") if isinstance(params, dict) else None
+        if event.get("method") == "turn/completed" and isinstance(thread_id, str):
+            await self._tool_events.wait_for_post(thread_id)
 
     async def request_protocol(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Issue an App Server request from a worker-owned multi-thread dispatcher."""
@@ -344,88 +402,24 @@ class CodexAppServerSession:
             if not future.done():
                 future.set_exception(error)
 
-    def _record_delta(self, params: Mapping[str, Any]) -> None:
-        item_id = params.get("itemId")
-        delta = params.get("delta")
-        if isinstance(item_id, str) and isinstance(delta, str):
-            self._text_by_item.setdefault(item_id, []).append(delta)
-
-    def _record_possible_side_effect(self, value: object) -> None:
-        if isinstance(value, dict) and value.get("type") in {
-            "collabAgentToolCall",
-            "commandExecution",
-            "fileChange",
-            "mcpToolCall",
-            "subAgentActivity",
-            "dynamicToolCall",
-            "imageGeneration",
-        }:
-            self._side_effects_started = True
-
-    def _completed_item_message(self, value: object) -> AssistantMessage | None:
-        if not isinstance(value, dict):
-            return None
-        item_id = str(value.get("id", ""))
-        if not item_id or item_id in self._emitted_items:
-            return None
-        self._emitted_items.add(item_id)
-        item_type = value.get("type")
-        if item_type == "agentMessage":
-            text = str(value.get("text") or "".join(self._text_by_item.get(item_id, ())))
-            if not text:
-                return None
-            self._text.append(text)
-            return AssistantMessage(content=[TextBlock(text=text)], model=self.model)
-        blocks = tool_blocks(value)
-        return AssistantMessage(content=blocks, model=self.model) if blocks else None
-
-    def _remaining_turn_messages(self, turn: Mapping[str, Any]) -> list[AssistantMessage]:
-        messages: list[AssistantMessage] = []
-        items = turn.get("items")
-        if isinstance(items, list):
-            for item in items:
-                message = self._completed_item_message(item)
-                if message is not None:
-                    messages.append(message)
-        for item_id, chunks in self._text_by_item.items():
-            if item_id not in self._emitted_items and chunks:
-                text = "".join(chunks)
-                self._emitted_items.add(item_id)
-                self._text.append(text)
-                messages.append(AssistantMessage(content=[TextBlock(text=text)], model=self.model))
-        return messages
-
-    def _result_message(self, turn: Mapping[str, Any]) -> ResultMessage:
-        status = str(turn.get("status", ""))
-        is_error = status != "completed"
-        error = turn.get("error")
-        detail = error.get("message") if isinstance(error, dict) else None
-        duration = turn.get("durationMs")
-        duration_ms = int(duration) if isinstance(duration, int | float) else 0
-        model_usage = cast("dict[str, ModelUsage]", {self.model: {}})
-        return ResultMessage(
-            subtype="success" if not is_error else "error_during_execution",
-            duration_ms=duration_ms,
-            duration_api_ms=duration_ms,
-            is_error=is_error,
-            num_turns=1,
-            session_id=self.thread_id,
-            total_cost_usd=None,
-            usage=self._usage,
-            result=str(detail) if detail else "".join(self._text),
-            model_usage=model_usage,
-        )
-
 
 class CodexAppServerHarness:
-    capabilities = CODEX_APP_SERVER_CAPABILITIES
-
-    def __init__(self, *, code_home: Path | None = None, command: Sequence[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        refusal: str | None,
+        code_home: Path | None = None,
+        command: Sequence[str] | None = None,
+    ) -> None:
+        self.capabilities = codex_capabilities()
         self.code_home = resolve_codex_home(code_home)
         self.command = command
+        self.refusal = refusal
 
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncIterator["HarnessSession"]:
+        if self.refusal:
+            raise HarnessFallbackError(self.refusal, kind=HarnessFallbackKind.ACCESS, side_effects_started=False)
         translated = CodexAppServerOptions.from_sdk_options(options)
         if self.command is None:
             from teatree.agents.codex_shared_app_server import (  # noqa: PLC0415 — late import avoids a transport cycle
@@ -439,11 +433,8 @@ class CodexAppServerHarness:
                 resume=options.resume,
             )
             try:
-                await session.start()
-                try:
+                async with _opened_session(session):
                     yield session
-                finally:
-                    await session.close()
             except CodexAuthCacheError as exc:
                 if session.thread_id:
                     raise auth_persist_error(
@@ -465,11 +456,8 @@ class CodexAppServerHarness:
                     command=self.command,
                     process_env=translated.core.env if self.command is not None else None,
                 )
-                try:
-                    await session.start()
+                async with _opened_session(session):
                     yield session
-                finally:
-                    await session.close()
         except CodexAuthCacheError as exc:
             if cache_hydrated and session is not None:
                 raise auth_persist_error(
@@ -479,11 +467,26 @@ class CodexAppServerHarness:
             raise managed_auth_error() from exc
 
 
+class _StartedSession(Protocol):
+    async def start(self) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+@asynccontextmanager
+async def _opened_session(session: _StartedSession) -> AsyncIterator[None]:
+    await session.start()
+    try:
+        yield
+    finally:
+        await session.close()
+
+
 def codex_app_server_spec() -> HarnessSpec:
     return HarnessSpec(
         name="codex_app_server",
-        factory=lambda _context: CodexAppServerHarness(),
-        capabilities=CODEX_APP_SERVER_CAPABILITIES,
+        factory=lambda context: CodexAppServerHarness(refusal=_codex_unavailable_reason(context)),
+        capabilities=codex_capabilities(),
         allows_provider=False,
         unavailable_reason=_codex_unavailable_reason,
     )
@@ -492,10 +495,22 @@ def codex_app_server_spec() -> HarnessSpec:
 def _codex_unavailable_reason(context: "HarnessBuildContext") -> str | None:
     if shutil.which("codex") is None:
         return "codex CLI is not installed or not on PATH"
+    if reason := codex_container_unavailable_reason():
+        return reason
     if context.phase and (
         reason := codex_phase_policy_unavailable_reason(sdk_disallowed_tools_for_phase(context.phase))
     ):
         return f"phase {context.phase!r} {reason.lower()}"
+    if container_is_the_sandbox() and (rules := sorted((resolve_codex_home() / "rules").glob("*.rules"))):
+        # Codex 0.155.1 has no app-server switch to ignore user rules, and an ALLOW skips the approval gate.
+        return f"execpolicy rules would bypass TeaTree approvals: {', '.join(str(rule) for rule in rules)}"
+    if context.phase == "architectural_review" and context.task is not None and container_is_the_sandbox():
+        from teatree.agents.codex_app_server_route import (  # noqa: PLC0415 — Django models are not importable at agents import time
+            starts_in_managed_main_clone,
+        )
+
+        if starts_in_managed_main_clone(context.task):
+            return "architectural_review starts in a managed main clone where the container is Codex's sandbox"
     return None
 
 
@@ -503,7 +518,7 @@ def _thread_params(options: CodexAppServerOptions) -> dict[str, Any]:
     params: dict[str, Any] = {
         "cwd": options.core.cwd,
         "developerInstructions": options.core.system_prompt,
-        "approvalPolicy": "never",
+        "approvalPolicy": "untrusted" if options.sandbox_mode == "danger-full-access" else "never",
         "sandbox": options.sandbox_mode,
         "runtimeWorkspaceRoots": list(options.runtime_workspace_roots),
     }

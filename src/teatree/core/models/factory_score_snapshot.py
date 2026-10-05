@@ -1,19 +1,4 @@
-"""Append-only ledger of recipe-weighted factory scores (SIG-PR-2).
-
-Every scored read the outer loop persists is one :class:`FactoryScoreSnapshot`
-carrying the aggregate, its verdict, and the two provenance keys that make a
-regression impossible to hide: ``recipe_sha`` (which recipe produced it) and
-``tree_sha`` (the code-under-test commit). The fat manager gives the outer loop
-its time-series diffs — :meth:`previous` (the last snapshot) and
-:meth:`last_with_different_recipe_sha` (the last snapshot under a *different*
-recipe), so re-weighting the recipe cannot mask a real regression behind its own
-sha.
-
-Flag-gated OFF is the shipped state: with ``factory_score_enabled`` false NO row
-is ever written (``t3 <overlay> recipe score --record`` refuses), so the migrated table
-stays empty — the only persistent footprint, matching the ``ConfigSetting``
-empty-table doctrine.
-"""
+"""Append-only score snapshots used by directive verification."""
 
 from typing import TYPE_CHECKING, ClassVar
 

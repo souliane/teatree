@@ -2,7 +2,7 @@
 
 After an experiment's fix merges the loop arms a measurement horizon
 (:func:`arm_measurement`); once :func:`horizon_elapsed` days pass it takes a post
-:func:`~teatree.loops.outer_loop.score.read_score` and applies the pure
+:func:`~teatree.loops.shared.score.read_score` and applies the pure
 :func:`~teatree.loops.outer_loop.decide.decide_keep` rule
 (:func:`measure_and_decide`). A non-improving experiment is never kept — it moves
 to ``REVERT_PENDING`` for a human-ratified revert.
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from teatree.core.factory.factory_score import FactoryScore
 from teatree.core.models import FactoryScoreSnapshot, OuterLoopExperiment
 from teatree.loops.outer_loop.decide import Decision, decide_keep
-from teatree.loops.outer_loop.score import read_score
+from teatree.loops.shared.score import read_score
 from teatree.loops.shared.score_snapshot import snapshot_to_score
 from teatree.utils.git_branch import head_sha
 

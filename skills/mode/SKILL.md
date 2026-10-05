@@ -124,8 +124,8 @@ Questions are never buffered on a mode — they are asked immediately
 `handle_mirror_question_to_slack` PreToolUse hook checks whether the current turn is
 **user-driven**:
 
-- **User-driven turn** (`is_live_user_turn` — a `UserPromptSubmit` for the same session
-  within `LIVE_TURN_FRESHNESS` = 90 s): the question renders **in-client** and goes
+- **User-driven turn** (`is_live_user_turn` — the owner's latest prompt or in-client answer
+  in this session's transcript, within `LIVE_TURN_FRESHNESS` = 90 s): the question renders **in-client** and goes
   nowhere else — it is not posted to Slack and not recorded ([#4673](https://github.com/souliane/teatree/issues/4673):
   a recorded row with no Slack ts is exactly what the tick drain re-posts). This is the
   [#189](https://github.com/souliane/teatree/issues/189) escape that makes `/checking`

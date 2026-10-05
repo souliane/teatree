@@ -4,7 +4,7 @@
 Engagement alone only armed the suggester and the loop: nothing ever put the
 platform skill itself in front of the agent, so the owner had to invoke it by
 hand on every fresh session. The demand is computed at the engagement seam
-(``hooks.scripts.engagement``) and merged into the ``UserPromptSubmit`` hard
+(``hooks.scripts.engagement``) and merged into the SessionStart hard
 suggestion set, so it lands in ``<session>.pending`` and the ``PreToolUse``
 skill-loading gate enforces it.
 
@@ -16,9 +16,9 @@ whose SDK cases are the ones that would go green on a uniformly-demanding seam
 and whose attended cases are the ones that would go green on a uniformly-silent
 one.
 
-Integration-leaning: the end-to-end class drives the live
-``handle_user_prompt_submit`` handler against a real state dir under
-``tmp_path`` and reads back the real ``<session>.pending`` file.
+Integration-leaning: the end-to-end class drives the live SessionStart
+``session_start_skill_context`` against a real state dir under ``tmp_path`` and
+reads back the real ``<session>.pending`` file.
 """
 
 import sys
@@ -28,8 +28,8 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.engagement import PLATFORM_SKILL, autoload_skill_demand
-from hooks.scripts.hook_router import handle_user_prompt_submit
 from hooks.scripts.session_lane import LANE_INTERACTIVE_CLI, LANE_SDK, LANE_UNKNOWN, session_lane
+from hooks.scripts.session_start_skills import session_start_skill_context
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -99,8 +99,8 @@ class TestAutoloadSkillDemand:
         assert autoload_skill_demand(["t3:code", "ac-python"]) == [PLATFORM_SKILL]
 
 
-class TestUserPromptSubmitDemandsThePlatformSkill:
-    """End-to-end through the live ``handle_user_prompt_submit`` handler."""
+class TestSessionStartDemandsThePlatformSkill:
+    """End-to-end through the live ``session_start_skill_context``."""
 
     @pytest.fixture
     def state_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -129,15 +129,15 @@ class TestUserPromptSubmitDemandsThePlatformSkill:
         monkeypatch.setattr(
             skill_loader_mod,
             "suggest_skills",
-            lambda _input: {"suggestions": [], "advisory": [], "companions": []},
+            lambda _input: {"suggestions": [], "companions": []},
         )
 
-        handle_user_prompt_submit({"session_id": "sess-sdk", "prompt": "implement the fix"})
+        session_start_skill_context("sess-sdk")
 
         assert self._canonical_platform_skill() not in self._pending("sess-sdk")
 
     def test_autoload_session_hard_demands_the_platform_skill(
-        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The shape the owner actually saw: the suggester resolves the overlay's
         # own skill from the cold metadata cache and nothing else, because the
@@ -148,20 +148,18 @@ class TestUserPromptSubmitDemandsThePlatformSkill:
         monkeypatch.setattr(
             skill_loader_mod,
             "suggest_skills",
-            lambda _input: {"suggestions": ["some-overlay"], "advisory": [], "companions": []},
+            lambda _input: {"suggestions": ["some-overlay"], "companions": []},
         )
 
-        handle_user_prompt_submit({"session_id": "sess-autoload", "prompt": "fix the bug"})
+        message = session_start_skill_context("sess-autoload")
 
         canonical = self._canonical_platform_skill()
         assert canonical in self._pending("sess-autoload")
-        assert f"/{canonical}" in capsys.readouterr().out
+        assert f"/{canonical}" in message
 
-    def test_the_demand_survives_a_broken_suggester(
-        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # A suggester that raises used to degrade the whole prompt hook to
-        # silence — indistinguishable from "the operator never opted in".
+    def test_the_demand_survives_a_broken_suggester(self, state_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A suggester that raises must not degrade the demand to silence —
+        # indistinguishable from "the operator never opted in".
         monkeypatch.setenv("T3_AUTOLOAD", "1")
         _pin_lane(monkeypatch, LANE_INTERACTIVE_CLI)
 
@@ -171,11 +169,11 @@ class TestUserPromptSubmitDemandsThePlatformSkill:
 
         monkeypatch.setattr(skill_loader_mod, "suggest_skills", _boom)
 
-        handle_user_prompt_submit({"session_id": "sess-broken", "prompt": "fix the bug"})
+        message = session_start_skill_context("sess-broken")
 
         canonical = self._canonical_platform_skill()
         assert canonical in self._pending("sess-broken")
-        assert f"/{canonical}" in capsys.readouterr().out
+        assert f"/{canonical}" in message
 
     def test_a_manually_engaged_session_is_not_forced_to_load_it(
         self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
@@ -187,10 +185,10 @@ class TestUserPromptSubmitDemandsThePlatformSkill:
         monkeypatch.setattr(
             skill_loader_mod,
             "suggest_skills",
-            lambda _input: {"suggestions": ["some-overlay"], "advisory": [], "companions": []},
+            lambda _input: {"suggestions": ["some-overlay"], "companions": []},
         )
 
-        handle_user_prompt_submit({"session_id": "sess-manual", "prompt": "fix the bug"})
+        session_start_skill_context("sess-manual")
 
         assert self._canonical_platform_skill() not in self._pending("sess-manual")
 
@@ -204,9 +202,9 @@ class TestUserPromptSubmitDemandsThePlatformSkill:
         monkeypatch.setattr(
             skill_loader_mod,
             "suggest_skills",
-            lambda _input: {"suggestions": [], "advisory": [], "companions": []},
+            lambda _input: {"suggestions": [], "companions": []},
         )
 
-        handle_user_prompt_submit({"session_id": "sess-held", "prompt": "fix the bug"})
+        session_start_skill_context("sess-held")
 
         assert self._pending("sess-held") == []

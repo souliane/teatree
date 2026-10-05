@@ -9,6 +9,7 @@ can open is the trap this whole change removes.
 from dataclasses import dataclass, field
 from unittest import mock
 
+import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
@@ -17,6 +18,9 @@ from teatree.core.models import Session, Task, Ticket
 from teatree.types import RawAPIDict
 from teatree.utils.run import CommandFailedError
 from teatree.utils.url_slug import slack_conversation_anchor
+from tests._send_gate import allow_forge_repos
+
+pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 
 _CHANNEL = "D-owner"
 _FILED = "https://github.com/souliane/teatree/issues/7100"
@@ -77,6 +81,8 @@ class TestTheWorkItemChannelFilesAndTellsTheOwner(TestCase):
     """A work-implying request ends as a real issue the owner can click."""
 
     def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos("souliane/teatree")
         self.backend = RecordingBackend()
         self.host = RecordingHost()
         patches = (

@@ -47,6 +47,26 @@ def _kinds(diff: str) -> list[str]:
 
 
 class TestNoqaSignal:
+    def test_sanctioned_deferred_import_is_not_new_debt(self) -> None:
+        diff = _diff("src/teatree/m.py", added=("from django.db import models  # noqa: PLC0415 — app registry",))
+        assert scan_debt_delta(diff) == []
+
+    def test_sanctioned_deferred_import_with_plain_reason_is_not_new_debt(self) -> None:
+        diff = _diff("src/teatree/m.py", added=("from django.db import models  # noqa: PLC0415 deferred import",))
+        assert scan_debt_delta(diff) == []
+
+    def test_mixed_noqa_codes_still_report_unsanctioned_rule(self) -> None:
+        diff = _diff("src/teatree/m.py", added=("from django.db import models  # noqa: PLC0415, F821 — mixed",))
+        assert _kinds(diff) == ["noqa"]
+
+    def test_space_separated_mixed_noqa_codes_are_reported(self) -> None:
+        diff = _diff("src/teatree/m.py", added=("from django.db import models  # noqa: PLC0415 F401",))
+        assert _kinds(diff) == ["noqa"]
+
+    def test_all_sanctioned_noqa_codes_are_ignored(self) -> None:
+        diff = _diff("src/teatree/m.py", added=("from django.db import models  # noqa: PLC0415, PLC0415",))
+        assert scan_debt_delta(diff) == []
+
     def test_added_noqa_fires(self) -> None:
         diff = _diff("src/teatree/m.py", added=("x = frobnicate()  # noqa: F821",))
         assert _kinds(diff) == ["noqa"]

@@ -87,7 +87,7 @@ class TestTheHierarchyIsSeveralLevelsDeep:
             assert not (node.children and node.rows), f"{node.path} carries both children and rows"
 
     def test_a_deep_path_reaches_its_key_through_named_levels(self) -> None:
-        path = setting_group_path("require_merge_evidence")
+        path = setting_group_path("expected_required_contexts")
         assert len(path) >= 3, f"expected a nested path for a merge gate, got {path}"
         assert all(segment.strip() for segment in path), f"a path segment is blank: {path}"
 
@@ -99,13 +99,13 @@ class TestGroupingIsDerivedNotHandKept:
             ("autoload", ("Workspace", "Engagement & identity")),
             ("mode", ("Agents", "Mode & harness")),
             ("loop_cadence_seconds", ("Loops", "Cadence & throughput")),
-            ("require_merge_evidence", ("Gates", "Quality", "Merge & done")),
+            ("expected_required_contexts", ("Gates", "Quality", "Merge & done")),
             ("architectural_review_skill", ("Gates", "Quality", "Architectural review")),
             ("artifact_idle_days", ("Infrastructure", "Resource pressure", "Thresholds & cadence")),
             ("ram_warn_avail_gb", ("Loops", "resource_pressure")),
-            ("allow_destructive_disk", ("Infrastructure", "Resource pressure", "Destructive levers")),
+            ("disk_cache_allowlist", ("Infrastructure", "Resource pressure", "Thresholds & cadence")),
             ("provision_max_concurrency", ("Infrastructure", "Provisioning")),
-            ("banned_terms", ("Registries", "Term scanning, agent tables & cold reads")),
+            ("banned_term_registry", ("Registries", "Term scanning, agent tables & cold reads")),
             ("skill_loading_gate_enabled", ("Gates", "Pre-Django hooks")),
             ("overlays", ("Registries", "Definitions")),
         ],
@@ -142,7 +142,7 @@ class TestTheTreeIsATotalPartition:
 
     def test_an_unknown_key_still_lands_in_the_tree_under_the_leftovers_banner(self) -> None:
         tree = group_tree(("mode", "a_key_no_declaration_base_carries"), key_of=lambda key: key)
-        leftovers = [leaf for leaf in _leaves(tree) if leaf.is_ungrouped]
+        leftovers = [leaf for leaf in _leaves(tree) if leaf.path == UNGROUPED_PATH]
         assert leftovers, "an unowned key produced no visible bucket"
         assert leftovers[0].rows == ("a_key_no_declaration_base_carries",)
 
@@ -160,7 +160,7 @@ class TestTheOutlineTheTextSurfacesRender:
         return list(group_outline(keys, key_of=lambda key: key))
 
     def test_a_level_is_announced_once_however_many_leaves_share_it(self) -> None:
-        sections = self._sections(("require_merge_evidence", "architectural_review_skill", "critic_gate_mode"))
+        sections = self._sections(("expected_required_contexts", "architectural_review_skill", "send_proxy_allowlist"))
         announced = [(heading.depth, heading.label) for section in sections for heading in section.headings]
         assert announced.count((1, "Gates")) == 1, "a shared parent level is re-announced per child"
         assert announced.count((2, "Quality")) == 1
@@ -171,12 +171,12 @@ class TestTheOutlineTheTextSurfacesRender:
         ]
 
     def test_each_sections_rows_follow_the_headings_that_introduce_them(self) -> None:
-        sections = self._sections(("autoload", "require_merge_evidence"))
+        sections = self._sections(("autoload", "expected_required_contexts"))
         assert [section.headings[-1].label for section in sections] == ["Engagement & identity", "Merge & done"]
-        assert [section.rows for section in sections] == [("autoload",), ("require_merge_evidence",)]
+        assert [section.rows for section in sections] == [("autoload",), ("expected_required_contexts",)]
 
     def test_a_sections_depth_is_its_leafs_so_a_text_surface_indents_without_relookup(self) -> None:
-        sections = self._sections(("autoload", "require_merge_evidence"))
+        sections = self._sections(("autoload", "expected_required_contexts"))
         assert [section.depth for section in sections] == [2, 3]
         assert all(section.depth == len(setting_group_path(row)) for section in sections for row in section.rows)
 
@@ -186,7 +186,7 @@ class TestTheOutlineTheTextSurfacesRender:
         assert sorted(placed) == sorted(keys)
 
     def test_group_leaves_flattens_to_the_row_carrying_nodes_in_render_order(self) -> None:
-        tree = group_tree(("autoload", "require_merge_evidence"), key_of=lambda key: key)
+        tree = group_tree(("autoload", "expected_required_contexts"), key_of=lambda key: key)
         leaves = group_leaves(tree)
         assert [leaf.path for leaf in leaves] == [
             ("Workspace", "Engagement & identity"),
@@ -198,8 +198,8 @@ class TestTheOutlineTheTextSurfacesRender:
 _SAMPLE: dict[str, object] = {
     "autoload": False,
     "mode": "interactive",
-    "require_merge_evidence": True,
-    "architectural_review_skill": "ac-reviewing-codebase",
+    "expected_required_contexts": ["test (3.13)"],
+    "architectural_review_skill": "architectural-review",
     "ram_warn_avail_gb": 5,
     "artifact_idle_days": 2.0,
 }

@@ -53,6 +53,7 @@ from teatree.eval.models import (
     Matcher,
     PlanBeforeToolMatcher,
     SuccessfulToolCallMatcher,
+    ToolCallCountMatcher,
 )
 from teatree.loops.dream._teeth_check import ToolCallShape, teeth_check_against_candidate
 
@@ -422,6 +423,15 @@ def _matchers_to_mappings(spec: EvalSpec) -> list[Mapping[str, object]]:
                         f"{matcher.before_tool}.{matcher.before_arg_path} "
                         f'{matcher.before_operator} "{matcher.before_value}"'
                     ),
+                }
+            )
+        elif isinstance(matcher, ToolCallCountMatcher):
+            out.append(
+                {
+                    "tool_call_count": matcher.tool,
+                    "args.command": f'~ "{matcher.pattern}"',
+                    "equals": matcher.equals,
+                    "until_edit_outside": list(matcher.round_files),
                 }
             )
         elif matcher.kind == "positive":

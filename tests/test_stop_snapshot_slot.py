@@ -24,7 +24,6 @@ def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 class TestSlotThrottle:
     def test_first_run_is_due_and_calls_prepare_stop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[tuple[str, dict]] = []
-        monkeypatch.setattr(slot, "_slot_enabled", lambda: True)
         monkeypatch.setattr(slot, "_run_prepare_stop", lambda sid, data: calls.append((sid, data)))
         assert slot.handle_stop_snapshot_slot({"session_id": "s1", "cwd": "/x"}) is None
         assert calls == [("s1", {"session_id": "s1", "cwd": "/x"})]
@@ -32,7 +31,6 @@ class TestSlotThrottle:
 
     def test_throttled_within_interval(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
-        monkeypatch.setattr(slot, "_slot_enabled", lambda: True)
         monkeypatch.setattr(slot, "_run_prepare_stop", lambda sid, _d: calls.append(sid))
         slot.handle_stop_snapshot_slot({"session_id": "s1"})
         slot.handle_stop_snapshot_slot({"session_id": "s1"})  # immediately again
@@ -40,7 +38,6 @@ class TestSlotThrottle:
 
     def test_due_again_after_interval_elapses(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[str] = []
-        monkeypatch.setattr(slot, "_slot_enabled", lambda: True)
         monkeypatch.setattr(slot, "_run_prepare_stop", lambda sid, _d: calls.append(sid))
         slot.handle_stop_snapshot_slot({"session_id": "s1"})
         marker = slot._slot_marker("s1")
@@ -50,7 +47,6 @@ class TestSlotThrottle:
         assert calls == ["s1", "s1"]
 
     def test_artifacts_under_five_minutes_stale(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(slot, "_slot_enabled", lambda: True)
         monkeypatch.setattr(slot, "_run_prepare_stop", lambda _s, _d: None)
         slot.handle_stop_snapshot_slot({"session_id": "s1"})
         age = time.time() - slot._slot_marker("s1").stat().st_mtime
@@ -61,26 +57,18 @@ class TestSlotIndependentOfAvailability:
     def test_runs_regardless_of_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The slot must fire while loops are paused — it never consults the mode."""
         calls: list[str] = []
-        monkeypatch.setattr(slot, "_slot_enabled", lambda: True)
         monkeypatch.setattr(slot, "_run_prepare_stop", lambda sid, _d: calls.append(sid))
         slot.handle_stop_snapshot_slot({"session_id": "s1"})
         assert calls == ["s1"]
 
 
-class TestKillSwitch:
-    def test_disabled_setting_skips_the_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+class TestNoKillSwitch:
+    def test_a_false_setting_cannot_disable_the_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("teatree_settings.teatree_bool_setting", lambda *_a, **_k: False)
         calls: list[str] = []
         monkeypatch.setattr(slot, "_run_prepare_stop", lambda sid, _d: calls.append(sid))
-        assert slot.handle_stop_snapshot_slot({"session_id": "s1"}) is None
-        assert calls == []
-
-    def test_enabled_by_default_on_broken_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _boom(*_a: object, **_k: object) -> bool:
-            raise OSError
-
-        monkeypatch.setattr("teatree_settings.teatree_bool_setting", _boom)
-        assert slot._slot_enabled() is True  # fails OPEN to always-on infra
+        slot.handle_stop_snapshot_slot({"session_id": "s1"})
+        assert calls == ["s1"]
 
 
 class TestResilience:
@@ -111,6 +99,29 @@ class TestOpenPrsForRepo:
         (tmp_path / ".git").mkdir()
         monkeypatch.setattr(slot.subprocess, "check_output", lambda *_a, **_k: "not json")
         assert slot.open_prs_for_repo(tmp_path) == []
+
+
+class TestReadOpenPrs:
+    """The same read, telling a failed one (``None``) from an answer (``[]``)."""
+
+    def test_not_a_checkout_is_an_answer(self, tmp_path: Path) -> None:
+        assert slot.read_open_prs(tmp_path) == []
+
+    def test_gh_absent_is_no_answer(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(slot.subprocess, "check_output", lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError))
+        assert slot.read_open_prs(tmp_path) is None
+
+    def test_an_unreadable_reply_is_no_answer(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        (tmp_path / ".git").mkdir()
+        for reply in ("not json", '{"number": 5}'):
+            monkeypatch.setattr(slot.subprocess, "check_output", lambda *_a, _reply=reply, **_k: _reply)
+            assert slot.read_open_prs(tmp_path) is None
+
+    def test_no_open_pr_is_an_answer(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setattr(slot.subprocess, "check_output", lambda *_a, **_k: "[]")
+        assert slot.read_open_prs(tmp_path) == []
 
 
 class TestInternalGuards:

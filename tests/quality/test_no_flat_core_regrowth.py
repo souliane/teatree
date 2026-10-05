@@ -84,8 +84,8 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # resolver (resolve_active_mode + the set/clear override chokepoint). A genuine new
 # core concern that MUST live at the core root: its domain-layer consumers speak.py and
 # stop_snapshot.py cannot import the orchestration layer, so the resolver cannot live in
-# teatree.loop; and it composes teatree.core.models + teatree.live_presence (the
-# presence heartbeat) + teatree.loop.preset_resolution, fitting no existing subpackage.
+# teatree.loop; and it composes teatree.core.models + teatree.loop.preset_resolution,
+# fitting no existing subpackage.
 # 80: +git_merge_driver.py (#3582) — the per-clone `merge.generated.driver` registration
 # seam, the exact sibling of the flat git-hooks install helper prek_hook.py (both are
 # per-checkout .git/config installers consumed by `t3 setup` + worktree provisioning).
@@ -132,9 +132,8 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # so no existing subpackage owns it.
 # 102: -availability.py (#3826) — the legacy availability layer is retired. Its fast-hook
 # posture mirror is deleted (the hooks cold-read the control DB instead), and the two
-# things that survived it were never mode concepts: the keyboard heartbeat moved DOWN to
-# the foundation leaf teatree.live_presence (so the Django resolver, the cold resolver and
-# the bare UserPromptSubmit hook share ONE implementation), and the two DeferredQuestion
+# things that survived it were never mode concepts: the keyboard heartbeat (since replaced
+# by the session transcript the hooks read), and the two DeferredQuestion
 # helpers collapsed onto DeferredQuestion.pending, which already was their whole body.
 # 103: +config_seed_tables.py (#3825) — the seed half of the TOML interchange (the
 # [loops]/[modes]/[schedules] classify + emit + write) carved out of config_migration.py
@@ -323,10 +322,22 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # leaves. Task dispatch is shared by core signals/tasks and loop timers.
 # Admission spans, their schema, skill assurance, and checked observation reads
 # form one cohesive core/telemetry/ package; none needs a flat root leaf.
-# 126: +question_heal.py (#4904) — the withdraw-a-healed-question seam shared by every
+# 126: +egress_transport.py — the context-scoped swap point for the FINAL Slack call, so a
+# preview run can replace the transport while every gate above it still runs for real. It
+# must sit BELOW on_behalf_egress.py and notify.py (both import it) and depend on nothing but
+# teatree.types, so no subpackage can own it without inverting that edge; it is a flat sibling
+# of the send leaves it serves, the same ruling entry 66 recorded for send_proxy.py.
+# 128: +issue_hygiene.py / self_forge_identities.py (#162). issue_hygiene is the
+# single issue-write facade consumed across management commands, review/,
+# mcp/, hooks/, and loop/ — no one subpackage owns it. self_forge_identities is
+# the self-authorship predicate consumed just as widely (config/, backends/,
+# mcp/, hooks/, loop/, review/); neither is a review/ or intake/ concern alone.
+# 129: +billed_model.py — which model a run billed, one reading shared by agents' attempt recorder
+# and eval's transcript; teatree.core is the only node both import, and no subpackage owns it.
+# 130: +question_heal.py (#4904) — the withdraw-a-healed-question seam shared by every
 # question surfacing drain (the flat notify_question_drains.py) and the tick sweep. No
 # subpackage owns the DeferredQuestion lifecycle, and its checks span provision/ today.
-PINNED_FLAT_CORE_MODULES = 126
+PINNED_FLAT_CORE_MODULES = 130
 
 
 def flat_core_modules(root: Path = _CORE_DIR) -> list[str]:

@@ -126,7 +126,7 @@ def resolve_own_identity(backend: MessagingBackend) -> OwnSlackIdentity | None:
         return None
     identity = identity_from_auth_test(response)
     if identity is not None:
-        with contextlib.suppress(AttributeError):
+        with contextlib.suppress(AttributeError, TypeError):
             setattr(backend, _IDENTITY_MEMO_ATTR, identity)
     return identity
 

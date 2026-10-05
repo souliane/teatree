@@ -7,6 +7,7 @@ a ``LocalStackQueueItem`` and returns ``False`` (the caller must NOT advance
 the FSM) — never ``SystemExit``. When a slot is free it returns ``True``.
 """
 
+from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +21,16 @@ from teatree.core.gates.local_stack_gate import (
 )
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.models import LocalStackQueueItem, Ticket, Worktree
+
+
+@pytest.fixture(autouse=True)
+def _healthy_host_resources() -> Iterator[None]:
+    """The acquisition cases control count and RAM explicitly, independent of host pressure."""
+    with (
+        patch("teatree.core.gates.provision_admission_gate.read_disk_used_percent", return_value=0.0),
+        patch("teatree.core.gates.provision_admission_gate.read_ram_used_percent", return_value=0.0),
+    ):
+        yield
 
 
 def _worktree(*, overlay: str = "t3-heavy", ticket_number: str, state: Worktree.State) -> Worktree:

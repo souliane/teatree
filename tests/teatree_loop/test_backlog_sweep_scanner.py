@@ -30,6 +30,8 @@ from django.utils import timezone
 from teatree.config import UserSettings
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
+from teatree.core.models.ticket import Ticket
+from teatree.loop.global_scanner_factories import _backlog_sweep_scanner
 from teatree.loop.scanners.backlog_sweep import BACKLOG_SWEEP_PHASE, BacklogSweepScanner
 
 #: Test overlay anchor — a non-legacy name distinct from any literal the
@@ -379,3 +381,76 @@ class BacklogSweepWiringTests(TestCase):
             scanner = _backlog_sweep_scanner()
         assert scanner is not None
         assert scanner.overlay_name == "t3-teatree"
+
+
+UMBRELLA = "https://gitlab.com/o/f/-/work_items/249"
+
+
+def _umbrella_with_pending(*keys: str) -> Ticket:
+    return Ticket.objects.create(
+        overlay=TEST_OVERLAY_NAME,
+        issue_url=UMBRELLA,
+        extra={"dream_gap_pending": [{"gap_key": key, "title": f"Fix {key}"} for key in keys]},
+    )
+
+
+class DreamGapLedgerTriggerTests(TestCase):
+    """A non-empty dream-gap ledger queues a sweep; an empty one never does."""
+
+    def _gap_scanner(self) -> BacklogSweepScanner:
+        return BacklogSweepScanner(overlay_name=TEST_OVERLAY_NAME, dream_umbrella_url=UMBRELLA)
+
+    def test_an_empty_ledger_queues_nothing(self) -> None:
+        _umbrella_with_pending()
+
+        assert self._gap_scanner().scan_dream_gaps() == []
+        assert _last_sweep_task() is None
+
+    def test_no_umbrella_ticket_queues_nothing(self) -> None:
+        assert self._gap_scanner().scan_dream_gaps() == []
+        assert _last_sweep_task() is None
+
+    def test_a_non_empty_ledger_queues_a_sweep_naming_every_pending_gap(self) -> None:
+        _umbrella_with_pending("3a9f11", "77c1aa")
+
+        signals = self._gap_scanner().scan_dream_gaps()
+
+        assert [signal.payload["trigger"] for signal in signals] == ["dream-gaps"]
+        task = _last_sweep_task()
+        assert task is not None
+        assert "3a9f11" in task.execution_reason
+        assert "77c1aa" in task.execution_reason
+        assert "ticket attach-gaps" in task.execution_reason
+
+    def test_an_in_flight_sweep_is_the_lock(self) -> None:
+        _umbrella_with_pending("3a9f11")
+        self._gap_scanner().scan_dream_gaps()
+
+        assert self._gap_scanner().scan_dream_gaps() == []
+        assert Task.objects.filter(phase=BACKLOG_SWEEP_PHASE).count() == 1
+
+    def test_the_daily_sweep_also_carries_the_pending_gaps(self) -> None:
+        _umbrella_with_pending("3a9f11")
+
+        self._gap_scanner().scan()
+
+        task = _last_sweep_task()
+        assert task is not None
+        assert "3a9f11" in task.execution_reason
+
+    def test_the_daily_sweep_with_nothing_pending_names_no_gap_section(self) -> None:
+        self._gap_scanner().scan()
+
+        task = _last_sweep_task()
+        assert task is not None
+        assert "ticket attach-gaps" not in task.execution_reason
+
+    def test_wiring_reads_the_dream_umbrella_setting(self) -> None:
+        settings = UserSettings(dream_umbrella_url=UMBRELLA)
+        with (
+            patch("teatree.loop.global_scanner_factories.get_effective_settings", return_value=settings),
+            patch("teatree.core.models.dream_gap_ledger.get_effective_settings", return_value=settings),
+        ):
+            scanner = _backlog_sweep_scanner()
+        assert scanner is not None
+        assert scanner.dream_umbrella_url == UMBRELLA

@@ -34,6 +34,27 @@ def _parse_str_list(raw: object) -> list[str]:
     return value_coercion.strict_str_list(raw)
 
 
+def _parse_private_repos(raw: object) -> list[str]:
+    """Validate host-qualified private repo paths at the write and schema seams."""
+    entries = _parse_str_list(raw)
+    expected = "private_repos entries must be host/owner or host/owner/repo (for example gitlab.com/group/repo)"
+    canonical: list[str] = []
+    for original in entries:
+        entry = original.rstrip("/").lower()
+        entry = entry.removesuffix(".git") if "/" in entry else entry
+        parts = entry.split("/")
+        if (
+            "/" not in entry
+            or "." not in parts[0]
+            or any(not part for part in parts)
+            or any(char.isspace() or char in "*?[]{}\\:@#%" for char in entry)
+            or any(part in {".", ".."} for part in parts)
+        ):
+            raise ValueError(expected)
+        canonical.append(entry)
+    return canonical
+
+
 def _parse_harness_skill_exclusions(raw: object) -> list[str]:
     return parse_harness_skill_exclusions(raw)
 
@@ -82,7 +103,7 @@ def _parse_env_bool(raw: str) -> bool:
     Truthy ``1``/``true``/``yes``/``on``, falsy ``0``/``false``/``no``/``off`` —
     case-insensitive. Anything else RAISES, like the ``Mode.parse`` / ``Wip.parse`` enum
     entries beside it: coercing an unrecognised token to ``False`` let a typo
-    (``T3_ENFORCE_REGULATED_PATH=treu``) silently disable the very control the operator was
+    (``T3_WORKER_QUIESCING=treu``) silently disable the very control the operator was
     reaching for. An EMPTY var raises here too, and :func:`env_pinned_value` reads that
     refusal as no opinion, so clearing an inherited pin falls through to the next tier.
     """
@@ -97,8 +118,7 @@ def _parse_env_bool(raw: str) -> bool:
 
 
 # A default-ON ``T3_*`` env flag: present-and-off-value disables, anything else
-# enables. Mirrors the legacy ``T3_HOOK_FETCH_TITLES`` semantics so a typo never
-# silently disables the feature (the resolver only invokes this when the var carries one).
+# enables. A typo does not silently disable the feature.
 def _parse_env_bool_default_on(raw: str) -> bool:
     return raw.strip().lower() not in _ENV_BOOL_FALSE
 

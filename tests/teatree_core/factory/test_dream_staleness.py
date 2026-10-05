@@ -1,6 +1,6 @@
 """``dream_fallen_behind`` — the reportable-stall predicate behind the health chip (#4726).
 
-The shipped ``dream`` row is ``default_enabled=false`` and the ``low-token`` / ``off``
+The shipped ``dream`` row is admitted by ``present`` and the ``low-token`` / ``off``
 presets mask it, so an ADMITTED loop is the precondition for every emitting case here, not
 the ambient state of a fresh DB.
 """

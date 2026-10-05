@@ -59,8 +59,15 @@ class TestActiveProjectOverlayRouting:
         ):
             from teatree.cli.review.request import post  # noqa: PLC0415
 
-            post(mr_url="https://gitlab.com/org/repo/-/merge_requests/385", approver="souliane", title="")
+            post(
+                mr_url="https://gitlab.com/org/repo/-/merge_requests/385",
+                approver="souliane",
+                ticket_id="42",
+                head_sha="a" * 40,
+                title="",
+            )
         assert managepy_core.call_args.kwargs["overlay_name"] == _OTHER_NAME
+        assert managepy_core.call_args.args[-4:] == ("--ticket-id", "42", "--head-sha", "a" * 40)
 
 
 class TestOverlayInferenceFromMrUrl:
@@ -137,7 +144,7 @@ class TestOverlayInferenceFromMrUrl:
         ):
             from teatree.cli.review.request import post  # noqa: PLC0415
 
-            post(mr_url=_MR_URL, approver="souliane", title="")
+            post(mr_url=_MR_URL, approver="souliane", ticket_id="42", head_sha="a" * 40, title="")
         assert managepy_core.call_args.kwargs["overlay_name"] == _OTHER_NAME
 
 
@@ -170,7 +177,13 @@ class TestCoreDispatch:
         with patch("teatree.cli.review.request.managepy_core") as managepy_core:
             from teatree.cli.review.request import post  # noqa: PLC0415
 
-            post(mr_url="https://gitlab.com/org/repo/-/merge_requests/385", approver="souliane", title="")
+            post(
+                mr_url="https://gitlab.com/org/repo/-/merge_requests/385",
+                approver="souliane",
+                ticket_id="42",
+                head_sha="a" * 40,
+                title="",
+            )
         assert managepy_core.call_args.args[0] == "review_request_post"
 
     def test_discover_via_cli_runner_uses_core_dispatch(self) -> None:

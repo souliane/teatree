@@ -17,6 +17,7 @@ without importing the CLI — the dependency the tach graph forbids
 (``teatree.loop`` must not depend on ``teatree.cli``).
 """
 
+import logging
 import os
 import shutil
 import sys
@@ -27,6 +28,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.generation import in_place_update_refusal
 from teatree.utils.editable_pth import host_root_for_checkout
 from teatree.utils.install_headroom import install_headroom_refusal
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
@@ -34,6 +36,8 @@ from teatree.utils.uv_constraints import uv_constraints_args
 from teatree.utils.uv_overrides import uv_overrides_args
 
 type SubprocessRunner = Callable[..., CompletedProcess[str]]
+
+logger = logging.getLogger(__name__)
 
 
 def uv_tool_dir(uv_bin: str, *, runner: SubprocessRunner | None = None) -> Path | None:
@@ -137,6 +141,9 @@ def reinstall_running_editable(*, runner: SubprocessRunner = run_allowed_to_fail
     ``deferred`` WITHOUT invoking the runner: the previous, functional install is
     left exactly as it was.
     """
+    if refusal := in_place_update_refusal():
+        logger.info("reinstall skipped: %s", refusal)
+        return ReinstallResult(ok=True, reinstalled=False)
     reinstalled = False
     errors: list[str] = []
     uv_bin = shutil.which("uv")

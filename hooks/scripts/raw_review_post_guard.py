@@ -2,7 +2,7 @@
 
 A raw forge REST POST — ``glab api projects/.../merge_requests/<n>/discussions
 -X POST`` (or ``.../notes``, or the GitHub ``.../pulls/<n>/comments``) — bypasses
-the sanctioned top-level ``t3 review post-comment`` / ``post-draft-note`` path
+the sanctioned top-level ``t3 review post-comment`` path
 that enforces draft-default, dedup, and on-behalf approval. This gate closes the
 bypass at the Bash boundary: a WRITE to a review discussion/notes/comments
 endpoint is denied; plain GET reads pass through.
@@ -27,12 +27,14 @@ forge send ``-f`` as a query parameter rather than a body write (#1568). Every
 other effective method (POST/PUT/PATCH/DELETE/…) is a write. Fails OPEN on an
 internal parse error — a gate bug must never wedge the fleet.
 
+
 The router re-exports :func:`handle_block_raw_review_post` into ``_HANDLERS``.
 The deny routes through the router's shared
-``emit_pretooluse_deny`` chokepoint (back-imported lazily), so the
-``_write_pretooluse_deny`` deny writer and the repeated-denial circuit breaker
-stay in the router. A narrow targeted-command gate — it denies only a raw
-review-post, never arbitrary Bash — so it is on the never-lockout allowlist.
+``emit_pretooluse_deny`` chokepoint (back-imported lazily), which applies the
+repeated-denial circuit breaker before ``gate_decision`` writes the deny. A narrow
+targeted-command gate — it denies only a raw review-post, never arbitrary Bash — so
+it is on the never-lockout allowlist.
+
 
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib —
@@ -62,19 +64,21 @@ _MR_REVIEW_DENY_REASON = (
     "BLOCKED: raw `glab api`/`gh api` POST to a merge-request/pull-request "
     "discussion/notes/comments endpoint bypasses the sanctioned review-post CLI. "
     "To CREATE a note use `t3 review post-comment <repo> <mr> --body-file <abspath>` "
-    "(top-level `t3 review`, never overlay-scoped; draft by default, #1207) or "
-    "`post-draft-note`; to EDIT use `t3 review update-note`; to REMOVE use "
+    "(top-level `t3 review`, never overlay-scoped; draft by default, #1207); "
+    "to EDIT use `t3 review update-note`; to REMOVE use "
     "`t3 review delete-discussion` — the CLI enforces draft-default, dedup, and "
     "on-behalf approval, which a direct REST write skips. Read-only GETs are unaffected."
 )
 _ISSUE_NOTE_DENY_REASON = (
     "BLOCKED: raw `glab api`/`gh api` POST to an issue/work-item notes endpoint bypasses "
     "the sanctioned issue-note CLI. To CREATE a note use "
-    "`t3 <overlay> ticket comment <issue-url> --body '<text>'` (or `--body-file <path>`); "
+    "`t3 <overlay> ticket comment <issue-url> --purpose <purpose> --body '<text>'` "
+    "(or `--body-file <path>`) — a requirement/change_request/scope_change/decision lands in "
+    "the DESCRIPTION where a lane reads it, only status/evidence stays a comment; "
     "to REMOVE use `t3 review delete-issue-note <repo> <issue-iid> <note-id>` — "
     "the CLI routes the body through the public-repo leak gate and the send-proxy "
     "audit/allowlist/redaction seam, which a direct REST write skips. "
-    "`t3 review post-comment` takes an integer MR IID and cannot address an "
+    "The review comment command takes an integer MR IID and cannot address an "
     "issue; the forge exposes no draft-note API for issues, so there is no draft path here. "
     "Read-only GETs are unaffected."
 )
@@ -145,7 +149,7 @@ def review_post_deny_reason(command: str) -> str | None:
 def handle_block_raw_review_post(data: dict) -> bool:
     """Deny a raw ``glab api``/``gh api`` WRITE to a review-comment endpoint.
 
-    Forces the sanctioned top-level ``t3 review post-comment`` / ``post-draft-note``
+    Forces the sanctioned top-level ``t3 review post-comment``
     path (draft-default + dedup + on-behalf approval), which a direct REST write
     skips. Conservative: a command is denied only when its effective HTTP method
     (last ``-X``/``--method`` wins; default POST when a body flag is present) is
@@ -154,8 +158,8 @@ def handle_block_raw_review_post(data: dict) -> bool:
     handler chain).
 
     The deny routes through the router's shared ``emit_pretooluse_deny`` chokepoint
-    (back-imported lazily; the ``_write_pretooluse_deny`` writer + circuit breaker
-    stay in the router).
+    (back-imported lazily; it applies the circuit breaker before ``gate_decision``
+    writes the deny).
     """
     from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
 
@@ -165,4 +169,4 @@ def handle_block_raw_review_post(data: dict) -> bool:
     reason = review_post_deny_reason(command) if command else None
     if reason is None:
         return False
-    return emit_pretooluse_deny(reason)
+    return emit_pretooluse_deny(reason, gate_id="raw_review_post")

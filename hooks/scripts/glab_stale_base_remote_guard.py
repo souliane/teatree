@@ -175,4 +175,4 @@ def handle_block_glab_stale_base_remote(data: dict) -> bool:
     remote_url = stale_base_remote(work_dir, target_slug)
     if remote_url is None:
         return False
-    return _fail_open_or_deny(data, _reason(remote_url, target_slug, work_dir))
+    return _fail_open_or_deny(data, _reason(remote_url, target_slug, work_dir), gate_id="glab_stale_base_remote")

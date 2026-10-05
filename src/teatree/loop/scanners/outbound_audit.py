@@ -281,25 +281,6 @@ class OutboundAuditScanner:
         )
 
 
-def _default_verifier_for(kind: str) -> Verifier | None:
-    """Lazy production-default verifiers built from the default overlay.
-
-    Returns ``None`` when no production verifier exists for the kind — the
-    scanner then skips the row (no alert). Kept as the legacy single-
-    overlay entry point and exercised by the dispatcher tests; per-claim
-    overlay-bound resolution is :func:`_default_verifier_for_claim`.
-    """
-    if kind == "gitlab_note":
-        return _gitlab_note_verifier()
-    if kind == "gitlab_approve":
-        return _gitlab_approve_verifier()
-    if kind == "github_note":
-        return _github_note_verifier()
-    if kind == "slack_dm":
-        return _slack_dm_verifier()
-    return None
-
-
 def _default_verifier_for_claim(claim: "OutboundClaimModel") -> Verifier | None:
     """Build a production verifier bound to the overlay that posted the claim.
 
@@ -345,27 +326,6 @@ def _audit_skipped_signal(claim: "OutboundClaimModel") -> ScanSignal:
     )
 
 
-def _gitlab_note_verifier() -> Verifier | None:
-    """Legacy single-overlay GitLab-note verifier — delegates to the overlay-aware sibling.
-
-    Kept so existing patch-based tests pinning the factory's import-
-    guard and constructor-raise paths keep working. Production code
-    paths go through :func:`_default_verifier_for_claim` (#1275).
-    """
-    return _gitlab_note_verifier_for_overlay("")
-
-
-def _github_note_verifier() -> Verifier | None:
-    """Legacy single-overlay GitHub-note verifier — delegates to the overlay-aware sibling.
-
-    Kept so existing patch-based tests pinning the factory's
-    import-guard, missing-token, and verifier-behaviour paths keep
-    working. Production code paths go through
-    :func:`_default_verifier_for_claim` (#1275).
-    """
-    return _github_note_verifier_for_overlay("")
-
-
 def _is_github_not_found(exc: BaseException) -> bool:
     """``gh api`` surfaces HTTP 404 in the CommandFailedError's stderr.
 
@@ -407,22 +367,6 @@ def _usernames_from_approvers(approved_by: list[object]) -> set[str]:
             if isinstance(username, str):
                 names.add(username)
     return names
-
-
-def _gitlab_approve_verifier() -> Verifier | None:
-    """Legacy single-overlay GitLab-approve verifier — delegates to the overlay-aware sibling."""
-    return _gitlab_approve_verifier_for_overlay("")
-
-
-def _slack_dm_verifier() -> Verifier | None:
-    """Build a Slack-DM verifier from the default overlay's messaging backend.
-
-    Legacy single-overlay entry. The overlay-bound sibling
-    :func:`_slack_dm_verifier_for_overlay` (#1275) supersedes this on the
-    per-claim path; tests still construct this directly to exercise the
-    underlying verifier behaviour.
-    """
-    return _slack_dm_verifier_for_overlay("")
 
 
 __all__ = [

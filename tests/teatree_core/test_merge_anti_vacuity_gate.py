@@ -1,26 +1,23 @@
 """Anti-vacuity gate wired into the merge precondition path (#1829).
 
 Extends the §17.4.3 merge gate with the anti-vacuity dimension: with
-``require_anti_vacuity_attestation`` on, a merge is refused unless the CLEAR's
+a merge is refused unless the CLEAR's
 ticket carries a complete, SHA-bound anti-vacuity attestation. The attestation
 binds to the merge-time live head, so a stale-SHA attestation (the bug present
 on a later, un-re-attested revision) is treated as absent.
 
 Only the unstoppable external (``gh``) is stubbed; the gate, CLEAR, FSM, and DB
-writes are real. ``require_anti_vacuity_attestation`` is pinned per test so the
+writes are real. The gate is unconditional, so the
 suite is deterministic regardless of the host config.
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.config import UserSettings
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
-from teatree.core.models import MergeClear, Ticket
+from teatree.core.models import CriticVerdict, MergeClear, Rubric, Ticket
 from tests.factories import waive_rubric
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 from tests.teatree_core.test_merge_execution import _GhStub
@@ -40,35 +37,40 @@ _SHA = "a" * 40
 _OTHER_SHA = "b" * 40
 
 
-def _clear(ticket: Ticket) -> MergeClear:
+def _clear(ticket: Ticket, *, pr_id: int = 859, head_sha: str = _SHA, waive: bool = True) -> MergeClear:
     # The rubric done-gate runs at this chokepoint; the real path has an independent
     # verifier grade the rubric, so the audited bypass stands in (cf. _seed_sibling_verdict).
-    waive_rubric(ticket)
+    if waive:
+        waive_rubric(ticket)
     return MergeClear.objects.create(
         ticket=ticket,
-        pr_id=859,
+        pr_id=pr_id,
         slug="souliane/teatree",
-        reviewed_sha=_SHA,
+        reviewed_sha=head_sha,
         reviewer_identity="cold-reviewer",
         gh_verify_result=MergeClear.VerifyResult.GREEN,
         blast_class=MergeClear.BlastClass.DOCS,
     )
 
 
-@contextmanager
-def _gate(*, required: bool) -> Iterator[None]:
-    with patch(
-        "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
-        return_value=UserSettings(require_anti_vacuity_attestation=required),
-    ):
-        yield
-
-
 def _merge(clear: MergeClear) -> object:
     # Seed the #2829 sibling verdict the real ``clear`` path records (the gate
     # is downstream of the anti-vacuity check, so a refuse test is unaffected).
     seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
-    with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()):
+    if clear.ticket_id is not None:
+        CriticVerdict.record_from_envelope(
+            ticket=clear.ticket,
+            transition="merge",
+            head_sha=clear.reviewed_sha,
+            envelope={
+                "grader_identity": "critic-agent-7",
+                "items": [
+                    {"slug": slug, "status": "pass", "citation": "inspected tests/x.py::test_y and the shipped diff"}
+                    for slug in ("test_value", "cleanliness")
+                ],
+            },
+        )
+    with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub(head=clear.reviewed_sha)):
         return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
 
@@ -76,7 +78,7 @@ class TestMergeAntiVacuityGate(TestCase):
     def test_merge_refused_without_attestation_when_gate_on(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         clear = _clear(ticket)
-        with _gate(required=True), pytest.raises(MergePreconditionError, match="anti-vacuity"):
+        with pytest.raises(MergePreconditionError, match="anti-vacuity"):
             _merge(clear)
         ticket.refresh_from_db()
         clear.refresh_from_db()
@@ -87,7 +89,7 @@ class TestMergeAntiVacuityGate(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         ticket.record_anti_vacuity_attestation(_OTHER_SHA, "AC mapped", ["tests/x.py::test_y"])
         clear = _clear(ticket)
-        with _gate(required=True), pytest.raises(MergePreconditionError, match="stale"):
+        with pytest.raises(MergePreconditionError, match="stale"):
             _merge(clear)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEW_REQUESTED
@@ -96,15 +98,40 @@ class TestMergeAntiVacuityGate(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         ticket.record_anti_vacuity_attestation(_SHA, "AC1-3 mapped", ["tests/x.py::test_y"])
         clear = _clear(ticket)
-        with _gate(required=True):
-            _merge(clear)
+        _merge(clear)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
 
-    def test_merge_unaffected_when_gate_off(self) -> None:
+    def test_two_prs_on_one_ticket_merge_after_both_reviews(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
-        clear = _clear(ticket)
-        with _gate(required=False):
-            _merge(clear)
-        ticket.refresh_from_db()
-        assert ticket.state == Ticket.State.MERGED
+        rubric = Rubric.populate(ticket, ["Both PRs have a reviewed regression test"])
+        criterion = rubric.criteria.get(ordinal=0)
+        criterion.record_grade(
+            status="pass", grader_identity="cold-reviewer", reviewed_sha=_SHA, rationale="tests/x.py::test_first"
+        )
+        ticket.refresh_from_db(fields=["extra"])
+        assert rubric.is_fully_passed_at(_SHA)
+        assert not rubric.is_fully_passed_at(_OTHER_SHA)
+        criterion.record_grade(
+            status="pass", grader_identity="cold-reviewer", reviewed_sha=_OTHER_SHA, rationale="tests/x.py::test_second"
+        )
+        ticket.refresh_from_db(fields=["extra"])
+        first = _clear(ticket, pr_id=859, head_sha=_SHA, waive=False)
+        second = _clear(ticket, pr_id=860, head_sha=_OTHER_SHA, waive=False)
+        ticket.record_anti_vacuity_attestation(_SHA, "First PR ACs mapped", ["tests/x.py::test_first"])
+        ticket.record_anti_vacuity_attestation(_OTHER_SHA, "Second PR ACs mapped", ["tests/x.py::test_second"])
+
+        first_outcome = _merge(first)
+        second_outcome = _merge(second)
+
+        assert first_outcome.merged_sha
+        assert second_outcome.merged_sha
+        first.refresh_from_db()
+        second.refresh_from_db()
+        assert first.consumed_at is not None
+        assert second.consumed_at is not None
+        ticket.refresh_from_db(fields=["extra"])
+        assert ticket.extra["anti_vacuity_attestations"] == {}
+        assert ticket.extra["rubric_grades_by_head"] == {}
+        ticket.record_anti_vacuity_attestation("c" * 40, "Third PR ACs mapped", ["tests/x.py::test_third"])
+        assert set(ticket.extra["anti_vacuity_attestations"]) == {"c" * 40}

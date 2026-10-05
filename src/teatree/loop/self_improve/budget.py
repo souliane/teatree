@@ -11,7 +11,6 @@ mocking ``psutil``, so the budget logic is fully deterministic.
 """
 
 import datetime as dt
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -28,7 +27,6 @@ DEFAULT_SPAWN_CAP = 3
 # not match ruff's hardcoded-password (S105) heuristic on the trailing
 # "_BUDGET" / "_TOKEN" word.
 _ENV_PREFIX = "T3_SELF_IMPROVE_"
-DEFAULT_TOKEN_BUDGET_ENV = f"{_ENV_PREFIX}TOKEN_BUDGET"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,19 +85,3 @@ def recent_self_improve_firings(seconds: int, *, now: dt.datetime | None = None)
     moment = now or timezone.now()
     cutoff = moment - dt.timedelta(seconds=seconds)
     return SelfImproveFiring.objects.filter(last_fired_at__gte=cutoff).count()
-
-
-def token_budget_from_env() -> int | None:
-    """Return the configured token budget (``None`` when unset).
-
-    Phase 1 detectors are mechanical (no LLM judgment); the env knob is
-    documented now so Phase 3 detectors plug into the same gate without
-    a schema change.
-    """
-    raw = os.environ.get(DEFAULT_TOKEN_BUDGET_ENV, "").strip()
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None

@@ -36,11 +36,6 @@ def read_github_token_for_repo(repo: str) -> ReadOutcome[str]:
     return ReadOutcome(value="", failed=True, error=RuntimeError(resolution.detail))
 
 
-def github_token_for_repo(repo: str) -> str:
-    """Resolve GitHub auth from the repo-owning overlay."""
-    return read_github_token_for_repo(repo).value
-
-
 def diff_stats_from_files(files: list[JSONObject]) -> _DiffStats:
     """Aggregate GitHub's ``pulls/{n}/files`` response into a :class:`_DiffStats`.
 

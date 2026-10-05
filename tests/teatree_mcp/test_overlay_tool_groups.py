@@ -18,8 +18,8 @@ from mcp.types import ToolAnnotations
 
 from teatree.backends.types import Service
 from teatree.core.overlay import McpTool, McpToolGroup, OverlayConfig, OverlayConnectors
-from teatree.mcp import build_server, write_tools
-from teatree.mcp.server import ToolNameCollisionError, declared_write_tool_seams
+from teatree.mcp.server import ToolNameCollisionError, build_server, declared_write_tool_seams
+from teatree.mcp.write_tools import TOOL_SEAMS
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True)
 _WRITE = ToolAnnotations(read_only_hint=False)
@@ -140,7 +140,7 @@ class TestWriteToolsDeclareTheirSeam(TestCase):
             seams = declared_write_tool_seams(frozenset())
 
         assert seams["demo_overlay_write"] == _SEAM
-        assert set(write_tools.TOOL_SEAMS) <= set(seams)
+        assert set(TOOL_SEAMS) <= set(seams)
 
 
 class TestServiceDeclarationGate(TestCase):

@@ -5,10 +5,9 @@ from typing import TYPE_CHECKING, TypedDict, Unpack, cast
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
 from django.db.models import Q
-from django.db.models.functions import Coalesce
-from django.db.models.lookups import LessThan
 from django.utils import timezone
 
+from teatree.core.admission.generation_admission import reopen_own_stranded_drain
 from teatree.core.claim_liveness import current_owner
 from teatree.core.intake.ticket_findability import unfindable_tickets
 from teatree.core.loop_lease_liveness import OwnershipStatus
@@ -19,6 +18,12 @@ from teatree.core.loop_lease_manager import (
     LoopLeaseQuerySet,
     is_per_loop_owner_slot,
     per_loop_owner_slot,
+)
+from teatree.core.managers_admission import (
+    ADMITTED_INFLIGHT_WINDOW,
+    _cheap_phase_q,
+    _lane_occupancy_q,
+    _lane_under_ceiling,
 )
 from teatree.core.managers_inbound import IncomingEventQuerySet, ReplyDispatchQuerySet
 from teatree.core.managers_issue_match import matching_issue_q
@@ -32,6 +37,7 @@ from teatree.core.managers_task_sweeps import reap_stale_claims as _reap_stale_c
 from teatree.core.managers_task_sweeps import reclaim_orphaned_claims as _reclaim_orphaned_claims
 from teatree.core.managers_task_sweeps import replay_orphaned_transitions as _replay_orphaned_transitions
 from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
+from teatree.generation import current_generation
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -73,67 +79,6 @@ __all__ = [
 
 
 logger = logging.getLogger(__name__)
-
-#: How long an admitted-but-unclaimed row keeps its seat in the cheap lane (#4098).
-#: It covers the runner handoff — the seconds between ``enqueue`` and the worker's
-#: claim — and no more: past it the seat is released, so a runner that died holding
-#: an admission cannot wedge the lane shut, and the drain re-admits (and re-stamps)
-#: the row on its next pass. Erring long would trade a melt for a stall; erring short
-#: reopens the burst window this bounds.
-ADMITTED_INFLIGHT_WINDOW = timedelta(minutes=5)
-
-
-def _cheap_phase_q() -> Q:
-    """Every row of the cheap phase class, whichever spelling it was stored with.
-
-    The lane's membership test, held apart from any one question about it so the seat
-    predicates below share a single hop to the phase vocabulary — one intra-core edge
-    hidden from tach's acyclic guard, not one per question.
-    """
-    from teatree.core.modelkit.phases import cheap_phase_spellings  # noqa: PLC0415 — deferred: call-time import
-
-    return Q(phase__in=cheap_phase_spellings())
-
-
-def _lane_occupancy_q(now: datetime, *, cheap: bool | None) -> Q:
-    """The rows holding a seat in one cost class's lane at *now*.
-
-    One predicate rather than two: :meth:`TaskQuerySet.cheap_lane_occupancy` reads it as a
-    ``COUNT`` and :meth:`TaskQuerySet.record_admission` embeds it in the ``WHERE`` of the
-    conditional stamp, and a bound whose probe and whose arbitration disagreed would be no
-    bound at all. ``cheap=None`` counts both classes. The two lanes PARTITION the queue —
-    the expensive one is the exact complement of the cheap one — so an unregistered
-    phase lands in the braked class,
-    matching :func:`~teatree.core.modelkit.phases.phase_cost`'s own fail-safe (#4374).
-    """
-    task_model = cast("type[Task]", apps.get_model("core", "Task"))
-
-    membership = Q() if cheap is None else _cheap_phase_q() if cheap else ~_cheap_phase_q()
-    return membership & (
-        Q(status=task_model.Status.CLAIMED, lease_expires_at__gt=now)
-        | Q(status=task_model.Status.PENDING, admitted_at__gt=now - ADMITTED_INFLIGHT_WINDOW)
-    )
-
-
-def _lane_under_ceiling(now: datetime, ceiling: int, *, cheap: bool | None) -> LessThan:
-    """A ``WHERE`` term true only while that lane has a free seat at *now*.
-
-    ``Coalesce`` is load-bearing: the grouped ``COUNT`` yields NO row for an empty lane, and
-    ``NULL < ceiling`` is not true — an empty lane would refuse every admission.
-    """
-    task_model = cast("type[Task]", apps.get_model("core", "Task"))
-
-    occupied = (
-        task_model.objects.filter(_lane_occupancy_q(now, cheap=cheap))
-        .order_by()
-        .values(_lane=models.Value(1))
-        .annotate(seats=models.Count("*"))
-        .values("seats")[:1]
-    )
-    return LessThan(
-        Coalesce(models.Subquery(occupied, output_field=models.IntegerField()), models.Value(0)),
-        ceiling,
-    )
 
 
 class TicketCreateFields(TypedDict, total=False):
@@ -260,7 +205,7 @@ class TaskQuerySet(models.QuerySet):
 
         A ``Task`` has no overlay column of its own — its overlay is the
         ticket's or the session's, so the scope clause spans both relations
-        and includes legacy empty-overlay rows. An empty ``overlay`` returns
+        and requires an exact overlay attribution. An empty ``overlay`` returns
         every task. Delegates to :func:`overlay_scope_q`, the single source of
         truth for the Task overlay clause, shared with ``claimable``
         (the loop claim), the MCP ``loop_stats`` read, and the dashboard
@@ -405,6 +350,7 @@ class TaskQuerySet(models.QuerySet):
         # DB lags the running code). The CAS never fires, so claimed ≡ spawned stays true,
         # and in-flight CLAIMED leases (which renew via ``renew_lease``, not this path)
         # are untouched by either.
+        reopen_own_stranded_drain()
         if claim_admission_block_reason():
             return None
         now = timezone.now()
@@ -429,6 +375,7 @@ class TaskQuerySet(models.QuerySet):
                 status=task_model.Status.CLAIMED,
                 claimed_by=claimed_by,
                 claimed_by_session=claimed_by_session,
+                claimed_generation=current_generation(),
                 claimed_at=now,
                 heartbeat_at=now,
                 lease_expires_at=now + timedelta(seconds=lease_seconds),

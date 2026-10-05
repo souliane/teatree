@@ -43,8 +43,8 @@ MR_REVIEW_DENY_REASON = (
     "BLOCKED: raw `glab api`/`gh api` POST to a merge-request/pull-request "
     "discussion/notes/comments endpoint bypasses the sanctioned review-post CLI. "
     "To CREATE a note use `t3 review post-comment <repo> <mr> --body-file <abspath>` "
-    "(top-level `t3 review`, never overlay-scoped; draft by default, #1207) or "
-    "`post-draft-note`; to EDIT use `t3 review update-note`; to REMOVE use "
+    "(top-level `t3 review`, never overlay-scoped; draft by default, #1207); "
+    "to EDIT use `t3 review update-note`; to REMOVE use "
     "`t3 review delete-discussion` — the CLI enforces draft-default, dedup, and "
     "on-behalf approval, which a direct REST write skips. Read-only GETs are unaffected."
 )
@@ -52,11 +52,13 @@ MR_REVIEW_DENY_REASON = (
 ISSUE_NOTE_DENY_REASON = (
     "BLOCKED: raw `glab api`/`gh api` POST to an issue/work-item notes endpoint bypasses "
     "the sanctioned issue-note CLI. To CREATE a note use "
-    "`t3 <overlay> ticket comment <issue-url> --body '<text>'` (or `--body-file <path>`); "
+    "`t3 <overlay> ticket comment <issue-url> --purpose <purpose> --body '<text>'` "
+    "(or `--body-file <path>`) — a requirement/change_request/scope_change/decision lands in "
+    "the DESCRIPTION where a lane reads it, only status/evidence stays a comment; "
     "to REMOVE use `t3 review delete-issue-note <repo> <issue-iid> <note-id>` — "
     "the CLI routes the body through the public-repo leak gate and the send-proxy "
     "audit/allowlist/redaction seam, which a direct REST write skips. "
-    "`t3 review post-comment` takes an integer MR IID and cannot address an "
+    "The review comment command takes an integer MR IID and cannot address an "
     "issue; the forge exposes no draft-note API for issues, so there is no draft path here. "
     "Read-only GETs are unaffected."
 )

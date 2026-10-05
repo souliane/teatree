@@ -39,9 +39,6 @@ class SessionQuerySet(models.QuerySet):
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         return _for_overlay(self, overlay)
 
-    def for_agent(self, agent_id: str) -> models.QuerySet:
-        return self.filter(agent_id=agent_id).order_by("pk")
-
     def live(self, *, now: datetime | None = None) -> models.QuerySet:
         """Open sessions whose last recorded activity is inside the staleness window."""
         hours = get_effective_settings().session_stale_after_hours

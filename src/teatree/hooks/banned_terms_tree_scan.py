@@ -1,55 +1,14 @@
-r"""Full-tree banned-brand backstop scan (#1570).
+r"""Scan tracked tree content for registry leak-class terms and terminology.
 
-The diff/payload banned-terms gate (``check-banned-terms.sh`` →
-``banned_terms_scanner``) only ever sees a *change*: a staged diff, a
-commit message, or a publish-surface body. A customer/tenant brand name
-that is ALREADY committed is invisible to it forever — it never appears
-in a post-landing diff. This module is the backstop the diff-only gate
-cannot provide: it enumerates every git-tracked file and scans the
-COMMITTED blob's content for the high-confidence brand list, so a
-pre-existing committed brand name is caught on push-to-main and on a
-schedule.
-
-Two design choices distinguish it from the fast diff gate.
-
-One shared matcher: the brand pass routes through
-:func:`teatree.hooks.term_match.matched_term` — the SAME whole-token
-matcher the ``[teatree].banned_terms`` posting gate and the
-``[overlay_leak].terms`` core-leak gate use. ``-``, ``_``, whitespace,
-punctuation AND camelCase boundaries all separate tokens, so a brand
-glued into ``wt_777_<brand>`` or a camelCase ``AcmeConfig`` is caught
-where a plain ``\b(term)\b`` regex would miss it. Routing through the one
-matcher means the four banned-terms entry points cannot drift (pinned by
-``tests/teatree_hooks/test_banned_terms_parity.py``).
-
-Committed-blob read: a brand name may be committed but later edited out
-of the working tree (or staged) — a working-tree-only edit must not hide
-a committed leak from the backstop. The scan reads the ``HEAD`` blob via
-``git show HEAD:<path>`` and falls back to the working-tree file only
-when the blob is unavailable (a freshly-added, not-yet-committed file).
-
-The brand list is a NEW optional high-confidence ``banned_brands`` key
-(distinct from the flat ``banned_terms`` the shell gate consumes), read
-DB-home from the canonical ``ConfigSetting`` store via the Django-free
-:mod:`teatree.config.cold_reader`. The public repo ships with no brands
-configured — each operator extends it locally with
-``t3 <overlay> config_setting set banned_brands '["...brand..."]'``.
+The classed ``banned_term_registry`` is the sole operator term source. The tree
+pass refuses an absent registry or empty leak list.
 """
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.config import cold_reader
 from teatree.hooks import term_match
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
-
-# Comma-separated brand list, used by CI where the operator's DB row is not
-# populated. Mirrors ``$TEATREE_OVERLAY_LEAK_TERMS`` for the overlay-leak
-# gate so the public repo can enforce the backstop from a CI secret
-# without committing any brand name. Takes precedence over the DB.
-_BRANDS_ENV = "TEATREE_BANNED_BRANDS"
-_BRANDS_KEY = "banned_brands"
 
 _GIT_LS_TIMEOUT_S = 30
 _GIT_SHOW_TIMEOUT_S = 30
@@ -124,34 +83,26 @@ _BINARY_SUFFIXES: frozenset[str] = frozenset(
 class BannedTermsUnsetError(RuntimeError):
     """The configured banned-terms/brands list is genuinely UNSET.
 
-    Separates a genuinely-absent list — a missing config, an unloadable
-    config, a missing key, or a wrong-typed value — from a DELIBERATE empty
-    list (``key = []``). An unset list is refused LOUD so a load bug that
-    silently returns nothing can never be mistaken for "the operator chose no
-    terms"; an explicit empty list is allowed and returns an empty tuple. The
-    message names the offending key and the deliberate-empty escape hatch so
-    the fix is actionable.
+    An absent or empty scan list is refused before scanning. The message names
+    the offending key so the installation value can be populated.
     """
 
     @classmethod
     def for_key(cls, key: str, env_var: str | None = None) -> "BannedTermsUnsetError":
-        item_noun = key.rsplit("_", 1)[-1]
-        list_label = key.replace("_", "-")
-        env_hint = f" (or supply the ${env_var} secret)" if env_var else ""
+        env_hint = f" or supply the ${env_var} JSON secret" if env_var else ""
         return cls(
-            f"{key} is unset — set it explicitly (use `{key} = []` if you intend "
-            f"no {item_noun}){env_hint}; refusing to run with an unloadable {list_label} list."
+            f"{key} is unset — configure a registry with scan terms "
+            f"(including a nonempty leak list for the tree scan){env_hint}; "
+            "refusing to run without a term source."
         )
 
 
 class BannedTermsUnreadableError(BannedTermsUnsetError):
     """The term list could not be READ — a locked, corrupt, or table-less config store.
 
-    Distinct from a genuinely-unset list, which a dev/solo box may legitimately warn-and-allow
-    on (#3247): an errored read carries no information about what the operator configured, so
-    it can only fail CLOSED. A SUBCLASS so every existing ``except BannedTermsUnsetError``
-    handler keeps catching it — the two differ only where the warn-and-allow disposition has
-    to choose (#4008).
+    Distinct from a genuinely-unset list so the refusal names a store read failure
+    instead of a missing installation value. Both fail closed. A subclass lets
+    every ``except BannedTermsUnsetError`` handler catch both cases.
     """
 
     @classmethod
@@ -196,46 +147,19 @@ class TreeFinding:
         return f"{self.path}:{self.lineno}: {self.term!r} — {self.line.strip()}"
 
 
-def legacy_brand_terms(db_path: Path | None = None) -> tuple[str, ...]:
-    """The PRE-registry ``banned_brands`` source: the env secret, else the DB row.
-
-    The registry-free half of :func:`load_brand_terms`, so the registry MIGRATION
-    has a source that is genuinely the old config. Reading the dual-read resolver
-    there made the rebuild copy the registry back onto itself and its verification
-    compare the registry with itself, which passes for any registry at all.
-    """
-    env = os.environ.get(_BRANDS_ENV, "")
-    if env.strip():
-        return tuple(t.strip() for t in env.split(",") if t.strip())
-    brands = cold_reader.read_setting(_BRANDS_KEY, db_path=db_path)
-    if not isinstance(brands, list):
-        raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV)
-    return tuple(str(t).strip() for t in brands if isinstance(t, str) and t.strip())
-
-
 def load_brand_terms(db_path: Path | None = None) -> tuple[str, ...]:
     """Load the high-confidence brand list, FAILING LOUD when it is unset.
 
-    ``$TEATREE_BANNED_BRANDS`` (comma-separated) takes precedence so CI feeds
-    the list from a secret; a set env var short-circuits before any raise.
-    Otherwise the consolidated ``banned_term_registry`` (its ``leak`` class, the
-    tree gate's terms) when it is present (dual-read); else the DB-home
-    ``banned_brands`` row via the Django-free :mod:`teatree.config.cold_reader`
-    (*db_path* overrides the DB path, else the canonical DB / ``T3_CONFIG_DB``).
-    An explicit ``banned_brands = []`` is the operator's deliberate no-brands
-    choice and returns an empty tuple. A genuinely-unset list — no env, no
-    registry, a missing ``banned_brands`` row, or a wrong-typed value — raises
+    The consolidated ``banned_term_registry`` supplies the tree gate's leak
+    class. Its environment secret takes precedence over the DB row. An empty
+    leak class or unset registry raises
     :class:`BannedTermsUnsetError`: an unset list is too dangerous to scan as
     empty because a load bug would look identical to a deliberate no-brands
     choice.
     """
-    if not os.environ.get(_BRANDS_ENV, "").strip():
-        from teatree.hooks.banned_term_registry import registry_terms_for_gate  # noqa: PLC0415  dual-read cycle
+    from teatree.hooks.banned_term_registry import terms_for_gate  # noqa: PLC0415 — cold-path import
 
-        registry_terms = registry_terms_for_gate("tree", db_path=db_path)
-        if registry_terms is not None:
-            return registry_terms
-    return legacy_brand_terms(db_path=db_path)
+    return terms_for_gate("tree", db_path=db_path)
 
 
 def scan_text(text: str, terms: tuple[str, ...], allowlist: tuple[str, ...] = ()) -> list[tuple[int, str, str]]:
@@ -337,7 +261,7 @@ def scan_tree(repo_root: Path, terms: tuple[str, ...], allowlist: tuple[str, ...
 
     Two passes per file, both over the COMMITTED blob (so a working-tree
     edit cannot hide a committed leak): the operator-supplied
-    high-confidence brand list (a clean no-op when none is configured) and
+    high-confidence brand list (required) and
     the built-in terminology gate (``terminology_gate``), which flags
     teatree-internal vocabulary conflations regardless of any operator
     config.
@@ -348,6 +272,9 @@ def scan_tree(repo_root: Path, terms: tuple[str, ...], allowlist: tuple[str, ...
     Propagates :class:`TreeEnumerationError` — a tree that could not be enumerated
     has no findings for the same reason a tree that was never read has none.
     """
+    if not terms:
+        message = "banned_term_registry.leak is empty — configure curated leak terms before scanning"
+        raise BannedTermsUnsetError(message)
     from teatree.hooks import terminology_gate  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     findings: list[TreeFinding] = []

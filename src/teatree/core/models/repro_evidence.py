@@ -245,3 +245,37 @@ class ReproEvidence(models.Model):
                 ]
             )
             return row
+
+    @classmethod
+    def record_failed_green(cls, *, ticket: Ticket, command: str, run: HarnessRun) -> "ReproEvidence":
+        """Keep a failed replay for diagnosis without satisfying the GREEN gate."""
+        clean_sha = _canonical_sha(run.head_sha)
+        if not is_commit_sha(clean_sha) or run.exit_code == 0:
+            msg = "a failed GREEN replay requires a full head SHA and nonzero exit code"
+            raise ReproEvidenceError(msg)
+        with transaction.atomic():
+            row = (
+                cls.objects.select_for_update()
+                .filter(ticket=ticket, command_fingerprint=_command_fingerprint(command))
+                .first()
+            )
+            if row is None or row.provenance_ok:
+                msg = "a failed GREEN replay requires an unmatched RED"
+                raise ReproEvidenceError(msg)
+            row.green_head_sha = clean_sha
+            row.green_exit_code = run.exit_code
+            row.green_output_digest = _output_digest(run.output)
+            row.green_output_tail = run.output[-_OUTPUT_TAIL_MAX:]
+            row.green_recorded_at = timezone.now()
+            row.provenance_ok = False
+            row.save(
+                update_fields=[
+                    "green_head_sha",
+                    "green_exit_code",
+                    "green_output_digest",
+                    "green_output_tail",
+                    "green_recorded_at",
+                    "provenance_ok",
+                ]
+            )
+            return row

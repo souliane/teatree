@@ -1,10 +1,8 @@
 """Tests for :class:`PendingChatInjection` — the Slack-inbound queue (#1014).
 
-Issue #1063 adds the ``answered_at`` gate; tests for the ``is_question``
+Issue #1063 adds ``answered_at``; tests for the ``is_question``
 heuristic live in a separate file (``test_pending_chat_injection_is_question.py``).
 """
-
-from datetime import timedelta
 
 import pytest
 from django.utils import timezone
@@ -17,6 +15,13 @@ pytestmark = pytest.mark.django_db
 
 class TestRecordIdempotency:
     """The scanner over-polls; ``record`` must be safe to call twice on the same ``ts``."""
+
+    def test_string_status_uses_the_live_answer_stamp(self) -> None:
+        row = PendingChatInjection.objects.create(channel="C", slack_ts="1.0", text="hello")
+        assert "pending" in str(row)
+        row.answered_at = timezone.now()
+        assert "answered" in str(row)
+        assert "consumed_at" not in {field.name for field in PendingChatInjection._meta.fields}
 
     def test_same_ts_recorded_twice_yields_one_row(self) -> None:
         first = PendingChatInjection.record(
@@ -61,70 +66,11 @@ class TestRecordIdempotency:
         assert PendingChatInjection.objects.count() == 0
 
 
-class TestPendingQuery:
-    def test_pending_excludes_consumed_rows(self) -> None:
-        consumed = PendingChatInjection.record(channel="C", slack_ts="1.0", text="old")
-        assert consumed is not None
-        consumed.consume()
-        PendingChatInjection.record(channel="C", slack_ts="2.0", text="new")
-
-        pending = list(PendingChatInjection.pending())
-        assert [row.slack_ts for row in pending] == ["2.0"]
-
-    def test_pending_returns_oldest_first(self) -> None:
-        # Order by received_at; insert in reverse to prove ordering.
-        later = PendingChatInjection.record(channel="C", slack_ts="2.0", text="later")
-        earlier = PendingChatInjection.record(channel="C", slack_ts="1.0", text="earlier")
-        assert later is not None
-        assert earlier is not None
-        # Force a deterministic received_at to remove insertion-time skew.
-        earlier.received_at = timezone.now().replace(microsecond=0)
-        later.received_at = earlier.received_at.replace(microsecond=1)
-        earlier.save(update_fields=["received_at"])
-        later.save(update_fields=["received_at"])
-
-        pending = list(PendingChatInjection.pending())
-        assert [row.slack_ts for row in pending] == ["1.0", "2.0"]
-
-    def test_pending_filters_by_overlay_when_given(self) -> None:
-        PendingChatInjection.record(channel="C", slack_ts="1.0", text="a", overlay="ovA")
-        PendingChatInjection.record(channel="C", slack_ts="2.0", text="b", overlay="other")
-
-        pending = list(PendingChatInjection.pending(overlay="ovA"))
-        assert [row.overlay for row in pending] == ["ovA"]
-
-
-class TestConsumeIdempotency:
-    """The hook can re-fire safely — ``consume`` is single-use."""
-
-    def test_first_consume_returns_true_and_stamps(self) -> None:
-        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
-        assert row is not None
-
-        assert row.consume() is True
-        assert row.consumed_at is not None
-        assert row.is_pending is False
-
-    def test_second_consume_returns_false_no_op(self) -> None:
-        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
-        assert row is not None
-        row.consume()
-        first_stamp = row.consumed_at
-
-        assert row.consume() is False
-        row.refresh_from_db()
-        assert row.consumed_at == first_stamp
-
-
 class TestLoopUnrepliedQuery:
     """The reactive Slack-answer loop reads its work via ``loop_unreplied`` (#1014/#1075).
 
-    ``loop_unreplied`` is orthogonal to ``pending`` AND to #1069's
-    ``answered_at`` turn-end gate: it gates on ``loop_replied_at`` (a
-    column distinct from both ``consumed_at`` and ``answered_at``), so a
-    row drained into the prompt (``consumed``) is still *loop-unreplied*
-    until the answer loop posts a reply — and a loop reply never touches
-    ``answered_at`` (#1075 / Option B).
+    It gates on ``loop_replied_at`` (a column distinct from ``answered_at``), and a
+    loop reply never touches ``answered_at`` (#1075 / Option B).
     """
 
     def test_loop_unreplied_excludes_loop_replied_rows(self) -> None:
@@ -156,18 +102,9 @@ class TestLoopUnrepliedQuery:
         loop_unreplied = list(PendingChatInjection.loop_unreplied(overlay="ovA"))
         assert [row.overlay for row in loop_unreplied] == ["ovA"]
 
-    def test_consumed_row_is_still_loop_unreplied(self) -> None:
-        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
-        assert row is not None
-        row.consume()
-
-        assert list(PendingChatInjection.loop_unreplied()) == [row]
-        assert row.loop_replied_at is None
-        assert row.consumed_at is not None
-
 
 class TestMarkLoopReplied:
-    """``mark_loop_replied`` is a single-use compare-and-swap, like ``consume``."""
+    """``mark_loop_replied`` is a single-use compare-and-swap."""
 
     def test_first_mark_returns_true_and_stamps_kind(self) -> None:
         row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
@@ -176,7 +113,6 @@ class TestMarkLoopReplied:
         assert row.mark_loop_replied("simple") is True
         assert row.loop_replied_at is not None
         assert row.answer_kind == "simple"
-        assert row.is_loop_replied is True
 
     def test_second_mark_returns_false_no_op(self) -> None:
         row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
@@ -189,27 +125,8 @@ class TestMarkLoopReplied:
         assert row.loop_replied_at == first_stamp
         assert row.answer_kind == "ack"
 
-    def test_loop_replied_is_orthogonal_to_consumed(self) -> None:
-        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
-        assert row is not None
-
-        assert row.consume() is True
-        assert row.mark_loop_replied("simple") is True
-
-        row.refresh_from_db()
-        assert row.consumed_at is not None
-        assert row.loop_replied_at is not None
-        assert row.answer_kind == "simple"
-
     def test_loop_replied_does_not_touch_answered_at(self) -> None:
-        """Option B (#1075) keystone: a loop reply must NOT satisfy the #1069 gate.
-
-        ``mark_loop_replied`` stamps only ``loop_replied_at``; it must
-        leave ``answered_at`` NULL so the #1063 turn-end Stop-hook gate
-        still fires for a question the loop "handled" but the agent never
-        personally answered. Regression guard for the shared-column
-        blocker resolved by Option B.
-        """
+        """Option B (#1075): a loop reply must NOT claim the agent personally answered."""
         row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="why does X fail?")
         assert row is not None
 
@@ -217,12 +134,7 @@ class TestMarkLoopReplied:
         row.refresh_from_db()
 
         assert row.loop_replied_at is not None
-        assert row.answered_at is None  # the gate column is untouched
-
-        # The #1069 turn-end gate still sees this question as unanswered:
-        # a token-cheap loop reply did NOT satisfy "agent personally replied".
-        still_unanswered = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
-        assert [r.slack_ts for r in still_unanswered] == ["1.0"]
+        assert row.answered_at is None
 
 
 class TestMarkEyesReacted:
@@ -295,12 +207,6 @@ class TestStrRepr:
         assert "pending" in str(row)
         assert "ovA" in str(row)
         assert "1.0" in str(row)
-
-    def test_repr_for_consumed_row(self) -> None:
-        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
-        assert row is not None
-        row.consume()
-        assert "consumed" in str(row)
 
     def test_repr_for_answered_row(self) -> None:
         row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
@@ -375,102 +281,28 @@ class TestAgentAnsweredQuestion:
         One overlay's session records the question; a *different* overlay's
         session answers it. The old exact-overlay filter stamped 0 rows
         here (the answering overlay never matched the recording overlay),
-        so ``answered_at`` stayed NULL and the unscoped gate nagged forever.
-        Keying the stamp on ``slack_ts`` alone clears the gate regardless.
+        so ``answered_at`` stayed NULL. Keying the stamp on ``slack_ts`` alone
+        answers it regardless.
         """
-        PendingChatInjection.record(
+        row = PendingChatInjection.record(
             channel="D", slack_ts="ts-cross", text="why does this fail?", overlay="overlay-alpha"
         )
-
-        unanswered_before = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
-        assert [r.slack_ts for r in unanswered_before] == ["ts-cross"]
+        assert row is not None
 
         stamped = PendingChatInjection.agent_answered_question("ts-cross")
 
         assert stamped == 1
-        assert PendingChatInjection.unanswered_questions_since(timedelta(hours=1)) == []
+        row.refresh_from_db()
+        assert row.answered_at is not None
 
-    def test_genuinely_unanswered_row_still_nags(self) -> None:
-        """The gate must not be weakened: answering one ts leaves others nagging."""
+    def test_answering_one_ts_leaves_the_others_unanswered(self) -> None:
         PendingChatInjection.record(channel="D", slack_ts="ts-answered", text="why?", overlay="overlay-alpha")
         PendingChatInjection.record(channel="D", slack_ts="ts-open", text="what about this?", overlay="overlay-beta")
 
         PendingChatInjection.agent_answered_question("ts-answered")
 
-        still_nagging = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
-        assert [r.slack_ts for r in still_nagging] == ["ts-open"]
-
-    def test_gate_clears_after_answer(self) -> None:
-        """The Stop-hook gate must clear once the satisfier stamps the row.
-
-        Record under a concrete overlay, answer it, and the gate must
-        return an empty list — the permanent-nag is eliminated.
-        """
-        PendingChatInjection.record(channel="D", slack_ts="ts-q2", text="why does this fail?", overlay="overlay-alpha")
-
-        unanswered_before = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
-        assert [r.slack_ts for r in unanswered_before] == ["ts-q2"]
-
-        PendingChatInjection.agent_answered_question("ts-q2")
-
-        unanswered_after = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
-        assert unanswered_after == []
-
-
-class TestUnansweredQuestionsSince:
-    """Stop hook's main query — windowed + heuristic-filtered + unanswered."""
-
-    def test_returns_question_rows_within_window(self) -> None:
-        q1 = PendingChatInjection.record(channel="D", slack_ts="1", text="why is this red?")
-        q2 = PendingChatInjection.record(channel="D", slack_ts="2", text="what about merging")
-        PendingChatInjection.record(channel="D", slack_ts="3", text="t3 should merge its own PRs")
-
-        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
-
-        slack_ts_list = [r.slack_ts for r in rows]
-        assert "1" in slack_ts_list
-        assert "2" in slack_ts_list
-        assert "3" not in slack_ts_list
-        assert q1 is not None
-        assert q2 is not None
-
-    def test_excludes_answered_rows(self) -> None:
-        PendingChatInjection.record(channel="D", slack_ts="1", text="why?")
-        PendingChatInjection.record(channel="D", slack_ts="2", text="what?")
-        PendingChatInjection.agent_answered_question("1")
-
-        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
-
-        assert [r.slack_ts for r in rows] == ["2"]
-
-    def test_excludes_rows_outside_window(self) -> None:
-        old = PendingChatInjection.record(channel="D", slack_ts="1", text="why is this red?")
-        recent = PendingChatInjection.record(channel="D", slack_ts="2", text="what about now")
-        assert old is not None
-        assert recent is not None
-        old.received_at = timezone.now() - timedelta(hours=3)
-        old.save(update_fields=["received_at"])
-
-        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
-
-        assert [r.slack_ts for r in rows] == ["2"]
-
-    def test_empty_when_nothing_pending(self) -> None:
-        assert PendingChatInjection.unanswered_questions_since(timedelta(hours=1)) == []
-
-    def test_returns_oldest_first(self) -> None:
-        first = PendingChatInjection.record(channel="D", slack_ts="2", text="why?")
-        second = PendingChatInjection.record(channel="D", slack_ts="1", text="what?")
-        assert first is not None
-        assert second is not None
-        first.received_at = timezone.now() - timedelta(minutes=30)
-        second.received_at = timezone.now() - timedelta(minutes=10)
-        first.save(update_fields=["received_at"])
-        second.save(update_fields=["received_at"])
-
-        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
-
-        assert [r.slack_ts for r in rows] == ["2", "1"]
+        unanswered = PendingChatInjection.objects.filter(answered_at__isnull=True)
+        assert [r.slack_ts for r in unanswered] == ["ts-open"]
 
 
 class TestRetireAnsweredInThread:

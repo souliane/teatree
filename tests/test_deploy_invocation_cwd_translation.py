@@ -18,12 +18,12 @@ handed — docker being the one unstoppable external.
 """
 
 import os
-import shutil
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
+from _deploy_wrapper_paths import copy_wrapper
 
 DEPLOY_DIR = Path(__file__).resolve().parents[1] / "deploy"
 WRAPPER = DEPLOY_DIR / "t3"
@@ -48,7 +48,7 @@ def _build_fork(root: Path) -> Path:
     deploy = fork / "vendor" / "teatree" / "deploy"
     deploy.mkdir(parents=True, exist_ok=True)
     entry = deploy / "t3"
-    shutil.copy2(WRAPPER, entry)
+    copy_wrapper(WRAPPER, entry)
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR)
     (fork / "pyproject.toml").write_text('[project]\nname = "fork"\n', encoding="utf-8")
     return fork

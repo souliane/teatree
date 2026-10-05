@@ -1,13 +1,15 @@
 """PreToolUse enforcement for an explicit multi-target plan-first contract.
 
-Skills teach the default, but a user can make ordering a binding runtime rule:
-when the latest genuine user message names multiple tickets and explicitly asks
-for a plan before action, the main agent must put a prospective plan for every
-target in visible assistant text before it can act, ask, or dispatch.
+Skills teach the default, but the owner can make ordering a binding runtime rule:
+when the owner's own latest prompt names multiple tickets and orders a plan before
+a change, the main agent must put a prospective plan for every target in visible
+assistant text or a plan-bearing task before it can write, ask, or dispatch.
+Reads stay open while the plan is prepared.
 
 This is intentionally not a general plan detector.  It activates only on a
-positive, narrow signal (two or more ticket IDs plus plan-before wording), and
-it fails open when the transcript is absent or unreadable.  The denial travels
+positive, narrow signal (two or more ticket IDs plus one sentence, not a question,
+that orders a plan before a change), and it fails open when the transcript is
+absent or unreadable.  The denial travels
 through the router's shared safety spine, retaining self-rescue, the master
 fail-open switch, and the deny circuit breaker.
 """
@@ -15,33 +17,19 @@ fail-open switch, and the deny circuit breaker.
 import re
 import sys
 
+from hooks.scripts.managed_repo import teatree_src_on_path
 from hooks.scripts.orchestration_boundary_signals import call_is_from_subagent
-from hooks.scripts.question_gates import (
-    _entry_message_blocks,
-    _entry_message_role,
-    is_tool_result_only,
-    read_transcript_entries,
-)
+from hooks.scripts.owner_prompts import entry_text, is_owner_prompt
+from hooks.scripts.question_gates import _entry_message_role, read_transcript_entries
+from hooks.scripts.skill_loader_input import strip_ambient_context
 from hooks.scripts.teatree_settings import teatree_bool_setting
-from hooks.scripts.turn_inspect import current_turn_assistant_text
 
 sys.modules.setdefault("visible_plan_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.visible_plan_gate", sys.modules[__name__])
 
-# Read, Grep and Glob are absent: `skills/code/SKILL.md` exempts read-only
-# investigation as part of planning, so gating them denies the very reading the
-# plan is written from.
+# Read, Grep and Glob stay open; a task is open only when it records the plan.
 GATED_TOOLS = frozenset(
-    {
-        "Agent",
-        "AskUserQuestion",
-        "Bash",
-        "Edit",
-        "NotebookEdit",
-        "TaskCreate",
-        "TaskUpdate",
-        "Write",
-    }
+    {"Agent", "AskUserQuestion", "Bash", "Edit", "NotebookEdit", "TaskCreate", "TaskUpdate", "Write"}
 )
 _MIN_TARGETS = 2
 _TOKEN_SCAN_LIMIT = 512
@@ -84,10 +72,17 @@ _NON_TICKET_PREFIXES = frozenset(
         "UTF",
     }
 )
-_PLAN_BEFORE_RE = re.compile(
-    r"\b(?:plan(?:s|ning)?|breakdown)\b.{0,320}\bbefore\b",
-    re.IGNORECASE | re.DOTALL,
+# Only an ordered plan arms, so "report whether the plan before editing was approved" stays inert.
+_PLAN_REQUIREMENT_RE = re.compile(
+    r"(?:(?:^\W*|[:;,]\s*|\b(?:and|first|please|then)\s+)plan"
+    r"|\b(?:draft|give|post|prepare|present|produce|provide|share|take|write)(?:\s+\S+){0,3}?\s+"
+    r"(?:plan(?:s|ning)?|breakdown))\b.{0,320}"
+    r"\bbefore\s+(?:(?:a|any|doing|i|making|the|we|you|your)\s+){0,2}"
+    r"(?:act|chang|cod|commit|dispatch|edit|exec|fix|implement|merg|modif|patch|proceed|push|ship|start|touch|writ)",
+    re.IGNORECASE,
 )
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+_COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
 _VISIBLE_PLAN_CUE_RE = re.compile(
     r"\b(?:plans?|breakdown|provisional|before (?:any )?(?:action|change|edit)|will|going to|intend to)\b",
     re.IGNORECASE,
@@ -131,39 +126,54 @@ def visible_plan_ok_token(data: dict) -> str | None:
     return None
 
 
-def _latest_user_text(transcript_path: str) -> str:
-    """Latest genuine user text, walking past tool-result pseudo-user entries."""
-    for entry in reversed(read_transcript_entries(transcript_path)):
-        if _entry_message_role(entry) != "user":
-            continue
-        blocks = _entry_message_blocks(entry)
-        if is_tool_result_only(blocks):
-            continue
-        if entry.get("isMeta"):
-            continue
-        message = entry.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        text = (
-            content
-            if isinstance(content, str)
-            else "\n".join(
-                str(block.get("text", ""))
-                for block in blocks
-                if isinstance(block, dict) and block.get("type") == "text"
+def _owner_turn(transcript_path: str) -> tuple[str, str]:
+    """The owner's latest prompt, and visible text or complete task plans since it."""
+    entries = read_transcript_entries(transcript_path)
+    for index in range(len(entries) - 1, -1, -1):
+        if is_owner_prompt(entries[index]):
+            entry_body = entry_text(entries[index])
+            command_args = _COMMAND_ARGS_RE.search(entry_body)
+            if "<command-name>" in entry_body:
+                if command_args is None:
+                    continue
+            elif any(marker in entry_body for marker in _HARNESS_WRAPPER_MARKERS):
+                continue
+            prompt = strip_ambient_context(command_args.group(1) if command_args else entry_body)
+            targets = _explicit_plan_first_targets(prompt)
+            since = (
+                _assistant_plan_content(entry, targets)
+                for entry in entries[index + 1 :]
+                if _entry_message_role(entry) == "assistant"
             )
-        )
-        if any(marker in text for marker in _HARNESS_WRAPPER_MARKERS):
-            continue
-        return text
-    return ""
+            return prompt, "\n".join(since)
+    return "", ""
 
 
-def _explicit_plan_first_targets(user_text: str) -> tuple[str, ...]:
-    """Ordered unique ticket IDs iff the user explicitly bound plan before action."""
-    if not _PLAN_BEFORE_RE.search(user_text):
+def _assistant_plan_content(entry: dict, targets: tuple[str, ...]) -> str:
+    parts = [entry_text(entry)]
+    message = entry.get("message")
+    blocks = message.get("content", ()) if isinstance(message, dict) else ()
+    if isinstance(blocks, list):
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            if block.get("name") not in {"TaskCreate", "TaskUpdate"}:
+                continue
+            task = block.get("input")
+            if isinstance(task, dict):
+                task_plan = "\n".join(str(task.get(field, "")) for field in ("subject", "description"))
+                if visible_plan_covers_targets(task_plan, targets):
+                    parts.append(task_plan)
+    return "\n".join(parts)
+
+
+def _explicit_plan_first_targets(owner_text: str) -> tuple[str, ...]:
+    """Ordered unique ticket IDs iff one non-question sentence orders a plan before a change."""
+    sentences = (sentence.strip() for sentence in _SENTENCE_BREAK_RE.split(owner_text))
+    if not any(_PLAN_REQUIREMENT_RE.search(sentence) for sentence in sentences if not sentence.endswith("?")):
         return ()
     found = (
-        match.group(0) for match in _TICKET_ID_RE.finditer(user_text) if match.group(1) not in _NON_TICKET_PREFIXES
+        match.group(0) for match in _TICKET_ID_RE.finditer(owner_text) if match.group(1) not in _NON_TICKET_PREFIXES
     )
     return tuple(dict.fromkeys(found))
 
@@ -220,10 +230,13 @@ def _deny_reason(targets: tuple[str, ...]) -> str:
     return (
         "TEATREE PLAN-FIRST GATE — the user explicitly required a visible per-target plan before action, "
         "but the current assistant turn does not yet contain an implementation→test/verify sequence for each of: "
-        f"{joined}. The requested tool was not executed. First emit ordinary user-visible text with one "
-        "target-labelled provisional plan block per ticket (implementation and test/verify/ship, in either order). "
-        "Reading, grepping and globbing stay open — they are how the plan gets written. Only once both plans are "
-        "visible may you ask a question, edit, or dispatch. Do not use placeholder Bash or printed tool syntax. "
+        f"{joined}. The requested tool was not executed. First emit ordinary user-visible text or a plan-bearing "
+        "TaskCreate/TaskUpdate with one target-labelled plan per ticket "
+        "(implementation and test/verify, in either order). "
+        "Reads stay open — Read, Grep, Glob and classified read-only Bash. A TaskCreate or TaskUpdate "
+        "whose subject and description cover every target may record the plan. Only once both plans "
+        "are visible or recorded may you ask a question, edit, or dispatch. "
+        "Do not use placeholder Bash or printed tool syntax. "
         "A false positive escapes with `[visible-plan-ok: <reason>]` in the call, "
         "or `t3 <overlay> gate visible-plan disable`."
     )
@@ -232,17 +245,32 @@ def _deny_reason(targets: tuple[str, ...]) -> str:
 def _unplanned_targets(transcript_path: str) -> tuple[str, ...]:
     """Targets the user bound to a plan that the current turn has not planned yet.
 
-    Empty means allow — fewer than two targets, an already-visible plan, and any
+    Empty means allow — fewer than two targets, a visible or recorded plan, and any
     unreadable context all resolve the same way, which is this gate's fail-open.
     """
     if not transcript_path:
         return ()
     try:
-        targets = _explicit_plan_first_targets(_latest_user_text(transcript_path))
-        covered = visible_plan_covers_targets(current_turn_assistant_text(transcript_path), targets)
+        owner_prompt, written_since = _owner_turn(transcript_path)
+        targets = _explicit_plan_first_targets(owner_prompt)
+        covered = visible_plan_covers_targets(written_since, targets)
     except Exception:  # noqa: BLE001 -- cold hook is fail-open on unreadable context
         return ()
     return () if len(targets) < _MIN_TARGETS or covered else targets
+
+
+def _is_read_only_bash(data: dict) -> bool:
+    tool_input = data.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if data.get("tool_name") != "Bash" or not isinstance(command, str):
+        return False
+    try:
+        with teatree_src_on_path():
+            from teatree.hooks.read_only_command import is_read_only  # noqa: PLC0415 -- deferred: cold-hook import
+
+            return is_read_only(command) is True
+    except Exception:  # noqa: BLE001 -- an unclassifiable command cannot be treated as read-only
+        return False
 
 
 def handle_enforce_visible_plan_before_tools(data: dict) -> bool:
@@ -264,8 +292,14 @@ def handle_enforce_visible_plan_before_tools(data: dict) -> bool:
     if data.get("tool_name") not in GATED_TOOLS or call_is_from_subagent(data) or not _gate_enabled():
         return False
     targets = _unplanned_targets(str(data.get("transcript_path", "")))
-    if not targets:
+    if not targets or _is_read_only_bash(data):
         return False
+    if data.get("tool_name") in {"TaskCreate", "TaskUpdate"}:
+        tool_input = data.get("tool_input")
+        if isinstance(tool_input, dict):
+            task_plan = "\n".join(str(tool_input.get(field, "")) for field in ("subject", "description"))
+            if visible_plan_covers_targets(task_plan, targets):
+                return False
     if reason_token := visible_plan_ok_token(data):
         sys.stderr.write(f"NOTE: visible-plan gate skipped via [visible-plan-ok: {reason_token}].\n")
         return False

@@ -75,7 +75,7 @@ class RecordClaimTests(TestCase):
         assert "drift" in str(claim)
 
     def test_resolves_agent_session_id_from_env(self) -> None:
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "sess-123"}, clear=False):
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "sess-123"}, clear=False):
             claim = record_claim(
                 kind=OutboundClaim.Kind.SLACK_DM,
                 idempotency_key="sess-test",

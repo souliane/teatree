@@ -12,8 +12,6 @@ Asserts:
 
 *   default-ON → exactly one DM, containing the destination, a clickable
     ``[label](url)`` link, and the summary;
-*   ``notify_on_post_on_behalf = false`` → no DM (the post already
-    happened; this only controls the after-receipt visibility);
 *   a second call for the same publication is idempotent, while a second
     publication to the same ``(target, action)`` gets its own receipt;
 *   a permalink-lookup failure falls back to the canonical URL (no raise);
@@ -30,7 +28,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from teatree.core.models import BotPing, ConfigSetting
+from teatree.core.models import BotPing
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 
 _GITLAB_X_KEY = "on_behalf_post:org/repo!7:post_comment:https://gitlab.example/x"
@@ -55,13 +53,10 @@ def _seed_cold_slack_user(tmp_path: Path, user_id: str) -> None:
         conn.close()
 
 
-def _cfg(tmp_path: Path, *, enabled: bool = True) -> None:
+def _cfg(tmp_path: Path) -> None:
     # ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it
     # in a config-store sqlite the reader resolves via ``T3_CONFIG_DB``.
-    # ``notify_on_post_on_behalf`` is DB-home (#1775, no ``T3_*`` env var) — stage
-    # it in the ``ConfigSetting`` store (global scope).
     _seed_cold_slack_user(tmp_path, "U-OPERATOR")
-    ConfigSetting.objects.set_value("notify_on_post_on_behalf", enabled)
 
 
 def _stub_backend() -> MagicMock:
@@ -92,7 +87,7 @@ class TestAfterReceiptDm(TestCase):
         self.addCleanup(patcher.stop)
 
     def test_default_on_emits_one_dm_with_destination_link_summary(self) -> None:
-        _cfg(self.tmp_path, enabled=True)
+        _cfg(self.tmp_path)
         backend = _stub_backend()
         self._set_messaging(backend)
 
@@ -121,7 +116,7 @@ class TestAfterReceiptDm(TestCase):
         # note_id/discussion_id/line_code), the receipt must NOT emit it as a dead
         # ``[id](id)`` markdown link. The id appears ONLY in ``artifact_url`` here, so
         # its absence proves the guard dropped the link rather than a coincidence.
-        _cfg(self.tmp_path, enabled=True)
+        _cfg(self.tmp_path)
         backend = _stub_backend()
         self._set_messaging(backend)
 
@@ -140,24 +135,8 @@ class TestAfterReceiptDm(TestCase):
         assert "C07ABCDEF" not in ping.text
         assert "](" not in ping.text
 
-    def test_toggle_off_suppresses_dm_post_still_happened(self) -> None:
-        _cfg(self.tmp_path, enabled=False)
-        backend = _stub_backend()
-        self._set_messaging(backend)
-
-        notify_user_on_behalf_post(
-            target="org/repo!7",
-            action="post_comment",
-            destination="review channel C-eng",
-            artifact_url="https://gitlab.example/x",
-            summary="LGTM",
-        )
-
-        assert BotPing.objects.count() == 0
-        backend.post_message.assert_not_called()
-
     def test_double_call_idempotent(self) -> None:
-        _cfg(self.tmp_path, enabled=True)
+        _cfg(self.tmp_path)
         backend = _stub_backend()
         self._set_messaging(backend)
 
@@ -174,7 +153,7 @@ class TestAfterReceiptDm(TestCase):
         assert backend.post_message.call_count == 1
 
     def test_second_publication_to_the_same_target_gets_its_own_receipt(self) -> None:
-        _cfg(self.tmp_path, enabled=True)
+        _cfg(self.tmp_path)
         backend = _stub_backend()
         self._set_messaging(backend)
 
@@ -191,7 +170,7 @@ class TestAfterReceiptDm(TestCase):
         assert backend.post_message.call_count == 2
 
     def test_permalink_lookup_failure_falls_back_to_canonical_url(self) -> None:
-        _cfg(self.tmp_path, enabled=True)
+        _cfg(self.tmp_path)
         backend = _stub_backend()
         backend.get_permalink.side_effect = RuntimeError("slack permalink boom")
         self._set_messaging(backend)
@@ -214,7 +193,7 @@ class TestAfterReceiptDm(TestCase):
         assert "https://gitlab.example/org/repo/-/merge_requests/7" in ping.text
 
     def test_notify_failure_does_not_raise_and_records_durable_row(self) -> None:
-        _cfg(self.tmp_path, enabled=True)
+        _cfg(self.tmp_path)
         backend = _stub_backend()
         backend.post_message.return_value = {"ok": False, "error": "missing_scope"}
         self._set_messaging(backend)

@@ -181,30 +181,21 @@ class TestSecondRunUpdatesInPlace(TestCase):
         assert "ccdd" in body
 
 
-class TestLegacyUnprefixedPlanIsUpdatedInPlace(_PlanFileTestBase):
-    """A plan written before the repo prefix is rewritten, never forked into a second file."""
+class TestPrefixedPlanPath(_PlanFileTestBase):
+    """The plan path always carries its repository prefix."""
 
     def setUp(self) -> None:
         super().setUp()
         self._worktree(_E2E_REPO, self.checkout)
         self.plan_dir = self.checkout / "test-plans"
-        self.legacy = self.plan_dir / f"{self.ticket.ticket_number}.md"
+        self.old = self.plan_dir / f"{self.ticket.ticket_number}.md"
 
-    def test_resolves_to_the_existing_unprefixed_file(self) -> None:
-        file_store.write_plan(self.legacy, render_body(_local_state()))
+    def test_unprefixed_file_is_not_resolved(self) -> None:
+        file_store.write_plan(self.old, render_body(_local_state()))
 
-        assert self._resolve() == self.legacy
+        assert self._resolve() == self.plan_dir / "client-7311.md"
 
-    def test_the_side_the_legacy_file_recorded_survives_a_rerun(self) -> None:
-        file_store.write_plan(self.legacy, render_body(_local_state()))
-
-        recovered = file_store.read_plan_state(self._resolve())
-
-        assert recovered["local"]["commits"] == {"client": "aabb"}
-        assert list(self.plan_dir.iterdir()) == [self.legacy]
-
-    def test_the_prefixed_name_wins_once_that_file_exists(self) -> None:
-        file_store.write_plan(self.legacy, render_body(_local_state()))
+    def test_prefixed_name_is_resolved(self) -> None:
         prefixed = self.plan_dir / "client-7311.md"
         file_store.write_plan(prefixed, render_body(_local_state()))
 

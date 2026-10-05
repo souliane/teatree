@@ -7,6 +7,8 @@ from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.ticket_external_review import schedule_external_review
 from tests._pr_open_state_stub import mint_open_pr_review
+from tests.factories import planned_ticket
+from tests.teatree_core.conftest import record_review_context_for_test
 
 
 class TestTicketRoleField(TestCase):
@@ -93,19 +95,19 @@ class TestMarkReviewedExternally(TestCase):
             extra={"reviewed_sha": "deadbeef"},
         )
         task = mint_open_pr_review(ticket)
+        record_review_context_for_test(ticket)
 
         task.complete()
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEW_DELIVERED
         assert ticket.state != Ticket.State.DELIVERED
-        # ``mark_reviewed`` upserts the same reviewer ticket via the DB —
-        # head sha + last review state should be persisted on ``extra``.
+        # The completed review records its discharge at the reviewed head.
         assert ticket.extra["reviewed_sha"] == "deadbeef"
         assert ticket.extra["discharged_sha"] == "deadbeef"
 
     def test_does_not_advance_author_ticket(self) -> None:
-        ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/6")
+        ticket = planned_ticket(overlay="acme", issue_url="https://example.com/issues/6")
         task = ticket.schedule_coding()
 
         # Author coding tasks should NOT trigger the reviewer short-circuit.

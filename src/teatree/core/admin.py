@@ -5,8 +5,8 @@ from django.contrib import admin
 from django.forms.renderers import BaseRenderer
 from django.utils.safestring import SafeString
 
-from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.write_validation import ConfigWriteError, validate_config_write
+from teatree.config.credential_pass_key import validate_pass_key_entry
+from teatree.config.write_validation import validate_config_write
 from teatree.core.config_display import is_secret, masked_display, withholds_value
 from teatree.core.models import (
     ConfigSetting,
@@ -25,6 +25,7 @@ from teatree.core.models import (
     Worktree,
 )
 from teatree.core.models.config_setting import ConfigValue
+from teatree.core.overlays.overlay_credentials import known_pass_key_credential
 
 if TYPE_CHECKING:
     from django.http import HttpRequest
@@ -182,11 +183,13 @@ class ConfigSettingAdminForm(forms.ModelForm):
         if value is None and self._edits_a_secret():
             return self.instance.value
         key = self.cleaned_data.get("key", "")
-        if value is None or key not in ALL_KNOWN_CONFIG_SETTINGS:
+        if not key:
             return value
         try:
-            return validate_config_write(key, value)
-        except ConfigWriteError as exc:
+            return (
+                validate_pass_key_entry(value) if known_pass_key_credential(key) else validate_config_write(key, value)
+            )
+        except ValueError as exc:
             raise forms.ValidationError(str(exc)) from exc
 
 

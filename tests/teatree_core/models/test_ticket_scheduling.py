@@ -14,6 +14,7 @@ re-work that must still mint.
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
+from tests.factories import planned_ticket
 
 
 class TestScheduleHeadlessCollapsesDuplicates(TestCase):
@@ -21,7 +22,7 @@ class TestScheduleHeadlessCollapsesDuplicates(TestCase):
 
     @staticmethod
     def _author() -> Ticket:
-        return Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1")
+        return planned_ticket(overlay="test", issue_url="https://example.com/issues/1")
 
     def test_two_schedule_coding_calls_yield_one_task_and_one_session(self) -> None:
         ticket = self._author()
@@ -72,7 +73,7 @@ class TestScheduleHeadlessStillMintsLegitimateRework(TestCase):
 
     @staticmethod
     def _author() -> Ticket:
-        return Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2")
+        return planned_ticket(overlay="test", issue_url="https://example.com/issues/2")
 
     def test_a_failed_attempt_is_followed_by_a_fresh_task(self) -> None:
         # A genuine second attempt after a real failure — the failure direction the
@@ -112,7 +113,7 @@ class TestScheduleHeadlessStillMintsLegitimateRework(TestCase):
         # overlay predicate deleted. That axis belongs to — and is pinned at — the
         # manager (``test_in_flight_for_phase_scopes_to_overlay_and_phase``).
         mine = self._author()
-        theirs = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/3")
+        theirs = planned_ticket(overlay="test", issue_url="https://example.com/issues/3")
 
         assert mine.schedule_coding().pk != theirs.schedule_coding().pk
         assert Task.objects.filter(phase="coding").count() == 2

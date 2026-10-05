@@ -2,16 +2,27 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import typer.testing
 
+from teatree.backends.types import Service
 from teatree.cli.notion import notion_app
-from tests.teatree_backends.notion._fake_notion import FakeNotion, install_fake_notion
+from teatree.cli.notion_replace import notion_replace
+from tests.teatree_backends.notion._fake_notion import UNSEEN_OBJECT_FRAGMENTS, FakeNotion, install_fake_notion
 
 CANONICAL = "🔧 /prd-agent — engineering delivery notes"
 MARKER = "[t3:bdd-test-creation]"
+
+
+_ELSEWHERE = "99999999-9999-9999-9999-999999999999"
+
+
+def _routing(entry: str, *services: Service) -> SimpleNamespace:
+    config = SimpleNamespace(required_third_party_services=frozenset(services), secret_pass_key=lambda _name: entry)
+    return SimpleNamespace(config=config)
 
 
 @pytest.fixture
@@ -34,6 +45,35 @@ class TestReads:
         assert result.exit_code == 0, result.output
         assert "Factory" in result.output
         assert "bot-1" in result.output
+
+    def test_a_bare_whoami_runs_as_the_overlay_that_owns_notion_and_says_so(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry = "notion/integration-token"
+        overlays = {"t3-acme": _routing(entry, Service.NOTION), "t3-teatree": _routing(entry)}
+        monkeypatch.delenv("NOTION_TOKEN")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.setattr("teatree.core.overlay_loader.get_all_overlays", lambda: overlays)
+        monkeypatch.setattr(
+            "teatree.backends.notion.credentials.overlay_notion_pass_key",
+            lambda name: overlays[name].config.secret_pass_key("notion_token"),
+        )
+        monkeypatch.setattr("teatree.llm.credentials.read_pass", lambda key: "ntn_bot" if key == entry else "")
+
+        result = runner.invoke(notion_app, ["whoami"])
+
+        assert result.exit_code == 0, result.output
+        assert "[overlay t3-acme]" in result.output
+        assert notion.bearer_tokens[-1] == "ntn_bot"
+
+    def test_whoami_names_the_environment_token_rather_than_an_overlays_entry(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        result = runner.invoke(notion_app, ["whoami"])
+
+        assert result.exit_code == 0, result.output
+        assert "[token from $NOTION_TOKEN;" in result.output
+        assert "[overlay " not in result.output
 
     def test_fetch_renders_the_page_as_markdown(self, runner: typer.testing.CliRunner, notion: FakeNotion) -> None:
         notion.heading("Requirements")
@@ -64,6 +104,92 @@ class TestReads:
         assert "is this still true?" in result.output
         assert "disc-1" in result.output
 
+    def test_comments_finds_a_thread_anchored_on_a_block_not_on_the_page(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        paragraph = notion.paragraph("the lookup returns the customer number")
+        notion.comment_on(
+            paragraph, "this contradicts the line above", discussion_id="disc-inline", author="Adrien Cossa"
+        )
+
+        result = runner.invoke(notion_app, ["comments", notion.page_id])
+
+        assert result.exit_code == 0, result.output
+        assert "disc-inline" in result.output
+        assert "this contradicts the line above" in result.output
+        assert "COVERAGE: COMPLETE" in result.output
+
+    def test_each_thread_names_the_text_of_the_block_it_is_attached_to(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        paragraph = notion.paragraph("the lookup returns the customer number")
+        notion.comment_on(paragraph, "which number?", discussion_id="disc-anchor")
+
+        result = runner.invoke(notion_app, ["comments", notion.page_id])
+
+        assert result.exit_code == 0, result.output
+        assert f"on paragraph {paragraph}: “the lookup returns the customer number”" in result.output
+
+    def test_a_page_with_no_open_thread_states_what_was_scanned(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        notion.paragraph("a requirement nobody commented on")
+
+        result = runner.invoke(notion_app, ["fetch", notion.page_id, "--comments"])
+
+        assert result.exit_code == 0, result.output
+        assert "page-level + 1 block(s) scanned" in result.output
+
+    def test_a_block_whose_comments_cannot_be_read_is_named_not_scanned(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        paragraph = notion.paragraph("requirement")
+        notion.comments_fail_for[paragraph] = (403, "restricted_resource")
+
+        result = runner.invoke(notion_app, ["comments", notion.page_id])
+
+        assert result.exit_code == 18, result.output
+        assert f"{paragraph} not scanned" in result.output
+
+    def test_comments_exits_18_when_part_of_the_page_could_not_be_read(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        paragraph = notion.paragraph("requirement")
+        notion.comment_on(paragraph, "an open question", discussion_id="disc-seen")
+        notion.comments_fail_for[notion.page_id] = (403, "restricted_resource")
+
+        result = runner.invoke(notion_app, ["comments", notion.page_id])
+
+        assert result.exit_code == 18, result.output
+        assert "COVERAGE: INCOMPLETE" in result.output
+        assert "disc-seen" in result.output
+
+    def test_comments_verify_reports_a_thread_that_vanished_between_two_reads(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        paragraph = notion.paragraph("the disputed line")
+        notion.vanishing_comment_ids.add(
+            notion.comment_on(paragraph, "the comment the dispute rests on", discussion_id="disc-vanishes")
+        )
+
+        result = runner.invoke(notion_app, ["comments", notion.page_id, "--verify"])
+
+        assert result.exit_code == 18, result.output
+        assert "divergent_reread" in result.output
+        assert "the comment the dispute rests on" in result.output
+
+    def test_fetch_with_comments_walks_the_block_tree_too(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        toggle = notion.add({"type": "toggle", "toggle": {"rich_text": [], "children": []}})
+        buried = notion.paragraph("nested requirement", parent=toggle)
+        notion.comment_on(buried, "still open?", discussion_id="disc-buried")
+
+        result = runner.invoke(notion_app, ["fetch", notion.page_id, "--comments"])
+
+        assert result.exit_code == 0, result.output
+        assert "disc-buried" in result.output
+
     def test_fetch_writes_to_a_file_when_asked(
         self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
     ) -> None:
@@ -79,7 +205,16 @@ class TestReads:
         result = runner.invoke(notion_app, ["query", notion.page_id])
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output) == [{"id": "row-1"}]
+        assert json.loads(result.stdout) == [{"id": "row-1"}]
+
+    def test_query_limit_stops_paging_at_the_limit(self, runner: typer.testing.CliRunner, notion: FakeNotion) -> None:
+        notion.rows = [{"id": f"row-{number}"} for number in range(250)]
+
+        result = runner.invoke(notion_app, ["query", notion.page_id, "--limit", "5"])
+
+        assert result.exit_code == 0, result.output
+        assert len(json.loads(result.stdout)) == 5
+        assert [method for method, path in notion.requests if path.endswith("/query")] == ["POST"]
 
     def test_query_can_target_a_data_source(self, runner: typer.testing.CliRunner, notion: FakeNotion) -> None:
         result = runner.invoke(notion_app, ["query", notion.page_id, "--data-source"])
@@ -98,7 +233,7 @@ class TestSectionSurface:
         result = runner.invoke(notion_app, ["section", "show", notion.page_id, "--heading", CANONICAL])
 
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
+        payload = json.loads(result.stdout)
         assert payload["outcome"] == "present"
         assert payload["body_block_ids"] == [body]
 
@@ -117,7 +252,7 @@ class TestSectionSurface:
         )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["outcome"] == "replaced"
+        assert json.loads(result.stdout)["outcome"] == "replaced"
         assert prd in notion.children[notion.page_id]
         assert "Delivered in" in " ".join(notion.body_texts(heading))
 
@@ -147,14 +282,15 @@ class TestSectionSurface:
         )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["outcome"] == "created"
+        assert json.loads(result.stdout)["outcome"] == "created"
 
     def test_there_is_no_whole_page_replace_command(self) -> None:
         names = {command.name for command in notion_app.registered_commands}
         assert "replace-content" not in names
-        assert not any("replace" in str(name) for name in names), (
-            "the only replace on this surface is the block-scoped `section replace`"
+        assert {name for name in names if "replace" in str(name)} == {"replace"}, (
+            "the only replaces on this surface are `section replace` and the anchored, one-block `replace`"
         )
+        assert "inside one block" in (notion_replace.__doc__ or "")
 
 
 class TestAppend:
@@ -325,6 +461,124 @@ class TestAppend:
         assert notion.body_texts(notion.page_id) == ["Beta", "inserted line", "Gamma"]
 
 
+class TestCommentOn:
+    def test_the_comment_is_anchored_on_the_block_holding_the_quote_and_quotes_it(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        notion.paragraph("Intro.")
+        target = notion.paragraph("Rates reset every quarter.")
+        body_file = tmp_path / "note.md"
+        body_file.write_text("Monthly, per the bank's mail?\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app, ["comment", "on", notion.page_id, "--quote", "every quarter", "--body-file", str(body_file)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["block_id"] == target
+        assert notion.comments[-1]["parent"] == {"block_id": target}
+        assert notion.comment_texts()[-1] == "“every quarter”\n\nMonthly, per the bank's mail?"
+
+    def test_a_quote_that_is_not_on_the_page_exactly_once_posts_nothing(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        notion.paragraph("Rates reset every quarter.")
+        body_file = tmp_path / "note.md"
+        body_file.write_text("question\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app, ["comment", "on", notion.page_id, "--quote", "every year", "--body-file", str(body_file)]
+        )
+
+        assert result.exit_code == 19, result.output
+        assert notion.comments == []
+
+
+class TestCommentReply:
+    def test_the_reply_lands_inside_the_discussion_and_is_verified_on_its_anchor(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        paragraph = notion.paragraph("the lookup returns the customer number")
+        notion.comment_on(paragraph, "which number?", discussion_id="disc-9")
+        body_file = tmp_path / "reply.md"
+        body_file.write_text("The one from the core banking system.\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app, ["comment", "reply", notion.page_id, "--discussion", "disc-9", "--body-file", str(body_file)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["outcome"] == "posted"
+        assert notion.comments[-1]["discussion_id"] == "disc-9"
+        assert notion.comments[-1]["parent"] == {"type": "block_id", "block_id": paragraph}
+
+    def test_a_repeated_reply_is_a_duplicate_and_a_fresh_marker_posts_it_on_purpose(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        notion.comment_on(notion.paragraph("requirement"), "open question", discussion_id="disc-9")
+        body_file = tmp_path / "reply.md"
+        body_file.write_text("answer\n", encoding="utf-8")
+        reply = ["comment", "reply", notion.page_id, "--discussion", "disc-9", "--body-file", str(body_file)]
+
+        outcomes = [
+            json.loads(runner.invoke(notion_app, [*reply, *extra]).stdout)["outcome"]
+            for extra in ([], [], ["--marker", "[t3:second]"])
+        ]
+
+        assert outcomes == ["posted", "duplicate", "posted"]
+        assert len(notion.comments) == 3
+
+    def test_a_discussion_that_is_not_on_the_page_gets_no_reply(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
+    ) -> None:
+        notion.comment_on(notion.paragraph("requirement"), "open question", discussion_id="disc-here")
+        body_file = tmp_path / "reply.md"
+        body_file.write_text("answer\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app,
+            ["comment", "reply", notion.page_id, "--discussion", "disc-elsewhere", "--body-file", str(body_file)],
+        )
+
+        assert result.exit_code == 21, result.output
+        assert len(notion.comments) == 1
+
+
+class TestCommentWritesStayInsideTheWriteScope:
+    @pytest.fixture(autouse=True)
+    def _anchored_discussion(self, notion: FakeNotion, tmp_path: Path) -> None:
+        self.paragraph = notion.paragraph("Rates reset every quarter.")
+        notion.comment_on(self.paragraph, "which rate?", discussion_id="disc-9")
+        self.body_file = tmp_path / "note.md"
+        self.body_file.write_text("answer\n", encoding="utf-8")
+
+    @pytest.mark.parametrize("scope", ["no-root-configured", "allowed-root-elsewhere", "under-a-denied-root"])
+    @pytest.mark.parametrize(
+        "verb", [["on", "--quote", "every quarter"], ["reply", "--discussion", "disc-9"]], ids=["on", "reply"]
+    )
+    def test_a_comment_outside_the_scope_exits_17_and_posts_nothing(
+        self,
+        runner: typer.testing.CliRunner,
+        notion: FakeNotion,
+        monkeypatch: pytest.MonkeyPatch,
+        verb: list[str],
+        scope: str,
+    ) -> None:
+        roots = {
+            "no-root-configured": ([], []),
+            "allowed-root-elsewhere": ([_ELSEWHERE], []),
+            "under-a-denied-root": ([notion.page_id], [notion.page_id]),
+        }[scope]
+        monkeypatch.setattr("teatree.backends.notion.write_guard.notion_write_roots", lambda _overlay: roots)
+
+        result = runner.invoke(
+            notion_app, ["comment", verb[0], notion.page_id, *verb[1:], "--body-file", str(self.body_file)]
+        )
+
+        assert result.exit_code == 17, result.output
+        assert ("POST", "/comments") not in notion.requests
+
+
 class TestCommentPost:
     def test_posting_lands_the_comment_and_reports_its_discussion(
         self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path
@@ -338,7 +592,7 @@ class TestCommentPost:
         )
 
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
+        payload = json.loads(result.stdout)
         assert payload["outcome"] == "posted"
         assert payload["comment_id"] == notion.comments[-1]["id"]
 
@@ -357,7 +611,7 @@ class TestCommentPost:
         )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["outcome"] == "duplicate"
+        assert json.loads(result.stdout)["outcome"] == "duplicate"
         assert len(notion.comments) == 1
 
     def test_a_comment_that_does_not_land_exits_with_the_write_not_landed_code(
@@ -404,7 +658,7 @@ class TestPropertySurface:
         result = runner.invoke(notion_app, ["property", "get", notion.page_id, "--name", "Status", "--json"])
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["status"] == {"name": "In review"}
+        assert json.loads(result.stdout)["status"] == {"name": "In review"}
 
     def test_a_property_the_page_does_not_have_exits_with_its_own_code(
         self, runner: typer.testing.CliRunner, notion: FakeNotion
@@ -424,7 +678,7 @@ class TestPropertySurface:
         result = runner.invoke(notion_app, ["property", "set", notion.page_id, "--name", "Status", "--value", "Merged"])
 
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
+        payload = json.loads(result.stdout)
         assert payload == {
             "outcome": "set",
             "name": "Status",
@@ -569,6 +823,47 @@ class TestArchivedPages:
         assert self.DEAD_SPEC not in result.output
         assert "unknown" in result.output
 
+    def test_an_unreadable_parent_database_names_the_integration_to_share_it_with(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        notion.paragraph(self.DEAD_SPEC)
+        notion.make_database_row(database_id="db-backlog")
+        notion.query_fail_with = (404, "object_not_found")
+
+        result = runner.invoke(notion_app, ["fetch", notion.page_id])
+
+        assert result.exit_code == 14, result.output
+        assert "parent_database_unreadable" in result.output
+        assert "share the parent database with integration 'Factory'" in result.output
+
+    def test_a_parent_database_query_that_fails_for_another_reason_is_not_blamed_on_sharing(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_NOTION_HTTP_MAX_RETRIES", "0")
+        notion.paragraph(self.DEAD_SPEC)
+        notion.make_database_row(database_id="db-backlog")
+        notion.query_fail_with = (503, "service_unavailable")
+
+        result = runner.invoke(notion_app, ["fetch", notion.page_id])
+
+        assert result.exit_code == 14, result.output
+        assert "parent_database_unverified" in result.output
+        assert "share the parent database" not in result.output
+        assert "share that database" not in result.output
+
+    def test_a_row_its_database_does_not_return_is_not_blamed_on_sharing(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        notion.paragraph(self.DEAD_SPEC)
+        notion.make_database_row(database_id="db-backlog")
+        notion.rows = []
+
+        result = runner.invoke(notion_app, ["fetch", notion.page_id])
+
+        assert result.exit_code == 14, result.output
+        assert "absent_from_parent_database" in result.output
+        assert "share the parent database" not in result.output
+
     def test_a_parent_database_this_integration_cannot_read_is_unknown_not_fine(
         self, runner: typer.testing.CliRunner, notion: FakeNotion
     ) -> None:
@@ -670,6 +965,18 @@ class TestDoctor:
         assert "token: OK" in result.output
         assert "page:  FAIL" in result.output
 
+    @pytest.mark.parametrize("fragment", UNSEEN_OBJECT_FRAGMENTS.values(), ids=UNSEEN_OBJECT_FRAGMENTS.keys())
+    def test_the_page_line_for_an_unseen_page_carries_the_bot_the_causes_and_the_checks(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, fragment: str
+    ) -> None:
+        notion.fail_with = (404, "object_not_found")
+
+        result = runner.invoke(notion_app, ["doctor", notion.page_id])
+
+        page_line = next(line for line in result.output.splitlines() if line.startswith("page:  FAIL"))
+        assert result.exit_code == 6
+        assert fragment in page_line
+
     def test_a_bad_token_fails_the_token_line_not_the_page_line(
         self, runner: typer.testing.CliRunner, notion: FakeNotion
     ) -> None:
@@ -702,3 +1009,141 @@ class TestDoctor:
         assert result.exit_code == 5, result.output
         assert "token: OK" in result.output
         assert "page:  FAIL" in result.output
+
+
+_WRITES = {
+    "append": ["append", "{page}", "--body-file", "{body}"],
+    "section-replace": ["section", "replace", "{page}", "--heading", "Notes", "--body-file", "{body}"],
+    "comment-post": ["comment", "post", "{page}", "--body-file", "{body}"],
+    "comment-on": ["comment", "on", "{page}", "--quote", "every quarter", "--body-file", "{body}"],
+    "comment-reply": ["comment", "reply", "{page}", "--discussion", "disc-9", "--body-file", "{body}"],
+    "property-set": ["property", "set", "{page}", "--name", "Status", "--value", "Merged"],
+    "create": ["create", "{page}", "--title", "Fresh page", "--body-file", "{body}"],
+    "replace": ["replace", "{page}", "--old-file", "{old}", "--new-file", "{new}"],
+    "append-text": ["append", "{page}", "--body-text", "a note long enough to probe"],
+    "section-replace-text": ["section", "replace", "{page}", "--heading", "Notes", "--body-text", "a note to probe"],
+    "comment-post-text": ["comment", "post", "{page}", "--body-text", "a note long enough to probe"],
+    "comment-on-text": ["comment", "on", "{page}", "--quote", "every quarter", "--body-text", "a note to probe"],
+    "comment-reply-text": ["comment", "reply", "{page}", "--discussion", "disc-9", "--body-text", "a note to probe"],
+    "create-text": ["create", "{page}", "--title", "Fresh page", "--body-text", "a note long enough to probe"],
+    "replace-text": ["replace", "{page}", "--old-text", "every quarter", "--new-text", "every month"],
+}
+
+
+class TestEveryWriteNamesWhoItWritesAs:
+    @pytest.fixture(autouse=True)
+    def _page(self, notion: FakeNotion, tmp_path: Path) -> None:
+        notion.comment_on(notion.paragraph("Rates reset every quarter."), "which rate?", discussion_id="disc-9")
+        notion.set_property("Status", {"type": "status", "status": {"name": "In review"}})
+        files = {"body": "a note long enough to probe\n", "old": "every quarter\n", "new": "every month\n"}
+        for name, text in files.items():
+            (tmp_path / f"{name}.md").write_text(text, encoding="utf-8")
+        self.paths = {name: str(tmp_path / f"{name}.md") for name in files}
+
+    def command(self, notion: FakeNotion, verb: str) -> list[str]:
+        return [part.format(page=notion.page_id, **self.paths) for part in _WRITES[verb]]
+
+    @pytest.mark.parametrize("verb", list(_WRITES))
+    def test_the_identity_and_overlay_are_printed_on_stderr(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, verb: str
+    ) -> None:
+        result = runner.invoke(notion_app, self.command(notion, verb))
+
+        assert result.exit_code == 0, result.output
+        assert "writing as integration 'Factory' (bot id bot-1)" in result.stderr
+
+    @pytest.mark.parametrize("verb", list(_WRITES))
+    def test_an_unreadable_identity_stops_the_write_with_a_named_error(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, monkeypatch: pytest.MonkeyPatch, verb: str
+    ) -> None:
+        monkeypatch.setenv("T3_NOTION_HTTP_MAX_RETRIES", "0")
+        notion.identity_fail_with = (503, "service_unavailable")
+
+        result = runner.invoke(notion_app, self.command(notion, verb))
+
+        assert result.exit_code == 2, result.output
+        assert "nothing was written" in result.stderr
+        writes = [(method, path) for method, path in notion.requests if method in {"PATCH", "DELETE"}]
+        assert writes + [(method, path) for method, path in notion.requests if path in {"/pages", "/comments"}] == []
+
+
+_FILE_AND_TEXT = {
+    "append": ["append", "{page}", "--body-file", "{body}", "--body-text", "x"],
+    "section-replace": [
+        "section",
+        "replace",
+        "{page}",
+        "--heading",
+        "Notes",
+        "--body-file",
+        "{body}",
+        "--body-text",
+        "x",
+    ],
+    "comment-post": ["comment", "post", "{page}", "--body-file", "{body}", "--body-text", "x"],
+    "comment-on": ["comment", "on", "{page}", "--quote", "q", "--body-file", "{body}", "--body-text", "x"],
+    "comment-reply": [
+        "comment",
+        "reply",
+        "{page}",
+        "--discussion",
+        "d",
+        "--body-file",
+        "{body}",
+        "--body-text",
+        "x",
+    ],
+    "create": ["create", "{page}", "--title", "T", "--body-file", "{body}", "--body-text", "x"],
+}
+
+
+class TestEveryBodyTakesExactlyOneOfFileOrText:
+    @pytest.mark.parametrize("verb", list(_FILE_AND_TEXT))
+    def test_a_file_together_with_text_is_refused_and_nothing_is_sent(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, tmp_path: Path, verb: str
+    ) -> None:
+        body = tmp_path / "body.md"
+        body.write_text("a note long enough to probe\n", encoding="utf-8")
+
+        result = runner.invoke(
+            notion_app, [part.format(page=notion.page_id, body=body) for part in _FILE_AND_TEXT[verb]]
+        )
+
+        assert result.exit_code == 1, result.output
+        assert "--body-text" in result.stderr
+        assert notion.requests == []
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["comment", "post", "{page}"],
+            ["section", "replace", "{page}", "--heading", "Notes"],
+            ["comment", "on", "{page}", "--quote", "q"],
+            ["comment", "reply", "{page}", "--discussion", "d"],
+            ["append", "{page}"],
+        ],
+    )
+    def test_neither_is_refused_too(self, runner: typer.testing.CliRunner, notion: FakeNotion, args: list[str]) -> None:
+        result = runner.invoke(notion_app, [part.format(page=notion.page_id) for part in args])
+
+        assert result.exit_code == 1, result.output
+        assert notion.requests == []
+
+    @pytest.mark.parametrize("args", [["append", "{page}"], ["create", "{page}", "--title", "T"]])
+    def test_the_verbs_that_take_raw_blocks_name_that_option_when_nothing_is_given(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion, args: list[str]
+    ) -> None:
+        result = runner.invoke(notion_app, [part.format(page=notion.page_id) for part in args])
+
+        assert result.exit_code == 1, result.output
+        assert "--blocks-file" in result.stderr
+
+    def test_an_empty_comment_text_exits_1_rather_than_raising(
+        self, runner: typer.testing.CliRunner, notion: FakeNotion
+    ) -> None:
+        result = runner.invoke(notion_app, ["comment", "post", notion.page_id, "--body-text", "  "])
+
+        assert result.exit_code == 1, result.output
+        assert "empty comment" in result.stderr
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert ("POST", "/comments") not in notion.requests

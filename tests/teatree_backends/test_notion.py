@@ -223,7 +223,7 @@ class TestNotionClient:
         assert calls[0]["body"]["filter"] == {"property": "Status"}
         assert calls[1]["body"]["start_cursor"] == "cur-2"
 
-    def test_update_page_status_issues_patch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_update_page_issues_patch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: dict[str, Any] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -238,7 +238,7 @@ class TestNotionClient:
 
         client = NotionClient(token="secret")
         monkeypatch.setattr(client._write_guard, "check", lambda _target: None)
-        client.update_page_status("pg-9", property_name="Status", value="Merged")
+        client.update_page("pg-9", {"properties": {"Status": {"status": {"name": "Merged"}}}})
 
         assert seen["method"] == "PATCH"
         assert seen["url"] == "https://api.notion.com/v1/pages/pg-9"

@@ -21,7 +21,12 @@ from teatree.dash.skill_control import (
 from teatree.dash.skills import recent_skill_assurance
 from teatree.dash.views.access import require_loopback_or_staff
 from teatree.dash.views.base import actor, error_page, nav_context
-from teatree.harness_skills import HarnessSkillPolicyError, SkillsHarness
+from teatree.harness_skills import (
+    HarnessSkillPolicyError,
+    SkillsHarness,
+    harness_skill_target,
+    remove_harness_skill_exclusion,
+)
 from teatree.paths import get_data_dir
 from teatree.provisioning.declared import (
     DeclaredDependency,
@@ -123,6 +128,9 @@ def _render(
         "skill_query": render_options.query,
         "skill_status": render_options.selected_status,
         "recent_assurance": recent_skill_assurance(),
+        "excluded_skills": [
+            {"harness": entry.partition(":")[0], "name": entry.partition(":")[2]} for entry in state.exclusions
+        ],
     }
     return render(request, "dash/skills.html", context, status=render_options.status)
 
@@ -203,4 +211,22 @@ def skills_remove(request: "HttpRequest", harness: str, name: str) -> "HttpRespo
     except HarnessSkillPolicyError as error:
         return error_page(request, str(error), back="dash:skills")
     audit.record(actor=actor(request), action="skills:remove", target=f"{harness}:{name}")
+    return redirect("dash:skills")
+
+
+@require_loopback_or_staff
+@require_POST
+def skills_enable(request: "HttpRequest", harness: str, name: str) -> "HttpResponse":
+    """Re-enable an excluded skill for the next setup install."""
+    try:
+        with file_operation_lock(_receipt_path().parent / ".remove.lock"):
+            current = _current_exclusions()
+            target = harness_skill_target(harness, name)
+            if target.exclusion not in current:
+                return error_page(request, "That skill is not excluded from setup.", back="dash:skills")
+            updated = remove_harness_skill_exclusion(current, harness, name)
+            _persist_exclusions(updated)
+    except HarnessSkillPolicyError as error:
+        return error_page(request, str(error), back="dash:skills")
+    audit.record(actor=actor(request), action="skills:enable", target=f"{harness}:{name}")
     return redirect("dash:skills")

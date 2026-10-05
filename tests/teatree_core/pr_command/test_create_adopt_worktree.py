@@ -130,7 +130,9 @@ class TestAdoptResolvesTheInvocationCwd(TestCase):
     def _linked_worktree(self, name: str = "teatree") -> Path:
         wt = self._tmp / name
         wt.mkdir()
-        (wt / ".git").write_text("gitdir: /clone/.git/worktrees/teatree\n")
+        gitdir = wt.parent / "clone" / ".git" / "worktrees" / "teatree"
+        gitdir.mkdir(parents=True, exist_ok=True)
+        (wt / ".git").write_text(f"gitdir: {gitdir}\n")
         return wt
 
     def _plain_dir(self, name: str) -> Path:

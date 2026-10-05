@@ -1,9 +1,7 @@
 # test-path: cross-cutting
 """Per-overlay ``worktree_root`` resolution (regroup worktrees under one dir).
 
-``config.worktree_root()`` resolves, first match wins: the ``T3_WORKSPACE_DIR``
-env var (or the ``settings.T3_WORKSPACE_DIR`` Django setting) as the explicit,
-highest-precedence back-compat override; then the DB-home ``ConfigSetting``
+``config.worktree_root()`` resolves the DB-home ``ConfigSetting``
 ``workspace_dir`` row (the active overlay's scope, then the global scope); then
 the sound default ``~/workspace/t3-workspaces/<overlay>/``.
 
@@ -19,7 +17,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.config import worktree_root
@@ -40,12 +37,11 @@ class _WorktreeRootCase(TestCase):
         self.addCleanup(lambda: shutil.rmtree(sandbox, ignore_errors=True))
         self.enterContext(patch.object(Path, "home", return_value=self.home))
         # Scope every touched env key to the test via the shared ``patched_environ``
-        # seam: sandbox HOME, pin the overlay, and drop the back-compat override so
-        # each test starts from the DB/default path — all restored on teardown.
+        # seam: sandbox HOME and pin the overlay, so each test starts from the
+        # DB/default path — all restored on teardown.
         self.enterContext(
             patched_environ(
                 {"HOME": str(self.home), "T3_OVERLAY_NAME": "myoverlay"},
-                remove=("T3_WORKSPACE_DIR",),
             )
         )
 
@@ -86,18 +82,6 @@ class TestDbConfigSetting(_WorktreeRootCase):
         assert worktree_root() == self.home / "elsewhere" / "ws"
 
 
-class TestEnvOverrideWins(_WorktreeRootCase):
-    def test_env_var_beats_db_row(self) -> None:
-        ConfigSetting.objects.set_value("workspace_dir", "/srv/overlay-ws", scope="myoverlay")
-        os.environ["T3_WORKSPACE_DIR"] = "/from/env"
-        assert worktree_root() == Path("/from/env")
-
-    def test_django_setting_beats_db_row(self) -> None:
-        ConfigSetting.objects.set_value("workspace_dir", "/srv/overlay-ws", scope="myoverlay")
-        with self.settings(T3_WORKSPACE_DIR="/from/django"):
-            assert worktree_root() == Path("/from/django")
-
-
 class TestExplicitOverlayArgument(_WorktreeRootCase):
     """``overlay=`` names the overlay instead of inheriting the process's ambient one.
 
@@ -109,7 +93,7 @@ class TestExplicitOverlayArgument(_WorktreeRootCase):
     """
 
     def _unresolvable_ambient(self) -> None:
-        self.enterContext(patched_environ({}, remove=("T3_OVERLAY_NAME", "T3_WORKSPACE_DIR")))
+        self.enterContext(patched_environ({}, remove=("T3_OVERLAY_NAME",)))
         self.enterContext(patch("teatree.config.resolution._active_overlay_entry", return_value=None))
 
     def test_explicit_overlay_beats_unresolvable_ambient(self) -> None:
@@ -135,36 +119,3 @@ class TestExplicitOverlayArgument(_WorktreeRootCase):
     def test_omitted_overlay_is_unchanged(self) -> None:
         assert worktree_root(overlay=None) == worktree_root()
         assert worktree_root() == self.home / "workspace" / "t3-workspaces" / "myoverlay"
-
-    def test_env_and_django_tiers_stay_ahead_of_an_explicit_overlay(self) -> None:
-        os.environ["T3_WORKSPACE_DIR"] = "/from/env"
-        assert worktree_root(overlay="other-overlay") == Path("/from/env")
-
-        del os.environ["T3_WORKSPACE_DIR"]
-        with self.settings(T3_WORKSPACE_DIR="/from/django"):
-            assert worktree_root(overlay="other-overlay") == Path("/from/django")
-
-
-class TestPreDjangoSafe(_WorktreeRootCase):
-    """The settings probe is fail-safe when Django is unconfigured (mirrors clone_root)."""
-
-    def test_unconfigured_settings_probe_falls_through_instead_of_raising(self) -> None:
-        # Accessing the T3_WORKSPACE_DIR attribute on an unconfigured LazySettings
-        # raises ImproperlyConfigured (not AttributeError, so hasattr does not swallow
-        # it). The suppress guard must let worktree_root fall through to the DB tier
-        # rather than crash a pre-Django caller. The proxy raises ONLY for that probe
-        # and delegates everything else to the real settings so the ORM read still works.
-        from django.conf import settings as real_settings  # noqa: PLC0415 — test-local proxy target
-
-        ConfigSetting.objects.set_value("workspace_dir", "/srv/overlay-ws", scope="myoverlay")
-
-        unconfigured = "Requested setting, but settings are not configured."
-
-        class _ProbeRaisingSettings:
-            def __getattr__(self, name: str) -> object:
-                if name == "T3_WORKSPACE_DIR":
-                    raise ImproperlyConfigured(unconfigured)
-                return getattr(real_settings, name)
-
-        with patch("django.conf.settings", _ProbeRaisingSettings()):
-            assert worktree_root() == Path("/srv/overlay-ws")

@@ -119,6 +119,11 @@ def registered_worktree_roots() -> set[Path]:
     return {Path(wt.worktree_path).parent for wt in Worktree.objects.all() if wt.worktree_path}
 
 
+def registered_worktree_paths() -> dict[int, Path]:
+    """Every registered worktree's checkout path, keyed by row pk."""
+    return {wt.pk: Path(wt.worktree_path) for wt in Worktree.objects.all() if wt.worktree_path}
+
+
 def scanned_worktree_roots(workspace: Path) -> tuple[Path, ...]:
     """Every root a cleanup/health pass must scan, canonical root first.
 
@@ -148,6 +153,7 @@ __all__ = [
     "CheckoutState",
     "canonical_worktree_root",
     "probe_checkout",
+    "registered_worktree_paths",
     "registered_worktree_roots",
     "scanned_worktree_roots",
     "worktrees_outside_the_canonical_root",

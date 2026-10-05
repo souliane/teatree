@@ -20,11 +20,12 @@ from django.utils import timezone
 
 from teatree.core.models import DeferredQuestion, Session, Task, Ticket
 from teatree.core.models.task_claim import claim_generation
+from tests.factories import planned_ticket
 
 
 class TestRecordAttemptCommand(TestCase):
     def _claimed_task(self, *, phase: str = "coding") -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         task.claim(claimed_by="loop-slot")
@@ -159,7 +160,7 @@ class TestLateRecordCannotFinishAnotherGeneration(TestCase):
     """
 
     def _claimed_task(self) -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
+        ticket = planned_ticket(role=Ticket.Role.AUTHOR, state=Ticket.State.PLAN_RECORDED)
         session = Session.objects.create(ticket=ticket, agent_id="coding")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         task.claim(claimed_by="tick-1")

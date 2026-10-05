@@ -1,16 +1,4 @@
-"""The ``notify`` autonomy tier fires the after-receipt DM on every on-behalf action (#1668).
-
-B.3 — coherence: the ``notify`` tier's contract is "act autonomously on
-colleague-facing actions BUT DM me on every one". The derived
-``notify_on_behalf`` field forces the after-receipt visibility DM on through
-the ONE canonical egress (``teatree.core.notify.notify_user`` →
-``notify_user_on_behalf_post``), never a parallel notifier. The ``full`` tier
-is silent (``notify_on_behalf = False``).
-
-These tests drive the real autonomy resolution (a ``[overlays.<n>]`` table +
-``T3_OVERLAY_NAME``) so the wiring is exercised end-to-end, mocking only the
-unstoppable Slack transport at the ``MessagingBackend`` boundary.
-"""
+"""Every autonomy tier sends the after-receipt DM on on-behalf actions."""
 
 import json
 import sqlite3
@@ -56,20 +44,15 @@ def _stage(
     *,
     overlay: str,
     autonomy: str,
-    notify_on_post_on_behalf: bool | None = None,
 ) -> None:
     # ``slack_user_id`` (both global and per-overlay) resolves via the Django-free
     # cold reader — seed both in a config-store sqlite the reader resolves via
-    # ``T3_CONFIG_DB`` so notify_user resolves the user id. ``autonomy`` and
-    # ``notify_on_post_on_behalf`` are DB-home (#1775) — stage ``autonomy`` in the
-    # ``ConfigSetting`` store scoped to the overlay, and the global toggle in the
-    # global scope.
+    # ``T3_CONFIG_DB`` so notify_user resolves the user id. ``autonomy`` is DB-home (#1775); stage it in the
+    # ``ConfigSetting`` store scoped to the overlay.
     _seed_cold_slack_user(tmp_path, monkeypatch, overlay, "U-OPERATOR")
     monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
     monkeypatch.setenv("T3_OVERLAY_NAME", overlay)
     ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)
-    if notify_on_post_on_behalf is not None:
-        ConfigSetting.objects.set_value("notify_on_post_on_behalf", notify_on_post_on_behalf)
 
 
 def _stub_backend() -> MagicMock:
@@ -97,13 +80,12 @@ class TestNotifyTierFiresAfterReceiptDm:
         self.monkeypatch = monkeypatch
 
     def test_client_notify_approve_fires_exactly_one_dm(self) -> None:
-        """The ``notify`` tier forces the DM even with the #949 toggle OFF."""
+        """The ``notify`` tier sends a receipt."""
         _stage(
             self.tmp_path,
             self.monkeypatch,
             overlay="t3-client",
             autonomy="notify",
-            notify_on_post_on_behalf=False,
         )
         backend = _stub_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
@@ -124,24 +106,12 @@ class TestNotifyTierFiresAfterReceiptDm:
 
         backend.post_message.assert_called_once()
 
-    def test_full_teatree_action_does_not_fire_dm(self) -> None:
-        """``full`` is silent — with the #949 toggle off too, no DM fires.
-
-        Pairing ``autonomy = full`` with ``notify_on_post_on_behalf = false``
-        isolates ``notify_on_behalf`` as the load-bearing trigger: ``full``
-        derives it False, so neither gate is on and the post stays silent.
-        """
-        _stage(
-            self.tmp_path,
-            self.monkeypatch,
-            overlay="t3-teatree",
-            autonomy="full",
-            notify_on_post_on_behalf=False,
-        )
+    def test_full_teatree_action_also_fires_dm(self) -> None:
+        _stage(self.tmp_path, self.monkeypatch, overlay="t3-teatree", autonomy="full")
         backend = _stub_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
 
         _post("approve")
 
-        backend.post_message.assert_not_called()
-        assert BotPing.objects.count() == 0
+        backend.post_message.assert_called_once()
+        assert BotPing.objects.count() == 1

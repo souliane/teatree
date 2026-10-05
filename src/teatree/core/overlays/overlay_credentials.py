@@ -4,10 +4,6 @@ from teatree.config.credential_pass_key import CORE_CREDENTIALS, credential_of_s
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 
 
-def known_credentials() -> frozenset[str]:
-    return CORE_CREDENTIALS.union(*(overlay.config.declared_credentials() for overlay in get_all_overlays().values()))
-
-
 def known_pass_key_credential(setting: str) -> str | None:
     credential = credential_of_setting(setting)
     if credential is None:

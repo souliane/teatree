@@ -47,6 +47,23 @@ never happened, and it is refused.
 }
 ```
 
+Return these sibling envelope fields with a `merge_safe` verdict:
+
+```json
+"review_context": {
+  "work_item": "<fetched ticket or work-item URL>",
+  "documents": ["<downloaded reference URL or path>"],
+  "analysis": "<how the implementation satisfies the source requirements>"
+},
+"anti_vacuity": {
+  "ac_coverage": "<how the diff covers the acceptance criteria>",
+  "proven_tests": ["<test::id with revert-fix -> RED proof>"],
+  "no_new_tests": false
+}
+```
+
+Use `"no_new_tests": true` with an empty `proven_tests` list only when the diff adds no regression test.
+
 Allowed values, exactly as written — anything else is refused:
 
 - `verdict`: `merge_safe` or `hold`. Not `PASS`, not `LGTM`, not `approve`.

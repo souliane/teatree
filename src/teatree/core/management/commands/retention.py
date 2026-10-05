@@ -23,8 +23,7 @@ disables that lane. Set them with ``t3 <overlay> config_setting set``. The
 
 The ``TicketTransition`` lane has no window: it fires when the owning ticket CLOSES,
 and it removes only rows that are not state edges (``from_state == to_state``), so a
-reopened ticket keeps its whole history. Its kill switch is
-``ticket_transition_prune_disabled``.
+reopened ticket keeps its whole history.
 
 ``--apply`` finishes with a ``VACUUM`` (:mod:`teatree.utils.django_db.vacuum`). Deleting
 rows on SQLite reclaims no disk on its own — the pages move to the free list and

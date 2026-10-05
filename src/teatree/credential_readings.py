@@ -3,7 +3,7 @@
 import datetime as dt
 
 from teatree.core.models.anthropic_token_usage import REJECTED_STATUS, TokenHealthReading, UnifiedVerdict
-from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitSnapshot
+from teatree.llm.rate_limits import RateLimitSnapshot
 
 
 def reading_from(snapshot: RateLimitSnapshot) -> TokenHealthReading:
@@ -17,24 +17,6 @@ def reading_from(snapshot: RateLimitSnapshot) -> TokenHealthReading:
         reset_5h=snapshot.unified_5h_reset,
         reset_7d=snapshot.unified_7d_reset,
         verdict=UnifiedVerdict(status=snapshot.unified_status, representative_claim=snapshot.representative_claim),
-    )
-
-
-def reading_from_metered(snapshot: MeteredKeySnapshot) -> TokenHealthReading:
-    """Translate a metered API-key status into the domain cache's value object.
-
-    A standard key exposes no dollar balance and no unified windows, so the routing
-    verdict rides the credit flag: an out-of-credits key is recorded with a rejected 7d
-    status — exactly the exhaustion signal the selector already refuses to route to.
-    """
-    return TokenHealthReading(
-        organization_id=snapshot.organization_id,
-        utilization_5h=None,
-        utilization_7d=None,
-        status_5h="",
-        status_7d=REJECTED_STATUS if snapshot.out_of_credits else "",
-        reset_5h=None,
-        reset_7d=None,
     )
 
 

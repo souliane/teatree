@@ -22,9 +22,12 @@ other create failure is a real error and surfaces.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
+
+from django.db import DatabaseError
 
 from teatree.core.authoring_credential import unapprovable_author_refusal, unresolvable_author_refusal
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
@@ -37,6 +40,7 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.merge.pr_assignee import resolve_pr_assignee
 from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.merge.pr_url_record import record_pr_url
+from teatree.core.models.pending_pull_request import settles_obligation
 from teatree.core.overlay_loader import get_overlay, get_overlay_for_ticket
 from teatree.core.review.mr_metadata import auto_created_description, ensure_standard_body
 from teatree.core.runners.ship import (
@@ -53,7 +57,7 @@ from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
-    from teatree.core.models.pending_pull_request import SerializedPrSpec
+    from teatree.core.models.pending_pull_request import PendingPullRequestManager, SerializedPrSpec
     from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
@@ -87,6 +91,33 @@ DISPOSABLE_CHECKOUT_SKIP = "checkout is disposable (under a temp root) — its p
 UNPUSHED_DEFERRAL = "branch not on remote yet — re-run after push completes"
 PRE_PUSH_RACE_DEFERRAL = "remote ref not yet current (pre-push race) — re-run after push completes"
 PR_UNKNOWN_DEFERRAL = "the branch's open-PR state could not be read — re-run once the forge answers"
+REMOTE_UNKNOWN_DEFERRAL = "origin could not be read to tell whether the branch is on it — re-run once it answers"
+#: The hook's venue may see no credential the dispatch loop's venue does, so the refusal is owed, not dropped.
+AUTHOR_UNRESOLVABLE_DEFERRAL = "declared author does not resolve here — retry where it does"
+
+
+def _write_obligation_ledger(write: "Callable[[PendingPullRequestManager], object]", branch_name: str) -> None:
+    """A busy control DB is not a reason to drop the write.
+
+    SQLite reports lock contention as ``OperationalError`` exactly like a missing
+    table, so the write is retried and a lock that never clears SURFACES rather
+    than shipping a branch with no PR and no record of one. Only a pre-migration
+    missing relation degrades to a logged warning: this runs inside the pre-push
+    hook, and refusing the push over an unmigrated control DB would wedge every
+    commit on the machine. The schema guard in ``t3 doctor check`` surfaces that state.
+    """
+    from teatree.core.modelkit.db_retry import (  # noqa: PLC0415 — deferred: ORM-adjacent import at call time
+        is_missing_table_error,
+        retry_on_locked,
+    )
+    from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: avoids the app-load cycle
+
+    try:
+        retry_on_locked(lambda: write(PendingPullRequest.objects))
+    except DatabaseError as exc:
+        if not is_missing_table_error(exc):
+            raise
+        logger.warning("ensure-pr could not update the obligation for %s — run `t3 doctor check`", branch_name)
 
 
 def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestSpec | None = None) -> EnsurePrResult:
@@ -96,46 +127,41 @@ def _owe_pr(repo_path: str, branch_name: str, *, reason: str, spec: PullRequestS
     default ``"."`` in the worktree's cwd, and the drain and the doctor read the
     stored value from the dispatch loop's cwd, where ``"."`` is a different
     checkout entirely.
-
-    A busy control DB is not a reason to drop the obligation — SQLite reports
-    lock contention as ``OperationalError`` exactly like a missing table, so the
-    write is retried and a lock that never clears SURFACES rather than shipping a
-    branch with no PR and no record of one. Only a pre-migration missing relation
-    degrades to a logged warning: this runs inside the pre-push hook, and
-    refusing the push over an unmigrated control DB would wedge every commit on
-    the machine. The schema guard in ``t3 doctor check`` surfaces that state.
     """
-    from django.db import DatabaseError  # noqa: PLC0415 — deferred: Django import at call time
-
-    from teatree.core.modelkit.db_retry import (  # noqa: PLC0415 — deferred: ORM-adjacent import at call time
-        is_missing_table_error,
-        retry_on_locked,
-    )
-    from teatree.core.models import PendingPullRequest  # noqa: PLC0415 — deferred: avoids the app-load cycle
-
     resolved_path = str(Path(repo_path).resolve())
     if is_disposable_checkout(resolved_path):
         logger.info("ensure-pr owes nothing for %s: %s is disposable", branch_name, resolved_path)
         return EnsurePrResult(skipped=DISPOSABLE_CHECKOUT_SKIP, branch=branch_name, owed=False)
-    try:
-        retry_on_locked(
-            lambda: PendingPullRequest.objects.owe(
-                repo_path=resolved_path,
-                branch=branch_name,
-                reason=reason,
-                spec=cast("SerializedPrSpec", asdict(spec)) if spec is not None else None,
-            ),
-        )
-    except DatabaseError as exc:
-        if not is_missing_table_error(exc):
-            raise
-        logger.warning("ensure-pr deferred %s but could not record the obligation — run `t3 doctor check`", branch_name)
+    _write_obligation_ledger(
+        lambda ledger: ledger.owe(
+            repo_path=resolved_path,
+            branch=branch_name,
+            reason=reason,
+            spec=cast("SerializedPrSpec", asdict(spec)) if spec is not None else None,
+        ),
+        branch_name,
+    )
     return EnsurePrResult(
         skipped=reason,
         branch=branch_name,
         hint=f"t3 <overlay> pr ensure-pr --repo {resolved_path} --branch {branch_name}",
         owed=True,
     )
+
+
+def discharge_if_settled(repo_path: str, branch_name: str, result: EnsurePrResult) -> EnsurePrResult:
+    """Retire an earlier deferral once a run settles its branch."""
+    if not settles_obligation(result):
+        return result
+    resolved_path = str(Path(repo_path).resolve())
+    try:
+        _write_obligation_ledger(
+            lambda ledger: ledger.discharge(repo_path=resolved_path, branch=branch_name),
+            branch_name,
+        )
+    except DatabaseError:
+        logger.warning("ensure-pr settled %s but could not retire its obligation — the drain will", branch_name)
+    return result
 
 
 def defer_unpushed_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
@@ -155,11 +181,27 @@ def defer_unreadable_pr_state(repo_path: str, branch_name: str) -> EnsurePrResul
     return _owe_pr(repo_path, branch_name, reason=PR_UNKNOWN_DEFERRAL)
 
 
+def defer_unreadable_remote(repo_path: str, branch_name: str) -> EnsurePrResult:
+    """Owe the PR for an orphan whose ``origin`` would not say whether it holds the branch.
+
+    Not an error: a push can still land through a distinct ``pushurl`` or past a
+    transient refusal, and an error owes nothing, so the branch would ship with no PR.
+    """
+    return _owe_pr(repo_path, branch_name, reason=REMOTE_UNKNOWN_DEFERRAL)
+
+
+_DEFERRALS: dict[BranchStatus, Callable[[str, str], EnsurePrResult]] = {
+    BranchStatus.UNPUSHED_ORPHAN: defer_unpushed_pr,
+    BranchStatus.PR_UNKNOWN: defer_unreadable_pr_state,
+    BranchStatus.REMOTE_UNKNOWN: defer_unreadable_remote,
+}
+
+
 def skip_for_classified(report: BranchReport, repo_path: str, branch_name: str) -> EnsurePrResult | None:
     """The answer a classification already carries, or ``None`` when a PR must be created.
 
-    A pure mapping over the classification — six of the seven branch states are
-    a no-op carrying their own reason, and only ``PUSHED_ORPHAN`` is work.
+    A pure mapping over the classification — every branch state but
+    ``PUSHED_ORPHAN`` carries its own answer, and only that one is work.
     """
     if report.status is BranchStatus.SYNCED:
         return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
@@ -170,11 +212,8 @@ def skip_for_classified(report: BranchReport, repo_path: str, branch_name: str) 
         return EnsurePrResult(skipped=reason, branch=branch_name)
     if report.status is BranchStatus.OPEN_PR:
         return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
-    if report.status is BranchStatus.UNPUSHED_ORPHAN:
-        return defer_unpushed_pr(repo_path, branch_name)
-    if report.status is BranchStatus.PR_UNKNOWN:
-        return defer_unreadable_pr_state(repo_path, branch_name)
-    return None
+    defer = _DEFERRALS.get(report.status)
+    return defer(repo_path, branch_name) if defer is not None else None
 
 
 def _ticket_for_branch(branch_name: str) -> "Ticket | None":
@@ -266,22 +305,35 @@ def _owning_ticket_pre_create_gate(
     return None
 
 
-def _no_host_error(repo_path: str, branch_name: str) -> str:
-    """The refusal for a branch whose forge host would not build, scoped to its owning ticket.
+def _named_author_refusal(repo_path: str, branch_name: str) -> str:
+    """The named declared-author cause behind a forge host that would not build, or ``""``.
 
     The overlay is resolved from the branch's ticket so a repo a NON-ambient overlay declares
     still reports its own declared author rather than the ambient overlay's.
 
     Never raises: this runs inside the git pre-push hook, where an exception aborts the push
-    itself, so an unreadable ticket or overlay registry degrades to the generic message.
+    itself, so an unreadable ticket or overlay registry degrades to ``""``.
     """
     try:
         owning_ticket = _ticket_for_branch(branch_name)
         overlay = get_overlay_for_ticket(owning_ticket) if owning_ticket is not None else get_overlay()
     except Exception:  # noqa: BLE001 — a pre-push hook must never raise; degrade to the generic message.
         logger.warning("could not resolve the overlay owning %s — leaving the generic no-host message", branch_name)
-        return "no code host configured"
-    return unresolvable_author_refusal(repo_path, overlay_config=overlay.config) or "no code host configured"
+        return ""
+    return unresolvable_author_refusal(repo_path, overlay_config=overlay.config)
+
+
+def _no_host_error(repo_path: str, branch_name: str) -> str:
+    return _named_author_refusal(repo_path, branch_name) or "no code host configured"
+
+
+def _unresolved_host_result(repo_path: str, branch_name: str, *, generic: str) -> EnsurePrResult:
+    refusal = _named_author_refusal(repo_path, branch_name)
+    if not refusal:
+        return EnsurePrResult(error=generic)
+    owed = _owe_pr(repo_path, branch_name, reason=AUTHOR_UNRESOLVABLE_DEFERRAL)
+    owed["error"] = refusal
+    return owed
 
 
 def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
@@ -298,7 +350,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     try:
         host = code_host_for_repo_from_overlay(repo_path)
     except BackendResolutionError as exc:
-        return EnsurePrResult(error=str(exc))
+        return _unresolved_host_result(repo_path, branch_name, generic=str(exc))
     if host is None:
         return EnsurePrResult(error=_no_host_error(repo_path, branch_name))
     # An MR its own author cannot approve is refused before it exists: afterwards the only remedy

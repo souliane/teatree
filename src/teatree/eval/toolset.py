@@ -20,7 +20,14 @@ provisions the generic delegate the runner hands to ``ClaudeAgentOptions.agents`
 
 from claude_agent_sdk import AgentDefinition
 
-from teatree.eval.models import AnyOf, EvalSpec, Matcher, SuccessfulToolCallMatcher, canonicalize_tool
+from teatree.eval.models import (
+    AnyOf,
+    EvalSpec,
+    Matcher,
+    SuccessfulToolCallMatcher,
+    ToolCallCountMatcher,
+    canonicalize_tool,
+)
 from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 #: The canonical CLI sub-agent SPAWN tool name. The bundled ``claude`` registers
@@ -48,6 +55,8 @@ def _matcher_referenced_tools(spec: EvalSpec) -> set[str]:
     for matcher in spec.matchers:
         if isinstance(matcher, SuccessfulToolCallMatcher):
             referenced.update((canonicalize_tool(matcher.tool), canonicalize_tool(matcher.before_tool)))
+        elif isinstance(matcher, ToolCallCountMatcher):
+            referenced.add(canonicalize_tool(matcher.tool))
         elif isinstance(matcher, Matcher):
             referenced.add(canonicalize_tool(matcher.tool))
             # A negative matcher's ORDER guard names a pivot tool (e.g. Skill);
@@ -135,7 +144,7 @@ def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None
     the delegated unit) and does NOT do the work in the foreground — they do not
     grade the sub-agent's own trajectory. A broad description is enough to make the
     spawn legitimate. The delegate is a bounded no-op stub: its trajectory is not
-    graded and it is capped (``model="haiku"``, ``maxTurns=1``, a reply-and-STOP
+    graded and it is capped (``model="sonnet"``, ``maxTurns=1``, a reply-and-STOP
     prompt) so it cannot burn the run's budget or turn caps while the (correct)
     main-agent dispatch is what the scenario actually measures.
 
@@ -163,7 +172,7 @@ def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None
                 "accepted' and STOP — do NOT investigate, edit, write, test, commit, push, "
                 "or open a PR."
             ),
-            model="haiku",
+            model="sonnet",
             maxTurns=1,
         )
     }

@@ -57,6 +57,8 @@ the two counts are read apart here, where a refusal costs the whole reclaim.
 
 """
 
+import os
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -137,9 +139,28 @@ def venue_proc_root() -> Path | None:
     return _OWN_PROC_ROOT if _pid_dirs(_OWN_PROC_ROOT) else None
 
 
+def _host_os_refusal() -> str:
+    """Why the mounted table cannot be the host's, or ``""`` when the host is provably Linux."""
+    declared = os.environ.get("TEATREE_HOST_OS", "").strip()
+    if not declared and running_in_a_container():
+        return (
+            f"TEATREE_HOST_OS is unset, so this container cannot tell the host's process table from a "
+            f"VM's at {_HOST_PROC_ROOT} (Docker Desktop mounts its VM's) — deploy.sh and deploy/t3 export it"
+        )
+    host_os = declared or platform.system()
+    if host_os != "Linux":
+        return (
+            f"the host runs {host_os}, so {_HOST_PROC_ROOT} is a VM's process table — "
+            "a process on the host itself never appears in it"
+        )
+    return ""
+
+
 def host_proc_root() -> tuple[Path | None, str]:
     """The table to read and why — ``(None, reason)`` when no source covers the host."""
     if _pid_dirs(_HOST_PROC_ROOT):
+        if refusal := _host_os_refusal():
+            return None, refusal
         return _HOST_PROC_ROOT, ""
     if running_in_a_container():
         return None, (

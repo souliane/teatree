@@ -317,7 +317,7 @@ class TestShippedSpecsCarryTheOwnersPostures:
 
         Asserted rather than left to the seed data, because seed data that merely happens to
         satisfy the order is exactly how it broke: ``present`` was written from this box's
-        ``default_enabled`` column, which made it the second most restrictive posture after
+        old seed enablement metadata, which made it the second most restrictive posture after
         ``off``, so a present -> afk switch ADDED eighteen loops including ``ship`` and
         ``review``. ``token-outage`` is deliberately outside the chain — it is defined by a
         property (a loop needs no tokens), not by a position in the ordering.

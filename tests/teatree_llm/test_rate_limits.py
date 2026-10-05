@@ -261,10 +261,10 @@ class TestRequestSigningAndTokenSafety:
         read_rate_limits("t", is_oauth=False, transport=api_key)
         assert "anthropic-beta" not in api_key.headers
 
-    def test_probe_body_is_a_one_token_haiku_ping(self) -> None:
+    def test_probe_body_is_a_one_token_ping(self) -> None:
         transport = _RecordingTransport(ProbeResponse(status_code=200, headers={}))
         read_rate_limits("t", is_oauth=False, transport=transport)
-        assert transport.body["model"] == "claude-haiku-4-5"
+        assert transport.body["model"] == "claude-sonnet-5-5"
         assert transport.body["max_tokens"] == 1
 
 

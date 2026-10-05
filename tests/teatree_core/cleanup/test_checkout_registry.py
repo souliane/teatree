@@ -12,6 +12,7 @@ assertion depend on where the runner happens to live.
 """
 
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,7 +22,6 @@ from django.test import TestCase
 from teatree.core.cleanup.checkout_registry import (
     candidate_clones,
     checkout_scan_roots,
-    linked_worktree_paths,
     live_checkout_paths,
     raw_worktree_paths,
     scan_checkout_paths,
@@ -31,6 +31,7 @@ from teatree.utils.run import CommandFailedError
 from tests._git_repo import make_git_repo, run_git
 
 _REGISTRY = "teatree.core.cleanup.checkout_registry"
+_CACHEDIR_SIGNATURE = "Signature: 8a477f597d28d172789f06886806bc55\n"
 
 
 def _break_the_repo(clone: Path) -> None:
@@ -364,65 +365,6 @@ class TestScanDepthBudget(TestCase):
         assert found.complete
 
 
-class TestLinkedWorktreePaths(TestCase):
-    """The population a worktree GC may act on (#4244).
-
-    The GC asked the worktree ROOT — a directory that CONTAINS worktrees — for
-    its worktrees, which is not a question a directory can answer, so it read
-    ``[]`` on every tick of its life. These pin both halves: the enumeration must
-    work from a root that is not itself a repository, and it must hand back a
-    clone as a candidate for removal under no circumstances.
-    """
-
-    def setUp(self) -> None:
-        self.workspace = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
-        self.clone = make_git_repo(self.workspace / "org" / "repo")
-        self.outside = self.workspace / "not-a-clone"
-        self.outside.mkdir()
-        self.enterContext(patch(f"{_REGISTRY}.Path.cwd", return_value=self.outside))
-        self.enterContext(patch(f"{_REGISTRY}.checkout_scan_roots", return_value=(self.workspace,)))
-
-    def _add_checkout(self, branch: str) -> Path:
-        checkout = self.workspace / branch
-        run_git(self.clone, "worktree", "add", "-q", "-b", branch, str(checkout))
-        return checkout
-
-    def test_worktrees_under_a_non_repo_root_are_enumerated(self) -> None:
-        """The whole defect: the root holding the worktrees is not itself a repo."""
-        checkout = self._add_checkout("feat-a")
-        assert not (self.workspace / ".git").exists(), "the root must not be a repo, or this proves nothing"
-
-        enumeration = linked_worktree_paths(self.workspace)
-
-        assert str(checkout) in enumeration.paths
-        assert enumeration.complete
-
-    def test_a_clone_is_never_offered_as_a_worktree(self) -> None:
-        """Anti-vacuous: the caller REMOVES what it is handed, so a clone here is data loss."""
-        self._add_checkout("feat-b")
-
-        enumeration = linked_worktree_paths(self.workspace)
-
-        assert str(self.clone) not in enumeration.paths
-        assert str(self.clone.resolve()) not in enumeration.paths
-
-    def test_an_unreadable_registry_is_a_gap_not_an_empty_answer(self) -> None:
-        self._add_checkout("feat-c")
-        _break_the_repo(self.clone)
-
-        enumeration = linked_worktree_paths(self.workspace)
-
-        assert not enumeration.complete, "an enumeration that could not run must never read as complete"
-        assert any(str(self.clone) in gap for gap in enumeration.gaps)
-
-    def test_a_removed_worktree_drops_out(self) -> None:
-        """Control proving the enumeration tracks git rather than only ever growing."""
-        checkout = self._add_checkout("feat-gone")
-        run_git(self.clone, "worktree", "remove", "--force", str(checkout))
-
-        assert str(checkout) not in linked_worktree_paths(self.workspace).paths
-
-
 class TestCheckoutScanRoots(TestCase):
     """Which roots the scan covers — the coverage the keep-set's completeness rests on."""
 
@@ -450,3 +392,79 @@ class TestCheckoutScanRoots(TestCase):
         roots = checkout_scan_roots(Path.home() / "workspace")
 
         assert roots == (Path.home(),)
+
+
+class TestScanBudget(TestCase):
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+        make_git_repo(self.root / "repo")
+
+    def test_an_exhausted_budget_ends_the_walk_as_a_gap(self) -> None:
+        found = scan_checkout_paths((self.root,), deadline=time.monotonic() - 1)
+
+        assert not found.complete
+        assert any("budget" in gap for gap in found.gaps)
+
+    def test_control_a_budget_with_time_left_reads_complete(self) -> None:
+        assert scan_checkout_paths((self.root,), deadline=time.monotonic() + 60).complete
+
+
+class TestNotACheckout(TestCase):
+    """What only looks like a checkout is skipped without a gap; a gap refuses every pass."""
+
+    def setUp(self) -> None:
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
+
+    def test_an_empty_git_file_is_not_a_checkout(self) -> None:
+        husk = self.root / "husk"
+        husk.mkdir()
+        (husk / ".git").write_bytes(b"")
+
+        found = scan_checkout_paths((self.root,))
+
+        assert found.complete, found.gaps
+        assert str(husk) not in found.paths
+
+    def test_a_tagged_cache_directory_is_not_walked(self) -> None:
+        cache = self.root / ".uv-cache"
+        sdist = cache / "sdists-v9" / "pkg"
+        sdist.mkdir(parents=True)
+        (sdist / ".git").write_text("not a gitdir pointer", encoding="utf-8")
+        (cache / "CACHEDIR.TAG").write_text(_CACHEDIR_SIGNATURE, encoding="utf-8")
+
+        found = scan_checkout_paths((self.root,))
+
+        assert found.complete, found.gaps
+        assert str(sdist) not in found.paths
+
+    def test_a_tagged_cache_directory_is_not_listed(self) -> None:
+        cache = self.root / ".uv-cache"
+        cache.mkdir()
+        (cache / "CACHEDIR.TAG").write_text(_CACHEDIR_SIGNATURE, encoding="utf-8")
+
+        assert cache not in scan_checkout_paths((self.root,)).listed
+
+    def test_a_tag_without_the_spec_signature_exempts_nothing(self) -> None:
+        cache = self.root / "not-a-cache"
+        odd = cache / "odd"
+        odd.mkdir(parents=True)
+        (odd / ".git").write_text("not a gitdir pointer", encoding="utf-8")
+        (cache / "CACHEDIR.TAG").write_text("just a file with that name\n", encoding="utf-8")
+
+        assert not scan_checkout_paths((self.root,)).complete
+
+    def test_a_tagged_scan_root_is_still_walked(self) -> None:
+        (self.root / "CACHEDIR.TAG").write_text(_CACHEDIR_SIGNATURE, encoding="utf-8")
+        checkout = make_git_repo(self.root / "repo")
+
+        found = scan_checkout_paths((self.root,))
+
+        assert str(checkout) in found.paths
+        assert self.root in found.listed
+
+    def test_control_an_untagged_unreadable_git_file_is_still_a_gap(self) -> None:
+        odd = self.root / "odd"
+        odd.mkdir()
+        (odd / ".git").write_text("not a gitdir pointer", encoding="utf-8")
+
+        assert not scan_checkout_paths((self.root,)).complete

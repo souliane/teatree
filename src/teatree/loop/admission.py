@@ -23,7 +23,6 @@ from teatree.core.admission_governor import (
     SupplementalAdmissionSignals,
     YieldSignal,
     decide_admission,
-    governor_enabled,
     pressure_for,
     read_machine_signal,
     read_quota_signal,
@@ -81,16 +80,13 @@ def read_yield_signal(now: dt.datetime | None = None) -> YieldSignal:
 
 
 def governor_verdict(*, statusline_path: Path, static_ceiling: int | None = None) -> AdmissionDecision | None:
-    """The live admission verdict, or ``None`` when the governor is off or unavailable.
+    """The live admission verdict, or ``None`` when the probe is unavailable.
 
     ``None`` means "the governor has no opinion" — the caller keeps its pre-governor
-    static behaviour. That is the kill-switch path (``admission_governor_enabled``
-    false) and the degraded path (a signal read raised), never a silent denial: a
+    static behaviour. That is the degraded path (a signal read raised), never a silent denial: a
     governor that cannot read its own signals must not wedge the factory.
     """
     try:
-        if not governor_enabled():
-            return None
         quota = read_quota_signal()
         machine = read_machine_signal()
         brake = MachineBrake(braked=read_braked(statusline_path=statusline_path))

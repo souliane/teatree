@@ -15,7 +15,6 @@ from teatree.agents.envelope_refusal import (
     NO_ENVELOPE_ERROR,
     NO_ENVELOPE_PREFIX,
     corrective_instruction,
-    is_envelope_refusal,
     is_no_envelope_refusal,
     is_recorder_refusal,
     required_keys_phrase,
@@ -70,13 +69,6 @@ class TestRecorderRefusal(SimpleTestCase):
     def test_a_genuine_defect_is_rejected(self) -> None:
         assert not is_recorder_refusal(_REAL_DEFECT)
         assert not is_recorder_refusal("")
-
-
-class TestEnvelopeRefusalUnion(SimpleTestCase):
-    def test_it_covers_both_seams_and_rejects_a_real_defect(self) -> None:
-        assert is_envelope_refusal(NO_ENVELOPE_ERROR)
-        assert is_envelope_refusal(_EVIDENCE_REFUSAL)
-        assert not is_envelope_refusal(_REAL_DEFECT)
 
 
 class TestRequiredKeysPhrase(SimpleTestCase):

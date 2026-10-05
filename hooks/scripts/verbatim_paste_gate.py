@@ -1,11 +1,10 @@
-"""Record what the operator said; refuse to publish it back verbatim (#4195).
+"""Refuse to publish the operator's own words back verbatim (#4195).
 
-Two handlers, one concern. ``handle_record_operator_message`` fingerprints each
-inbound operator message on ``UserPromptSubmit``; ``handle_block_verbatim_
-operator_paste`` refuses a ``gh``/``glab`` post whose body reproduces one. The
-detection and the ledger live in the pure ``teatree.hooks.verbatim_paste`` leaf
-— this module owns only the hook wiring, the destination scoping and the
-``permissionDecision`` JSON.
+``handle_block_verbatim_operator_paste`` refuses a ``gh``/``glab`` post whose
+body reproduces a message the operator typed in this session, read from the
+session transcript. The detection lives in the pure
+``teatree.hooks.verbatim_paste`` leaf — this module owns only the hook wiring,
+the destination scoping and the ``permissionDecision`` JSON.
 
 Sibling of the #1415 banned-terms gate, and deliberately independent of it: a
 term-list hit presents as a vocabulary problem, so clearing it reads as clearing
@@ -21,15 +20,9 @@ to its OWN location and is therefore correct from any caller depth.
 
 import sys
 
-from hooks.scripts.loop_prompt_shape import is_bare_loop_prompt
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
-from hooks.scripts.skill_loader_input import strip_ambient_context
+from hooks.scripts.owner_prompts import owner_messages
 from hooks.scripts.teatree_settings import teatree_bool_setting as _teatree_bool_setting
-
-_OVERRIDE_NOTE = (
-    "NOTE: verbatim operator-paste gate (#4195) SKIPPED by an explicit "
-    "ALLOW_VERBATIM_PASTE=1 override; the override is recorded.\n"
-)
 
 
 def _gate_enabled() -> bool:
@@ -40,32 +33,6 @@ def _gate_enabled() -> bool:
     never-lockout kill-switch.
     """
     return _teatree_bool_setting("verbatim_paste_gate_enabled", default=True)
-
-
-def handle_record_operator_message(data: dict) -> None:
-    """Fingerprint this prompt as an operator message (UserPromptSubmit).
-
-    Harness-injected ambient blocks are stripped first: the CLAUDE.md body and
-    the memory index arrive inside every prompt, and fingerprinting them would
-    make quoting the repo's own documentation look like quoting the operator.
-    A bare loop tick is machine text, not operator speech, and is skipped.
-
-    Silent and crash-proof — an unwritable ledger degrades the later publish
-    check to UNKNOWN (which announces itself), never blocks the prompt.
-    """
-    session_id = str(data.get("session_id", ""))
-    prompt = data.get("prompt", "")
-    if not session_id or not isinstance(prompt, str) or not prompt:
-        return
-    try:
-        if is_bare_loop_prompt(prompt):
-            return
-        with _teatree_src_on_path():
-            from teatree.hooks import verbatim_paste  # noqa: PLC0415 — cold-hook import after the src bootstrap
-
-            verbatim_paste.record_operator_message(strip_ambient_context(prompt), session_id=session_id)
-    except Exception:  # noqa: BLE001 — crash-proof hook: recording never blocks a prompt
-        return
 
 
 def handle_block_verbatim_operator_paste(data: dict) -> bool:
@@ -122,12 +89,8 @@ def _run_verbatim_paste_pretool(data: dict) -> bool:
     payload = _public_publish_payload(data)
     if payload is None:
         return False
-    command = (data.get("tool_input", {}) or {}).get("command", "")
-    verdict = verbatim_paste.scan_body(payload, session_id=str(data.get("session_id", "")))
-    if verbatim_paste.has_override(command):
-        verbatim_paste.log_decision(decision="override", verdict=verdict)
-        sys.stderr.write(_OVERRIDE_NOTE)
-        return False
+    said = owner_messages(str(data.get("transcript_path", "")), limit=verbatim_paste.MAX_RECORDED_MESSAGES)
+    verdict = verbatim_paste.scan_body(payload, operator_messages=said)
     if verdict.outcome == verbatim_paste.UNKNOWN:
         verbatim_paste.log_decision(decision="unknown", verdict=verdict)
         sys.stderr.write(verbatim_paste.format_unknown_message(verdict))

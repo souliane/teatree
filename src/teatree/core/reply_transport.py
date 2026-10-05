@@ -29,7 +29,7 @@ from teatree.core.gates.privacy_gate import PrivacyGateResult, scan_outbound_tex
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, route_send
+from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, normalized_forge_repo, route_send
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 if TYPE_CHECKING:
@@ -138,17 +138,18 @@ _SEND_CHANNEL_BY_SOURCE: dict[str, SendChannel] = {
 def _route_reply(spec: ReplySpec) -> str:
     """Route an on-behalf reply body through the #117 send-proxy.
 
-    Returns the body to deliver (redacted in ``enforce`` mode) and raises
-    :class:`SendBlockedError` when the proxy refuses the destination in
-    ``enforce`` mode. On the ``warn`` ship default the proxy always allows and
-    returns the body unchanged, so this is an audit-only pass that records one
-    :class:`~teatree.core.models.send_audit.SendAudit` row per reply.
+    Returns the body to deliver (with matching terms redacted) and raises
+    :class:`SendBlockedError` when the proxy refuses the destination. It records
+    one :class:`~teatree.core.models.send_audit.SendAudit` row per reply.
     """
     channel = _SEND_CHANNEL_BY_SOURCE.get(spec.event.source, SendChannel.OTHER)
+    destination = spec.event.channel_ref
+    if channel in {SendChannel.GITHUB, SendChannel.GITLAB}:
+        destination = f"{channel.value}:{normalized_forge_repo(destination)}"
     verdict = route_send(
         SendRequest(
             channel=channel,
-            destination=spec.event.channel_ref,
+            destination=destination,
             payload=spec.body,
             action=spec.action_name,
             target=spec.target_ref,
@@ -278,9 +279,8 @@ class _BaseReplier:
         if spec.action_name in self._ON_BEHALF_ACTIONS:
             try:
                 _enforce_privacy(spec)
-                # #117: the send-proxy audits the reply and (in enforce mode)
-                # redacts the body / refuses a non-allowlisted destination before
-                # any wire call. On the warn ship default it is audit-only.
+                # #117: the send-proxy audits the reply, redacts the body, and
+                # refuses a non-allowlisted destination before any wire call.
                 spec.body = _route_reply(spec)
                 # #1879: consume + deliver + audit run in one transaction.atomic
                 # inside the gate, so a delivery failure rolls back the consume

@@ -77,8 +77,8 @@ def _seed_db(tmp_path: Path) -> Path:
         "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
     )
     conn.execute(
-        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
-        (json.dumps([_BANNED_TERM]),),
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+        (json.dumps({"leak": [_BANNED_TERM], "prose_collider": [_BANNED_TERM]}),),
     )
     conn.commit()
     conn.close()

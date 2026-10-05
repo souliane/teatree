@@ -17,17 +17,18 @@ import django.test
 from django.utils import timezone
 
 from teatree.config.gate_evidence import ActivationIntent, GateEvidence, ObservableKind
+from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.inert_gate_questions import MARKER_PREFIX, InertGateQuestionScanner
 
 _SHIPPED = dt.date(2020, 1, 1)
-#: Real, shipped-OFF settings — ``enabled_anywhere`` reads the live field, so an invented key
+#: Real settings explicitly turned off by each fixture — ``enabled_anywhere`` reads the live field, so an invented key
 #: would fail for the wrong reason and prove nothing about the finding split.
-_UNDECIDED_SETTING = "require_merge_evidence"
-_SECOND_UNDECIDED_SETTING = "require_executed_repro"
-_STAGED_SETTING = "require_debt_delta"
+_UNDECIDED_SETTING = "dream_memory_promote"
+_SECOND_UNDECIDED_SETTING = "substrate_self_signoff"
+_STAGED_SETTING = "worker_quiescing"
 
 
 def _entry(setting: str, intent: ActivationIntent) -> GateEvidence:
@@ -51,6 +52,8 @@ def _undecided(*settings: str) -> dict[str, GateEvidence]:
 class TestEveryUndecidedGateGoesIntoOneQuestion(django.test.TestCase):
     def setUp(self) -> None:
         DeferredQuestion.objects.all().delete()
+        for key in (_UNDECIDED_SETTING, _SECOND_UNDECIDED_SETTING):
+            ConfigSetting.objects.set_value(key, value=False)
         self.registry = _undecided(_UNDECIDED_SETTING, _SECOND_UNDECIDED_SETTING)
 
     def test_two_undecided_gates_file_a_single_question_naming_both(self) -> None:
@@ -100,6 +103,9 @@ class TestEveryUndecidedGateGoesIntoOneQuestion(django.test.TestCase):
 
 @django.test.override_settings(USE_TZ=True)
 class TestAFailedPassIsReportedNotSilent(django.test.TestCase):
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value(_UNDECIDED_SETTING, value=False)
+
     def test_a_failed_inertness_read_reaches_the_tick_error_surface(self) -> None:
         scanner = InertGateQuestionScanner(registry=_undecided(_UNDECIDED_SETTING))
         with patch("teatree.core.factory.feature_inertness.feature_inertness", side_effect=RuntimeError("boom")):
@@ -117,6 +123,8 @@ class TestAFailedPassIsReportedNotSilent(django.test.TestCase):
 class TestADecisionAlreadyMadeRaisesNothing(django.test.TestCase):
     def setUp(self) -> None:
         DeferredQuestion.objects.all().delete()
+        for key in (_UNDECIDED_SETTING, _STAGED_SETTING):
+            ConfigSetting.objects.set_value(key, value=False)
 
     def test_a_staged_finding_files_nothing(self) -> None:
         registry = {_STAGED_SETTING: _entry(_STAGED_SETTING, ActivationIntent.STAGED)}

@@ -25,6 +25,7 @@ from teatree.core.models import Session, Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import _handle_answerer
 from teatree.loop.persistence_phase_task import create_phase_task, has_open_task, open_task_in_phase
+from tests.factories import planned_ticket
 
 
 class TestOpenTaskLookup(TestCase):
@@ -58,7 +59,7 @@ class TestPhaseTaskMintCollapsesDuplicates(TestCase):
 
     @staticmethod
     def _ticket(url: str = "answer://event/1") -> Ticket:
-        return Ticket.objects.create(overlay="test", issue_url=url)
+        return planned_ticket(overlay="test", issue_url=url)
 
     def _mint(self, ticket: Ticket, *, phase: str = "debugging") -> Task:
         return create_phase_task(ticket, phase=phase, agent_id="debug", reason="Auto-scheduled red-MR fix")
@@ -143,7 +144,7 @@ class TestPhaseTaskMintStillMintsLegitimateRework(TestCase):
 
     @staticmethod
     def _ticket(url: str = "e2e-failure://test/spec.ts") -> Ticket:
-        return Ticket.objects.create(overlay="test", issue_url=url)
+        return planned_ticket(overlay="test", issue_url=url)
 
     def _mint(self, ticket: Ticket, *, phase: str = "e2e") -> Task:
         return create_phase_task(ticket, phase=phase, agent_id="e2e-fix", reason="Auto-scheduled E2E fix")

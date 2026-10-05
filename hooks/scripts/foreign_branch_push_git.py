@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Final
 
 from hooks.scripts.credential_redaction import clip, redact_credentials
+from hooks.scripts.hook_budget import NO_TIME_LEFT, remaining_timeout_s
 from hooks.scripts.managed_repo import teatree_src_on_path
 
 _HEADS_PREFIX: Final[str] = "refs/heads/"
@@ -67,18 +68,21 @@ def push_work_dir(tokens: list[str], cwd: str) -> tuple[str, str]:
 
 
 def git_probe(work_dir: str, *args: str, timeout: float = _GIT_TIMEOUT_S) -> GitProbe:
-    """Run a bounded Git probe in the targeted repo; return ``ok=False`` on failure."""
+    """Run a Git probe in the targeted repo, inside what is left of the hook budget; ``ok=False`` on failure."""
+    affordable = remaining_timeout_s(timeout)
+    if affordable is None:
+        return GitProbe(ok=False, out="", err=NO_TIME_LEFT)
     try:
         proc = subprocess.run(  # noqa: S603 -- trusted internal subprocess; fixed argv, no shell.
             # Use the same Git from PATH as the push this gate judges.
             ["git", "-C", work_dir or ".", "--no-optional-locks", *args],  # noqa: S607 -- see above.
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=affordable,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return GitProbe(ok=False, out="", err=f"timed out after {timeout:g}s")
+        return GitProbe(ok=False, out="", err=f"timed out after {affordable:g}s")
     except (OSError, subprocess.SubprocessError) as exc:
         return GitProbe(ok=False, out="", err=f"could not run git: {exc}")
     return GitProbe(
@@ -127,6 +131,12 @@ def probe_cause(probe: GitProbe) -> str:
         # beside the refusal it explains, `exit 0` reads as a success.
         return probe.err or "it exited 0, and said nothing this gate could read"
     return f"exit {probe.code}: {probe.err}" if probe.err else f"exit {probe.code} with no stderr"
+
+
+def config_value(work_dir: str, key: str) -> GitProbe:
+    """*key* from the targeted repo's config — ``ok`` with an empty value when it is unset, which is an answer."""
+    probe = git_probe(work_dir, "config", key)
+    return GitProbe(ok=True, out="", code=probe.code) if probe.code == _CONFIG_KEY_UNSET else probe
 
 
 def repository_at(work_dir: str) -> GitProbe:

@@ -1,8 +1,6 @@
 """The shared anti-Goodhart collateral-regression fold.
 
-Extracted from :mod:`teatree.loops.outer_loop.decide` so BOTH the outer loop's
-keep-only-if-better rule AND the directive loop's VERIFYING step read ONE
-implementation of the same question: did any factory signal turn RED/REGRESSING vs
+The directive loop's VERIFYING step uses this fold to answer: did any factory signal turn RED/REGRESSING vs
 the admission baseline? A pure fold over two
 :class:`~teatree.core.factory.factory_score.FactoryScore` snapshots — no DB, table-tested.
 """
@@ -27,9 +25,8 @@ def no_collateral_regression(
 
     A signal already RED/REGRESSING in the baseline that STAYS worse is not a NEW
     collateral regression — only a signal that crossed into a worse verdict counts.
-    ``exclude_provider_id`` skips the outer loop's target signal (whose own
-    improvement is judged separately); the directive loop omits it, so every signal
-    is treated as collateral.
+    ``exclude_provider_id`` can skip one target signal whose own improvement
+    is judged separately.
     """
     baseline_by_id = _by_id(baseline)
     for provider_id, after in _by_id(post).items():

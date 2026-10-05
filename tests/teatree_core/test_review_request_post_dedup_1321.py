@@ -22,6 +22,7 @@ from django.utils import timezone
 
 from teatree.backends.slack import http as slack_http
 from teatree.core.gates.review_request_guard import GuardTarget
+from tests.teatree_core.conftest import ready_review_batch_for_test, record_review_request_prerequisites_for_test
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _CHANNEL_ID = "C0_REVIEW"
@@ -63,7 +64,7 @@ class _PostRecordingBackend:
         return f"https://team.slack.com/archives/{channel}/p{ts.replace('.', '')}"
 
 
-def _run_post() -> tuple[int, dict[str, object]]:
+def _run_post(ticket_id: int, head_sha: str) -> tuple[int, dict[str, object]]:
     from django.core.management import call_command  # noqa: PLC0415
 
     buf = io.StringIO()
@@ -76,6 +77,10 @@ def _run_post() -> tuple[int, dict[str, object]]:
                 _MR_URL,
                 "--approver",
                 "souliane",
+                "--ticket-id",
+                str(ticket_id),
+                "--head-sha",
+                head_sha,
             )
         except SystemExit as exc:
             code = int(exc.code) if isinstance(exc.code, int) else 1
@@ -89,6 +94,8 @@ def _run_post() -> tuple[int, dict[str, object]]:
 
 class TestPostRefusedWhenChannelHistoryHasHit(TestCase):
     def test_24h_history_hit_refuses_the_post(self) -> None:
+        head_sha = "a" * 40
+        ticket = record_review_request_prerequisites_for_test(head_sha)
         recent_ts = f"{timezone.now().timestamp():.6f}"
         page = {
             "ok": True,
@@ -102,6 +109,7 @@ class TestPostRefusedWhenChannelHistoryHasHit(TestCase):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(slack_http.httpx, "get", fake.get)
             with (
+                ready_review_batch_for_test(_MR_URL),
                 patch(f"{_CMD_MOD}.resolve_guard_target", return_value=_TARGET),
                 patch(f"{_CMD_MOD}.messaging_from_overlay", return_value=backend),
                 # The draft gate runs BEFORE the dedup scan and fails closed on an
@@ -111,7 +119,7 @@ class TestPostRefusedWhenChannelHistoryHasHit(TestCase):
                 patch(f"{_CMD_MOD}.draft_refusal_reason", return_value=""),
                 patch(f"{_CMD_MOD}._owner_authorship", return_value=True),
             ):
-                code, payload = _run_post()
+                code, payload = _run_post(ticket.pk, head_sha)
 
         assert code == 0
         assert payload["action"] == "suppress"

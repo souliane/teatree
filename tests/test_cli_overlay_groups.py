@@ -123,11 +123,6 @@ def test_run_e2e_alias_forwards_the_target_to_the_e2e_runner() -> None:
     assert not any(isinstance(argument, typer.models.OptionInfo) for argument in forwarded_arguments)
 
 
-def test_pr_group_exposes_deprecated_post_evidence_alias() -> None:
-    # Same as above for the ``pr`` group.
-    assert "post-evidence" in _pr_subcommands()
-
-
 def test_honesty_group_exposes_escalate() -> None:
     # ``skills/rules/SKILL.md`` § "Escalate Honesty-Critical Verification"
     # tells the agent to run ``t3 <overlay> honesty escalate``. The Django

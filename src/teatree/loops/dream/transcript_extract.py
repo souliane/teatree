@@ -15,9 +15,8 @@ correction keeper for the "improve-with-new-stuff" half of dreaming (#2663): a U
 turn that reads like a manual directive/request t3 could automate away (imperative
 cues "can you"/"please"/"let's", or operational-ACTION cues "hotfix"/"asap"/
 "rollback"). Bare incident-state words ("production"/"broken"/"blocker"/"wedged")
-are excluded (#2732) — they describe a situation, not a request. Clustered over many
-nights, a recurring ask becomes an automatable-ask gap promoted to a fix under the
-standing umbrella.
+are excluded (#2732) — they describe a situation, not a request. Ask-shaped
+turns stay in the distiller input as evidence for the memory corpus.
 
 Without these keepers the keyword gate filtered fresh user-correction and user-ask
 prose out before the distiller ever saw it — the gap this module closes.
@@ -29,7 +28,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import Any, cast
 
-from teatree.loops.dream._shared import DREAM_BATCH_MANIFEST_HEADER
+from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
 
 #: Transcript lines worth keeping on keyword alone — the rest is chatter that
 #: must never reach the LLM prompt. Necessary-not-sufficient: a line also
@@ -285,10 +284,9 @@ def _repeated_user_turns(lines: Sequence[str]) -> set[str]:
 def high_signal_lines(raw: str) -> str:
     """Keep the lines worth distilling: keyword signals, corrections, asks, or learnings.
 
-    The user-ask keeper rides here too (#2663) so a recurring manual directive
-    reaches the distiller and clusters into an automatable-ask gap — otherwise the
-    keyword gate would drop a directive that carries no correction cue and no signal
-    token before the engine ever saw it. The learning keeper rides here too (#2986):
+    The user-ask keeper also retains manual directives that carry no correction cue
+    or signal token, so the distiller can preserve their context. The learning
+    keeper rides here too (#2986):
     a declarative finding/decision (from either role) carries no literal signal token
     and neither a correction nor an ask cue, yet it is the day's richest drift — so the
     keyword gate used to starve it out and a plain pass distilled 0 clusters from a
@@ -444,17 +442,6 @@ def decode_transcript_line(line: str) -> str:
     return f'{{"role": "{_decoded_role(obj, role)}"}} {" ".join(text.split())}'
 
 
-def user_ask_lines(raw: str) -> str:
-    """Keep only the USER directive/request lines — the sibling of :func:`high_signal_lines`.
-
-    The narrow extract the automatable-ask classifier reads: every line that
-    :func:`looks_like_user_ask` flags, nothing else. Where ``high_signal_lines`` mixes
-    asks into the broad distiller input, this isolates the ask signal for the
-    Bucket-A/B classification.
-    """
-    return "\n".join(line for line in raw.splitlines() if looks_like_user_ask(line))
-
-
 __all__ = [
     "TRANSCRIPT_SIGNALS",
     "decode_transcript_line",
@@ -464,5 +451,4 @@ __all__ = [
     "looks_like_learning",
     "looks_like_user_ask",
     "looks_like_user_correction",
-    "user_ask_lines",
 ]

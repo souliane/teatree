@@ -16,14 +16,6 @@ import typer
 
 def validate_skill_refs_cmd(
     *,
-    supplementary_config: Path | None = typer.Option(
-        None,
-        "--config",
-        help=(
-            "Path to the keyword->skill routing config "
-            "(default: $T3_SUPPLEMENTARY_SKILLS or $HOME/.teatree-skills.yml)."
-        ),
-    ),
     agents_dir: Path | None = typer.Option(
         None,
         "--agents-dir",
@@ -35,16 +27,14 @@ def validate_skill_refs_cmd(
 
     Enumerates the canonical skill set from the actual installed/remote skills
     (the same search dirs the skill-loading hook reads — ``~/.claude/skills/*``
-    symlinks plus this plugin's ``skills/`` tree), then checks every reference
-    site: the ``$HOME/.teatree-skills.yml`` keyword->skill routing config and the
-    ``agents/*.md`` frontmatter ``skills:`` / ``companion_skills:`` lists. A
-    dangling name (e.g. the real ``ac-reviewing-skills`` -> ``ac-reviewing-codebase``
-    incident) exits non-zero with file:line + the bad name + nearest matches.
-    A missing optional config is not a failure (fail-open).
+    symlinks plus this plugin's ``skills/`` tree), then checks the ``agents/*.md``
+    frontmatter ``skills:`` / ``companion_skills:`` lists. A dangling name (e.g. the
+    real ``ac-reviewing-skills`` -> ``ac-reviewing-codebase`` incident) exits non-zero
+    with file:line + the bad name + nearest matches.
     """
     from teatree.skill_support.ref_validator import validate_skill_refs  # noqa: PLC0415 — deferred: lazy CLI import
 
-    findings = validate_skill_refs(supplementary_config=supplementary_config, agents_dir=agents_dir)
+    findings = validate_skill_refs(agents_dir=agents_dir)
     if json_output:
         typer.echo(
             json.dumps(

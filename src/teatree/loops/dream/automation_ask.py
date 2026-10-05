@@ -20,12 +20,11 @@ prescribe a new loop/skill/gate, canonical example a hotfix lane). PROMOTE route
 GROUNDED automatable-ask gap (the verbatim cited snippet must appear in the transcript
 — :func:`teatree.loops.dream.engine.check_grounding`, mirroring the cluster
 grounding) into the pass's shared
-:class:`~teatree.loops.dream.batch_promote.PromotionBatch` (#4776): a deduped umbrella
-checkbox, carrying the Bucket-A/B framing in the title, queued alongside every other
-promoting phase's gaps for the ONE coding fix the whole pass mints. RETIRE reuses
-:func:`~teatree.loops.dream.batch_promote.reconcile_batches` — when the batch's fix
-merges, the ask memory is retired off the batch Ticket's MERGED state, for the gaps
-recorded delivered.
+:class:`~teatree.loops.dream.batch_promote.PromotionBatch` (#4776): a deduped gap,
+carrying the Bucket-A/B framing in the title, queued alongside every other promoting
+phase's gaps for the backlog sweep to fold into an existing host. RETIRE reuses
+:func:`~teatree.loops.dream.batch_promote.reconcile_batches` — when that host merges,
+the ask memory is retired off its MERGED state, for the gaps recorded delivered.
 
 PURE w.r.t. the forge and the LLM: the classifier is an INJECTED seam (default the
 deterministic catalog-keyword classifier) and this phase itself does no forge I/O —

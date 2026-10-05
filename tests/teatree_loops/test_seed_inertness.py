@@ -27,7 +27,6 @@ from teatree.loops.seed import seed_default_loops_and_prompts
 from teatree.loops.seed_inertness import (
     KIND_BACKUP_WITHOUT_RECLAIM,
     KIND_DANGLING_SLOT,
-    KIND_DISABLED,
     KIND_DISABLED_VS_SHIPPED,
     KIND_EMPTY,
     KIND_EMPTY_MASK,
@@ -44,7 +43,6 @@ from teatree.loops.seed_inertness import (
 _GHOST_TOML = """
 [loops.ghost_loop]
 delay_seconds = 300
-default_enabled = true
 description = "a loop that ships but was never seeded"
 
 [modes.ghost_preset]
@@ -128,26 +126,27 @@ class TestExpectedSetComesFromTheSeed(django.test.TestCase):
         assert [f.kind for f in _named(findings, "schedule", "ghost_schedule")] == [KIND_MISSING]
 
 
-class TestDisabledSeverityUsesTheShippedFlag(django.test.TestCase):
-    """Ten shipped-off loops are not ten faults — only a shipped-ON loop turned off is."""
+class TestDisabledSeverityUsesThePresentMode(django.test.TestCase):
+    """A deliberate manual override is visible without making doctor warn."""
 
     def setUp(self) -> None:
         seed_default_loops_and_prompts()
 
-    def test_a_shipped_on_loop_found_off_is_a_fault(self) -> None:
+    def test_a_shipped_on_loop_found_off_is_reported_as_deliberate(self) -> None:
         Loop.objects.filter(name="inbox").update(enabled=False)
 
         found = _named(shipped_inertness(), "loop", "inbox")
 
         assert [f.kind for f in found] == [KIND_DISABLED_VS_SHIPPED]
-        assert found[0].is_fault
+        assert not found[0].is_fault
+        assert "preset/mode mask" in found[0].detail
 
-    def test_a_shipped_off_loop_found_off_is_only_a_note(self) -> None:
+    def test_another_present_loop_found_off_is_also_deliberate(self) -> None:
         Loop.objects.filter(name="dogfood").update(enabled=False)
 
         found = _named(shipped_inertness(), "loop", "dogfood")
 
-        assert [f.kind for f in found] == [KIND_DISABLED]
+        assert [f.kind for f in found] == [KIND_DISABLED_VS_SHIPPED]
         assert not found[0].is_fault
 
 

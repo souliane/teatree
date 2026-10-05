@@ -42,6 +42,14 @@ class TestInvokesForgeSubcommand:
             "command -- gh repo delete o/r",
             "xargs -n 1 gh repo delete",
             "env -i time -p gh repo delete o/r",
+            "timeout -k 5 30 gh repo delete o/r",
+            "nice -n 5 stdbuf -oL gh repo delete o/r",
+            "case x in x) gh repo delete o/r;; esac",
+            "cat <(gh repo delete o/r)",
+            "cat <<< x\ngh repo delete o/r\necho done",
+            "cat > f <<EOF\nEOF\ngh repo delete o/r",
+            "# don't\nurl=$(gh repo delete o/r)",
+            "cat <<EOF\n`gh repo delete o/r`\nEOF",
         ],
     )
     def test_any_plausible_invocation_fires(self, command: str) -> None:
@@ -61,6 +69,8 @@ class TestInvokesForgeSubcommand:
             "command env",
             "echo '$(gh repo delete o/r)'",
             "echo 'run `glab project archive 9`'",
+            "cat <<'EOF'\nrun `gh repo delete o/r` or $(gh repo delete o/r)\nEOF",
+            'echo "<(gh repo delete o/r)"',
         ],
     )
     def test_non_invocation_text_does_not_fire(self, command: str) -> None:

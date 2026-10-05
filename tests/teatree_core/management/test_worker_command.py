@@ -15,8 +15,10 @@ from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
+from django.test import TestCase
 
 from teatree.core.management.commands.worker import STARVED_EXIT
+from teatree.core.models import WorkerGeneration
 from teatree.utils.singleton import WORKER_SINGLETON, AlreadyRunningError, ExecutionContext, flock_is_held
 from teatree.utils.singleton_refusals import ESCALATION_THRESHOLD, read_streak, record_refusal
 
@@ -152,3 +154,35 @@ def test_a_changed_reason_restarts_the_count() -> None:
     streak = read_streak(WORKER_SINGLETON)
     assert streak is not None
     assert streak.count == 1
+
+
+class TestTheWorkerActivatesItsGeneration(TestCase):
+    _SHA = "8" * 40
+
+    def _boot(self, generation: str) -> None:
+        with (
+            patch.dict("os.environ", {"TEATREE_GENERATION": generation}),
+            patch("teatree.loops.worker.LoopWorker"),
+            patch("teatree.core.management.commands.worker.signal.signal"),
+        ):
+            call_command("worker")
+
+    def test_an_image_worker_activates_its_generation(self) -> None:
+        self._boot(self._SHA)
+
+        assert WorkerGeneration.objects.state_of(self._SHA) == WorkerGeneration.State.ACTIVE
+
+    def test_a_legacy_worker_registers_nothing(self) -> None:
+        self._boot("")
+
+        assert not WorkerGeneration.objects.exists()
+
+    def test_a_refused_worker_activates_nothing(self) -> None:
+        with (
+            patch.dict("os.environ", {"TEATREE_GENERATION": self._SHA}),
+            patch("teatree.utils.singleton.singleton", side_effect=_refuse_from_outside),
+            pytest.raises(SystemExit),
+        ):
+            call_command("worker")
+
+        assert not WorkerGeneration.objects.exists()

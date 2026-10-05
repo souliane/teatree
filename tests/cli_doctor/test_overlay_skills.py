@@ -37,10 +37,29 @@ class TestCollectOverlaySkills:
 
         assert all(name != "my_app" for _, name in results)
 
-    def test_skips_entries_without_project_path(self, tmp_path, monkeypatch):
+    def test_skips_entries_without_project_path_or_declared_root(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
         _seed_overlays(tmp_path, monkeypatch, {"classonly": {"class": "acme.overlay:AcmeOverlay"}})
 
         results = DoctorService.collect_overlay_skills()
 
         assert all(name != "classonly" for _, name in results)
+
+    def test_declared_skill_root_works_without_project_path(self, tmp_path, monkeypatch):
+        _stage_home(tmp_path, monkeypatch)
+        _seed_overlays(tmp_path, monkeypatch, {"classonly": {"class": "acme.overlay:AcmeOverlay"}})
+        skill = tmp_path / "packaged" / "skills" / "overlay-guide"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# Overlay guide\n", encoding="utf-8")
+
+        class _Metadata:
+            @staticmethod
+            def get_skill_metadata() -> dict[str, str]:
+                return {"skill_root": str(skill.parent)}
+
+        class _Overlay:
+            metadata = _Metadata()
+
+        monkeypatch.setattr("teatree.core.overlay_loader.get_overlay", lambda _name: _Overlay())
+
+        assert (skill, "overlay-guide") in DoctorService.collect_overlay_skills()

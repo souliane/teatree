@@ -29,6 +29,7 @@ from django.test import TestCase
 import teatree.core.signals as signals_mod
 from teatree.core.models import BotPing, PullRequest, Ticket
 from tests.teatree_core._on_behalf_gate_helpers import seed_permitting_posture
+from tests.teatree_core.conftest import record_confirmed_merge_for_test
 
 
 def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
@@ -136,6 +137,7 @@ class TestSignalsAfterReceiptDm(TestCase):
         react on (helper returns 0) no ``on_behalf_post:`` DM is sent.
         """
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        record_confirmed_merge_for_test(ticket)
         with _patch_transition_publisher(lambda _t, _n: 0):
             ticket.mark_merged()
             ticket.save()
@@ -147,6 +149,7 @@ class TestSignalsAfterReceiptDm(TestCase):
     def test_transition_reaction_emits_after_receipt_dm_when_reacted(self) -> None:
         # No PR data: the fake publisher's return value alone drives the receipt.
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEW_REQUESTED)
+        record_confirmed_merge_for_test(ticket)
         with _patch_transition_publisher(lambda _t, _n: 1):
             ticket.mark_merged()
             ticket.save()

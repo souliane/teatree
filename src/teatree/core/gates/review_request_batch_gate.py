@@ -33,8 +33,7 @@ it; whether it HOLDS the group is
 which is the conservative reading — an unready infrastructure change the batch
 depends on keeps holding the batch — and it is never broadcast either way.
 
-Ships INERT: the chokepoints consult :func:`work_group_batch_refusal`, a no-op
-until ``require_work_group_batch`` is turned on.
+The chokepoints consult :func:`work_group_batch_refusal` on every broadcast.
 """
 
 import logging
@@ -135,8 +134,6 @@ def work_group_batch_refusal(mr_url: str, *, overlay_name: str = "") -> BatchVer
     The single call each chokepoint makes, so ``check`` can never predict a
     verdict ``post`` then contradicts.
     """
-    if not get_effective_settings(overlay_name or None).require_work_group_batch:
-        return None
     verdict = work_group_ready(mr_url=mr_url, overlay_name=overlay_name)
     return None if verdict.ready else verdict
 

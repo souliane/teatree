@@ -33,15 +33,18 @@ h1 { font-size: 1.4rem; }
 .summary .pass { color: #1a7f37; }
 .summary .fail { color: #cf222e; }
 .summary .skip { color: #6e7781; }
+.summary .incomplete { color: #9a6700; }
 details { border: 1px solid #d0d7de; border-radius: 6px; margin: 0.5rem 0; padding: 0.5rem 0.75rem; }
 details.pass { border-left: 4px solid #1a7f37; }
 details.fail { border-left: 4px solid #cf222e; }
 details.skip { border-left: 4px solid #6e7781; }
+details.incomplete { border-left: 4px solid #9a6700; }
 summary { cursor: pointer; font-weight: 600; }
 .verdict { font-size: 0.8rem; padding: 0.1rem 0.45rem; border-radius: 999px; margin-right: 0.5rem; color: #fff; }
 .verdict.pass { background: #1a7f37; }
 .verdict.fail { background: #cf222e; }
 .verdict.skip { background: #6e7781; }
+.verdict.incomplete { background: #9a6700; }
 .reason { color: #6e7781; font-weight: 400; }
 .trial { margin: 0.75rem 0 0; padding-left: 0.75rem; border-left: 2px solid #d0d7de; }
 .trial h3 { font-size: 0.95rem; margin: 0 0 0.35rem; }
@@ -53,21 +56,21 @@ pre { border-radius: 4px; margin: 0.25rem 0; }
 
 
 def _aggregate_verdict(result: PassAtKResult) -> str:
-    if result.skipped:
-        return "skip"
-    return "pass" if result.ok else "fail"
+    return result.verdict
 
 
 def _summary(results: Sequence[PassAtKResult]) -> str:
     total = len(results)
-    skipped = sum(1 for r in results if r.skipped)
-    passed = sum(1 for r in results if not r.skipped and r.ok)
-    failed = total - passed - skipped
+    skipped = sum(1 for r in results if r.verdict == "skip")
+    passed = sum(1 for r in results if r.verdict == "pass")
+    failed = sum(1 for r in results if r.verdict == "fail")
+    incomplete = sum(1 for r in results if r.verdict == "incomplete")
     return (
         '<p class="summary">'
         f'<span class="pass">{passed} passed</span>, '
         f'<span class="fail">{failed} failed</span>, '
-        f'<span class="skip">{skipped} skipped</span> '
+        f'<span class="skip">{skipped} skipped</span>, '
+        f'<span class="incomplete">{incomplete} incomplete</span> '
         f"(of {total} scenarios, pass@{results[0].trials if results else 0})</p>"
     )
 

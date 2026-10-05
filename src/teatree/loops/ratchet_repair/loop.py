@@ -1,6 +1,6 @@
 """Reference-ratchet staleness mini-loop (#4451) — notice a loose ratchet on the core clone.
 
-Default-OFF (``default_enabled = false`` in the seed). When enabled it reads the
+The ``present`` preset admits it. On each fire it reads the
 maintained teatree core clone every 30m; the scanner
 (:mod:`teatree.loop.scanners.ratchet_staleness`) flags pins the tree no longer
 reports and the mechanical handler surfaces them with the one-command repair.

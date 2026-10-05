@@ -47,7 +47,19 @@ class TestMergePayloads:
 
     def test_totals_are_summed_across_shards(self) -> None:
         merged = merge_summary_payloads([_SHARD_A, _SHARD_B], head_sha=_SHA, generated_at=_AT)
-        assert merged["totals"] == {"total": 4, "passed": 2, "failed": 1, "skipped": 1}
+        assert merged["totals"] == {"total": 4, "passed": 2, "failed": 1, "skipped": 1, "incomplete": 0}
+
+    def test_incomplete_shard_count_survives_the_merge(self) -> None:
+        incomplete = {
+            **_SHARD_B,
+            "totals": {"total": 2, "passed": 1, "failed": 0, "skipped": 0, "incomplete": 1},
+            "scenarios": [
+                _SHARD_B["scenarios"][0],
+                {"name": "gamma", "lane": "clean_room", "verdict": "incomplete", "triage_class": "behavioral"},
+            ],
+        }
+        merged = merge_summary_payloads([_SHARD_A, incomplete], head_sha=_SHA, generated_at=_AT)
+        assert merged["totals"] == {"total": 4, "passed": 2, "failed": 1, "skipped": 0, "incomplete": 1}
 
     def test_scenarios_are_concatenated_across_shards(self) -> None:
         merged = merge_summary_payloads([_SHARD_A, _SHARD_B], head_sha=_SHA, generated_at=_AT)
@@ -70,7 +82,7 @@ class TestMergePayloads:
 
     def test_empty_input_yields_a_valid_empty_payload(self) -> None:
         merged = merge_summary_payloads([], head_sha=_SHA, generated_at=_AT)
-        assert merged["totals"] == {"total": 0, "passed": 0, "failed": 0, "skipped": 0}
+        assert merged["totals"] == {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "incomplete": 0}
         assert merged["scenarios"] == []
         assert merged["model"] == "unknown"
 

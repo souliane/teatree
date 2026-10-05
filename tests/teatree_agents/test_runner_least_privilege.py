@@ -61,15 +61,6 @@ class TestDisallowedToolsForPhase(TestCase):
         assert list(result) == sorted(result)
         assert len(result) == len(set(result))
 
-    def test_reader_phase_denies_the_exhaustive_known_builtin_registry(self) -> None:
-        # #116 (C1): the reader denies EVERY known CLI built-in (the binary-validated
-        # registry), so no built-in of any kind — including the external-effect
-        # PushNotification/RemoteTrigger and tool-acquisition ToolSearch — remains
-        # reachable. Anti-vacuous: dropping any built-in from the derivation → RED.
-        disallowed = set(_disallowed_tools_for_phase("directive_reading"))
-        assert set(KNOWN_BUILTIN_TOOLS) <= disallowed, set(KNOWN_BUILTIN_TOOLS) - disallowed
-        assert {"PushNotification", "RemoteTrigger", "ToolSearch"} <= disallowed
-
 
 class TestBuildOptionsHarnessPin(TestCase):
     @classmethod
@@ -135,20 +126,6 @@ class TestBuildOptionsHarnessPin(TestCase):
         disallowed = set(self._options_for("coding").disallowed_tools)
         assert {"AskUserQuestion", "PushNotification", "RemoteTrigger", "SendMessage", "Monitor"} <= disallowed
 
-    def test_reader_dispatch_suppresses_all_tool_sources(self) -> None:
-        # #116 (C1): an empty allowed_tools is a no-op in the SDK transport, so the reader
-        # closes tool acquisition at the source — no settings, no MCP config — and denies
-        # the extra built-ins. A coding dispatch is unaffected (loads settings as before).
-        reader = self._options_for("directive_reading")
-        assert reader.setting_sources == []
-        assert reader.strict_mcp_config is True
-        assert reader.mcp_servers == {}
-        assert set(KNOWN_BUILTIN_TOOLS) <= set(reader.disallowed_tools)
-
-        coding = self._options_for("coding")
-        assert coding.setting_sources is None
-        assert coding.strict_mcp_config is False
-
     def test_lifecycle_dispatch_wires_the_teatree_mcp_server(self) -> None:
         # #3242: plugin sub-agents ignore the mcpServers frontmatter, so the
         # headless lifecycle dispatch must inject the teatree local-stdio server
@@ -160,21 +137,9 @@ class TestBuildOptionsHarnessPin(TestCase):
             assert server["command"] == "t3"
             assert list(server["args"]) == ["mcp", "serve"]
 
-    def test_reader_dispatch_never_wires_the_teatree_mcp_server(self) -> None:
-        # The quarantined reader stays hermetic: no MCP config of any origin,
-        # including teatree's own server.
-        assert self._options_for("directive_reading").mcp_servers == {}
 
-
-class TestReaderPermissionModeIsDefaultDeny(TestCase):
-    """The #116 reader denies by DEFAULT, not by enumerating every tool.
-
-    ``bypassPermissions`` auto-approves whatever survives the denylist, so a tool the
-    denylist does not name — an MCP-server tool, a custom slash command — would still
-    run. ``dontAsk`` denies anything not pre-approved by an allow rule, and the reader
-    carries none. Source-suppression (no settings, no MCP config) is the independent
-    other half; the reader keeps both.
-    """
+class TestWritePermissionMode(TestCase):
+    """Active work phases keep unattended write permission."""
 
     @classmethod
     def setUpTestData(cls) -> None:
@@ -184,10 +149,6 @@ class TestReaderPermissionModeIsDefaultDeny(TestCase):
         session = Session.objects.create(ticket=self.ticket)
         task = Task.objects.create(ticket=self.ticket, session=session)
         return _build_options(task, "ctx", phase=phase, skills=[])
-
-    def test_reader_phase_denies_anything_not_pre_approved(self) -> None:
-        options = self._options_for_phase("directive_reading")
-        assert options.permission_mode == "dontAsk"
 
     def test_write_phases_keep_bypass_so_they_can_act_unattended(self) -> None:
         # A detached write run has no human to grant permissions; downgrading these

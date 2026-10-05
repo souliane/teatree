@@ -119,23 +119,19 @@ def _clamp(value: int, hard_cap: int) -> int:
     return max(MIN_CONCURRENCY, min(value, hard_cap))
 
 
-def resolve_intake_concurrency(static_ceiling: int, *, overlay: str = "") -> int:
+def resolve_intake_concurrency(static_ceiling: int) -> int:
     """The live intake limit: the resource loop's answer, else *static_ceiling* verbatim.
 
     The static setting is the FALLBACK, not a bound — the whole point is that the box's
     own reading may be higher than a number chosen in advance. It is returned unchanged
-    whenever the adaptation has nothing trustworthy to say: the kill-switch is off, no
-    value has ever been computed, the ledger row is unreadable, or the last reading has
-    aged past :data:`ADAPTIVE_FRESHNESS`.
+    whenever the adaptation has nothing trustworthy to say: no value has ever been
+    computed, the ledger row is unreadable, or the last reading has aged past :data:`ADAPTIVE_FRESHNESS`.
     """
     from django.utils import timezone  # noqa: PLC0415 — deferred: Django app-registry read at call time
 
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: avoids a config import cycle
     from teatree.core.models.resource_pressure_marker import ResourcePressureMarker  # noqa: PLC0415 — deferred: ORM
 
     try:
-        if not get_effective_settings(overlay or None).adaptive_intake_concurrency_enabled:
-            return static_ceiling
         marker = ResourcePressureMarker.objects.filter(singleton=True).first()
     except Exception:
         logger.exception("adaptive intake concurrency unreadable — keeping the static ceiling")

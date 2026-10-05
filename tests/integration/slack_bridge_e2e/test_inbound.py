@@ -1,6 +1,4 @@
-"""Inbound bridge: REST polling → row → drain → additionalContext."""
-
-from pathlib import Path
+"""Inbound bridge: REST polling → a PendingChatInjection row for the Slack answer loop."""
 
 import pytest
 from inline_snapshot import snapshot
@@ -8,18 +6,14 @@ from inline_snapshot import snapshot
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.models import PendingChatInjection
 from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
-from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _own_loop
+from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = [pytest.mark.django_db, pytest.mark.integration]
 
 
 class TestInboundBridgeEndToEnd:
-    """Slack DM → REST poll → row → ``UserPromptSubmit`` drain → stdout.
-
-    Each test runs the real ``SlackBotBackend.fetch_dms`` against the
-    fake transport, then the real scanner, then the real hook handler.
-    """
+    """Slack DM → REST poll → row: the real ``fetch_dms`` over the fake transport, then the real scanner."""
 
     def test_dm_lands_as_pending_chat_injection_row(self, transport: FakeSlackTransport) -> None:
         """RED if ``SlackBotBackend.fetch_dms`` REST poll branch is removed.
@@ -95,64 +89,6 @@ class TestInboundBridgeEndToEnd:
         SlackDmInboundScanner(backend=backend, overlay="demo").scan()
 
         assert PendingChatInjection.objects.get().channel == snapshot("D-USER")
-
-    def test_userpromptsubmit_drain_injects_additional_context(
-        self,
-        transport: FakeSlackTransport,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """RED if the drain handler stops printing the additionalContext block.
-
-        Guard: removing the ``print(...)`` line in
-        ``handle_inject_pending_chat`` (or removing the ``row.consume()``
-        call) breaks one of the two asserts. The stdout shape is
-        captured via inline-snapshot — a refactor that changes the
-        emitted line format will surface as a snapshot diff.
-        """
-        from hooks.scripts.hook_router import handle_inject_pending_chat  # noqa: PLC0415
-
-        transport.default_responses["conversations.history"] = {
-            "ok": True,
-            "messages": [{"ts": "1700000000.0001", "user": "U_HUMAN", "text": "drain me"}],
-        }
-        backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-        SlackDmInboundScanner(backend=backend, overlay="").scan()
-        _own_loop("owner", monkeypatch, tmp_path)
-
-        handle_inject_pending_chat({"session_id": "owner"})
-
-        out = capsys.readouterr().out
-        assert out == snapshot("""\
-You have 1 new Slack DM reply(ies) from the user:
-User replied on Slack at 1700000000.0001: drain me
-""")
-        assert PendingChatInjection.objects.get().consumed_at is not None
-
-    def test_consumed_row_not_redrained_on_second_session(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """RED if ``PendingChatInjection.consume`` stops gating on ``consumed_at``.
-
-        Guard: removing the ``consumed_at__isnull=True`` filter in
-        ``consume()`` lets the second drain re-emit the message, which
-        re-injects an already-handled DM into the agent.
-        """
-        from hooks.scripts.hook_router import handle_inject_pending_chat  # noqa: PLC0415
-
-        PendingChatInjection.record(channel="D-USER", slack_ts="1.0", text="once-only", overlay="")
-        _own_loop("session-A", monkeypatch, tmp_path)
-        handle_inject_pending_chat({"session_id": "session-A"})
-        capsys.readouterr()  # drain stdout
-
-        _own_loop("session-B", monkeypatch, tmp_path)
-        handle_inject_pending_chat({"session_id": "session-B"})
-
-        assert capsys.readouterr().out == snapshot("")
 
     def test_scanner_overpoll_does_not_emit_duplicate_signals(self, transport: FakeSlackTransport) -> None:
         """RED if ``SlackDmInboundScanner`` re-emits signals for already-recorded ``ts``.

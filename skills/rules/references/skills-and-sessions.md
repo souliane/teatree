@@ -6,7 +6,7 @@ The full text of the `/t3:rules` sections on loading skills, reading the canonic
 
 _Adapted from [superpowers/using-superpowers](https://github.com/obra/superpowers)._
 
-When a skill might apply — even a 1% chance — **invoke it BEFORE responding, exploring, or asking clarifying questions.** The `UserPromptSubmit` hook suggests skills; you must load every suggestion. If the hook doesn't fire, pick the right skill yourself.
+When a skill might apply — even a 1% chance — **invoke it BEFORE responding, exploring, or asking clarifying questions.** The SessionStart hook suggests skills; you must load every suggestion. If the hook doesn't fire, pick the right skill yourself.
 
 **Stop rationalizing.** These thoughts mean you're skipping a skill:
 

@@ -19,7 +19,7 @@ from django.utils import timezone
 
 from teatree.core.telemetry.admission import record_factory_issue
 from teatree.loop.scanners.clear_stall_lookup import live_pr_state_reader
-from teatree.loop.self_improve.actions import ActionResult, run_action_ladder
+from teatree.loop.self_improve.actions import ActionResult, OwnerAlertDelivery, run_action_ladder
 from teatree.loop.self_improve.budget import (
     DEFAULT_SPAWN_CAP_WINDOW_SECONDS,
     BudgetVerdict,
@@ -131,7 +131,7 @@ class DeliveryRoutes:
     """One injected delivery boundary for alerts and repair ownership."""
 
     messaging: "MessagingBackend | None" = None
-    owner_alert: Callable[[DetectorReport, "SelfImproveFiring | None"], bool] | None = None
+    owner_alert: Callable[[DetectorReport, "SelfImproveFiring | None"], OwnerAlertDelivery | bool] | None = None
     overlay_name: str | None = None
 
 

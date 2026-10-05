@@ -1,22 +1,20 @@
 """The IMPLEMENT phase — synthetic mechanism ticket + normal maker pipeline (north-star PR-7).
 
-Cloned from :func:`teatree.loops.outer_loop.implement.schedule_experiment_fix`: an
-ADMITTED directive whose sketch is a ``setting_policy_gate`` anchors an ``AUTHOR``
-``Ticket`` on a unique synthetic issue URL and rides :meth:`Ticket.schedule_coding`
-— the SAME isolated-worktree → plan gate → design/quality critic → cold review →
+An ADMITTED directive whose sketch is a ``setting_policy_gate`` anchors an ``AUTHOR``
+``Ticket`` on a unique synthetic issue URL and rides :meth:`Ticket.schedule_implementing`
+— planning first, then the SAME isolated-worktree → plan gate → design/quality critic → cold review →
 critic-gated merge keystone every ticket uses. The self-modification code is held
 to the clean bar by those gates for free; the directive loop gains ZERO new merge
 authority. ``extra["directive_id"]`` links the ticket back so the directive-scoped
 plan gates (PR-3's ``mechanism_placement``) key on it.
 
-The admission baseline is snapshotted here (mirroring the outer loop's propose-time
-baseline) so VERIFYING's no-collateral-regression evidence has a reference.
+The admission baseline is snapshotted here so VERIFYING's no-collateral-regression evidence has a reference.
 """
 
 from teatree.core.models import Directive, FactoryScoreSnapshot
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
-from teatree.loops.outer_loop.score import read_score
+from teatree.loops.shared.score import read_score
 from teatree.utils.url_slug import SYNTHETIC_LOOP_UMBRELLA_URL
 
 #: The standing north-star self-modification umbrella every directive's synthetic
@@ -36,11 +34,8 @@ def implementation_brief(directive: Directive) -> str:
     """The implementer's brief — built ONLY from the ratified, sanitized fields (#116).
 
     The implementer-never-refetches guarantee: the brief is the ``constraint_statement``
-    (the ratified constraint) or, absent that, ``raw_text``. For an ambient directive
-    ``raw_text`` is only ever the schema-validated candidate the ``directive_candidate_gate``
-    recorder minted (the ambient raw-mint path is disabled — the scanner never puts
-    ``source_event.body`` on a ``Directive``), never the raw attacker text. So the tooled
-    implementer works from sanitized text by construction. Reading
+    (the ratified constraint) or, absent that, ``raw_text``. The ambient raw-mint
+    path is disabled: the scanner never puts ``source_event.body`` on a ``Directive``. Reading
     ``directive.source_event`` here would reintroduce the trifecta; this function
     deliberately never does.
     """
@@ -58,11 +53,12 @@ def schedule_directive_implementation(
     *,
     umbrella_url: str = DIRECTIVE_IMPL_UMBRELLA_URL,
 ) -> Task | None:
-    """Anchor the directive's synthetic mechanism ticket + schedule its coding task.
+    """Anchor the directive's synthetic mechanism ticket + schedule its implementation, planned first.
 
     Idempotent per directive (the synthetic issue URL dedups); snapshots the
     admission baseline and transitions the directive ``ADMITTED`` → ``IMPLEMENTING``.
-    Returns the scheduled ``Task`` (``None`` when a coding task already exists).
+    Returns the scheduled ``Task`` (``None`` once the ticket has left NOT_STARTED or
+    already carries a coding task).
     """
     issue_url = f"{umbrella_url}#directive-impl={directive.pk}"
     short = implementation_brief(directive)
@@ -74,7 +70,7 @@ def schedule_directive_implementation(
     task: Task | None = None
     already_scheduled = Task.objects.pending_in_phase("coding").filter(ticket=ticket).exists()
     if not already_scheduled and ticket.state == Ticket.State.NOT_STARTED:
-        task = ticket.schedule_coding()
+        task = ticket.schedule_implementing("coding", reason=f"Directive {directive.pk} mechanism — {short}")
     directive.begin_implementation(ticket, baseline_snapshot=_baseline_snapshot(directive))
     return task
 

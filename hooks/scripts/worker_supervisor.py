@@ -27,7 +27,7 @@ import sys
 from collections.abc import Callable
 
 # Alias the bare and ``hooks.scripts.`` identities so the live hook and a test
-# importing either name operate on ONE module object (mirrors loop_registrations).
+# importing either name operate on ONE module object.
 sys.modules.setdefault("worker_supervisor", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.worker_supervisor", sys.modules[__name__])
 

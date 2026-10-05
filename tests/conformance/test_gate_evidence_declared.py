@@ -11,15 +11,37 @@ the matcher against a hand-built list.
 """
 
 import dataclasses
+from datetime import date
 
 import pytest
 
 from teatree.cli import app, register_overlay_commands
 from teatree.cli_reference import command_groups, command_paths
 from teatree.config.feature_flags import DURABLE_GATE_SETTINGS, FEATURE_FLAGS
-from teatree.config.gate_evidence import GATE_EVIDENCE, declaration_faults, ships_off, undeclared_gates
+from teatree.config.gate_evidence import (
+    GATE_EVIDENCE,
+    ActivationIntent,
+    GateEvidence,
+    ObservableKind,
+    declaration_faults,
+    ships_off,
+    undeclared_gates,
+)
 from teatree.config.schema import shipped_defaults
 from teatree.eval.skill_command_validity import citation_resolves, iter_backticked_t3_commands
+
+
+def _sample_entry() -> GateEvidence:
+    return GateEvidence(
+        setting="fixture_gate_enabled",
+        off_value=False,
+        kind=ObservableKind.MODEL,
+        target="core.Ticket",
+        shipped=date(2026, 1, 1),
+        intent=ActivationIntent.STAGED,
+        rationale="fixture #4189",
+        satisfier="`t3 <overlay> ticket plan`",
+    )
 
 
 @pytest.fixture(scope="module")
@@ -62,7 +84,7 @@ class TestEveryDefaultOffGateDeclaresItsEvidence:
         assert undeclared_gates(with_new_gate, governed | {"require_widget_attestation"}) == ()
 
     def test_a_new_default_off_mode_gate_is_refused(self, shipped: dict[str, object], governed: set[str]) -> None:
-        """A tri-state posture ships off as a NAMED value, the shape ``critic_gate_mode`` has."""
+        """A tri-state posture can ship off as a named value."""
         with_new_gate = {**shipped, "widget_gate_mode": "off"}
         missing = undeclared_gates(with_new_gate, governed | {"widget_gate_mode"})
         assert missing == ("widget_gate_mode",)
@@ -103,7 +125,7 @@ class TestTheDeclarationStaysHonest:
 
     def test_an_entry_with_no_satisfier_is_refused(self) -> None:
         """The RED control for the fault: a blank satisfier is a declaration nobody can act on."""
-        blank = dataclasses.replace(GATE_EVIDENCE["require_executed_repro"], satisfier="   ")
+        blank = dataclasses.replace(_sample_entry(), satisfier="   ")
         faults = declaration_faults({blank.setting: blank})
         assert [fault for fault in faults if "satisfier is empty" in fault] != []
 

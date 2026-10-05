@@ -35,7 +35,6 @@ class NotifyReason(enum.StrEnum):
     NONE = ""
     INTERNAL_AUDIENCE = "internal_audience"
     ROUTED_TO_PULL = "routed_to_pull"
-    FEATURE_DISABLED = "feature_disabled"
     ALREADY_SENT = "already_sent"
     LEDGER_UNAVAILABLE = "ledger_unavailable"
     NO_MESSAGING_BACKEND = "no_messaging_backend"
@@ -56,7 +55,6 @@ _REASON_DETAIL: dict[NotifyReason, str] = {
         "a status signal, not a decision — recorded for the pulled surface, never DM'd; "
         "read it with `t3 <overlay> notify digest`"
     ),
-    NotifyReason.FEATURE_DISABLED: "the notify_user feature is disabled in settings",
     NotifyReason.ALREADY_SENT: "already delivered under this idempotency key",
     NotifyReason.LEDGER_UNAVAILABLE: "the BotPing ledger was unreadable (database error)",
     NotifyReason.NO_MESSAGING_BACKEND: (

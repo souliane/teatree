@@ -29,7 +29,7 @@ _INNOCENT_PROMPTS = [
     "Run `t3 worker status` and report whether the fleet is alive.",
     "Check the backlog and pick the next ticket.",
     "t3 loop status",
-    "t3 loop enable dispatch",
+    "t3 loop resume dispatch",
     "",
 ]
 
@@ -87,7 +87,7 @@ class TestDenyReason:
         reason = deny_reason(finding)
 
         assert "t3 worker" in reason
-        assert "t3 loop enable" in reason
+        assert "t3 loop resume" in reason
         assert "cron-loop-ok" in reason
 
     def test_reactive_reason_names_the_slot_command(self) -> None:

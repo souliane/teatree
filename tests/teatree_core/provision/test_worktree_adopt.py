@@ -16,6 +16,7 @@ from django.test import TestCase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.provision.worktree_adopt import (
     NotAWorktreeError,
+    UnreachableGitdirError,
     WorktreeAdoptError,
     adopt_worktree_for_ticket,
     reopen_ticket_for_followup,
@@ -30,10 +31,47 @@ class TestAdoptWorktreeForTicket(TestCase):
         self._tmp = tmp_path
 
     def _make_worktree(self, name: str = "backend") -> Path:
+        """A linked worktree whose gitdir EXISTS — what `git worktree add` leaves behind.
+
+        The administrative dir is real because adoption now refuses a dangling
+        pointer: a fixture that skipped it was simulating the
+        broken shape while asserting the healthy one's behaviour.
+        """
+        gitdir = self._tmp / "clone" / ".git" / "worktrees" / name
+        gitdir.mkdir(parents=True)
         wt = self._tmp / name
         wt.mkdir()
-        (wt / ".git").write_text("gitdir: /some/.git/worktrees/backend\n")
+        (wt / ".git").write_text(f"gitdir: {gitdir}\n")
         return wt
+
+    def _make_unreachable_worktree(self, name: str = "backend") -> Path:
+        """A linked worktree whose gitdir is absent in THIS venue (amendment 2026-09-21)."""
+        wt = self._tmp / name
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: /elsewhere/backend/.git/worktrees/{name}\n")
+        return wt
+
+    def test_refuses_a_checkout_whose_gitdir_is_unreachable_here(self) -> None:
+        # Its `.git` is a file and `git` answers nothing, so the pre-#96 refusal was
+        # "not on a feature branch (branch=<none>)" — accurate, wrong cause, and it
+        # sent the operator auditing the branch instead of the missing mount.
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.MERGED)
+        wt = self._make_unreachable_worktree()
+
+        with (
+            patch(_BRANCH, return_value=""),
+            pytest.raises(UnreachableGitdirError, match="gitdir"),
+        ):
+            adopt_worktree_for_ticket(ticket, cwd=str(wt))
+        assert not Worktree.objects.exists()
+
+    def test_unreachable_gitdir_refusal_names_the_pointer(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.MERGED)
+        wt = self._make_unreachable_worktree()
+
+        with patch(_BRANCH, return_value=""), pytest.raises(UnreachableGitdirError) as caught:
+            adopt_worktree_for_ticket(ticket, cwd=str(wt))
+        assert "/elsewhere/backend/.git/worktrees/backend" in str(caught.value)
 
     def test_creates_row_for_terminal_ticket(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.MERGED)
@@ -67,6 +105,9 @@ class TestAdoptWorktreeForTicket(TestCase):
         # Subtyping is what keeps every existing `except WorktreeAdoptError`
         # catching the refusal it always caught.
         assert issubclass(NotAWorktreeError, WorktreeAdoptError)
+
+    def test_unreachable_gitdir_error_is_a_worktree_adopt_error(self) -> None:
+        assert issubclass(UnreachableGitdirError, WorktreeAdoptError)
 
     def test_refuses_main_clone_dot_git_directory(self) -> None:
         # A main clone keeps .git as a DIRECTORY — the #752 main-clone refusal.

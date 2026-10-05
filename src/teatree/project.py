@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from teatree.paths import resolve_main_clone
+from teatree.paths import PathHelpers, resolve_main_clone
 
 
 def find_project_root() -> Path | None:
@@ -15,7 +15,10 @@ def find_project_root() -> Path | None:
     """
     current = Path(__file__).resolve().parent
     while current != current.parent:
-        if (current / ".git").exists() and (current / "pyproject.toml").is_file():
-            return resolve_main_clone(current) or current
+        if (current / "pyproject.toml").is_file():
+            if PathHelpers.is_baked_generation_root(current):
+                return current
+            if (current / ".git").exists():
+                return resolve_main_clone(current) or current
         current = current.parent
     return None

@@ -12,19 +12,16 @@ declared exactly once, where the payload that makes it that class already lives.
 data here would have created the second source B11 exists to remove.
 
 Two things follow from being a view, and both are pinned by
-``tests/config/test_setting_taxonomy.py``. A key can hold SEVERAL classes at once — ten keys
-are both a gate and a feature flag, so a single-class answer would be a lie. And
+``tests/config/test_setting_taxonomy.py``. A key can hold SEVERAL classes at once, so a
+single-class answer would be a lie. And
 :attr:`SettingClass.PLAIN` is computed, never declared: it is what no registry claimed, so a
-key cannot be plain and something else, and nobody maintains a list of the 191 ordinary keys.
+key cannot be plain and something else, and nobody maintains a list of ordinary keys.
 
-The domain is every key that EXISTS, which is wider than the live union: a retired key is
-deliberately absent from ``ALL_KNOWN_CONFIG_SETTINGS`` (it names no live field), so a view
-over the live union alone would answer "unknown" for exactly the keys whose whole job is to
-answer for themselves.
+The domain is every live key in ``ALL_KNOWN_CONFIG_SETTINGS``.
 
 B9's read level is NOT here. Levels 1-2 are the schedule and preset selectors, and level 3 is
 loop ownership — which is structure the settings-to-loop map builds, not a per-key label. A
-``level`` field would answer "other" for 284 of 286 keys today, which is a field with no
+``level`` field would answer "other" for nearly every key, which is a field with no
 reader rather than a classification.
 """
 
@@ -37,7 +34,6 @@ from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag
 from teatree.config.gate_evidence import GATE_EVIDENCE, GateEvidence
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_KEYS
-from teatree.config.retired_settings import RETIRED_SETTINGS, RetiredSetting
 from teatree.config.secret_settings import is_pass_key_setting
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 
@@ -54,7 +50,7 @@ def is_gate_switch(key: str) -> bool:
 
 
 class UnclassifiedSettingError(KeyError):
-    """Raised for a key that is neither a live setting nor a recorded retirement."""
+    """Raised for a key that is not a live setting."""
 
 
 class SettingClass(StrEnum):
@@ -75,7 +71,6 @@ class SettingClass(StrEnum):
     SAFETY_POSTURE = "safety-posture"
     COLD = "cold"
     REGISTRY = "registry"
-    RETIRED = "retired"
     PLAIN = "plain"
 
 
@@ -87,21 +82,16 @@ class SettingTaxon:
     classes: frozenset[SettingClass]
     flag: FeatureFlag | None = None
     gate: GateEvidence | None = None
-    retirement: RetiredSetting | None = None
 
 
 @cache
 def taxonomy() -> dict[str, SettingTaxon]:
-    """Every key that exists — live or retired — classified from the registries that own it."""
-    retirements = {entry.key: entry for entry in RETIRED_SETTINGS}
+    """Every live key classified from the registries that own it."""
     cold = set(COLD_SETTINGS) | set(COLD_HOOK_SETTINGS)
-    return {
-        key: _taxon(key, retirements.get(key), cold=key in cold)
-        for key in sorted(set(ALL_KNOWN_CONFIG_SETTINGS) | set(retirements))
-    }
+    return {key: _taxon(key, cold=key in cold) for key in sorted(ALL_KNOWN_CONFIG_SETTINGS)}
 
 
-def _taxon(key: str, retirement: RetiredSetting | None, *, cold: bool) -> SettingTaxon:
+def _taxon(key: str, *, cold: bool) -> SettingTaxon:
     flag = FEATURE_FLAGS.get(key)
     gate = GATE_EVIDENCE.get(key)
     claimed = {
@@ -111,18 +101,17 @@ def _taxon(key: str, retirement: RetiredSetting | None, *, cold: bool) -> Settin
         SettingClass.SAFETY_POSTURE: key in SAFETY_POSTURE_KEYS,
         SettingClass.COLD: cold,
         SettingClass.REGISTRY: key in REGISTRY_KEYS,
-        SettingClass.RETIRED: retirement is not None,
     }
     classes = {kind for kind, held in claimed.items() if held} or {SettingClass.PLAIN}
-    return SettingTaxon(key, frozenset(classes), flag=flag, gate=gate, retirement=retirement)
+    return SettingTaxon(key, frozenset(classes), flag=flag, gate=gate)
 
 
 def classify(key: str) -> SettingTaxon:
-    """*key*'s governance classes, or a loud refusal naming the two domains it is absent from."""
+    """*key*'s governance classes, or a loud refusal when it is unknown."""
     try:
         return taxonomy()[key]
     except KeyError:
-        msg = f"{key!r} is neither a live config setting nor a recorded retirement"
+        msg = f"{key!r} is not a live config setting"
         raise UnclassifiedSettingError(msg) from None
 
 

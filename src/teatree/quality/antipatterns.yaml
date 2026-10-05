@@ -12,7 +12,7 @@
 #   anti_pattern      what NOT to do
 #   preferred_pattern what to do instead
 #   grep_hint         regex; REQUIRED iff detection == greppable, forbidden otherwise
-#   consumers         architecture-design | ac-reviewing-codebase | linter | eval
+#   consumers         architecture-design | architectural-review | linter | eval
 #   refs              issue slugs / provenance pointers
 #   linter            scripts/hooks/*.py (or a real tool) that mechanizes it, or null
 #   eval_invariant    transcript_conformance invariant id, or null
@@ -35,7 +35,7 @@
     source-of-truth normalization function; never strip down to make a
     comparison succeed.
   grep_hint: '\.split\(":"\)\[-1\]|\.rsplit\(":", ?1\)\[-1\]'
-  consumers: [architecture-design, ac-reviewing-codebase, linter]
+  consumers: [architecture-design, architectural-review, linter]
   refs: ["arch-design-check-8", "identity-normalization-skill-note"]
   linter: null
   eval_invariant: null
@@ -51,7 +51,7 @@
   preferred_pattern: >-
     normalize(normalize(x)) == normalize(x) for every input; assert idempotence
     in a test against the real corpus of forms.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["arch-design-check-8"]
   linter: null
   eval_invariant: null
@@ -68,7 +68,7 @@
     Decide identity from the canonical string form alone; keep matching pure
     and platform-independent. Read the filesystem only to act, never to decide
     identity.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["arch-design-check-8"]
   linter: null
   eval_invariant: null
@@ -89,7 +89,7 @@
     A boundary-protecting gate fails CLOSED — an error denies, and so does an
     empty the gate cannot prove is genuine. Only liveness paths fail open, and
     never the public-egress leak gate.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["enforcement-gate-family"]
   linter: null
   eval_invariant: null
@@ -105,7 +105,7 @@
   preferred_pattern: >-
     Route liveness denials through a shared fail-open chokepoint with an
     always-allow-listed self-rescue command and an out-of-repo kill-switch.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["enforcement-gate-family", "gate-self-rescue-note"]
   linter: null
   eval_invariant: null
@@ -123,7 +123,7 @@
     Classify by EFFECTIVE HTTP method — last -X/--method wins; body/field flags
     default to POST — mirroring the transcript-conformance effective-method
     classifier.
-  consumers: [architecture-design, ac-reviewing-codebase, eval]
+  consumers: [architecture-design, architectural-review, eval]
   refs: ["effective-method-classifier", "gh-glab-last-wins-finding"]
   linter: null
   eval_invariant: no_raw_review_post
@@ -143,7 +143,7 @@
     When their requirements differ, add a strict variant for the caller that
     needs it, leave the shared predicate as it was, and pin the untouched caller
     with a test.
-  consumers: [architecture-design, ac-reviewing-codebase, eval]
+  consumers: [architecture-design, architectural-review, eval]
   refs: ["arch-design-check-9", "souliane/teatree#4880"]
   linter: null
   eval_invariant: null
@@ -162,7 +162,7 @@
     delivered to the handler's event); a handler whose tool is absent from every
     matcher is xfail-tracked as a known phantom, never silently shipped.
   grep_hint: 'phantom_reason\s*=\s*\w'
-  consumers: [architecture-design, ac-reviewing-codebase, eval]
+  consumers: [architecture-design, architectural-review, eval]
   refs: ["gate-liveness-corpus", "phantom-gate-roster"]
   linter: gate-liveness
   eval_invariant: null
@@ -181,7 +181,7 @@
     Read the LIVE value, not the default in the source, and assert reachability
     — a test or liveness row proving the path executes in production
     configuration. A feature that cannot be shown to run is not shipped.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["souliane/teatree#4215", "gate-liveness-corpus"]
   linter: null
   eval_invariant: null
@@ -203,7 +203,7 @@
     one implementation fills meaningfully into that implementation, not on the
     base. When an existing surface would have to widen to fit one caller, change
     the caller.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["minimal-configurable-surface"]
   linter: null
   eval_invariant: null
@@ -227,7 +227,7 @@
     flagged" and NAMES the artifact that now exists; a refusal that leaves an
     artifact behind must say so. The regression test asserts the write did not
     happen, not merely that the verdict was a refusal.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["souliane/teatree#4151", "souliane/teatree#4144", "resilience-invariants"]
   linter: null
   eval_invariant: null
@@ -246,7 +246,7 @@
     chokepoint every path funnels through, refusing on anything it cannot prove
     disposable. A new call site then inherits the guard instead of re-deriving
     it.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["souliane/teatree#4215", "enforcement-gate-family"]
   linter: null
   eval_invariant: null
@@ -265,7 +265,7 @@
     the secret store vouches for, or a durable row written by a different actor.
     Where a caller-supplied id is unavoidable, refuse the ones the acting agent
     could be (maker ids, loop ids) rather than trusting the string.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["souliane/teatree#4215", "souliane/teatree#1967"]
   linter: null
   eval_invariant: null
@@ -283,7 +283,7 @@
   preferred_pattern: >-
     Every test names the observable contract and asserts it; if there is nothing
     to assert, there is no test.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["anti-vacuous-eval"]
   linter: null
   eval_invariant: null
@@ -300,7 +300,7 @@
   preferred_pattern: >-
     Baselines are captured deliberately and reviewed; the test asserts against a
     committed baseline and never rewrites it during a normal run.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["anti-vacuous-eval", "baseline-auto-accept-redcard"]
   linter: null
   eval_invariant: null
@@ -320,7 +320,7 @@
     Exercise the real path — Django test client, call_command, a real git repo
     under tmp_path, an E2E — and mock only unstoppable externals: network, clock,
     credential stores, third-party subprocesses.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["anti-vacuous-eval", "test-writing-doctrine"]
   linter: null
   eval_invariant: null
@@ -341,7 +341,7 @@
     red, then make it — revert the fix, break the invariant, plant the
     violation — and observe the red. A guard no mutation can turn red is itself
     the finding, not proof of the code it wraps.
-  consumers: [architecture-design, ac-reviewing-codebase, eval]
+  consumers: [architecture-design, architectural-review, eval]
   refs: ["souliane/teatree#4215", "anti-vacuous-eval"]
   linter: null
   eval_invariant: null
@@ -358,7 +358,7 @@
   preferred_pattern: >-
     Fat models, thin views: domain behaviour lives as methods on the model and
     reusable query logic on a custom QuerySet (see ac-django antipatterns §22).
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["ac-django-antipatterns-22"]
   linter: null
   eval_invariant: null
@@ -374,7 +374,7 @@
   preferred_pattern: >-
     Use DecimalField (with explicit max_digits/decimal_places) for monetary
     values; consider a money type that carries the currency code.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["ac-django-antipatterns-22"]
   linter: null
   eval_invariant: null
@@ -396,7 +396,7 @@
     Keep GET safe and idempotent; perform mutations under POST/PUT/PATCH/DELETE
     and enforce with @require_POST / @require_http_methods.
   grep_hint: '@require_GET'
-  consumers: [architecture-design, ac-reviewing-codebase, linter]
+  consumers: [architecture-design, architectural-review, linter]
   refs: ["ac-django-antipatterns-22"]
   linter: null
   eval_invariant: null
@@ -413,7 +413,7 @@
     Call domain behaviour explicitly from a model method; reserve signals for
     integrating third-party app events.
   grep_hint: '@receiver\(\s*post_save|@receiver\(\s*pre_save|post_save\.connect\(|pre_save\.connect\('
-  consumers: [architecture-design, ac-reviewing-codebase, linter]
+  consumers: [architecture-design, architectural-review, linter]
   refs: ["ac-django-antipatterns-22"]
   linter: null
   eval_invariant: null
@@ -439,7 +439,7 @@
     whose caller owns the transaction declares that contract with a same-line
     `# select-for-update: caller-atomic` pragma.
   grep_hint: 'select_for_update\([^)]*\b(?:skip_locked|nowait)\b'
-  consumers: [architecture-design, ac-reviewing-codebase, linter]
+  consumers: [architecture-design, architectural-review, linter]
   refs: ["souliane/teatree#4226", "souliane/teatree#804", "786-b1-sqlite-lesson"]
   linter: select-for-update-audit
   eval_invariant: null
@@ -457,7 +457,7 @@
     Split by responsibility into cohesive units; prefer methods on classes over
     module-level functions and typed dataclasses over dict[str, object]. The
     LOC/function thresholds are mechanized by check_module_health over the diff.
-  consumers: [architecture-design, ac-reviewing-codebase, linter]
+  consumers: [architecture-design, architectural-review, linter]
   refs: ["module-health-hook"]
   linter: check_module_health
   eval_invariant: null
@@ -478,7 +478,7 @@
     A file lives in the package whose concern it shares, and a cohesive set of
     siblings serving one concern becomes its own subpackage. Every finding names
     the concrete target path so the fix needs no re-derivation.
-  consumers: [ac-reviewing-codebase, architecture-design]
+  consumers: [architectural-review, architecture-design]
   refs: ["file-hierarchy-check", "module-health-hook"]
   linter: null
   eval_invariant: null
@@ -503,7 +503,7 @@
     not flattening: the owner holds the invariant and may keep deliberately
     distinct strategies distinct, so an owner that erased a deliberate difference
     is the same finding pointed the other way.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["one-place-test", "file-hierarchy-check"]
   linter: null
   eval_invariant: null
@@ -520,7 +520,7 @@
     Respect the tach-enforced DAG; break a backwards edge with a callback,
     registration, or Protocol before implementing the feature. tach decides
     direction from the declared edges — a regex over imports cannot.
-  consumers: [architecture-design, ac-reviewing-codebase, linter]
+  consumers: [architecture-design, architectural-review, linter]
   refs: ["module-dependency-graph"]
   linter: tach
   eval_invariant: null
@@ -536,7 +536,7 @@
   preferred_pattern: >-
     Implement the OverlayBase hook / Protocol method; let the platform own the
     behaviour uniformly across overlays.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["overlay-extension-points"]
   linter: null
   eval_invariant: null
@@ -553,7 +553,7 @@
   preferred_pattern: >-
     Page to exhaustion (or assert the result fits one page); never let a
     truncated read masquerade as the full set.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["silent-truncation-note"]
   linter: null
   eval_invariant: null
@@ -574,7 +574,7 @@
     A mechanical handler is held to the same rule — _execute_mechanical isolates
     each one and records its raise, so a handler that catches its own failure
     into a log line hides a backup or refresh that fails on every tick.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["loop-topology", "fault-isolation-note"]
   linter: null
   eval_invariant: null
@@ -592,7 +592,7 @@
     Do the I/O outside the transaction and take the write lock only to persist
     the result — read, call, then open a short atomic block. A transaction's
     body contains no call whose duration a remote party decides.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["souliane/teatree#4215", "loop-topology"]
   linter: null
   eval_invariant: null
@@ -616,7 +616,7 @@
     single deduped defect report a human must resolve, labelled needs-triage:
     that is the agent-filed path, not a candidate stream, and the dream
     binding-reconciliation issue (Decision-3) is that case.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["souliane/teatree#1391", "loop-topology", "memory-consolidation"]
   linter: null
   eval_invariant: null
@@ -635,7 +635,7 @@
     UNKNOWN is a third value and it propagates: a read that failed says so,
     distinctly from a read that returned nothing, and the consumer decides what
     to do with the unknown rather than inheriting a fabricated negative.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["souliane/teatree#4041", "souliane/teatree#4215"]
   linter: null
   eval_invariant: null
@@ -653,7 +653,7 @@
     The exit code carries the verdict the output claims: raise SystemExit(N), or
     route a structured refusal through the seam that restores the non-zero exit
     on the argv path. A green exit means the work succeeded.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["souliane/teatree#4215", "management-command-exit-contract"]
   linter: null
   eval_invariant: null
@@ -671,7 +671,7 @@
     Every claim carries a lease and a heartbeat, and a reaper acts on the
     expiry; the absence of progress is itself a signal something emits, not a
     silence someone has to notice.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["souliane/teatree#4215", "resilience-invariants"]
   linter: null
   eval_invariant: null
@@ -689,7 +689,7 @@
     A fallback is a sanctioned secondary path that records it was taken
     (log/signal/metric); silent substitution that masks the primary failure is
     the anti-pattern.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["resilience-invariants"]
   linter: null
   eval_invariant: null
@@ -705,7 +705,7 @@
   preferred_pattern: >-
     Name ONE authoritative store; every other copy is a derived cache that
     refreshes from the authority and is never written independently.
-  consumers: [architecture-design, ac-reviewing-codebase]
+  consumers: [architecture-design, architectural-review]
   refs: ["resilience-invariants", "single-source-of-truth-note"]
   linter: null
   eval_invariant: null
@@ -727,7 +727,7 @@
     than one line is a refactor signal — rename or split the code instead of
     explaining it. Adjacent one-liners are fine when each states a separate
     point; rationale, tickets and history belong in the commit message.
-  consumers: [ac-reviewing-codebase, architecture-design]
+  consumers: [architectural-review, architecture-design]
   refs: ["comments-as-code"]
   linter: check_comment_density
   eval_invariant: null
@@ -747,7 +747,7 @@
     does is the code's own job. A section describing a mechanism the change
     touched is updated or deleted in the same change, and depth past
     architectural overview moves to a linked appendix.
-  consumers: [ac-reviewing-codebase, architecture-design]
+  consumers: [architectural-review, architecture-design]
   refs: ["comments-as-code", "keep-blueprint-tight"]
   linter: null
   eval_invariant: null

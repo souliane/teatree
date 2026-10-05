@@ -97,7 +97,7 @@ def _advance_with(ticket: Ticket, make_artifact: "Callable[[], PlanArtifact]") -
 
     ``ticket.plan()``'s FSM source is exclusively ``Ticket.State.WORK_STARTED``; the
     plan-dispatch gate's satisfying signal
-    (``plan_dispatch_gate.unplanned_dispatch_refusal``) is the *existence* of a
+    (``plan_decision.plan_missing_refusal``) is the *existence* of a
     ``PlanArtifact``/trivial-skip marker, never the transition itself. Most
     dispatch targets this command actually runs against are already past
     WORK_STARTED (coded/tested/reviewed/etc. — the #4449 class), so unconditionally

@@ -11,9 +11,7 @@ not a code edit. A concrete dated model-id string (``claude-haiku-4-5``,
     ``core/autocompact_advisory.py``'s harness native-1M set, a decoded harness fact
     that is deliberately NOT family-shaped);
 *   ``core/cost.py`` — HISTORICAL usage-record parsing prose (it must keep pricing
-    yesterday's recorded ids);
-*   the eval-corpus scenarios, whose deliberate per-scenario pins are reproducibility
-    choices.
+    yesterday's recorded ids).
 
 Everywhere else — production dispatch, the eval lane, CLI help, docs, workflows —
 must reference an abstract TIER / family alias, or DERIVE from ``TIER_MODELS``.
@@ -73,7 +71,6 @@ _ALLOWLIST: frozenset[str] = frozenset(
         "src/teatree/llm/rate_limits.py",
         "src/teatree/core/autocompact_advisory.py",
         "src/teatree/core/cost.py",
-        "evals/scenarios/e2e_review.yaml",
     }
 )
 

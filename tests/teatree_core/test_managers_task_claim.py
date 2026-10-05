@@ -2,19 +2,22 @@
 
 import itertools
 from collections.abc import Callable
+from contextlib import AbstractContextManager
+from datetime import datetime, timedelta
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 
 import teatree.agents.runner as runner_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core import managers_task_claim
 from teatree.core.claim_liveness import current_owner
 from teatree.core.managers_task_claim import claim_admission_block_reason
-from teatree.core.models import ModeOverride, Session, Task, Ticket
+from teatree.core.models import ModeOverride, Session, Task, Ticket, WorkerGeneration
 from teatree.loop.drain import DrainReport, drain_worker
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -151,6 +154,75 @@ class TestAQuiesceLandingMidClaimWinsNoClaim(TestCase):
             return current_owner()
 
         with patch("teatree.core.managers.current_owner", quiesce_through_the_public_command):
+            assert Task.objects.claim_next_pending(claimed_by="worker-1") is None
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+
+
+_N = "a" * 40
+_N1 = "b" * 40
+
+
+def _in_an_hour() -> datetime:
+    return timezone.now() + timedelta(hours=1)
+
+
+def _running_as(sha: str) -> AbstractContextManager[object]:
+    return patch.dict("os.environ", {"TEATREE_GENERATION": sha})
+
+
+class TestADrainingGenerationRefusesItsOwnClaims(TestCase):
+    def setUp(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        self.task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="test"), phase="coding"
+        )
+        WorkerGeneration.objects.boot(_N).begin_drain(deadline=timezone.now())
+        WorkerGeneration.objects.boot(_N1)
+
+    def test_the_draining_generation_is_refused_by_name(self) -> None:
+        with _running_as(_N):
+            assert claim_admission_block_reason() == "this worker's generation aaaaaaaaaaaa is draining"
+            assert Task.objects.claim_next_pending(claimed_by="worker-1") is None
+
+    def test_the_next_generation_still_claims(self) -> None:
+        with _running_as(_N1):
+            assert Task.objects.claim_next_pending(claimed_by="worker-1") == self.task
+
+    def test_a_legacy_worker_ignores_the_generation_registry(self) -> None:
+        with _running_as(""):
+            assert claim_admission_block_reason() == ""
+
+    def test_an_unregistered_generation_is_admitted(self) -> None:
+        with _running_as("c" * 40):
+            assert claim_admission_block_reason() == ""
+
+
+class TestAGenerationDrainLandingMidClaimWinsNoClaim(TestCase):
+    def setUp(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        self.task = Task.objects.create(
+            ticket=ticket, session=Session.objects.create(ticket=ticket, overlay="test"), phase="coding"
+        )
+        self.generation = WorkerGeneration.objects.boot(_N)
+
+    def test_the_fence_rolls_the_claim_back(self) -> None:
+        def drain_lands() -> tuple[int, str]:
+            WorkerGeneration.objects.get(sha=_N).begin_drain(deadline=_in_an_hour())
+            return current_owner()
+
+        with _running_as(_N), patch("teatree.core.managers.current_owner", drain_lands):
+            assert Task.objects.claim_next_pending(claimed_by="worker-1") is None
+
+        self.task.refresh_from_db()
+        assert self.task.status == Task.Status.PENDING
+
+    def test_an_active_verdict_read_before_a_drain_admits_no_claim_after_it(self) -> None:
+        with _running_as(_N):
+            assert claim_admission_block_reason() == ""
+            self.generation.begin_drain(deadline=_in_an_hour())
+
             assert Task.objects.claim_next_pending(claimed_by="worker-1") is None
 
         self.task.refresh_from_db()

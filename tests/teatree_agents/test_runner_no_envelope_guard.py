@@ -26,7 +26,7 @@ from pydantic_ai.models.test import TestModel
 import teatree.agents.harness as harness_mod
 import teatree.agents.runner as runner_mod
 from teatree.agents.attempt_recorder import record_result_envelope
-from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, is_envelope_refusal
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, is_no_envelope_refusal, is_recorder_refusal
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.runner import TaskUsage, run_agent
 from teatree.core.models import Session, Task, TaskAttempt
@@ -140,11 +140,12 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         with _fake_sdk(_PROSE):
             attempt = run_agent(task, phase="debugging", overlay_skill_metadata={})
 
-        assert is_envelope_refusal(attempt.error), (
+        assert is_no_envelope_refusal(attempt.error), (
             f"the correcting sweep must classify the runner's own refusal; got: {attempt.error!r}"
         )
         # Control: the classifier can say NO — it is not a rubber stamp.
-        assert not is_envelope_refusal("AssertionError: expected 3 got 4")
+        assert not is_no_envelope_refusal("AssertionError: expected 3 got 4")
+        assert not is_recorder_refusal("AssertionError: expected 3 got 4")
 
     def test_evidence_phase_with_no_json_is_diagnosed_as_no_envelope(self) -> None:
         # #3905. `testing` carries an evidence requirement, so an envelope-less run
@@ -183,7 +184,7 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
 
     def test_both_diagnoses_stay_classified_as_envelope_refusals(self) -> None:
         # The consumer contract: `transient_requeue` routes on
-        # `is_envelope_refusal`, so re-diagnosing must not drop either path out
+        # the phase-specific refusal predicates, so re-diagnosing must not drop either path out
         # of the corrective lane.
         session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
         no_json = Task.objects.create(ticket=self.ticket, session=session, phase="testing")
@@ -194,9 +195,10 @@ class TestNoEnvelopeGuardIsLaneAgnostic(TestCase):
         with _fake_sdk('{"summary": "ran them, honest"}'):
             parsed_attempt = run_agent(parsed, phase="testing", overlay_skill_metadata={})
 
-        assert is_envelope_refusal(no_json_attempt.error)
-        assert is_envelope_refusal(parsed_attempt.error)
-        assert not is_envelope_refusal("AssertionError: expected 3 got 4")
+        assert is_no_envelope_refusal(no_json_attempt.error)
+        assert is_recorder_refusal(parsed_attempt.error)
+        assert not is_no_envelope_refusal("AssertionError: expected 3 got 4")
+        assert not is_recorder_refusal("AssertionError: expected 3 got 4")
 
     def test_the_halt_fingerprint_is_stable_across_two_no_envelope_runs(self) -> None:
         # `task_repair` halts on two consecutive IDENTICAL fingerprints, so a

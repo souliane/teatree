@@ -17,13 +17,12 @@ from teatree.config.discovery import (
     _canonical_active_overlay_name,
     _discover_from_manage_py,
     _extract_settings_module,
-    _match_canonical_ep,
     _resolve_ep_project_path,
     discover_active_overlay,
     discover_overlays,
 )
 from teatree.config.e2e_repo import E2ERepo
-from teatree.config.enums import Autonomy, CriticGateMode, MissingIssuePolicy, Mode, PrReviewBackend, SendProxyMode, Wip
+from teatree.config.enums import Autonomy, Mode, PrReviewBackend, Wip
 from teatree.config.feature_flags import (
     DURABLE_GATE_SETTINGS,
     FEATURE_FLAGS,
@@ -94,11 +93,9 @@ __all__ = [
     "AgentHarnessProvider",
     "Autonomy",
     "ColdHookSetting",
-    "CriticGateMode",
     "E2ERepo",
     "FeatureFlag",
     "FlagStage",
-    "MissingIssuePolicy",
     "Mode",
     "MrReminderConfig",
     "OverlayEntry",
@@ -106,7 +103,6 @@ __all__ = [
     "PeerTransport",
     "PeerTunnel",
     "PrReviewBackend",
-    "SendProxyMode",
     "SettingHome",
     "TeaTreeConfig",
     "UserSettings",
@@ -118,7 +114,6 @@ __all__ = [
     "_default_handover_mirror_path",
     "_discover_from_manage_py",
     "_extract_settings_module",
-    "_match_canonical_ep",
     "_overlay_overrides_by_name",
     "_parse_disk_cache_allowlist",
     "_parse_env_bool",

@@ -118,6 +118,11 @@ class TestTmpfsHeadroomCheck:
 class TestTmpfsSizingCheck:
     """``_check_tmp_tmpfs_sizing`` — how big the tmpfs may GET, not how full it is (#4165)."""
 
+    @pytest.fixture(autouse=True)
+    def _no_host_bind(self, tmp_path: Path) -> Iterator[None]:
+        with patch.object(checks_resources, "_HOST_TMP_MOUNT", tmp_path / "absent-host-bind"):
+            yield
+
     def test_warns_when_the_tmpfs_may_claim_a_large_share_of_ram(self, tmp_path: Path, capsys) -> None:
         mounts = _mounts(tmp_path, "tmpfs")
         # The measured box: a 15 GB /tmp on 31 GB of RAM.

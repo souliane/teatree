@@ -24,12 +24,14 @@ import re
 import shlex
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
+from subprocess import CompletedProcess
 from types import SimpleNamespace
 from typing import Final
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -39,7 +41,12 @@ import hooks.scripts.foreign_branch_push_gate as gate
 import hooks.scripts.foreign_branch_push_git as git_probes
 import hooks.scripts.foreign_branch_push_text as refusal_text
 import hooks.scripts.hook_router as router
+from hooks.scripts import hook_budget
+from hooks.scripts.hook_budget import HOOK_CEILING_S
+from teatree.hooks import _repo_visibility, foreign_mr_cli
 from teatree.hooks._repo_visibility import ForgeProbe
+from teatree.utils.run import CommandFailedError, TimeoutExpired
+from tests._hook_clock import HookClock
 
 OUR_EMAIL = "us@example.com"
 THEIR_EMAIL = "colleague@example.com"
@@ -209,6 +216,10 @@ def _event(command: str, cwd: Path) -> dict:
 
 
 def _run(command: str, cwd: Path) -> tuple[bool, dict | None]:
+    if (
+        hook_budget.time is time
+    ):  # a real clock restarts with the hook process; a faked one keeps the start its test set
+        hook_budget._STARTED_AT = time.monotonic()
     buf = StringIO()
     with patch("sys.stdout", buf):
         blocked = router.handle_block_foreign_branch_push(_event(command, cwd))
@@ -221,11 +232,11 @@ def _deny_route(command: str, cwd: Path) -> str:
     taken: list[str] = []
 
     def no_escape(_reason: str, *, gate_id: str | None = None) -> bool:
-        assert gate_id == gate.GATE_ID
+        assert gate_id == gate.FORCE_DELETE_GATE_ID
         taken.append("emit_pretooluse_deny")
         return True
 
-    def shared_chain(_data: dict, _reason: str) -> bool:
+    def shared_chain(_data: dict, _reason: str, *, gate_id: str | None = None) -> bool:
         taken.append("_fail_open_or_deny")
         return True
 
@@ -244,7 +255,14 @@ def _refusal_reason(command: str, cwd: Path) -> str:
     return payload["permissionDecisionReason"]
 
 
-def _forge(*, mr_rows: list | None, our_login: str = "us", unreachable: bool = False) -> SimpleNamespace:
+def _forge(
+    *,
+    mr_rows: list | None,
+    our_login: str = "us",
+    unreachable: bool = False,
+    declared: frozenset[str] = frozenset(),
+    kind: str = "gitlab",
+) -> SimpleNamespace:
     """A stand-in for the forge seam.
 
     Returns the real :class:`ForgeProbe`, not a bare string: a fake with a
@@ -252,27 +270,79 @@ def _forge(*, mr_rows: list | None, our_login: str = "us", unreachable: bool = F
     the gate would keep passing here while raising on the real seam.
     """
 
-    def run_forge_tool(_tool: str, argv: list[str]) -> ForgeProbe:
+    def run_forge_tool(_tool: str, argv: list[str], **_budget: object) -> ForgeProbe:
         if unreachable:
-            return ForgeProbe(stdout=None, unresolved="exit-nonzero")
+            return ForgeProbe(stdout=None, unresolved="exit 1 with no stderr")
         if argv[:2] == ["api", "user"]:
             return ForgeProbe(stdout=json.dumps({"username": our_login, "login": our_login}))
         return ForgeProbe(stdout=json.dumps(mr_rows or []))
 
     return SimpleNamespace(
-        GITHUB="github",
-        FORGE_TOOL={"github": "gh", "gitlab": "glab"},
-        slug_for_remote_url=lambda _url: SLUG,
-        forge_and_repo_path=lambda _slug: ("gitlab", "acme/app"),
-        host_of_slug=lambda _slug: "gitlab.com",
-        run_forge_tool=run_forge_tool,
-        declared_self_identities=lambda _host: frozenset(),
+        **{
+            **vars(foreign_mr_cli),
+            "slug_for_remote_url": lambda _url: SLUG,
+            "forge_and_repo_path": lambda _slug: (kind, "acme/app"),
+            "host_of_slug": lambda _slug: "gitlab.com",
+            "run_forge_tool": run_forge_tool,
+            "declared_self_identities": lambda _host: declared,
+        }
     )
 
 
 def _mr(author: str) -> list[dict]:
     url = "https://gitlab.com/acme/app/-/merge_requests/6921"
     return [{"iid": 6921, "web_url": url, "author": {"username": author}}]
+
+
+def _glab_answer(payload: object) -> CompletedProcess[str]:
+    return CompletedProcess(["glab"], 0, json.dumps(payload), "")
+
+
+@contextmanager
+def _asking_through_the_real_probe(
+    glab: Mock, declared: frozenset[str] = frozenset(), kind: str = "gitlab"
+) -> Iterator[SimpleNamespace]:
+    """The routing fake, with every forge question asked through the real :func:`run_forge_tool` of *glab*."""
+    forge = _forge(mr_rows=None, declared=declared, kind=kind)
+    forge.run_forge_tool = _repo_visibility.run_forge_tool
+    with (
+        patch.object(gate, "_forge_seam", return_value=forge),
+        patch.object(_repo_visibility, "_resolve_probe_tool", return_value="/usr/bin/glab"),
+        patch.object(_repo_visibility, "run_allowed_to_fail", glab),
+    ):
+        yield forge
+
+
+def _spending(clock: HookClock, *outcomes: object) -> Callable[..., object]:
+    """Forge attempts that each use their whole timeout, then answer or raise *outcomes* in order."""
+    pending = list(outcomes)
+
+    def attempt(_argv: list[str], **kwargs: float) -> object:
+        clock.now += kwargs["timeout"]
+        outcome = pending.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    return attempt
+
+
+@contextmanager
+def _git_answering_at_its_timeout(
+    clock: HookClock, verbs: frozenset[str] = frozenset({"ls-remote", "fetch"})
+) -> Iterator[list[float]]:
+    """Every git probe running one of *verbs* still answers, but only once its whole timeout has passed."""
+    real_run = subprocess.run
+    granted: list[float] = []
+
+    def run(argv: list[str], *, timeout: float, **kwargs: bool) -> subprocess.CompletedProcess[str]:
+        if verbs & set(argv):
+            granted.append(timeout)
+            clock.now += timeout
+        return real_run(argv, capture_output=True, text=True, timeout=timeout, check=kwargs["check"])
+
+    with patch.object(git_probes.subprocess, "run", side_effect=run):
+        yield granted
 
 
 class TestABranchThatIsOursIsAllowed:
@@ -295,6 +365,79 @@ class TestABranchThatIsOursIsAllowed:
             blocked, payload = _run("git push origin ac/ours", work)
         assert blocked is False
         assert payload is None
+
+    def test_our_own_open_mr_whose_listing_stalls_once_is_allowed(self, work: Path) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        glab = Mock(side_effect=[TimeoutExpired("glab", 3), _glab_answer(_mr("us")), _glab_answer({"username": "us"})])
+        with _asking_through_the_real_probe(glab):
+            blocked, payload = _run("git push origin ac/ours", work)
+        assert (blocked, payload) == (False, None)
+        stalled, answered, user = glab.call_args_list
+        assert (stalled.args, stalled.kwargs["env"]) == (answered.args, answered.kwargs["env"])
+        assert stalled.args[0][-2:] == ["--hostname", "gitlab.com"]
+        assert user.args[0][1:] == ["api", "user", "--hostname", "gitlab.com"]
+
+    def test_an_mr_by_a_declared_identity_is_ours_without_asking_who_we_are(self, work: Path) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        glab = Mock(side_effect=[_glab_answer(_mr("our-factory-bot"))])
+        with _asking_through_the_real_probe(glab, declared=frozenset({"our-factory-bot"})):
+            blocked, payload = _run("git push origin ac/ours", work)
+        assert (blocked, payload) == (False, None)
+        assert glab.call_count == 1
+
+    def test_declared_identities_are_read_once_whatever_the_mr_count(self, work: Path) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        second = {"iid": 6922, "web_url": "6922", "author": {"username": "our-factory-bot"}}
+        glab = Mock(return_value=_glab_answer([*_mr("our-factory-bot"), second]))
+        reads = Mock(return_value=frozenset({"our-factory-bot"}))
+        with _asking_through_the_real_probe(glab) as forge:
+            forge.declared_self_identities = reads
+            blocked, payload = _run("git push origin ac/ours", work)
+        assert (blocked, payload) == (False, None)
+        assert reads.call_count == 1
+
+    def test_who_we_are_is_asked_once_per_push_whatever_the_branch_count(self, work: Path) -> None:
+        for branch in ("ac/one", "ac/two"):
+            _branch_pushed_by(work, branch, email=OUR_EMAIL, author="Us")
+            _git(work, "branch", "-q", branch, f"origin/{branch}")
+        glab = Mock(side_effect=[_glab_answer(_mr("us")), _glab_answer({"username": "us"}), _glab_answer(_mr("us"))])
+        with _asking_through_the_real_probe(glab):
+            blocked, payload = _run("git push origin ac/one ac/two", work)
+        assert (blocked, payload) == (False, None)
+        assert [call.args[0][1:3] for call in glab.call_args_list].count(["api", "user"]) == 1
+
+    @pytest.mark.parametrize(
+        ("kind", "fork_row"),
+        [
+            (
+                "gitlab",
+                {
+                    "iid": 7,
+                    "web_url": "fork/7",
+                    "author": {"username": "colleague-login"},
+                    "source_project_id": 2,
+                    "target_project_id": 1,
+                },
+            ),
+            (
+                "github",
+                {"number": 7, "url": "fork/7", "author": {"login": "colleague-login"}, "isCrossRepository": True},
+            ),
+        ],
+    )
+    def test_an_mr_opened_from_a_fork_does_not_decide_whose_branch_this_is(
+        self, work: Path, kind: str, fork_row: dict
+    ) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        ours = {"number": 6921, "url": "ours", "author": {"login": "us", "username": "us"}}
+        glab = Mock(side_effect=[_glab_answer([fork_row, ours]), _glab_answer({"username": "us", "login": "us"})])
+        with _asking_through_the_real_probe(glab, kind=kind):
+            blocked, payload = _run("git push origin ac/ours", work)
+        assert (blocked, payload) == (False, None)
 
     def test_our_own_commits_on_an_un_mr_d_branch_are_allowed(self, work: Path) -> None:
         _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
@@ -432,7 +575,21 @@ class TestAForcePushHasNoEscape:
             blocked, payload = _run(command, work)
         assert blocked is True
         assert payload is not None
-        assert payload["hookSpecificOutput"]["gate_id"] == "foreign_branch_push"
+        assert payload["hookSpecificOutput"]["gate_id"] == gate.FORCE_DELETE_GATE_ID
+
+    def test_a_non_force_fp_confirmed_token_releases_the_live_breaker(
+        self, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
+        _git(work, "checkout", "-q", "-b", "theirs", "origin/theirs")
+        command = "git push origin HEAD:theirs  # [fp-confirmed: forge lookup was stale]"
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path / "hook-state")
+        monkeypatch.setattr(router, "_CURRENT_EVENT", "PreToolUse")
+        monkeypatch.setattr(router, "_CURRENT_DATA", _event(command, work))
+        with patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=_mr("colleague-login"))):
+            blocked, payload = _run(command, work)
+        assert blocked is False
+        assert payload is None
 
     def test_a_non_force_push_still_routes_through_the_shared_fail_open_chain(self, work: Path) -> None:
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
@@ -458,6 +615,122 @@ class TestAnUnansweredProbeRefuses:
         assert "glab" in reason
         assert "fails closed" in reason
 
+    def test_a_listing_that_times_out_on_every_attempt_refuses_naming_the_timeout(self, work: Path) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        glab = Mock(side_effect=TimeoutExpired("glab", 3))
+        with _asking_through_the_real_probe(glab):
+            reason = _refusal_reason("git push origin ac/ours", work)
+        assert "`glab` listing the open MRs for `ac/ours` did not answer" in reason
+        assert "It failed with timeout of 3s, then timeout of 5s." in reason
+        assert glab.call_count == 2
+
+    def test_an_identity_probe_that_fails_is_not_asked_again_and_its_cause_is_named(self, work: Path) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        glab = Mock(side_effect=[_glab_answer(_mr("us")), CommandFailedError(["glab"], 1, "", "401 Unauthorized")])
+        with _asking_through_the_real_probe(glab):
+            reason = _refusal_reason("git push origin ac/ours", work)
+        assert "who we are on this forge" in reason
+        assert "It failed with exit 1: 401 Unauthorized." in reason
+        assert glab.call_count == 2
+
+    def test_forge_attempts_shrink_to_what_the_hook_has_left_and_stop_once_it_is_spent(
+        self, work: Path, hook_clock: HookClock
+    ) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        hook_clock.now = 26.5
+        glab = Mock(side_effect=_spending(hook_clock, TimeoutExpired("glab", 0)))
+        with _asking_through_the_real_probe(glab):
+            reason = _refusal_reason("git push origin ac/ours", work)
+        assert "It failed with timeout of 2.5s, then no time left in the hook budget." in reason
+        assert [call.kwargs["timeout"] for call in glab.call_args_list] == [2.5]
+
+    def test_identity_reads_the_budget_cut_off_name_the_budget_not_our_own_email(
+        self, work: Path, hook_clock: HookClock
+    ) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        hook_clock.now = 24.0
+        with (
+            patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=[])),
+            _git_answering_at_its_timeout(hook_clock, frozenset({"log"})),
+        ):
+            reason = _refusal_reason("git push origin ac/ours", work)
+        assert "`git config user.email`" in reason
+        assert "It failed with no time left in the hook budget." in reason
+        assert OUR_EMAIL not in reason
+
+    def test_the_fetch_ladder_stops_at_the_hook_ceiling_and_refuses(self, work: Path, hook_clock: HookClock) -> None:
+        """No MR, so ownership falls to the live commit range, and every network git answer takes its whole timeout."""
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        with (
+            patch.object(gate, "_forge_seam", return_value=_forge(mr_rows=[])),
+            _git_answering_at_its_timeout(hook_clock) as granted,
+        ):
+            reason = _refusal_reason("git push origin ac/ours", work)
+        assert "It failed with no time left in the hook budget." in reason
+        assert granted == [12.0, 12.0, 5.0]
+        assert hook_clock.now <= HOOK_CEILING_S - 1
+
+    @pytest.mark.parametrize("order", ["ours-first", "colleague-first"])
+    def test_a_colleague_mr_on_the_same_branch_refuses_whatever_the_listing_order(self, work: Path, order: str) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        colleague = {
+            "iid": 6922,
+            "web_url": "https://gitlab.com/acme/app/-/merge_requests/6922",
+            "author": {"username": "colleague-login"},
+        }
+        rows = [colleague, *_mr("us")] if order == "colleague-first" else [*_mr("us"), colleague]
+        glab = Mock(side_effect=[_glab_answer(rows), _glab_answer({"username": "us"})])
+        with _asking_through_the_real_probe(glab):
+            reason = _refusal_reason("git push origin ac/ours", work)
+        assert "merge_requests/6922" in reason
+        assert "`colleague-login`" in reason
+
+    @pytest.mark.parametrize(
+        ("listing", "named"),
+        [
+            (["authorless", "colleague"], "`colleague-login`"),
+            (["colleague", "authorless"], "`colleague-login`"),
+            (["ours", "authorless"], "It failed with an answer listing an MR with no readable author."),
+            (["authorless", "ours"], "It failed with an answer listing an MR with no readable author."),
+        ],
+    )
+    def test_a_listing_with_an_authorless_row_is_refused_whatever_else_it_lists(
+        self, work: Path, listing: list[str], named: str
+    ) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        rows = {
+            "authorless": {"iid": 6923, "web_url": "6923", "author": {"username": ""}},
+            "colleague": {"iid": 6922, "web_url": "6922", "author": {"username": "colleague-login"}},
+            "ours": _mr("us")[0],
+        }
+        glab = Mock(side_effect=[_glab_answer([rows[row] for row in listing]), _glab_answer({"username": "us"})])
+        with _asking_through_the_real_probe(glab):
+            reason = _refusal_reason("git push origin ac/ours", work)
+        assert named in reason
+
+    @pytest.mark.parametrize(
+        ("answer", "cause"),
+        [
+            ("not json", "an answer that is not JSON"),
+            ('{"message": "404"}', "an answer that is not a JSON array of MRs"),
+            ('["not an MR"]', "an answer that is not a JSON array of MRs"),
+            ('[{"iid": 6921, "author": {}}]', "an answer listing an MR with no readable author"),
+        ],
+    )
+    def test_a_listing_that_answers_unusably_names_what_it_answered(self, work: Path, answer: str, cause: str) -> None:
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        with _asking_through_the_real_probe(Mock(return_value=CompletedProcess(["glab"], 0, answer, ""))):
+            reason = _refusal_reason("git push origin ac/ours", work)
+        assert f"It failed with {cause}." in reason
+
     def test_an_unimportable_forge_seam_refuses(self, work: Path) -> None:
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
         _git(work, "checkout", "-q", "-b", "theirs", "origin/theirs")
@@ -466,6 +739,16 @@ class TestAnUnansweredProbeRefuses:
         assert blocked is True
         assert payload is not None
         assert "foreign_mr_cli" in payload["permissionDecisionReason"]
+
+    def test_unresolvable_ssh_alias_refuses_with_hostname_hint(self, work: Path) -> None:
+        _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
+        _git(work, "checkout", "-q", "-b", "theirs", "origin/theirs")
+        forge = _forge(mr_rows=[])
+        forge.slug_for_remote_url = lambda _url: ""
+        with patch.object(gate, "_forge_seam", return_value=forge):
+            reason = _refusal_reason("git push origin theirs", work)
+        assert "HostName" in reason
+        assert "~/.ssh/config" in reason
 
     def test_an_unresolvable_login_refuses_rather_than_guessing_the_mr_is_ours(self, work: Path) -> None:
         _branch_pushed_by(work, "theirs", email=THEIR_EMAIL, author="Colleague")
@@ -476,6 +759,18 @@ class TestAnUnansweredProbeRefuses:
         assert blocked is True
         assert payload is not None
         assert "who we are on this forge" in payload["permissionDecisionReason"]
+        assert "It failed with an answer naming no login." in payload["permissionDecisionReason"]
+
+    def test_the_slowest_forge_answer_fits_the_pretooluse_ceiling(self, work: Path, hook_clock: HookClock) -> None:
+        """`ls-remote` at its timeout, an MR listed on its last attempt, then `api user` unanswered on both."""
+        _branch_pushed_by(work, "ac/ours", email=OUR_EMAIL, author="Us")
+        _git(work, "checkout", "-q", "-b", "ac/ours", "origin/ac/ours")
+        stall = TimeoutExpired("glab", 0)
+        glab = Mock(side_effect=_spending(hook_clock, stall, _glab_answer(_mr("us")), stall, stall))
+        with _asking_through_the_real_probe(glab), _git_answering_at_its_timeout(hook_clock):
+            reason = _refusal_reason("git push origin ac/ours", work)
+        assert "It failed with timeout of 3s, then timeout of 5s." in reason
+        assert hook_clock.now == pytest.approx(28.0)
 
     @pytest.mark.parametrize(
         "command", ["git push --all origin", "git push --mirror origin", "git push origin $BRANCH"]
@@ -1387,12 +1682,12 @@ class TestEagerEvaluationCannotLoseAnEstablishedDenial:
         parsed = gate.ParsedPushes(specs=(force_spec, other_spec), unread=())
         probed: list[gate.PushSpec] = []
 
-        def fake_push_refusal(spec: gate.PushSpec) -> str | None:
+        def fake_push_refusal(spec: gate.PushSpec, _run: gate._ForgeRun) -> str | None:
             probed.append(spec)
             return "REFUSED: force" if spec.force else None
 
         with patch.object(gate, "push_refusal", side_effect=fake_push_refusal):
-            verdict = gate._refusal_verdict(parsed)
+            verdict = gate._refusal_verdict(parsed, gate._ForgeRun())
 
         assert verdict == ("REFUSED: force", True)
         assert probed == [force_spec]
@@ -1404,12 +1699,12 @@ class TestEagerEvaluationCannotLoseAnEstablishedDenial:
         parsed = gate.ParsedPushes(specs=(non_force_spec, force_spec), unread=())
         probed: list[gate.PushSpec] = []
 
-        def fake_push_refusal(spec: gate.PushSpec) -> str | None:
+        def fake_push_refusal(spec: gate.PushSpec, _run: gate._ForgeRun) -> str | None:
             probed.append(spec)
             return "REFUSED: force" if spec.force else "REFUSED: plain"
 
         with patch.object(gate, "push_refusal", side_effect=fake_push_refusal):
-            verdict = gate._refusal_verdict(parsed)
+            verdict = gate._refusal_verdict(parsed, gate._ForgeRun())
 
         assert verdict == ("REFUSED: force", True)
         assert probed == [force_spec]
@@ -1421,12 +1716,12 @@ class TestEagerEvaluationCannotLoseAnEstablishedDenial:
         parsed = gate.ParsedPushes(specs=(first, second), unread=())
         probed: list[gate.PushSpec] = []
 
-        def fake_push_refusal(spec: gate.PushSpec) -> str | None:
+        def fake_push_refusal(spec: gate.PushSpec, _run: gate._ForgeRun) -> str | None:
             probed.append(spec)
             return None
 
         with patch.object(gate, "push_refusal", side_effect=fake_push_refusal):
-            verdict = gate._refusal_verdict(parsed)
+            verdict = gate._refusal_verdict(parsed, gate._ForgeRun())
 
         assert verdict is None
         assert set(probed) == {first, second}

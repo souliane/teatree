@@ -60,6 +60,7 @@ def test_registry_covers_every_named_family() -> None:
         "git_bypass",
         "secret_file_print",
         "raw_review_post",
+        "raw_issue_write",
         "self_reviewer_assign",
         "raw_pid_kill",
         "unbounded_wait",

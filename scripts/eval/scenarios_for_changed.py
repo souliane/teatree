@@ -47,13 +47,15 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Unified diff (git diff --unified=0) for the same range, to narrow section-scoped scenarios.",
     )
+    # A VENDORED core sits below the consuming repo's root, so its own root names only
+    # half the catalog: an overlay's specs resolve outside it and match no diff path.
     parser.add_argument(
         "--repo-root",
         type=Path,
         default=REPO_ROOT,
-        help="Root the STDIN paths are relative to (a consuming repo's, when core is vendored).",
+        help="Root the STDIN diff paths are relative to (default: teatree's own repo root).",
     )
-    parser.add_argument("--metadata-env", type=Path, default=None, help="Write EVAL_DEFERRED=<n> to this dotenv file.")
+    parser.add_argument("--metadata-env", type=Path, help="Write the deferred count as EVAL_DEFERRED dotenv data.")
     args = parser.parse_args(argv)
     sections = None
     if args.diff_file is not None:

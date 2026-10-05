@@ -46,7 +46,7 @@
 #   run it already spent — never by firing another one. Two artifacts back that, both
 #   uploaded `if: always()` and both named per matrix leg (`<lane>-<shard>-<effort>`,
 #   so parallel legs cannot collide):
-#     * `eval-run-log-*`   — the raw teed stdout/stderr of EVERY attempt. Exists from
+#     * `eval-run-log-*`   — the redacted, teed stdout/stderr of EVERY attempt. Exists from
 #       the first byte, so it is the only one that survives a leg that dies mid-run.
 #     * `eval-benchmark-*` — the sanitized matrix dashboard (rendered at end of run).
 #   And the first diagnosis needs NO download: on a non-zero exit the eval step
@@ -245,10 +245,15 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The agent under test runs in this job: leave no token on disk for it to read.
+          persist-credentials: false
       - name: Check out and symlink the teatree host (overlay callers only)
         if: inputs.teatree-repo != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # The agent under test runs in this job: leave no token on disk for it to read.
+          persist-credentials: false
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
           path: teatree-upstream
@@ -277,7 +282,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.283
+          npm install -g @anthropic-ai/claude-code@2.1.284
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -393,18 +398,23 @@ jobs:
           #     The upload step's `if: always()` was already correct; the file simply did
           #     not exist, which is why the artifact looked un-uploaded on exactly the
           #     failures that needed it.
-          # So the run is teed to a durable $RUNNER_TEMP log (uploaded as its own per-leg
-          # artifact below, and the ONLY artifact that survives a pre-dashboard death),
-          # and on non-zero exit the tail is re-printed from that file into the job log —
-          # the first diagnosis needs no download. The dashboard is an HTML file, useless
+          # So the run is teed — through `python -m teatree.eval.artifact_redaction tee`,
+          # which redacts every credential value from each line — to a durable
+          # $RUNNER_TEMP log (uploaded as its own per-leg artifact below, and the ONLY
+          # artifact that survives a pre-dashboard death), and on non-zero exit the tail
+          # is re-printed from that file into the job log through the same filter — the
+          # first diagnosis needs no download. The filter runs from the installed package,
+          # never a `scripts/` path, so it resolves in an overlay caller's checkout too.
+          # The dashboard is an HTML file, useless
           # catted into a log, so the block points at the uploaded artifact instead; its
           # text twin (the matrix table `t3 eval run` echoes before writing the HTML) is
-          # already inside the tail. `set -o pipefail` keeps `tee` from masking the eval's
-          # exit code, and the block ends in `exit "$rc"`: this adds visibility, it never
-          # swallows the failure. Printing INSIDE the command block is what makes EACH
-          # attempt visible — attempt 1's tail lands before the retry's "Attempt 1 failed"
-          # line instead of being discarded when attempt 2 starts. `tee -a` keeps both
-          # attempts in the one uploaded log.
+          # already inside the tail. `set -o pipefail` keeps the filter from masking the
+          # eval's exit code (and turns a filter crash red), and the block ends in
+          # `exit "$rc"`: this adds visibility, it never swallows the failure. Printing
+          # INSIDE the command block is what makes EACH attempt visible — attempt 1's tail
+          # lands before the retry's "Attempt 1 failed" line instead of being discarded
+          # when attempt 2 starts. The filter appends, so both attempts stay in the one
+          # uploaded log.
           command: |
             set -o pipefail
             EFFORT_FLAG=""
@@ -412,15 +422,16 @@ jobs:
             TAIL_LINES=400
             MATRIX_HTML="$RUNNER_TEMP/eval-benchmark-$EVAL_SUFFIX.html"
             LOG="$RUNNER_TEMP/eval-run-$EVAL_SUFFIX.log"
-            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) · leg $EVAL_SUFFIX =====" >> "$LOG"
+            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) · leg $EVAL_SUFFIX =====" \
+              | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             uv run t3 eval run --benchmark --backend api \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
               --require-executed --docker \
-              --transcript-html "$MATRIX_HTML" 2>&1 | tee -a "$LOG"
+              --transcript-html "$MATRIX_HTML" 2>&1 | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             rc=$?
             [ "$rc" -eq 0 ] && exit 0
             echo "::group::leg $EVAL_SUFFIX FAILED (exit $rc) — last $TAIL_LINES captured lines"
-            tail -n "$TAIL_LINES" "$LOG" || echo "nothing captured at $LOG"
+            tail -n "$TAIL_LINES" "$LOG" | uv run python -m teatree.eval.artifact_redaction tee || echo "nothing captured at $LOG"
             echo "::endgroup::"
             if [ -s "$MATRIX_HTML" ]; then
               echo "The matrix dashboard rendered: download artifact eval-benchmark-$EVAL_SUFFIX."
@@ -428,33 +439,51 @@ jobs:
               echo "No dashboard at $MATRIX_HTML: the run died before rendering one, so the tail above is the whole diagnosis."
             fi
             exit "$rc"
+      # Defense in depth: one last in-place redaction pass over exactly the files
+      # the two uploads below publish, holding every credential this job holds, so
+      # a file that reached them without the redacting writer still leaves redacted.
+      # It deletes any file it cannot prove clean on disk and then fails, and each
+      # upload below runs only when it succeeded (`steps.redact.outcome`).
+      - name: Redact the uploaded files in place
+        id: redact
+        if: always()
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.subscription-oauth-token }}
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+          EVAL_OAUTH_TOKENS: ${{ secrets.eval-oauth-tokens }}
+          SUFFIX: ${{ steps.artifact.outputs.suffix }}
+        run: >-
+          uv run python -m teatree.eval.artifact_redaction in-place
+          "$RUNNER_TEMP/eval-benchmark-$SUFFIX.html"
+          "$RUNNER_TEMP/eval-run-$SUFFIX.log"
       # Publish the benchmark matrix HTML dashboard THIS leg emitted. The name is
       # per-lane-and-shard (and effort) so parallel matrix legs never collide. The
       # matrix HTML is itself sanitized (no reasoning/tool-call transcript — only
       # the per-(scenario, tier) verdicts + per-model tally), so it is BOTH the
       # private report and the publish-safe summary artifact.
       - name: Upload the benchmark matrix HTML dashboard
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-benchmark-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-benchmark-${{ steps.artifact.outputs.suffix }}.html
           if-no-files-found: warn
-      # The RAW captured stdout/stderr of every attempt (the `tee -a` target in the
-      # eval command). Unlike the matrix dashboard — rendered only if the run reaches
+      # The captured, redacted stdout/stderr of every attempt (the `artifact_redaction tee` target
+      # in the eval command). Unlike the matrix dashboard — rendered only if the run reaches
       # its end — this file exists from the first byte, so it is the one artifact that
       # survives a leg that died mid-run, which is precisely the failure class that
       # used to leave a maintainer with nothing but "exit code 1". `if: always()`
       # because a GREEN leg needs none of this; a red one needs all of it. NOT
-      # collected by the `publish` job (which globs `eval-benchmark-*` only) — it is
-      # unsanitized, so it stays out of the public dashboard.
+      # collected by the `publish` job (which globs `eval-benchmark-*` only) — beyond the
+      # credential redaction it is unsanitized, so it stays out of the public dashboard.
       - name: Upload the raw eval run log
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-run-log-${{ steps.artifact.outputs.suffix }}
           path: ${{ runner.temp }}/eval-run-${{ steps.artifact.outputs.suffix }}.log
           if-no-files-found: warn
+          retention-days: 7
 
   # PUBLISH: collect every shard's benchmark matrix HTML into the public
   # dashboard dir and commit it to the caller's default branch. `if: always() &&

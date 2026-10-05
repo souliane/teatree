@@ -6,21 +6,14 @@ bypass dimension — a vacuous / missing / stale-SHA attestation slips through
 the current head is never wrongly blocked (must ALLOW).
 
 The gate reads durable ``ticket.extra['anti_vacuity_attestation']`` plus the
-live head SHA. ``require_anti_vacuity_attestation`` is pinned per test rather
-than the host machine's config so the suite is deterministic.
+live head SHA. The gate always checks the durable attestation.
 """
-
-from collections.abc import Iterator
-from contextlib import contextmanager
-from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.config import UserSettings
 from teatree.core.gates.anti_vacuity_gate import (
     AntiVacuityAttestationError,
-    anti_vacuity_required,
     check_anti_vacuity_attestation,
     is_bound_to,
     is_complete,
@@ -33,15 +26,6 @@ pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40
 _OTHER_SHA = "b" * 40
-
-
-@contextmanager
-def _gate(*, required: bool) -> Iterator[None]:
-    with patch(
-        "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
-        return_value=UserSettings(require_anti_vacuity_attestation=required),
-    ):
-        yield
 
 
 def _attested_ticket(
@@ -65,44 +49,63 @@ def _attested_ticket(
 class TestGateAllows(TestCase):
     def test_complete_attestation_bound_to_current_head_passes(self) -> None:
         ticket = _attested_ticket(head_sha=_SHA)
-        with _gate(required=True):
-            check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
+        check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
 
     def test_no_new_tests_claim_with_ac_coverage_passes(self) -> None:
         ticket = _attested_ticket(head_sha=_SHA, proven_tests=[], no_new_tests=True)
-        with _gate(required=True):
-            check_anti_vacuity_attestation(ticket, _SHA, transition="request review")
+        check_anti_vacuity_attestation(ticket, _SHA, transition="request review")
 
     def test_mixed_case_head_sha_still_binds(self) -> None:
         ticket = _attested_ticket(head_sha=_SHA)
-        with _gate(required=True):
-            check_anti_vacuity_attestation(ticket, _SHA.upper(), transition="merge")
+        check_anti_vacuity_attestation(ticket, _SHA.upper(), transition="merge")
 
-    def test_noop_when_gate_off_even_without_attestation(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
-        with _gate(required=False):
-            check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
+    def test_earlier_head_remains_attested_after_second_pr_review(self) -> None:
+        ticket = _attested_ticket(head_sha=_SHA)
+        ticket.record_anti_vacuity_attestation(_OTHER_SHA, "Other PR ACs", ["tests/x.py::test_other"])
+        ticket.refresh_from_db()
+
+        check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
+        check_anti_vacuity_attestation(ticket, _OTHER_SHA, transition="merge")
+        assert set(ticket.extra["anti_vacuity_attestations"]) == {_SHA, _OTHER_SHA}
+
+    def test_legacy_single_attestation_survives_next_pr_review(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.SELF_REVIEWED,
+            extra={
+                "anti_vacuity_attestation": {
+                    "head_sha": _SHA,
+                    "ac_coverage": "First PR ACs",
+                    "proven_tests": ["tests/x.py::test_first"],
+                }
+            },
+        )
+        ticket.record_anti_vacuity_attestation(_OTHER_SHA, "Second PR ACs", ["tests/x.py::test_second"])
+        ticket.refresh_from_db()
+
+        check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
+        check_anti_vacuity_attestation(ticket, _OTHER_SHA, transition="merge")
 
 
 class TestGateDenies(TestCase):
     def test_no_attestation_is_blocked(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
-        with _gate(required=True), pytest.raises(AntiVacuityAttestationError, match="no anti-vacuity attestation"):
+        with pytest.raises(AntiVacuityAttestationError, match="no anti-vacuity attestation"):
             check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
 
     def test_empty_proven_tests_without_no_new_tests_is_blocked(self) -> None:
         ticket = _attested_ticket(head_sha=_SHA, proven_tests=[], no_new_tests=False)
-        with _gate(required=True), pytest.raises(AntiVacuityAttestationError, match="incomplete"):
+        with pytest.raises(AntiVacuityAttestationError, match="incomplete"):
             check_anti_vacuity_attestation(ticket, _SHA, transition="request review")
 
     def test_missing_ac_coverage_is_blocked(self) -> None:
         ticket = _attested_ticket(head_sha=_SHA, ac_coverage="   ")
-        with _gate(required=True), pytest.raises(AntiVacuityAttestationError, match="incomplete"):
+        with pytest.raises(AntiVacuityAttestationError, match="incomplete"):
             check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
 
     def test_stale_sha_attestation_is_blocked(self) -> None:
         ticket = _attested_ticket(head_sha=_OTHER_SHA)
-        with _gate(required=True), pytest.raises(AntiVacuityAttestationError, match="stale"):
+        with pytest.raises(AntiVacuityAttestationError, match="stale"):
             check_anti_vacuity_attestation(ticket, _SHA, transition="merge")
 
 
@@ -123,13 +126,6 @@ class TestPredicates(TestCase):
     def test_recorded_attestation_empty_without_evidence(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.SELF_REVIEWED)
         assert recorded_attestation(ticket) == {}
-
-    def test_anti_vacuity_required_reads_effective_settings(self) -> None:
-        with patch(
-            "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
-            return_value=UserSettings(require_anti_vacuity_attestation=True),
-        ):
-            assert anti_vacuity_required() is True
 
 
 class TestRecordAttestation(TestCase):

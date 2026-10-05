@@ -12,8 +12,8 @@ from django.test import TestCase
 from teatree.agents import harness as harness_mod
 from teatree.agents import runner as runner_mod
 from teatree.agents.runner import run_agent
-from teatree.core.gates.plan_dispatch_gate import PLAN_MISSING_PREFIX
 from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.plan_decision import PLAN_MISSING_PREFIX
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 from tests.factories import record_test_plan
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream

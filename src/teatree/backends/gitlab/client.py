@@ -23,6 +23,7 @@ from teatree.core.backend_protocols import (
     ReviewState,
     UploadVerification,
 )
+from teatree.core.self_forge_identities import ExternalIssueRefusedError, require_self_authored_issue
 from teatree.types import RawAPIDict
 from teatree.utils.throttled_log import warn_throttled
 
@@ -53,7 +54,6 @@ class _GitLabMergeRequestSummary(TypedDict, total=False):
     state: str
     author: _GitLabUser
     draft: bool
-    work_in_progress: bool
 
 
 def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
@@ -223,34 +223,26 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
     ) -> RawAPIDict:
         """Create a child work item under the parent at *parent_url*.
 
-        GitLab forbids an Issue→Issue parent link, so the child is created as a
-        plain issue, converted to *child_type* (default ``Task``) via
-        ``workItemConvert``, then linked under the parent via ``workItemUpdate``
-        with ``hierarchyWidget.parentId``. The returned dict carries the child's
-        ``web_url`` and ``iid``; any failed hop returns ``{"error": ...}`` and
-        leaves the partially-created child as a non-linked issue.
+        The three-hop create/convert/nest dance lives in ``subissues`` with the
+        GraphQL helpers it drives; ``create_issue`` is handed in so the child's
+        first hop reuses this host's leak-scrubbed create path. A colleague's
+        ticket is refused before any hop runs (#162 rule 5) — nesting a child
+        under it is a mutation of that ticket's hierarchy same as an edit.
         """
-        context = _subissues.resolve_sub_context(self._client, parent_url, child_type)
-        if not isinstance(context, _subissues.SubContext):
-            return context
-
-        created = self.create_issue(repo=context.repo, title=title, body=body, labels=labels)
-        if "error" in created:
-            return created
-        child_iid = created.get("iid")
-        if not isinstance(child_iid, int):
-            return {"error": f"Child issue creation returned no iid: {created}"}
-
-        child_gid = _subissues.work_item_gid(self._client, context.project_path, child_iid)
-        if child_gid is None:
-            return {"error": f"Could not resolve created child work item: {created.get('web_url')}"}
-
-        nest_error = _subissues.convert_and_link(self._client, child_gid, context, child_type)
-        return nest_error or created
+        try:
+            require_self_authored_issue(host=self, issue_url=parent_url)
+        except ExternalIssueRefusedError as exc:
+            return {"error": str(exc)}
+        spec = _subissues.ChildSpec(parent_url=parent_url, title=title, body=body, labels=labels, child_type=child_type)
+        return _subissues.create_child(self._client, self.create_issue, spec)
 
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
         """Return open issues on *repo* whose title/description match *query*."""
         return _issue_ops.search_open_issues(self._client, self._resolve_project(repo), query=query)
+
+    def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]:
+        """Every open issue on *repo*, all pages — the #162 create-dedupe landscape."""
+        return _issue_ops.list_repo_open_issues(self._client, self._resolve_project(repo))
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         project = self._resolve_project(repo)
@@ -547,8 +539,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         ``FileNotFoundError`` and the gate reported "not a draft" for every MR.
         The HTTP client needs only ``GITLAB_TOKEN``, which that image already has.
 
-        ``draft`` is canonical on modern GitLab; ``work_in_progress`` is the
-        legacy field kept for compatibility — either one being true means DRAFT.
+        ``draft`` is the GitLab draft flag.
         An unresolvable project, a transport error, or a non-dict payload yields
         ``UNKNOWN`` so no consumer mistakes an unanswered probe for a live MR.
         """
@@ -570,7 +561,7 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         if not isinstance(mr, dict):
             return DraftState.UNKNOWN
         summary = cast("_GitLabMergeRequestSummary", mr)
-        if summary.get("draft") or summary.get("work_in_progress"):
+        if summary.get("draft"):
             return DraftState.DRAFT
         return DraftState.NOT_DRAFT
 

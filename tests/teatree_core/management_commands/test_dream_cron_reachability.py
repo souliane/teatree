@@ -1,14 +1,11 @@
 """Every dream promotion phase is reachable from the nightly cron ``tick`` (#4176).
 
-``force_all_phases`` is the ``--full`` convenience alias — "turn every opt-in phase on
-for this one manual pass". It must never be a phase's ONLY way in, because ``tick`` (the
-cron entry) never sets it: a phase AND-gated on it is dead on the cron path however its
-own toggle is set. Measured before the fix: 355 consecutive nightly passes produced zero
-escalations and zero promotions.
+``force_all_phases`` is the ``--full`` convenience alias for manual core-gap work.
+The nightly tick runs eval derivation and live validation unconditionally. The
+remaining optional memory-promotion phase is reachable through its own setting.
 
-Each test drives ``dream tick`` with ONLY one phase's config toggle on and asserts that
-phase's promoter runs. The AST ratchet at the bottom refuses the AND-gate shape
-structurally, so a NEW phase cannot reintroduce the class.
+Each test drives ``dream tick`` and asserts that the phase's promoter runs.
+The AST ratchet at the bottom refuses an AND-gate shape for future phases.
 """
 
 import ast
@@ -16,20 +13,25 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory, Loop
 from teatree.core.models.ticket import Ticket
+from teatree.hooks import _repo_visibility
 from teatree.loops.dream.engine import DreamRunResult
 from teatree.loops.dream.loop import DREAM_LOOP_NAME
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
+from tests._send_gate import allow_forge_repos
 
-#: A memory-backed rule plus a correction turn violating it again — a RECURRENCE, the
-#: only finding kind the compliance-escalation phase acts on.
+#: A memory-backed rule plus a correction turn violating it again.
 _MEMORY_BODY = (
+    "---\n"
     "name: feedback_askuserquestion_overuse\n"
+    "metadata:\n  type: feedback\n"
+    "---\n"
     "The AskUserQuestion gate must not fire for routine obstacles — make a reasonable guess and keep working.\n"
 )
 _VIOLATION_TURN = (
@@ -37,19 +39,17 @@ _VIOLATION_TURN = (
     'for routine obstacles, you do not follow instructions!!"}'
 )
 
-#: Every phase toggle silenced, so a test enabling one toggle measures that phase alone.
-_ALL_PHASES_OFF = {
-    "T3_DREAM_PROPOSE_EVALS": "0",
-    "T3_DREAM_CROSS_LINK": "0",
-    "T3_DREAM_MERGE": "0",
-    "T3_DREAM_REINDEX": "0",
-    "T3_DREAM_DECAY": "0",
+#: The remaining optional memory phase is disabled so tests isolate one route.
+_MEMORY_PHASE_OFF = {
     "T3_DREAM_MEMORY_PROMOTE": "0",
-    "T3_DREAM_DERIVE_EVALS": "0",
-    "T3_DREAM_AUTOMATION_ASKS": "0",
-    "T3_DREAM_COMPLIANCE_ESCALATE": "0",
-    "T3_DREAM_VALIDATE_LIVE": "0",
 }
+
+
+@pytest.fixture(autouse=True)
+def _configured_dream_publication(monkeypatch: pytest.MonkeyPatch, configured_banned_term_registry: None) -> None:
+    """Cron dream writes use the classed term registry and allowed forge repo."""
+    monkeypatch.setattr(_repo_visibility, "slug_visibility", lambda _slug: "PUBLIC")
+    allow_forge_repos("souliane/teatree")
 
 
 def _stateful_umbrella_host() -> CodeHostBackend:
@@ -82,7 +82,7 @@ def _recurrence_result() -> DreamRunResult:
 
 
 class DreamPhasesAreCronReachableTestCase(TestCase):
-    """Each promotion phase runs from ``tick`` on its own config toggle — no ``--full``."""
+    """Every required phase runs from ``tick`` without ``--full``."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -107,21 +107,22 @@ class DreamPhasesAreCronReachableTestCase(TestCase):
                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
                 return_value=(host if host is not None else object(), "souliane/teatree"),
             ),
-            patch.dict("os.environ", {**_ALL_PHASES_OFF, **env}, clear=False),
+            patch.dict("os.environ", {**_MEMORY_PHASE_OFF, **env}, clear=False),
         ):
             call_command("dream", "tick", stdout=out)
         return out.getvalue()
 
-    def test_compliance_escalation_runs_from_tick_on_its_toggle_alone(self) -> None:
-        # RED before the fix: the gate was `force_all_phases and compliance_escalate_enabled()`,
-        # and tick never sets force_all_phases — so the toggle was dead on the cron path.
+    def test_compliance_escalation_runs_on_the_nightly_entry_point(self) -> None:
         with patch("teatree.loops.dream.compliance.run_compliance_escalation", return_value="") as escalate:
-            self._tick(T3_DREAM_COMPLIANCE_ESCALATE="1")
+            self._tick()
         escalate.assert_called_once()
 
-    def test_live_validation_runs_from_tick_on_its_toggle_alone(self) -> None:
-        # RED before the fix: validate_live had NO config path at all — only --full /
-        # --validate-live — so every candidate the nightly pass cleared stayed withheld.
+    def test_automation_asks_run_on_the_nightly_entry_point(self) -> None:
+        with patch("teatree.loops.dream.automation_ask.run_automation_asks_phase", return_value="") as asks:
+            self._tick()
+        asks.assert_called_once()
+
+    def test_live_validation_runs_from_tick_unconditionally(self) -> None:
         sentinel = object()
         seen: dict[str, object] = {}
 
@@ -133,53 +134,31 @@ class DreamPhasesAreCronReachableTestCase(TestCase):
             patch("teatree.loops.dream.promote.build_live_validator", return_value=sentinel),
             patch("teatree.loops.dream.promote.promote_proposals_file", side_effect=_capture),
         ):
-            self._tick(T3_DREAM_PROPOSE_EVALS="1", T3_DREAM_VALIDATE_LIVE="1")
+            self._tick()
         assert seen["validator"] is sentinel
-
-    def test_live_validation_stays_off_by_default_so_tick_still_withholds(self) -> None:
-        seen: dict[str, object] = {}
-
-        def _capture(_path: object, **kwargs: object) -> list:
-            seen["validator"] = getattr(kwargs.get("live_gate"), "validator", "MISSING")
-            return []
-
-        with patch("teatree.loops.dream.promote.promote_proposals_file", side_effect=_capture):
-            self._tick(T3_DREAM_PROPOSE_EVALS="1")
-        assert seen["validator"] is None
 
     def test_memory_promotion_runs_from_tick_on_its_toggle_alone(self) -> None:
         with (
             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]) as promote,
-            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
+            patch("teatree.loops.dream.batch_promote.reconcile_batches", return_value=[]),
         ):
             self._tick(T3_DREAM_MEMORY_PROMOTE="1")
         promote.assert_called_once()
 
-    def test_automation_asks_runs_from_tick_on_its_toggle_alone(self) -> None:
-        with patch("teatree.loops.dream.automation_ask.run_automation_asks_phase", return_value="") as phase:
-            self._tick(T3_DREAM_AUTOMATION_ASKS="1")
-        phase.assert_called_once()
-
-    def test_eval_derivation_runs_from_tick_on_its_toggle_alone(self) -> None:
+    def test_eval_derivation_runs_from_tick_unconditionally(self) -> None:
         with (
             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
             patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file", return_value=[]) as derive,
         ):
-            self._tick(T3_DREAM_PROPOSE_EVALS="1", T3_DREAM_DERIVE_EVALS="1")
+            self._tick()
         derive.assert_called_once()
 
 
-class BatchedTickMintsOneTicketTestCase(DreamPhasesAreCronReachableTestCase):
-    """A pass's promotions collapse into ONE ticket, whatever the gap count (#4776).
+class BatchedTickMintsNoTicketTestCase(DreamPhasesAreCronReachableTestCase):
+    """A pass mints no ticket, whatever the gap count: its gaps queue for the backlog sweep (#4776)."""
 
-    ``promotion_cap`` used to bound how much of a pass's backlog got a ticket without
-    bounding the fan-out itself — a measured pass with 297 pending gaps and the
-    cap-of-5 default deferred roughly 60 nights to drain. It is deleted: there is
-    nothing left to ration, because every gap a pass promotes now collapses into ONE
-    ticket, not one per gap.
-    """
-
-    def test_many_pending_core_gaps_schedule_exactly_one_ticket(self) -> None:
+    def test_many_pending_core_gaps_queue_on_the_umbrella_and_mint_nothing(self) -> None:
+        umbrella = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/2663")
         for i in range(5):
             ConsolidatedMemory.objects.create(
                 cluster_key=f"gap-{i}",
@@ -190,15 +169,19 @@ class BatchedTickMintsOneTicketTestCase(DreamPhasesAreCronReachableTestCase):
                 max_member_weight=90,
                 verified_citation="pushed without running the gate, CI went red",
             )
-        self._tick(host=_stateful_umbrella_host(), T3_DREAM_MEMORY_PROMOTE="1")
-        batch_tickets = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True)
-        assert batch_tickets.count() == 1
-        assert len(batch_tickets.first().extra["dream_gap_batch"]) == 5
-
-    def test_zero_pending_gaps_mints_no_ticket(self) -> None:
-        # The required negative control: a pass that promotes nothing creates nothing.
-        self._tick(host=_stateful_umbrella_host(), T3_DREAM_MEMORY_PROMOTE="1")
+        with patch("teatree.loops.dream.compliance.run_compliance_escalation", return_value=""):
+            self._tick(host=_stateful_umbrella_host(), T3_DREAM_MEMORY_PROMOTE="1")
+        umbrella.refresh_from_db()
         assert not Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).exists()
+        assert len(umbrella.extra["dream_gap_pending"]) == 5
+
+    def test_zero_pending_gaps_queues_nothing(self) -> None:
+        # The required negative control: a pass that promotes nothing queues nothing.
+        umbrella = Ticket.objects.create(issue_url="https://github.com/souliane/teatree/issues/2663")
+        with patch("teatree.loops.dream.compliance.run_compliance_escalation", return_value=""):
+            self._tick(host=_stateful_umbrella_host(), T3_DREAM_MEMORY_PROMOTE="1")
+        umbrella.refresh_from_db()
+        assert "dream_gap_pending" not in umbrella.extra
 
 
 class ForceAllPhasesIsNeverTheOnlyGateTestCase(TestCase):

@@ -21,7 +21,11 @@ from teatree.core.management.commands.lifecycle import ReviewerAttestationError
 from teatree.core.models import MergeClear, Session, Ticket
 from tests._forge_stub import changed_files_stdout
 from tests.factories import waive_rubric
-from tests.teatree_core.conftest import seed_merge_safe_verdict
+from tests.teatree_core.conftest import (
+    record_merge_prerequisites_for_test,
+    record_review_context_for_test,
+    seed_merge_safe_verdict,
+)
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -52,6 +56,7 @@ class TestReviewingRequiresExplicitReviewer(TestCase):
     def test_independent_reviewer_is_accepted(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
         Session.objects.create(ticket=ticket, agent_id="maker:coding")
+        record_review_context_for_test(ticket)
         call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing", agent_id="cold-reviewer")
         session = ticket.sessions.first()
         assert session is not None
@@ -60,6 +65,7 @@ class TestReviewingRequiresExplicitReviewer(TestCase):
     def test_existing_reviewing_key_is_overwritten_loudly_not_silent(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
         Session.objects.create(ticket=ticket, agent_id="maker:coding")
+        record_review_context_for_test(ticket)
         call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing", agent_id="reviewer-one")
         with self.assertLogs("teatree.core.management.commands.lifecycle", level="WARNING") as cm:
             call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing", agent_id="reviewer-two")
@@ -113,6 +119,7 @@ class TestTicketMergeKeystoneCli(TestCase):
     def test_ticket_merge_advances_in_review_to_merged(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
         waive_rubric(ticket)  # the rubric gate runs at the merge chokepoint
+        record_merge_prerequisites_for_test(ticket, "c" * 40)
         clear = MergeClear.objects.create(
             ticket=ticket,
             pr_id=859,

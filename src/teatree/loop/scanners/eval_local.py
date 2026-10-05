@@ -51,7 +51,7 @@ class EvalLocalScanner:
     """
 
     overlay_name: str
-    skill: str = "eval"
+    skill: str
     name: str = "eval_local"
 
     def scan(self) -> list[ScanSignal]:

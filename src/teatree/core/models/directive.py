@@ -17,8 +17,7 @@ writer of ``ADMITTED`` and RAISES unless a consumed (answered) ratify
 :class:`~teatree.core.models.deferred_question.DeferredQuestion` exists, mirroring
 ``OuterLoopExperiment.admit`` — no code path can auto-admit a directive.
 
-Ships inert: capture is explicit (the CLI) or, only when ``directive_loop_enabled``
-is on, the ``DIRECTIVE``-intent router; at default config nothing writes a row, so
+Capture is explicit (the CLI) or through the ``DIRECTIVE``-intent router; at default config nothing writes a row, so
 the migrated table stays empty (the ``ConfigSetting`` empty-table doctrine).
 """
 
@@ -219,11 +218,6 @@ class Directive(models.Model):
     @property
     def is_terminal(self) -> bool:
         return self.state in self.TERMINAL_STATES
-
-    @property
-    def taint_is_untrusted(self) -> bool:
-        """True iff this directive's origin is not the operator (#116) — floored to ASK."""
-        return self.taint != Provenance.OWNER
 
     @property
     def sketch(self) -> "MechanismSketch | None":

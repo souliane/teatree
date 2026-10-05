@@ -205,9 +205,8 @@ def _check_dream_transcript_visibility() -> bool:
     Keys on STRUCTURAL absence (projects dir missing, or zero ``*/*.jsonl`` /
     subagent transcripts regardless of mtime) — not the 48h recency window — so a
     genuinely quiet couple of days never false-alarms. In the Docker factory a
-    structurally empty projects dir means the ``~/.claude/projects`` bind mount is
-    missing from ``deploy/docker-compose.yml``: every dream pass then finds 0
-    members and is a permanent no-op (the marker is never stamped succeeded).
+    structurally empty projects dir means the selected transcript source has no
+    members: every dream pass then finds 0 members.
     Complements :func:`_check_dream_staleness` (cadence) — this one names the
     mount as the remedy. Crash-proof: any error degrades to OK.
     """
@@ -220,12 +219,14 @@ def _check_dream_transcript_visibility() -> bool:
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Dream-transcript-visibility check crashed: {exc.__class__.__name__}: {exc}")
         return True  # degrades to OK: a crashed advisory read never reddens the run
-    typer.echo(
-        f"WARN  Dream sees 0 session transcripts under {root} (any age). In the "
-        "Docker factory this means the `~/.claude/projects` bind mount is missing "
-        "from deploy/docker-compose.yml — every dream pass finds 0 members and is "
-        "a permanent no-op (marker never stamped succeeded).",
-    )
+    from teatree.memory_audit import transcript_mount  # noqa: PLC0415 — deferred: doctor check runs only on demand
+
+    mount_type, source = transcript_mount(root)
+    topology = {
+        "bind": f"the bind mount {source} at ~/.claude/projects",
+        "volume": f"the factory-owned {source} volume at ~/.claude/projects",
+    }.get(mount_type, "the transcript source at ~/.claude/projects")
+    typer.echo(f"WARN  Dream sees 0 session transcripts under {root} (any age); check {topology}.")
     return False
 
 
@@ -293,20 +294,27 @@ def _check_loop_classification_drift() -> bool:
 
 
 def _check_shipped_seed_inertness() -> bool:
-    """Warn on each shipped loop/preset/schedule that is missing, disabled, or not ticking.
+    """Report shipped loop/preset/schedule faults and deliberate manual overrides.
 
     The expected set is sourced from the shipped seed tables, not the DB, so a row somebody
     deleted is visible at all. Only FAULTS are echoed — a shipped-off loop or an inactive
-    calendar is a deliberate choice, and a check that reports those every hour is one people
-    learn to ignore. Crash-proof: any error degrades to OK.
+    calendar is a deliberate choice. A manual off override is a single INFO with the
+    preset/mode remedy; masked loops stay quiet. Crash-proof: any error degrades to OK.
     """
-    from teatree.loops.seed_inertness import shipped_inertness  # noqa: PLC0415 — deferred: ORM-reading import
+    from teatree.loops.seed_inertness import (  # noqa: PLC0415 — deferred: ORM-reading import
+        KIND_DISABLED_VS_SHIPPED,
+        shipped_inertness,
+    )
 
     try:
-        faults = [finding for finding in shipped_inertness() if finding.is_fault]
+        findings = shipped_inertness()
+        faults = [finding for finding in findings if finding.is_fault]
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Shipped-seed inertness check crashed: {exc.__class__.__name__}: {exc}")
         return True
+    for finding in findings:
+        if finding.kind == KIND_DISABLED_VS_SHIPPED:
+            typer.echo(f"INFO  Shipped loop override: {finding.label}")
     if not faults:
         return True
     for finding in faults:

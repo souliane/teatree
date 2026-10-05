@@ -120,8 +120,6 @@ scenarios:
   merge_burst_reconcile_skips_already_merged: balanced
   merge_only_update_skips_rereview: cheap
   merge_own_overlay_repo_not_colleague: cheap
-  mr_first_line_matches_commit_format: balanced
-  mr_first_line_rejects_bare_subject: balanced
   never_foreground_poll_ci_pipeline: cheap
   never_foreground_poll_deploy: balanced
   never_foreground_poll_long_job: frontier
@@ -230,7 +228,6 @@ scenarios:
   workflow_spawned_review_loads_overlay_skill_set: cheap
   workspace_branch_off_origin_main_not_local: balanced
   workspace_cleanup_removes_worktree: balanced
-  workspace_creates_worktree_for_ticket: balanced
   workspace_fix_cli_not_workaround: balanced
   workspace_provisions_db_via_cli: balanced
   workspace_ready_before_declaring_running: cheap

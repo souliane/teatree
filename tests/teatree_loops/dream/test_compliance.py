@@ -29,8 +29,10 @@ from teatree.loops.dream.compliance import (
     run_compliance_escalation,
     run_compliance_measurement,
 )
+from teatree.loops.dream.gap_phases import GapPromotionPhases
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 from teatree.loops.dream.transcript_extract import high_signal_lines
+from tests.teatree_loops.dream._own_umbrella import claims_self, ours
 
 
 def _memory_snippet(name: str, body: str) -> WeightedSnippet:
@@ -48,7 +50,10 @@ def _extract(*snippets: WeightedSnippet) -> ConsolidationExtract:
 #: A memory-backed rule (a feedback_ slug) whose subject recurs in a fresh
 #: user-correction turn — the recurrence the detector must flag.
 _MEMORY_BODY = (
+    "---\n"
     "name: feedback_askuserquestion_overuse\n"
+    "metadata:\n  type: feedback\n"
+    "---\n"
     "The AskUserQuestion gate must not fire for routine obstacles — make a "
     "reasonable guess and keep working.\n"
 )
@@ -63,9 +68,9 @@ UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
 
 
 def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
-    host = MagicMock(spec=CodeHostBackend)
+    host = claims_self(MagicMock(spec=CodeHostBackend))
     host.search_open_issues.return_value = []
-    host.get_issue.return_value = {"body": body}
+    host.get_issue.return_value = ours({"body": body})
     host.update_issue.return_value = {"number": 2663}
     return host
 
@@ -76,10 +81,10 @@ def _stateful_fake_host() -> CodeHostBackend:
     ``_fake_host`` pins a fixed body, so a repeat pass re-adds the same checkbox and
     never reaches the already-promoted dedup path a multi-pass test is about.
     """
-    host = MagicMock(spec=CodeHostBackend)
+    host = claims_self(MagicMock(spec=CodeHostBackend))
     state = {"body": "## Open gaps\n"}
     host.search_open_issues.return_value = []
-    host.get_issue.side_effect = lambda _issue_url: {"body": state["body"]}
+    host.get_issue.side_effect = lambda _issue_url: ours({"body": state["body"]})
 
     def _update(*, body: str, **_rest: str) -> dict[str, int]:
         state["body"] = body
@@ -128,7 +133,8 @@ class DetectComplianceFailuresTestCase(TestCase):
         # merely happens to share a common word — the correction is still a compliance
         # failure, just a first-occurrence directive, not a memory recurrence.
         memory = (
-            "name: feedback_provision_lease\nThe worktree provision lease claims a pid guard before owner liveness.\n"
+            "---\nname: feedback_provision_lease\nmetadata:\n  type: feedback\n---\n"
+            "The worktree provision lease claims a pid guard before owner liveness.\n"
         )
         violation = (
             '{"type": "user", "content": "stop touching the worktree without asking, you do not follow instructions!!"}'
@@ -146,8 +152,8 @@ class DetectComplianceFailuresTestCase(TestCase):
         # F6.5: attribution is BEST-match, not first-token-wins. The correction shares
         # two distinctive tokens with feedback_beta and only one with feedback_alpha,
         # so the recurrence attributes to feedback_beta.
-        mem_a = "name: feedback_alpha\nThe alphaword lesson about widgets.\n"
-        mem_b = "name: feedback_beta\nThe alphaword and betaword handling.\n"
+        mem_a = "---\nname: feedback_alpha\nmetadata:\n  type: feedback\n---\nThe alphaword lesson about widgets.\n"
+        mem_b = "---\nname: feedback_beta\nmetadata:\n  type: feedback\n---\nThe alphaword and betaword handling.\n"
         violation = (
             '{"type": "user", "content": "stop ignoring the alphaword and betaword rule again, '
             'you do not follow instructions!!"}'
@@ -185,28 +191,38 @@ class EscalateRecurrencesTestCase(TestCase):
             is_recurrence=True,
         )
 
-    def test_one_recurrence_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
+    def test_backed_recurrence_creates_pending_gap_and_escalated_audit_row(self) -> None:
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
+        extract = _extract(
+            _memory_snippet("feedback_askuserquestion_overuse.md", _MEMORY_BODY),
+            _transcript_snippet("session-a.jsonl", _VIOLATION_TURN),
+        )
+        batch = PromotionBatch()
+        phases = GapPromotionPhases(backlog_host_resolver=lambda: (_fake_host(), "souliane/teatree"))
+        phases.run_compliance(extract=extract, dry_run=False, batch=batch)
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
+        umbrella.refresh_from_db()
+        assert len(umbrella.extra["dream_gap_pending"]) == 1
+        assert InstructionComplianceRecord.objects.filter(remediation=RemediationKind.ESCALATION).count() == 1
+
+    def test_one_recurrence_queues_one_structural_gap_for_the_sweep(self) -> None:
         from teatree.core.models.task import Task  # noqa: PLC0415 — deferred: ORM/app-registry, test-local import
 
-        host = _fake_host()
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
         batch = PromotionBatch()
         outcomes = escalate_recurrences([self._recurrence()], batch=batch, umbrella_url=UMBRELLA)
         assert len(outcomes) == 1
         assert outcomes[0].filed is True
-        # Nothing is written/scheduled until the pass mints its single batch ticket.
-        host.create_issue.assert_not_called()
-        host.update_issue.assert_not_called()
 
-        batch_outcome = bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
-        assert batch_outcome.scheduled is True
-        host.create_issue.assert_not_called()
-        host.update_issue.assert_called_once()
-        _, kwargs = host.update_issue.call_args
-        # The checkbox title prescribes a STRUCTURAL fix (a gate or an eval).
-        title = kwargs["body"].lower()
+        batch_outcome = bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
+
+        umbrella.refresh_from_db()
+        assert batch_outcome.queued is True
+        # The queued title prescribes a STRUCTURAL fix (a gate or an eval).
+        title = umbrella.extra["dream_gap_pending"][0]["title"].lower()
         assert "gate" in title or "eval" in title
-        assert Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
-        assert Task.objects.filter(phase="coding").exists()
+        assert not Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
+        assert not Task.objects.exists()
 
     def test_two_recurrences_of_the_same_rule_promote_one_gap(self) -> None:
         batch = PromotionBatch()
@@ -215,20 +231,18 @@ class EscalateRecurrencesTestCase(TestCase):
         assert len(filed) == 1
         assert len(batch.pending) == 1
 
-    def test_a_pre_existing_checkbox_with_no_backing_ticket_is_not_duplicated(self) -> None:
-        # A bare checkbox line with no backing Ticket names nothing in flight, so the
-        # gap is queued and its ticket minted fresh — but the umbrella write dedups by
-        # marker, so no NEW line is appended (nothing to write — the box is already
-        # there), while the fix still gets a real ticket.
-        marker = "<!-- dream-gap compliance-recurrence-feedback_askuserquestion_overuse -->"
-        existing = f"## Open gaps\n- [ ] Compliance recurrence ... {marker}\n"
-        host = _fake_host(body=existing)
-        batch = PromotionBatch()
-        escalate_recurrences([self._recurrence()], batch=batch, umbrella_url=UMBRELLA)
-        outcome = bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
-        assert outcome.checkboxes_added == 0
-        host.update_issue.assert_not_called()
-        assert Ticket.objects.filter(extra__dream_gap_batch__isnull=False).exists()
+    def test_a_recurrence_already_pending_is_not_queued_again(self) -> None:
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
+        first = PromotionBatch()
+        escalate_recurrences([self._recurrence()], batch=first, umbrella_url=UMBRELLA)
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=first)
+
+        second = PromotionBatch()
+        escalate_recurrences([self._recurrence()], batch=second, umbrella_url=UMBRELLA)
+
+        umbrella.refresh_from_db()
+        assert second.pending == []
+        assert len(umbrella.extra["dream_gap_pending"]) == 1
 
     def test_non_recurrence_findings_are_never_escalated(self) -> None:
         first_occurrence = ComplianceFinding(
@@ -311,17 +325,17 @@ class PersistCompliancePassTestCase(TestCase):
         assert row.escalation_url == UMBRELLA
 
     def test_a_recurrence_stays_stamped_escalated_across_passes_once_promoted(self) -> None:
-        # Idempotency is invisible to a single pass: pass 1 promotes the gap for real
-        # (mints the batch ticket); pass 2 detects the SAME recurrence, finds it
-        # already covered by that in-flight ticket, and must keep reading ESCALATION
-        # without double-adding a checkbox or minting a second ticket (#4776).
+        # Idempotency is invisible to a single pass: pass 1 queues the gap for real;
+        # pass 2 detects the SAME recurrence, finds it already pending, and must keep
+        # reading ESCALATION without queueing it twice (#4776).
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
         host = _stateful_fake_host()
         finding = _recurrence("feedback_a")
 
         batch1 = PromotionBatch()
         snapshot1 = persist_compliance_pass([finding], instructions_observed=4)
         run_compliance_escalation(snapshot=snapshot1, findings=[finding], host=host, dry_run=False, batch=batch1)
-        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch1)
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch1)
         row1 = InstructionComplianceRecord.objects.get(snapshot=snapshot1, rule_identity="feedback_a")
         assert row1.remediation == RemediationKind.ESCALATION
 
@@ -332,7 +346,8 @@ class PersistCompliancePassTestCase(TestCase):
         assert row2.remediation == RemediationKind.ESCALATION
         assert row2.escalation_url == UMBRELLA
         assert batch2.pending == []  # already covered — not re-queued
-        assert host.update_issue.call_count == 1  # one checkbox write total, from pass 1
+        umbrella.refresh_from_db()
+        assert len(umbrella.extra["dream_gap_pending"]) == 1
 
     def test_every_row_of_one_rule_is_stamped_not_just_the_first(self) -> None:
         # One row per FINDING is persisted, but escalation dedups to one outcome per
@@ -351,13 +366,14 @@ class PersistCompliancePassTestCase(TestCase):
 
     def test_a_newly_withheld_title_does_not_unstamp_a_riding_recurrence(self) -> None:
         # The banned-terms ruleset is versioned: tonight's pass can withhold a title it
-        # promoted last night, while that checkbox and its coding task stay live (#4176).
+        # promoted last night, while that queued gap stays live (#4176).
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
         host = _stateful_fake_host()
         finding = _recurrence("feedback_a")
         batch1 = PromotionBatch()
         first = persist_compliance_pass([finding], instructions_observed=4)
         run_compliance_escalation(snapshot=first, findings=[finding], host=host, dry_run=False, batch=batch1)
-        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch1)
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch1)
 
         batch2 = PromotionBatch()
         second = persist_compliance_pass([finding], instructions_observed=4)
@@ -366,7 +382,8 @@ class PersistCompliancePassTestCase(TestCase):
         row = InstructionComplianceRecord.objects.get(snapshot=second, rule_identity="feedback_a")
         assert row.remediation == RemediationKind.ESCALATION
         assert row.escalation_url == UMBRELLA
-        assert host.update_issue.call_count == 1
+        umbrella.refresh_from_db()
+        assert len(umbrella.extra["dream_gap_pending"]) == 1
 
 
 class RunComplianceMeasurementTestCase(TestCase):

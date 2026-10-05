@@ -85,6 +85,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 `drain` quiesces admission without stopping anything; `stop` │
 │                 / `restart` end the live worker and verify it against the    │
 │                 flock.                                                       │
+│ deploy          Roll the runtime stack between immutable image generations;  │
+│                 `deploy/roll.sh <rev>` runs it.                              │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
@@ -106,9 +108,9 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 the cadence-gated cron entry point.                          │
 │ mutation        Scoped mutation testing over high-value safety modules.      │
 │ outer           T4 autoresearch outer loop — propose → ratify → implement →  │
-│                 measure → keep-only-if-better. Ships QUADRUPLE-OFF (feature  │
-│                 flag + disabled loop row + off_live_tick + critic/signal     │
-│                 code guards); a full tick is a no-op at defaults.            │
+│                 measure → keep-only-if-better. Runs under the present and    │
+│                 afk presets; the critic-live and score-signal guards refuse  │
+│                 a tick while either is not trustworthy.                      │
 │ directive       Directive-driven self-modification — capture → interpret →   │
 │                 human-ratify → implement → configure → verify →              │
 │                 keep-or-revert. Ships TRIPLE-OFF (disabled loop row +        │
@@ -151,9 +153,7 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ tick             Run one user-manual full-scan tick by hand: scan every      │
 │                  overlay, dispatch, render.                                  │
 │ status           Show the loop's last-rendered statusline.                   │
-│ pending-spawn    List pending Tasks (read-only probe; legacy — prefer        │
-│                  ``claim-next``).                                            │
-│ spawn-claim      Claim a Task by id (legacy — prefer atomic ``claim-next``). │
+│ pending-spawn    List pending Tasks for the Stop hook's read-only probe.     │
 │ start            Spawn a Claude Code session; the t3-master registers each   │
 │                  enabled loop's ``/loop``.                                   │
 │ stop             Print how to stop the durable, worker-driven loops.         │
@@ -176,8 +176,6 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  prefer presets/schedules or `loop override`.                │
 │ disable          Disable a mini-loop durably — EMERGENCY-only; prefer        │
 │                  presets/schedules or `loop override`.                       │
-│ enable           Enable a disabled mini-loop — EMERGENCY-only; prefer        │
-│                  presets/schedules or `loop override`.                       │
 │ override         Set the MANUAL per-loop override (on/off/clear) — the one   │
 │                  handle that beats the preset.                               │
 │ loop-state       Read a known mini-loop's durable state, read-only (ENABLED  │
@@ -192,8 +190,7 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                  this timer is the fallback safety net on a 5m default       │
 │                  cadence, in the same t3-master session as `t3 loop tick`,   │
 │                  on a separate LoopLease so a long answer cycle never blocks │
-│                  a fast regular tick. Complementary to the inbound           │
-│                  prompt-drain, never a double-answer (#1014).                │
+│                  a fast regular tick (#1014).                                │
 │ drain-queue      Reactive DB-queue drain loop — a `/loop` slot that keeps    │
 │                  the django-tasks DB queue advancing without an always-on    │
 │                  `db_worker`. Runs on a tight cadence (default 30s) on the   │

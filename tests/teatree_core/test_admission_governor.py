@@ -15,7 +15,6 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents import _runner_env
 from teatree.agents._runner_env import XDIST_WORKERS_VAR, with_test_worker_cap
 from teatree.core import admission_governor
 from teatree.core.admission import machine_load
@@ -34,14 +33,21 @@ from teatree.core.admission_governor import (
     box_load_headroom,
     decide_admission,
     per_agent_test_workers,
-    pressure_for,
     read_machine_signal,
     resume_agent_ceiling,
     resume_shed_directive,
     weekly_pace,
 )
+from teatree.core.admission_pressure import (
+    SWAP_BRAKE_MIB_PER_S,
+    SWAP_RESUME_MIB_PER_S,
+    VM_PRESSURE_CRITICAL,
+    VM_PRESSURE_NORMAL,
+    VM_PRESSURE_WARN,
+    PressureBand,
+    admission_pressure,
+)
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage
-from teatree.core.models.config_setting import ConfigSetting
 from teatree.utils import ram_scope
 from teatree.utils.ram_scope import RamHeadroom
 from tests._machine_probe import PINNED_AVAILABLE_RAM_MIB, PINNED_CORES, PINNED_LOAD1
@@ -127,13 +133,63 @@ class TestTokenBudgetIsPrimary:
 
 
 class TestMachinePressureIsSecondary:
-    def test_swap_brakes_and_holds_until_ten_percent(self) -> None:
-        melted = _machine(swap_used_fraction=0.26)
-        assert not _decide(machine=melted).admit
-        assert "swap" in _decide(machine=melted).reason
-        held = _machine(swap_used_fraction=0.15)
-        assert not _decide(machine=held, load_brake=MachineBrake(braked=True)).admit
-        assert _decide(machine=_machine(swap_used_fraction=0.09), load_brake=MachineBrake(braked=True)).admit
+    def test_swap_activity_brakes_and_holds_until_the_resume_rate(self) -> None:
+        thrashing = _decide(machine=_machine(swap_mib_per_s=SWAP_BRAKE_MIB_PER_S))
+        assert not thrashing.admit
+        assert thrashing.cause == "swap"
+        braked = MachineBrake(braked=True)
+        between = (SWAP_BRAKE_MIB_PER_S + SWAP_RESUME_MIB_PER_S) / 2
+        assert _decide(machine=_machine(swap_mib_per_s=between)).admit
+        assert not _decide(machine=_machine(swap_mib_per_s=between), load_brake=braked).admit
+        assert _decide(machine=_machine(swap_mib_per_s=SWAP_RESUME_MIB_PER_S * 0.5), load_brake=braked).admit
+
+    def test_idle_swap_admits_however_full_the_swap_file_is(self) -> None:
+        assert _decide(machine=_machine(swap_mib_per_s=0.0, vm_pressure_level=VM_PRESSURE_NORMAL)).admit
+
+    def test_critical_kernel_memory_pressure_halts(self) -> None:
+        decision = _decide(machine=_machine(vm_pressure_level=VM_PRESSURE_CRITICAL))
+        assert not decision.admit
+        assert decision.cause == "memory-pressure"
+
+    def test_warn_kernel_memory_pressure_sheds_without_halting(self) -> None:
+        pressure = admission_pressure(quota=_quota(), machine=_machine(vm_pressure_level=VM_PRESSURE_WARN))
+        assert pressure.band is PressureBand.SHED
+        assert pressure.dominant.name == "memory-pressure"
+
+    def test_critical_kernel_memory_pressure_halts_the_cheap_class_too(self) -> None:
+        exempt = admission_pressure(
+            quota=_quota(),
+            machine=_machine(vm_pressure_level=VM_PRESSURE_CRITICAL),
+            load_brake=MachineBrake(applies=False),
+        )
+        assert exempt.band is PressureBand.HALT
+
+    def test_warn_kernel_memory_pressure_never_touches_the_cheap_class(self) -> None:
+        exempt = admission_pressure(
+            quota=_quota(), machine=_machine(vm_pressure_level=VM_PRESSURE_WARN), load_brake=MachineBrake(applies=False)
+        )
+        assert exempt.band is PressureBand.FULL
+
+    def test_warn_kernel_memory_pressure_sits_at_the_configured_shed_threshold(self) -> None:
+        pressure = admission_pressure(quota=_quota(), machine=_machine(vm_pressure_level=VM_PRESSURE_WARN), shed_at=0.8)
+        assert pressure.value == pytest.approx(0.8)
+        assert pressure.band is PressureBand.SHED
+
+    def test_critical_kernel_pressure_is_named_ahead_of_a_load_brake(self) -> None:
+        # The worker keeps the cheap lane under a load brake; kernel-critical must not be hidden behind one.
+        machine = _machine(load1=8 * 5.0 + 1, vm_pressure_level=VM_PRESSURE_CRITICAL)
+        assert _decide(machine=machine).cause == "memory-pressure"
+
+    def test_host_load_is_judged_against_the_cores_it_was_measured_on(self) -> None:
+        # Load 40 on a 10-core host, read from a 7-CPU container: 4/core, under the 5/core brake.
+        machine = _machine(cores=7, load_cores=10, load1=40.0)
+        assert _decide(machine=machine).admit
+        assert not _decide(machine=_machine(cores=7, load1=40.0)).admit
+
+    def test_high_swap_occupancy_without_paging_still_admits(self) -> None:
+        # Occupancy can remain at 82% after paging stops; only the rate is a signal.
+        assert "swap_used_fraction" not in MachineSignal.__dataclass_fields__
+        assert _decide(machine=_machine(swap_mib_per_s=0.0)).admit
 
     def test_load_above_the_brake_denies_while_quota_is_healthy(self) -> None:
         decision = _decide(machine=_machine(load1=8 * 5.0 + 1))
@@ -271,11 +327,6 @@ class TestTestWorkerCapWiring:
         capped = with_test_worker_cap(None, active_agents=4)
         assert capped is not None
         assert set(capped) == {XDIST_WORKERS_VAR}
-
-    def test_kill_switch_removes_the_cap_entirely(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(admission_governor, "governor_enabled", lambda: False)
-        assert _runner_env.with_test_worker_cap(None, active_agents=4) is None
-        assert _runner_env.with_test_worker_cap({"A": "b"}, active_agents=4) == {"A": "b"}
 
 
 class TestTheExportedCapRespondsToMemory:
@@ -929,74 +980,3 @@ class TestSuiteMachineProbeIsPinned:
         assert signal.ram_available_gb == pytest.approx(1.0)
         assert signal.load1 == pytest.approx(999.0)
         assert signal.cores == 3
-
-
-class TestTheQuotaBrakeSwitch(TestCase):
-    """``admission_quota_brake_enabled`` drops the token brakes and nothing else (#4816).
-
-    An operator whose box authenticates through a lane teatree's quota signal says nothing
-    about must be able to stand that signal down — without also standing down the brakes
-    that keep the box from OOMing.
-    """
-
-    def _set(self, *, enabled: bool) -> None:
-        ConfigSetting.objects.set_value("admission_quota_brake_enabled", value=enabled)
-
-    def test_the_load_brake_survives_the_quota_brake_being_off(self) -> None:
-        self._set(enabled=False)
-
-        decision = _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine(load1=60.0))
-
-        assert not decision.admit
-        assert "load" in decision.reason
-
-    def test_the_memory_brake_survives_the_quota_brake_being_off(self) -> None:
-        self._set(enabled=False)
-
-        decision = _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine(ram_available_gb=1.0))
-
-        assert not decision.admit
-        assert "GB available" in decision.reason, "the memory component names the refusal, not the quota one"
-
-    def test_an_exhausted_fleet_on_a_healthy_box_is_admitted(self) -> None:
-        self._set(enabled=False)
-
-        assert _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine()).admit
-
-    def test_control_the_shipped_default_still_brakes_on_an_exhausted_fleet(self) -> None:
-        assert not _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine()).admit
-
-    def test_control_an_unreadable_setting_keeps_the_brake_on(self) -> None:
-        # Fail-safe: a config read that raises must never silently widen admission.
-        with patch("teatree.config.get_effective_settings", side_effect=RuntimeError("down")):
-            assert not _decide(quota=_quota(all_accounts_exhausted=True), machine=_machine()).admit
-
-    def test_the_metered_family_stands_down_with_the_subscription_one(self) -> None:
-        # ONE switch for the quota FAMILY: an operator turning off "the token brake"
-        # never has to know which lane this box authenticates through.
-        self._set(enabled=False)
-
-        pressure = pressure_for(
-            quota=_quota(),
-            machine=_machine(),
-            metered=MeteredSignal(fresh=True, utilization=2.0, spend_detail="over the ceiling"),
-        )
-
-        assert {component.name for component in pressure.components} == {"load", "memory"}
-
-    def test_control_both_token_families_contribute_while_the_brake_is_on(self) -> None:
-        pressure = pressure_for(
-            quota=_quota(),
-            machine=_machine(),
-            metered=MeteredSignal(fresh=True, utilization=0.1, spend_detail="plenty left"),
-        )
-
-        assert "weekly-quota" in {component.name for component in pressure.components}
-        assert "metered-spend" in {component.name for component in pressure.components}
-
-    def test_control_the_governor_kill_switch_is_a_different_lever(self) -> None:
-        # ``admission_governor_enabled`` is the whole-governor rollback and is untouched
-        # by this split — it still governs from its own seam, not from the pressure fold.
-        self._set(enabled=False)
-
-        assert admission_governor.governor_enabled() is True

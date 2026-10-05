@@ -17,15 +17,19 @@ scanner's broad ``except``, which logged "failed on message" and dropped the
 review-intent signal — so the colleague-MR broadcast dispatched nothing.
 """
 
+import errno
 import time
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import Mock
 
 import pytest
 
 from teatree import paths
 from teatree.core.review.author_trust import classify_author
 from teatree.hooks import _repo_visibility
-from teatree.utils.run import TimeoutExpired
+from teatree.hooks._repo_visibility import PROBE_UNRUNNABLE, ForgeProbe, run_forge_tool
+from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 
 def _raise_timeout(cmd: object, *_args: object, **kwargs: object) -> object:
@@ -62,6 +66,92 @@ class TestProbeTimeoutFailsSafe:
 
         # An unresolvable (timed-out) probe must treat the repo as NOT private, not raise.
         assert _repo_visibility.slug_is_private("github.com/octo/repo") is False
+
+
+class TestOnlyATransientForgeFailureIsAskedAgain:
+    """A timeout, a 5xx, a stalled or dropped connection, or a refused process start is asked again; nothing else is."""
+
+    @pytest.mark.parametrize(
+        ("failure", "cause"),
+        [
+            (CommandFailedError(["glab"], 1, "", "glab: 401 Unauthorized\n"), "exit 1: glab: 401 Unauthorized"),
+            (CommandFailedError(["glab"], 1, "", ""), "exit 1 with no stderr"),
+            (
+                CommandFailedError(["glab"], 1, "", "glab: 404 Not Found (project 512 Widgets)"),
+                "exit 1: glab: 404 Not Found (project 512 Widgets)",
+            ),
+            (OSError(errno.ENOEXEC, "Exec format error"), PROBE_UNRUNNABLE),
+        ],
+    )
+    def test_an_answer_is_not_asked_again_and_is_named(
+        self, monkeypatch: pytest.MonkeyPatch, failure: Exception, cause: str
+    ) -> None:
+        run = Mock(side_effect=[failure, CompletedProcess(["glab"], 0, "[]", "")])
+        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
+
+        assert run_forge_tool("glab", ["api", "user"]) == ForgeProbe(stdout=None, unresolved=cause)
+        assert run.call_count == 1
+
+    @pytest.mark.parametrize(
+        "transient",
+        [
+            TimeoutExpired("glab", 3),
+            CommandFailedError(["gh"], 1, "", "HTTP 502: Bad Gateway (https://api.github.com/user)"),
+            CommandFailedError(["glab"], 1, "", "glab: 503 Service Unavailable"),
+            CommandFailedError(
+                ["glab"], 1, "", "read tcp 10.0.0.2:51234->10.0.0.9:443: read: connection reset by peer"
+            ),
+            CommandFailedError(["glab"], 1, "", "Post https://gitlab.com/api/graphql: Connection reset by peer"),
+            CommandFailedError(["glab"], 1, "", "dial tcp: lookup gitlab.com: Temporary failure in name resolution"),
+            CommandFailedError(["glab"], 1, "", "fork/exec /usr/bin/ssh: Resource temporarily unavailable"),
+            CommandFailedError(["gh"], 1, "", "Get https://api.github.com/user: dial tcp 10.0.0.9:443: i/o timeout"),
+            CommandFailedError(["gh"], 1, "", "Get https://api.github.com/user: net/http: TLS handshake timeout"),
+            CommandFailedError(["glab"], 1, "", "Get https://gitlab.com/api/v4/user: unexpected EOF"),
+            CommandFailedError(
+                ["glab"], 1, "", "context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+            ),
+            BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable"),
+        ],
+    )
+    def test_a_transient_is_asked_again_with_the_same_command(
+        self, monkeypatch: pytest.MonkeyPatch, transient: Exception
+    ) -> None:
+        run = Mock(side_effect=[transient, CompletedProcess(["glab"], 0, '{"username": "us"}', "")])
+        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
+
+        assert run_forge_tool("glab", ["api", "user"]) == ForgeProbe(stdout='{"username": "us"}')
+        first, second = run.call_args_list
+        assert (first.args, first.kwargs["env"]) == (second.args, second.kwargs["env"])
+
+    def test_a_process_start_the_host_refused_is_named_apart_from_a_missing_tool(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        refused = BlockingIOError(errno.EAGAIN, "Resource temporarily unavailable")
+        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", Mock(side_effect=[refused, refused]))
+
+        assert run_forge_tool("glab", ["api", "user"]) == ForgeProbe(
+            stdout=None,
+            unresolved="a process start the host refused (EAGAIN), then a process start the host refused (EAGAIN)",
+        )
+
+    def test_each_attempt_takes_its_own_timeout_from_the_schedule(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        run = Mock(side_effect=_raise_timeout)
+        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
+
+        assert run_forge_tool("glab", ["api", "user"]) == ForgeProbe(
+            stdout=None, unresolved="timeout of 3s, then timeout of 5s"
+        )
+        assert [call.kwargs["timeout"] for call in run.call_args_list] == [3, 5]
+
+    def test_no_attempt_starts_once_the_budget_is_spent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        run = Mock(side_effect=_raise_timeout)
+        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
+        affordable = {3: 2.5}
+
+        assert run_forge_tool("glab", ["api", "user"], budget=affordable.get) == ForgeProbe(
+            stdout=None, unresolved="timeout of 2.5s, then no time left in the hook budget"
+        )
+        assert [call.kwargs["timeout"] for call in run.call_args_list] == [2.5]
 
 
 class TestNegativeVisibilityCaching:
@@ -138,6 +228,14 @@ class TestGitRemoteResolverTimeoutFailsSafe:
 
         assert _repo_visibility._origin_url_via_git(tmp_path) == ""
 
+    def test_the_origin_read_keeps_a_timeout_of_its_own(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        run = Mock(side_effect=_raise_timeout)
+        monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", run)
+
+        _repo_visibility._origin_url_via_git(tmp_path)
+
+        assert run.call_args.kwargs["timeout"] == 5
+
 
 class TestClassifyAuthorSurvivesProbeTimeout:
     """The scanner-facing seam is fail-safe: a timed-out probe yields the untrusted (public) verdict."""
@@ -145,7 +243,7 @@ class TestClassifyAuthorSurvivesProbeTimeout:
     def test_classify_author_does_not_raise_on_probe_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(_repo_visibility, "run_allowed_to_fail", _raise_timeout)
 
-        result = classify_author("team/project", "someone", host_kind="gitlab")
+        result = classify_author("team/project", "someone", pr_url="https://gitlab.com/team/project/pull/1")
 
         # Fail-safe direction: an unresolvable visibility is treated as PUBLIC, so an
         # unknown author is untrusted — the caller keeps dispatching rather than crashing.

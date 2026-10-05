@@ -17,7 +17,9 @@ spend on a metered key. That is why the price lookup here is
 rate has to read *unknown*, not a confidently-wrong figure at the opus fallback rate.
 """
 
+import os
 from dataclasses import dataclass
+from functools import lru_cache
 
 from teatree.core.cost import ModelPrice
 from teatree.eval.models import COST_SOURCE_DERIVED, COST_SOURCE_REPORTED, COST_SOURCE_UNKNOWN
@@ -33,6 +35,43 @@ class CostObservation:
 
 
 UNKNOWN_COST = CostObservation(usd=0.0, source=COST_SOURCE_UNKNOWN)
+
+
+@dataclass(slots=True)
+class ConservativeSuiteBudget:
+    """Reserve a worst-case request cost before dispatch, then settle it to the billed usage."""
+
+    limit_usd: float
+    reserved_usd: float = 0.0
+    exhausted: bool = False
+
+    def reserve(self, model: str, messages: object, parameters: object, max_output_tokens: int) -> float | None:
+        price = ModelPrice.known_for(model)
+        if price is None or max_output_tokens <= 0:
+            self.exhausted = True
+            return None
+        input_bytes = len((str(messages) + str(parameters)).encode("utf-8"))
+        upper_bound = price.cost(cache_write_tokens=input_bytes, output_tokens=max_output_tokens)
+        if self.reserved_usd + upper_bound > self.limit_usd:
+            self.exhausted = True
+            return None
+        self.reserved_usd += upper_bound
+        return upper_bound
+
+    def settle(self, reservation_usd: float, actual_usd: float) -> None:
+        self.reserved_usd += actual_usd - reservation_usd
+
+
+@lru_cache(maxsize=1)
+def suite_budget_from_env() -> ConservativeSuiteBudget | None:
+    raw = os.environ.get("T3_EVAL_SUITE_BUDGET_USD")
+    if raw is None:
+        return None
+    limit = float(raw)
+    if limit <= 0:
+        msg = "T3_EVAL_SUITE_BUDGET_USD must be positive"
+        raise ValueError(msg)
+    return ConservativeSuiteBudget(limit)
 
 
 def observe_cost(

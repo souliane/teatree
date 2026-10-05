@@ -1,7 +1,7 @@
 """The REVERT flow — instant config rollback + human-ratified code revert (north-star PR-7).
 
-Mirrors :mod:`teatree.loops.outer_loop.revert`. A directive that failed verification
-enters ``REVERT_PENDING`` with its overlay config ALREADY rolled back (the reversible
+A directive that failed verification enters ``REVERT_PENDING`` with its overlay
+config ALREADY rolled back (the reversible
 half — done at :func:`teatree.loops.directive_loop.verify.rollback_and_request_revert`).
 :func:`ask_revert` records the revert :class:`DeferredQuestion` (so a ``REVERT_PENDING``
 directive visibly asks a human rather than dead-ending and holding the loop forever);

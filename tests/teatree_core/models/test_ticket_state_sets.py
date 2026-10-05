@@ -8,8 +8,9 @@ the walk and is reported in the returned ``AdvanceResult`` — never raised.
 
 from django.test import TestCase
 
-from teatree.core.models import ConfigSetting, Ticket
+from teatree.core.models import Ticket
 from teatree.core.models.ticket_state_sets import AdvanceResult
+from tests.factories import MergeAuditFactory
 
 
 class TestAdvanceToDelivered(TestCase):
@@ -25,8 +26,8 @@ class TestAdvanceToDelivered(TestCase):
         assert not result.refused
 
     def test_shipped_ticket_walks_all_ungated_steps(self) -> None:
-        # With the merge-evidence gate off (the default) the whole chain advances.
         ticket = Ticket.objects.create(overlay="test", issue_url="https://x/2", state=Ticket.State.PR_OPENED)
+        MergeAuditFactory(clear__ticket=ticket)
 
         result = ticket.advance_to_delivered()
 
@@ -38,7 +39,6 @@ class TestAdvanceToDelivered(TestCase):
 
     def test_mid_chain_refusal_reports_persisted_partial_state(self) -> None:
         # The merge-evidence gate refuses ``mark_merged`` for an evidence-less ticket.
-        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
         ticket = Ticket.objects.create(overlay="test", issue_url="https://x/3", state=Ticket.State.PR_OPENED)
 
         result = ticket.advance_to_delivered()

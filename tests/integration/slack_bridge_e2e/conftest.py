@@ -1,8 +1,7 @@
 """Shared infra for the Slack messaging-bridge integration fortress (#1057).
 
 This package exercises the inbound bridge (Slack DM →
-``PendingChatInjection`` → ``UserPromptSubmit`` drain → agent
-``additionalContext``) AND the outbound bridge (``notify_user`` →
+``PendingChatInjection`` row for the Slack answer loop) AND the outbound bridge (``notify_user`` →
 backend ``post_message`` → Slack ``chat.postMessage``) end-to-end with a
 fake Slack transport bolted onto the ``httpx`` boundary so the only
 thing mocked is the network. Every other layer — the real
@@ -42,6 +41,7 @@ from typing import Any
 import httpx
 import pytest
 
+from hooks.scripts.hook_router import _write_loop_registry
 from teatree.backends.slack import http as slack_http
 from teatree.config.enums import Autonomy
 from teatree.config.settings import TeaTreeConfig, UserSettings
@@ -219,7 +219,7 @@ def _own_loop(session_id: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     registry_dir = tmp_path / "loop_registry"
     registry_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(registry_dir))
-    router._write_loop_registry(
+    _write_loop_registry(
         {
             router._OWNER_LOOP: {
                 "session_id": session_id,

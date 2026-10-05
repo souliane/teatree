@@ -3,7 +3,6 @@
 import json
 from dataclasses import dataclass
 from io import StringIO
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -11,7 +10,6 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
-from teatree.utils.postgres_secret import PostgresPasswordUnavailableError
 
 
 @dataclass
@@ -220,131 +218,3 @@ class TestEnvCheck(TestCase):
             call_command("env", "check", "--path", "/tmp/wt/repo", stderr=err)
         assert exc_info.value.code == 1
         assert "env cache stale at /tmp/cache" in err.getvalue()
-
-
-class TestEnvMigrateSecrets(TestCase):
-    """The ``migrate-secrets`` subcommand moves literals into ``pass`` and refreshes the cache.
-
-    These tests provision a real ticket + worktree row, write a tiny
-    ``.t3-env.cache`` to ``tmp_path``, and patch only the ``pass`` boundary
-    (writing to a fake password store). Verifies that the literal disappears
-    from the regenerated cache and that the canonical pass key is stored.
-    """
-
-    def test_single_worktree_migration_writes_to_pass_and_regenerates_cache(self) -> None:
-        from tempfile import TemporaryDirectory  # noqa: PLC0415
-
-        from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
-
-        with TemporaryDirectory() as tmp:
-            ticket_dir = Path(tmp) / "ticket-42"
-            ticket_dir.mkdir()
-            wt_path = ticket_dir / "backend"
-            wt_path.mkdir()
-            cache_dir = ticket_dir / CACHE_DIRNAME / wt_path.name
-            cache_dir.mkdir(parents=True)
-            cache_file = cache_dir / CACHE_FILENAME
-            cache_file.write_text("FOO=bar\nPOSTGRES_PASSWORD=swordfish\n", encoding="utf-8")
-
-            ticket = Ticket.objects.create(overlay="teatree", issue_url="https://example.com/issues/42")
-            wt = Worktree.objects.create(
-                overlay="teatree",
-                ticket=ticket,
-                repo_path="backend",
-                branch="ac-test",
-                db_name="wt_42",
-                extra={"worktree_path": str(wt_path)},
-            )
-
-            stored: dict[str, str] = {}
-
-            def _fake_write_pass(key: str, value: str) -> bool:
-                stored[key] = value
-                return True
-
-            with (
-                patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
-                patch("teatree.utils.secrets.write_pass", side_effect=_fake_write_pass),
-                patch("teatree.utils.secrets.read_pass", side_effect=lambda key: stored.get(key, "")),
-            ):
-                call_command("env", "migrate-secrets", "--path", str(wt_path))
-
-            # Pass key is ticket-pk-scoped (canonical, unique), not ticket_number.
-            assert stored == {f"teatree/wt/{wt.ticket_id}/postgres": "swordfish"}
-            new_body = cache_file.read_text(encoding="utf-8")
-            assert "POSTGRES_PASSWORD=swordfish" not in new_body
-            assert f"POSTGRES_PASSWORD_PASS_KEY=teatree/wt/{wt.ticket_id}/postgres" in new_body
-
-    def test_reports_already_migrated_when_no_literal_present(self) -> None:
-        from tempfile import TemporaryDirectory  # noqa: PLC0415
-
-        from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
-
-        with TemporaryDirectory() as tmp:
-            ticket_dir = Path(tmp) / "ticket-7"
-            ticket_dir.mkdir()
-            wt_path = ticket_dir / "backend"
-            wt_path.mkdir()
-            cache_dir = ticket_dir / CACHE_DIRNAME / wt_path.name
-            cache_dir.mkdir(parents=True)
-            cache_file = cache_dir / CACHE_FILENAME
-            cache_file.write_text(
-                "FOO=bar\nPOSTGRES_PASSWORD_PASS_KEY=teatree/wt/7/postgres\n",
-                encoding="utf-8",
-            )
-
-            ticket = Ticket.objects.create(overlay="teatree", issue_url="https://example.com/issues/7")
-            wt = Worktree.objects.create(
-                overlay="teatree",
-                ticket=ticket,
-                repo_path="backend",
-                branch="ac-test",
-                db_name="wt_7",
-                extra={"worktree_path": str(wt_path)},
-            )
-
-            with (
-                patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
-                patch("teatree.utils.secrets.write_pass") as mock_write,
-            ):
-                call_command("env", "migrate-secrets", "--path", str(wt_path))
-
-            mock_write.assert_not_called()
-
-    def test_exits_non_zero_when_pass_not_available(self) -> None:
-        from tempfile import TemporaryDirectory  # noqa: PLC0415
-
-        from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
-
-        with TemporaryDirectory() as tmp:
-            ticket_dir = Path(tmp) / "ticket-99"
-            ticket_dir.mkdir()
-            wt_path = ticket_dir / "backend"
-            wt_path.mkdir()
-            cache_dir = ticket_dir / CACHE_DIRNAME / wt_path.name
-            cache_dir.mkdir(parents=True)
-            cache_file = cache_dir / CACHE_FILENAME
-            cache_file.write_text("POSTGRES_PASSWORD=needs-migration\n", encoding="utf-8")
-
-            ticket = Ticket.objects.create(overlay="teatree", issue_url="https://example.com/issues/99")
-            wt = Worktree.objects.create(
-                overlay="teatree",
-                ticket=ticket,
-                repo_path="backend",
-                branch="ac-test",
-                db_name="wt_99",
-                extra={"worktree_path": str(wt_path)},
-            )
-
-            with (
-                patch("teatree.core.management.commands.env.resolve_worktree", return_value=wt),
-                patch(
-                    "teatree.core.management.commands.env.ensure_postgres_pass_entry",
-                    side_effect=PostgresPasswordUnavailableError("pass missing"),
-                ),
-                pytest.raises(SystemExit) as exc_info,
-            ):
-                call_command("env", "migrate-secrets", "--path", str(wt_path))
-            assert exc_info.value.code == 1
-            # Literal must not be wiped — caller needs to retry once pass is configured.
-            assert "POSTGRES_PASSWORD=needs-migration" in cache_file.read_text(encoding="utf-8")

@@ -96,22 +96,20 @@ def _rename_modes(apps, schema_editor) -> None:
         if mode.filter(name=new).exists():
             # The successor name is already taken (an operator's own row): keep theirs
             # rather than colliding on the unique name.
-            row.delete()
+            mode.filter(pk=row.pk).delete()
         else:
-            row.name = new
-            row.save(update_fields=["name"])
+            mode.filter(pk=row.pk).update(name=new)
         renamed[old] = new
     for old, new in _MERGED:
         row = mode.filter(name=old).first()
         if row is not None:
             if mode.filter(name=new).exists() or not _is_referenced(apps, db, old):
-                row.delete()
+                mode.filter(pk=row.pk).delete()
             else:
                 # Something points AT this row and there is nothing to merge it into, so
                 # the repoint below would name an absent preset and fail OPEN to base
                 # config — full intake under the hold. Carry the row across instead.
-                row.name = new
-                row.save(update_fields=["name"])
+                mode.filter(pk=row.pk).update(name=new)
         renamed[old] = new
     mode.filter(name__in=_DROPPED).delete()
 
@@ -121,8 +119,7 @@ def _rename_modes(apps, schema_editor) -> None:
     row = mode.filter(name="maintenance").first()
     if row is not None:
         entries = dict(row.entries) if isinstance(row.entries, dict) else {}
-        row.entries = {**entries, **_MAINTENANCE_ENTRIES}
-        row.save(update_fields=["entries"])
+        mode.filter(pk=row.pk).update(entries={**entries, **_MAINTENANCE_ENTRIES})
 
     _repoint_references(apps, db, renamed)
 
@@ -157,8 +154,7 @@ def _repoint_references(apps, db: str, renamed: dict[str, str]) -> None:
     old_name, new_name = _SCHEDULE_RENAME
     row = schedule.filter(name=old_name).first()
     if row is not None and not schedule.filter(name=new_name).exists():
-        row.name = new_name
-        row.save(update_fields=["name"])
+        schedule.filter(pk=row.pk).update(name=new_name)
         setting.filter(key=_SCHEDULE_VALUED_SETTING, value=old_name).update(value=new_name)
     shipped, replacement = _SCHEDULE_DESCRIPTIONS
     schedule.filter(name=new_name, description=shipped).update(description=replacement)

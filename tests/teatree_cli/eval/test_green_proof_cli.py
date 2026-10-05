@@ -103,6 +103,30 @@ class TestGreenProofCli:
         assert result.exit_code == 1, result.output
         assert "NOT A GREEN PROOF" in result.output
 
+    def test_weekly_incomplete_coverage_exits_75(self, tmp_path: Path) -> None:
+        path = _write(tmp_path, _green_payload())
+        with _catalog_of(3):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path), "--incomplete-exit-code", "75"])
+        assert result.exit_code == 75, result.output
+        assert "coverage incomplete" in result.output
+
+    @pytest.mark.parametrize("red", [False, True])
+    def test_complete_catalog_with_incomplete_rows_preserves_red_precedence(self, tmp_path: Path, *, red: bool) -> None:
+        payload = _green_payload()
+        payload["scenarios"][1].update(verdict="incomplete", outcome="UNVERIFIED", triage_class="behavioral")
+        payload["totals"] = {"total": 2, "passed": 1, "failed": 0, "skipped": 0, "incomplete": 1}
+        if red:
+            payload["scenarios"][0].update(verdict="fail", outcome="BEHAVIOR_FAIL", triage_class="behavioral")
+            payload["totals"].update(passed=0, failed=1)
+        path = _write(tmp_path, payload)
+
+        with _catalog_of(2):
+            result = CliRunner().invoke(app, ["eval", "green-proof", str(path), "--incomplete-exit-code", "75"])
+
+        assert result.exit_code == (1 if red else 75), result.output
+        assert "NOT A GREEN PROOF" in result.output
+        assert "IDs, versions, uniqueness, SHA and totals must all match" not in result.output
+
     def test_a_red_run_exits_nonzero(self, tmp_path: Path) -> None:
         payload = _green_payload()
         payload["totals"] = {"total": 2, "passed": 1, "failed": 1, "skipped": 0}

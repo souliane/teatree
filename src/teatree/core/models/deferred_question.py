@@ -25,13 +25,15 @@ audited — so the team can reason about all four (DB, on-behalf, merge,
 question) as the same primitive.
 """
 
+import logging
 from functools import partial
 from typing import TYPE_CHECKING, ClassVar
 
-from django.db import models, transaction
+from django.db import DatabaseError, models, transaction
 from django.db.models import Max
 from django.utils import timezone
 
+from teatree import answer_handback
 from teatree.core.models.question_text import (  # noqa: F401 — public re-exports
     is_tool_lack_selfreport,
     question_fingerprint,
@@ -39,7 +41,10 @@ from teatree.core.models.question_text import (  # noqa: F401 — public re-expo
 from teatree.core.telemetry.admission import record_lifecycle_transition
 
 if TYPE_CHECKING:
+    from teatree.core.models.session import Session
     from teatree.core.models.task import Task
+
+logger = logging.getLogger(__name__)
 
 
 class DeferredQuestionError(ValueError):
@@ -108,6 +113,16 @@ class DeferredQuestion(models.Model):
         blank=True,
         related_name="deferred_questions",
     )
+    task_session = models.ForeignKey(
+        "core.Session",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    if TYPE_CHECKING:
+        parked_task_id: int | None
+        task_session_id: int | None
     resolved_via = models.CharField(
         max_length=8,
         blank=True,
@@ -176,6 +191,7 @@ class DeferredQuestion(models.Model):
         run_id: str = "",
         dedupe_marker: str = "",
         parked_task: "Task | None" = None,
+        task_session: "Session | None" = None,
         audience: str = Audience.OWNER_QUESTION,
     ) -> "DeferredQuestion":
         """The single guarded factory for a queued question.
@@ -202,6 +218,9 @@ class DeferredQuestion(models.Model):
         if not clean_question:
             msg = "question is required and must be non-empty (#58)"
             raise DeferredQuestionError(msg)
+        if session_id.isdigit():
+            msg = f"session_id {session_id!r} names a teatree Session; pass it as task_session"
+            raise DeferredQuestionError(msg)
 
         with transaction.atomic():
             if dedupe_marker:
@@ -224,6 +243,7 @@ class DeferredQuestion(models.Model):
                 run_id=run_id or "",
                 dedupe_marker=dedupe_marker or "",
                 parked_task=parked_task,
+                task_session=task_session,
                 audience=audience or cls.Audience.OWNER_QUESTION,
             )
             transaction.on_commit(
@@ -427,9 +447,7 @@ class DeferredQuestion(models.Model):
         Wraps :meth:`consume` (the single-use CAS that stamps
         ``answered_at`` + ``answer_text``) and additionally records
         ``resolved_via``. Returns the consumed row, or ``None`` when the
-        row was already resolved (a concurrent answer won). ``applied_at``
-        is stamped separately by the UserPromptSubmit drain — this marks
-        the answer *recorded*, not yet *delivered* back to a session.
+        row was already resolved (a concurrent answer won).
         """
         with transaction.atomic():
             row = type(self).consume(self.pk, answer=answer)
@@ -439,30 +457,23 @@ class DeferredQuestion(models.Model):
             row.save(update_fields=["resolved_via"])
             return row
 
-    @classmethod
-    def answered_not_applied(cls, *, session_id: str = "") -> models.QuerySet["DeferredQuestion"]:
-        """Rows answered but whose answer has not yet been delivered to a session.
+    def mark_posted(self) -> bool:
+        """Stamp ``applied_at``: the answer was posted to the asking session's mailbox (not that it was read)."""
+        manager = type(self).objects.using(self._state.db)
+        return bool(manager.filter(pk=self.pk, applied_at__isnull=True).update(applied_at=timezone.now()))
 
-        The UserPromptSubmit drain reads these to emit each resolved
-        answer into ``additionalContext`` exactly once. Scoped to
-        *session_id* when given (an empty session matches every row, the
-        v1 single-session path).
-        """
-        qs = cls.objects.filter(answered_at__isnull=False, applied_at__isnull=True).order_by("created_at")
-        if session_id:
-            qs = qs.filter(session_id=session_id)
-        return qs
-
-    @classmethod
-    def mark_applied(cls, question_id: int) -> bool:
-        """Stamp ``applied_at`` single-use; ``True`` on the transition, else ``False``.
-
-        The at-most-once gate for delivering an answer back into a
-        session's ``additionalContext`` (``UPDATE … WHERE applied_at IS
-        NULL``): a concurrent second drain sees 0 rows updated and emits
-        nothing.
-        """
-        return bool(cls.objects.filter(pk=question_id, applied_at__isnull=True).update(applied_at=timezone.now()))
+    def post_to_asking_session(self) -> None:
+        try:
+            answer_handback.post(session_id=self.session_id, question_id=self.pk, answer=self.answer_text)
+        except (OSError, ValueError):
+            logger.warning(
+                "Answer to question %s was not posted to session %s", self.pk, self.session_id, exc_info=True
+            )
+            return
+        try:
+            self.mark_posted()
+        except DatabaseError:
+            logger.warning("Answer to question %s was posted but not stamped as posted", self.pk, exc_info=True)
 
     @classmethod
     def pending(cls, *, using: str | None = None) -> models.QuerySet["DeferredQuestion"]:
@@ -511,6 +522,8 @@ class DeferredQuestion(models.Model):
                 row.answer_text = answer
                 row.save(update_fields=["answered_at", "answer_text"], using=using)
                 kind = "question.answered"
+                if row.session_id and row.parked_task_id is None:
+                    transaction.on_commit(row.post_to_asking_session, using=using, robust=True)
             else:
                 row.dismissed_at = now
                 row.dismissed_reason = dismissed_reason

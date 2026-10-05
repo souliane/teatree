@@ -17,6 +17,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from teatree.eval.artifact_redaction import redact_artifact, write_artifact
 from teatree.eval.summaries import merge_summaries
 
 __all__ = ["main"]
@@ -36,9 +37,9 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     dashboard = merge_summaries(args.inputs, run_url=args.run_url, sha=args.sha, generated_at=args.generated_at)
     if args.out is not None:
-        Path(args.out).write_text(dashboard, encoding="utf-8")
+        write_artifact(Path(args.out), dashboard)
     else:
-        print(dashboard)
+        print(redact_artifact(dashboard))
     return 0
 
 

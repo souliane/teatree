@@ -27,7 +27,7 @@ import pytest
 from django.test import TestCase
 from django_fsm import TransitionNotAllowed
 
-from teatree.core.management.commands.e2e import _build_e2e_env
+from teatree.core.management.commands._e2e_runners import build_e2e_env as _build_e2e_env
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayE2E, OverlayRuntime, ProvisionStep, RunCommands
 from teatree.core.provision.provision_report import StepResult

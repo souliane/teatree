@@ -33,6 +33,7 @@ from teatree.loop.review_claim import (
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import posture_permits_cm
 
 
@@ -45,6 +46,7 @@ class _GateOffTestCase(TestCase):
 
     def setUp(self) -> None:
         self.enterContext(posture_permits_cm())
+        allow_slack_channels(CHANNEL)
 
 
 CHANNEL = "C0REVIEW"

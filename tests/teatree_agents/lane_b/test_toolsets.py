@@ -173,7 +173,7 @@ class TestMaxDenialsThreadedFromConfig:
 
 
 _SKILL_PATH_RE = re.compile(r"(?<![\w.-])skills/[a-z0-9_-]+/(?:SKILL\.md|references/[A-Za-z0-9_.-]+\.md)")
-_QUARANTINED_PHASES = ("directive_reading", "short_describe")
+_QUARANTINED_PHASES = ("short_describe",)
 
 
 def _rendered_context(phase: str) -> str:

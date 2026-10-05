@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.core.models.plan_decision import refuse_unplanned_mint
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 
@@ -47,13 +48,17 @@ def enqueue_phase_task(
     reason: str,
     agent_id: str = "phase-handoff",
 ) -> Task:
-    """Create the phase task for *ticket*, on the ticket's canonical phase session."""
+    """Create the phase task for *ticket*, on the ticket's canonical phase session.
+
+    An implementing phase on a ticket with no plan decision raises ``NoPlanArtifactError``.
+    """
     if not phase.strip():
         msg = "phase is required (scoping, coding, testing, reviewing, or shipping)."
         raise TaskEnqueueError(msg)
     if not reason.strip():
         msg = "a non-blank reason is required — it is the prompt body the worker receives."
         raise TaskEnqueueError(msg)
+    refuse_unplanned_mint(ticket, phase=phase)
     session = ticket.resolve_phase_session(agent_id=agent_id)
     return Task.objects.create(
         ticket=ticket,

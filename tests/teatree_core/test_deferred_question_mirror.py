@@ -11,7 +11,6 @@ import hashlib
 import json
 
 import pytest
-from django.utils import timezone
 
 from teatree.core.models.deferred_question import DeferredQuestion
 
@@ -175,10 +174,11 @@ class TestRecordBackwardCompatible:
         assert row.resolved_via == ""
         assert row.applied_at is None
 
-    def test_applied_at_marks_delivery(self) -> None:
+    def test_mark_posted_stamps_the_hand_back_once(self) -> None:
         row = DeferredQuestion.record("q", session_id="s", run_id="r", generation=1)
         row.apply_answer("Yes", resolved_via="slack")
-        now = timezone.now()
-        DeferredQuestion.objects.filter(pk=row.pk, applied_at__isnull=True).update(applied_at=now)
+
+        assert row.mark_posted() is True
+        assert row.mark_posted() is False
         row.refresh_from_db()
         assert row.applied_at is not None

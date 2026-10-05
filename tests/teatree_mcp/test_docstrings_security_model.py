@@ -10,7 +10,7 @@ from pathlib import Path
 
 import teatree.mcp
 import teatree.mcp.server
-from teatree.mcp import build_server
+from teatree.mcp.server import build_server
 
 
 def _collapsed(text: str) -> str:

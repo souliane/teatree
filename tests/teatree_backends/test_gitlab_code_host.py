@@ -2,6 +2,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.backends.gitlab import subissues as _subissues
 from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.backends.gitlab.discussions import (
     _count_unresolved_resolvable_threads,
@@ -9,6 +10,7 @@ from teatree.backends.gitlab.discussions import (
     thread_opened_solely_by,
 )
 from teatree.core.backend_protocols import BackendResolutionError, DraftState, PullRequestSpec
+from teatree.core.self_forge_identities import ExternalIssueRefusedError
 
 
 def _project() -> ProjectInfo:
@@ -183,6 +185,22 @@ def test_update_issue_puts_the_description() -> None:
 
     assert result == {"iid": 3}
     client.put_json.assert_called_once_with("projects/42/issues/3", {"description": "new umbrella body"})
+
+
+def test_a_work_item_url_is_read_and_written_as_the_same_issue() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_issue.return_value = {"iid": 249, "description": "umbrella"}
+    client.put_json.return_value = {"iid": 249}
+    host = GitLabCodeHost(client=client)
+    url = "https://gitlab.com/org/sub/repo/-/work_items/249"
+
+    assert host.get_issue(url) == {"iid": 249, "description": "umbrella"}
+    assert host.update_issue(issue_url=url, body="folded") == {"iid": 249}
+
+    client.resolve_project.assert_called_with("org/sub/repo")
+    client.get_issue.assert_called_once_with(42, 249)
+    client.put_json.assert_called_once_with("projects/42/issues/249", {"description": "folded"})
 
 
 def test_update_issue_returns_error_when_project_not_resolved() -> None:
@@ -505,6 +523,40 @@ def test_create_pr_uses_explicit_slug_when_repo_has_namespace() -> None:
 
     client.resolve_project.assert_called_once_with("org/nested/repo")
     client.resolve_project_from_remote.assert_not_called()
+
+
+def test_create_sub_issue_refuses_a_colleagues_parent_before_any_forge_write() -> None:
+    """The child-link inverse case: nesting under someone else's ticket is a mutation too (#162 rule 5)."""
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    with patch(
+        "teatree.backends.gitlab.client.require_self_authored_issue",
+        side_effect=ExternalIssueRefusedError(
+            "https://gitlab.com/org/repo/-/issues/8", "someone.else", "not authored by the owner or the factory bot"
+        ),
+    ) as guard:
+        result = host.create_sub_issue(parent_url="https://gitlab.com/org/repo/-/issues/8", title="child", body="")
+
+    assert "error" in result
+    guard.assert_called_once_with(host=host, issue_url="https://gitlab.com/org/repo/-/issues/8")
+    client.resolve_project.assert_not_called()
+    client.graphql.assert_not_called()
+
+
+def test_create_sub_issue_proceeds_past_the_guard_for_an_owned_parent() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    with (
+        patch("teatree.backends.gitlab.client.require_self_authored_issue", return_value={}) as guard,
+        patch.object(_subissues, "create_child", return_value={"iid": 9, "web_url": "x"}) as create_child,
+    ):
+        result = host.create_sub_issue(parent_url="https://gitlab.com/org/repo/-/issues/8", title="child", body="")
+
+    guard.assert_called_once_with(host=host, issue_url="https://gitlab.com/org/repo/-/issues/8")
+    create_child.assert_called_once()
+    assert result == {"iid": 9, "web_url": "x"}
 
 
 def test_get_issue_parses_url_and_calls_api() -> None:
@@ -1161,7 +1213,18 @@ def _graphql_router(*, child_iid: int, convert_errors=None, link_errors=None):
     return _route
 
 
-def _host_for_create_sub(child_iid: int = 8546, **kwargs) -> tuple[GitLabCodeHost, MagicMock]:
+def _skip_identity_guard(monkeypatch: "pytest.MonkeyPatch") -> None:
+    """These tests cover the create/convert/link mechanics; the guard has its own tests above."""
+    monkeypatch.setattr(
+        "teatree.backends.gitlab.client.require_self_authored_issue",
+        lambda *, host, issue_url: {},
+    )
+
+
+def _host_for_create_sub(
+    monkeypatch: "pytest.MonkeyPatch", child_iid: int = 8546, **kwargs
+) -> tuple[GitLabCodeHost, MagicMock]:
+    _skip_identity_guard(monkeypatch)
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
     client.post_json.return_value = {
@@ -1172,8 +1235,8 @@ def _host_for_create_sub(child_iid: int = 8546, **kwargs) -> tuple[GitLabCodeHos
     return GitLabCodeHost(client=client), client
 
 
-def test_create_sub_issue_creates_converts_and_links() -> None:
-    host, client = _host_for_create_sub()
+def test_create_sub_issue_creates_converts_and_links(monkeypatch: "pytest.MonkeyPatch") -> None:
+    host, client = _host_for_create_sub(monkeypatch)
 
     result = host.create_sub_issue(parent_url=_PARENT_URL, title="Finding 1", body="desc", labels=["sec"])
 
@@ -1189,38 +1252,39 @@ def test_create_sub_issue_creates_converts_and_links() -> None:
     assert link_call.args[1] == {"id": _CHILD_GID, "parentId": _PARENT_GID}
 
 
-def test_create_sub_issue_rejects_non_gitlab_url() -> None:
-    host, _ = _host_for_create_sub()
+def test_create_sub_issue_rejects_non_gitlab_url(monkeypatch: "pytest.MonkeyPatch") -> None:
+    host, _ = _host_for_create_sub(monkeypatch)
     result = host.create_sub_issue(parent_url="https://example.com/foo", title="t", body="")
     assert result == {"error": "Not a GitLab issue URL: https://example.com/foo"}
 
 
-def test_create_sub_issue_errors_on_unknown_type() -> None:
-    host, _ = _host_for_create_sub()
+def test_create_sub_issue_errors_on_unknown_type(monkeypatch: "pytest.MonkeyPatch") -> None:
+    host, _ = _host_for_create_sub(monkeypatch)
     result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="", child_type="Bogus")
     assert result == {"error": "Unknown work item type: Bogus"}
 
 
-def test_create_sub_issue_surfaces_convert_errors() -> None:
-    host, _ = _host_for_create_sub(convert_errors=["not allowed"])
+def test_create_sub_issue_surfaces_convert_errors(monkeypatch: "pytest.MonkeyPatch") -> None:
+    host, _ = _host_for_create_sub(monkeypatch, convert_errors=["not allowed"])
     result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
     assert result == {"error": "Convert to Task failed: not allowed"}
 
 
-def test_create_sub_issue_surfaces_link_errors() -> None:
-    host, _ = _host_for_create_sub(link_errors=["it's not allowed to add this type of parent item"])
+def test_create_sub_issue_surfaces_link_errors(monkeypatch: "pytest.MonkeyPatch") -> None:
+    host, _ = _host_for_create_sub(monkeypatch, link_errors=["it's not allowed to add this type of parent item"])
     result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
     assert result == {"error": "Parent link failed: it's not allowed to add this type of parent item"}
 
 
-def test_create_sub_issue_errors_when_create_returns_no_iid() -> None:
-    host, client = _host_for_create_sub()
+def test_create_sub_issue_errors_when_create_returns_no_iid(monkeypatch: "pytest.MonkeyPatch") -> None:
+    host, client = _host_for_create_sub(monkeypatch)
     client.post_json.return_value = {"web_url": "https://gitlab.com/org/repo/-/issues/9"}
     result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
     assert "no iid" in result["error"]
 
 
-def test_create_sub_issue_errors_when_project_unresolved() -> None:
+def test_create_sub_issue_errors_when_project_unresolved(monkeypatch: "pytest.MonkeyPatch") -> None:
+    _skip_identity_guard(monkeypatch)
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = None
     host = GitLabCodeHost(client=client)
@@ -1228,7 +1292,8 @@ def test_create_sub_issue_errors_when_project_unresolved() -> None:
     assert result == {"error": "Could not resolve project: org/repo"}
 
 
-def test_create_sub_issue_errors_when_parent_gid_unresolved() -> None:
+def test_create_sub_issue_errors_when_parent_gid_unresolved(monkeypatch: "pytest.MonkeyPatch") -> None:
+    _skip_identity_guard(monkeypatch)
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
     client.graphql.return_value = {"data": {"project": {"workItems": {"nodes": []}}}}
@@ -1237,14 +1302,15 @@ def test_create_sub_issue_errors_when_parent_gid_unresolved() -> None:
     assert result == {"error": f"Could not resolve parent work item: {_PARENT_URL}"}
 
 
-def test_create_sub_issue_propagates_create_issue_error() -> None:
-    host, _ = _host_for_create_sub()
+def test_create_sub_issue_propagates_create_issue_error(monkeypatch: "pytest.MonkeyPatch") -> None:
+    host, _ = _host_for_create_sub(monkeypatch)
     with patch.object(host, "create_issue", return_value={"error": "Could not resolve project: org/repo"}):
         result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
     assert result == {"error": "Could not resolve project: org/repo"}
 
 
-def test_create_sub_issue_errors_when_child_gid_unresolved() -> None:
+def test_create_sub_issue_errors_when_child_gid_unresolved(monkeypatch: "pytest.MonkeyPatch") -> None:
+    _skip_identity_guard(monkeypatch)
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
     client.post_json.return_value = {"iid": 8546, "web_url": "https://gitlab.com/org/repo/-/work_items/8546"}
@@ -1617,16 +1683,9 @@ def test_fetch_pr_draft_state_reads_the_draft_flag_over_http() -> None:
     client.get_json.assert_called_once_with("projects/42/merge_requests/12")
 
 
-def test_fetch_pr_draft_state_accepts_the_legacy_work_in_progress_field() -> None:
-    client = MagicMock(spec=GitLabAPI)
-    client.get_json.return_value = {"work_in_progress": True}
-
-    assert _draft_host(client).fetch_pr_draft_state(slug="org/repo", pr_id=12) is DraftState.DRAFT
-
-
 def test_fetch_pr_draft_state_confirms_a_non_draft() -> None:
     client = MagicMock(spec=GitLabAPI)
-    client.get_json.return_value = {"draft": False, "work_in_progress": False}
+    client.get_json.return_value = {"draft": False}
 
     assert _draft_host(client).fetch_pr_draft_state(slug="org/repo", pr_id=12) is DraftState.NOT_DRAFT
 

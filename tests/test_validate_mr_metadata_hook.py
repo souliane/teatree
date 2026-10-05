@@ -11,13 +11,14 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts import gate_result, mr_validator, t3_invocation
+from hooks.scripts import gate_result, hook_budget, mr_validator, t3_invocation
 from hooks.scripts.forge_api_detect import _is_existing_pr_metadata_only_edit
 from hooks.scripts.gate_result import GateSkipped
 from hooks.scripts.hook_router import handle_validate_mr_metadata
@@ -255,7 +256,7 @@ class TestValidatorTimeoutIsNotADeny:
     class as "ran but crashed" (crash ≠ deny, #1528), not a policy rejection.
     """
 
-    def _timeout_run(self, monkeypatch, allowance: int = 60):
+    def _timeout_run(self, monkeypatch, allowance: float = 60):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
@@ -276,6 +277,13 @@ class TestValidatorTimeoutIsNotADeny:
         assert "hook_validator_timeout_seconds" in captured.err, "the warn must name the knob that raises it"
         assert "invalid" not in err, "the warn must not read as a content rejection"
         assert "rejected" not in err, "the warn must not read as a content rejection"
+
+    def test_a_timeout_the_hook_ceiling_imposed_does_not_advise_raising_the_allowance(self, monkeypatch, capsys):
+        with self._timeout_run(monkeypatch, allowance=28.9):
+            assert handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)")) is False
+        err = capsys.readouterr().err
+        assert "ceiling cut it off" in err
+        assert "Raise the allowance" not in err
 
     def test_rejection_still_denies_after_the_timeout_change(self, monkeypatch, capsys):
         # Anti-vacuity: only the CANNOT_EVALUATE path moved. A validator that RAN
@@ -311,11 +319,48 @@ class TestValidatorTimeoutAllowanceIsConfigurable:
     def test_configured_allowance_is_passed_to_the_subprocess(self, monkeypatch):
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        monkeypatch.setattr(mr_validator, "validator_timeout_seconds", lambda: 123)
+        monkeypatch.setattr(gate_result, "validator_timeout_seconds", lambda: 12)
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(router.subprocess, "run", return_value=ok) as run:
             handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
-        assert run.call_args.kwargs["timeout"] == 123
+        assert run.call_args.kwargs["timeout"] == 12
+
+    def test_the_allowance_is_capped_by_what_the_hook_has_left(self, monkeypatch, hook_clock):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        hook_clock.now = 25.0
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok) as run:
+            handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert run.call_args.kwargs["timeout"] == pytest.approx(4.0)
+
+    def test_the_allowance_is_read_after_the_t3_environment_is_resolved(self, monkeypatch, hook_clock):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        hook_clock.now = 20.0
+        real_env = t3_invocation.t3_invocation_env
+
+        def slow_env(cwd: str) -> dict[str, str] | None:
+            hook_clock.now += 5.0
+            return real_env(cwd)
+
+        monkeypatch.setattr(t3_invocation, "t3_invocation_env", slow_env)
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch.object(router.subprocess, "run", return_value=ok) as run:
+            handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert run.call_args.kwargs["timeout"] == pytest.approx(4.0)
+
+    def test_no_validator_starts_once_the_hook_budget_is_spent(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        # Only ``t3`` resolves: a ``docker`` hit would start the process-cached mount probe on a cold worker.
+        monkeypatch.setattr(router.shutil, "which", lambda name: "/usr/local/bin/t3" if name == "t3" else None)
+        monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic() - float(hook_budget.HOOK_CEILING_S))
+        with patch.object(router.subprocess, "run") as run:
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert blocked is False
+        assert run.call_count == 0
+        assert "no time left in the hook budget" in capsys.readouterr().err
 
     def test_allowance_resolves_from_the_cold_db_budget(self, monkeypatch):
         monkeypatch.setattr(
@@ -1378,7 +1423,7 @@ class TestAnExecThatNeverStartsIsAnnouncedNotSwallowed:
     _EXEC_FAILED = OSError(7, "Argument list too long", "python3")
 
     def _run(self) -> object:
-        with patch.object(mr_validator, "run_t3", side_effect=self._EXEC_FAILED):
+        with patch.object(gate_result, "run_t3", side_effect=self._EXEC_FAILED):
             return mr_validator.run_mr_validator(["t3", "tool", "validate-mr"], "fix: x (p#1)", "body")
 
     def test_a_failed_exec_is_a_cannot_evaluate_marker(self) -> None:

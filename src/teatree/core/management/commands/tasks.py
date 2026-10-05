@@ -22,6 +22,7 @@ from teatree.core.managers_task_claim import claim_when_admitted
 from teatree.core.modelkit.phases import PhaseCost, cheap_phase_spellings
 from teatree.core.modelkit.task_failure_taxonomy import CANCELLED_PREFIX, is_environmental
 from teatree.core.models import Task, TaskAttempt, Ticket
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_claim import HEARTBEAT_MATCHED_LEASE_SECONDS, claim_generation
 from teatree.core.models.task_enqueue import TaskEnqueueError, enqueue_phase_task
 from teatree.core.overlay_loader import get_overlay_for_ticket
@@ -89,7 +90,7 @@ class Command(TyperCommand):
 
         try:
             task = enqueue_phase_task(ticket=ticket_obj, phase=phase, reason=body)
-        except TaskEnqueueError as exc:
+        except (TaskEnqueueError, NoPlanArtifactError) as exc:
             self.stderr.write(str(exc))
             raise SystemExit(1) from None
         payload: dict[str, int | str] = {
@@ -278,7 +279,7 @@ class Command(TyperCommand):
         terminal state through the SHARED recorder — schema-key check, the
         #1284 phase-evidence gate, then ``complete`` (auto-advancing the
         ticket) or ``fail``. Pairs with ``t3 loop claim-next`` /
-        ``loop_dispatch spawn-claim``: claim → spawn → record-attempt. The task
+        ``loop_dispatch claim-next``: claim → spawn → record-attempt. The task
         must be ``claimed`` (the claim is the spawn boundary); recording onto a
         finished task is rejected.
 
@@ -286,7 +287,7 @@ class Command(TyperCommand):
         finish somebody else's unit. This command reads the row fresh, so the
         recorder's own claim-generation guard would compare that row against itself
         and always hold; the token is the generation the CALLER observed when it was
-        given the work (``claim-next`` / ``spawn-claim`` emit it). A lease that
+        given the work (``claim-next`` emits it). A lease that
         lapsed mid-run, was reclaimed and re-offered mints a new generation, so the
         stale token no longer matches and the record is refused instead of
         completing the unit the next tick is executing — and advancing the ticket
@@ -318,7 +319,7 @@ class Command(TyperCommand):
         if task.status != Task.Status.CLAIMED:
             self.stderr.write(
                 f"Task {task_id} is '{task.status}', not 'claimed'. Claim it first "
-                "(`t3 loop claim-next` / `loop_dispatch spawn-claim`) before `tasks record-attempt`.",
+                "(`t3 loop claim-next`) before `tasks record-attempt`.",
             )
             raise SystemExit(1)
         if not claim_token.strip():

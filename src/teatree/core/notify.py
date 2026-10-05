@@ -3,18 +3,19 @@
 The user does not read the Claude CLI: answers, questions, and important
 info the agent surfaces inside a CLI turn are invisible to them. This
 helper is the single, always-on egress for those directions — post as the
-**bot** to the user's DM (the same channel ``DailyDigest`` opens) so the
+**bot** to the user's DM so the
 message arrives in Slack outside the active session. It owns the whole
 path: BotPing audit + messaging backend lookup + Slack post.
 
 Living in ``teatree.core`` keeps the dependency direction one-way — the
 core modules that fire a bot→user DM (:mod:`teatree.core.on_behalf_gate_recorded`
 under the AUTO_DRAFT verdict #960, and :mod:`teatree.core.on_behalf_post_receipt`
-for the after-receipt visibility DM, the default-ON ``notify_on_post_on_behalf``
+for the after-receipt visibility DM, the always-on receipt
 ``UserSettings`` field #949) import it as a core sibling with no cycle.
 
+
 Out of scope of the on-behalf concerns (the posture gate,
-#949 ``notify_on_post_on_behalf``): those govern posts the agent makes
+#949): those govern posts the agent makes
 *as the user* to a colleague/customer surface. ``notify_user`` itself is
 the **bot** talking to its own operator — a different concern with a
 different doctrine.
@@ -32,9 +33,9 @@ import os
 
 from django.db import DatabaseError
 
-from teatree.config import get_effective_settings
 from teatree.core.backend_factory import OwnerMessagingTransport, messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.egress_transport import EgressKind, suppressed_egress_response
 from teatree.core.modelkit.dm_channel_policy import DmChannel, classify
 from teatree.core.modelkit.notify_policy import NotifyAudience
 from teatree.core.notify_ledger import (
@@ -132,7 +133,7 @@ def notify_user_outcome(
     a queued user-question (the user DM'd, the question was injected via
     :class:`PendingChatInjection`, the agent is now replying), pass the
     Slack ``ts`` of that question. The matching row(s) get their
-    ``answered_at`` stamped so the Stop hook stops nagging. Alternatively
+    ``answered_at`` stamped. Alternatively
     use an idempotency-key of the form ``answer-<anything>-<slack_ts>``
     and the same auto-stamp triggers — useful for callers that don't
     plumb the explicit kwarg through.
@@ -298,9 +299,6 @@ def _preflight_result(
     if classify(audience=audience, idempotency_key=idempotency_key, requested_push=requested_push) is DmChannel.PULL:
         record_pulled(idempotency_key=idempotency_key, kind=kind, text=text, audience=audience)
         return blocked(NotifyReason.ROUTED_TO_PULL)
-    if not _feature_enabled():
-        logger.debug("notify_user disabled by settings — %s skipped", idempotency_key)
-        return blocked(NotifyReason.FEATURE_DISABLED)
     return None
 
 
@@ -362,6 +360,13 @@ def _deliver_dm(
     """
     from teatree.core.speak import deliver_user_dm_sidecar  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
+    # A preview (`t3 loops tick --loop followup --dry-run`) installs a suppressor and must
+    # not DM the owner either — a run that "posts nothing" still pinging them is a lie. The
+    # action name pairs with `teatree.loop.followup_dry_run._OWNER_DM_ACTION`, which classes
+    # it owner-facing so it never counts as an authorship breach. Inert with no suppressor.
+    suppressed = suppressed_egress_response(user_id, "owner_dm_post", EgressKind.POST)
+    if suppressed is not None:
+        return "dry-run", str(suppressed.get("ts") or "dry-run"), ""
     try:
         channel = backend.open_dm(user_id)
         if not channel:
@@ -421,12 +426,6 @@ def _route_through_send_proxy(text: str, *, destination: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 — send-proxy audit is a side path; never break notify.
         logger.debug("notify_user send-proxy audit failed: %s", exc)
-
-
-def _feature_enabled() -> bool:
-    """Read ``notify_user_via_bot`` from the active settings (default ``True``)."""
-    settings_ = get_effective_settings()
-    return bool(getattr(settings_, "notify_user_via_bot", True))
 
 
 def maybe_linkify(text: str) -> str:

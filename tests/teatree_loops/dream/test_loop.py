@@ -6,7 +6,7 @@ low-frequency cron (``t3 dream tick``) that reuses the MiniLoop cadence /
 config / in-flight-lock primitives. The structural contract: the ``dream``
 loop is registered (so its cadence is configured and the statusline can show
 its countdown) yet excluded from the live tick (#2513 cutover — the live tick is
-now the DB-``Loop``-table ``build_loop_table_jobs`` path; an ``off_live_tick``
+now the DB-``Loop``-table ``admitted_loop_names`` path; an ``off_live_tick``
 row is skipped before its ``build_jobs`` runs or its ``last_run_at`` is bumped, so
 the dream cron owns its ONE cadence ledger alone).
 """
@@ -28,18 +28,9 @@ from teatree.loops.dream.loop import (
     DREAM_LOOP_NAME,
     DREAM_PASS_BUDGET_SECONDS,
     MINI_LOOP,
-    automation_asks_enabled,
-    compliance_escalate_enabled,
-    compliance_measure_enabled,
-    cross_link_enabled,
-    decay_enabled,
-    derive_evals_enabled,
     memory_promote_enabled,
-    merge_enabled,
-    propose_evals_enabled,
-    reindex_enabled,
 )
-from teatree.loops.loop_table import build_loop_table_jobs
+from teatree.loops.loop_table import admitted_loop_names
 from teatree.loops.registry import iter_loops
 
 NOW = dt.datetime(2026, 6, 11, 4, tzinfo=dt.UTC)
@@ -91,7 +82,7 @@ class DreamLoopRegistrationTestCase(TestCase):
     @override_settings(USE_TZ=True)
     def test_dream_emits_no_jobs_on_the_live_db_tick(self) -> None:
         # #2513 cutover: the live tick is the DB-``Loop``-table path. Dream's
-        # row is daily, so on a due tick ``build_loop_table_jobs`` resolves it to
+        # row is daily, so on a due tick ``admitted_loop_names`` resolves it to
         # its registry ``build_jobs`` — which deliberately emits NO scanner jobs
         # (the consolidation engine runs from the dream cron, not the live tick).
         # Anti-vacuous contrast: a live mini-loop with the same row DOES emit.
@@ -105,8 +96,8 @@ class DreamLoopRegistrationTestCase(TestCase):
                 "last_run_at": None,
             },
         )
-        jobs = build_loop_table_jobs(_context(), now=NOW)
-        assert all(getattr(job, "overlay", None) != "dream" for job in jobs)
+        names = admitted_loop_names(NOW, only="dream")
+        assert "dream" not in names
         # The dream row's build_jobs (registry MINI_LOOP) emits nothing.
         assert MINI_LOOP.build_jobs(**_context()) == []
 
@@ -127,7 +118,7 @@ class DreamLoopRegistrationTestCase(TestCase):
                 "last_run_at": None,
             },
         )
-        build_loop_table_jobs(_context(), now=NOW)
+        admitted_loop_names(NOW, only="dream")
         assert Loop.objects.get(name="dream").last_run_at is None
 
 
@@ -135,24 +126,6 @@ class OffLiveTickFieldTestCase(TestCase):
     def test_default_off_live_tick_is_false(self) -> None:
         loop = MiniLoop(name="x", default_cadence_seconds=60, build_jobs=lambda **_: [])
         assert loop.off_live_tick is False
-
-
-class ProposeEvalsKillSwitchTestCase(TestCase):
-    """The nightly eval-derivation seam is LIVE by default, flippable via env/DB (#2346)."""
-
-    def test_default_is_on_with_no_env_no_db(self) -> None:
-        with patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("T3_DREAM_PROPOSE_EVALS", None)
-            assert propose_evals_enabled() is True
-
-    def test_falsy_env_disables(self) -> None:
-        for value in ("0", "false", "no", "off", "FALSE"):
-            with patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": value}):
-                assert propose_evals_enabled() is False, value
-
-    def test_truthy_env_enables(self) -> None:
-        with patch.dict("os.environ", {"T3_DREAM_PROPOSE_EVALS": "1"}):
-            assert propose_evals_enabled() is True
 
 
 class MemoryPromoteToggleTestCase(TestCase):
@@ -177,88 +150,6 @@ class MemoryPromoteToggleTestCase(TestCase):
     def test_truthy_env_enables(self) -> None:
         with patch.dict("os.environ", {"T3_DREAM_MEMORY_PROMOTE": "1"}):
             assert memory_promote_enabled() is True
-
-
-class AutomationAsksToggleTestCase(TestCase):
-    """The automatable-ask promotion files fixes, so it is default OFF (#2663)."""
-
-    def test_default_is_off_with_no_env_no_db(self) -> None:
-        with patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("T3_DREAM_AUTOMATION_ASKS", None)
-            assert automation_asks_enabled() is False
-
-    def test_truthy_env_enables(self) -> None:
-        for value in ("1", "true", "yes", "on"):
-            with patch.dict("os.environ", {"T3_DREAM_AUTOMATION_ASKS": value}):
-                assert automation_asks_enabled() is True, value
-
-
-class ComplianceMeasureToggleTestCase(TestCase):
-    """Compliance MEASUREMENT (the root KPI) runs every pass — default ON (#2663)."""
-
-    def test_default_is_on_with_no_env_no_db(self) -> None:
-        with patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("T3_DREAM_COMPLIANCE_MEASURE", None)
-            assert compliance_measure_enabled() is True
-
-    def test_falsy_env_disables(self) -> None:
-        for value in ("0", "false", "no", "off"):
-            with patch.dict("os.environ", {"T3_DREAM_COMPLIANCE_MEASURE": value}):
-                assert compliance_measure_enabled() is False, value
-
-
-class ComplianceEscalateToggleTestCase(TestCase):
-    """Compliance ESCALATION files enforcement tickets, so it is default OFF (#2663)."""
-
-    def test_default_is_off_with_no_env_no_db(self) -> None:
-        with patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("T3_DREAM_COMPLIANCE_ESCALATE", None)
-            assert compliance_escalate_enabled() is False
-
-    def test_truthy_env_enables(self) -> None:
-        for value in ("1", "true", "yes", "on"):
-            with patch.dict("os.environ", {"T3_DREAM_COMPLIANCE_ESCALATE": value}):
-                assert compliance_escalate_enabled() is True, value
-
-
-class DeriveEvalsToggleTestCase(TestCase):
-    """The LLM-backed full-scenario derivation is the one phase that is default OFF (#2447)."""
-
-    def test_default_is_off_with_no_env_no_db(self) -> None:
-        with patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("T3_DREAM_DERIVE_EVALS", None)
-            assert derive_evals_enabled() is False
-
-    def test_truthy_env_enables(self) -> None:
-        for value in ("1", "true", "yes", "on"):
-            with patch.dict("os.environ", {"T3_DREAM_DERIVE_EVALS": value}):
-                assert derive_evals_enabled() is True, value
-
-
-class MemoryPhaseKillSwitchTestCase(TestCase):
-    """Phases 4-6 are LIVE by default, each flippable via its own env/DB (#1933 §6)."""
-
-    _PHASES = (
-        ("cross_link", "T3_DREAM_CROSS_LINK", cross_link_enabled),
-        ("merge", "T3_DREAM_MERGE", merge_enabled),
-        ("reindex", "T3_DREAM_REINDEX", reindex_enabled),
-        ("decay", "T3_DREAM_DECAY", decay_enabled),
-    )
-
-    def _clear_env(self) -> None:
-        for _key, env, _fn in self._PHASES:
-            os.environ.pop(env, None)
-
-    def test_each_phase_defaults_on(self) -> None:
-        with patch.dict("os.environ", {}, clear=False):
-            self._clear_env()
-            for _key, _env, fn in self._PHASES:
-                assert fn() is True, fn.__name__
-
-    def test_each_phase_disabled_by_falsy_env(self) -> None:
-        for _key, env, fn in self._PHASES:
-            with patch.dict("os.environ", {env: "false"}):
-                assert fn() is False, env
 
 
 class DreamLeaseSizingTestCase(TestCase):

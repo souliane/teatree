@@ -1,20 +1,12 @@
-"""Eval matrix for the quote-scanner egress-wrapper escape hatch (#1213, #126).
+"""Eval matrix for the quote-scanner override and public-egress boundary (#1213, #126).
 
-The gate-over-deny lockout this guards against: the documented
-``QUOTE_OK=1`` escape did NOT propagate to the egress wrapper. The
-override check read ONLY ``tool_input["env"]`` — but the Claude Code
-PreToolUse payload for a ``Bash`` tool carries no ``env`` block, so the
-agent's ``QUOTE_OK=1`` process env var (which the hook subprocess
-inherits via ``os.environ``) never reached the gate. The escape was
-documented in every block message yet structurally unreachable, forcing
-paraphrase workarounds all session.
+Legacy override tokens cannot bypass the public publish gate. This matrix
+pins the production gate with those tokens present.
 
-Scenario matrix (accepts a legitimately-authorized action / still
-blocks a genuine violation / the documented escape actually works /
-fails-OPEN on a broken env):
+Scenario matrix:
 
 * a clean body → ALLOW;
-* ``QUOTE_OK=1`` in the process env (``os.environ``) → ALLOW;
+* ``QUOTE_OK=1`` in the process env cannot prevent a public block;
 * an actual user-verbatim quote, no override → BLOCK;
 * the body in a file the scanner cannot read → NOT auto-denied
     (treat as needs-inline, scan what it can — a missing draft file is
@@ -28,7 +20,7 @@ import pytest
 
 from hooks.scripts.hook_router import handle_quote_scanner_pretool
 from teatree.hooks import _repo_visibility
-from teatree.hooks.quote_scanner import extract_publish_payload, has_quote_ok_override, scan_text
+from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
 
 
 @pytest.fixture(autouse=True)
@@ -42,47 +34,32 @@ def _bash(command: str) -> dict[str, object]:
 
 
 class TestQuoteOkEnvReachesWrapper:
-    """``QUOTE_OK=1`` in the process env bypasses the gate (the documented escape)."""
+    """The override parses, while the public wrapper still enforces the gate."""
 
-    def test_process_env_quote_ok_is_honoured_by_override_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("QUOTE_OK", "1")
-        cmd = 'gh pr create --title t --body "the user said: ship it now"'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is True
-
-    def test_env_sourced_override_emits_visible_note(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # An inherited-env override silently disables every publish scan — the
-        # NOTE makes that standing disable visible (finding 7).
-        for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID"):
-            monkeypatch.delenv(key, raising=False)
-        monkeypatch.setenv("QUOTE_OK", "1")
-        assert has_quote_ok_override("Bash", {"command": "gh pr create --body x"}) is True
-        assert "QUOTE_OK=1 is set in the process environment" in capsys.readouterr().err
-
-    def test_process_env_quote_ok_zero_does_not_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("QUOTE_OK", "0")
-        cmd = 'gh pr create --title t --body "the user said: ship it now"'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
-
-    def test_process_env_quote_ok_bypasses_high_match_end_to_end(
+    def test_process_env_quote_ok_does_not_bypass_public_high_match_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("QUOTE_OK", "1")
-        data = _bash('gh pr create --title t --body "## User ask (verbatim, 2026-05-20)\nfoo"')
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash('gh pr create -R souliane/teatree --title t --body "## User ask (verbatim, 2026-05-20)\nfoo"')
         blocked = handle_quote_scanner_pretool(data)
-        assert blocked is False
-        assert capsys.readouterr().out == ""
-
-    def test_tool_input_env_still_honoured(self) -> None:
-        # The legacy ``tool_input["env"]`` surface keeps working — a
-        # harness that DOES populate it is not regressed.
-        cmd = 'gh pr create --title t --body "the user said: foo"'
-        assert has_quote_ok_override("Bash", {"command": cmd, "env": {"QUOTE_OK": "1"}}) is True
+        assert blocked is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "QUOTE_OK" not in reason
 
 
 class TestQuoteScannerGenuineGuardsIntact:
     """The override must not weaken the real block / clean-allow contract."""
+
+    def test_public_post_ignores_env_override(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("QUOTE_OK", "1")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash('gh pr create -R souliane/teatree --title t --body "## User ask (verbatim, 2026-05-20)\nship now"')
+        assert handle_quote_scanner_pretool(data) is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "QUOTE_OK" not in reason
 
     def test_clean_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = _bash('gh pr create --title t --body "Refactored the config loader."')
@@ -102,11 +79,6 @@ class TestQuoteScannerGenuineGuardsIntact:
         assert handle_quote_scanner_pretool(data) is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
-
-    def test_no_env_var_means_no_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("QUOTE_OK", raising=False)
-        cmd = 'gh pr create --title t --body "the user said: foo"'
-        assert has_quote_ok_override("Bash", {"command": cmd}) is False
 
 
 class TestUnreadableBodyFileIsNotAutoDenied:

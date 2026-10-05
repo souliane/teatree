@@ -18,12 +18,12 @@ from typing import TypedDict
 
 from teatree.agents.result_payloads import (
     answer_text,
-    candidate_carries_payload,
     interpretation_carries_payload,
     recommendation_persists,
     suggestion_url,
     verdict_carries_payload,
 )
+from teatree.agents.result_schema_ticket_sweep import TICKET_SWEEP_SCHEMA_PROPERTY, TicketSweepEvidence
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_contract import ENVELOPE_FINDINGS_RULE
 from teatree.core.models.mechanism_sketch import MechanismSketchDict
@@ -109,6 +109,22 @@ class ReviewVerdictEnvelope(TypedDict, total=False):
     rubric_grades: list[RubricGrade]
 
 
+class ReviewContextEnvelope(TypedDict, total=False):
+    work_item: str
+    documents: list[str]
+    analysis: str
+
+
+class AntiVacuityEnvelope(TypedDict, total=False):
+    ac_coverage: str
+    proven_tests: list[str]
+    no_new_tests: bool
+
+
+class IntegrationReviewEnvelope(TypedDict, total=False):
+    repos: list[str]
+
+
 class CriticItemVerdictDict(TypedDict, total=False):
     slug: str
     status: str  # "pass" | "fail" | "instrumentation_gap"
@@ -131,17 +147,6 @@ class DirectiveInterpretationEnvelope(TypedDict, total=False):
     clarifying_questions: list[str]
 
 
-class DirectiveCandidateEnvelope(TypedDict, total=False):
-    """A quarantined reader's typed verdict, recorded server-side (#116 context firewall)."""
-
-    reader_identity: str
-    is_directive: bool
-    normalized_constraint: str
-    scope_overlay: str
-    cited_signal: str
-    provenance: str
-
-
 class AgentResult(TypedDict, total=False):
     """Structured result from an agent task execution."""
 
@@ -155,14 +160,17 @@ class AgentResult(TypedDict, total=False):
     tests_failed: int
     decisions: list[str]
     review_verdict: ReviewVerdictEnvelope
+    review_context: ReviewContextEnvelope
+    anti_vacuity: AntiVacuityEnvelope
+    integration_review: IntegrationReviewEnvelope
     critic_verdict: "CriticVerdictEnvelope"
     directive_interpretation: "DirectiveInterpretationEnvelope"
-    directive_candidate: "DirectiveCandidateEnvelope"
     article_suggestions: list[ArticleSuggestion]
     triage_recommendations: list[TriageRecommendation]
     answer: AnswerEnvelope
     work_item: WorkItemEnvelope
     fix_record: FixRecord
+    ticket_sweep: TicketSweepEvidence
     needs_user_input: bool
     user_input_reason: str
     next_steps: list[str]
@@ -336,6 +344,26 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             },
             "required": ["verdict", "reviewed_sha"],
         },
+        "review_context": {
+            "type": "object",
+            "properties": {
+                "work_item": {"type": "string"},
+                "documents": {"type": "array", "items": {"type": "string"}},
+                "analysis": {"type": "string"},
+            },
+        },
+        "anti_vacuity": {
+            "type": "object",
+            "properties": {
+                "ac_coverage": {"type": "string"},
+                "proven_tests": {"type": "array", "items": {"type": "string"}},
+                "no_new_tests": {"type": "boolean"},
+            },
+        },
+        "integration_review": {
+            "type": "object",
+            "properties": {"repos": {"type": "array", "items": {"type": "string"}}},
+        },
         "critic_verdict": {
             "type": "object",
             "description": "The autonomous user-proxy critic's typed verdict, recorded server-side (SELFCATCH-5).",
@@ -378,18 +406,6 @@ RESULT_JSON_SCHEMA: JSONSchema = {
                     },
                 },
                 "clarifying_questions": {"type": "array", "items": {"type": "string"}},
-            },
-        },
-        "directive_candidate": {
-            "type": "object",
-            "description": "A quarantined reader's typed verdict, recorded server-side (#116 context firewall).",
-            "properties": {
-                "reader_identity": {"type": "string"},
-                "is_directive": {"type": "boolean"},
-                "normalized_constraint": {"type": "string"},
-                "scope_overlay": {"type": "string"},
-                "cited_signal": {"type": "string"},
-                "provenance": {"type": "string"},
             },
         },
         "article_suggestions": {
@@ -454,6 +470,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
             "properties": {field: {"type": "string"} for field in FIX_RECORD_FIELDS},
             "required": list(FIX_RECORD_FIELDS),
         },
+        "ticket_sweep": TICKET_SWEEP_SCHEMA_PROPERTY,
         "needs_user_input": {"type": "boolean"},
         "user_input_reason": {"type": "string"},
         "next_steps": {
@@ -499,6 +516,12 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #:   summary-only run is a silently-dropped scan (#9), refused here.
 #: - ``answering``: an ``answer`` draft returned — same shell-denied hand-back;
 #:   a summary-only run dropped the drafted reply.
+#: - ``backlog_sweep``: a ``ticket_sweep`` naming the run the sweep opened and
+#:   closed (#162 Rule 4). The metric the owner reads is "each sweep tends to zero
+#:   changes", and a count the sweeping agent types into its own envelope measures
+#:   nothing — a skipped sweep and a clean backlog both report ``0``. The run row is
+#:   the measurement; :mod:`teatree.agents.ticket_sweep_recorder` checks the envelope
+#:   against it.
 #:
 #: ``fix_record`` is deliberately ABSENT from this map: it is conditional on the
 #: TICKET's kind, not the phase, so requiring it here would refuse every non-fix
@@ -509,7 +532,7 @@ RESULT_JSON_SCHEMA: JSONSchema = {
 #: ``scoping`` and ``retro`` are intentionally lightweight and may complete on
 #: prose alone (:data:`PROSE_SUMMARY_ACCEPTED_PHASES`); every OTHER absent phase
 #: — ``debugging``, ``bughunt``, ``e2e``, ``e2e_reviewing``, ``requesting_review``,
-#: ``architectural_review``, ``backlog_sweep``, ``dogfood_smoke``, ``eval_local``,
+#: ``architectural_review``, ``dogfood_smoke``, ``eval_local``,
 #: the ``codex_*`` review variants, and any free-form phase — must still RETURN a
 #: result envelope, which :meth:`ProseSummaryPolicy.allowed` enforces.
 PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
@@ -521,11 +544,11 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "codex_adversarial_reviewing": ("review_verdict",),
     "critic_reviewing": ("critic_verdict",),
     "directive_interpreting": ("directive_interpretation",),
-    "directive_reading": ("directive_candidate",),
     "shipping": ("commands_executed",),
     "scanning_news": ("article_suggestions",),
     "triage_assessing": ("triage_recommendations",),
     "answering": ("answer",),
+    "backlog_sweep": ("ticket_sweep",),
 }
 
 
@@ -586,7 +609,6 @@ _FIELD_PERSISTS: dict[str, Callable[[object], bool]] = {
     "triage_recommendations": lambda v: isinstance(v, list) and any(recommendation_persists(item) for item in v),
     "answer": lambda v: bool(answer_text(v)),
     "directive_interpretation": interpretation_carries_payload,
-    "directive_candidate": candidate_carries_payload,
     "review_verdict": verdict_carries_payload,
 }
 

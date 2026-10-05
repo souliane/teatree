@@ -114,6 +114,7 @@ class TestTheFactoryIsNeverRefused:
             assert _run_chain(_edit()) is False
 
 
+@pytest.mark.usefixtures("configured_banned_term_registry")
 class TestTheCoordinatorRoleStaysAvailable:
     def test_reading_and_searching_are_not_refused(self, engaged_session: Path) -> None:
         # `rg` carries a count bound because the delegation gate refuses an UNBOUNDED
@@ -123,11 +124,13 @@ class TestTheCoordinatorRoleStaysAvailable:
             assert _run_chain(data) is False, command
 
     def test_review_merge_and_issue_filing_are_not_refused(self, engaged_session: Path) -> None:
+        # `gh issue comment` moved to the refused side: it now bypasses the
+        # issue-hygiene facade (#162) and is covered by
+        # tests/teatree_hooks/test_raw_issue_write_gate.py instead.
         for command in (
             "t3 teatree ticket merge 42",
             "t3 teatree ticket clear 42",
             "gh issue create --title x --body y",
-            "gh issue comment 42 --body y",
         ):
             data = {"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": command}}
             assert _run_chain(data) is False, command

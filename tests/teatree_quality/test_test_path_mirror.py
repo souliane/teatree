@@ -258,7 +258,7 @@ class TestExpectedDir:
             ("teatree.backends.gitlab.ci", "tests/teatree_backends/gitlab", False),
             ("teatree.core.models.merge_clear", "tests/teatree_core/models", False),
             ("teatree.config", "tests/teatree_config", False),
-            ("teatree.identity", "tests", True),
+            ("teatree.update_check", "tests", True),
         ],
     )
     def test_module_maps_to_mirror_dir(self, module: str, expected_path: str, *, exact_only: bool) -> None:
@@ -271,7 +271,7 @@ class TestExpectedDir:
         assert expected_test_dir("teatree", _REPO_ROOT) is None
 
     def test_toplevel_module_expectation_demands_exact_root(self) -> None:
-        expectation = expected_test_dir("teatree.identity", _REPO_ROOT)
+        expectation = expected_test_dir("teatree.update_check", _REPO_ROOT)
         assert expectation is not None
         assert expectation.satisfied_by("tests")
         assert not expectation.satisfied_by("tests/teatree_hooks")

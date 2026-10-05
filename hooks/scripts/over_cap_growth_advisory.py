@@ -29,12 +29,13 @@ Cold-import safe: the live hook is a bare ``python3`` subprocess with no guarant
 hook siblings; both teatree leaves are imported lazily inside the ``src/`` bootstrap.
 """
 
-import json
+import contextlib
 import subprocess  # noqa: S404 — stdlib subprocess for the trusted internal `git` reads
 import sys
 from pathlib import Path
 from typing import Final
 
+from hooks.scripts.additional_context import emit_additional_context
 from hooks.scripts.managed_repo import teatree_src_on_path as _teatree_src_on_path
 
 # Alias both identities so the handler the router registers and a test patching a
@@ -71,8 +72,9 @@ def _advise(data: dict) -> None:
         return
     for path in _written_paths(data):
         growth = _pending_refusal(path)
-        if growth is not None and _claim_first_mention(session_id, growth.path):
+        if growth is not None and not _advised(session_id, growth.path):
             _emit(growth)
+            _latch(session_id, growth.path)
 
 
 def _written_paths(data: dict) -> list[Path]:
@@ -157,23 +159,22 @@ def _ledger_path(session_id: str) -> Path:
     return _state_file(session_id, _STATE_SUFFIX)
 
 
-def _claim_first_mention(session_id: str, rel: str) -> bool:
-    """True the FIRST time *rel* is advised in *session_id* — the once-per-file latch."""
+def _advised(session_id: str, rel: str) -> bool:
+    """Whether *rel* was already advised in *session_id* (an unreadable ledger counts as advised: never nag)."""
     ledger = _ledger_path(session_id)
     try:
-        seen = ledger.read_text(encoding="utf-8").splitlines() if ledger.is_file() else []
-        if rel in seen:
-            return False
-        with ledger.open("a", encoding="utf-8") as handle:
-            handle.write(f"{rel}\n")
+        return ledger.is_file() and rel in ledger.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return False
-    return True
+        return True
+
+
+def _latch(session_id: str, rel: str) -> None:
+    """The once-per-file latch, set only after the advisory reached the session (a failed write retries next call)."""
+    with contextlib.suppress(OSError), _ledger_path(session_id).open("a", encoding="utf-8") as handle:
+        handle.write(f"{rel}\n")
 
 
 def _emit(growth) -> None:  # noqa: ANN001 — the lazily-imported OverCapGrowth, see _pending_refusal
     advisory = _ADVISORY.format(path=growth.path, message=_module_health().over_cap_growth_message(growth))
     print(advisory, file=sys.stderr, end="")  # noqa: T201 — hook stderr is this module's logging channel
-    print(  # noqa: T201 — hook writes its protocol output to stdout
-        json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": advisory}})
-    )
+    emit_additional_context("PostToolUse", advisory)

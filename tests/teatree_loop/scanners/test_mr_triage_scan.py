@@ -17,7 +17,7 @@ from django.utils import timezone
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.gates.review_request_guard import GuardTarget
-from teatree.core.models import ConfigSetting, DeferredQuestion, ReviewRequestPost
+from teatree.core.models import DeferredQuestion, ReviewRequestPost
 from teatree.core.review.mr_state_question import mr_state_marker
 from teatree.core.review.mr_triage import RepoOwner, TriageAction, TriageReason
 from teatree.loop.scanner_factories import _mr_triage_scanner_for
@@ -101,14 +101,6 @@ def _actions(signals: list[ScanSignal]) -> list[object]:
     return [s.payload["action"] for s in signals]
 
 
-class _OptedIn(TestCase):
-    """This file exercises the scanner itself, so each case opts the box in first."""
-
-    def setUp(self) -> None:
-        super().setUp()
-        ConfigSetting.objects.set_value("mr_triage_enabled", value=True)
-
-
 @dataclass
 class _RecordingCiEnricher:
     urls: list[str] = field(default_factory=list)
@@ -120,7 +112,7 @@ class _RecordingCiEnricher:
         return self.status
 
 
-class TestAListingWithNoPipelineFieldStillReadsCi(_OptedIn):
+class TestAListingWithNoPipelineFieldStillReadsCi(TestCase):
     """GitLab's MR LIST payload carries no `head_pipeline`, so the enricher IS the CI source.
 
     Without one every merge request on that forge reads UNKNOWN forever: a green MR waits on
@@ -165,7 +157,7 @@ class TestAListingWithNoPipelineFieldStillReadsCi(_OptedIn):
         assert enricher.urls == [], "the payload short-circuit bounds the per-tick read budget"
 
 
-class TestItSurfacesAVerdictPerMr(_OptedIn):
+class TestItSurfacesAVerdictPerMr(TestCase):
     def test_a_red_mr_asks_for_the_ci_fix(self) -> None:
         host = FakeCodeHost(user="alice", my_prs=[_mr(1, head_pipeline={"status": "failed"})])
 
@@ -232,7 +224,7 @@ class TestItSurfacesAVerdictPerMr(_OptedIn):
         assert MrTriageScanner(allowed_url_prefixes=_SCOPE, host=host).scan() == []
 
 
-class TestWhatItCannotKnowBecomesAQuestion(_OptedIn):
+class TestWhatItCannotKnowBecomesAQuestion(TestCase):
     def test_an_mr_with_no_review_request_row_and_no_ci_is_an_owner_question(self) -> None:
         """Neither signal is readable, so the ladder's fallback is the honest answer."""
         host = FakeCodeHost(user="alice", my_prs=[_mr(7)])
@@ -250,7 +242,7 @@ class TestWhatItCannotKnowBecomesAQuestion(_OptedIn):
         assert _actions(signals) == [TriageAction.ASK_OWNER]
 
 
-class TestItIsBoundedAndScoped(_OptedIn):
+class TestItIsBoundedAndScoped(TestCase):
     def test_it_stops_at_the_per_tick_cap(self) -> None:
         host = FakeCodeHost(user="alice", my_prs=[_green(n) for n in range(10)])
 
@@ -279,7 +271,7 @@ class TestItIsBoundedAndScoped(_OptedIn):
         assert scanner.scan() == []
 
 
-class TestAWorkGroupIsHeldUntilEveryMemberIsReady(_OptedIn):
+class TestAWorkGroupIsHeldUntilEveryMemberIsReady(TestCase):
     def test_a_red_sibling_holds_the_green_member(self) -> None:
         host = FakeCodeHost(
             user="alice",
@@ -370,7 +362,7 @@ class TestAWorkGroupIsHeldUntilEveryMemberIsReady(_OptedIn):
         assert [(s.payload["url"], s.payload["action"]) for s in signals] == [(f"{_REPO}/30", TriageAction.WAIT)]
 
 
-class TestAnUnresolvedScopeReadsNothing(_OptedIn):
+class TestAnUnresolvedScopeReadsNothing(TestCase):
     """An empty scope is an unresolved one — never every merge request the credential can list."""
 
     def test_an_empty_scope_neither_lists_nor_asks_the_owner(self) -> None:
@@ -396,7 +388,7 @@ class TestAnUnresolvedScopeReadsNothing(_OptedIn):
         assert _open_mr_questions() == []
 
 
-class TestAMissingReviewIsProvedAgainstTheChannel(_OptedIn):
+class TestAMissingReviewIsProvedAgainstTheChannel(TestCase):
     """The one fact no ledger can supply: nobody has been asked yet.
 
     An absent ledger row is silence, so the surveyor reads the review channel
@@ -448,7 +440,7 @@ class TestAMissingReviewIsProvedAgainstTheChannel(_OptedIn):
         assert _open_mr_questions() == []
 
 
-class TestAReviewExemptRepoIsNeverAskedAbout(_OptedIn):
+class TestAReviewExemptRepoIsNeverAskedAbout(TestCase):
     """R2 is a declared axis the ladder already carries; the surveyor has to feed it."""
 
     def test_an_exempt_repo_surfaces_no_review_request(self) -> None:
@@ -469,7 +461,7 @@ class TestAReviewExemptRepoIsNeverAskedAbout(_OptedIn):
         assert _actions(signals) == [TriageAction.FIX_CI]
 
 
-class TestItNeverPostsToColleagues(_OptedIn):
+class TestItNeverPostsToColleagues(TestCase):
     def test_surfacing_a_group_ping_posts_nothing_and_marks_nothing(self) -> None:
         post = _seed_request(10, days_idle=3.0)
         host = FakeCodeHost(user="alice", my_prs=[_green(10)])
@@ -488,12 +480,3 @@ class TestItNeverPostsToColleagues(_OptedIn):
         assert signal.payload["url"] == f"{_REPO}/11"
         assert signal.payload["reason"]
         assert f"{_REPO}/11" in signal.summary or "11" in signal.summary
-
-
-class TestTheSurveyorShipsOff(TestCase):
-    """A box builds no surveyor until ``mr_triage_enabled`` opts it in."""
-
-    def test_the_factory_builds_nothing_by_default(self) -> None:
-        backend = OverlayBackends(name="overlay-a", hosts=(FakeCodeHost(user="alice"),), identities=("alice",))
-
-        assert _mr_triage_scanner_for(backend, ci_enricher=_RecordingCiEnricher(status="success")) is None

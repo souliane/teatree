@@ -30,6 +30,7 @@ from collections.abc import Callable
 
 from teatree.hooks import (
     git_bypass_detect,
+    raw_issue_write_detect,
     raw_merge_detect,
     raw_review_post_detect,
     safe_kill_detect,
@@ -63,6 +64,7 @@ HARD_DENY_PREDICATES: tuple[tuple[str, HardDenyPredicate], ...] = (
     ("git_bypass", git_bypass_detect.git_bypass_deny_reason),
     ("secret_file_print", secret_file_print_detect.secret_print_deny_reason),
     ("raw_review_post", raw_review_post_detect.raw_review_deny_reason),
+    ("raw_issue_write", raw_issue_write_detect.raw_issue_write_deny_reason),
     ("self_reviewer_assign", self_reviewer_assign_detect.reviewer_assign_deny_reason),
     ("raw_pid_kill", _raw_pid_kill_deny_reason),
     ("unbounded_wait", _unbounded_wait_deny_reason),

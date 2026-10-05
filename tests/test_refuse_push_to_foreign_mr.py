@@ -32,17 +32,13 @@ from pathlib import Path
 
 import pytest
 
-from teatree.hooks._repo_visibility import _PROBE_TIMEOUT_S
+from teatree.hooks import _repo_visibility
 
 HOOK = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "refuse-push-to-foreign-mr.sh"
 
 _OUR_LOGIN = "souliane"
 _NOREPLY_EMAIL = "21343492+souliane@users.noreply.github.com"
 _NOREPLY_NAME = "souliane"
-
-# One second past `_repo_visibility._PROBE_TIMEOUT_S`, so the shim's identity
-# answer is real but arrives too late — the timeout is the ONLY variable.
-_OVER_PROBE_BUDGET_S = _PROBE_TIMEOUT_S + 1
 
 
 def _hermetic_env() -> dict[str, str]:
@@ -119,8 +115,7 @@ def _make_gh_shim(bin_dir: Path, *, login: str, pr_payload: list[dict[str, objec
         'if "pr" in args and "list" in args:\n'
         '    head = args[args.index("--head") + 1] if "--head" in args else None\n'
         "    rows = [pr for pr in payload if head is None or pr.get('headRefName') == head]\n"
-        "    for pr in rows:\n"
-        "        print(f\"{pr['number']}\\t{pr['author']['login']}\")\n"
+        "    print(json.dumps(rows))\n"
         "    sys.exit(0)\n"
         "sys.exit(1)\n",
         encoding="utf-8",
@@ -297,8 +292,7 @@ def _gh_shim_without_an_identity(bin_dir: Path, pr_payload: list[dict[str, objec
         'if "pr" in args and "list" in args:\n'
         '    head = args[args.index("--head") + 1] if "--head" in args else None\n'
         "    rows = [pr for pr in payload if head is None or pr.get('headRefName') == head]\n"
-        "    for pr in rows:\n"
-        "        print(f\"{pr['number']}\\t{pr['author']['login']}\")\n"
+        "    print(json.dumps(rows))\n"
         "    sys.exit(0)\n"
         "sys.exit(1)\n",
         encoding="utf-8",
@@ -327,8 +321,7 @@ def _gh_shim_whose_identity_probe_hangs(bin_dir: Path, pr_payload: list[dict[str
         'if "pr" in args and "list" in args:\n'
         '    head = args[args.index("--head") + 1] if "--head" in args else None\n'
         "    rows = [pr for pr in payload if head is None or pr.get('headRefName') == head]\n"
-        "    for pr in rows:\n"
-        "        print(f\"{pr['number']}\\t{pr['author']['login']}\")\n"
+        "    print(json.dumps(rows))\n"
         "    sys.exit(0)\n"
         "sys.exit(1)\n",
         encoding="utf-8",
@@ -714,6 +707,7 @@ class TestAnUnresolvableIdentityRefusesRatherThanEvaporating:
         combined = result.stdout + result.stderr
         assert "this venue" in combined, combined
         assert "'gh api user'" in combined, combined
+        assert "exit 1: HTTP 401: Unauthorized" in combined, combined
 
     def test_the_refusal_names_the_author_it_could_not_attribute(self, tmp_path: Path) -> None:
         """``open_mr.author`` is in hand — withholding it hides WHOSE MR is at stake."""
@@ -786,14 +780,62 @@ class TestAnUnresolvableIdentityRefusesRatherThanEvaporating:
     def test_a_timed_out_probe_is_named_a_timeout_not_an_unauthenticated_cli(self, tmp_path: Path) -> None:
         """#282/B2: the CLI answers — just past the budget — so `auth status` is the wrong path."""
         work, env = _setup(tmp_path, pr_payload=_foreign_open_pr())
-        _gh_shim_whose_identity_probe_hangs(tmp_path / "bin", _foreign_open_pr(), sleep_s=_OVER_PROBE_BUDGET_S)
+        _gh_shim_whose_identity_probe_hangs(
+            tmp_path / "bin", _foreign_open_pr(), sleep_s=max(_repo_visibility._PROBE_ATTEMPT_TIMEOUTS_S) + 1
+        )
         _commit(work, "feature.txt", "a clean feature line\n")
 
         combined = _run_hook(work, env, "feature-x").stdout
 
         assert "TIMED OUT" in combined, combined
+        assert "(timeout of 3s, then timeout of 5s)" in combined, combined
         assert "not evidence the CLI is unauthenticated" in combined, combined
         assert "exited non-zero" not in combined, combined
+
+    def test_a_process_start_the_host_refused_is_not_reported_as_a_missing_tool(self, tmp_path: Path) -> None:
+        work, env = _setup(tmp_path, pr_payload=_foreign_open_pr())
+        refused = "a process start the host refused (EAGAIN)"
+        resolver = tmp_path / "foreign-mr-verdict"
+        resolver.write_text(f"#!/bin/sh\necho 'UNKNOWN 77 teammate gh {refused}, then {refused}'\n", encoding="utf-8")
+        resolver.chmod(resolver.stat().st_mode | stat.S_IEXEC)
+        env["T3_FOREIGN_MR_CMD"] = str(resolver)
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        combined = _run_hook(work, env, "feature-x").stdout
+
+        assert "short of processes" in combined, combined
+        assert "Install" not in combined, combined
+
+    def test_unresolved_ssh_alias_has_its_own_refusal_message(self, tmp_path: Path) -> None:
+        work, env = _setup(tmp_path, pr_payload=[])
+        resolver = tmp_path / "foreign-mr-verdict"
+        resolver.write_text("#!/bin/sh\necho 'ALIAS_UNRESOLVED bank-alias'\n", encoding="utf-8")
+        resolver.chmod(resolver.stat().st_mode | stat.S_IEXEC)
+        env["T3_FOREIGN_MR_CMD"] = str(resolver)
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = _run_hook(work, env, "feature-x")
+
+        assert result.returncode == 1
+        assert "SSH alias 'bank-alias' could not be resolved to a forge host" in result.stdout
+        assert "Set HostName for 'bank-alias' in ~/.ssh/config" in result.stdout
+        assert "OPEN MR (#0)" not in result.stdout
+
+    def test_an_empty_remote_has_its_own_refusal_message(self, tmp_path: Path) -> None:
+        work, env = _setup(tmp_path, pr_payload=[])
+        resolver = tmp_path / "foreign-mr-verdict"
+        resolver.write_text("#!/bin/sh\necho 'REMOTE_EMPTY'\n", encoding="utf-8")
+        resolver.chmod(resolver.stat().st_mode | stat.S_IEXEC)
+        env["T3_FOREIGN_MR_CMD"] = str(resolver)
+        _commit(work, "feature.txt", "a clean feature line\n")
+
+        result = _run_hook(work, env, "feature-x")
+
+        assert result.returncode == 1
+        assert "the push names no remote URL" in result.stdout
+        assert "Set the origin remote" in result.stdout
+        assert "OPEN MR (#" not in result.stdout
+        assert "authored by" not in result.stdout
 
     def test_a_branch_with_no_open_mr_is_still_allowed_without_an_identity(self, tmp_path: Path) -> None:
         """The common case must not brick: no MR means no ownership question to answer."""

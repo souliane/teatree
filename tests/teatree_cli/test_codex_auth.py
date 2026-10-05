@@ -3,6 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from teatree.agents.codex_auth_cache import CodexAuthCacheError
@@ -79,7 +80,8 @@ def test_codex_auth_import_rejects_stdin_above_the_bounded_limit() -> None:
     store.assert_not_called()
 
 
-def test_codex_auth_import_does_not_echo_invalid_stdin() -> None:
+def test_codex_auth_import_does_not_echo_invalid_stdin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("T3_CODEX_HOME", str(tmp_path))
     result = CliRunner().invoke(
         codex_app,
         ["auth", "import", "--from", "-"],

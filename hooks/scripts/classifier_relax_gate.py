@@ -365,5 +365,6 @@ def handle_allow_classifier_relax_settings_write(data: dict) -> bool | Verdict |
             "classifier-relax settings.json write failed content-schema validation (#857): "
             f"{schema_error}. Only a smallest-scope string rule may be appended to permissions.allow / "
             "autoMode.allow; no blanket wildcard, and the result must stay valid JSON.",
+            gate_id="classifier_relax",
         )
     return emit_pretooluse_allow()

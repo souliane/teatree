@@ -24,7 +24,8 @@ parser for the banned-terms gate.
 
 from pathlib import Path
 
-from teatree.hooks._command_parser import extract_bash_payload, is_fail_closed_sentinel, is_publish_command
+from teatree.hooks._command_parser import extract_bash_payload, is_publish_command
+from teatree.hooks._parser_primitives import is_fail_closed_sentinel
 
 
 def extract_forge_post_body(command: str, cwd: Path | None = None) -> str | None:

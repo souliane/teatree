@@ -74,9 +74,8 @@ class ReactiveSlot:
     The three reactive slots (Slack-answer, self-improve, drain-queue) have NO DB
     ``Loop`` row: their sub-minute cadence cannot be a minute-granular cron. The
     worker drives all three as maintenance chains, so this registration is the
-    WORKER-DOWN fallback: ``t3 loop <slot> start`` and the owner-session bootstrap
-    (:mod:`hooks.scripts.loop_registrations`) both probe the worker singleton first
-    and emit the SAME ``/loop`` only when nothing else is driving the slot.
+    WORKER-DOWN fallback: ``t3 loop <slot> start`` probes the worker singleton first
+    and emits the ``/loop`` only when nothing else is driving the slot.
     """
 
     slot_id: str
@@ -96,7 +95,7 @@ class ReactiveSlot:
 
 
 #: The three reactive infra ``/loop`` slots, in registration order — the single
-#: source of truth both ``t3 loop <slot> start`` and the owner bootstrap read.
+#: source of truth ``t3 loop <slot> start`` reads.
 REACTIVE_SLOTS: tuple[ReactiveSlot, ...] = (
     ReactiveSlot("loop-slack-answer", slack_answer_cadence_seconds, "t3 loop slack-answer run"),
     ReactiveSlot("loop-self-improve", self_improve_cadence_seconds, "t3 loop self-improve run --tier cheap"),
@@ -111,18 +110,12 @@ def reactive_slot(slot_id: str) -> ReactiveSlot:
     return _REACTIVE_BY_SLOT[slot_id]
 
 
-def reactive_slot_directives() -> list[str]:
-    """The ``/loop <duration>`` registrations for all three reactive infra loops (owner-session bootstrap)."""
-    return [slot.loop_directive() for slot in REACTIVE_SLOTS]
-
-
 __all__ = [
     "REACTIVE_SLOTS",
     "ReactiveSlot",
     "drain_cadence_seconds",
     "loop_owner_ttl_seconds",
     "reactive_slot",
-    "reactive_slot_directives",
     "self_improve_cadence_seconds",
     "slack_answer_cadence_seconds",
 ]

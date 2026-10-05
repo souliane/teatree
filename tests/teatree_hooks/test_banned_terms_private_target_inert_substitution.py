@@ -30,7 +30,7 @@ These tests pin the fix and its security invariants:
     private skip must not weaken the fail-closed public-surface scan);
 - a high-confidence SECRET in a private-target body still BLOCKS (secrets leak on
     every surface, scanned before any visibility skip); and
-- the ``ALLOW_BANNED_TERM=1`` escape is unchanged.
+- public egress ignores the ``ALLOW_BANNED_TERM=1`` escape.
 
 Synthetic terms only (``democorp``) -- the overlay-leak-tree runs on real PRs.
 """
@@ -61,9 +61,11 @@ def _seed(
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
-    rows: dict[str, object] = {"banned_terms": [_TERM]}
+    rows: dict[str, object] = {"banned_term_registry": {"leak": [_TERM], "prose_collider": [_TERM]}}
     if private_repos is not None:
-        rows["private_repos"] = private_repos
+        # The DB-home allowlist records host-qualified namespaces; these
+        # fixtures all target GitLab, so bind the declared privacy to GitLab.
+        rows["private_repos"] = [f"gitlab.com/{repo}" for repo in private_repos]
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))
     try:
@@ -280,13 +282,24 @@ class TestSecurityInvariantsUnchanged:
         assert handle_banned_terms_pretool(_bash(cmd)) is True, "a secret must block even on a private target"
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_allow_banned_term_override_still_bypasses(
+    def test_allow_banned_term_override_does_not_bypass_public_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # The explicit override is unchanged: a public target with a banned term is
-        # allowed through only when the leading env prefix opts out.
+        # An inline override cannot authorize a banned term on public egress.
         _seed(tmp_path, monkeypatch)  # no private_repos
         _pin_probe(monkeypatch, "PUBLIC")
         cmd = f"ALLOW_BANNED_TERM=1 gh pr create --repo someowner/public-svc --title t --body 'ship {_TERM} now'"
+        assert handle_banned_terms_pretool(_bash(cmd)) is True
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "ALLOW_BANNED_TERM" not in reason
+
+    def test_override_on_private_target_still_allows_without_printing_variable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _seed(tmp_path, monkeypatch, private_repos=[_PRIVATE_NS])
+        _pin_probe(monkeypatch, None)
+        cmd = f"ALLOW_BANNED_TERM=1 glab mr create -R {_PRIVATE_NS}/skills --title t --description 'ship {_TERM} now'"
         assert handle_banned_terms_pretool(_bash(cmd)) is False
-        assert capsys.readouterr().out == ""
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "ALLOW_BANNED_TERM" not in captured.err

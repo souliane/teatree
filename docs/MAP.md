@@ -13,7 +13,7 @@ lightweight entry-point packages. The Python source lives under
 
 | Directory | Purpose | BLUEPRINT |
 |---|---|---|
-| `src/teatree/` | Package root: `__main__.py`/`wsgi.py` entry points, `identity.py`, `paths.py` (XDG + worktree-aware DB isolation), `project.py`, `on_behalf_gate.py`, `outbound_claim.py`, `types.py` (Django-free shared types), `settings.py`/`urls.py` (Django wiring) | [§3](../BLUEPRINT.md#3-package-structure) |
+| `src/teatree/` | Package root: `__main__.py`/`wsgi.py` entry points, `paths.py` (XDG + worktree-aware DB isolation), `project.py`, `on_behalf_gate.py`, `outbound_claim.py`, `types.py` (Django-free shared types), `settings.py`/`urls.py` (Django wiring) | [§3](../BLUEPRINT.md#3-package-structure) |
 | `src/teatree/config/` | Config load + resolution: `UserSettings`, the DB `ConfigSetting` store, the `OVERLAY_OVERRIDABLE_SETTINGS`/registry/cold-hook settings surface, and overlay discovery | [§10](../BLUEPRINT.md#10-configuration) |
 | `src/teatree/cli/` | The `t3` CLI command tree — Typer apps for the Django-free bootstrap commands plus per-overlay subapp registration | [§8](../BLUEPRINT.md#8-command-tiers) |
 | `src/teatree/core/` | The heart of teatree: the Django app with the FSM models, scanners, sync, cleanup, reconcile, signals, and provisioning | [§4](../BLUEPRINT.md#4-domain-models) |
@@ -57,7 +57,7 @@ lightweight entry-point packages. The Python source lives under
 |---|---|
 | `skills/` | Workflow skills loaded as `/t3:*` (`SKILL.md` + `references/`) — `code`, `ship`, `review`, `workspace`, `rules`, ... |
 | `agents/` | Phase sub-agent definitions (`orchestrator`, `coder`, `reviewer`, `tester`, `shipper`, `debugger`, `e2e`, `e2e-review`, `planner`, `followup`, `answerer`, `scanning-news`) |
-| `hooks/` | Plugin hooks: `hooks.json` event→script mapping and the `scripts/` hook router (UserPromptSubmit, PreToolUse, PreCompact, Stop) |
+| `hooks/` | Plugin hooks: `hooks.json` event→script mapping and the `scripts/` hook router (SessionStart, PreToolUse, PreCompact, Stop) |
 | `.claude-plugin/` | Plugin manifest — `plugin.json` (identity) and `marketplace.json` |
 | `tests/` | Pytest suite, mirroring the `src/` module path (`teatree_core/`, `teatree_cli/`, `integration/`, ...). E2E lives here, not in a separate top-level dir |
 | `docs/` | User-facing documentation (mkdocs site) plus `generated/` auto-generated reference |

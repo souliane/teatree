@@ -6,7 +6,6 @@ back a second time means the walk stopped advancing, and an unattended run must
 raise rather than spin.
 """
 
-import json
 from collections.abc import Callable
 
 import httpx
@@ -106,19 +105,3 @@ class TestAdvancingCursor:
         children = NotionClient(token="good").list_block_children("block-1")
 
         assert [child["id"] for child in children] == ["a", "b", "c"]
-
-    def test_shared_object_search_pages_with_a_json_cursor(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        pages = {
-            "": {"results": [{"id": "page-a"}], "has_more": True, "next_cursor": "c1"},
-            "c1": {"results": [{"id": "database-b"}], "has_more": False, "next_cursor": None},
-        }
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            cursor = str(json.loads(request.content).get("start_cursor", ""))
-            return httpx.Response(200, json=pages[cursor])
-
-        _install(monkeypatch, handler)
-
-        objects = NotionClient(token="good").search_shared_objects()
-
-        assert [item["id"] for item in objects] == ["page-a", "database-b"]

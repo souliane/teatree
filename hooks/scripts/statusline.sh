@@ -111,19 +111,8 @@ $(printf '%s' "$input" | jq -r --rawfile _cfgraw "$_effort_cfg" '
 EOF
     fi
 fi
-# The render gate is primarily the `autoload` owner flag (below), NOT the per-session
-# `.teatree-active` marker as a hard requirement. That marker is written by
-# SessionStart-engage / a teatree-skill load, but the harness runs the loop in a
-# background `bg-spare` daemon session (which gets the marker and owns the tick) while
-# the owner's foreground TUI sessions frequently never get it — so ANDing the marker
-# with autoload blanked the statusline in exactly the sessions the owner looks at.
-# `autoload` is the ONE owner flag that "engages the session", so it is the PRIMARY
-# gate here. A secondary opt-in — `statusline_engaged_render` (#3502, default false) —
-# ADDITIONALLY renders in a session the owner explicitly engaged by hand (an engage
-# marker present) even with autoload off. Loop *arming* keeps its stricter
-# `marker AND autoload` gate (hook_router._loop_auto_load_active); this is display
-# *visibility*. The #256 colleague guarantee still holds: with `autoload` off and the
-# opt-in unset the bar shows only the neutral hint, regardless of the marker.
+# Render for `autoload` or a `.t3-engaged` session (see session_engaged); loop arming has its own gate.
+
 
 # The host-visible projection of the container-owned control DB (#3499). Every
 # ConfigSetting read below resolves a HOST sqlite path, but a containerized deploy
@@ -231,7 +220,7 @@ _statusline_chain_db() {
 
 # Session-start loop/statusline auto-load is OPT-IN (#256): default OFF so a
 # colleague who merely clones the repo never sees the loop statusline. ``autoload``
-# is the ONE owner flag (it engages the session AND arms its loops). Mirrors
+# is the global owner flag; the `.t3-engaged` marker opts one session into rendering. Mirrors
 # hook_router._autoload_enabled — env T3_AUTOLOAD first, then the canonical
 # ConfigSetting read (_config_setting_read). autoload is DB-home only (no file
 # fallback).
@@ -258,29 +247,13 @@ autoload_state() {
     esac
 }
 
-# A session is explicitly engaged when it carries either engage marker under
-# `state_dir`: `.teatree-active` (SessionStart-engage / a teatree-requiring skill)
-# or `.t3-engaged` (any `t3:` skill loaded).
+# Any `t3:` skill load writes `.t3-engaged`; `.teatree-active` alone (autoload off, a non-t3: skill requiring t3:interactive) gets the hint (#256).
 session_engaged() {
-    [ -n "$1" ] && { [ -f "$state_dir/$1.teatree-active" ] || [ -f "$state_dir/$1.t3-engaged" ]; }
-}
-
-# The opt-in render path (`statusline_engaged_render`, #3502): the flag is a
-# strict-bool `true` AND this session is explicitly engaged. Default false → a
-# colleague never reaches it (#256). An unreadable store is not `true`, so this
-# stays closed; the honesty of that state is carried by `autoload_state` instead,
-# which is the flag the hint line is about.
-engaged_render_enabled() {
-    local value
-    value=$(_config_setting_read statusline_engaged_render) || return 1
-    case "$value" in
-        true) session_engaged "$1" ;;
-        *) return 1 ;;
-    esac
+    [ -n "$1" ] && [ -f "$state_dir/$1.t3-engaged" ]
 }
 
 teatree_autoload_state=$(autoload_state)
-if [ -n "$session_id" ] && [ "$teatree_autoload_state" != "on" ] && ! engaged_render_enabled "$session_id"; then
+if [ -n "$session_id" ] && [ "$teatree_autoload_state" != "on" ] && ! session_engaged "$session_id"; then
     # #3233: CC discards zero-byte statusline output, so a silent ``exit 0``
     # here renders a mysteriously BLANK bar under the non-TTY CC invocation
     # (session_id set) — invisible to every run-the-script-by-hand debug pass.
@@ -426,10 +399,9 @@ EOF
         _total_gb=$(( (_ram_total + 536870912) / 1073741824 ))
         color_pct "$_ram_pct"
         _ram_segment="${_LBL}ram=${_RST}${_cp}${_LBL} $(( _used_tenths / 10 )).$(( _used_tenths % 10 ))/${_total_gb}G${_RST}"
-        # Publish a fresh, host-scoped reading to the data dir Docker bind-mounts.
-        # Read the first JSON line with a shell builtin to throttle writes to 15s;
-        # the statusline hot path gains no parser process and only one `mv` on a
-        # write. A stale/missing feed is explicitly reported by the governor.
+        # Fallback publisher for a host whose launchd publisher is not running: write only
+        # once the feed is 45s old, so its every-15s sample (which alone carries the swap
+        # activity) is never overwritten, and the governor's 60s freshness still holds.
         _swap_total="${_sysctl_l4#*total = }"
         _swap_total="${_swap_total%%M*}"
         _swap_used="${_sysctl_l4#*used = }"
@@ -444,7 +416,7 @@ EOF
                 IFS= read -r _old_host_json < "$_host_pressure_file"
                 if [[ "$_old_host_json" =~ \"epoch\":([0-9]+) ]]; then _last_host_epoch="${BASH_REMATCH[1]}"; fi
             fi
-            if [ $(( _host_epoch - _last_host_epoch )) -ge 15 ]; then
+            if [ $(( _host_epoch - _last_host_epoch )) -ge 45 ]; then
                 _host_ram_mib=$(( (_free + _inact) * _page_sz / 1048576 ))
                 _swap_total_mib="${_swap_total%%.*}"
                 _swap_used_mib="${_swap_used%%.*}"

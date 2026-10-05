@@ -55,6 +55,10 @@ Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 
 Back up teatree's control DB and prune past the keep-last-N-days retention (directive #2).
 
+## `deploy_roll`
+
+Roll the runtime stack to an immutable image generation.
+
 ## `directive`
 
 Capture, drive, and inspect plain-language directives about teatree's own behavior.
@@ -89,6 +93,8 @@ Drive the idle-time memory-consolidation (dreaming) cron (#1933).
 | `run` | Run one consolidation pass NOW (manual escape hatch; ignores cadence) |
 | `tick` | Run one consolidation pass IF the dream cadence has elapsed (cron entry) |
 | `compliance` | Print the latest instruction-compliance snapshot — read-only (#2663) |
+| `gap-coverage` | Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap |
+| `gap-disposition` | Record a folded dream gap's ADDRESS (with its citation) or reasoned REJECT on its host |
 
 ## `e2e`
 
@@ -116,7 +122,6 @@ Run E2E specs and post their evidence — the overlay-agnostic e2e verbs.
 | `overrides` | List user-declared overrides for this worktree |
 | `set-var` | Persist an override on the worktree and refresh the cache |
 | `check` | Exit non-zero if the on-disk cache diverges from the DB render |
-| `migrate-secrets` | Move ``POSTGRES_PASSWORD`` literals out of ``.t3-env.cache`` into ``pass`` |
 
 ## `followup`
 
@@ -229,7 +234,7 @@ Switch standing-directive slots off (disable) or back on (enable) (#4166).
 
 ## `loop_directives`
 
-Print the standing directives with their resolved cadence, scope, cost and text (#4166).
+Print the standing directives with their resolved cadence, scope and text (#4166).
 
 ## `loop_dispatch`
 
@@ -237,7 +242,6 @@ Print the standing directives with their resolved cadence, scope, cost and text 
 | --- | --- |
 | `pending-spawn` | List pending Tasks the ``/loop`` slot should spawn in-session |
 | `claim-next` | Atomically claim the oldest pending dispatchable Task, then emit it |
-| `spawn-claim` | Mark the Task as claimed so the next tick doesn't surface it |
 
 ## `loop_drain_queue`
 
@@ -297,14 +301,13 @@ Run one reactive Slack-answer cycle (the third /loop slot).
 
 ## `loop_state`
 
-Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913).
+Pause, resume, disable, or inspect a mini-loop's durable state (#1913).
 
 | Subcommand | Description |
 | --- | --- |
 | `pause` | Move *name* into the reversible PAUSED hold |
 | `resume` | Return *name* to ENABLED, clearing a pause OR a disable — both planes |
 | `disable` | Move *name* into the durable DISABLED kill-switch — both planes |
-| `enable` | Return *name* to ENABLED (alias of resume) — both planes |
 | `override` | Set the MANUAL override for *name* — on/off beats the preset, clear hands it back |
 | `status` | Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it |
 
@@ -359,7 +362,7 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 | --- | --- |
 | `tick` | Advance the outer loop one step IF the cadence elapsed (cron entry) |
 | `status` | Print the guard-chain verdict and the active experiment (read-only) |
-| `propose` | Record an operator hypothesis as a PROPOSED experiment (refused while off) |
+| `propose` | Record an operator hypothesis as a PROPOSED experiment |
 | `history` | Print the recent experiment ledger (read-only) |
 | `resolve-revert` | Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot |
 | `resolve-keep` | Close a KEEP_PENDING experiment to terminal KEPT, freeing the slot |
@@ -396,7 +399,6 @@ Pull-request delivery: ship-gated creation, the pending-PR sweep, and test-plan 
 | `fetch-issue` | Fetch issue details with embedded image URLs and external links |
 | `detect-tenant` | Detect the current tenant variant from the overlay |
 | `post-test-plan` | Post a test plan as a PR comment. Uploads files and updates existing notes |
-| `post-evidence` | Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat) |
 
 ## `prompts_list`
 
@@ -471,7 +473,7 @@ Group root — forces sub-commands to be addressed by name.
 
 | Subcommand | Description |
 | --- | --- |
-| `finding` | Record one retro finding in the ledger and drive it to a scheduled fix |
+| `finding` | Record one retro finding in the ledger and queue it for the backlog sweep |
 | `review-findings` | Classify a PR's review findings A/B/C and file class-C enforcement issues |
 | `gate-failures` | Extract a session's gate failures, classify them, record, and optionally escalate |
 
@@ -597,6 +599,7 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 
 | Subcommand | Description |
 | --- | --- |
+| `comment` | Record a note on an issue, in the place its ``--purpose`` belongs (#162) |
 | `merge` | Execute the missing REVIEW_REQUESTED → MERGED keystone transition (BLUEPRINT §17.4) |
 | `attachments` | Print (and with ``--fetch`` download) a ticket's referenced attachments |
 | `fold` | Merge a member ticket's body into its host's, verbatim (#4344) |
@@ -606,15 +609,18 @@ Ticket lifecycle: transitions, CLEAR issuance, the merge keystone, and issue wri
 | `plan` | Record a PlanArtifact and advance the ticket WORK_STARTED → PLAN_RECORDED |
 | `transition` | Transition a ticket to a new state. Allowed transition names: scope, start, plan, code, code_direct, test, review, ship, request_review, mark_merged, retrospect, mark_delivered, rework, reopen, reopen_for_followup, mark_review_no_action, mark_reviewed_externally, reconcile_reviewed, reconcile_merged, ignore, unignore |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
-| `comment` | Post a comment to an issue or work item by its URL |
 | `backfill-clears` | Recover the ticket link on consumed CLEARs issued without ``--ticket-id`` |
 | `list-clears` | List every unconsumed merge authorisation, each with the standing that hides it |
 | `reconcile-clears` | Consume every standing merge authorisation whose PR already merged or closed |
 | `set-target-branch` | Point *repo*'s future PR at *branch* (its stack parent) instead of the repo default |
 | `sync-completions` | Reconcile the ticket board against forge truth and advance what has landed |
+| `sweep-begin` | Open a ticket-hygiene sweep run and print its id (#162 Rule 4) |
+| `sweep-finish` | Close a sweep run, persisting its changed-ticket count — zero included |
+| `sweep-trend` | Report the changed-ticket count series, the zero streak, and any unfinished runs |
 | `reconcile-overlay` | Backfill ``overlay`` for rows whose attribution disagrees with inference |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
 | `fold-check` | Prove a host body still carries the folded member's substance (#4344) |
+| `attach-gaps` | Fold pending dream gaps into an existing host ticket, proved on the forge |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
 | `fix-record-override` | Record the audited exception for the fix-ticket FixRecord DoD gate (#1661/#4520) |
 | `dead-rows` | List every non-terminal ticket intake can never find, oldest lane first (#4527) |
@@ -680,7 +686,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `restore` | Apply a captured salvage bundle back into a checkout (#4435) |
 | `clean-merged` | Tear down every done worktree (analyze-then-wipe) on demand |
 | `stamp-identity` | Stamp the scoped noreply git identity onto an existing public GitHub clone (#762) |
-| `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace |
+| `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none |
 | `branch-verdict` | Is this branch's work already on the default branch? The canonical answer (#4070) |
 | `reap-stale` | Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207) |
 | `reclaim-disk` | Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246) |
@@ -693,11 +699,12 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 
 ## `worktree`
 
-The checkout-occupancy operator command surface (mixed into the ``worktree`` command).
+Per-worktree FSM operations.
 
 | Subcommand | Description |
 | --- | --- |
 | `occupancy` | Show every checkout a live agent currently holds (#3952) |
+| `adopt` | Register an existing on-disk checkout as a ``Worktree`` row |
 | `provision` | Run DB import + env cache + direnv + prek + overlay setup steps for one worktree |
 | `start` | Boot ``docker compose up`` for one worktree |
 | `verify` | Run overlay health checks for one worktree |

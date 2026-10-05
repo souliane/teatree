@@ -37,8 +37,10 @@ from teatree.utils import git_run
 from teatree.utils.git_run import run_with_status
 from teatree.utils.run import CompletedProcess, TimeoutExpired
 from tests._git_repo import make_git_repo, run_git
+from tests._unreadable_file import skip_if_root
 
 FAKE_TOKEN = "gh" + "p_" + "x" * 36
+FAKE_GITLAB_TOKEN = "gl" + "pat-" + "x" * 20
 
 _ABORT_EMITTER_LINES = (
     "=== push-gate: ABORTED waiting for lock held by pid=41 ===",
@@ -134,6 +136,15 @@ class _RecordingRun:
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
 
+def _strict_routes(**routes: ForgeTokenResolution) -> Callable[..., ForgeTokenResolution]:
+    def resolve(repo: str, *, credential: str) -> ForgeTokenResolution:
+        _ = repo
+        assert credential in routes, f"push asked for {credential!r}; this remote routes only {sorted(routes)}"
+        return routes[credential]
+
+    return resolve
+
+
 class TestResolveForgeCredential:
     def test_uses_the_owning_overlay_route_despite_hostile_ambient(self) -> None:
         routed = ForgeTokenResolution(
@@ -170,6 +181,21 @@ class TestResolveForgeCredential:
         assert credential.token == ""
         assert credential.source is CredentialSource.OVERLAY_PASS_STORE
         assert credential.state is state
+
+    def test_can_request_the_gitlab_route(self) -> None:
+        routed = ForgeTokenResolution(
+            "gitlab_token",
+            "owner",
+            ForgeTokenState.TOKEN,
+            token=FAKE_GITLAB_TOKEN,
+            pass_key="owner/gitlab",
+        )
+        with patch("teatree.core.forge_push.resolve_repo_token", return_value=routed) as resolve:
+            credential = resolve_forge_credential("/repo", credential="gitlab_token")
+
+        resolve.assert_called_once_with("/repo", credential="gitlab_token")
+        assert credential.token == FAKE_GITLAB_TOKEN
+        assert credential.state is ForgeTokenState.TOKEN
 
 
 class TestRemoteUrlEmbedsCredential:
@@ -294,7 +320,7 @@ class TestPushBranch:
         routed = ForgeTokenResolution(
             "github_token", "owner", ForgeTokenState.TOKEN, token=FAKE_TOKEN, pass_key="owner/github"
         )
-        with patch("teatree.core.forge_push.resolve_repo_token", return_value=routed):
+        with patch("teatree.core.forge_push.resolve_repo_token", side_effect=_strict_routes(github_token=routed)):
             outcome = push_branch(repo=clone_with_origin)
 
         assert outcome.ok, outcome.detail
@@ -320,6 +346,94 @@ class TestPushBranch:
         assert state.value in outcome.detail
         assert "refusing ambient" in outcome.detail
         push.assert_not_called()
+
+    def test_gitlab_push_sets_gitlab_token_env_not_gh_token(self, clone_with_origin: Path) -> None:
+        run_git(clone_with_origin, "remote", "set-url", "origin", "https://gitlab.example.invalid/acme/widget.git")
+        routed = ForgeTokenResolution(
+            "gitlab_token", "owner", ForgeTokenState.TOKEN, token=FAKE_GITLAB_TOKEN, pass_key="owner/gitlab"
+        )
+        recorder = _RecordingRun()
+        with (
+            patch("teatree.core.forge_push.resolve_repo_token", side_effect=_strict_routes(gitlab_token=routed)),
+            patch("teatree.core.forge_push.run_bounded_group", recorder),
+        ):
+            push_branch(repo=clone_with_origin)
+
+        seen = recorder.envs[-1]
+        assert seen["GITLAB_TOKEN"] == FAKE_GITLAB_TOKEN
+        assert "GH_TOKEN" not in seen
+
+    @pytest.mark.parametrize("state", [ForgeTokenState.UNSET, ForgeTokenState.UNREADABLE])
+    def test_gitlab_push_refuses_hostile_ambient_when_owner_route_is_empty(
+        self, clone_with_origin: Path, state: ForgeTokenState
+    ) -> None:
+        run_git(clone_with_origin, "remote", "set-url", "origin", "https://gitlab.com/acme/widget.git")
+        routed = ForgeTokenResolution("gitlab_token", "owner", state, detail=f"owner route is {state.value}")
+        with (
+            patch.dict(os.environ, {"GITLAB_TOKEN": FAKE_GITLAB_TOKEN}, clear=False),
+            patch("teatree.core.forge_push.resolve_repo_token", side_effect=_strict_routes(gitlab_token=routed)),
+            patch("teatree.core.forge_push.run_bounded_group") as push,
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.CREDENTIAL
+        assert state.value in outcome.detail
+        assert "refusing ambient" in outcome.detail
+        assert "gitlab_token_pass_key" in outcome.detail
+        push.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "git@gitlab.example.invalid:acme/widget.git",
+            "ssh://git@gitlab.example.invalid/acme/widget.git",
+            "http://gitlab.example.invalid/acme/widget.git",
+        ],
+    )
+    def test_non_https_gitlab_push_is_not_routed_or_refused_for_a_missing_gitlab_token(
+        self, clone_with_origin: Path, url: str
+    ) -> None:
+        run_git(clone_with_origin, "remote", "set-url", "origin", url)
+        unset = ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET, detail="owner route is unset")
+        recorder = _RecordingRun()
+        with (
+            patch("teatree.core.forge_push.resolve_repo_token", side_effect=_strict_routes(github_token=unset)),
+            patch("teatree.core.forge_push.run_bounded_group", recorder),
+        ):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is not PushFailure.CREDENTIAL
+        assert recorder.commands
+
+    @skip_if_root
+    def test_a_prek_hook_it_cannot_repair_is_a_refusal_not_a_traceback(self, clone_with_origin: Path) -> None:
+        hook = _install_pre_push_hook(
+            clone_with_origin,
+            '# File generated by prek: https://github.com/j178/prek\nPREK="/opt/elsewhere/prek"\nexec "$PREK" "$@"\n',
+        )
+        hook.chmod(0o555)
+
+        outcome = push_branch(repo=clone_with_origin)
+
+        assert not outcome.ok
+        assert outcome.failure is PushFailure.CONFIG
+        assert str(hook) in outcome.detail
+
+    def test_a_credential_refusal_leaves_the_shared_hooks_untouched(self, clone_with_origin: Path) -> None:
+        run_git(clone_with_origin, "remote", "set-url", "origin", "https://github.com/acme/widget.git")
+        hook = _install_pre_push_hook(
+            clone_with_origin,
+            '# File generated by prek: https://github.com/j178/prek\nPREK="/opt/elsewhere/prek"\nexec "$PREK" "$@"\n',
+        )
+        before = hook.read_text(encoding="utf-8")
+        unset = ForgeTokenResolution("github_token", "owner", ForgeTokenState.UNSET, detail="owner route is unset")
+
+        with patch("teatree.core.forge_push.resolve_repo_token", return_value=unset):
+            outcome = push_branch(repo=clone_with_origin)
+
+        assert outcome.failure is PushFailure.CREDENTIAL
+        assert hook.read_text(encoding="utf-8") == before
 
     def test_never_silences_the_pre_push_hooks(self, clone_with_origin: Path) -> None:
         recorder = _RecordingRun()

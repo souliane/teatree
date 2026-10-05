@@ -65,27 +65,23 @@ def _format_quote_block_message(result: ScanResult, surface: QuoteGateSurface) -
         f"BLOCKED: {surface.gate_label}. {surface.carrier} "
         f"carries verbatim user-voice/PII content{matched} — matched patterns: {names}. "
         f"Paraphrase it into author-voice description {surface.consequence}. "
-        f"If the match is a false positive, add `[quote-ok: <reason>]` {surface.escape_location}."
+        "If this is a false match, rephrase without the quoted span or ask the owner. "
+        "The owner may approve this one entry with a per-call `[quote-ok: <reason>]` override "
+        f"{surface.escape_location}."
     )
 
 
-def format_block_message(result: ScanResult) -> str:
+def format_block_message(result: ScanResult, *, slack_mcp: bool = False) -> str:
     """Render the publish-boundary deny reason for a HIGH match (#1213).
 
-    The false-positive escape names the leading ``QUOTE_OK=1`` env PREFIX, not a
-    ``--quote-ok`` CLI flag: the flag is consumed by the gate's parser, never by
-    the posting command, so a ``t3 review post-comment`` (or any other
-    subcommand) would reject it as an unknown option. The env prefix is a real
-    shell construct every command accepts and is the spelling that actually
-    works at the prompt.
+    Name the per-call override only as an option for the owner to approve.
     """
     names = ", ".join(sorted({f.name for f in result.high}))
+    carrier = "The scan matched quoted owner text" if slack_mcp else "The publish body matched quoted owner text"
     return (
-        "BLOCKED: pre-publish quote-scanner gate (#1213). "
-        f"Matched patterns: {names}. "
-        "Paraphrase any user-attributed content; do not quote verbatim. "
-        "If the match is a false positive, re-issue the command with a leading "
-        "QUOTE_OK=1 env prefix (e.g. `QUOTE_OK=1 <command>`)."
+        f"BLOCKED: pre-publish quote-scanner gate (#1213). {carrier}; matched patterns: {names}. "
+        "Rephrase without the quoted span or ask the owner if this is a false match. "
+        "Ask the owner to review the blocked publication."
     )
 
 

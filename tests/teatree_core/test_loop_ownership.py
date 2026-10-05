@@ -230,7 +230,7 @@ class TestSessionIdentity(TestCase):
     def test_reads_claude_session_id(self) -> None:
         from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
 
-        with mock.patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-1"}, clear=True):
+        with mock.patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "claude-1"}, clear=True):
             assert current_session_id() == "claude-1"
 
     def test_falls_back_to_t3_loop_session_id(self) -> None:
@@ -262,18 +262,10 @@ class TestSessionIdentity(TestCase):
 
         with mock.patch.dict(
             "os.environ",
-            {"CLAUDE_SESSION_ID": "claude-1", "T3_LOOP_SESSION_ID": "t3-loop-1"},
+            {"CLAUDE_CODE_SESSION_ID": "claude-1", "T3_LOOP_SESSION_ID": "t3-loop-1"},
             clear=True,
         ):
             assert current_session_id() == "claude-1"
-
-    def test_outbound_claim_reexport_is_the_same_callable(self) -> None:
-        from teatree.core.session_identity import current_session_id as core_impl  # noqa: PLC0415
-        from teatree.outbound_claim import _resolve_agent_session_id  # noqa: PLC0415
-
-        # core is the canonical home; the outbound_claim backward-compat alias
-        # resolves to the same object.
-        assert _resolve_agent_session_id is core_impl
 
 
 # ── Keystone: cross-session hijack on the file-backed prod SQLite backend ──

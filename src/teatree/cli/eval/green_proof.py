@@ -14,6 +14,9 @@ from teatree.eval.summary_json import scenario_version
 def green_proof(
     summary_json: Path = typer.Argument(..., help="The merged eval-heal-<sha> §2.4 summary JSON to prove green."),
     sha: str | None = typer.Option(None, "--sha", help="Exact checked-out commit SHA being proved."),
+    incomplete_exit_code: int = typer.Option(
+        1, "--incomplete-exit-code", help="Exit code for incomplete catalog coverage."
+    ),
 ) -> None:
     """Assert the merged eval-heal JSON proves a full-suite green (whole catalog, 0 reds)."""
     if not summary_json.is_file():
@@ -35,5 +38,11 @@ def green_proof(
         expected_sha=sha or os.environ.get("CI_COMMIT_SHA") or os.environ.get("GITHUB_SHA", ""),
     )
     typer.echo(proof.summary)
-    if not proof.is_green:
+    if proof.reds:
         raise typer.Exit(1)
+    if proof.incomplete:
+        typer.echo("coverage incomplete: one or more scenarios did not finish grading")
+        raise typer.Exit(incomplete_exit_code)
+    if not proof.covers_the_catalog:
+        typer.echo("coverage incomplete: exact catalog proof did not execute")
+        raise typer.Exit(incomplete_exit_code)

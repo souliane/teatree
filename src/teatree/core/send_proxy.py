@@ -11,20 +11,15 @@ post/DM/react (:mod:`teatree.core.notify`, :class:`~teatree.core.on_behalf_egres
     so the credential surface is one auditable function instead of scattered
     ``read_pass`` calls. (Pinned by the single-credential-reader grep-gate.)
 
-2.  **It enforces a per-overlay destination allowlist** (Slack channels, forge
-    repos, hosts). The allowlist is deterministic, so a BLOCK is legitimate —
-    but it ships in ``warn`` mode (audit-only) so it can never over-block a
-    real send before the operator seeds the allowlist from a live-traffic soak.
+2.  **It enforces a per-overlay destination allowlist** (Slack channels and
+    forge repos). A non-allowlisted destination is refused before delivery.
 
-3.  **It runs redaction/banned-terms on every payload.** In ``warn`` mode the
-    matches are audited but the live payload is never mutated; in ``enforce``
-    mode the payload is redacted before the wire call.
+3.  **It runs redaction/banned-terms on every payload.** Matching terms are
+    redacted before the wire call.
 
 Every send writes one :class:`~teatree.core.models.send_audit.SendAudit` row
-carrying the delegation provenance (#119 reads it). The proxy is **fail-open in
-``warn`` mode and never-raise in the audit path** — a policy-evaluation or
-audit-write failure degrades to "allow, unredacted, unaudited" and is logged, so
-the proxy can sit on the hot outbound path without ever breaking a send.
+carrying the delegation provenance (#119 reads it). The audit write is
+best-effort and cannot break a send.
 
 Home is :mod:`teatree.core`: it imports config, the overlay loader (for the
 allowlist + redact terms), and the shared :mod:`teatree.hooks.term_match`
@@ -47,7 +42,6 @@ from typing import TYPE_CHECKING
 from django.db import DatabaseError, transaction
 
 from teatree.config import get_effective_settings
-from teatree.config.enums import SendProxyMode
 from teatree.core.gates.privacy_gate import PrivacyGateResult, format_refusal, overlay_privacy_rules, scan_outbound_text
 from teatree.core.session_identity import current_session_id
 from teatree.utils import secrets
@@ -59,7 +53,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Placeholder a redacted whole-token match is replaced with in ``enforce`` mode.
+#: Placeholder a redacted whole-token match is replaced with.
 REDACTION_PLACEHOLDER = "[redacted]"
 
 #: How much of the payload is kept in the audit row's non-sensitive preview.
@@ -114,9 +108,10 @@ def _default_provenance() -> str:
 class SendRequest:
     """One outbound artifact presented to the proxy for policy + audit.
 
-    ``payload`` is the body/text about to egress. ``destination`` is the raw
-    surface id the allowlist matches (Slack channel id, ``org/repo`` slug, forge
-    host). ``target`` is the human-facing artifact ref for the audit
+    ``payload`` is the body/text about to egress. ``destination`` is the
+    surface id the allowlist matches (Slack channel id or a channel-qualified
+    ``<forge>:<owner/repo>`` slug).
+    ``target`` is the human-facing artifact ref for the audit
     (``org/repo#42``). ``authorized_by`` / ``provenance`` are the delegation
     fields #119 consumes — which directive/ticket/human sanctioned the send and
     the trust origin of its content.
@@ -137,39 +132,26 @@ class SendRequest:
 class SendVerdict:
     """The proxy's decision for one send.
 
-    ``allowed`` is always ``True`` in ``warn`` mode (audit-only). ``payload`` is
-    the original body in ``warn`` mode and the redacted body in ``enforce`` mode.
-    ``allowlist_ok`` reports the raw allowlist check regardless of mode (so the
-    audit and a caller can see the would-be verdict during the soak).
+    ``payload`` is the redacted body and ``allowlist_ok`` reports the allowlist check.
     """
 
     allowed: bool
     payload: str
-    mode: SendProxyMode
     allowlist_ok: bool
     redaction_matches: tuple[str, ...] = field(default_factory=tuple)
     reason: str = ""
 
     @property
     def payload_redacted(self) -> bool:
-        """True when redaction actually mutated the payload (matches present AND enforce mode)."""
-        return bool(self.redaction_matches) and self.mode is SendProxyMode.ENFORCE
-
-
-def _resolve_mode(overlay: str) -> SendProxyMode:
-    """The effective ``send_proxy_mode`` for *overlay* (env → DB(overlay) → DB(global) → WARN)."""
-    try:
-        return get_effective_settings(overlay or None).send_proxy_mode
-    except Exception as exc:  # noqa: BLE001 — a settings failure must fail SAFE (warn), never enforce.
-        logger.debug("send_proxy: mode resolution failed for overlay=%r (%s) — defaulting to warn", overlay, exc)
-        return SendProxyMode.WARN
+        """True when redaction actually mutated the payload."""
+        return bool(self.redaction_matches)
 
 
 def _allowlist(overlay: str) -> list[str]:
     try:
         return list(get_effective_settings(overlay or None).send_proxy_allowlist)
-    except Exception as exc:  # noqa: BLE001 — an unreadable allowlist is empty, not fatal.
-        logger.debug("send_proxy: allowlist resolution failed for overlay=%r (%s)", overlay, exc)
+    except Exception:
+        logger.warning("send_proxy: allowlist resolution failed for overlay=%r; denying", overlay, exc_info=True)
         return []
 
 
@@ -181,16 +163,30 @@ def destination_allowed(channel: SendChannel, destination: str, *, overlay: str,
     Otherwise a destination matches when a ``send_proxy_allowlist`` glob matches
     either the bare ``destination`` or the channel-qualified
     ``<channel>:<destination>`` form (``fnmatch``, mirroring ``clean_ignore``).
-    An empty allowlist matches nothing — in ``enforce`` mode that denies every
-    non-self destination, which is why the flip only happens after a soak.
+    An empty allowlist denies every non-self destination.
     """
     if is_self_dm:
         return True
     patterns = _allowlist(overlay)
     if not patterns:
         return False
-    qualified = f"{channel.value}:{destination}"
-    return any(fnmatch(destination, pat) or fnmatch(qualified, pat) for pat in patterns)
+    bare = destination.removeprefix(f"{channel.value}:")
+    qualified = f"{channel.value}:{bare}"
+    return any(fnmatch(bare, pat) or fnmatch(qualified, pat) for pat in patterns)
+
+
+def normalized_forge_repo(ref: str) -> str:
+    """Return a host-relative repo path for the forge send audit, or refuse it."""
+    from teatree.utils.url_slug import project_slug_from_ref  # noqa: PLC0415 — shared URL parser
+
+    repo = project_slug_from_ref(ref) if "://" in ref else ref.strip().strip("/")
+    head, sep, rest = repo.partition("/")
+    if sep and head.lower() in {"github.com", "gitlab.com"}:
+        repo = rest
+    if not repo or "://" in repo or "/" not in repo or any(not part for part in repo.split("/")):
+        msg = f"forge destination must be owner/repo, got {ref!r}"
+        raise OutboundBlockedError(msg)
+    return repo
 
 
 def _redact_terms(overlay: str) -> list[str]:
@@ -255,36 +251,19 @@ def redact_payload(payload: str, *, overlay: str) -> tuple[str, tuple[str, ...]]
 def route_send(request: SendRequest) -> SendVerdict:
     """Evaluate one outbound send: allowlist + redaction + audit.
 
-    The single policy chokepoint. In ``warn`` mode (ship default) it is
-    audit-only — ``allowed`` is ``True``, the live payload is returned unchanged,
-    and a :class:`SendAudit` row records the would-be allowlist verdict and the
-    redaction matches. In ``enforce`` mode a non-allowlisted destination yields
-    ``allowed=False`` and the returned payload is redacted.
-
-    Never raises out of the audit path: a policy-evaluation or audit-write
-    failure degrades to allow/unredacted/unaudited (logged), so the proxy on the
-    hot outbound path can never break a send.
+    A non-allowlisted destination yields ``allowed=False``. The returned payload
+    is redacted and a :class:`SendAudit` row records the decision.
+    Audit-write failures are logged without breaking the send.
     """
-    mode = _resolve_mode(request.overlay)
     allowlist_ok = _safe_allowlist_check(request)
     redacted, matches = _safe_redact(request)
 
-    if mode is SendProxyMode.ENFORCE:
-        allowed = allowlist_ok
-        out_payload = redacted
-        reason = "" if allowed else f"destination {request.destination!r} not on the send-proxy allowlist"
-    else:  # WARN — audit-only, never block, never mutate the live payload.
-        allowed = True
-        out_payload = request.payload
-        reason = ""
-
     verdict = SendVerdict(
-        allowed=allowed,
-        payload=out_payload,
-        mode=mode,
+        allowed=allowlist_ok,
+        payload=redacted,
         allowlist_ok=allowlist_ok,
         redaction_matches=matches,
-        reason=reason,
+        reason="" if allowlist_ok else f"destination {request.destination!r} not on the send-proxy allowlist",
     )
     _record_audit(request, verdict)
     return verdict
@@ -298,9 +277,9 @@ def _safe_allowlist_check(request: SendRequest) -> bool:
             overlay=request.overlay,
             is_self_dm=request.is_self_dm,
         )
-    except Exception as exc:  # noqa: BLE001 — a check failure fails SAFE (allowed), never a spurious block.
-        logger.debug("send_proxy: allowlist check failed for %s (%s) — treating as allowed", request.destination, exc)
-        return True
+    except Exception as exc:  # noqa: BLE001 — an unreadable allowlist cannot authorize a send.
+        logger.warning("send_proxy: allowlist check failed for %s (%s) — treating as denied", request.destination, exc)
+        return False
 
 
 def _safe_redact(request: SendRequest) -> tuple[str, tuple[str, ...]]:
@@ -329,7 +308,6 @@ def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
                 action=request.action[:64],
                 target=request.target[:512],
                 overlay=overlay[:255],
-                mode=verdict.mode.value,
                 allowlist_verdict=_audit_verdict(verdict),
                 redaction_applied=verdict.payload_redacted,
                 redaction_matches=list(verdict.redaction_matches),
@@ -345,14 +323,12 @@ def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
 
 
 def _audit_verdict(verdict: SendVerdict) -> "SendAudit.Verdict":
-    """Map a :class:`SendVerdict` onto the audit's tri-state verdict enum."""
+    """Map a :class:`SendVerdict` onto the audit verdict enum."""
     from teatree.core.models.send_audit import SendAudit  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
 
     if verdict.allowlist_ok:
         return SendAudit.Verdict.ALLOWED
-    if verdict.mode is SendProxyMode.ENFORCE:
-        return SendAudit.Verdict.DENIED
-    return SendAudit.Verdict.WARNED
+    return SendAudit.Verdict.DENIED
 
 
 class OutboundBlockedError(RuntimeError):
@@ -365,12 +341,11 @@ class OutboundBlockedError(RuntimeError):
 
 
 class SendBlockedError(OutboundBlockedError):
-    """An ``enforce``-mode send was refused — the destination is not allowlisted.
+    """A send was refused because its destination is not allowlisted.
 
     Raised by a chokepoint that opts to hard-fail on a blocked verdict (the
     on-behalf Slack egress, a forge comment). Callers that instead degrade to a
-    no-op / FAILED row inspect ``verdict.allowed`` directly. Only reachable in
-    ``enforce`` mode — inert on the ``warn`` ship default.
+    no-op / FAILED row inspect ``verdict.allowed`` directly.
     """
 
     def __init__(self, verdict: SendVerdict) -> None:
@@ -431,20 +406,27 @@ def route_forge_write(*, forge: str, repo: str, text: str, action: str, target: 
     The public-repo leak gate (:func:`~teatree.core.gates.privacy_gate.scan_outbound_text`)
     refuses when *text* carries a customer codename bound for a public forge; the
     send-proxy (:func:`route_send`) then audits the send, applies the per-overlay
-    allowlist, and redacts on ``enforce``. Returns the body to post (redacted in
-    ``enforce`` mode). Raises :class:`OutboundLeakError` on a leak or
-    :class:`SendBlockedError` on a non-allowlisted destination — both
+    allowlist, and redacts matching terms. Returns the body to post. Raises
+    :class:`OutboundLeakError` on a leak or :class:`SendBlockedError` on a
+    non-allowlisted destination — both
     :class:`OutboundBlockedError` — so a leaking or blocked write is stopped
     before the backend call. An empty body is a no-op pass-through (no scan, no
     audit).
     """
     if not text:
         return text
+    repo = normalized_forge_repo(repo)
     scan = scan_outbound_text(text=text, target_repo=repo, forge=forge)
     if scan.refused:
         raise OutboundLeakError(scan)
     verdict = route_send(
-        SendRequest(channel=channel_for_forge(forge), destination=repo, payload=text, action=action, target=target),
+        SendRequest(
+            channel=channel_for_forge(forge),
+            destination=f"{channel_for_forge(forge).value}:{repo}",
+            payload=text,
+            action=action,
+            target=target,
+        ),
     )
     if not verdict.allowed:
         raise SendBlockedError(verdict)

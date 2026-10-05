@@ -120,7 +120,6 @@ def _disabled(table: str, days: int, reason: str = "") -> TableRetention:
 _NO_RESULT_TABLE = "the default task backend does not store results in the DB"
 #: The transition lane has no window — it is keyed on ticket closure — so its kill
 #: switch reports its own name rather than a meaningless ``retention_days=0``.
-_TRANSITION_OFF = "ticket_transition_prune_disabled"
 
 
 def _junk_count(task_attempt_qs: models.QuerySet) -> int:
@@ -162,15 +161,11 @@ def _apply_parks(moment: dt.datetime, *, batch_size: int) -> TableRetention:
     return TableRetention(PARK_TABLE, PARK_ATTEMPT_RETENTION_DAYS, rows, junk=rows, batches=batches)
 
 
-def _plan_transition_lane(cfg: UserSettings) -> TableRetention:
-    if cfg.ticket_transition_prune_disabled:
-        return _disabled(TRANSITION_TABLE, 0, _TRANSITION_OFF)
+def _plan_transition_lane() -> TableRetention:
     return TableRetention(TRANSITION_TABLE, 0, TicketTransition.objects.prunable().count(), aged=False)
 
 
-def _apply_transition_lane(cfg: UserSettings, *, batch_size: int) -> TableRetention:
-    if cfg.ticket_transition_prune_disabled:
-        return _disabled(TRANSITION_TABLE, 0, _TRANSITION_OFF)
+def _apply_transition_lane(*, batch_size: int) -> TableRetention:
     rows, batches = _delete_in_batches(TicketTransition.objects.prunable(), batch_size=batch_size)
     return TableRetention(TRANSITION_TABLE, 0, rows, aged=False, batches=batches)
 
@@ -220,7 +215,7 @@ def plan_retention(now: dt.datetime | None = None, *, settings: UserSettings | N
     qs = IncomingEvent.objects.prunable(_cutoff(moment, INCOMING_EVENT_RETENTION_DAYS))
     tables.append(TableRetention("IncomingEvent", INCOMING_EVENT_RETENTION_DAYS, qs.count()))
 
-    tables.extend((_plan_transition_lane(cfg), _plan_task_result_lane(moment, cfg)))
+    tables.extend((_plan_transition_lane(), _plan_task_result_lane(moment, cfg)))
 
     return RetentionPlan(moment, tuple(tables))
 
@@ -262,5 +257,5 @@ def apply_retention(
         tables.append(TableRetention("IncomingEvent", INCOMING_EVENT_RETENTION_DAYS, rows))
 
     tables.insert(1, _apply_parks(moment, batch_size=batch_size))
-    tables.extend((_apply_transition_lane(cfg, batch_size=batch_size), _apply_task_result_lane(cfg)))
+    tables.extend((_apply_transition_lane(batch_size=batch_size), _apply_task_result_lane(cfg)))
     return RetentionPlan(moment, tuple(tables), applied=True)

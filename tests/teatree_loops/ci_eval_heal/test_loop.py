@@ -1,8 +1,9 @@
-"""CI-eval heal mini-loop package (#3201 PR-3a) — MINI_LOOP shape + default-OFF seed."""
+"""CI-eval heal mini-loop package (#3201 PR-3a) — MINI_LOOP shape + present mode."""
 
 from django.test import TestCase
 
 from teatree.loops.ci_eval_heal.loop import MINI_LOOP
+from teatree.loops.preset_seed import default_preset_specs
 from teatree.loops.seed import DEFAULT_LOOPS
 
 
@@ -24,8 +25,9 @@ class TestMiniLoop:
         assert jobs[0].scanner.name == "ci_eval_heal"
 
 
-class TestDefaultOff(TestCase):
-    def test_seed_spec_ships_disabled(self) -> None:
+class TestDefaultOn(TestCase):
+    def test_seed_spec_ships_with_present_mode(self) -> None:
         spec = next(s for s in DEFAULT_LOOPS if s.name == "ci_eval_heal")
-        assert spec.default_enabled is False
         assert spec.colleague_facing is False
+        present = next(mode for mode in default_preset_specs() if mode.name == "present")
+        assert present.entries[spec.name] is True

@@ -20,6 +20,7 @@ from django.core.management import call_command
 from teatree.config import UserSettings
 from teatree.config.mr_reminder import MrReminderConfig
 from teatree.core.management.commands import mr_reminder as command_module
+from teatree.core.models import ConfigSetting
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -34,6 +35,11 @@ _PRS = [
     {"iid": 1, "title": "feat a", "web_url": "https://gitlab.com/souliane/teatree/-/merge_requests/1"},
     {"number": 2, "title": "fix b", "html_url": "https://github.com/acme-engineering/widget/pull/2"},
 ]
+
+
+@pytest.fixture(autouse=True)
+def _allow_expected_reminder_channels() -> None:
+    ConfigSetting.objects.set_value("send_proxy_allowlist", ["slack:C_TEATREE", "slack:C_ACME"])
 
 
 def _host() -> MagicMock:

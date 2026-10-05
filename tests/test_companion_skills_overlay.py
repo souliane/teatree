@@ -2,8 +2,8 @@
 
 When an overlay declares ``companion_skills = ["ac-django", "ac-python"]`` in
 its ``[overlays.<name>]`` table (the DB-home overlays config), those skills must
-appear in the resolved suggestion set for both the UserPromptSubmit hook
-path (``select_for_prompt_hook``) and the runtime-phase path
+appear in the resolved suggestion set for both the SessionStart path
+(``select_for_session_start``) and the runtime-phase path
 (``select_for_runtime_phase``).
 
 The wiring threads through ``OverlayConfig.apply_toml_overrides`` (reads the
@@ -17,7 +17,7 @@ transitive ``requires`` chain so we never parallel-implement the dep chain).
 
 Every path resolves overlay scope the same way — ``overlay_active`` or a
 ``remote_patterns`` match on the cwd's git remote — so the overlay's own skill
-and its companions surface through the prompt hook as well as the dispatch
+and its companions surface through the SessionStart suggester as well as the dispatch
 paths (agent launch, runtime phase).
 """
 

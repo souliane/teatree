@@ -40,6 +40,10 @@ app = typer.Typer(add_completion=False)
 # names a model / Claude / Anthropic — a human co-author is legitimate.
 _MODEL_AUTHOR = r"(?:claude|anthropic|gpt|opus|sonnet|haiku|copilot|\bai\b|noreply@anthropic)"
 
+# Every agent the rule's published list names as the subject of an attribution
+# footer — ``via Claude``, ``(via AI)``, ``via the assistant`` are one shape.
+_AGENT_NOUN = r"(?:claude\b|the assistant\b|an?\s+ai\b|ai\b)"
+
 _TRAILER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "co-authored-by-model",
@@ -59,15 +63,27 @@ _TRAILER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         # generated/sent-style verb (``Generated with Claude``). No
         # arbitrary preceding prose, so legitimate body text like
         # "Reviewed the design with Claude" passes (finding 3).
-        "via-claude",
+        "via-agent",
         re.compile(
-            r"^(?:(?:generated|sent|posted|created|written|drafted)\s+)?(?:via|using|with) claude\b\s*$",
+            rf"^(?:(?:generated|sent|posted|created|written|drafted)\s+)?(?:via|using|with) {_AGENT_NOUN}\s*$",
             re.IGNORECASE,
         ),
     ),
     (
-        "sent-using-claude",
-        re.compile(r"^(?:sent|posted|created|written|drafted) (?:using|via|with|by) claude\b", re.IGNORECASE),
+        "sent-using-agent",
+        re.compile(rf"^(?:sent|posted|created|written|drafted) (?:using|via|with|by) {_AGENT_NOUN}", re.IGNORECASE),
+    ),
+    (
+        "written-by-agent",
+        re.compile(
+            r"^this (?:message|comment|post|reply|note|text|description|body|pr|mr) "
+            r"was (?:written|generated|drafted|created|composed|authored) by\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "ai-generated",
+        re.compile(r"^ai[-\s]generated\b", re.IGNORECASE),
     ),
     (
         "emoji-bot-footer",
@@ -95,6 +111,15 @@ _TRAILER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 # in any leading combination (``> - ``, ``>> ``, ``- ``). Repeated so
 # ``>> via Claude`` and ``> - Co-Authored-By: …`` are both unwrapped.
 _MD_PREFIX_RE = re.compile(r"^(?:\s*(?:>+|[-*+])\s*)+")
+
+# A footer the rule publishes parenthesised (``(via AI)``) is the same footer:
+# the wrapper is what defeats the line-leading anchor and the ``$`` tail.
+_WRAPPER_RE = re.compile(r"^[(\[{]+\s*|\s*[)\]}]+$")
+
+
+def _strip_wrapping_delimiters(line: str) -> str:
+    """Remove enclosing brackets so a parenthesised footer still anchors."""
+    return _WRAPPER_RE.sub("", line)
 
 
 def _strip_markdown_prefix(line: str) -> str:
@@ -128,11 +153,12 @@ def scan_text(text: str) -> list[tuple[int, str, str]]:
     stripping leading whitespace, and peeling any leading
     blockquote/list markdown prefix, a banned pattern matches at the
     line start — i.e. the banned text is in trailer/footer position, not
-    described in running prose.
+    described in running prose. Enclosing brackets are peeled last, so a
+    parenthesised footer anchors like its bare twin.
     """
     findings: list[tuple[int, str, str]] = []
     for lineno, raw in enumerate(text.splitlines(), 1):
-        candidate = _strip_markdown_prefix(_strip_inline_code(raw).strip()).strip()
+        candidate = _strip_wrapping_delimiters(_strip_markdown_prefix(_strip_inline_code(raw).strip()).strip()).strip()
         if not candidate:
             continue
         for category, pattern in _TRAILER_PATTERNS:

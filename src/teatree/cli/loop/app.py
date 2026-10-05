@@ -4,8 +4,8 @@ The autonomous loops run as durable self-rescheduling loop-timer chains that the
 singleton ``t3 worker`` drains (#1796 / PR-28: one ``loop_timer`` chain per enabled
 DB ``Loop`` row, each firing ``t3 loops tick --loop <name>`` on its own cadence —
 there is no master tick). This CLI manages that lifecycle: ``start`` spawns a Claude
-Code session (whose owner hook registers the reactive infra ``/loop``s only when no
-worker is alive — the worker drives them otherwise); ``stop``
+Code session (the worker drives the reactive infra loops; with none alive, ``t3 worker
+ensure`` starts one, or ``t3 loop <slot> start`` prints the ``/loop`` a session registers); ``stop``
 prints the slot id to unregister; ``list`` / ``status`` read live loop state; and
 the reactive infra loops (``self-improve``, ``slack-answer``, ``drain-queue``) each
 expose their own ``run`` / ``start`` subcommands here.
@@ -139,16 +139,12 @@ def pending_spawn_command(
         help="Report work ONLY when a claim could land (honour the admit budget).",
     ),
 ) -> None:
-    """List pending Tasks (read-only probe; legacy — prefer ``claim-next``).
+    """List pending Tasks for the Stop hook's read-only probe.
 
     Reads the dispatch DB (``Task`` rows in PENDING status) and prints
     each with its ``subagent`` hint. This is a pure read with NO claim:
-    the spawn-then-``spawn-claim`` flow it used to drive was the
-    double-dispatch race #786 WS1 replaced with the atomic
-    ``t3 loop claim-next`` (claim-then-spawn). Retained for compatibility
-    and as a non-mutating "is there pending work?" probe (e.g. the
-    Stop-hook self-pump); the ``/loop`` slot should drive dispatch with
-    ``claim-next``, not this + ``spawn-claim``.
+    The Stop-hook self-pump uses this non-mutating probe to decide whether
+    to offer work. The ``/loop`` slot claims with ``claim-next``.
 
     ``--claimable-only`` (TODO #100) makes the probe budget-aware: it
     reports work ONLY when a unit ``claim-next`` could actually claim,
@@ -167,29 +163,6 @@ def pending_spawn_command(
     call_command("loop_dispatch", "pending-spawn", **kwargs)
 
 
-@loop_app.command("spawn-claim")
-def spawn_claim_command(
-    task_id: int = typer.Argument(..., help="Task PK to mark claimed."),
-    *,
-    claimed_by: str = typer.Option("loop-slot", "--claimed-by"),
-) -> None:
-    """Claim a Task by id (legacy — prefer atomic ``claim-next``).
-
-    The retired spawn-then-claim flow called this AFTER dispatching
-    ``Agent(...)``, leaving a window where two concurrent ticks both
-    dispatched the same Task. #786 WS1's ``t3 loop claim-next`` claims
-    atomically BEFORE the spawn (claim == spawn boundary) and is what the
-    ``/loop`` slot should use. Retained for compatibility / explicit
-    by-id claims; ``complete`` still happens when the sub-agent reports
-    back via the standard TaskAttempt flow.
-    """
-    ensure_django()
-
-    from django.core.management import call_command  # noqa: PLC0415 — deferred: Django import at call time
-
-    call_command("loop_dispatch", "spawn-claim", str(task_id), claimed_by=claimed_by)
-
-
 def _stdin_is_terminal() -> bool:
     """Return whether stdin is a TTY — wrapped so tests can patch around ``runner.invoke``'s stdin replacement."""
     return sys.stdin.isatty()
@@ -199,10 +172,10 @@ _REGISTER_GUIDANCE = (
     "The singleton `t3 worker` owns the per-loop tick cadence, draining the durable "
     "self-rescheduling loop-timer chains — so the DB loops run with no Claude session open. Check it with "
     "`t3 worker status`; ensure one is running with `t3 worker ensure`. Enable or "
-    "disable an individual loop with `t3 loop enable|disable <name>` (the reconciler "
+    "resume or disable an individual loop with `t3 loop resume|disable <name>` (the reconciler "
     "adds/prunes its timer at once). The worker drives the reactive infra loops "
-    "(self-improve, slack-answer, drain-queue) too; a session registers those only "
-    "when no worker is alive."
+    "(self-improve, slack-answer, drain-queue) too; with no worker alive, start one with `t3 worker ensure`, "
+    "or register one loop in a session with the `/loop` that `t3 loop <slot> start` prints."
 )
 
 
@@ -426,7 +399,7 @@ loop_app.add_typer(directives_app, name="directives")
 loop_app.command("reclaim-markers")(reclaim_markers_command)
 
 # #1913 — the DB-backed per-loop control plane: flat ``t3 loop
-# pause/resume/disable/enable <name>`` + ``t3 loop loop-state <name>``. Split
+# pause/resume/disable <name>`` + ``t3 loop loop-state <name>``. Split
 # off (same module-health reason) into ``teatree.cli.loop.state``.
 register_loop_state(loop_app)
 

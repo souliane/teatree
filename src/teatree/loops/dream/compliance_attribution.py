@@ -59,21 +59,16 @@ _NAME_LINE_RE = re.compile(r"^name:\s*(?P<slug>[\w\-]+)", re.MULTILINE)
 #: correction can never be a recurrence OF one.
 _RULE_MEMORY_TYPES = frozenset({"feedback", "user"})
 
-#: The pre-frontmatter corpus encodes the kind in the slug instead of a `type:` field.
-_LEGACY_RULE_SLUG_PREFIX = "feedback_"
-
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(?P<block>.*?)\r?\n---\s*$", re.DOTALL | re.MULTILINE)
 _TYPE_LINE_RE = re.compile(r"^[ \t]*type:[ \t]*[\"']?(?P<kind>[\w-]+)", re.MULTILINE)
 
 
-def is_rule_memory(slug: str, text: str) -> bool:
+def is_rule_memory(text: str) -> bool:
     """True when this memory states a RULE, so a correction can be a recurrence of it.
 
     Reads the leading frontmatter block ONLY — a `type:` mentioned in the body is prose,
     and the index files (which carry no frontmatter at all) are not memories.
     """
-    if slug.startswith(_LEGACY_RULE_SLUG_PREFIX):
-        return True
     match = _FRONTMATTER_RE.search(text)
     if match is None:
         return False
@@ -112,7 +107,7 @@ def _memory_rules(extract: ConsolidationExtract) -> list[_MemoryRule]:
         if snippet.kind != "memory":
             continue
         slug = _memory_slug(snippet)
-        if not is_rule_memory(slug, snippet.text):
+        if not is_rule_memory(snippet.text):
             continue
         tokens = _significant_tokens(snippet.text) | _significant_tokens(slug)
         by_slug.setdefault(slug, set()).update(tokens)

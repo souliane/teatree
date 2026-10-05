@@ -5,7 +5,6 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.core.backend_protocols import PrOpenState, ReviewState
-from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.models import (
     BroadcastObservation,
     DeferredQuestion,
@@ -14,6 +13,7 @@ from teatree.core.models import (
     Task,
     Ticket,
 )
+from teatree.core.models.plan_decision import plan_missing_refusal
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions
 from tests._pr_open_state_stub import pr_open_state
@@ -324,7 +324,7 @@ class TestPersistOrchestrator(TestCase):
         """The acceptance criterion, stated as the gate itself rather than as the phase name."""
         task = persist_agent_actions([self._action()])[0]
 
-        assert unplanned_dispatch_refusal(task.ticket, phase=task.phase) is None
+        assert plan_missing_refusal(task.ticket, phase=task.phase) is None
 
     def test_links_claimed_marker_to_ticket_and_moves_it_to_ticket_created(self) -> None:
         """The dispatch handler is the intended writer of ``TICKET_CREATED`` (previously unwritten)."""
@@ -429,6 +429,9 @@ class TestReviewerCacheUpdate(TestCase):
         created = persist_agent_actions([action])
         assert len(created) == 1
         task = created[0]
+        from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
+
+        record_review_context_for_test(task.ticket)
         task.complete()
 
         # The discharge lands on its own key, never on ``last_review_state`` — that one is

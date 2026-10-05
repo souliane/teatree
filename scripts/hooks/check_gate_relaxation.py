@@ -18,7 +18,7 @@ resolved a merge for suppressions they did not write (#3899).
 Enforcement (§17.6.5 WARN-not-hardfail): a BLOCK finding refuses the commit; a
 WARN finding (possible test vacuity — a fuzzy heuristic) prints advisory-only
 and never fails. Never-lockout: the ``ALLOW_GATE_RELAX=<reason>`` env marker
-(a non-empty reason, mirroring ``ALLOW_BANNED_TERM=1``) records a sanctioned
+(a non-empty reason) records a sanctioned
 relaxation and lets the commit through, and the ``gate_relaxation_gate_enabled``
 kill-switch disables the gate entirely — resolved DB-first through
 ``get_effective_settings`` (the canonical resolver every sibling gate uses), so a

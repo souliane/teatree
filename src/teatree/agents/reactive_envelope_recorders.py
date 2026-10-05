@@ -92,7 +92,6 @@ def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, ph
         return
     DeferredQuestion.record(
         question=_article_batch_question(recorded),
-        session_id=task.claimed_by_session or "",
         dedupe_marker=f"news-batch-{task.pk}",
     )
     _post_press_review_digest(task, recorded)
@@ -186,7 +185,6 @@ def _maybe_record_triage_recommendations(task: Task, result: AgentResultBlob, *,
             f"Triaged {recorded} open needs-triage issue(s). Review and approve/reject each "
             f"recommendation with /t3:triaging-issues — nothing is acted on until you approve."
         ),
-        session_id=task.claimed_by_session or "",
         parked_task=task,
         dedupe_marker=f"triage-batch-{task.pk}",
     )
@@ -302,7 +300,6 @@ def _maybe_record_answer_draft(
     where = f" (thread {thread_ref})" if thread_ref else ""
     DeferredQuestion.record(
         question=f"Approve this drafted reply{where}?\n\n{text}",
-        session_id=task.claimed_by_session or "",
         parked_task=task,
     )
 
@@ -322,7 +319,7 @@ def _post_owner_dm_reply(task: Task, text: str) -> bool:
     losing nothing) when the ticket carries no ``slack_answer`` context, the
     coordinates are incomplete, no messaging backend resolves, or the post does
     not confirm ``ok``. On a confirmed send the owner-question row is stamped
-    ``answered_at`` so the #1063 turn-end gate stops nagging for it.
+    ``answered_at``.
     """
     from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: call-time import
     from teatree.core.models import PendingChatInjection  # noqa: PLC0415 — deferred: call-time import

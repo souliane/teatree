@@ -3,8 +3,7 @@
 Reclaiming a rebuildable build product loses nothing at any fullness, so there is
 no threshold worth having and nothing to gate the pass on but its own cadence. The
 alternative — hanging it off ``resource.cleanup_needed`` — would drag the whole
-destructive ladder along with it (``allow_destructive_disk``, the RAM kill list, the
-scratch sweep) and inherit that ladder's anti-thrash debounce, which downgrades a
+pressure ladder along with it (including the scratch sweep) and inherit its anti-thrash debounce, which downgrades a
 throttled CRITICAL to a WARN that frees nothing.
 
 The cadence field is :attr:`ResourcePressureMarker.last_artifact_sweep_at`, written

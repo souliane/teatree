@@ -17,6 +17,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.eval.artifact_redaction import redact_artifact, write_artifact
 from teatree.eval.summary_json_merge import merge_summary_json as _merge_summary_json
 
 
@@ -29,6 +30,6 @@ def merge_summary_json(
     """Merge per-shard eval-heal summary JSONs into one §2.4 JSON (to --out or stdout)."""
     merged = _merge_summary_json(inputs, head_sha=sha, generated_at=generated_at)
     if out is not None:
-        out.write_text(merged, encoding="utf-8")
+        write_artifact(out, merged)
     else:
-        typer.echo(merged)
+        typer.echo(redact_artifact(merged))

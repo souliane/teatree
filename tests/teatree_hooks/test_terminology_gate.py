@@ -121,7 +121,7 @@ class TestTerminologyGateInTreeScan:
 
     def test_tree_scan_catches_teatree_todo(self, tmp_path: Path) -> None:
         repo = _repo_with(tmp_path, "docs/notes.md", "Clear the teatree todo before shipping.\n")
-        findings = banned_terms_tree_scan.scan_tree(repo, ())
+        findings = banned_terms_tree_scan.scan_tree(repo, ("sentinelbrand",))
         assert len(findings) == 1
         assert findings[0].path == "docs/notes.md"
         assert findings[0].lineno == 1
@@ -134,4 +134,4 @@ class TestTerminologyGateInTreeScan:
             "docs/notes.md",
             "Claim the next teatree task.\nRead the harness TODO list.\n",
         )
-        assert banned_terms_tree_scan.scan_tree(repo, ()) == []
+        assert banned_terms_tree_scan.scan_tree(repo, ("sentinelbrand",)) == []

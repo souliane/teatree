@@ -52,7 +52,7 @@ def _lineage_subjects(task: Task) -> list[EscalationSubject]:
 
 
 def _session_uuids(task: Task, *, harness: str = "") -> list[str]:
-    attempts = task.attempts.order_by("-pk")  # ty: ignore[unresolved-attribute]
+    attempts = task.attempts.order_by("-pk")
     if harness:
         attempts = attempts.filter(selected_harness__in=(harness, "") if harness == "claude_sdk" else (harness,))
     last_attempt = attempts.first()

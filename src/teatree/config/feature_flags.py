@@ -14,7 +14,7 @@ typed-registry-plus-fitness-test idiom of ``SETTING_HOMES`` / ``COLD_HOOK_SETTIN
 / ``BOOTSTRAP_ENV_ONLY_SETTINGS``: the registry is pure data, and the conformance
 suite in ``tests/config/test_feature_flags.py`` keeps every entry honest — each
 must name a real ``bool``-or-``StrEnum`` ``UserSettings`` field (most flags are
-on/off bools; ``critic_gate_mode`` is a tri-state ``StrEnum``) registered in
+on/off bools and typed modes) registered in
 ``OVERLAY_OVERRIDABLE_SETTINGS``, carry a non-empty ``tracking_issue`` and a valid
 ``stage``, and (for a ``DARK`` flag) default to its own ``off_value`` so a dark
 feature can never ship default-ON without a code-reviewed stage demotion. Non-empty
@@ -26,8 +26,6 @@ real issue from one that only reads like it does.
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-
-from teatree.config.enums import CriticGateMode, SendProxyMode
 
 # The loud banner the audit view prints for a ``REMOVE``-stage flag: the gated
 # code is permanent, so the toggle is dead weight whose only job left is deletion.
@@ -65,8 +63,7 @@ class FeatureFlag:
     :data:`FEATURE_FLAGS`, pinned by the conformance suite). ``off_value`` is the
     value that means "gated code stays OFF" — ``False`` for a positive-sense
     ``*_enabled`` flag, ``True`` for an inverted-sense ``*_disabled`` flag, or the
-    OFF member of a typed multi-state mode (``CriticGateMode.OFF`` for the tri-state
-    ``critic_gate_mode``) — so the dark-defaults-off invariant reads correctly for a
+    OFF member of a typed multi-state mode — so the dark-defaults-off invariant reads correctly for a
     bool toggle and a typed mode alike.
     """
 
@@ -77,106 +74,8 @@ class FeatureFlag:
     off_value: bool | str = False
 
 
-# ``outer_loop_enabled`` is the canonical DARK flag (the OFF switch the T4
-# autoresearch outer loop ships behind). The live registry is mostly ``DARK`` plus a
-# few ``SETTLING`` flags (``incremental_push_gate``, graduated by #122 once its CI
-# selection-audit soak came clean; and
-# ``directive_loop_enabled``, graduated by #3895 as part of the owner-authorised
-# autonomous-by-default posture); ``REMOVE`` is not represented live, so the
-# stage-discrimination machinery (:func:`dark_flags`, :func:`render_flags_audit`) is
-# proven non-vacuously over a MIXED FIXTURE in the conformance suite rather than over
-# the live set's accidental composition.
-FEATURE_FLAGS: dict[str, FeatureFlag] = {
-    "outer_loop_enabled": FeatureFlag(
-        field="outer_loop_enabled",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — autoresearch outer-loop (T4)",
-        summary="The OFF switch the T4 autoresearch outer-loop runtime ships behind.",
-    ),
-    "factory_score_enabled": FeatureFlag(
-        field="factory_score_enabled",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — autoresearch outer-loop (T4)",
-        summary="The SIG-PR-2 recipe/score seam; ships dark until the outer loop consumes the metric.",
-    ),
-    "critic_gate_mode": FeatureFlag(
-        field="critic_gate_mode",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree#104 — SELFCATCH-5 critic_gate",
-        summary=(
-            "Tri-state enforcement posture (off|advisory|blocking) for the autonomous user-proxy critic on "
-            "mark_delivered; ships off (records advisory findings, never arms the async critic, never blocks). "
-            "Self-satisfying, but a safety-posture gate bounding self-modification — arming it is an owner call."
-        ),
-        off_value=CriticGateMode.OFF,
-    ),
-    "directive_loop_enabled": FeatureFlag(
-        field="directive_loop_enabled",
-        stage=FlagStage.SETTLING,
-        tracking_issue="souliane/teatree#3895 — north-star PR-6 directive intake",
-        summary=(
-            "Master gate for the directive self-modification front-end (intake+interpret+ratify). Default ON "
-            "(graduated DARK->SETTLING by #3895 under the owner-authorised autonomous-by-default posture), so a "
-            "captured directive is interpreted without an operator opt-in. The EXECUTION arc past the human ratify "
-            "gate still needs factory_score_enabled (default OFF) and a live critic; survives as a per-overlay "
-            "escape hatch during the soak. OFF restores the pre-graduation total no-op."
-        ),
-    ),
-    "send_proxy_mode": FeatureFlag(
-        field="send_proxy_mode",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree#117 — SEC-SEND-PROXY",
-        summary=(
-            "Tri-state posture (warn|enforce) for the outbound send-proxy destination allowlist; ships warn "
-            "(audit-only — records SendAudit rows, never blocks, never mutates the payload) until an overlay "
-            "seeds the allowlist from a soak and opts into enforce."
-        ),
-        off_value=SendProxyMode.WARN,
-    ),
-    "require_debt_delta": FeatureFlag(
-        field="require_debt_delta",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — north-star PR-3 debt_delta_gate",
-        summary="Deterministic no-new-tech-debt merge gate in _run_ship_gates; ships dark until an overlay opts in.",
-    ),
-    "require_executed_repro": FeatureFlag(
-        field="require_executed_repro",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree#118",
-        summary="Executed RED->GREEN repro gate on ship() for FIX tickets; ships dark until an overlay opts in.",
-    ),
-    "require_merge_quality_verdict": FeatureFlag(
-        field="require_merge_quality_verdict",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — north-star PR-4 merge-quality critic",
-        summary=(
-            "Merge-quality (test_value + cleanliness) verdict gate on execute_bound_merge for ORDINARY tickets; "
-            "directive tickets are gated unconditionally, so this flag ships dark until an overlay opts in. "
-            "Self-satisfying, but a safety-posture gate — arming it is an owner call."
-        ),
-    ),
-    "incremental_push_gate": FeatureFlag(
-        field="incremental_push_gate",
-        stage=FlagStage.SETTLING,
-        tracking_issue="souliane/teatree#122",
-        summary=(
-            "Safety-biased incremental push gate: scopes the push doctest + ast-grep sweeps to the diff "
-            "(FULL on any uncertainty). Default ON after the CI selection-audit soak came clean; survives "
-            "as a per-overlay escape hatch. OFF is whole-tree (the pre-#122 behaviour); the CI whole-tree "
-            "backstop is untouched regardless."
-        ),
-    ),
-    "ci_eval_heal_autofix_enabled": FeatureFlag(
-        field="ci_eval_heal_autofix_enabled",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree#3201 — CI-eval self-heal PR-3b autonomous fixer",
-        summary=(
-            "The OFF switch the CI-eval self-heal AUTONOMOUS fixer ships behind (autonomous CI mutation). "
-            "Ships dark: the ci_eval_heal loop stays observe-only until this AND the loop row are both on; "
-            "when armed a behavioral red triggers a bounded, anti-cheat-gated fix dispatch, never a loop-forever."
-        ),
-    ),
-}
+# Live flags retain their declared lifecycle until their gated code is retired.
+FEATURE_FLAGS: dict[str, FeatureFlag] = {}
 
 
 # The other half of the classification: every ``require_*`` ``UserSettings``
@@ -188,14 +87,8 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
 # gated, default-off, and reviewed by nothing.
 DURABLE_GATE_SETTINGS: frozenset[str] = frozenset(
     {
-        "require_anti_vacuity_attestation",  # producer: lifecycle record-anti-vacuity
         "require_human_approval_to_answer",  # standing doctrine knob
         "require_human_approval_to_merge",  # standing doctrine knob
-        "require_integration_review",  # producer: review record-evidence
-        "require_merge_evidence",  # producer: the keystone merge's MergeAudit row
-        "require_review_context",  # producer: lifecycle record-review-context
-        "require_reviewed_state_for_review_request",  # satisfied by the FSM state itself
-        "require_work_group_batch",  # standing doctrine knob
     }
 )
 

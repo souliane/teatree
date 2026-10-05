@@ -41,7 +41,7 @@ The output store is the DB-backed :class:`~teatree.core.models.ConsolidatedMemor
 ledger; :func:`write_clusters` reuses its ``record_cluster`` factory rather than
 bypassing the manager.
 
-Phase 3b (propose evals — default OFF, #2346) — when ``run_consolidation`` is
+Phase 3b (propose evals, #2346) — when ``run_consolidation`` is
 given an ``EvalProposalRequest``, the sibling :mod:`teatree.loops.dream.eval_proposer`
 maps each grounded cluster to an inert eval CANDIDATE and appends it to a JSONL
 review queue. This realises the "a behavioural drift is not fixed until an
@@ -53,8 +53,8 @@ LLM-generated, self-anti-vacuous derivation is the deferred follow-up the design
 issue specifies.
 
 The file-side phases over the discovered ``~/.claude`` memory dirs are LIVE
-(#1933 § 6, shipped in #2489) and run from the cron command after the pass, each
-behind its own kill-switch and fault-isolated: phase 4 cross-link
+(#1933 § 6, shipped in #2489) and run from the cron command after the pass,
+fault-isolated: phase 4 cross-link
 (:mod:`teatree.loops.dream.cross_link`), phase 5 ``MEMORY.md`` re-index
 (:mod:`teatree.loops.dream.reindex`), and phase 6 decay / archive
 (:mod:`teatree.loops.dream.decay`). They are invoked by
@@ -219,7 +219,7 @@ class DreamRunResult:
     #: never reads like one that finished the corpus.
     budget_stopped_batches: int = 0
     #: The ranked extract this pass built, so the command can reuse it for the
-    #: compliance-measurement and automatable-ask phases instead of re-enumerating +
+    #: compliance-measurement phase instead of re-enumerating +
     #: re-reading every member a second time. ``None`` only on a pass that built none.
     extract: "ConsolidationExtract | None" = None
 

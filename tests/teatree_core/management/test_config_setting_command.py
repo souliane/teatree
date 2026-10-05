@@ -8,9 +8,12 @@ string, an int, or a list all round-trip into the override store.
 
 import re
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 from typing import ClassVar
+from unittest import mock
 
 import pytest
 from django.core.management import call_command
@@ -19,8 +22,9 @@ from django.test import TestCase
 from teatree.config import get_effective_settings
 from teatree.config.cold_defaults import flatten_settings_table
 from teatree.config.enums import Mode
-from teatree.config.retired_settings import CLEAR_REMEDY, RENAMED_SETTING_KEYS, removed_setting
+from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage
 from teatree.config.setting_groups import UNGROUPED_PATH
+from teatree.config.setting_taxonomy import taxonomy
 from teatree.core.models import ConfigSetting
 
 
@@ -29,22 +33,27 @@ def _teatree(document: dict[str, object]) -> dict[str, object]:
     return flatten_settings_table(document.get("teatree", {}))
 
 
+@contextmanager
+def _fixture_flag() -> Iterator[None]:
+    flag = FeatureFlag(field="contribute", stage=FlagStage.DARK, tracking_issue="#4189", summary="fixture")
+    with mock.patch.dict(FEATURE_FLAGS, {"contribute": flag}):
+        taxonomy.cache_clear()
+        try:
+            yield
+        finally:
+            taxonomy.cache_clear()
+
+
 class TestConfigSettingSet(TestCase):
     def test_set_bool_creates_row(self) -> None:
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "true")
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is True
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "true")
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is True
 
     def test_set_is_upsert(self) -> None:
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "true")
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "false")
-        assert ConfigSetting.objects.filter(key="adaptive_intake_concurrency_enabled").count() == 1
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is False
-
-    def test_set_banned_terms_required(self) -> None:
-        # The exact command the banned-terms scanner's unset warning tells the operator to run.
-        # It was refused as an unknown key, so the only available behaviour was the fail-open (#4008).
-        call_command("config_setting", "set", "banned_terms_required", "true")
-        assert ConfigSetting.objects.get_effective("banned_terms_required") is True
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "true")
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "false")
+        assert ConfigSetting.objects.filter(key="admit_colleague_prs_to_board").count() == 1
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is False
 
     def test_set_string_value(self) -> None:
         call_command("config_setting", "set", "issue_implementer_label", '"ready"')
@@ -69,15 +78,10 @@ class TestConfigSettingSet(TestCase):
             call_command("config_setting", "set", "agent_review_request_disabled", "true")
         assert ConfigSetting.objects.filter(key="agent_review_request_disabled").exists() is False
 
-    def test_set_accepts_new_review_request_post_disabled_key(self) -> None:
-        # The Option-A per-overlay escape replacing the deleted flag IS overridable.
-        call_command("config_setting", "set", "review_request_post_disabled", "true")
-        assert ConfigSetting.objects.get_effective("review_request_post_disabled") is True
-
     def test_set_rejects_invalid_json(self) -> None:
         with pytest.raises(SystemExit):
-            call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "not-json")
-        assert ConfigSetting.objects.filter(key="adaptive_intake_concurrency_enabled").exists() is False
+            call_command("config_setting", "set", "admit_colleague_prs_to_board", "not-json")
+        assert ConfigSetting.objects.filter(key="admit_colleague_prs_to_board").exists() is False
 
     def test_set_rejects_out_of_enum_value_and_leaves_reads_working(self) -> None:
         # #258 blocker 1: a value that JSON-parses but is invalid for the
@@ -110,14 +114,14 @@ class TestConfigSettingSet(TestCase):
         # must be rejected, not truthy-coerced via ``bool("false") == True``.
         # Silently enabling an opt-in safety setting is the failure mode.
         with pytest.raises(SystemExit):
-            call_command("config_setting", "set", "allow_destructive_disk", '"false"')
-        assert ConfigSetting.objects.filter(key="allow_destructive_disk").exists() is False
+            call_command("config_setting", "set", "autoload", '"false"')
+        assert ConfigSetting.objects.filter(key="autoload").exists() is False
 
     def test_set_accepts_real_json_bool_false(self) -> None:
         # The GREEN side of blocker 2: a real JSON boolean ``false`` resolves
         # to Python ``False`` and the opt-in setting stays disabled.
-        call_command("config_setting", "set", "allow_destructive_disk", "false")
-        assert ConfigSetting.objects.get_effective("allow_destructive_disk") is False
+        call_command("config_setting", "set", "autoload", "false")
+        assert ConfigSetting.objects.get_effective("autoload") is False
 
     def test_set_rejects_bool_for_int_setting(self) -> None:
         # #258 fix round 2, blocker 1.1: JSON ``true`` decodes to Python ``True``,
@@ -193,9 +197,9 @@ class TestConfigSettingSet(TestCase):
 
 class TestConfigSettingClear(TestCase):
     def test_clear_removes_row(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
-        call_command("config_setting", "clear", "adaptive_intake_concurrency_enabled")
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is None
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
+        call_command("config_setting", "clear", "admit_colleague_prs_to_board")
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is None
 
     def test_clear_absent_key_exits_nonzero(self) -> None:
         with pytest.raises(SystemExit):
@@ -204,10 +208,10 @@ class TestConfigSettingClear(TestCase):
 
 class TestConfigSettingList(TestCase):
     def test_list_shows_rows(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
         out = StringIO()
         call_command("config_setting", "list", stdout=out)
-        assert "adaptive_intake_concurrency_enabled" in out.getvalue()
+        assert "admit_colleague_prs_to_board" in out.getvalue()
 
     def test_list_empty_is_clean(self) -> None:
         out = StringIO()
@@ -215,7 +219,7 @@ class TestConfigSettingList(TestCase):
         assert "no" in out.getvalue().lower()
 
     def test_list_groups_rows_under_the_same_nested_hierarchy(self) -> None:
-        ConfigSetting.objects.set_value("require_merge_evidence", value=True)
+        ConfigSetting.objects.set_value("expected_required_contexts", value=["test (3.13)"])
         ConfigSetting.objects.set_value("autoload", value=True)
         out = StringIO()
         call_command("config_setting", "list", stdout=out)
@@ -223,7 +227,7 @@ class TestConfigSettingList(TestCase):
         assert "Gates" in rendered
         assert "Quality" in rendered
         assert "Merge & done" in rendered
-        assert rendered.index("Merge & done") < rendered.index("require_merge_evidence")
+        assert rendered.index("Merge & done") < rendered.index("expected_required_contexts")
         # The level's indent is what makes the hierarchy readable in a flat terminal.
         assert re.search(r"^\s+Gates$", rendered, re.MULTILINE)
         assert re.search(r"^(\s+)Quality$", rendered, re.MULTILINE)
@@ -257,10 +261,10 @@ class TestConfigSettingListMarksDeadRows(TestCase):
     def _row_line(self, key: str) -> str:
         return next(line for line in self._rendered().splitlines() if line.strip().startswith(f"{key} ="))
 
-    def test_a_retired_row_is_marked_dead_with_its_remedy(self) -> None:
+    def test_a_former_setting_row_is_marked_unknown_with_its_remedy(self) -> None:
         ConfigSetting.objects.create(key="issue_implementer_require_label", value=True, scope="")
         line = self._row_line("issue_implementer_require_label")
-        assert "retired" in line
+        assert "unknown" in line
         assert "config_setting clear" in line
 
     def test_an_unrecorded_stale_row_is_marked_too(self) -> None:
@@ -278,9 +282,9 @@ class TestConfigSettingListMarksDeadRows(TestCase):
 
     def test_a_live_row_carries_no_marker(self) -> None:
         # Positive control: the marker must distinguish, not decorate every row.
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
-        line = self._row_line("adaptive_intake_concurrency_enabled")
-        assert "retired" not in line
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
+        line = self._row_line("admit_colleague_prs_to_board")
+        assert "unknown" not in line
         assert "not a declared setting" not in line
 
 
@@ -310,13 +314,8 @@ class TestConfigSettingGet(TestCase):
             call_command("config_setting", "get", "not_a_real_setting", stderr=StringIO())
 
 
-class TestRetiredKeyRefusalRendersTheRecord(TestCase):
-    """A retired key is answered with its retirement record (souliane/teatree#4094).
-
-    The bare unknown-key refusal is indistinguishable from a typo, so a reader who
-    knows the setting used to exist concludes the mechanism is lost rather than
-    superseded — twice, in one session, from ``issue_implementer_require_label``.
-    """
+class TestUnknownKeyRefusal(TestCase):
+    """Former setting names follow the same refusal as any unknown name."""
 
     def _refusal(self, subcommand: str, key: str) -> str:
         err = StringIO()
@@ -325,33 +324,14 @@ class TestRetiredKeyRefusalRendersTheRecord(TestCase):
             call_command(*args, stderr=err, stdout=StringIO())
         return err.getvalue()
 
-    def test_get_of_a_removed_key_renders_its_reason_and_remedy(self) -> None:
-        entry = removed_setting("issue_implementer_require_label")
-        rendered = self._refusal("get", "issue_implementer_require_label")
-        assert entry.reason in rendered
-        assert CLEAR_REMEDY.format(key="issue_implementer_require_label") in rendered
-        assert "is not a known config setting" not in rendered
-
-    def test_get_of_a_renamed_key_names_its_replacement(self) -> None:
-        rendered = self._refusal("get", "speed")
-        assert RENAMED_SETTING_KEYS["speed"] in rendered
-        assert "is not a known config setting" not in rendered
-
-    def test_get_of_a_genuinely_unknown_key_is_unchanged(self) -> None:
-        assert "is not a known config setting" in self._refusal("get", "not_a_real_setting")
-
-    def test_set_of_a_removed_key_renders_the_record_and_still_refuses(self) -> None:
-        entry = removed_setting("issue_implementer_require_label")
-        assert entry.reason in self._refusal("set", "issue_implementer_require_label")
-        assert ConfigSetting.objects.filter(key="issue_implementer_require_label").exists() is False
-
-    def test_set_of_a_renamed_key_points_at_the_replacement(self) -> None:
-        assert RENAMED_SETTING_KEYS["speed"] in self._refusal("set", "speed")
-        assert ConfigSetting.objects.filter(key="speed").exists() is False
-
-    def test_seed_of_a_removed_key_renders_the_record(self) -> None:
-        entry = removed_setting("issue_implementer_require_label")
-        assert entry.reason in self._refusal("seed", "issue_implementer_require_label")
+    def test_unknown_names_are_refused_identically(self) -> None:
+        for key in ("issue_implementer_require_label", "speed", "not_a_real_setting"):
+            for subcommand in ("get", "set", "seed"):
+                with self.subTest(key=key, subcommand=subcommand):
+                    assert self._refusal(subcommand, key) == self._refusal(subcommand, "not_a_real_setting").replace(
+                        "not_a_real_setting", key
+                    )
+                    assert not ConfigSetting.objects.filter(key=key).exists()
 
 
 class TestConfigSettingColdHookGateKey(TestCase):
@@ -402,7 +382,8 @@ class TestConfigSettingGovernanceTrailer(TestCase):
 
     def test_set_of_a_flag_key_prints_its_stage_and_tracking_issue(self) -> None:
         out = StringIO()
-        call_command("config_setting", "set", "outer_loop_enabled", "true", stdout=out)
+        with _fixture_flag():
+            call_command("config_setting", "set", "contribute", "false", stdout=out)
         rendered = out.getvalue()
         assert "feature-flag" in rendered
         assert "stage=dark" in rendered
@@ -415,12 +396,13 @@ class TestConfigSettingGovernanceTrailer(TestCase):
 
     def test_get_of_a_flag_key_prints_the_trailer(self) -> None:
         out = StringIO()
-        call_command("config_setting", "get", "outer_loop_enabled", stdout=out)
+        with _fixture_flag():
+            call_command("config_setting", "get", "contribute", stdout=out)
         assert "feature-flag" in out.getvalue()
 
     def test_set_of_a_gate_key_announces_the_gate_a_flag_registry_never_named(self) -> None:
         out = StringIO()
-        call_command("config_setting", "set", "require_review_context", "false", stdout=out)
+        call_command("config_setting", "set", "out_of_band_merge_gate_enabled", "false", stdout=out)
         assert "gate" in out.getvalue()
 
 
@@ -429,11 +411,10 @@ class TestConfigSettingFlagsAudit(TestCase):
 
     def test_flags_lists_every_registered_flag_with_its_stage(self) -> None:
         out = StringIO()
-        call_command("config_setting", "flags", stdout=out)
+        with _fixture_flag():
+            call_command("config_setting", "flags", stdout=out)
         rendered = out.getvalue()
-        # The live registry is all-DARK, so its rows render stage=dark.
-        for key in ("outer_loop_enabled", "factory_score_enabled"):
-            assert key in rendered
+        assert "contribute" in rendered
         assert "stage=dark" in rendered
 
     def test_flags_is_read_only_creates_no_rows(self) -> None:
@@ -445,30 +426,30 @@ class TestConfigSettingOverlayScope(TestCase):
     """``--overlay`` scoping on set / clear / get / list (per-overlay + global)."""
 
     def test_set_with_overlay_writes_overlay_scoped_row(self) -> None:
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "true", "--overlay", "ov")
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled", scope="ov") is True
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "true", "--overlay", "ov")
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board", scope="ov") is True
         # The global scope is untouched by an overlay-scoped write.
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is None
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is None
 
     def test_set_global_and_overlay_coexist_via_cli(self) -> None:
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "false")
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "true", "--overlay", "ov")
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is False
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled", scope="ov") is True
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "false")
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "true", "--overlay", "ov")
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is False
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board", scope="ov") is True
 
     def test_clear_with_overlay_is_scope_isolated(self) -> None:
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "false")
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "true", "--overlay", "ov")
-        call_command("config_setting", "clear", "adaptive_intake_concurrency_enabled", "--overlay", "ov")
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "false")
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "true", "--overlay", "ov")
+        call_command("config_setting", "clear", "admit_colleague_prs_to_board", "--overlay", "ov")
         # The overlay row is gone; the global row survives.
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled", scope="ov") is None
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is False
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board", scope="ov") is None
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is False
 
     def test_clear_overlay_absent_row_exits_nonzero(self) -> None:
         # A global row exists, but clearing the overlay scope (no row there) is loud.
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "true")
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "true")
         with pytest.raises(SystemExit):
-            call_command("config_setting", "clear", "adaptive_intake_concurrency_enabled", "--overlay", "ov")
+            call_command("config_setting", "clear", "admit_colleague_prs_to_board", "--overlay", "ov")
 
     def test_get_with_overlay_reports_db_source(self) -> None:
         call_command("config_setting", "set", "issue_implementer_max_concurrent", "7", "--overlay", "ov")
@@ -480,7 +461,7 @@ class TestConfigSettingOverlayScope(TestCase):
         assert "ov" in rendered
 
     def test_list_names_each_rows_scope(self) -> None:
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "true")
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "true")
         call_command("config_setting", "set", "issue_implementer_label", '"ready"', "--overlay", "ov")
         out = StringIO()
         call_command("config_setting", "list", stdout=out)
@@ -510,11 +491,11 @@ class TestConfigSettingExport(TestCase):
         assert doc["overlays"]["myproj"]["mode"] == "interactive"
 
     def test_export_output_writes_a_file(self) -> None:
-        call_command("config_setting", "set", "adaptive_intake_concurrency_enabled", "true")
+        call_command("config_setting", "set", "admit_colleague_prs_to_board", "true")
         target = self.tmp_path / "dump.toml"
         call_command("config_setting", "export", "--output", str(target))
         doc = tomllib.loads(target.read_text(encoding="utf-8"))
-        assert _teatree(doc)["adaptive_intake_concurrency_enabled"] is True
+        assert _teatree(doc)["admit_colleague_prs_to_board"] is True
 
     def test_export_overlay_scopes_the_dump(self) -> None:
         call_command("config_setting", "set", "mode", '"auto"')  # global
@@ -594,12 +575,13 @@ class TestConfigSettingImport(TestCase):
         assert "rejected not_a_setting" in err.getvalue()
         assert ConfigSetting.objects.count() == 0
 
-    def test_import_reports_a_folded_alias(self) -> None:
+    def test_import_rejects_a_former_setting_name(self) -> None:
         path = self._write_toml('[teatree]\nspeed = "slow"\n')
-        out = StringIO()
-        call_command("config_setting", "import", "--input", str(path), stdout=out)
-        assert "folded retired alias speed -> wip" in out.getvalue()
-        assert ConfigSetting.objects.get_effective("wip") == "slow"
+        err = StringIO()
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "import", "--input", str(path), stdout=StringIO(), stderr=err)
+        assert "rejected speed" in err.getvalue()
+        assert ConfigSetting.objects.get_effective("wip") is None
 
     def test_import_rejects_invalid_toml_and_writes_nothing(self) -> None:
         path = self._write_toml("[teatree\nmode = broken")  # malformed TOML
@@ -627,9 +609,8 @@ class TestPrivateBackupRoundTripOverTheCli(TestCase):
     #: a one-class fix. The fourth class (a banned term matched on the VALUE) is unit-covered in
     #: ``test_config_migration`` instead: it needs live scan terms, and this command resolves
     #: those through a cold reader that cannot see a test transaction's rows.
-    PRIVATE_ROWS: ClassVar[dict[str, str | list[str]]] = {
-        "banned_terms": ["synthetic-scanned-term"],  # private-key
-        "banned_brands": ["synthetic-brand"],  # private-key
+    PRIVATE_ROWS: ClassVar[dict[str, str | list[str] | dict[str, list[str]]]] = {
+        "banned_term_registry": {"leak": ["synthetic-scanned-term"], "prose_collider": []},  # private-key
         "anthropic_oauth_pass_paths": ["synthetic/oauth-entry"],  # credential-coordinate
         "slack_user_id": "synthetic-user-ref",  # personal-identifier
     }
@@ -644,7 +625,10 @@ class TestPrivateBackupRoundTripOverTheCli(TestCase):
         """Every private VALUE as it would read on screen — what must never appear in stdout."""
         fragments: list[str] = []
         for value in TestPrivateBackupRoundTripOverTheCli.PRIVATE_ROWS.values():
-            fragments.extend(value if isinstance(value, list) else [value])
+            if isinstance(value, dict):
+                fragments.extend(term for terms in value.values() for term in terms)
+            else:
+                fragments.extend(value if isinstance(value, list) else [value])
         return fragments
 
     def _backup(self) -> tuple[Path, str]:

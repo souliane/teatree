@@ -1,7 +1,6 @@
 """Tests for ``teatree.utils.postgres_secret`` — pass-key resolution helpers."""
 
 import os
-import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,17 +13,10 @@ from teatree.utils.postgres_secret import (
     RESOLVER_ENV,
     PostgresPasswordUnavailableError,
     ensure_postgres_pass_entry,
-    extract_literal_from_cache,
     postgres_pass_key,
     remove_postgres_pass_entry,
     resolve_postgres_password,
 )
-
-
-@pytest.fixture(autouse=True)
-def _reset_deprecation_state() -> None:
-    """Reset the one-shot deprecation warning flag between tests."""
-    postgres_secret._reset_literal_deprecation_state()
 
 
 class TestPostgresPassKey:
@@ -62,32 +54,9 @@ class TestResolvePostgresPassword:
         with patch.object(postgres_secret.secrets, "read_pass", return_value=""):
             assert resolve_postgres_password(env) == "from-resolver"
 
-    def test_falls_back_to_literal_with_deprecation_warning(self) -> None:
-        env = {POSTGRES_PASSWORD_ENV: "legacy-literal"}
-        with (
-            patch.object(postgres_secret.secrets, "read_pass", return_value=""),
-            warnings.catch_warnings(record=True) as caught,
-        ):
-            warnings.simplefilter("always")
-            assert resolve_postgres_password(env) == "legacy-literal"
-        kinds = [w.category for w in caught]
-        assert DeprecationWarning in kinds
-
     def test_returns_empty_when_no_source_available(self) -> None:
         with patch.object(postgres_secret.secrets, "read_pass", return_value=""):
             assert resolve_postgres_password({}) == ""
-
-    def test_deprecation_warning_fires_only_once_per_process(self) -> None:
-        env = {POSTGRES_PASSWORD_ENV: "literal"}
-        with (
-            patch.object(postgres_secret.secrets, "read_pass", return_value=""),
-            warnings.catch_warnings(record=True) as first_batch,
-        ):
-            warnings.simplefilter("always")
-            resolve_postgres_password(env)
-            resolve_postgres_password(env)
-        deprecations = [w for w in first_batch if w.category is DeprecationWarning]
-        assert len(deprecations) == 1
 
     def test_defaults_to_os_environ_when_env_not_provided(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(PASS_KEY_ENV, "teatree/wt/99/postgres")
@@ -127,28 +96,6 @@ class TestRemovePostgresPassEntry:
             assert remove_postgres_pass_entry("321") is False
 
 
-class TestExtractLiteralFromCache:
-    def test_returns_value_for_existing_literal(self, tmp_path: Path) -> None:
-        cache = tmp_path / ".t3-env.cache"
-        cache.write_text("FOO=bar\nPOSTGRES_PASSWORD=abc123\nBAZ=qux\n", encoding="utf-8")
-        assert extract_literal_from_cache(cache) == "abc123"
-
-    def test_returns_empty_when_cache_missing(self, tmp_path: Path) -> None:
-        assert extract_literal_from_cache(tmp_path / "missing.cache") == ""
-
-    def test_returns_empty_when_only_pass_key_present(self, tmp_path: Path) -> None:
-        cache = tmp_path / ".t3-env.cache"
-        cache.write_text("POSTGRES_PASSWORD_PASS_KEY=teatree/wt/1/postgres\n", encoding="utf-8")
-        assert extract_literal_from_cache(cache) == ""
-
-    def test_does_not_leak_password_to_logger(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        cache = tmp_path / ".t3-env.cache"
-        cache.write_text("POSTGRES_PASSWORD=swordfish-literal\n", encoding="utf-8")
-        caplog.set_level("DEBUG", logger="teatree.utils.postgres_secret")
-        extract_literal_from_cache(cache)
-        assert "swordfish-literal" not in caplog.text
-
-
 class TestResolverCommandInvocation:
     """End-to-end exercise of the T3_SECRET_RESOLVER fallback.
 
@@ -166,34 +113,25 @@ class TestResolverCommandInvocation:
             value = resolve_postgres_password(env)
         assert value == "key:teatree/wt/1/postgres"
 
-    def test_resolver_failure_falls_through_to_literal(self, tmp_path: Path) -> None:
+    def test_resolver_failure_returns_empty(self, tmp_path: Path) -> None:
         resolver = tmp_path / "resolver"
         resolver.write_text("#!/bin/sh\nexit 1\n")
         resolver.chmod(0o755)
-        env = {RESOLVER_ENV: str(resolver), POSTGRES_PASSWORD_ENV: "literal"}
-        with (
-            patch.object(postgres_secret.secrets, "read_pass", return_value=""),
-            warnings.catch_warnings(),
-        ):
-            warnings.simplefilter("ignore", DeprecationWarning)
-            assert resolve_postgres_password(env) == "literal"
+        env = {PASS_KEY_ENV: "teatree/wt/1/postgres", RESOLVER_ENV: str(resolver)}
+        with patch.object(postgres_secret.secrets, "read_pass", return_value=""):
+            assert resolve_postgres_password(env) == ""
 
-    def test_missing_resolver_falls_through(self) -> None:
-        env = {RESOLVER_ENV: "/no/such/binary", POSTGRES_PASSWORD_ENV: "literal"}
-        with (
-            patch.object(postgres_secret.secrets, "read_pass", return_value=""),
-            warnings.catch_warnings(),
-        ):
-            warnings.simplefilter("ignore", DeprecationWarning)
-            assert resolve_postgres_password(env) == "literal"
+    def test_missing_resolver_returns_empty(self) -> None:
+        env = {PASS_KEY_ENV: "teatree/wt/1/postgres", RESOLVER_ENV: "/no/such/binary"}
+        with patch.object(postgres_secret.secrets, "read_pass", return_value=""):
+            assert resolve_postgres_password(env) == ""
 
 
-def test_module_does_not_log_literal_value(caplog: pytest.LogCaptureFixture) -> None:
-    """Verify the literal value never reaches the log stream."""
-    env = {PASS_KEY_ENV: "teatree/wt/9/postgres", POSTGRES_PASSWORD_ENV: "secret-literal"}
+def test_literal_env_without_pass_key_is_ignored(caplog: pytest.LogCaptureFixture) -> None:
+    """A direct password env value is not a resolver input."""
     caplog.set_level("DEBUG", logger="teatree.utils.postgres_secret")
     with patch.object(postgres_secret.secrets, "read_pass", return_value=""):
-        resolve_postgres_password(env)
+        assert resolve_postgres_password({POSTGRES_PASSWORD_ENV: "secret-literal"}) == ""
     assert "secret-literal" not in caplog.text
 
 

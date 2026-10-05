@@ -133,7 +133,12 @@ gh pr list --repo <owner>/<repo> --search "in:title #<issue-number>" --state mer
 glab mr list --search "#<issue-number>" --state merged
 ```
 
-If a merged PR references this issue and its body claims the work is complete, **stop and confirm with the user** before continuing. If the user agrees the work is done, close the issue with a comment pointing to the merged PR — do not start a redundant scoping/implementation pass.
+If a merged PR references this issue and its body claims the work is complete, **stop and confirm with the user** before continuing. If the user agrees the work is done, record the merged-PR citation in the issue's DESCRIPTION and close it with no comment — do not start a redundant scoping/implementation pass. The citation is why the ticket closed, so it belongs where the next reader looks (#162 Rule 2); a comment carrying it is invisible to a lane:
+
+```bash
+t3 <overlay> ticket comment <issue-url> --purpose decision \
+  --body "Closed as already shipped by <merged-pr-url>."
+```
 
 **Run this check even when an upstream brief, coordinator, or mission prompt names the ticket as the "current" or "next" one.** A brief asserting a ticket authoritatively is not evidence the ticket is unresolved — backlogs drift and merged-but-open issues accumulate. Verify against merged PRs *before* creating a worktree, not after. Closing the stale issue with evidence and advancing to the next backlog item is the correct outcome, not a deviation from the brief.
 

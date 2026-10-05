@@ -324,6 +324,11 @@ def _cgroup_v2_cpu_quota() -> "int | None":
     return max(1, -(-quota // period))  # ceil division, floored at 1
 
 
+def cgroup_cpu_quota() -> "int | None":
+    """The CPU quota alone, without a process-affinity or physical-core cap."""
+    return _cgroup_v2_cpu_quota()
+
+
 def available_cpu_count() -> int:
     """Cores actually available to THIS process — cgroup/affinity-aware (#3409).
 
@@ -459,11 +464,6 @@ class DockerWorkerSizing:
             return 0
 
     @classmethod
-    def worker_mem_limit_mib(cls, total_ram_mib: "int | None" = None, daemon_ram_mib: "int | None" = None) -> int:
-        """:meth:`worker_sizing`'s cap alone, in whole MiB; ``0`` when none was derived."""
-        return cls.worker_sizing(total_ram_mib, daemon_ram_mib).mem_limit_mib
-
-    @classmethod
     def worker_sizing(cls, total_ram_mib: "int | None" = None, daemon_ram_mib: "int | None" = None) -> "WorkerSizing":
         """The worker's ``mem_limit``, or the reason this daemon cannot host one (#3432).
 
@@ -517,24 +517,39 @@ class DockerWorkerSizing:
         )
 
 
+def _exceeds(cpus: str, limit: int) -> bool:
+    try:
+        return float(cpus) > limit
+    except ValueError:
+        return False
+
+
 def _emit_compose_sizing() -> None:
     """Print the worker's deploy-derived compose caps as shell ``KEY=VALUE`` lines.
 
     ``deploy/deploy.sh`` ``eval``s this on the host before it converges the stack. The
     ``mem_limit`` line is omitted when host RAM is unreadable so compose keeps its in-file
-    default; ``cpus`` otherwise always emits (its derivation floors at 1).
+    default. ``cpus`` is omitted when the daemon's ``NCPU`` is unreadable: the daemon
+    refuses a ``cpus`` above its own count, and host cores overstate a Docker Desktop VM.
 
     An operator who exported ``TEATREE_WORKER_CPUS`` or ``TEATREE_WORKER_MEM_LIMIT`` has
     already decided that cap, so its derivation is skipped — re-emitting a derived line
-    would silently overwrite it. The memory override is also the never-lockout
-    escape from the refusal below.
+    would silently overwrite it. The one exception is a ``cpus`` above the daemon's count,
+    which is capped at it rather than left to fail the whole ``up``. The memory override is
+    also the never-lockout escape from the refusal below.
 
     Exits ``3`` on a refusal so ``deploy.sh`` can tell "this daemon cannot host a worker"
     (abort, with the reason) from "the probe could not run" (degrade to the compose
     default), which a shared non-zero code could not.
     """
-    if not os.environ.get("TEATREE_WORKER_CPUS", "").strip():
-        sys.stdout.write(f"TEATREE_WORKER_CPUS={DockerWorkerSizing.worker_cpus()}\n")
+    engine = DockerWorkerSizing.daemon_cpu_count()
+    operator_cpus = os.environ.get("TEATREE_WORKER_CPUS", "").strip()
+    if not operator_cpus:
+        if engine > 0:
+            sys.stdout.write(f"TEATREE_WORKER_CPUS={DockerWorkerSizing.worker_cpus(daemon_cpus=engine)}\n")
+    elif engine > 0 and _exceeds(operator_cpus, engine):
+        sys.stderr.write(f"TEATREE_WORKER_CPUS={operator_cpus} exceeds the Docker daemon's {engine} CPUs; capped.\n")
+        sys.stdout.write(f"TEATREE_WORKER_CPUS={engine}\n")
     if os.environ.get("TEATREE_WORKER_MEM_LIMIT", "").strip():
         return
     sizing = DockerWorkerSizing.worker_sizing()
@@ -549,6 +564,7 @@ __all__ = [
     "DockerWorkerSizing",
     "WorkerSizing",
     "available_cpu_count",
+    "cgroup_cpu_quota",
     "cgroup_file",
     "cgroup_v1_memory_mib",
     "cgroup_v2_memory_mib",

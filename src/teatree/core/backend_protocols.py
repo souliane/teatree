@@ -473,6 +473,8 @@ class CodeHostBackend(Protocol):
 
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def list_repo_open_issues(self, *, repo: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict: ...  # pragma: no branch
 
     def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch

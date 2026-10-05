@@ -55,7 +55,7 @@ class TestAgentSessionPinsCheck:
             db,
             agent_session_model="opus",
             agent_session_effort="xhigh",
-            agent_skill_models={"code-review": "opus"},
+            agent_skill_models={"code-review": [{"floor": "opus"}]},
         )
         _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
@@ -99,7 +99,7 @@ class TestAgentSessionPinsCheck:
     ) -> None:
         # A floor naming no known tier substring — a real typo, no substring match.
         db = tmp_path / "config.sqlite3"
-        _seed(db, agent_skill_models={"code-review": "opsu"})
+        _seed(db, agent_skill_models={"code-review": [{"floor": "opsu"}]})
         _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         out = capsys.readouterr().out
@@ -113,7 +113,7 @@ class TestAgentSessionPinsCheck:
         # A superstring that contains a known tier (e.g. a dated id) is fine —
         # the system resolves it to that tier by substring, so no false typo WARN.
         db = tmp_path / "config.sqlite3"
-        _seed(db, agent_skill_models={"c": "sonnet-4-6"})
+        _seed(db, agent_skill_models={"c": [{"floor": "sonnet-4-6"}]})
         _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
@@ -122,7 +122,7 @@ class TestAgentSessionPinsCheck:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db = tmp_path / "config.sqlite3"
-        _seed(db, agent_skill_models={"a": "haiku", "b": "sonnet", "c": "opus"})
+        _seed(db, agent_skill_models={"a": [{"floor": "haiku"}], "b": [{"floor": "sonnet"}], "c": [{"floor": "opus"}]})
         _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
@@ -143,7 +143,7 @@ class TestAgentSessionPinsCheck:
         # F4: an abstract tier (frontier) is the redesign's canonical vocabulary —
         # it must not be flagged as a typo just because it isn't a pricing family.
         db = tmp_path / "config.sqlite3"
-        _seed(db, agent_session_model="frontier", agent_skill_models={"code-review": "cheap"})
+        _seed(db, agent_session_model="frontier", agent_skill_models={"code-review": [{"floor": "cheap"}]})
         _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""
@@ -157,7 +157,7 @@ class TestAgentSessionPinsCheck:
         _seed(
             db,
             agent_session_model="vendor/some-model",
-            agent_skill_models={"c": "deepseek/deepseek-v4-pro"},
+            agent_skill_models={"c": [{"floor": "deepseek/deepseek-v4-pro"}]},
         )
         _point_at(monkeypatch, db)
         assert _check_agent_session_pins() is True

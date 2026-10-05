@@ -260,6 +260,44 @@ class Command(TyperCommand):
             human="\n".join([verdict, *warnings]),
         )
 
+    def _run_followup_dry_run(self, *, overlay: str, json_output: bool) -> None:
+        """``--dry-run``: run the followup scanners for real, post nothing, gate on breaches.
+
+        Selection deliberately does NOT go through the live admission gate
+        (:class:`_ScopedJobsBuilder`): ``followup`` is previewed precisely while it is
+        masked off, and a gated preview answers "0 candidates, all clear" for a scan
+        that never ran. The live verdict is READ from ``loop_block_reasons`` — the same
+        ``_admission_block`` the tick applies — and printed in the header instead.
+
+        Exit codes: 0 clean · 1 a candidate would be acted on that the authorship guard
+        does not class as the owner's · 3 nothing was selected, so the run proves
+        nothing (``--loop`` misuse is 2, raised by :meth:`handle`).
+        """
+        from teatree.loop.followup_dry_run import (  # noqa: PLC0415 — loaded only for the explicit preview
+            render_followup_dry_run,
+            run_followup_dry_run,
+        )
+        from teatree.loops.loop_table import (  # noqa: PLC0415 — loaded only for the explicit preview
+            loop_block_reasons,
+            preview_loop_jobs,
+        )
+
+        now = dt.datetime.now(tz=dt.UTC)
+        context = _scanner_context(self._build_request(overlay))
+        report = run_followup_dry_run(
+            lambda: preview_loop_jobs("followup", context),
+            live_admission=loop_block_reasons(now).get("followup", ""),
+        )
+        emit(
+            report.as_payload(),
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=render_followup_dry_run(report),
+        )
+        if report.exit_code:
+            raise SystemExit(report.exit_code)
+
     def handle(
         self,
         *,
@@ -281,6 +319,10 @@ class Command(TyperCommand):
             ),
         ] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit the tick report as JSON.")] = False,
+        dry_run: Annotated[
+            bool,
+            typer.Option("--dry-run", help="Preview the followup loop without posting or writing the database."),
+        ] = False,
     ) -> None:
         if not loop.strip():
             self.stderr.write(
@@ -288,9 +330,16 @@ class Command(TyperCommand):
                 "self-rescheduling loop_timer chain per enabled DB Loop row that the singleton "
                 "`t3 worker` drains, each firing `t3 loops tick --loop <name>` on its own cadence. "
                 "There is NO master tick. Run `t3 loops list` to see the loops, then "
-                "`t3 loop enable <name>` (the reconciler adds its timer); `t3 worker status` shows the worker."
+                "`t3 loop resume <name>` (the reconciler adds its timer); `t3 worker status` shows the worker."
             )
             raise SystemExit(2)
+
+        if dry_run:
+            if loop != "followup":
+                self.stderr.write("--dry-run is supported only with --loop followup")
+                raise SystemExit(2)
+            self._run_followup_dry_run(overlay=overlay, json_output=json_output)
+            return
 
         # A per-loop tick (#2650) preflights ONLY its own overlay, gated on the
         # loop being enabled + due — so one overlay's connector outage can't
@@ -388,8 +437,7 @@ class Command(TyperCommand):
     def _hard_exit_if_subprocess() -> None:
         """``os._exit`` right after render when this is the worker's deadlined subprocess.
 
-        A hung NON-daemon scanner thread blocks interpreter shutdown (the
-        ``ThreadPoolExecutor`` atexit join it left running), pinning this subprocess —
+        A hung NON-daemon thread blocks interpreter shutdown, pinning this subprocess —
         and one of the worker's scarce ``loops`` executor slots — until the outer
         deadline SIGKILL. Once the report is rendered there is nothing left to do, so a
         hard exit reclaims the slot immediately. Gated on the env marker the worker's

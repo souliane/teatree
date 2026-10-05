@@ -211,8 +211,7 @@ class PydanticAiHarness:
     and no :class:`~teatree.llm.credentials.CredentialError` risk. A resolved
     model name is checked against the regulated-path allowlist policy
     (:class:`~teatree.agents.regulated_path.RegulatedPathPolicy`, #2887)
-    before it reaches the provider — a no-op unless the lane sets
-    ``enforce_regulated_path``.
+    before it reaches the provider when the lane has a configured model allowlist.
 
     *history* (#2886) is the rehydrated conversation of a RESUMED park, if
     any — passed straight through to the opened :class:`PydanticAiHarnessSession`
@@ -254,6 +253,7 @@ class PydanticAiHarness:
         # SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the defaults (router
         # binding, factory lane, uncapped, no pre-resolved regulated-path policy).
         cfg = config or PydanticAiModelConfig()
+        self._tier = cfg.tier
         self._backend = cfg.backend
         self._binding = cfg.binding
         self._max_tokens = cfg.max_tokens
@@ -298,7 +298,7 @@ class PydanticAiHarness:
         # (the :data:`TIER_MODELS` form) an OpenAI-compatible provider does NOT carry, so it maps
         # to the configured ``openai_compatible_model``; an explicit provider-native pin
         # passes through.
-        model_name = resolve_pydantic_ai_model(options.model, configured_model=self._backend.model)
+        model_name = resolve_pydantic_ai_model(options.model, configured_model=self._backend.model, tier=self._tier)
         # Regulated-path allowlist gate on the ORIGINAL pin (before normalisation
         # laundered a bare ineligible id into the configured id) — a config-policy
         # refusal that must surface BEFORE the credential step, so it fires even when
@@ -331,7 +331,6 @@ class PydanticAiHarness:
             resolve_effort(harness_options),
             binding=self._binding,
             max_tokens=self._max_tokens,
-            prompt_cache_key=run.session_id if self._backend.sends_prompt_cache_key else None,
         )
         # PR-03: a phased dispatch wires the phase-scoped, gated tool/MCP layer
         # onto the Agent (``toolsets=`` + ``tool_timeout=``); an un-phased one
@@ -433,6 +432,7 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
         config=PydanticAiModelConfig(
             binding=binding,
             max_tokens=settings.pydantic_ai_max_tokens,
+            tier=context.tier,
             regulated_path=RegulatedPathPolicy.from_settings(settings),
             anthropic_credential=_routed_anthropic_credential(binding, context.task),
             backend=OpenAICompatibleLaneConfig(
@@ -442,7 +442,6 @@ def _build_pydantic_ai_harness(context: HarnessBuildContext) -> Harness:
                 credential_entry=settings.openai_compatible_credential_entry or None,
                 model=settings.openai_compatible_model or None,
                 extra_headers=dict(settings.openai_compatible_extra_headers),
-                sends_prompt_cache_key=settings.openai_compatible_sends_prompt_cache_key,
             ),
         ),
     )

@@ -4,12 +4,13 @@ from django.db import transaction
 from django.utils import timezone
 
 from teatree.core.modelkit.gate_registry import get_gate
+from teatree.core.models.known_issue import KnownIssue
 from teatree.core.models.ticket_data import TicketFacet
-from teatree.core.models.types import FIX_RECORD_FIELDS, validated_ticket_extra
+from teatree.core.models.types import FIX_RECORD_FIELDS, AntiVacuityAttestation, validated_ticket_extra
 
 if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import (
-        AntiVacuityAttestation,
         FixRecord,
         FixRecordOverride,
         JSONObject,
@@ -21,6 +22,35 @@ if TYPE_CHECKING:
 
 #: ``extra`` slot holding one durable agent conversation per ``Task.pk`` (``TicketExtra.pydantic_ai_threads``).
 TASK_THREADS_KEY = "pydantic_ai_threads"
+
+
+def recorded_anti_vacuity_attestation(ticket: "Ticket", head_sha: str = "") -> AntiVacuityAttestation:
+    """Read the proof for a head, including legacy single-record tickets."""
+    extra = ticket.extra or {}
+    raw = extra.get("anti_vacuity_attestation") or {}
+    if head_sha:
+        by_head = extra.get("anti_vacuity_attestations") or {}
+        if isinstance(by_head, dict) and "anti_vacuity_attestations" in extra:
+            raw = by_head.get(head_sha.strip().lower()) or {}
+    return AntiVacuityAttestation(
+        **{key: value for key, value in raw.items() if key in AntiVacuityAttestation.__annotations__}
+    )
+
+
+def anti_vacuity_is_complete(attestation: AntiVacuityAttestation) -> bool:
+    """Require AC coverage and a RED proof, or an explicit no-new-tests claim."""
+    raw_coverage = attestation.get("ac_coverage")
+    coverage = raw_coverage.strip() if isinstance(raw_coverage, str) else ""
+    proven = attestation.get("proven_tests") or []
+    valid_proven = isinstance(proven, list) and all(isinstance(test, str) for test in proven)
+    has_proven = valid_proven and any(test.strip() for test in proven)
+    no_new_tests = attestation.get("no_new_tests")
+    return (
+        bool(coverage)
+        and valid_proven
+        and (no_new_tests is None or isinstance(no_new_tests, bool))
+        and (has_proven or no_new_tests is True)
+    )
 
 
 class TicketEvidenceModel(TicketFacet):
@@ -155,12 +185,18 @@ class TicketEvidenceModel(TicketFacet):
             unchanged = locked.extra == merged and all(
                 getattr(locked, field) == value for field, value in (also_set or {}).items()
             )
+            # Only the forge's merge clears a refusal: a board-only move to DELIVERED is no merge.
+            forge_merged = cast("Ticket", self).State.MERGED
+            lands = (also_set or {}).get("state") == forge_merged and locked.state != forge_merged
             self.extra = merged
             for field, value in (also_set or {}).items():
                 setattr(self, field, value)
             if unchanged:
                 return
             type(self).objects.filter(pk=self.pk).update(extra=merged, **(also_set or {}))
+            if lands:
+                # A bulk UPDATE fires no signal, so a sync that lands the ticket closes its merge refusal here.
+                KnownIssue.objects.settle_merge_refusal(self.pk)
 
     def rearm_review_at(self, head_sha: str) -> None:
         """Aim this reviewer ticket at *head_sha*; a review an older head earned does not carry over (#959)."""
@@ -245,17 +281,27 @@ class TicketEvidenceModel(TicketFacet):
             "no_new_tests": no_new_tests,
             "at": timezone.now().isoformat(),
         }
-        self.merge_extra(set_keys={"anti_vacuity_attestation": attestation})
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            previous = (locked.extra or {}).get("anti_vacuity_attestation") or {}
+            by_head: dict[str, AntiVacuityAttestation] = {}
+            if isinstance(previous, dict) and "anti_vacuity_attestations" not in (locked.extra or {}):
+                previous_sha = str(previous.get("head_sha") or "").strip().lower()
+                if previous_sha:
+                    by_head[previous_sha] = cast("AntiVacuityAttestation", previous)
+            by_head[attestation["head_sha"]] = attestation
+            self.merge_extra(
+                set_keys={"anti_vacuity_attestation": attestation},
+                merge_into_dicts={"anti_vacuity_attestations": cast("JSONObject", by_head)},
+            )
 
     def review_context_satisfied(self) -> bool:
         """Whether the ``-> reviewing`` deep-retrieval precondition is met.
 
         An FSM ``condition`` on ``review()``: the ``TESTED -> SELF_REVIEWED``
         transition is mechanically refused (``TransitionNotAllowed``) when
-        ``require_review_context`` is on and no complete ``review_context``
-        artifact is recorded — so a verdict from the diff alone cannot advance
-        the FSM regardless of entry path. NO-OP (returns ``True``) when the knob
-        is off (opt-in default preserved).
+        no complete ``review_context`` artifact is recorded — so a verdict from
+        the diff alone cannot advance the FSM regardless of entry path.
         """
         return bool(get_gate("review_context_satisfied")(self))
 

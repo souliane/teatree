@@ -3,7 +3,6 @@
 The agent-teams pane layer is retired, so its mini-loop no longer exists on disk.
 The inlined ``0001`` seeds stop creating the row, but that only reaches a fresh
 install — a deployed box keeps a ``Loop`` row whose ``script`` resolves to a
-deleted module, which ``build_loop_table_jobs`` raises on rather than silently
 skipping. The seeded ``Mode.entries`` carry the same name, which
 ``preset_findings`` reports as "entries name unknown loops".
 
@@ -30,7 +29,7 @@ def forward(apps, schema_editor) -> None:
     for row in mode.objects.using(db_alias).all():
         if _PANE_REAPER in row.entries:
             del row.entries[_PANE_REAPER]
-            row.save(update_fields=["entries"])
+            mode.objects.using(db_alias).filter(pk=row.pk).update(entries=row.entries)
 
 
 def backward(apps, schema_editor) -> None:

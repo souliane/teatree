@@ -10,7 +10,6 @@ from teatree.agents._runner_options import SpawnOverrides, _build_options, _turn
 from teatree.agents.compaction_guard import CompactionGuard
 from teatree.agents.harness_dispatch import DispatchHarness
 from teatree.agents.prompt import build_system_context, build_task_prompt, required_skill_delivery
-from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.skill_assurance import SkillAssurance, assess_skill_dispatch, recover_truncated_inline_skills
 from teatree.agents.stage_skill_prompt import stage_skills_present
 from teatree.core.models import Task
@@ -65,7 +64,6 @@ def prepare_run(
         required_inline=required_inline,
         required_explicit=required_explicit,
         rendered_context=system_context,
-        can_load=not is_reader_phase(phase),
     )
     if load_directive:
         prompt = f"{load_directive}\n\n{prompt}"
@@ -87,8 +85,10 @@ def prepare_run(
             handoff=handoff,
             compaction_guard=guard if dispatch.harness.capabilities.spawns_cli_child else None,
             model=dispatch.model,
+            spawn_selection=dispatch.spawn_selection,
             model_is_resolved=(dispatch.route_candidate_index is not None or dispatch.name == "codex_app_server"),
             harness_name=dispatch.name,
+            mcp=dispatch.harness.capabilities.mcp,
             effort=dispatch.effort,
         ),
     )

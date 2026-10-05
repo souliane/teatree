@@ -25,8 +25,7 @@ table refuses it: an epic's scope is unbounded, so it holds a bounded in-flight
 slot with no state of the world that ends the claim, displacing implementable
 work for the whole run.
 
-Claims go through the TOCTOU-safe :meth:`ImplementedIssueMarker.claim` (or the
-cross-instance fleet ref when that kill-switch is on), so a re-tick or a
+Claims go through the cross-instance fleet claim ref, so a re-tick or a
 concurrent overlay never double-dispatches.
 
 Candidates are claimed OLDEST FILED FIRST (#4238). Each discovery query asks its forge
@@ -166,16 +165,14 @@ def _issue_is_open(issue: RawAPIDict) -> bool:
     return not (isinstance(state, str) and state.lower() == "closed")
 
 
-def _issue_slug_and_host_kind(url: str) -> tuple[str, str]:
-    """The ``(repo_slug, host_kind)`` the author classifier needs, from an issue URL.
+def _issue_slug(url: str) -> str:
+    """The repo slug the author classifier needs, from an issue URL.
 
     An unrecognised URL yields an EMPTY slug, which the gate refuses — an
     unclassifiable issue is never claimable.
     """
     parsed = urlparse(url)
-    slug = slug_from_issue_or_pr_url(parsed.path)
-    is_gitlab = "/-/" in parsed.path or "gitlab" in (parsed.hostname or "").lower()
-    return slug, "gitlab" if is_gitlab else "github"
+    return slug_from_issue_or_pr_url(parsed.path)
 
 
 def author_is_trusted(issue: RawAPIDict, trusted: frozenset[str]) -> bool:
@@ -189,10 +186,10 @@ def author_is_trusted(issue: RawAPIDict, trusted: frozenset[str]) -> bool:
     the decision is reached.
     """
     author = issue_author(issue)
-    slug, host_kind = _issue_slug_and_host_kind(issue_url(issue))
+    slug = _issue_slug(issue_url(issue))
     if not author or not slug:
         return False
-    subject = AuthorSubject(slug=slug, author=author, host_kind=host_kind)
+    subject = AuthorSubject(slug=slug, author=author, pr_url=issue_url(issue))
     return decide_author_trust(subject, gate=AutonomyGate.INTAKE, extra_trusted=trusted) is TrustVerdict.AUTONOMOUS
 
 
@@ -467,7 +464,7 @@ class IssueIntakeScanner:
         return reason is not None
 
     def _claim(self, url: str) -> ImplementedIssueMarker | None:
-        """Claim *url*, cross-instance mutex first when the fleet kill-switch is on.
+        """Claim *url*, cross-instance mutex first.
 
         ``None`` from the fleet acquire — a live rival holds it, or the ref infra is
         unreachable and the acquire failed safe — skips this issue.
@@ -482,8 +479,6 @@ class IssueIntakeScanner:
         if holder:
             logger.info("Deferring the claim of %s: %r holds its branch/PR work lease (#3561).", url, holder)
             return None
-        if not wire.fleet_claim_enabled(self.overlay_name):
-            return ImplementedIssueMarker.objects.claim(url, overlay=self.overlay_name)
         claim = wire.acquire_issue_claim(url)
         if claim is None:
             return None

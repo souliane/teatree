@@ -590,26 +590,6 @@ class TestWiredIntoRouter:
         assert "Stop" in config["hooks"]
 
 
-class TestCleanupStalePumpArmed:
-    """#758 N1: a crashed session's stale ``*.pump-armed`` is swept.
-
-    Its mere presence would suppress a new owner's self-pump (the
-    anti-spin check keys on the marker existing); the current session's
-    marker is kept.
-    """
-
-    def test_sweeps_other_session_pump_armed_keeps_own(self) -> None:
-        (router.STATE_DIR / "dead-sess.pump-armed").write_text("1", encoding="utf-8")
-        (router.STATE_DIR / "dead-sess.loop-pending").write_text("1", encoding="utf-8")
-        (router.STATE_DIR / "live-sess.pump-armed").write_text("1", encoding="utf-8")
-
-        router._cleanup_stale_pending("live-sess")
-
-        assert not (router.STATE_DIR / "dead-sess.pump-armed").exists()
-        assert not (router.STATE_DIR / "dead-sess.loop-pending").exists()
-        assert (router.STATE_DIR / "live-sess.pump-armed").exists()
-
-
 class TestSelfPumpHonorsPause:
     """An explicit user pause wins over the standing loop directive (#2247/#2250).
 

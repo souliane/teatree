@@ -1,8 +1,8 @@
 """PreToolUse ALLOW verdict primitive (#3 — a sanctioned allow must exit 0).
 
-The DENY counterpart (``emit_pretooluse_deny`` + ``_write_pretooluse_deny``)
-stays in ``hook_router`` where the never-lockout contract's call-graph analysis
-can see it. The ALLOW verdict is its own leaf here so the ``classifier_relax_gate``
+The DENY counterpart (``emit_pretooluse_deny``, writing through ``gate_decision``)
+is reached only through ``hook_router``, where the never-lockout contract's
+call-graph analysis can see it. The ALLOW verdict is its own leaf here so the ``classifier_relax_gate``
 cold hook can emit a sanctioned allow without importing the router: it writes the
 nested ``hookSpecificOutput`` allow envelope Claude Code actually reads and
 returns the distinct :data:`Verdict.ALLOW` sentinel, which ``main()`` breaks the
@@ -50,7 +50,7 @@ def emit_pretooluse_allow() -> Verdict:
     PreToolUse allow only when ``permissionDecision`` rides inside
     ``hookSpecificOutput`` — a bare legacy ``{"permissionDecision": "allow"}`` is
     ignored. The legacy flat keys ride alongside for in-process test consumers,
-    mirroring ``_write_pretooluse_deny``.
+    mirroring ``gate_decision.write_pretooluse_deny``.
     """
     payload = {
         # Legacy flat shape — kept for in-process consumers (existing handler

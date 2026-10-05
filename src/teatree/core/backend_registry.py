@@ -31,7 +31,6 @@ class ReviewSearchSpec:
     channel_id: str
     channel_name: str
     pr_urls: list[str]
-    max_pages: int
     oldest_ts: str
     timeout: float
 
@@ -129,8 +128,7 @@ class ThreadActivityReadLike(Protocol):
 class NotionPageClient(Protocol):
     """Core-owned view of the direct Notion API client the backends app builds.
 
-    ``core.sync`` reads a page's status (and, gated by ``notion_write_back``,
-    writes it back) without importing the concrete ``teatree.backends.notion``
+    ``core.sync`` reads a page's status without importing the concrete ``teatree.backends.notion``
     client — the same core → backends inversion as the other provider builders.
 
     ``page_is_live`` is a BOOLEAN rather than a raised refusal precisely so core
@@ -140,10 +138,6 @@ class NotionPageClient(Protocol):
     """
 
     def get_page_status(self, page_id: str, *, property_name: str = "Status") -> str | None: ...  # pragma: no branch
-
-    def update_page_status(
-        self, page_id: str, *, property_name: str, value: str
-    ) -> "RawAPIDict": ...  # pragma: no branch
 
     def page_is_live(self, page_id: str) -> bool: ...  # pragma: no branch
 

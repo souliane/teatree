@@ -123,6 +123,11 @@
       "subcommands": []
     },
     {
+      "help": "Roll the runtime stack to an immutable image generation.",
+      "name": "deploy_roll",
+      "subcommands": []
+    },
+    {
       "help": "Capture, drive, and inspect plain-language directives about teatree's own behavior.",
       "name": "directive",
       "subcommands": [
@@ -182,6 +187,14 @@
         {
           "help": "Print the latest instruction-compliance snapshot \u2014 read-only (#2663)",
           "name": "compliance"
+        },
+        {
+          "help": "Prove every dream gap has exactly one owner; exit 1 on an orphan, duplicate, bad link or open gap",
+          "name": "gap-coverage"
+        },
+        {
+          "help": "Record a folded dream gap's ADDRESS (with its citation) or reasoned REJECT on its host",
+          "name": "gap-disposition"
         }
       ]
     },
@@ -254,10 +267,6 @@
         {
           "help": "Exit non-zero if the on-disk cache diverges from the DB render",
           "name": "check"
-        },
-        {
-          "help": "Move ``POSTGRES_PASSWORD`` literals out of ``.t3-env.cache`` into ``pass``",
-          "name": "migrate-secrets"
         }
       ]
     },
@@ -453,7 +462,7 @@
       ]
     },
     {
-      "help": "Print the standing directives with their resolved cadence, scope, cost and text (#4166).",
+      "help": "Print the standing directives with their resolved cadence, scope and text (#4166).",
       "name": "loop_directives",
       "subcommands": []
     },
@@ -468,10 +477,6 @@
         {
           "help": "Atomically claim the oldest pending dispatchable Task, then emit it",
           "name": "claim-next"
-        },
-        {
-          "help": "Mark the Task as claimed so the next tick doesn't surface it",
-          "name": "spawn-claim"
         }
       ]
     },
@@ -590,7 +595,7 @@
       "subcommands": []
     },
     {
-      "help": "Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913).",
+      "help": "Pause, resume, disable, or inspect a mini-loop's durable state (#1913).",
       "name": "loop_state",
       "subcommands": [
         {
@@ -604,10 +609,6 @@
         {
           "help": "Move *name* into the durable DISABLED kill-switch \u2014 both planes",
           "name": "disable"
-        },
-        {
-          "help": "Return *name* to ENABLED (alias of resume) \u2014 both planes",
-          "name": "enable"
         },
         {
           "help": "Set the MANUAL override for *name* \u2014 on/off beats the preset, clear hands it back",
@@ -702,7 +703,7 @@
           "name": "status"
         },
         {
-          "help": "Record an operator hypothesis as a PROPOSED experiment (refused while off)",
+          "help": "Record an operator hypothesis as a PROPOSED experiment",
           "name": "propose"
         },
         {
@@ -790,10 +791,6 @@
         {
           "help": "Post a test plan as a PR comment. Uploads files and updates existing notes",
           "name": "post-test-plan"
-        },
-        {
-          "help": "Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)",
-          "name": "post-evidence"
         }
       ]
     },
@@ -924,7 +921,7 @@
       "name": "retro",
       "subcommands": [
         {
-          "help": "Record one retro finding in the ledger and drive it to a scheduled fix",
+          "help": "Record one retro finding in the ledger and queue it for the backlog sweep",
           "name": "finding"
         },
         {
@@ -1177,6 +1174,10 @@
       "name": "ticket",
       "subcommands": [
         {
+          "help": "Record a note on an issue, in the place its ``--purpose`` belongs (#162)",
+          "name": "comment"
+        },
+        {
           "help": "Execute the missing REVIEW_REQUESTED \u2192 MERGED keystone transition (BLUEPRINT \u00a717.4)",
           "name": "merge"
         },
@@ -1213,10 +1214,6 @@
           "name": "clear"
         },
         {
-          "help": "Post a comment to an issue or work item by its URL",
-          "name": "comment"
-        },
-        {
           "help": "Recover the ticket link on consumed CLEARs issued without ``--ticket-id``",
           "name": "backfill-clears"
         },
@@ -1237,6 +1234,18 @@
           "name": "sync-completions"
         },
         {
+          "help": "Open a ticket-hygiene sweep run and print its id (#162 Rule 4)",
+          "name": "sweep-begin"
+        },
+        {
+          "help": "Close a sweep run, persisting its changed-ticket count \u2014 zero included",
+          "name": "sweep-finish"
+        },
+        {
+          "help": "Report the changed-ticket count series, the zero streak, and any unfinished runs",
+          "name": "sweep-trend"
+        },
+        {
           "help": "Backfill ``overlay`` for rows whose attribution disagrees with inference",
           "name": "reconcile-overlay"
         },
@@ -1247,6 +1256,10 @@
         {
           "help": "Prove a host body still carries the folded member's substance (#4344)",
           "name": "fold-check"
+        },
+        {
+          "help": "Fold pending dream gaps into an existing host ticket, proved on the forge",
+          "name": "attach-gaps"
         },
         {
           "help": "Record the audited escape hatch for the cross-repo integration-review gate (PR-08)",
@@ -1415,7 +1428,7 @@
           "name": "stamp-identity"
         },
         {
-          "help": "List orphan branches (commits ahead of origin/main AND no open PR) across the workspace",
+          "help": "List orphan branches (commits ahead of origin/main AND no open PR) across the workspace; ``[]`` if none",
           "name": "list-orphans"
         },
         {
@@ -1457,12 +1470,16 @@
       ]
     },
     {
-      "help": "The checkout-occupancy operator command surface (mixed into the ``worktree`` command).",
+      "help": "Per-worktree FSM operations.",
       "name": "worktree",
       "subcommands": [
         {
           "help": "Show every checkout a live agent currently holds (#3952)",
           "name": "occupancy"
+        },
+        {
+          "help": "Register an existing on-disk checkout as a ``Worktree`` row",
+          "name": "adopt"
         },
         {
           "help": "Run DB import + env cache + direnv + prek + overlay setup steps for one worktree",

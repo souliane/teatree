@@ -4,9 +4,8 @@
 export reaches only the process tree of the role it ran for. ``docker exec`` starts
 from the CONTAINER's create-time environment, so an exec'd process saw an unset
 ``GITLAB_TOKEN`` while the role process had it the whole time. The baked credential
-helper then interpolated the empty value and authenticated with an EMPTY password,
-which GitLab reports as ``HTTP Basic: Access denied`` — indistinguishable, from the
-outside, from a branch that does not exist.
+helper then answers nothing and git stops at ``could not read Username``, which names the
+missing credential.
 
 Two halves close it, and this module pins both. The compose files DECLARE
 ``GITLAB_TOKEN`` per service, which is what an exec inherits; and the host-side
@@ -29,6 +28,7 @@ from pathlib import Path
 import pytest
 import yaml
 from _deploy_forwarded_env import CREDENTIAL_PROBE, ENV_REPORT, argv, forwarded
+from _deploy_wrapper_paths import copy_wrapper
 
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy"
 COMPOSE = DEPLOY / "docker-compose.yml"
@@ -144,7 +144,7 @@ def _invoke(
 
     entry = tmp_path / "teatree-deploy" / "deploy" / "t3"
     entry.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(WRAPPER, entry)
+    copy_wrapper(WRAPPER, entry)
     entry.chmod(entry.stat().st_mode | stat.S_IXUSR)
 
     elsewhere = tmp_path / "elsewhere"

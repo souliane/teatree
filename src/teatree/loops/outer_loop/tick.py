@@ -17,18 +17,18 @@ from datetime import datetime
 
 from django.utils import timezone
 
-from teatree.config import get_effective_settings
 from teatree.core.factory.factory_signals import FactorySignalsReport
 from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoopExperiment
 from teatree.core.models.ticket import Ticket
-from teatree.loops.outer_loop.guards import CONVERGED, GuardSeams, OuterLoopSettings, admission_verdict, evaluate_guards
+from teatree.loops.outer_loop.guards import CONVERGED, MEASURE_DAYS, admission_verdict, evaluate_guards
 from teatree.loops.outer_loop.implement import schedule_experiment_fix
 from teatree.loops.outer_loop.keep import ask_keep
 from teatree.loops.outer_loop.measure import arm_measurement, horizon_elapsed, measure_and_decide
 from teatree.loops.outer_loop.propose import select_proposal
 from teatree.loops.outer_loop.ratify import ask_ratification, try_admit
 from teatree.loops.outer_loop.revert import ask_revert
-from teatree.loops.outer_loop.score import read_score
+from teatree.loops.shared.guards import GuardSeams
+from teatree.loops.shared.score import read_score
 
 #: The ``action`` a guard-chain refusal carries — a zero-mutation no-op, not an advance.
 REFUSED_ACTION = "refused"
@@ -66,30 +66,27 @@ def run_tick(
     *,
     overlay: str = "",
     now: datetime | None = None,
-    settings: OuterLoopSettings | None = None,
     seams: TickSeams | None = None,
 ) -> OuterLoopTickResult:
     """Run one tick: guard chain, then advance/propose exactly one step."""
     resolved_seams = seams or TickSeams()
-    resolved_settings = settings if settings is not None else get_effective_settings(overlay or None)
-    verdict = evaluate_guards(settings=resolved_settings, seams=resolved_seams.guards, overlay=overlay, now=now)
+    verdict = evaluate_guards(seams=resolved_seams.guards, overlay=overlay, now=now)
     if not verdict.ok:
         return OuterLoopTickResult(action=REFUSED_ACTION, reason=verdict.reason)
 
     experiment = OuterLoopExperiment.objects.active(overlay=overlay).order_by("created_at", "pk").first()
     if experiment is None:
-        return _maybe_propose(resolved_settings, overlay=overlay, now=now, propose_report=resolved_seams.propose_report)
-    return _advance(experiment, resolved_settings, overlay=overlay, now=now, merged_probe=resolved_seams.merged_probe)
+        return _maybe_propose(overlay=overlay, now=now, propose_report=resolved_seams.propose_report)
+    return _advance(experiment, overlay=overlay, now=now, merged_probe=resolved_seams.merged_probe)
 
 
 def _maybe_propose(
-    settings: OuterLoopSettings,
     *,
     overlay: str,
     now: datetime | None,
     propose_report: FactorySignalsReport | None,
 ) -> OuterLoopTickResult:
-    admission = admission_verdict(settings=settings, overlay=overlay, now=now)
+    admission = admission_verdict(overlay=overlay, now=now)
     if not admission.ok:
         if admission.reason == CONVERGED:
             _park_converged(overlay)
@@ -105,7 +102,6 @@ def _maybe_propose(
 
 def _advance(
     experiment: OuterLoopExperiment,
-    settings: OuterLoopSettings,
     *,
     overlay: str,
     now: datetime | None,
@@ -124,7 +120,7 @@ def _advance(
     if experiment.state == state.IMPLEMENTING:
         return _advance_implementing(experiment, merged_probe=merged_probe, now=now)
     if experiment.state == state.MEASURING:
-        return _advance_measuring(experiment, settings, overlay=overlay, now=now)
+        return _advance_measuring(experiment, overlay=overlay, now=now)
     return _advance_pending_decision(experiment)
 
 
@@ -166,14 +162,13 @@ def _advance_implementing(
 
 def _advance_measuring(
     experiment: OuterLoopExperiment,
-    settings: OuterLoopSettings,
     *,
     overlay: str,
     now: datetime | None,
 ) -> OuterLoopTickResult:
     """Decide keep/revert once the horizon elapses; else wait."""
     moment = now or timezone.now()
-    if not horizon_elapsed(experiment, measure_days=settings.outer_loop_measure_days, now=moment):
+    if not horizon_elapsed(experiment, measure_days=MEASURE_DAYS, now=moment):
         return OuterLoopTickResult(action="waiting", reason="horizon_not_elapsed", experiment_id=experiment.pk)
     decision = measure_and_decide(experiment, overlay=overlay, now=now)
     return OuterLoopTickResult(

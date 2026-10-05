@@ -19,6 +19,7 @@ from django.test import TestCase
 from teatree.core.models import IntakeScanCursor, Ticket, UnclaimedIntakeCandidate, WaitingCandidate
 from teatree.loop.scanners.issue_intake import IssueIntakeScanner
 from teatree.types import RawAPIDict
+from tests.teatree_loop._fleet_claim_stub import FleetClaimStub
 
 OWNER = "souliane"
 OVERLAY = "acme"
@@ -85,6 +86,7 @@ class _IntakeTestCase(TestCase):
         patcher = patch("teatree.core.review.author_trust.repo_is_internal", return_value=False)
         patcher.start()
         self.addCleanup(patcher.stop)
+        FleetClaimStub().install(self)
         # The governor reads live box load, so on a busy host it denies admission and the
         # scan claims nothing — which is not what any test below is about.
         governor = patch("teatree.core.agent_admission.agent_admission_denied_reason", return_value=None)

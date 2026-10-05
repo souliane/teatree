@@ -33,6 +33,7 @@ from teatree.eval.anthropic_api_runner import (
     AnthropicApiKeyMissingError,
     AnthropicApiRunner,
     UsageLimitStopModel,
+    _build_anthropic_model,
     build_anthropic_api_eval_runner,
     usage_limit_stop,
 )
@@ -56,6 +57,12 @@ class _FixedSource:
 
 def _credential_with_key(value: str | None) -> AnthropicApiKeyCredential:
     return AnthropicApiKeyCredential(sources=(_FixedSource(value),))
+
+
+def test_judge_model_name_uses_the_same_provider_builder() -> None:
+    model = _build_anthropic_model("claude-haiku-4-5", "offline-double")
+    assert isinstance(model, AnthropicModel)
+    assert model.model_name == "claude-haiku-4-5"
 
 
 def _spec(matcher: Matcher, *, tools: tuple[str, ...] = ("Bash",)) -> EvalSpec:

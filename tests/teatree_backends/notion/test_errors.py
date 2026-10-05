@@ -5,16 +5,19 @@ from collections.abc import Callable
 import httpx
 import pytest
 
+from teatree.backends.notion import errors
 from teatree.backends.notion.client import NotionClient
 from teatree.backends.notion.errors import (
     NotionBadTokenError,
     NotionCapabilityDeniedError,
+    NotionError,
     NotionNotSharedError,
     NotionObjectNotFoundError,
     NotionRateLimitedError,
+    NotionWriteNotApprovedError,
     normalize_object_id,
 )
-from tests.teatree_backends.notion._fake_notion import FakeNotion
+from tests.teatree_backends.notion._fake_notion import UNSEEN_OBJECT_FRAGMENTS, FakeNotion
 
 _PAGE = "11111111-1111-1111-1111-111111111111"
 
@@ -55,6 +58,30 @@ class TestFailureClassification:
         assert "not shared with this integration" in message
         assert "Factory" in message, "the human needs the integration NAME to grant access"
         assert "Connections" in message
+
+    @pytest.mark.parametrize("fragment", UNSEEN_OBJECT_FRAGMENTS.values(), ids=UNSEEN_OBJECT_FRAGMENTS.keys())
+    def test_an_unseen_page_states_what_the_api_knows_and_the_checks_that_separate_the_causes(
+        self, notion: FakeNotion, fragment: str
+    ) -> None:
+        notion.fail_with = (404, "object_not_found")
+
+        with pytest.raises(NotionNotSharedError) as caught:
+            NotionClient(token="good").get_page(_PAGE)
+
+        assert fragment in str(caught.value)
+
+    def test_an_unseen_page_is_never_blamed_on_one_cause_nor_on_the_ui_showing_a_bot_id(
+        self, notion: FakeNotion
+    ) -> None:
+        notion.fail_with = (404, "object_not_found")
+
+        with pytest.raises(NotionNotSharedError) as caught:
+            NotionClient(token="good").get_page(_PAGE)
+
+        message = str(caught.value)
+        assert "because" not in message
+        assert f"{_PAGE} is not shared" not in message
+        assert "by that bot id" not in message
 
     def test_a_404_under_a_rejected_token_reports_the_token_not_the_sharing(self, notion: FakeNotion) -> None:
         notion.fail_with = (404, "object_not_found")
@@ -108,6 +135,29 @@ class TestFailureClassification:
             NotionRateLimitedError.exit_code,
         ]
         assert len(set(codes)) == len(codes)
+
+
+class TestExitCodeTable:
+    @staticmethod
+    def _conditions() -> list[type[NotionError]]:
+        return [
+            cls
+            for cls in vars(errors).values()
+            if isinstance(cls, type) and issubclass(cls, NotionError) and cls is not NotionError
+        ]
+
+    def test_no_two_conditions_share_an_exit_code(self) -> None:
+        codes = [cls.exit_code for cls in self._conditions()]
+
+        assert len(set(codes)) == len(codes)
+
+    def test_every_condition_is_named_in_the_documented_table(self) -> None:
+        undocumented = [cls.__name__ for cls in self._conditions() if cls.__name__ not in (errors.__doc__ or "")]
+
+        assert undocumented == []
+
+    def test_a_write_without_a_recorded_approval_exits_23(self) -> None:
+        assert NotionWriteNotApprovedError.exit_code == 23
 
 
 def _mock_transport(monkeypatch: pytest.MonkeyPatch, handler: Callable[[httpx.Request], httpx.Response]) -> None:

@@ -44,12 +44,14 @@ class TestPostMrTestPlanCommentPeekFirst:
 
 
 class TestPostMrTestPlanCommentPublishes:
-    def _patched_gates(self, stack: ExitStack) -> None:
+    def _patched_gates(self, stack: ExitStack) -> MagicMock:
         stack.enter_context(patch(f"{_MODULE}.on_behalf_block_message", return_value=""))
         stack.enter_context(patch(f"{_MODULE}.check_blocked_body_from_config", return_value=None))
-        stack.enter_context(patch(f"{_MODULE}.route_forge_write", side_effect=lambda **kw: kw["text"]))
+        stack.enter_context(patch(f"{_MODULE}.forge_for_repo_slug", return_value="gitlab"))
+        route = stack.enter_context(patch(f"{_MODULE}.route_forge_write", side_effect=lambda **kw: kw["text"]))
         stack.enter_context(patch(f"{_MODULE}.require_on_behalf_approval", side_effect=_passthrough_publish))
         stack.enter_context(patch(f"{_MODULE}.notify_user_on_behalf_post", return_value=None))
+        return route
 
     def test_no_existing_note_creates_and_embeds_marker(self) -> None:
         host = MagicMock()
@@ -61,13 +63,15 @@ class TestPostMrTestPlanCommentPublishes:
         lines: list[str] = []
 
         with ExitStack() as stack:
-            self._patched_gates(stack)
+            route = self._patched_gates(stack)
             result = post_mr_test_plan_comment(host, post, write_out=lines.append)
 
         assert result["id"] == 501
         posted_body = host.post_pr_comment.call_args.kwargs["body"]
         assert "org/backend!7" in posted_body  # hidden idempotency marker scoped to THIS MR
         assert "![shot.png](/uploads/abc/shot.png)" in posted_body
+        assert route.call_args.kwargs["forge"] == "gitlab"
+        assert route.call_args.kwargs["repo"] == "org/backend"
         host.update_pr_comment.assert_not_called()
 
     def test_existing_note_updates_in_place(self) -> None:

@@ -21,7 +21,7 @@ TEST_OVERLAY_NAME = "t3-teatree"
 
 
 def _scanner() -> ProvisionSmokeScanner:
-    return ProvisionSmokeScanner(overlay_name=TEST_OVERLAY_NAME)
+    return ProvisionSmokeScanner(overlay_name=TEST_OVERLAY_NAME, skill="dogfooding")
 
 
 def _last_smoke_task() -> Task | None:
@@ -96,7 +96,7 @@ class ProvisionSmokeScannerTests(TestCase):
 
     def test_empty_overlay_name_returns_no_signal(self) -> None:
         """Defensive — an unconfigured overlay name produces no signal, no task."""
-        scanner = ProvisionSmokeScanner(overlay_name="")
+        scanner = ProvisionSmokeScanner(overlay_name="", skill="dogfooding")
         assert scanner.scan() == []
         assert _last_smoke_task() is None
 
@@ -122,7 +122,7 @@ class AcmeProvisionSmokeWiringTests(TestCase):
 class ScannerProtocolTests(TestCase):
     def test_scanner_name_is_stable_for_dispatch_routing(self) -> None:
         """The scanner's ``name`` is the dispatch key — it must not drift."""
-        scanner = ProvisionSmokeScanner(overlay_name=TEST_OVERLAY_NAME)
+        scanner = ProvisionSmokeScanner(overlay_name=TEST_OVERLAY_NAME, skill="dogfooding")
         assert scanner.name == "provision_smoke"
 
 

@@ -25,7 +25,7 @@ from teatree.core.config_display import MASKED
 from teatree.core.config_interchange.migration import export_db_to_toml
 from teatree.core.models import ConfigSetting
 from teatree.core.setting_control import SettingControl
-from teatree.mcp import build_server
+from teatree.mcp.server import build_server
 from tests.teatree_mcp._call_tool_result import payloads
 
 _KEY = "openai_compatible_extra_headers"

@@ -147,7 +147,6 @@ class InstructionComplianceRecord(models.Model):
         null=True,
         blank=True,
     )
-    # RuleSource is a TextChoices; ty's overload resolution misses the type[TextChoices] branch without a default=.
     rule_source = models.CharField(max_length=16, choices=RuleSource)  # ty: ignore[invalid-argument-type]
     rule_identity = models.CharField(max_length=512)
     evidence = models.TextField(blank=True, default="")
@@ -172,13 +171,3 @@ class InstructionComplianceRecord(models.Model):
         self.remediation = RemediationKind.ESCALATION
         self.escalation_url = escalation_url.strip()
         self.save(update_fields=["remediation", "escalation_url"])
-
-    def mark_remediated_with_memory(self) -> None:
-        """Record the FORBIDDEN remediation: another memory for a recurrence.
-
-        Only the §4 gate (g) test path stamps this — production never writes
-        another memory for a recurrence, it escalates. The flag exists so the
-        gate can FAIL a pass that took the forbidden path.
-        """
-        self.remediation = RemediationKind.MEMORY
-        self.save(update_fields=["remediation"])

@@ -1,12 +1,10 @@
 """Clear the stored rows under two keys the code no longer has a field for.
 
-A row under a REMOVED key resolves to nothing and emits a loud stderr line naming the
-key on every resolution (``retired_settings.warn_removed_setting``) — never-lockout by
-design, but noise once the removal is settled. These two are the only retired keys the
+A row under a removed key resolves to nothing. These two are the only keys the
 three-box sweep measured stored rows for, and every one of them holds what was the
 shipped default, so deleting them changes no effective value.
 
-The list is a literal rather than a read of ``REMOVED_SETTING_KEYS``: a migration states
+The list is a literal: a migration states
 what it did to the rows that existed when it ran, and a later retirement must not
 retroactively widen an applied cleanup (0027/0086 precedent).
 """

@@ -1,7 +1,7 @@
 """A publish to a PROVABLY-PRIVATE repo never needs an escape flag (#1213/#1415/#2369).
 
 The operator's standing config declares the internal namespace in BOTH
-``internal_publish_namespaces`` and ``private_repos``. With that in place, an MR
+``private_repos``. With that in place, an MR
 create toward the internal namespace must pass BOTH pre-publish leak gates with
 NO ``QUOTE_OK=1`` / ``ALLOW_BANNED_TERM=1`` -- including the multi-line-body
 shapes ``glab mr create`` forces (no ``--description-file`` flag exists, so the
@@ -53,10 +53,9 @@ def _seed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, internal: bool) ->
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("QUOTE_OK", raising=False)
     monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
-    rows: dict[str, object] = {"banned_terms": [_TERM]}
+    rows: dict[str, object] = {"banned_term_registry": {"leak": [_TERM], "prose_collider": [_TERM]}}
     if internal:
-        rows["internal_publish_namespaces"] = [_NS]
-        rows["private_repos"] = [_NS]
+        rows["private_repos"] = [f"gitlab.com/{_NS}"]
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))
     try:

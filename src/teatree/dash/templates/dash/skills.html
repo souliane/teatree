@@ -94,6 +94,19 @@
     </section>
   {% endfor %}
 
+  {% if excluded_skills %}
+    <section class="band">
+      <h2>Excluded from setup</h2>
+      <p>Re-enabled skills are installed on the next setup run.</p>
+      {% for skill in excluded_skills %}
+        <div class="skill-row">
+          <span class="mono">{{ skill.harness }}:{{ skill.name }}</span>
+          <form method="post" action="{% url 'dash:skills_enable' skill.harness skill.name %}">{% csrf_token %}<button class="dash-btn" type="submit">Re-enable</button></form>
+        </div>
+      {% endfor %}
+    </section>
+  {% endif %}
+
   {% if inventory.diagnostics or inventory.cycles %}
     <section class="band"><h2>Dependency diagnostics</h2>{% for diagnostic in inventory.diagnostics %}<div class="banner-amber">{{ diagnostic }}</div>{% endfor %}{% for cycle in inventory.cycles %}<div class="banner-red">Cycle: {% for identity in cycle %}<span class="mono">{{ identity }}</span>{% if not forloop.last %} → {% endif %}{% endfor %}</div>{% endfor %}</section>
   {% endif %}

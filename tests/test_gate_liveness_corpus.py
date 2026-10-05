@@ -47,14 +47,12 @@ import pytest
 
 import hooks.scripts.hook_router as router
 import hooks.scripts.standing_grant_ask_gate as _standing_grant_ask_gate
-import hooks.scripts.verbatim_paste_gate as _verbatim_paste_gate
 from hooks.scripts.glab_stale_base_remote_guard import BASE_REMOTE
 from hooks.scripts.pretooluse_verdict import Verdict
 from teatree.core.admission_governor import BRAKE_LOAD_PER_CORE, MachineSignal, QuotaSignal
 from teatree.core.merge.substrate_standing import SubstrateStandingAuthorization
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
-from teatree.hooks import verbatim_paste as _verbatim_paste
 from tests._git_repo import _GIT, git_identity_env, make_git_repo
 
 if TYPE_CHECKING:
@@ -622,14 +620,8 @@ def _quote_bash_allow(ctx: GateContext) -> dict:
     return _bash('gh issue create --repo souliane/teatree --title t --body "Routine status update."')
 
 
-# quote-scanner Slack-MCP arm (mcp__*slack* send) — now reachable via the
-# ``mcp__.*[Ss]lack.*`` PreToolUse matcher (#171). The arm is default-ON; the
-# corpus enables ``mcp_privacy_gate_enabled`` explicitly so the must-DENY fires
-# regardless of any developer-local config leaking through.
-
-
-def _arrange_mcp_privacy_gate(ctx: GateContext) -> None:
-    ctx.seed_setting("mcp_privacy_gate_enabled", value=True)
+# quote-scanner Slack-MCP arm (mcp__*slack* send) — reachable via the
+# ``mcp__.*[Ss]lack.*`` PreToolUse matcher (#171).
 
 
 def _quote_slack_deny(ctx: GateContext) -> dict:
@@ -731,14 +723,9 @@ def _dispatch_quote_allow(ctx: GateContext) -> dict:
 
 # quote-scanner ON TaskCreated (the task-list arm, #171): the task-LIST tools
 # bypass PreToolUse, so this TaskCreated handler scans the task
-# subject/description. Ships default-OFF pending validation of its live
-# enforcement, so the corpus enables it explicitly to prove it CAN fire when on:
-# reachable + denies a HIGH-quote entry + allows a clean one. The payload carries
+# subject/description. It always runs: the corpus proves it denies a HIGH-quote
+# entry and allows a clean one. The payload carries
 # no teammate field — a top-level session's own todo is the shape it must handle.
-
-
-def _arrange_dispatch_quote_on_task(ctx: GateContext) -> None:
-    ctx.seed_setting("dispatch_quote_gate_on_task_create_enabled", value=True)
 
 
 def _dispatch_quote_task_deny(ctx: GateContext) -> dict:
@@ -766,7 +753,6 @@ def _arrange_dispatch_admission(ctx: GateContext) -> None:
     from teatree.core import dispatch_admission  # noqa: PLC0415 — deferred: arranged per-row, not at import
 
     over_the_watermark = MachineSignal(cores=8, load1=BRAKE_LOAD_PER_CORE * 8 + 1, ram_available_gb=1.0)
-    ctx.monkeypatch.setattr(dispatch_admission, "governor_enabled", lambda: True)
     ctx.monkeypatch.setattr(dispatch_admission, "read_machine_signal", lambda: over_the_watermark)
     ctx.monkeypatch.setattr(
         dispatch_admission,
@@ -790,15 +776,9 @@ def _dispatch_admission_allow(ctx: GateContext) -> dict:
 
 
 # brief-anchor lint on dispatch (#4341): a brief asserting a file:line and a
-# count with no SHA anchor and no trust-the-code clause. Arranged in REFUSE
-# posture — the shipped default warns without denying, so only the opt-in
-# posture has a deny arm to prove reachable.
+# count with no SHA anchor and no trust-the-code clause.
 _BRIEF_ANCHOR_OK = "[brief-anchor-ok: the sha is on the ticket]"
 _UNANCHORED_BRIEF = "The guard is in src/teatree/core/ticket.py:412 and there are 3 callers. Fix each."
-
-
-def _arrange_brief_anchor(ctx: GateContext) -> None:
-    ctx.seed_setting("brief_anchor_gate_refuse", value=True)
 
 
 def _brief_anchor_deny(ctx: GateContext) -> dict:
@@ -818,7 +798,7 @@ def _brief_anchor_allow(ctx: GateContext) -> dict:
 
 
 def _arrange_banned_terms(ctx: GateContext) -> None:
-    ctx.seed_setting("banned_terms", ["acme"])
+    ctx.seed_setting("banned_term_registry", {"leak": ["acme"], "prose_collider": ["acme"]})
     ctx.monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
     _pin_public_probe(ctx)
 
@@ -833,21 +813,28 @@ _OPERATOR_SAID = (
 )
 
 
+def _operator_transcript(ctx: GateContext) -> str:
+    return str(ctx.tmp_path / "operator.jsonl")
+
+
 def _arrange_verbatim_paste(ctx: GateContext) -> None:
     _pin_public_probe(ctx)
-    ctx.monkeypatch.delenv(_verbatim_paste.OVERRIDE_ENV, raising=False)
-    _verbatim_paste_gate.handle_record_operator_message({"session_id": ctx.session_id, "prompt": _OPERATOR_SAID})
+    ctx.monkeypatch.delenv("ALLOW_VERBATIM_PASTE", raising=False)
+    said = {"type": "user", "origin": {"kind": "human"}, "message": {"role": "user", "content": _OPERATOR_SAID}}
+    Path(_operator_transcript(ctx)).write_text(json.dumps(said) + "\n", encoding="utf-8")
 
 
 def _verbatim_paste_deny(ctx: GateContext) -> dict:
-    return _bash(f'gh issue create --repo souliane/teatree --title t --body "> {_OPERATOR_SAID}"')
+    command = f'gh issue create --repo souliane/teatree --title t --body "> {_OPERATOR_SAID}"'
+    return {**_bash(command), "transcript_path": _operator_transcript(ctx)}
 
 
 def _verbatim_paste_allow(ctx: GateContext) -> dict:
-    return _bash(
+    command = (
         "gh issue create --repo souliane/teatree --title t "
         '--body "The operator asked for their chat text to be summarised, never reproduced."'
     )
+    return {**_bash(command), "transcript_path": _operator_transcript(ctx)}
 
 
 def _banned_bash_deny(ctx: GateContext) -> dict:
@@ -1115,6 +1102,18 @@ def _raw_review_allow(_ctx: GateContext) -> dict:
     return _bash("glab api projects/1/merge_requests/1/discussions")
 
 
+# block-raw-issue-write (PreToolUse Bash): a raw `gh issue comment` bypassing the
+# #162 issue-hygiene facade denies; the read-only `issue view` allows.
+
+
+def _raw_issue_write_deny(_ctx: GateContext) -> dict:
+    return _bash("gh issue comment 12 --body 'a requirement'")
+
+
+def _raw_issue_write_allow(_ctx: GateContext) -> dict:
+    return _bash("gh issue view 12")
+
+
 # block-raw-pid-kill (PreToolUse Bash): a raw `kill <pid>` of a guessed pid
 # denies; the `kill -0` no-op liveness probe allows.
 
@@ -1330,7 +1329,6 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="mcp__claude_ai_Slack__slack_send_message",
         deny_input=_quote_slack_deny,
         allow_input=_quote_slack_allow,
-        arrange=_arrange_mcp_privacy_gate,
     ),
     GateRow(
         gate_id="block-self-dm-via-mcp",
@@ -1364,7 +1362,6 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Task",
         deny_input=_dispatch_quote_task_deny,
         allow_input=_dispatch_quote_task_allow,
-        arrange=_arrange_dispatch_quote_on_task,
     ),
     GateRow(
         gate_id="dispatch-admission-governor",
@@ -1382,7 +1379,6 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Agent",
         deny_input=_brief_anchor_deny,
         allow_input=_brief_anchor_allow,
-        arrange=_arrange_brief_anchor,
     ),
     GateRow(
         gate_id="banned-terms-bash",
@@ -1501,6 +1497,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_raw_review_deny,
         allow_input=_raw_review_allow,
+    ),
+    GateRow(
+        gate_id="block-raw-issue-write",
+        handler=router.handle_block_raw_issue_write,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_raw_issue_write_deny,
+        allow_input=_raw_issue_write_allow,
     ),
     GateRow(
         gate_id="block-raw-pid-kill",

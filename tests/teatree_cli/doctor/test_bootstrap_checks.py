@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.cli.doctor.checks_bootstrap import (
@@ -296,8 +297,17 @@ class TestGithubRemotesAreHttps:
         return repo
 
     @staticmethod
-    def _run(*checkouts: Path) -> bool:
-        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    def _run(*checkouts: Path, global_config: Path | None = None) -> bool:
+        # Git's injected config pairs outrank the fixture repo's local config.
+        # Clear them as well as the ambient config files so this probe observes
+        # only the checkout assembled by each test (and the global file it hands in).
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+            and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+        }
+        env.update(GIT_CONFIG_GLOBAL=str(global_config or os.devnull), GIT_CONFIG_SYSTEM=os.devnull)
         with (
             patch("teatree.core.gates.git_checkouts.discover_checkouts", return_value=list(checkouts)),
             patch.dict(os.environ, env, clear=True),
@@ -352,6 +362,7 @@ class TestGithubRemotesAreHttps:
 
     def test_a_missing_credential_helper_warns_without_failing(self, tmp_path: Path, capsys) -> None:
         repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+        run_git(repo, "config", "credential.helper", "")
 
         ok = self._run(repo)
 
@@ -373,6 +384,31 @@ class TestGithubRemotesAreHttps:
         run_git(repo, "config", "credential.helper", "store")
 
         assert self._run(repo) is True
+        assert "WARN" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("reset_key", ["credential.helper", "credential.https://github.com.helper"])
+    def test_an_empty_helper_resets_the_one_configured_before_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], reset_key: str
+    ) -> None:
+        # Git collects helpers in config order (global, then local); an empty value for a key that
+        # matches the URL empties the list collected so far, so the global helper no longer serves.
+        global_config = tmp_path / "global.gitconfig"
+        global_config.write_text("[credential]\n\thelper = store\n", encoding="utf-8")
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+        run_git(repo, "config", reset_key, "")
+
+        assert self._run(repo, global_config=global_config) is True
+        assert "gh auth setup-git" in capsys.readouterr().out
+
+    def test_an_empty_helper_for_another_host_resets_nothing_for_github(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        global_config = tmp_path / "global.gitconfig"
+        global_config.write_text("[credential]\n\thelper = store\n", encoding="utf-8")
+        repo = self._checkout(tmp_path / "repo", "https://github.com/souliane/teatree.git")
+        run_git(repo, "config", "credential.https://gitlab.com.helper", "")
+
+        assert self._run(repo, global_config=global_config) is True
         assert "WARN" not in capsys.readouterr().out
 
     def test_an_unreadable_config_warns_and_passes(self, tmp_path: Path, capsys) -> None:

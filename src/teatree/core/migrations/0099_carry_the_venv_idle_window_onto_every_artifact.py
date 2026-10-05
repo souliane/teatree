@@ -1,7 +1,7 @@
 """Move a stored ``venv_idle_days`` row onto ``artifact_idle_days``.
 
 The #3527 contract: a RENAMED setting migrates its stored value, it does not silently
-revert an operator to the default. The alias in ``retired_settings`` is the safety net;
+revert an operator to the default. The row migration is the safety net;
 this is the mechanism (0027 precedent).
 
 The move is a RENAME in place, so each row keeps its scope — a global and a per-overlay row

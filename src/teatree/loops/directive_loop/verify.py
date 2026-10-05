@@ -21,8 +21,8 @@ from teatree.core.models import CriticFinding, Directive
 from teatree.loops.directive_loop.configure import clear_activation
 from teatree.loops.directive_loop.decide import FulfilDecision, VerifyEvidence, decide_fulfilment
 from teatree.loops.directive_loop.probes import resolve_probe
-from teatree.loops.outer_loop.score import read_score
 from teatree.loops.shared.regression import no_collateral_regression
+from teatree.loops.shared.score import read_score
 from teatree.loops.shared.score_snapshot import snapshot_to_score
 from teatree.utils.acceptance_runner import run_acceptance_tests
 

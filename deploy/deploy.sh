@@ -16,6 +16,7 @@ set -euo pipefail
 # the fork on whatever branch is checked out. With no symlink involved `pwd -P` is
 # identical to `pwd`, so a standalone clone is unaffected.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+. "$SCRIPT_DIR/deploy-lock.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 HOST_IDENTITY_FILE="$SCRIPT_DIR/docker-compose.host-identity.yml"
@@ -66,39 +67,6 @@ DEPLOY_LOCK_DIR=""
 DEPLOY_LOCK_MAX_AGE_MINUTES=$(((${TEATREE_DRAIN_TIMEOUT:-1800} + 3600) / 60))
 DEPLOY_LOCK_MAX_RECLAIMS=5
 
-# `kill -0` cannot answer this alone: it fails with EPERM on ANOTHER USER's live
-# process, and the default lock sits in world-shared /tmp, so a refused signal is
-# evidence the process exists. `ps -p` reports existence without needing that right.
-_pid_alive() {
-    kill -0 "$1" 2>/dev/null || ps -p "$1" >/dev/null 2>&1
-}
-
-# The pid a lock names, or failure when it names none. `mkdir` publishes the lock one
-# syscall BEFORE the pid lands in it, so an absent — or half-written — pid is a winner
-# mid-acquisition, never a free lock; the caller must read failure here as HELD.
-_lock_holder_pid() {
-    local pid
-    pid="$(cat "$1/pid" 2>/dev/null || true)"
-    case "$pid" in
-        '' | *[!0-9]*) return 1 ;;
-    esac
-    printf '%s' "$pid"
-}
-
-_lock_expired() {
-    [ -n "$(find "$1" -maxdepth 0 -mmin "+$DEPLOY_LOCK_MAX_AGE_MINUTES" 2>/dev/null)" ]
-}
-
-# Release ONLY a lock this process is named in. Ownership is proved from the lock
-# itself, not from where the trap sits relative to the acquisition, so hoisting the
-# trap — its other job has nothing to do with the lock — cannot make it delete the
-# lock another convergence holds.
-_release_deploy_lock() {
-    [ -n "${DEPLOY_LOCK_DIR:-}" ] || return 0
-    [ "$(cat "$DEPLOY_LOCK_DIR/pid" 2>/dev/null || true)" = "$$" ] || return 0
-    rm -rf "$DEPLOY_LOCK_DIR"
-}
-
 if command -v flock >/dev/null 2>&1; then
     # Append, never truncate: `>` would wipe the winner's in-progress record below from an
     # invocation that goes on to lose the race.
@@ -110,36 +78,40 @@ if command -v flock >/dev/null 2>&1; then
 else
     # macOS ships no flock, and `! flock` cannot tell "held" from "missing": a 127 read as
     # a held lock, so every deploy on this host exited 0 having converged nothing.
-    DEPLOY_LOCK_DIR="$DEPLOY_LOCK.d"
-    reclaims=0
-    until mkdir "$DEPLOY_LOCK_DIR" 2>/dev/null; do
-        reclaims=$((reclaims + 1))
-        if [ "$reclaims" -gt "$DEPLOY_LOCK_MAX_RECLAIMS" ]; then
-            echo "deploy: $DEPLOY_LOCK_DIR keeps reappearing after $DEPLOY_LOCK_MAX_RECLAIMS reclaims — refusing to converge." >&2
-            exit 1
-        fi
-        if holder="$(_lock_holder_pid "$DEPLOY_LOCK_DIR")" && ! _pid_alive "$holder"; then
-            echo "deploy: reclaiming $DEPLOY_LOCK_DIR from dead pid $holder." >&2
-        elif _lock_expired "$DEPLOY_LOCK_DIR"; then
-            echo "deploy: reclaiming $DEPLOY_LOCK_DIR — pid ${holder:-unknown} has held it over ${DEPLOY_LOCK_MAX_AGE_MINUTES}m, longer than a convergence can run." >&2
-        else
-            echo "deploy: another convergence (pid ${holder:-unknown}) already holds $DEPLOY_LOCK_DIR — exiting (it converges to latest main)." >&2
-            exit 0
-        fi
-        if ! rm -rf "$DEPLOY_LOCK_DIR"; then
-            echo "deploy: cannot remove the stale $DEPLOY_LOCK_DIR — refusing to converge." >&2
-            exit 1
-        fi
-        sleep 1
-    done
-    printf '%s\n' "$$" >"$DEPLOY_LOCK_DIR/pid"
+    locked=0
+    acquire_deploy_lock_dir deploy || locked=$?
+    case "$locked" in
+    0) ;;
+    1)
+        echo "deploy: another convergence (pid $DEPLOY_LOCK_HOLDER) already holds $DEPLOY_LOCK_DIR — exiting (it converges to latest main)." >&2
+        exit 0
+        ;;
+    *) exit 1 ;;
+    esac
 fi
 
-# The convergence's own in-progress record (#4339). /proc/locks is filtered by pid
-# namespace, so the flock above is invisible from the watchdog CONTAINER; this record is
-# what crosses that boundary, and a crash loop cannot write it. Cleared on exit, so a
-# lock file outliving its holder reads as not held.
-printf '%s %s\n' "$$" "$(date -u +%s)" >"$DEPLOY_LOCK"
+# The convergence's own in-progress record (#4339): "<pid> <heartbeat> <deadline>". /proc/locks
+# is filtered by pid namespace, so the flock above is invisible from the watchdog CONTAINER;
+# this record is what crosses that boundary, and a crash loop cannot write it. Readers judge
+# it by the heartbeat's age, so a legal long drain stays live and a killed deploy goes stale
+# within three beats. The deadline is the lock's own reclaim age. Cleared on exit.
+DEPLOY_HEARTBEAT_INTERVAL=60
+DEPLOY_DEADLINE=$(($(date -u +%s) + DEPLOY_LOCK_MAX_AGE_MINUTES * 60))
+_write_deploy_record() {
+    printf '%s %s %s\n' "$1" "$(date -u +%s)" "$DEPLOY_DEADLINE" >"$DEPLOY_LOCK"
+}
+_write_deploy_record "$$"
+# The beat stops with its parent and never recreates a record the exit trap cleared; fd 9 is
+# closed so a SIGKILLed deploy's flock is not held by it.
+(
+    exec 9>&-
+    while sleep "$DEPLOY_HEARTBEAT_INTERVAL" && kill -0 "$$" 2>/dev/null; do
+        if [ -s "$DEPLOY_LOCK" ]; then
+            _write_deploy_record "$$" || true
+        fi
+    done
+) </dev/null >/dev/null 2>&1 &
+_DEPLOY_HEARTBEAT_PID=$!
 
 # Fail-safe against a stranded quiescing gate. If this run drains the worker (which
 # sets `worker_quiescing` ON) but then exits BEFORE the swap that would recreate the
@@ -161,12 +133,16 @@ _SWAP_DONE=false
 _INIT_RAN=false
 _WORKER_SWAPPED=false
 _WORKER_CONTAINED=false
+_WORKER_STOPPED_BY_DEPLOY=false
 # Clears the in-progress record above (#4339). The `if` guards `${DEPLOY_LOCK:-}`
 # rather than a bare `$DEPLOY_LOCK` so this stays a safe no-op wherever the var is
 # unset — e.g. this fail-safe block lifted verbatim into a test harness that never
 # declared it — and an `if` condition (unlike a bare `&&` list) is exempt from
 # `set -e` under this script's own `set -euo pipefail`.
 _release_deploy_record() {
+    if [ -n "${_DEPLOY_HEARTBEAT_PID:-}" ]; then
+        kill "$_DEPLOY_HEARTBEAT_PID" 2>/dev/null || true
+    fi
     if [ -n "${DEPLOY_LOCK:-}" ]; then
         : >"$DEPLOY_LOCK" 2>/dev/null || true
     fi
@@ -189,7 +165,20 @@ _clear_quiescing_if_stranded() {
     _release_deploy_lock
     return 0
 }
-trap '_clear_quiescing_if_stranded; _release_deploy_record' EXIT
+# A worker this run stopped and never replaced is started again, so a failed convergence leaves
+# the box with its worker, never without one. Before the quiescing clear, which execs into it.
+_restart_contained_worker() {
+    if [ "$_WORKER_STOPPED_BY_DEPLOY" = true ] && [ "$_WORKER_SWAPPED" = false ]; then
+        echo "deploy: [cleanup] starting the teatree-worker this run stopped, so the box is not left without one." >&2
+        compose start teatree-worker >/dev/null 2>&1 || echo "deploy: WARNING could not start teatree-worker again — run 'docker compose -f $COMPOSE_FILE start teatree-worker'." >&2
+    fi
+}
+_remove_build_context() {
+    if [ -n "${BUILD_CONTEXT:-}" ]; then
+        rm -rf "$BUILD_CONTEXT"
+    fi
+}
+trap '_restart_contained_worker; _clear_quiescing_if_stranded; _release_deploy_record; _remove_build_context' EXIT
 
 # A route proof is stronger than a container-state proof: the fresh process must
 # answer through the CLI before the sibling control-plane route is replaced.
@@ -220,6 +209,41 @@ worker_state_for_drain() {
         return 0
     fi
     docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null
+}
+
+# The worker exits non-zero on transient faults by design, so a lifetime restart count proves
+# nothing. A crash loop is a worker Docker is reviving right now, one revived again during the
+# drain, or one revived under CRASH_LOOP_UPTIME seconds ago.
+CRASH_LOOP_UPTIME=60
+_WORKER_RESTARTS_AT_DRAIN=""
+
+# "<status> <restart count> <started-at>" of the worker container; fails when unreadable.
+worker_restart_state() {
+    local ids cid
+    ids="$(compose ps -q teatree-worker 2>/dev/null)" || return 1
+    cid="${ids%%$'\n'*}"
+    [ -n "$cid" ] || return 1
+    docker inspect -f '{{.State.Status}} {{.RestartCount}} {{.State.StartedAt}}' "$cid" 2>/dev/null
+}
+
+# Seconds since the epoch for a Docker RFC 3339 UTC stamp, on GNU and BSD date alike.
+_utc_epoch() {
+    local stamp="${1%%.*}"
+    stamp="${stamp%Z}"
+    date -u -d "$stamp" +%s 2>/dev/null || TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$stamp" +%s 2>/dev/null
+}
+
+worker_crash_looping() {
+    local status restarts started_at started
+    read -r status restarts started_at <<<"$(worker_restart_state)" || return 1
+    [ "$status" = restarting ] && return 0
+    case "${restarts:-}" in "" | *[!0-9]*) return 1 ;; esac
+    if [ -n "$_WORKER_RESTARTS_AT_DRAIN" ] && [ "$restarts" -gt "$_WORKER_RESTARTS_AT_DRAIN" ]; then
+        return 0
+    fi
+    [ "$restarts" -gt 0 ] || return 1
+    started="$(_utc_epoch "${started_at:-}")" || return 1
+    [ "$(($(date -u +%s) - started))" -lt "$CRASH_LOOP_UPTIME" ]
 }
 
 worker_state_after_stop() {
@@ -260,27 +284,52 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-# Bring the build context current (fast-forward only — never clobber local work).
-# The helper runs `fetch --prune origin` then `pull --ff-only`, and between them
-# reconciles the one class of local dirt a fast-forward provably cannot lose: a
-# path whose working-tree bytes already equal the target's. Everything else is
-# retained and, if it blocks the merge, named in a fatal diagnostic. See its
-# header for the wedge this closes — a `uv.lock` silently re-locked by `uv run`
-# aborted every deploy and left the box 42 commits behind, unreported, for days.
-bash "$SCRIPT_DIR/fast-forward-checkout.sh" "$REPO_ROOT"
-echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+export_transcript_source() {
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+        TEATREE_TRANSCRIPT_SOURCE=*)
+            TEATREE_TRANSCRIPT_SOURCE="${line#*=}"
+            export TEATREE_TRANSCRIPT_SOURCE
+            ;;
+        esac
+    done < "$ENV_FILE"
+}
+export_transcript_source
+
+# Fetch now, fast-forward later: this checkout is bind-mounted into every running
+# container, so moving it before the drain hands the old processes new modules. The image
+# is built from a clean export of the fetched commit, and `fast_forward_live_tree` moves
+# the checkout to that same commit once the old worker is drained or contained. The helper
+# reconciles the one class of local dirt a fast-forward provably cannot lose; see its
+# header for the wedge that closes.
+DEPLOY_COMMIT="$(bash "$SCRIPT_DIR/fast-forward-checkout.sh" --fetch-only "$REPO_ROOT")"
+if [ -z "$DEPLOY_COMMIT" ]; then
+    echo "deploy: FATAL — fast-forward-checkout.sh --fetch-only named no commit to deploy." >&2
+    exit 1
+fi
+BUILD_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/teatree-build.XXXXXX")"
+ARCHIVE_PREFIX="$(git -C "$REPO_ROOT" rev-parse --show-prefix)"
+ARCHIVE_PATH="$DEPLOY_COMMIT:$ARCHIVE_PREFIX"
+git -C "$(git -C "$REPO_ROOT" rev-parse --show-toplevel)" archive --format=tar "$ARCHIVE_PATH" |
+    tar -x -C "$BUILD_CONTEXT"
+if [ ! -f "$BUILD_CONTEXT/deploy/Dockerfile" ]; then
+    printf "deploy: archive %s (prefix '%s') lacks deploy/Dockerfile\n" "$ARCHIVE_PATH" "$ARCHIVE_PREFIX" >&2
+    exit 1
+fi
+echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(git -C "$REPO_ROOT" rev-parse --short "$DEPLOY_COMMIT")"
 
 # EVERY host bind-mount SOURCE dir (compose x-teatree-common `volumes:`) must
 # pre-exist owned by the deploy user. A missing source is auto-created by dockerd
 # ROOT-owned, which locks the non-root container — whose UID must equal this
 # deploy user (see deploy/README.md § UID invariant) — out of that mount: the
-# credential plane then blocks `pass insert` provisioning, and the data + session
-# planes block the DB, worktree, workspace, and transcript writes so `init`
+# credential plane then blocks `pass insert` provisioning, and the data and
+# optional transcript binds block worktree, workspace, and transcript writes so `init`
 # crash-loops on its first write. Empty dirs are the sane degradation for an
 # env-token box (init's preflight then falls through to CLAUDE_CODE_OAUTH_TOKEN).
 #
-# The credential plane (pass store + its GPG home) is mode 700; the data and
-# session planes take the default mode.
+# The credential plane (pass store + its GPG home) is mode 700; data and an
+# optional transcript bind take the default mode.
 #
 # `$HOME` here IS the compose sources' host root: the mounts read it as
 # `${TEATREE_HOST_HOME:-/home/teatree}`, exported below so the dirs created here
@@ -288,13 +337,6 @@ echo "deploy: deploying $(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD) @ $(g
 # user's home is `/home/teatree`, so this equals the compose default and every
 # mount keeps path identity with the container's `/home/teatree/...` targets.
 export TEATREE_HOST_HOME="$HOME"
-
-# Docker Desktop's worker cannot observe macOS load/RAM/swap. Install from the
-# updated checkout, after the host home is known, on every convergence. The
-# deploy workflow also invokes this after an old deploy.sh's first fast-forward.
-if [ "$(uname -s)" = Darwin ]; then
-    "$SCRIPT_DIR/install-host-pressure.zsh"
-fi
 
 # The checkout this deploy runs out of — the directory holding `deploy/`. The
 # watchdog bind-mounts it read-only at PATH IDENTITY and the entrypoint execs
@@ -354,14 +396,21 @@ if [ -z "${TEATREE_DOCKER_SOCKET_GID:-}" ]; then
 fi
 export TEATREE_DOCKER_SOCKET_GID
 
+# Under Docker Desktop the containers' /host-proc is the VM's process table, not this
+# host's, so they must not read it as the table a host deploy.sh would appear in.
+TEATREE_HOST_OS="${TEATREE_HOST_OS:-$(uname -s)}"
+export TEATREE_HOST_OS
+
 install -d -m 700 "$HOME/.password-store" "$HOME/.gnupg"
 install -d \
     "$HOME/.local/share/teatree" \
     "$HOME/.local/share/teatree-worktrees" \
     "$HOME/workspace/t3-workspaces" \
     "$HOME/.local/share/uv/python" \
-    "$HOME/.claude/projects" \
     "$HOME/.local/bin"
+if [[ "${TEATREE_TRANSCRIPT_SOURCE:-}" == /* ]]; then
+    install -d "$TEATREE_TRANSCRIPT_SOURCE"
+fi
 
 # Derive the container's runtime UID from the HOST at deploy time (#3438). Every
 # bind mount above is at path identity, so the container's teatree user MUST hold
@@ -458,7 +507,11 @@ RESUME_TIMEOUT="${TEATREE_RESUME_TIMEOUT:-300}"
 LOG_ARCHIVE_DIR="${TEATREE_DEPLOY_LOG_ARCHIVE_DIR:-$HOME/.local/share/teatree/deploy-logs}"
 LOG_ARCHIVE_KEEP="${TEATREE_DEPLOY_LOG_ARCHIVE_KEEP:-200}"
 
-admin_answers() { curl -fsS -o /dev/null --max-time 5 "$ADMIN_PROBE_URL"; }
+# Probed inside the admin container: under Docker Desktop `network_mode: host` is the
+# VM's network, so the host's own loopback never reaches the dashboard (#307).
+admin_answers() {
+    compose exec -T teatree-admin curl -fsS -o /dev/null --max-time 5 "$ADMIN_PROBE_URL" >/dev/null 2>&1
+}
 
 # A recreate destroys the container object and its json-file log with it — which is
 # how a live diagnosis lost the very worker ticks it was reading. Copy each service's
@@ -495,7 +548,7 @@ wait_for_init() {
         case "$state" in
         "exited 0") return 0 ;;
         exited*)
-            echo "deploy: FATAL — teatree-init $state. No app service was recreated, so the previous generation is still serving." >&2
+            echo "deploy: FATAL — teatree-init $state. No app service was recreated, but the live tree is already at $(git -C "$REPO_ROOT" rev-parse --short "$DEPLOY_COMMIT"): the old containers now read new source against the pre-init schema. Fix the cause and re-run the deploy." >&2
             compose logs --tail 200 teatree-init >&2 || true
             return 1
             ;;
@@ -515,18 +568,23 @@ wait_for_init() {
 # the runtime clone. Any interrupted task re-queues PENDING via its lease lapse.
 contain_worker_for_deploy() {
     local require_admin="${1:-false}" state
+    if [ "$require_admin" = true ] && worker_crash_looping; then
+        echo "deploy: teatree-worker is crash-looping (restarting now, revived during the drain, or up under ${CRASH_LOOP_UPTIME}s after a restart), so it is no control-plane route; containing it without the admin." >&2
+        require_admin=false
+    fi
     if [ "$require_admin" = true ] && ! admin_answers; then
-        echo "deploy: FATAL — teatree-worker could not drain and admin is not answering; refusing to stop the only live control-plane route." >&2
+        echo "deploy: FATAL — teatree-worker could not drain, and the admin probe failed (curl $ADMIN_PROBE_URL inside teatree-admin, via compose exec); refusing to stop the only live control-plane route." >&2
         return 1
     fi
     echo "deploy: stopping the old teatree-worker because it could not be proven quiescent ..." >&2
+    _WORKER_STOPPED_BY_DEPLOY=true
     if ! compose stop teatree-worker >/dev/null 2>&1; then
         echo "deploy: FATAL — compose could not stop teatree-worker; refusing to run init/swap." >&2
         return 1
     fi
 
     if ! state="$(worker_state_after_stop)"; then
-        echo "deploy: FATAL — could not verify teatree-worker containment before init/swap." >&2
+        echo "deploy: FATAL — could not verify teatree-worker containment before init/swap (compose ps --all + docker inspect on the host)." >&2
         return 1
     fi
     case "$state" in
@@ -545,7 +603,7 @@ contain_worker_for_deploy() {
 drain_worker() {
     local state
     if ! state="$(worker_state_for_drain)"; then
-        echo "deploy: FATAL — could not determine teatree-worker state; refusing to run init." >&2
+        echo "deploy: FATAL — could not determine teatree-worker state (compose ps + docker inspect on the host); refusing to run init." >&2
         return 1
     fi
     case "$state" in
@@ -564,12 +622,24 @@ drain_worker() {
         ;;
     esac
     echo "deploy: draining teatree-worker (up to ${TEATREE_DRAIN_TIMEOUT:-1800}s for in-flight agents to finish) ..."
+    _WORKER_RESTARTS_AT_DRAIN="$(worker_restart_state | awk '{print $2}')" || _WORKER_RESTARTS_AT_DRAIN=""
     _DRAINED=true
     if compose exec -T teatree-worker \
         t3 worker drain --timeout "${TEATREE_DRAIN_TIMEOUT:-1800}"; then
         return 0
     fi
     contain_worker_for_deploy true
+}
+
+# Only after the old worker is drained or contained: every running container reads this
+# tree, and init needs it at the built commit.
+fast_forward_live_tree() {
+    bash "$SCRIPT_DIR/fast-forward-checkout.sh" "$REPO_ROOT" "$DEPLOY_COMMIT" || return 1
+    # Docker Desktop's worker cannot observe macOS load/RAM/swap; the agent it registers
+    # runs the publisher from this checkout, so it installs from the moved tree.
+    if [ "$(uname -s)" = Darwin ]; then
+        "$SCRIPT_DIR/install-host-pressure.zsh" || return 1
+    fi
 }
 
 # A failed drain takes the old worker route out of service deliberately. Once init
@@ -656,9 +726,10 @@ remaining_services() {
 staged_swap() {
     # Build first and recreate nothing: the longest phase of a convergence now runs
     # against a fully live stack, and a build failure costs no availability at all.
-    compose build || return 1
+    TEATREE_BUILD_CONTEXT="$BUILD_CONTEXT" compose build || return 1
 
     drain_worker || return 1
+    fast_forward_live_tree || return 1
 
     archive_service_logs teatree-init
     compose up -d --no-deps teatree-init || return 1
@@ -704,12 +775,12 @@ staged_swap || {
     exit 1
 } >&2
 
-# Wait for the admin dev server on the box loopback (init clone + install can
-# take a few minutes on first run).
-echo "deploy: waiting for the admin service on 127.0.0.1:8000 ..."
+# Wait for the admin dev server (init clone + install can take a few minutes on
+# first run).
+echo "deploy: waiting for the admin service to answer $ADMIN_PROBE_URL inside teatree-admin ..."
 admin_up=false
 for _ in $(seq 1 60); do
-    if curl -fsS -o /dev/null "http://127.0.0.1:8000/admin/login/"; then
+    if admin_answers; then
         admin_up=true
         break
     fi

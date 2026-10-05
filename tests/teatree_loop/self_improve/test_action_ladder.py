@@ -282,6 +282,29 @@ class ActionLadderBehaviourTests(TestCase):
         assert send.call_count == 2
         assert SelfImproveFiring.objects.count() == 0
 
+    def test_pull_routed_skill_alert_records_a_truthful_action_once(self) -> None:
+        report = DetectorReport(
+            detector="skill_assurance_gap",
+            dedup_key="skill_assurance_gap::t3-teatree::missing:t3-teatree",
+            state_hash="missing-1",
+            severity="error",
+            max_rung=ActionRung.SLACK,
+            requested_rung=ActionRung.SLACK,
+            summary="Requested skill was not loaded",
+            payload={"kind": "skill_assurance", "requires_delivery": True},
+        )
+
+        with self.assertNoLogs("teatree.core.management.commands.loop_self_improve", level="WARNING"):
+            first = run_action_ladder(report, owner_alert=_deliver_owner_alert, overlay_name="t3-teatree")
+            repeated = run_action_ladder(report, owner_alert=_deliver_owner_alert, overlay_name="t3-teatree")
+
+        assert first is not None
+        assert first.rung == ActionRung.STATUSLINE
+        assert repeated is None
+        assert SelfImproveFiring.objects.get().last_action == ActionRung.STATUSLINE
+        assert BotPing.objects.filter(status=BotPing.Status.PULLED).count() == 1
+        assert BotPing.objects.filter(status=BotPing.Status.SENT).count() == 0
+
     def test_critical_alerts_reach_owner_through_real_push_policy(self) -> None:
         backend = MagicMock()
         backend.open_dm.return_value = "D-OWNER"
@@ -303,8 +326,8 @@ class ActionLadderBehaviourTests(TestCase):
                         summary="The factory requires attention",
                         payload={"kind": kind, "requires_delivery": True},
                     )
-                    assert _deliver_owner_alert(report, None) is True
-                    assert _deliver_owner_alert(report, None) is True
+                    assert _deliver_owner_alert(report, None).sent is True
+                    assert _deliver_owner_alert(report, None).sent is True
 
         assert backend.post_message.call_count == 3
         assert BotPing.objects.filter(status=BotPing.Status.SENT).count() == 3

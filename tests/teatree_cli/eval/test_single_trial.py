@@ -1,4 +1,4 @@
-"""``run_single_trial`` + ``write_single_trial_reports`` — the single-pass ``eval run`` body.
+"""``run_single_trial`` + ``RunReportPaths.write_single_trial`` — the single-pass ``eval run`` body.
 
 The selective-PR / weekly lanes drive ``run_single_trial`` (the single-trial
 sibling of the pass@k / matrix paths). These exercise it end to end against a
@@ -7,7 +7,7 @@ drops BOTH per-run artifacts (the PRIVATE ``--transcript-html`` transcript and t
 SANITIZED ``--summary-md`` dashboard), runs the no-coverage guards, and gates the
 result. The artifacts are written from THIS run's in-memory results BEFORE any
 guard/gate can exit — so a RED run still drops both, which the failing-path test
-pins. ``write_single_trial_reports`` is also exercised directly for its
+pins. ``RunReportPaths.write_single_trial`` is also exercised directly for its
 transcript-html branch.
 """
 
@@ -23,7 +23,7 @@ from django.test import TestCase
 from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from teatree.cli.eval.app_helpers import write_single_trial_reports
+from teatree.cli.eval.app_helpers import RunReportPaths
 from teatree.cli.eval.single_trial import EscalationConfig, SingleTrialGates, make_escalation_runner, run_single_trial
 from teatree.eval.anthropic_api_runner import AnthropicApiKeyMissingError, AnthropicApiRunner
 from teatree.eval.api_errors import USAGE_LIMIT_REACHED_REASON
@@ -382,7 +382,7 @@ class TestWriteSingleTrialReports:
     def test_writes_only_the_transcript_when_summary_md_is_none(self, tmp_path: Path) -> None:
         transcript = tmp_path / "transcript.html"
         summary = tmp_path / "summary.md"
-        write_single_trial_reports([_result("alpha", passed=True)], transcript_html=transcript, summary_md=None)
+        RunReportPaths(transcript_html=transcript).write_single_trial([_result("alpha", passed=True)])
         # The transcript-html branch wrote a self-contained HTML report …
         html = transcript.read_text(encoding="utf-8")
         assert "<!doctype html>" in html
@@ -393,14 +393,16 @@ class TestWriteSingleTrialReports:
     def test_writes_both_when_both_paths_given(self, tmp_path: Path) -> None:
         transcript = tmp_path / "transcript.html"
         summary = tmp_path / "summary.md"
-        write_single_trial_reports([_result("alpha", passed=True)], transcript_html=transcript, summary_md=summary)
+        RunReportPaths(transcript_html=transcript, summary_md=summary).write_single_trial(
+            [_result("alpha", passed=True)]
+        )
         assert "<!doctype html>" in transcript.read_text(encoding="utf-8")
         assert "| scenario | lane | verdict | trials |" in summary.read_text(encoding="utf-8")
 
     def test_no_op_when_both_paths_none(self, tmp_path: Path) -> None:
         transcript = tmp_path / "transcript.html"
         summary = tmp_path / "summary.md"
-        write_single_trial_reports([_result("alpha", passed=True)], transcript_html=None, summary_md=None)
+        RunReportPaths().write_single_trial([_result("alpha", passed=True)])
         assert not transcript.exists()
         assert not summary.exists()
 

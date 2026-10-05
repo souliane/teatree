@@ -157,8 +157,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         wrest the loop back from a hijacking session within one tick. This is
         the deliberate exception to :meth:`claim_ownership`'s pid-anchored CAS
         (which never evicts a live owner). A steal that installs a DIFFERENT
-        holder bumps the fencing generation (§5) so the old holder's in-flight
-        worker is fenced at its next git write, and installs the incoming
+        holder bumps the lease generation (§5) and installs the incoming
         ``driver`` verbatim; re-taking one's OWN claim keeps both.
 
         Returns ``(True, current_owner_session)`` — always wins; the owner is
@@ -245,7 +244,7 @@ class LoopLeaseQuerySet(models.QuerySet):
                 # CAS re-asserts the exact stored pid so a concurrent claim that
                 # already moved the lease off it is never clobbered. The
                 # generation is KEPT — a same-process rotation is not a transfer
-                # (§5), so the master never fences its own worker across a compaction.
+                # (§5), so a compaction does not change the observed generation.
                 won = self.filter(name=name, owner_pid=stored_pid).update(
                     session_id=session_id,
                     owner_pid=owner_pid,
@@ -298,7 +297,7 @@ class LoopLeaseQuerySet(models.QuerySet):
 
     @staticmethod
     def _generation_after(*, holder_changed: bool) -> Combinable:
-        """The ``generation=`` value for a winning claim write (§5 fencing token).
+        """The ``generation=`` value for a winning claim write (§5).
 
         A holder change increments the token; a same-holder refresh / same-process
         self-reclaim keeps it via an identity ``F("generation")``. The write always
@@ -325,30 +324,10 @@ class LoopLeaseQuerySet(models.QuerySet):
             return driver
         return driver or F("driver")
 
-    def fencing_generation(self, name: str) -> int:
-        """Current fencing / lease-generation token for ``name`` (§5).
-
-        The value a merge-worker dispatched now would stamp. A missing row
-        reports ``0`` — an unclaimed slot has never changed hands.
-        """
-        return self.filter(name=name).values_list("generation", flat=True).first() or 0
-
-    def token_is_current(self, name: str, token: int) -> bool:
-        """Whether ``token`` still matches the live fencing generation (§5).
-
-        The git-write fencing check: a merge-worker's write is admitted only
-        while no newer generation has been granted. A stale token (a higher
-        generation was installed by a failover or a human steal after the worker
-        was dispatched) is fenced out. Equality is exact because the generation
-        only ever increases, so a worker can never legitimately hold a token
-        above the current one.
-        """
-        return token == self.fencing_generation(name)
-
     def live_foreign_owner(self, name: str, *, session_id: str, current_pid: int | None) -> str:
         """The session of a genuinely LIVE foreign owner of ``name``, or ``""`` (#1604).
 
-        The READ predicate the SessionStart/UserPromptSubmit desync check consults:
+        The READ predicate the SessionStart desync check consults:
         a slot owned by a DIFFERENT, still-live session that is also a DIFFERENT OS
         process means that session is the rightful owner and a fresh session must
         stay idle (INV1). Reuses :func:`live_foreign_owner_session` for the
@@ -489,8 +468,8 @@ class LoopLeaseQuerySet(models.QuerySet):
         Deliberately narrow, because a lease row can carry state a delete would reset:
 
         - An OWNER slot (``t3-master`` / ``loop:<name>``) is never touched — its
-            ``generation`` is the §5 fencing token, and a token that goes backwards
-            un-fences an already-fenced worker. Those are returned to the pool by
+            ``generation`` records holder changes and must remain monotonic.
+            Those are returned to the pool by
             :meth:`reclaim_dead_owner_leases`, which blanks ownership and keeps the row.
         - A row still held by a session is never touched, at any expiry.
         - ``older_than`` keeps a grace well past any lease TTL, so a row a caller is

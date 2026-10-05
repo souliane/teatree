@@ -13,8 +13,7 @@ against the loop's real dispatch behaviour — agent-routing signal kinds, ``pha
 arguments naming an agent-dispatched phase, and imports of a model-calling module,
 read out of the loop's own package and the scanner modules it actually wires this
 tick. A signal routed to a MECHANICAL executor is followed through that executor's
-import closure too, which is the only way ``ci_eval_heal`` is caught: nothing it
-names is an agent, and the headless turn lives two modules down its handler chain.
+import closure too.
 A loop declaring ``deterministic`` while any of that evidence exists fails.
 """
 
@@ -170,13 +169,3 @@ class DeterministicClaimTestCase(TestCase):
     def test_evidence_names_the_route_it_found(self) -> None:
         review = next(loop for loop in iter_loops() if loop.name == "review")
         assert "reviewer_pr.new_sha" in _evidence(review)
-
-    def test_evidence_follows_a_mechanical_executor_to_the_model_it_spawns(self) -> None:
-        """ci_eval_heal routes to a MECHANICAL zone whose executor runs a headless turn.
-
-        Nothing in the loop package or its scanner names an agent — the model call
-        lives two modules down the executor's import chain, which is exactly the
-        shape a dispatch-table-only check would call deterministic.
-        """
-        ci_eval_heal = next(loop for loop in iter_loops() if loop.name == "ci_eval_heal")
-        assert "claude_agent_sdk" in _evidence(ci_eval_heal)

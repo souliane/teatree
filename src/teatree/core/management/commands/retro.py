@@ -4,10 +4,10 @@ Three lanes, each turning a retrospective finding into a durable mechanism rathe
 than more prose: ``review-findings`` (classify a PR's findings A/B/C and file
 class-C enforcement issues), ``gate-failures`` (extract, classify and escalate a
 session's gate BLOCKs), and ``finding`` (record one confirmed lesson in the
-consolidation ledger and drive it onto the standing umbrella as a scheduled coding
-fix). ``finding`` is what retro persists a lesson WITH — retro writes no memory
-file, so a lesson lands as work that merges and then retires itself. The umbrella
-write is the default-OFF ``memory_promote`` mechanism, so with that toggle off the
+consolidation ledger and queue it on the umbrella host for the backlog sweep to fold
+into an existing ticket). ``finding`` is what retro persists a lesson WITH — retro writes no memory
+file, so a lesson lands as work that merges and then retires itself. The queueing
+is the default-OFF ``memory_promote`` mechanism, so with that toggle off the
 finding is recorded and its promotion deferred onto the drain queue Pass 2 reads.
 
 ``review-findings`` is the enforcement-retrospective scaffold
@@ -40,6 +40,7 @@ import typer
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.management.refusal_exit import refusal_exit_code
+from teatree.core.models.dream_gap_ledger import dream_umbrella_url
 from teatree.core.review.review_findings import (
     ClassifiedFinding,
     FilingContext,
@@ -60,7 +61,6 @@ from teatree.eval.gate_failures import (
 from teatree.eval.session_transcript import parse_session_jsonl
 from teatree.eval.transcript_resolver import resolve_transcript
 from teatree.loops.dream.destination import points_at_core_fix
-from teatree.loops.dream.promote_memory import UMBRELLA_ISSUE_URL
 from teatree.loops.dream.retro_finding import promote_finding, record_finding
 from teatree.types import RawAPIDict
 from teatree.url_classify import repo_and_iid
@@ -236,12 +236,12 @@ class Command(TyperCommand):
         ] = "",
         dry_run: Annotated[bool, typer.Option(help="Report what would be promoted; write nothing.")] = False,
     ) -> str:
-        """Record one retro finding in the ledger and drive it to a scheduled fix.
+        """Record one retro finding in the ledger and queue it for the backlog sweep.
 
         This is what retro persists a lesson WITH: the finding becomes a VERIFIED
-        core-gap ledger row and rides the standing umbrella as a deduped checkbox
-        plus a coding task — the same drain dreaming Pass 2 uses, so the prose
-        retires itself once that fix merges. With ``memory_promote`` off the row is
+        core-gap ledger row queued on the umbrella host's pending ledger — the same
+        drain dreaming Pass 2 uses, so the prose retires itself once the host that
+        absorbs it merges. With ``memory_promote`` off the row is
         still recorded and the promotion reported ``deferred``, reaching no umbrella.
         Emits the result as JSON; a refusal prints its payload and raises
         ``SystemExit`` (``typer.Exit`` exits 0 under ``call_command``, so a real
@@ -270,18 +270,16 @@ class Command(TyperCommand):
 
         if not dry_run:
             record_finding(rule=rule, citation=citation, destination=destination)
-        outcome = promote_finding(
-            self._resolve_host(UMBRELLA_ISSUE_URL), rule=rule, umbrella_url=UMBRELLA_ISSUE_URL, dry_run=dry_run
-        )
+        umbrella_url = dream_umbrella_url()
+        outcome = promote_finding(rule=rule, umbrella_url=umbrella_url, dry_run=dry_run)
         self.stdout.write(
-            f"  {outcome.gap_key[:12]}: checkbox={outcome.checkbox_added} scheduled={outcome.scheduled}"
+            f"  {outcome.gap_key[:12]}: queued={outcome.queued}"
             f" withheld={outcome.withheld} deferred={outcome.deferred} — {outcome.reason}"
         )
         return {
             "cluster_key": outcome.gap_key,
-            "umbrella_url": UMBRELLA_ISSUE_URL,
-            "checkbox_added": outcome.checkbox_added,
-            "scheduled": outcome.scheduled,
+            "umbrella_url": umbrella_url,
+            "queued": outcome.queued,
             "withheld": outcome.withheld,
             "deferred": outcome.deferred,
             "reason": outcome.reason,

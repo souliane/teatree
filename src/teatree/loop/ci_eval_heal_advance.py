@@ -1,37 +1,4 @@
-"""Driver for the CI-eval self-healing loop (#3201 PR-3a observe + PR-3b fixer).
-
-An operator opens a :class:`~teatree.core.models.CiEvalHealSession` for a PR branch
-(``t3 eval ci-heal open``); this module advances every open session ONE FSM step
-per tick, driven by the default-OFF ``ci_eval_heal`` mini-loop (or by an operator
-dry-run via ``t3 eval ci-heal advance``):
-
-* ``PENDING`` → dispatch the ``eval-ci-heal`` workflow against the branch (``$0``
-    subscription credential), record the head SHA, and move to ``AWAITING_CI``.
-* ``AWAITING_CI`` → poll the run (non-blocking, one bounded ``gh`` read). While it
-    runs, no-op. On ``success`` → ``receive_result([])`` → GREEN. On any non-success
-    conclusion, the run is NEVER greened: a ``failure`` carrying parseable behavioral
-    reds moves through ``TRIAGING``; any other conclusion, or a failure whose reds
-    cannot be confirmed, is an infra HALT (escalated).
-* ``TRIAGING`` → GREEN when no red remains. With a red: observe-only (the default)
-    HALTs + escalates; when the fixer is ARMED (:func:`~teatree.loop.ci_eval_heal_fixer.autofix_armed`
-    — the ``ci_eval_heal_autofix_enabled`` DARK flag AND the loop row both on) and the
-    fix budget is not exhausted, it dispatches ONE bounded autonomous fix instead
-    (``begin_fix`` → propose → gate → publish → re-trigger). Budget exhausted ⇒ HALT.
-* ``PUSHED`` → re-trigger the eval on the fixed branch (the loop back-edge; recovers
-    a fix that pushed but crashed before re-dispatch).
-
-**Anti-cheat invariant (non-negotiable).** A genuinely-failing eval can never be
-marked green. ``GREEN`` is reachable from exactly ONE place — a run whose CI
-conclusion is ``success`` (an empty red set) — and the model's ``_no_reds`` guard
-independently refuses ``mark_green`` while any red remains. The fixer only PROPOSES:
-the #3282 anti-cheat gate (``record_fix``) runs over the proposed diff BEFORE any
-push, so a fix editing ``evals/scenarios/**`` or the eval harness
-(``src/teatree/eval/**``) is REJECTED and
-DISCARDED, never reaching the branch. A red, an infra failure, an unconfirmable
-result, an exhausted budget, or a rejected/empty fix all terminate at ``HALTED`` and
-escalate to the human via a :class:`~teatree.core.models.DeferredQuestion` (the
-§17.1 invariant-9 surface: statusline / ``t3 teatree questions list`` / Slack DM).
-"""
+"""Advance CI eval heal sessions, fixing confirmed behavioral reds within budget."""
 
 import logging
 from collections.abc import Callable, Iterable
@@ -47,7 +14,7 @@ from teatree.backends.github.ci_eval_client import (
     GhCiEvalClient,
     build_ci_eval_client,
 )
-from teatree.loop.ci_eval_heal_fixer import CiEvalHealFixer, autofix_armed, default_fixer
+from teatree.loop.ci_eval_heal_fixer import CiEvalHealFixer, default_fixer, fix_turn_admitted
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -226,17 +193,17 @@ def _resolve_triage(
     """TRIAGING terminal: GREEN iff no red remains; a red HALTs or dispatches a bounded fix.
 
     ``mark_green`` is never reached while ``red_scenarios`` is non-empty (and the
-    model's ``_no_reds`` guard would refuse it anyway). With a red: observe-only
-    (:func:`~teatree.loop.ci_eval_heal_fixer.autofix_armed` false) HALTs + escalates;
-    armed-but-budget-exhausted HALTs + escalates; armed-with-budget dispatches ONE
-    bounded, anti-cheat-gated fix. A red NEVER self-certifies green.
+    model's ``_no_reds`` guard would refuse it anyway). With a red: a preset that
+    does not admit the loop HALTs + escalates, an exhausted fix budget HALTs +
+    escalates, otherwise it dispatches ONE bounded, anti-cheat-gated fix. A red
+    NEVER self-certifies green.
     """
     if not session.red_scenarios:
         session.mark_green()
         session.save()
         return session.state
-    if not autofix_armed(session):
-        return _halt_red(session, escalate=escalate, detail="autofix disarmed (observe-only)")
+    if not fix_turn_admitted():
+        return _halt_red(session, escalate=escalate, detail="the active preset does not admit ci_eval_heal")
     if session.fix_budget_exhausted:
         return _halt_red(
             session, escalate=escalate, detail=f"fix budget exhausted after {session.fix_attempts} attempt(s)"
@@ -436,7 +403,7 @@ def advance_open_sessions(
     recorded, never raised — the next tick retries the un-advanced session. Returns
     the outcomes + swallowed errors for the caller (loop log / operator CLI). The
     ``fixer`` is the injected autonomous-fix seam (default: the production headless
-    fixer); it only fires when :func:`~teatree.loop.ci_eval_heal_fixer.autofix_armed`.
+    fixer); every confirmed behavioral red within budget reaches it.
     """
     from teatree.core.models import CiEvalHealSession  # noqa: PLC0415 — deferred: ORM needs the app registry
 

@@ -56,21 +56,6 @@ class GatedReviewPoster:
 
     service: ReviewService
 
-    def post_draft_note(self, repo: str, mr: int, note: SeamNote) -> tuple[str, int]:
-        finding, refusal = _finding(note)
-        if finding is None:
-            return refusal, _BAD_INPUT
-        return self.service.post_draft_note(
-            repo,
-            mr,
-            finding.note,
-            file=finding.file,
-            line=finding.line,
-            evidence=finding.evidence,
-            force_general=finding.force_general,
-            allow_bloat=finding.allow_bloat,
-        )
-
     def post_comment(self, repo: str, mr: int, note: SeamNote, *, live: bool = False) -> tuple[str, int]:
         finding, refusal = _finding(note)
         if finding is None:

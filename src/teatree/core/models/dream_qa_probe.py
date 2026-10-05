@@ -30,10 +30,6 @@ class DreamQaProbeManager(models.Manager["DreamQaProbe"]):
         """Probes carried over from an earlier session in *scope* — the retention corpus."""
         return self.filter(scope=scope, is_prior_session=True)
 
-    def current_corpus(self, scope: str) -> "models.QuerySet[DreamQaProbe]":
-        """Every probe recorded for *scope*."""
-        return self.filter(scope=scope)
-
 
 class DreamQaProbe(models.Model):
     """One question/expected-answer probe in the dream QA corpus.

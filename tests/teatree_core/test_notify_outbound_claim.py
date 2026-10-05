@@ -51,26 +51,6 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
         )
         assert not OutboundClaim.objects.filter(idempotency_key="slack_dm:failed-key").exists()
 
-    def test_disabled_feature_does_not_record_claim(self) -> None:
-        from unittest.mock import patch  # noqa: PLC0415
-
-        backend = _backend()
-        fake_settings = MagicMock()
-        fake_settings.notify_user_via_bot = False
-        # `notify_user` lives in `teatree.core.notify` since #1009 — the
-        # top-level `teatree.core.notify` is a thin re-export. Patch where the
-        # real `get_effective_settings` is bound.
-        with patch("teatree.core.notify.get_effective_settings", return_value=fake_settings):
-            notify_user(
-                "shh",
-                kind=NotifyKind.INFO,
-                idempotency_key="disabled-key",
-                audience=NotifyAudience.OWNER_QUESTION,
-                backend=backend,
-                user_id="U_ME",
-            )
-        assert not OutboundClaim.objects.filter(idempotency_key="slack_dm:disabled-key").exists()
-
     def test_slack_dm_claim_records_agent_session_id(self) -> None:
         # Mirrors the GitLab/Notion path's
         # ``test_resolves_agent_session_id_from_env`` (#1065 Nit 1): the
@@ -79,7 +59,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
         # ``record_claim`` writes.
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "sess-123"}, clear=False):
+        with patch.dict("os.environ", {"CLAUDE_CODE_SESSION_ID": "sess-123"}, clear=False):
             sent = notify_user(
                 "tests passing",
                 kind=NotifyKind.INFO,

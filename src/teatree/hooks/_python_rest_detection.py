@@ -67,7 +67,7 @@ _GITHUB_REPOS_URL_RE: Final[re.Pattern[str]] = re.compile(
     r"^https?://(?P<host>[^/\s'\"]+)/(?:api/v\d+/)?repos/(?P<slug>[^/\s'\"]+/[^/\s'\"]+)",
 )
 _GITLAB_PROJECTS_URL_RE: Final[re.Pattern[str]] = re.compile(
-    r"^https?://[^/\s'\"]+/api/v\d+/projects/(?P<slug>[^/\s'\"?]+)",
+    r"^https?://(?P<host>[^/\s'\"]+)/api/v\d+/projects/(?P<slug>[^/\s'\"?]+)",
 )
 _URL_LITERAL_RE: Final[re.Pattern[str]] = re.compile(r"https?://[^\s'\"]+")
 
@@ -90,11 +90,12 @@ def find_python_forge_rest_urls(source: str) -> Iterator[tuple[str, str]]:
         url = match.group(0)
         gh_match = _GITHUB_REPOS_URL_RE.match(url)
         if gh_match and gh_match.group("host").lower() in _GITHUB_REST_HOSTS:
-            yield "github", gh_match.group("slug")
+            yield "github", f"github.com/{gh_match.group('slug')}"
             continue
         glab_match = _GITLAB_PROJECTS_URL_RE.match(url)
         if glab_match:
-            yield "gitlab", glab_match.group("slug").replace("%2F", "/").replace("%2f", "/")
+            project = glab_match.group("slug").replace("%2F", "/").replace("%2f", "/")
+            yield "gitlab", f"{glab_match.group('host').lower()}/{project}"
 
 
 # Write-verb signals a python REST client carries, mirroring the effective-

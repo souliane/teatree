@@ -31,8 +31,6 @@ if TYPE_CHECKING:
 sys.modules.setdefault("standing_grant_ask_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.standing_grant_ask_gate", sys.modules[__name__])
 
-_GATE_ID = "block-standing-grant-ask"
-
 
 def _standing_grant_ask_gate_enabled() -> bool:
     """Whether the gate is enabled (default True); an explicit ``false`` is the kill-switch."""
@@ -109,7 +107,7 @@ def handle_block_standing_grant_ask(data: dict) -> bool:
         return False
     core = _load_core()
     reason = _deny_reason_for(core, _question_texts(data)) if core is not None else None
-    return _fail_open_or_deny(data, reason, gate_id=_GATE_ID) if reason else False
+    return _fail_open_or_deny(data, reason, gate_id="block-standing-grant-ask") if reason else False
 
 
 __all__ = ["handle_block_standing_grant_ask"]

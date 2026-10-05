@@ -8,20 +8,25 @@ hand. These are the fitness functions for the single view over them.
 The equivalence assertions are the load-bearing ones: the taxonomy is a VIEW, so each class
 must return exactly what its registry returns today. A view that quietly dropped a registry
 would still be total, still be self-consistent, and would silently reclassify every key that
-registry owned — which is why each class is also asserted NON-EMPTY before it is compared.
+registry owned. Live empty flag and gate registries are pinned, while fixture entries keep
+their classification checks non-vacuous.
 """
+
+from datetime import date
+from unittest import mock
 
 import pytest
 
-from teatree.config.feature_flags import FEATURE_FLAGS
-from teatree.config.gate_evidence import GATE_EVIDENCE
+from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage
+from teatree.config.gate_evidence import GATE_EVIDENCE, ActivationIntent, GateEvidence, ObservableKind
 from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.registries import COLD_HOOK_SETTINGS, COLD_SETTINGS, REGISTRY_KEYS
-from teatree.config.retired_settings import RETIRED_SETTINGS
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
 from teatree.config.setting_taxonomy import (
     SettingClass,
+    SettingTaxon,
     UnclassifiedSettingError,
+    _taxon,
     classify,
     governance_trailer,
     is_gate_switch,
@@ -32,13 +37,10 @@ from teatree.config.setting_taxonomy import (
 _REGISTRY_BY_CLASS: dict[SettingClass, set[str]] = {
     SettingClass.FEATURE_FLAG: set(FEATURE_FLAGS),
     SettingClass.GATE: set(GATE_EVIDENCE),
-    SettingClass.GATE_SWITCH: {
-        key for key in {*ALL_KNOWN_CONFIG_SETTINGS, *(r.key for r in RETIRED_SETTINGS)} if is_gate_switch(key)
-    },
+    SettingClass.GATE_SWITCH: {key for key in ALL_KNOWN_CONFIG_SETTINGS if is_gate_switch(key)},
     SettingClass.SAFETY_POSTURE: set(SAFETY_POSTURE_KEYS),
     SettingClass.COLD: set(COLD_SETTINGS) | set(COLD_HOOK_SETTINGS),
     SettingClass.REGISTRY: set(REGISTRY_KEYS),
-    SettingClass.RETIRED: {entry.key for entry in RETIRED_SETTINGS},
 }
 
 
@@ -46,18 +48,28 @@ def _keys_classified(kind: SettingClass) -> set[str]:
     return {key for key, taxon in taxonomy().items() if kind in taxon.classes}
 
 
+def _overlapping_taxon() -> SettingTaxon:
+    key = "fixture_gate_enabled"
+    flag = FeatureFlag(field=key, stage=FlagStage.DARK, tracking_issue="#4189", summary="fixture")
+    gate = GateEvidence(
+        setting=key,
+        off_value=False,
+        kind=ObservableKind.MODEL,
+        target="core.Ticket",
+        shipped=date(2026, 1, 1),
+        intent=ActivationIntent.STAGED,
+        rationale="fixture #4189",
+        satisfier="fixture",
+    )
+    with mock.patch.dict(FEATURE_FLAGS, {key: flag}), mock.patch.dict(GATE_EVIDENCE, {key: gate}):
+        return _taxon(key, cold=False)
+
+
 class TestTheDomainIsEveryKeyThatEXISTS:
     def test_every_live_key_has_a_taxon(self) -> None:
         assert set(ALL_KNOWN_CONFIG_SETTINGS) <= set(taxonomy())
 
-    def test_a_retired_key_is_classified_though_it_is_no_longer_a_live_key(self) -> None:
-        """A view over the live union alone answers "unknown" for the keys whose job is to answer."""
-        retired = _REGISTRY_BY_CLASS[SettingClass.RETIRED]
-        assert retired
-        assert retired.isdisjoint(ALL_KNOWN_CONFIG_SETTINGS)
-        assert retired <= set(taxonomy())
-
-    def test_a_key_belonging_to_neither_domain_is_refused_loudly(self) -> None:
+    def test_an_unknown_key_is_refused_loudly(self) -> None:
         with pytest.raises(UnclassifiedSettingError, match="no_such_setting_key"):
             classify("no_such_setting_key")
 
@@ -66,15 +78,17 @@ class TestEachClassEqualsItsRegistry:
     @pytest.mark.parametrize("kind", list(_REGISTRY_BY_CLASS))
     def test_the_view_returns_what_the_registry_returns(self, kind: SettingClass) -> None:
         expected = _REGISTRY_BY_CLASS[kind]
-        assert expected, f"{kind} is empty — the comparison below would hold over nothing"
+        if kind in {SettingClass.FEATURE_FLAG, SettingClass.GATE}:
+            assert expected == set()
+        else:
+            assert expected, f"{kind} is empty — the comparison below would hold over nothing"
         assert _keys_classified(kind) == expected
 
     def test_a_key_may_hold_several_classes_at_once(self) -> None:
-        """Ten keys are both a gate and a feature flag, so a single-class answer would be a lie."""
-        both = _REGISTRY_BY_CLASS[SettingClass.GATE] & _REGISTRY_BY_CLASS[SettingClass.FEATURE_FLAG]
-        assert both
-        for key in both:
-            assert {SettingClass.GATE, SettingClass.FEATURE_FLAG} <= classify(key).classes
+        taxon = _overlapping_taxon()
+        assert {SettingClass.GATE, SettingClass.FEATURE_FLAG, SettingClass.GATE_SWITCH} <= taxon.classes
+        assert taxon.flag is not None
+        assert taxon.gate is not None
 
 
 class TestPlainIsALeftoverNeverADeclaration:
@@ -110,7 +124,9 @@ class TestPlainIsALeftoverNeverADeclaration:
 
 class TestTheGovernanceTrailer:
     def test_a_gate_that_is_also_a_flag_names_both(self) -> None:
-        trailer = governance_trailer("critic_gate_mode")
+        taxon = _overlapping_taxon()
+        with mock.patch("teatree.config.setting_taxonomy.taxonomy", return_value={taxon.key: taxon}):
+            trailer = governance_trailer(taxon.key)
         assert "gate" in trailer
         assert "feature-flag" in trailer
         assert "stage=" in trailer

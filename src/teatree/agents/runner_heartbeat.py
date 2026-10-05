@@ -10,6 +10,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 
 from teatree.agents.harness import Harness
 from teatree.agents.live_mailbox import bound_task_mailbox
+from teatree.agents.round_ceiling import RoundCeiling
 from teatree.agents.runner_stream import HarnessOutcome, StreamCapture, _collect
 from teatree.agents.runner_watchdog import LoopWatchdog, TaskUsage
 from teatree.core.models import LeaseLostError, Task
@@ -46,6 +47,17 @@ def renew_lease_closing_connection(task: Task, *, lease_seconds: int) -> None:
         close_thread_db_connections()
 
 
+def _arm_round_ceiling(options: ClaudeAgentOptions, harness: Harness) -> RoundCeiling:
+    """A hook runtime has the round start refused; any other is stopped by the driver as the round starts."""
+    takes_hooks = getattr(getattr(harness, "harness", harness), "capabilities", None)
+    ceiling = RoundCeiling(enforce_by_observation=not (takes_hooks is not None and takes_hooks.hooks))
+    if not ceiling.enforces_by_observation:
+        hooks = dict(options.hooks or {})
+        hooks["PreToolUse"] = [*hooks.get("PreToolUse", []), ceiling.matcher()]
+        options.hooks = hooks
+    return ceiling
+
+
 async def drive_with_heartbeat(
     task: Task,
     prompt: str,
@@ -77,7 +89,7 @@ async def _drive_bound_session(
     started_at = time.monotonic()
     breach: list[str] = []
     lease_lost = False
-    capture = StreamCapture()
+    capture = StreamCapture(round_ceiling=_arm_round_ceiling(options, harness))
 
     async with harness.open(options) as session:
 

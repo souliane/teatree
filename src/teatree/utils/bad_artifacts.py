@@ -65,12 +65,14 @@ def mark_bad(path: str) -> None:
             _write(paths)
 
 
-def unmark(path: str) -> None:
+def unmark(path: str) -> bool:
     with _exclusive():
         paths = _read()
         if path in paths:
             paths.remove(path)
             _write(paths)
+            return True
+    return False
 
 
 def list_bad() -> list[str]:
@@ -78,5 +80,5 @@ def list_bad() -> list[str]:
 
 
 def clear_all() -> None:
-    if _CACHE_FILE.is_file():
-        _CACHE_FILE.unlink()
+    with _exclusive():
+        _CACHE_FILE.unlink(missing_ok=True)

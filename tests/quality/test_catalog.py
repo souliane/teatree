@@ -186,7 +186,7 @@ class TestLoaderValidation:
     def test_waiver_on_judgement_entry_loads(self, tmp_path: Path) -> None:
         body = (
             "- id: x\n  name: X\n  severity: low\n  detection: judgement\n"
-            "  anti_pattern: a\n  preferred_pattern: p\n  consumers: [ac-reviewing-codebase]\n"
+            "  anti_pattern: a\n  preferred_pattern: p\n  consumers: [architectural-review]\n"
             "  waivers:\n    - An accepted, examined exception.\n"
         )
         (entry,) = self._load(tmp_path, body)

@@ -104,7 +104,7 @@ class TestDispatchablePhaseTotality:
         assert "shell" not in tools_for_phase("requesting_review")
 
     def test_architectural_review_can_implement_and_commit_its_findings(self) -> None:
-        # The periodic ac-reviewing-codebase pass ends in a pushed PR, not a report,
+        # The periodic architectural-review pass ends in a pushed PR, not a report,
         # so it needs write/edit on top of the read+shell a review walk takes. It is
         # NOT a VERDICT_REVIEW_PHASES member: those record a verdict on someone
         # else's diff, this one authors its own.

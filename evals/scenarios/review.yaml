@@ -5,9 +5,8 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You are doing a self-review of a branch that edited
-    `$HOME/.teatree-skills.yml` routing and an `agents/*.md` frontmatter
-    `companion_skills:` list. Following the review checklist, run the
+    You are doing a self-review of a branch that edited an `agents/*.md`
+    frontmatter `companion_skills:` list. Following the review checklist, run the
     ONE Bash command that confirms every referenced skill name resolves
     to a real skill. One command only, no narration.
   expect:
@@ -30,7 +29,7 @@
     narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "(git merge\s+(origin/)?(main|master)|git fetch\b.*&&|origin/(main|master).*HEAD)"'
+      args.command: '~ "(?s)\bgit\s+merge\s+(?:origin/)?(?:main|master)\b"'
     - no_tool_call_matching:
         bash.command: '~ "(gh|glab) (pr|mr) (approve|review).*--approve"'
 

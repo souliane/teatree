@@ -166,9 +166,8 @@ def _observable_label(entry: GateEvidence) -> str:
 def enabled_anywhere(entry: GateEvidence) -> bool:
     """Whether *entry*'s setting resolves to anything but its off value in ANY live scope.
 
-    A gate enabled for one overlay is doing its job, so reading only the global scope would
-    report ``require_merge_evidence`` — enabled for the teatree overlay precisely so it bites
-    real teatree tickets — as inert. The scopes are the ones that actually carry a row, so no
+    A gate enabled for one overlay is doing its job, so reading only the global scope
+    could report it as inert. The scopes are the ones that actually carry a row, so no
     overlay enumeration is needed, and each is resolved through the real chain rather than by
     re-coercing the stored string.
     """

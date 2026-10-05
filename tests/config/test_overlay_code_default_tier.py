@@ -9,7 +9,7 @@ and the ``UserSettings`` dataclass default, so per promoted key:
     env -> DB(overlay) -> DB(global) -> overlay code default -> dataclass default
 
 ``review_skill`` is the observable pilot: its dataclass default is ``""`` while
-the public teatree overlay's code default is ``"ac-reviewing-codebase"`` — so a
+the public teatree overlay's code default is ``"architectural-review"`` — so a
 row-less resolution proves the code default wins over the dataclass default, and
 a row at any scope proves the DB still overrides it.
 
@@ -35,7 +35,7 @@ class TestOverlayCodeDefaultTier(TestCase):
 
     def test_code_default_wins_over_dataclass_default_with_no_db_row(self) -> None:
         assert ConfigSetting.objects.count() == 0
-        assert get_effective_settings().review_skill == "ac-reviewing-codebase"
+        assert get_effective_settings().review_skill == "architectural-review"
 
     def test_db_global_row_overrides_the_code_default(self) -> None:
         ConfigSetting.objects.set_value("review_skill", "custom-review-skill")
@@ -54,10 +54,16 @@ class TestOverlayCodeDefaultTier(TestCase):
         # default without changing the effective value (default == dataclass default).
         settings = get_effective_settings()
         assert settings.scanning_news_skill == "scanning-news"
-        assert settings.eval_local_skill == "eval"
+        assert settings.eval_local_skill == "running-evals"
         assert settings.backlog_sweep_skill == "sweeping-tickets"
-        assert settings.dogfood_smoke_skill == "dogfood-smoke"
-        assert settings.architectural_review_skill == "ac-reviewing-codebase"
+        assert settings.dogfood_smoke_skill == "dogfooding"
+        assert settings.architectural_review_skill == "architectural-review"
+
+    def test_review_skill_code_default_is_the_architectural_tier(self) -> None:
+        # The per-PR review gate reads this equality as "the periodic tier", so the two
+        # shipped defaults must move together or every ship demands the wrong review run.
+        settings = get_effective_settings()
+        assert settings.review_skill == settings.architectural_review_skill
 
     def test_field_only_key_db_row_still_overrides(self) -> None:
         ConfigSetting.objects.set_value("scanning_news_skill", "custom-news-skill")

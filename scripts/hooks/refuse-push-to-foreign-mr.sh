@@ -13,7 +13,14 @@
 #      GitLab remote is gated too. Shelling `gh` here hard-coded ONE
 #      forge: on a GitLab remote the guard could never fire at all.
 #   2. On a `FOREIGN` verdict, BLOCK and name the author + MR number.
-#   3. Our own MR branch, a branch with no open MR, and a foreign
+#   3. On an `UNKNOWN` verdict — an open MR backs the branch and this
+#      venue could not resolve who we are — BLOCK too (#83). The guard
+#      used to answer NONE there, which made its protection depend on
+#      which venue it ran in: the same push was refused on the host and
+#      permitted inside the worker container, and the container route
+#      minted none of the override token below, so the bypass left no
+#      audit trail at all.
+#   4. Our own MR branch, a branch with no open MR, and a foreign
 #      CLOSED/merged MR (which the open-state query excludes) all pass.
 #
 # Override: a genuine co-authoring push carries the token
@@ -21,12 +28,21 @@
 # in any commit message in the push range — the gate then allows it.
 #
 # Sibling of `refuse-public-push-with-leak.sh` (#685/#730): same Phase-0
-# pre-push prek block, same fail-OPEN posture, same interpreter fallback
-# chain. When no forge CLI is available, the slug is not an owner/repo
-# shape, or the MR query fails, the CLI answers NONE and the gate passes
-# through. Once an open MR IS found, a login this venue cannot resolve
-# answers UNKNOWN and is refused like a foreign MR: it is not evidence
-# the push is harmless, and the token still releases it.
+# pre-push prek block, same interpreter fallback chain. When no forge CLI
+# is available, the slug is not an owner/repo shape, or the MR query
+# fails, the CLI answers NONE and the gate passes through — a transient
+# forge-API failure must never brick a legitimate push, and this is a
+# safety net layered on top of the behavioural rule, not the only line of
+# defence. The one step that does NOT fail open is the identity, because
+# it is only ever asked once a colleague's MR is already on the table.
+#
+# That asymmetry costs the operator nothing when the answer was already
+# available: an MR authored by a login declared in `self_forge_identities`
+# is OWN from a cold config read, before any forge call, so a venue whose
+# probe cannot answer still pushes to its own MRs. When the identity is
+# genuinely unsettled the refusal reports the cause it OBSERVED — a
+# timeout is not an unauthenticated CLI, and naming it as one sends the
+# operator to `auth status` on a credential that is working.
 #
 # Git invokes a pre-push hook as:  hook <remote-name> <remote-url>
 # and feeds ref updates on stdin, one per line:
@@ -117,23 +133,26 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
   branch=${local_ref#refs/heads/}
   [ -n "${branch}" ] || continue
 
-  # Ask the host-routed resolver. No open MR, or no forge to ask, comes back
-  # NONE; an open MR whose ownership this venue cannot settle comes back
-  # UNKNOWN and is refused like a confirmed FOREIGN one. `T3_FOREIGN_MR_CMD`
-  # overrides the resolver for testing, mirroring `T3_REPO_VISIBILITY_CMD`.
+  # Ask the host-routed resolver. A question it never got to ask (no forge
+  # CLI, no owner/repo shape, a failed MR query) comes back NONE and passes
+  # through; FOREIGN is a confirmed colleague's MR and UNKNOWN is one whose
+  # owner this venue cannot name. `T3_FOREIGN_MR_CMD` overrides the resolver
+  # for testing, mirroring `T3_REPO_VISIBILITY_CMD`.
   if [ -n "${T3_FOREIGN_MR_CMD:-}" ]; then
     verdict=$(${T3_FOREIGN_MR_CMD} "${remote_url}" "${branch}" 2>/dev/null || true)
   else
     verdict=$(_resolve_foreign_mr "${branch}" || true)
   fi
-  read -r kind pr_number pr_author field4 field5 <<<"${verdict}" || true
+  # Field 3 is the MR author on BOTH blocking verdicts, so the shared prefix is
+  # read once and only the kind-specific tail is split below.
+  read -r kind mr_number mr_author verdict_tail <<<"${verdict}" || true
   case "${kind:-}" in
-    FOREIGN | UNKNOWN) : ;;
+    FOREIGN | UNKNOWN | ALIAS_UNRESOLVED | REMOTE_EMPTY) : ;;
     *) continue ;;
   esac
 
-  # A foreign OPEN MR backs this branch. Allow only with an explicit
-  # co-authoring override token in the commit messages the push INTRODUCES —
+  # An open MR backs this branch that is not established as ours. Allow only
+  # with an explicit co-authoring override token in the messages the push INTRODUCES —
   # the pushed sha's whole ancestry would turn one already-pushed token into a
   # permanent blanket waiver for every later push to the teammate's branch.
   # Subtract what the remote already has, mirroring the leak gate: its
@@ -165,22 +184,54 @@ while read -r local_ref local_sha _remote_ref remote_sha; do
     continue
   fi
 
-  if [ "${kind}" = "UNKNOWN" ]; then
-    probe="'${field4} api user'"
-    echo "✗ refuse: '${branch}' backs an OPEN MR (#${pr_number}) authored by '${pr_author}', and this venue cannot tell whether that is you."
-    case "${field5:-}" in
-      timeout=*) echo "  The identity probe ${probe} TIMED OUT (${field5#timeout=}); that is not evidence the CLI is unauthenticated. Retry, or push from a venue where it answers." ;;
-      exit-nonzero) echo "  The identity probe ${probe} exited non-zero; check '${field4} auth status' in this venue." ;;
-      tool-absent) echo "  '${field4}' is not installed in this venue, so ${probe} could not run." ;;
-      *) echo "  The identity probe ${probe} could not name a login (${field5:-unknown})." ;;
+  if [ "${kind}" = "REMOTE_EMPTY" ]; then
+    echo "✗ refuse: the push names no remote URL, so no MR backing '${branch}' could be looked up."
+    echo "  Set the origin remote ('git remote set-url origin <url>'), then retry the push."
+    echo "  For a deliberate override, add [push-to-foreign-mr-ok: <reason>] to a commit message in the push range."
+  elif [ "${kind}" = "ALIAS_UNRESOLVED" ]; then
+    echo "✗ refuse: SSH alias '${mr_number}' could not be resolved to a forge host."
+    echo "  Set HostName for '${mr_number}' in ~/.ssh/config, then retry the push."
+    echo "  For a deliberate override, add [push-to-foreign-mr-ok: <reason>] to a commit message in the push range."
+  elif [ "${kind}" = "UNKNOWN" ]; then
+    read -r probe_tool probe_cause <<<"${verdict_tail}" || true
+    echo "✗ refuse: '${branch}' backs an OPEN MR (#${mr_number}) authored by '${mr_author}'; this venue cannot tell whether that is you."
+    # Report the cause the probe was OBSERVED to produce. Asserting an
+    # unauthenticated CLI on a TIMEOUT sent the operator to `auth status`,
+    # which answers "Logged in" and hides the real, transient cause.
+    # Judged on the LAST attempt: an earlier one was a transient the retry outlived.
+    case "${probe_cause##*, then }" in
+      "timeout of "*)
+        echo "  Observed: '${probe_tool} api user' did not answer (${probe_cause}) — the identity probe TIMED OUT."
+        echo "  A timeout is not evidence the CLI is unauthenticated; it may well answer on the next attempt."
+        remedy="Retry the push. If it keeps timing out, push from a venue where '${probe_tool}' answers promptly."
+        ;;
+      "a process start the host refused"*)
+        echo "  Observed: this host briefly refused to start '${probe_tool}' (EAGAIN) — it is short of processes, not missing '${probe_tool}'."
+        remedy="Retry the push once the host is less loaded."
+        ;;
+      tool-absent | exec-failed)
+        echo "  Observed: '${probe_tool}' could not be run in this venue, so no identity was ever asked for."
+        remedy="Install '${probe_tool}' here, or push from a venue that has it."
+        ;;
+      "an answer naming no login")
+        echo "  Observed: '${probe_tool} api user' answered here, but the payload named no login."
+        remedy="Re-authenticate '${probe_tool}' in THIS venue ('${probe_tool} auth status'), or push from a venue that resolves an identity."
+        ;;
+      *)
+        echo "  Observed: '${probe_tool} api user' ran here and exited non-zero (${probe_cause})."
+        remedy="If that names a credential problem, authenticate '${probe_tool}' in THIS venue ('${probe_tool} auth status'); otherwise retry, or push from a venue that resolves an identity."
+        ;;
     esac
-    echo "  Declare the MR author as one of your own logins in self_forge_identities if it is yours."
+    echo "  An unresolvable identity is not evidence the push is harmless — the guard refuses rather than letting the check evaporate."
+    echo "  ${remedy}"
+    echo "  If '${mr_author}' is one of YOUR OWN logins, declare it once under 'self_forge_identities' — that is a cold config read, so it answers even here."
+    echo "  For a genuine co-authoring push, add [push-to-foreign-mr-ok: <reason>] to a commit message in the push range."
   else
-    echo "✗ refuse: '${branch}' backs an OPEN MR (#${pr_number}) authored by '${pr_author}', not you ('${field4}')."
+    echo "✗ refuse: '${branch}' backs an OPEN MR (#${mr_number}) authored by '${mr_author}', not you ('${verdict_tail}')."
     echo "  Pushing would silently modify a teammate's MR. Your changes belong on YOUR own branch."
+    echo "  A worktree opened to INSPECT a colleague's MR is read-only (see /t3:rules § never push to a colleague's open MR branch)."
+    echo "  For a genuine co-authoring push, add [push-to-foreign-mr-ok: <reason>] to a commit message in the push range."
   fi
-  echo "  A worktree opened to INSPECT a colleague's MR is read-only (see /t3:rules § never push to a colleague's open MR branch)."
-  echo "  For a genuine co-authoring push, add [push-to-foreign-mr-ok: <reason>] to a commit message in the push range."
   blocked=1
 done <<< "${refs_input}"
 

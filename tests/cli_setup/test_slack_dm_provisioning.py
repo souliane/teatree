@@ -183,7 +183,7 @@ class TestSlackBackendUsesCachedChannel:
 
     This is the consumer side of #1342: even when the per-overlay bot has
     been freshly created and never had an IM with the user, every DM-sending
-    path (``notify_user``, ``DailyDigest``, ``review_nag``) reads the cached
+    path (``notify_user``, ``review_nag``) reads the cached
     channel id without re-calling ``conversations.open``.
     """
 

@@ -167,6 +167,12 @@ class TestIsFullyPassedAt(TestCase):
         assert "stale" in rubric.unverified_reason(_SHA)
         assert "#0 'AC1'" in rubric.unverified_reason(_SHA)
 
+    def test_missing_head_grade_is_distinct_from_stale_grade(self) -> None:
+        rubric = Rubric.populate(_ticket(), ["AC1"])
+        rubric.ticket.merge_extra(set_keys={"rubric_grades_recorded": True, "rubric_grades_by_head": {}})
+        assert "no grades recorded" in rubric.unverified_reason(_SHA)
+        assert "stale" not in rubric.unverified_reason(_SHA)
+
     def test_empty_head_sha_is_not_passed(self) -> None:
         assert self._graded_rubric().is_fully_passed_at("") is False
 
@@ -191,10 +197,13 @@ class TestIsFullyPassedAt(TestCase):
         assert rubric.unverified_reason(_SHA, waived=True) == ""
 
     def test_an_uncited_pass_is_not_passed(self) -> None:
-        # A legacy row graded before a citation was required: record_grade refuses this
-        # shape now, so it is written through the ORM to model what is already on disk.
+        # Per-head JSON is the merge gate's source of truth after grade binding.
         rubric = self._graded_rubric()
-        rubric.criteria.filter(ordinal=0).update(rationale="")
+        ticket = rubric.ticket
+        ticket.refresh_from_db()
+        grades = ticket.extra["rubric_grades_by_head"]
+        grades[_SHA][str(rubric.criteria.get(ordinal=0).pk)]["rationale"] = ""
+        ticket.merge_extra(set_keys={"rubric_grades_by_head": grades})
         assert rubric.is_fully_passed_at(_SHA) is False
         assert "cite" in rubric.unverified_reason(_SHA)
         assert "#0 'AC1'" in rubric.unverified_reason(_SHA)

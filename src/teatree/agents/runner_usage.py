@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 from claude_agent_sdk import ResultMessage
 
 from teatree.agents.skill_assurance import SkillAssurance
+from teatree.core.billed_model import dominant_model
 
 if TYPE_CHECKING:
     from teatree.agents.attempt_recorder import AttemptUsage
@@ -119,7 +120,7 @@ def _attempt_usage(message: ResultMessage | None, observation: UsageObservation 
             fallback_from_attempt_id=provenance.fallback_from_attempt_id,
         )
     usage = message.usage if isinstance(message.usage, dict) else {}
-    model = _billed_model(message.model_usage)
+    model = dominant_model(message.model_usage) or ""
     served = message.model_usage.get(model) if isinstance(message.model_usage, dict) else None
     cost_usd, estimated = _resolve_cost_usd(message, usage=usage, model=model)
     return AttemptUsage(
@@ -174,10 +175,6 @@ def _spend_is_unknown(message: ResultMessage, *, usage: dict[str, Any]) -> bool:
     return (message.num_turns or 0) > 0 and all(usage.get(key) is None for key in _TOKEN_KEYS)
 
 
-#: A ``model_usage`` entry's token counts, in the CLI's camelCase rather than ``usage``'s snake_case.
-_MODEL_TOKEN_KEYS = ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
-
-
 def _token_sum(counts: object, keys: tuple[str, ...]) -> int:
     if not isinstance(counts, dict):
         return 0
@@ -187,17 +184,6 @@ def _token_sum(counts: object, keys: tuple[str, ...]) -> int:
 def context_size(usage: object) -> int:
     """One request's whole context — what it sent, read from cache, cached and wrote — from its ``usage``."""
     return _token_sum(usage, _TOKEN_KEYS)
-
-
-def _billed_model(model_usage: dict[str, Any] | None) -> str:
-    """The model that served the run — the ``model_usage`` key with the most tokens — or ``""``.
-
-    Claude Code bills a small Haiku auxiliary call beside every run, so the first key is a coin flip.
-    """
-    if isinstance(model_usage, dict) and model_usage:
-        served, _ = max(model_usage.items(), key=lambda entry: _token_sum(entry[1], _MODEL_TOKEN_KEYS))
-        return str(served)
-    return ""
 
 
 def _resolve_cost_usd(message: ResultMessage, *, usage: dict[str, Any], model: str) -> tuple[float | None, bool]:

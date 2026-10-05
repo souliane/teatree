@@ -129,7 +129,7 @@ pipeline — you do NOT execute or chain the phases yourself:
    CLEAR refuses on its own message, which names the sanctioned path.
 
 The orchestrator never merges ITSELF (that is the loop's keystone step, not
-orchestration), never overrides `require_ticket`, and never bypasses CI quality
+orchestration), and never bypasses CI quality
 gates — auto-start only kicks off the work; the per-phase loop dispatch carries
 it forward.
 

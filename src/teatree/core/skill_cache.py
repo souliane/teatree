@@ -1,9 +1,9 @@
 """Skill metadata cache.
 
 Writes the active overlay's skill metadata + skill (requires) index to
-``$DATA_DIR/skill-metadata.json``. The UserPromptSubmit hook reads the
+``$DATA_DIR/skill-metadata.json``. The SessionStart hook reads the
 cache to resolve overlay matching and the requires closure without paying
-the cost of Django bootstrap on every prompt.
+the cost of Django bootstrap.
 
 Called from `t3 config write-skill-cache` and from the loop tick
 when its scanners notice a SKILL.md mtime change. The dashboard's

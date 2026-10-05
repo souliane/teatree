@@ -3,7 +3,7 @@
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import IncomingEvent, ReplyDispatch
+from teatree.core.models import ConfigSetting, IncomingEvent, ReplyDispatch
 from teatree.core.reply_transport import NoopReplier, Replier
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
@@ -17,6 +17,7 @@ def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Monk
     # suite. The gate defaults ON globally (#960), so disable it here so
     # the mechanics assertions still hold.
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+    ConfigSetting.objects.set_value("send_proxy_allowlist", ["slack:C-eng"])
 
 
 class TestReplyDispatch(TestCase):
@@ -73,6 +74,7 @@ class TestNoopReplier(TestCase):
     def test_post_in_thread_records_dispatch_as_sent(self) -> None:
         event = IncomingEvent.objects.create(
             source=IncomingEvent.Source.SLACK,
+            channel_ref="C-eng",
             body="x",
             idempotency_key="slack:noop-1",
         )
@@ -92,6 +94,7 @@ class TestNoopReplier(TestCase):
     def test_post_in_thread_is_idempotent_on_duplicate_key(self) -> None:
         event = IncomingEvent.objects.create(
             source=IncomingEvent.Source.SLACK,
+            channel_ref="C-eng",
             body="x",
             idempotency_key="slack:noop-2",
         )

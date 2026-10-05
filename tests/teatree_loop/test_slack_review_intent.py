@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.core.models import ReviewAssignment, ReviewIntent
+from teatree.core.models import ReviewAssignment
 from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.types import RawAPIDict
 
@@ -235,41 +235,6 @@ class TestOverlayScoping:
         SlackReviewIntentScanner(backend=backend_b, overlay="ovB").scan()
 
         assert ReviewAssignment.objects.count() == 2
-
-
-class TestApprovalReactionApi:
-    """Requirement 3: white_check_mark when t3 approves an MR the user reviewed.
-
-    The hot path is already wired via ``add_approval_reaction`` (signals.py).
-    We assert the dedicated helper ``approve_review_assignment`` advances the
-    ledger row to ``approved`` so the audit trail captures the closed loop.
-    """
-
-    def test_approve_review_assignment_marks_row_approved(self) -> None:
-        row = ReviewAssignment.record(
-            ReviewIntent(mr_url=MR, user_id=USER, channel=CHANNEL, slack_ts=TS, trigger="reaction")
-        )
-        assert row is not None
-
-        from teatree.loop.scanners.slack_review_intent import approve_review_assignment  # noqa: PLC0415
-
-        count = approve_review_assignment(mr_url=MR, overlay="")
-        assert count == 1
-        row.refresh_from_db()
-        assert row.state == ReviewAssignment.State.APPROVED
-        assert row.approved_at is not None
-
-    def test_approve_review_assignment_is_idempotent(self) -> None:
-        row = ReviewAssignment.record(
-            ReviewIntent(mr_url=MR, user_id=USER, channel=CHANNEL, slack_ts=TS, trigger="reaction")
-        )
-        assert row is not None
-
-        from teatree.loop.scanners.slack_review_intent import approve_review_assignment  # noqa: PLC0415
-
-        approve_review_assignment(mr_url=MR, overlay="")
-        second = approve_review_assignment(mr_url=MR, overlay="")
-        assert second == 0
 
 
 class TestScannerName:

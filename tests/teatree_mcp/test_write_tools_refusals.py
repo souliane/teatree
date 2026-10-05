@@ -25,7 +25,8 @@ from django.test import TestCase
 
 from teatree.config import SAFETY_POSTURE_KEYS, UserSettings
 from teatree.core.models import ConfigSetting
-from teatree.mcp import build_server, write_tools
+from teatree.mcp import write_tools
+from teatree.mcp.server import build_server
 from teatree.mcp.write_tools import MCP_SETTABLE_OK, refuse_reason
 from tests.teatree_mcp._call_tool_result import payloads as _payloads
 
@@ -162,9 +163,9 @@ class TestConfigSettingSetEndToEnd(TestCase):
 
     def test_reviewed_settable_key_is_written(self) -> None:
         # A delegation-shaped but reviewed-benign tuning knob still goes through.
-        result = _call("config_setting_set", {"key": "e2e_confidence_threshold", "value": "60"})
+        result = _call("config_setting_set", {"key": "max_open_prs_per_repo_per_ticket", "value": "60"})
         assert result["ok"] is True
-        assert ConfigSetting.objects.get_effective("e2e_confidence_threshold", scope="") == 60
+        assert ConfigSetting.objects.get_effective("max_open_prs_per_repo_per_ticket", scope="") == 60
 
     def test_refuse_reason_is_the_module_gate(self) -> None:
         # Guards against the tool bypassing refuse_reason: the write path must consult it.

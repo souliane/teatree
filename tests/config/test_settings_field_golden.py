@@ -1,14 +1,9 @@
 # test-path: cross-cutting
 """Golden field-set pin for ``UserSettings`` (config §3d #2).
 
-The retired-key guard in ``test_legacy_setting_aliases.py`` re-asserts renames
-that are ALREADY recorded, but nothing forces the NEXT rename to be recorded —
-the exact #3109 silent-drop class (a stored row under an unrecorded old name is
-dropped with no signal). This golden frozenset closes it: ANY change to the
-``UserSettings`` field set — an add, a removal, or a rename — turns this test red
-with the routing instructions, so recording the rename in
-``_RETIRED_SETTING_KEYS`` + ``_LEGACY_SETTING_ALIASES`` (or the removed-dead pin)
-can never be forgotten.
+This golden frozenset makes every change to the ``UserSettings`` field set — an
+add, removal, or rename — a deliberate edit. A rename also needs a data migration
+to carry stored rows onto the new key.
 
 The set is maintained by hand ON PURPOSE: that is the whole point — a field-set
 change must be a deliberate, reviewed edit here, not an incidental drift.
@@ -16,24 +11,16 @@ change must be a deliberate, reviewed edit here, not an incidental drift.
 
 import dataclasses
 
-from teatree.config import UserSettings
+from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings
 
 #: Every ``UserSettings`` field name at the current schema. Editing the dataclass
 #: WITHOUT updating this set is a red test — see the module docstring for routing.
 GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
     {
-        "adaptive_intake_concurrency_enabled",
-        "admin_autologin_enabled",
-        "admission_governor_enabled",
         "admission_pressure_shed_at",
-        "admission_quota_brake_enabled",
         "admit_colleague_prs_to_board",
         "agent_harness",
         "agent_harness_provider",
-        "agent_max_turns",
-        "agent_signature",
-        "allow_destructive_disk",
-        "allow_destructive_ram",
         "anthropic_api_key_pass_paths",
         "anthropic_oauth_pass_paths",
         "approved_recipe_sha",
@@ -43,9 +30,6 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "artifact_idle_days",
         "ask_before_backlog_sweep_closes",
         "ask_before_creating_news_tickets",
-        "attachment_gate_enabled",
-        "auto_disposition_enabled",
-        "auto_update_reinstall",
         "auto_update_require_green_main",
         "autoload",
         "autonomy",
@@ -55,21 +39,14 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "boost_concurrency",
         "bulk_close_threshold",
         "cheap_phase_admission_ceiling",
-        "check_updates",
-        "chrome_devtools_headless",
-        "chrome_devtools_mcp_enabled",
-        "ci_eval_heal_autofix_enabled",
-        "claude_chrome",
         "clean_ignore",
         "colleague_repo_url_pattern",
         "contribute",
         "contribute_plugin_dir",
-        "critic_gate_mode",
         "dashboard_instance_label",
         "dashboard_logo",
         "db_backup_retention_days",
         "directive_intake_per_tick",
-        "directive_loop_enabled",
         "directive_verify_days",
         "disk_cache_allowlist",
         "disk_crit_free_gb",
@@ -77,34 +54,19 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "dogfood_smoke_overlay",
         "dogfood_smoke_skill",
         "drain_slot_reservation",
-        "dream_automation_asks",
-        "dream_compliance_escalate",
-        "dream_compliance_measure",
-        "dream_cross_link",
-        "dream_decay",
-        "dream_derive_evals",
         "dream_memory_promote",
-        "dream_merge",
-        "dream_propose_evals",
-        "dream_reindex",
-        "dream_validate_live",
-        "e2e_confidence_threshold",
-        "e2e_mandatory_gate_enabled",
-        "enforce_regulated_path",
+        "dream_umbrella_url",
         "envelope_stop_gate_refusals",
         "eval_local_skill",
         "excluded_skills",
         "expected_required_contexts",
-        "factory_score_enabled",
-        "fleet_claim_enabled",
         "gate_relaxation_gate_enabled",
-        "gitlab_approval_scanner_enabled",
+        "gitlab_events_subscription",
         "handover_mirror_path",
         "harness_skill_exclusions",
-        "hook_fetch_titles",
+        "agent_max_turns",
         "idle_stack_e2e_recent_minutes",
         "idle_stack_idle_minutes",
-        "incremental_push_gate",
         "independent_reviewer_identities",
         "intake_ram_per_agent_gb",
         "intake_ram_reserve_gb",
@@ -117,15 +79,9 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "merge_wip",
         "metered_spend_window_hours",
         "metered_token_ceiling",
-        "missing_issue_ref_policy",
         "mode",
-        "mr_conflict_scan_enabled",
         "mr_reminder",
         "mr_title_regex",
-        "mr_triage_enabled",
-        "notify_on_behalf",
-        "notify_on_post_on_behalf",
-        "notify_user_via_bot",
         "notion_write_allowed_roots",
         "notion_write_denied_roots",
         "on_behalf_auto_actions",
@@ -134,14 +90,8 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "openai_compatible_extra_headers",
         "openai_compatible_lane",
         "openai_compatible_model",
-        "openai_compatible_sends_prompt_cache_key",
-        "orchestrate_claim_enabled",
         "orchestrator_bash_gate_enabled",
         "orphan_group_min_age_hours",
-        "outer_loop_enabled",
-        "outer_loop_max_per_week",
-        "outer_loop_measure_days",
-        "outer_loop_stop_after_consecutive_failures",
         "pr_review_backend",
         "provision_fast_step_timeout_seconds",
         "provision_max_concurrency",
@@ -149,65 +99,45 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "provision_slow_threshold_seconds",
         "provision_step_timeout_seconds",
         "pull_main_clone_cadence_hours",
-        "pull_main_clone_disabled",
         "pydantic_ai_max_tokens",
         "pydantic_ai_request_limit",
         "ram_crit_avail_gb",
-        "ram_kill_allowlist",
         "ram_warn_avail_gb",
         "regulated_path_model_allowlist",
         "repo_mode",
-        "require_anti_vacuity_attestation",
-        "require_debt_delta",
-        "require_executed_repro",
         "require_human_approval_to_answer",
         "require_human_approval_to_merge",
-        "require_integration_review",
-        "require_merge_evidence",
-        "require_merge_quality_verdict",
-        "require_review_context",
-        "require_reviewed_state_for_review_request",
-        "require_work_group_batch",
         "review_backend_cooldown_hours",
         "review_exempt_repos",
         "review_exempt_repos_count_toward_group_readiness",
-        "review_nag_enabled",
         "review_nag_max_interval_days",
-        "review_request_post_disabled",
-        "review_resume_reply_enabled",
         "review_skill",
         "review_skill_alternates",
         "scanner_overlay_scope",
+        "schema_readiness_gate_enabled",
         "scanning_news_cadence_hours",
         "scanning_news_skill",
-        "schema_readiness_gate_enabled",
         "scratch_retention_days",
         "scratch_sweep_root",
         "sdk_monthly_credit_usd",
-        "self_update_disabled",
         "send_proxy_allowlist",
-        "send_proxy_mode",
         "session_stale_after_hours",
         "single_branch_repos",
-        "slack_voice_classifier_mode",
         "snapshot_baseline_gate_enabled",
         "snapshot_warmer_max_age_days",
         "solo_repo_url_pattern",
         "speak",
         "stale_stack_min_age_minutes",
         "statusline_chain",
-        "statusline_engaged_render",
         "subagent_spawn_ceiling",
         "substrate_auto_merge_authorized_by",
         "substrate_self_signoff",
         "target_branch",
         "task_attempt_retention_days",
         "task_result_retention_days",
-        "task_sweep_disabled",
         "task_sweep_recheck_interval_hours",
         "test_worker_ram_gb",
         "ticket_budget_max_cost_usd",
-        "ticket_transition_prune_disabled",
         "trusted_issue_authors",
         "umbrella_issue_labels",
         "user_identity_aliases",
@@ -216,10 +146,8 @@ GOLDEN_USER_SETTINGS_FIELDS: frozenset[str] = frozenset(
         "watchdog_max_turns",
         "wip",
         "worker_quiescing",
-        "workspace_dir",
-        "worktree_occupancy_gate_enabled",
-        "worktree_stale_days",
         "write_wip",
+        "workspace_dir",
     }
 )
 
@@ -228,10 +156,8 @@ _ROUTING = (
     "  * ADDED a field   -> add its name to GOLDEN_USER_SETTINGS_FIELDS + register a\n"
     "                       parser in OVERLAY_OVERRIDABLE_SETTINGS (and a reader / a\n"
     "                       conformance-allowlist entry).\n"
-    "  * RENAMED a field -> record the old name in resolution._RETIRED_SETTING_KEYS AND\n"
-    "                       map it in _LEGACY_SETTING_ALIASES so a stored row is never\n"
-    "                       silently dropped (#3109), then update this golden set.\n"
-    "  * REMOVED a field -> drop it here AND pin its removal in test_removed_dead_settings.py."
+    "  * RENAMED a field -> migrate stored ConfigSetting rows, then update this golden set.\n"
+    "  * REMOVED a field -> drop it here; test_setting_decisions.py pins audited removals."
 )
 
 
@@ -244,6 +170,10 @@ def test_user_settings_field_set_matches_golden() -> None:
     added = sorted(current - GOLDEN_USER_SETTINGS_FIELDS)
     removed = sorted(GOLDEN_USER_SETTINGS_FIELDS - current)
     assert current == GOLDEN_USER_SETTINGS_FIELDS, f"added={added} removed={removed}\n{_ROUTING}"
+
+
+def test_every_db_home_setting_has_a_user_settings_field() -> None:
+    assert set(OVERLAY_OVERRIDABLE_SETTINGS) <= GOLDEN_USER_SETTINGS_FIELDS
 
 
 def test_golden_pin_flags_a_synthetic_add_and_removal() -> None:

@@ -4,8 +4,7 @@ Each gated the whole of ONE loop's only scanner, so the preset entry for that lo
 already carries the same opinion. The stored value is NOT folded onto the preset: these
 were read through ``load_config().user``, which is the dataclass defaults rather than the
 store, so a stored ``true`` was never in effect — folding it would STOP a loop that has
-been running all along. The rows go, and ``RETIRED_SETTINGS`` answers for any that a
-downgraded box writes back.
+been running all along. The rows go.
 
 Refuses rather than picks when a box's rows DISAGREE across scopes, mirroring ``0088``:
 that shape is an operator's deliberate carve-out and is worth a human look before it is

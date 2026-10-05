@@ -30,7 +30,6 @@ from hooks.scripts.resume_admission import (
     resume_admission_advisory,
 )
 from hooks.scripts.state_files import read_lines
-from teatree.config import cold_reader
 from teatree.core import admission_governor
 from teatree.core.admission_governor import MachineSignal
 
@@ -131,12 +130,6 @@ class TestResumeAdvisory:
             handle_subagent_stop_track_agent({"session_id": _SESSION, "agent_id": f"a{i:04d}"})
         assert resume_admission_advisory(_SESSION, "resume") == ""
 
-    def test_the_kill_switch_silences_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _on_box(monkeypatch, _machine(cores=8, load1=58.0))
-        _fleet(12)
-        monkeypatch.setattr(cold_reader, "bool_setting", lambda *_a, **_kw: False)
-        assert resume_admission_advisory(_SESSION, "resume") == ""
-
     def test_an_unreadable_ledger_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_box(monkeypatch, _machine(cores=8, load1=58.0))
         _fleet(12)
@@ -164,13 +157,13 @@ class TestWiring:
     ) -> None:
         _on_box(monkeypatch, _machine(cores=8, load1=58.0))
         _fleet(12)
-        monkeypatch.setattr(router, "_claim_session_handover", lambda _s: None)
+        monkeypatch.setattr(router, "_claim_session_handover", lambda _s, _c: None)
         monkeypatch.setattr(router, "_autocompact_kill_switch_advisory", lambda: "")
         monkeypatch.setattr(router, "_account_switch_advisory", lambda: "")
         monkeypatch.setattr(router, "_mcp_connectivity_advisory", lambda: "")
 
-        merged = router._merge_session_start_context("orientation", _SESSION, "resume")
-        router._emit_session_start_context(merged)
+        merged = router._merge_session_start_context("orientation", _SESSION, "resume", router.StartClaims())
+        router.StartClaims().deliver(merged)
 
         payload = json.loads(capsys.readouterr().out)
         emitted = payload["hookSpecificOutput"]["additionalContext"]
@@ -180,11 +173,14 @@ class TestWiring:
     def test_a_non_resume_start_merges_exactly_as_before(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _on_box(monkeypatch, _machine(cores=8, load1=58.0))
         _fleet(12)
-        monkeypatch.setattr(router, "_claim_session_handover", lambda _s: None)
+        monkeypatch.setattr(router, "_claim_session_handover", lambda _s, _c: None)
         monkeypatch.setattr(router, "_autocompact_kill_switch_advisory", lambda: "")
         monkeypatch.setattr(router, "_account_switch_advisory", lambda: "")
         monkeypatch.setattr(router, "_mcp_connectivity_advisory", lambda: "")
-        assert router._merge_session_start_context("orientation", _SESSION, "startup") == "orientation"
+        assert (
+            router._merge_session_start_context("orientation", _SESSION, "startup", router.StartClaims())
+            == "orientation"
+        )
 
 
 _COLD_PROBE = textwrap.dedent(
@@ -194,7 +190,11 @@ _COLD_PROBE = textwrap.dedent(
     repo = pathlib.Path(sys.argv[1]).resolve()
     src = (repo / "src").resolve()
     sys.path.insert(0, str(repo))
-    sys.path[:] = [p for p in sys.path if p and pathlib.Path(p).resolve() != src]
+    sys.path[:] = [
+        p for p in sys.path
+        if p and pathlib.Path(p).resolve() != src
+        and not (pathlib.Path(p) / "teatree" / "__init__.py").exists()
+    ]
 
     def purge():
         for name in [n for n in sys.modules if n == "teatree" or n.startswith("teatree.")]:
@@ -208,7 +208,7 @@ _COLD_PROBE = textwrap.dedent(
         control_failed = True
     purge()
 
-    from hooks.scripts.resume_admission import _governor_enabled, _shed_directive
+    from hooks.scripts.resume_admission import _shed_directive
 
     try:
         directive = _shed_directive(10000)
@@ -217,7 +217,6 @@ _COLD_PROBE = textwrap.dedent(
     probe = {
         "control_import_failed": control_failed,
         "directive": directive,
-        "kill_switch_read": _governor_enabled(),
     }
     print(json.dumps(probe))
     """
@@ -247,4 +246,3 @@ class TestColdHookImports:
         probe = json.loads(result.stdout)
         assert probe["control_import_failed"], "control did not reproduce the cold-hook path"
         assert "10000" in probe["directive"]
-        assert isinstance(probe["kill_switch_read"], bool)

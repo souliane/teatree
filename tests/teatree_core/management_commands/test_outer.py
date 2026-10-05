@@ -6,6 +6,7 @@ created at defaults), and ``tick`` SKIPs while the seeded Loop row is disabled.
 With the flag on, ``propose`` records an operator hypothesis.
 """
 
+from contextlib import AbstractContextManager
 from io import StringIO
 from unittest import mock
 
@@ -23,7 +24,9 @@ from teatree.core.models import (
     ProposalSpec,
     Ticket,
 )
+from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.outer_loop.tick import OuterLoopTickResult
+from teatree.loops.shared.guards import SignalTrust
 
 
 def _run(*args: str) -> str:
@@ -75,20 +78,35 @@ def _keep_pending() -> OuterLoopExperiment:
     return exp
 
 
+def _signals(*, trusted: bool) -> AbstractContextManager[object]:
+    """Pin the factory-signal read, which otherwise depends on whether the test runs in a git clone."""
+    trust = SignalTrust(trusted=trusted, gap_ids=() if trusted else ("review_catch",))
+    return mock.patch("teatree.loops.outer_loop.guards.probe_signal_trust", return_value=trust)
+
+
 class TestOuterCommandInertAtDefaults(TestCase):
-    def test_status_reports_the_guard_chain_refusing(self) -> None:
-        output = _run("status")
-        assert "REFUSE" in output
-        assert "outer_loop_disabled" in output
+    def test_status_reports_the_unconditional_guard_chain(self) -> None:
+        with (
+            _signals(trusted=True),
+            mock.patch("teatree.loop.self_improve.budget.read_disk_used_percent", return_value=10),
+            mock.patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=20),
+        ):
+            output = _run("status")
+        assert "ALLOW" in output
         assert "no active experiment" in output
+
+    def test_status_names_an_untrusted_signal_as_the_refusal(self) -> None:
+        with _signals(trusted=False):
+            output = _run("status")
+        assert "REFUSE (signal_untrusted)" in output
 
     def test_history_is_empty(self) -> None:
         assert "no experiments recorded" in _run("history")
 
-    def test_propose_refuses_while_the_flag_is_off(self) -> None:
+    def test_propose_requires_a_hypothesis_and_target(self) -> None:
         with pytest.raises(SystemExit) as exc:
-            call_command("outer", "propose", hypothesis="Try X", target="review_catch")
-        assert exc.value.code == 2
+            call_command("outer", "propose", hypothesis="", target="review_catch")
+        assert exc.value.code == 1
         assert OuterLoopExperiment.objects.count() == 0
 
     def test_tick_skips_while_the_loop_row_is_disabled(self) -> None:
@@ -99,17 +117,7 @@ class TestOuterCommandInertAtDefaults(TestCase):
 
 class TestOuterTickWhenEnabled(TestCase):
     def setUp(self) -> None:
-        call_command("config_setting", "set", "outer_loop_enabled", "true")
-        call_command("config_setting", "set", "factory_score_enabled", "true")
         _seed_outer_loop_row(enabled=True)
-
-    def test_tick_runs_the_guard_chain_and_refuses_without_a_live_critic(self) -> None:
-        # Flag + loop row on, but the critic code guard fails closed → the tick
-        # runs, refuses, marks the run, and creates nothing (the shipped state).
-        output = _run("tick")
-        assert "outer_loop tick" in output
-        assert "critic_not_live" in output
-        assert OuterLoopExperiment.objects.count() == 0
 
     def test_tick_skips_when_the_cadence_has_not_elapsed(self) -> None:
         Loop.objects.filter(name="outer_loop").update(last_run_at=timezone.now())
@@ -121,7 +129,8 @@ class TestOuterTickWhenEnabled(TestCase):
 
     def test_a_guard_refusal_is_not_rendered_as_an_ok_tick(self) -> None:
         """A refusal mutates nothing; the OK prefix read as an advanced tick."""
-        output = _run("tick")
+        with mock.patch("teatree.loops.outer_loop.guards.precheck_budget", return_value=BudgetVerdict.skip("cap")):
+            output = _run("tick")
         assert "REFUSE" in output
         assert "OK " not in output
 
@@ -194,9 +203,6 @@ def _seed_outer_loop_row(*, enabled: bool) -> None:
 
 
 class TestOuterProposeWhenEnabled(TestCase):
-    def setUp(self) -> None:
-        call_command("config_setting", "set", "outer_loop_enabled", "true")
-
     def test_propose_records_an_operator_experiment(self) -> None:
         output = _run("propose", "--hypothesis", "Tighten the review gate.", "--target", "review_catch")
         assert "proposed experiment" in output
@@ -216,6 +222,10 @@ class TestOuterProposeWhenEnabled(TestCase):
 
     def test_status_shows_the_active_experiment(self) -> None:
         _run("propose", "--hypothesis", "H", "--target", "review_catch")
-        output = _run("status")
+        with (
+            mock.patch("teatree.loop.self_improve.budget.read_disk_used_percent", return_value=10),
+            mock.patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=20),
+        ):
+            output = _run("status")
         assert "active experiment #" in output
         assert "review_catch" in output

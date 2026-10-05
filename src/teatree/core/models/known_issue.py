@@ -23,13 +23,21 @@ thresholds live in :mod:`teatree.core.factory.operational_health`, this model on
 carries the per-issue severity.
 """
 
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 if TYPE_CHECKING:
     from teatree.core.factory.health_signal import HealthSignal
+
+logger = logging.getLogger(__name__)
+
+
+def merge_refusal_fingerprint(ticket_pk: int) -> str:
+    """The one issue the board keeps open while it cannot confirm a ticket's forge merge."""
+    return f"board-merge-refused:{ticket_pk}"
 
 
 class KnownIssueManager(models.Manager["KnownIssue"]):
@@ -118,6 +126,23 @@ class KnownIssueManager(models.Manager["KnownIssue"]):
             resolved_at__isnull=True,
         ).exclude(fingerprint__in=live_fingerprints)
         return stale.update(resolved_at=timezone.now())
+
+    def resolve_merge_refusal(self, ticket_pk: int) -> int:
+        """Close the board's merge-refusal issue for a ticket that has merged, by whatever path."""
+        return self.filter(fingerprint=merge_refusal_fingerprint(ticket_pk), resolved_at__isnull=True).update(
+            resolved_at=timezone.now()
+        )
+
+    def settle_merge_refusal(self, ticket_pk: int) -> None:
+        """Close a ticket's merge refusal as it LANDS (the FSM save or a sync's bulk write), never failing the landing.
+
+        The savepoint keeps a failed write from leaving the enclosing transaction unusable for the landing's own writes.
+        """
+        try:
+            with transaction.atomic():
+                self.resolve_merge_refusal(ticket_pk)
+        except Exception:
+            logger.exception("Failed to resolve the merge-refusal issue for ticket %s", ticket_pk)
 
     def add_manual(self, text: str, *, severity: str = "", overlay: str = "") -> "KnownIssue":
         """Record an operator-authored issue the deterministic signals cannot see.

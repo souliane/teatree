@@ -133,13 +133,13 @@ def test_select_for_agent_launch_overlay_active(tmp_path: Path):
     assert "debug" in result.skills
 
 
-# ── SkillLoadingPolicy.select_for_prompt_hook (cwd/overlay context) ──
+# ── SkillLoadingPolicy.select_for_session_start (cwd/overlay context) ──
 
 
-def test_select_for_prompt_hook_framework_from_cwd(tmp_path: Path):
+def test_select_for_session_start_framework_from_cwd(tmp_path: Path):
     (tmp_path / "manage.py").touch()
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_session_start(
         cwd=tmp_path,
         overlay_skill_metadata={},
         loaded_skills=set(),
@@ -149,10 +149,10 @@ def test_select_for_prompt_hook_framework_from_cwd(tmp_path: Path):
     assert result.lifecycle_skill == ""
 
 
-def test_select_for_prompt_hook_filters_loaded(tmp_path: Path):
+def test_select_for_session_start_filters_loaded(tmp_path: Path):
     (tmp_path / "manage.py").touch()
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_session_start(
         cwd=tmp_path,
         overlay_skill_metadata={},
         loaded_skills={"ac-django"},
@@ -160,23 +160,9 @@ def test_select_for_prompt_hook_filters_loaded(tmp_path: Path):
     assert "ac-django" not in result.skills
 
 
-def test_select_for_prompt_hook_with_supplementary(tmp_path: Path):
+def test_select_for_session_start_no_context(tmp_path: Path):
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
-        cwd=tmp_path,
-        overlay_skill_metadata={},
-        loaded_skills=set(),
-        supplementary_skills=["rules", "platforms"],
-    )
-    assert "rules" in result.skills
-    assert "platforms" in result.skills
-    # Supplementary skills are advisory-only.
-    assert set(result.advisory_skills) == {"rules", "platforms"}
-
-
-def test_select_for_prompt_hook_no_context(tmp_path: Path):
-    policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_session_start(
         cwd=tmp_path,
         overlay_skill_metadata={},
         loaded_skills=set(),
@@ -495,17 +481,17 @@ def test_companion_skills_not_required_for_core_only_work(tmp_path: Path, monkey
     assert "code" in result.skills
 
 
-def test_prompt_hook_surfaces_overlay_skill_and_companions_on_remote_match(tmp_path: Path, monkeypatch):
-    # The UserPromptSubmit path has no lifecycle skill and no session-active
+def test_session_start_surfaces_overlay_skill_and_companions_on_remote_match(tmp_path: Path, monkeypatch):
+    # The SessionStart path has no lifecycle skill and no session-active
     # overlay: the cwd's remote match is the ONLY overlay-scope signal it has.
     # A matching remote means overlay work, so the overlay's own skill and its
-    # companions are surfaced as HARD demands, not advisory ones.
+    # companions are surfaced as HARD demands.
     monkeypatch.setattr(
         "teatree.skill_support.loading._matches_any_remote",
         lambda _cwd, _patterns: True,
     )
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_session_start(
         cwd=tmp_path,
         overlay_skill_metadata=_OVERLAY_META,
         loaded_skills=set(),
@@ -514,10 +500,9 @@ def test_prompt_hook_surfaces_overlay_skill_and_companions_on_remote_match(tmp_p
     assert "t3:acme" in result.skills
     assert "t3-acme-review" in result.skills
     assert "acme-conventions" in result.skills
-    assert result.advisory_skills == ()
 
 
-def test_prompt_hook_withholds_overlay_skill_when_remote_does_not_match(tmp_path: Path, monkeypatch):
+def test_session_start_withholds_overlay_skill_when_remote_does_not_match(tmp_path: Path, monkeypatch):
     # ANTI-VACUITY TWIN: the single flipped input is the remote match. Core-only
     # work keeps the overlay skill and its companions out of the demand set.
     monkeypatch.setattr(
@@ -525,7 +510,7 @@ def test_prompt_hook_withholds_overlay_skill_when_remote_does_not_match(tmp_path
         lambda _cwd, _patterns: False,
     )
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_session_start(
         cwd=tmp_path,
         overlay_skill_metadata=_OVERLAY_META,
         loaded_skills=set(),

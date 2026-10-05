@@ -56,6 +56,9 @@ class TestConfigSettingAdminSecrecy(django.test.TestCase):
     #: rendered HTML is the assertion, so it must not collide with any markup.
     SECRET_VALUE = "zzz-stored-secret-marker-zzz"
 
+    def _secret_registry(self) -> dict[str, list[str]]:
+        return {"leak": [self.SECRET_VALUE], "prose_collider": []}
+
     def setUp(self) -> None:
         user = get_user_model().objects.create_superuser("admin-secrecy", "sec@example.com", "pw")
         self.client.force_login(user)
@@ -67,23 +70,23 @@ class TestConfigSettingAdminSecrecy(django.test.TestCase):
         return self.client.get(reverse("admin:core_configsetting_change", args=[row.pk]))
 
     def test_a_secret_value_is_masked_in_the_changelist(self) -> None:
-        ConfigSetting.objects.set_value("banned_terms", [self.SECRET_VALUE])
+        ConfigSetting.objects.set_value("banned_term_registry", self._secret_registry())
         response = self._changelist()
         assert response.status_code == 200
         assert self.SECRET_VALUE.encode() not in response.content
         assert b"***" in response.content
 
     def test_a_secret_value_is_not_rendered_on_the_change_form(self) -> None:
-        row = ConfigSetting.objects.set_value("banned_terms", [self.SECRET_VALUE])
+        row = ConfigSetting.objects.set_value("banned_term_registry", self._secret_registry())
         response = self._change_form(row)
         assert response.status_code == 200
         assert self.SECRET_VALUE.encode() not in response.content
 
     def test_a_secret_seed_value_is_not_rendered_on_the_change_form(self) -> None:
         """``seed_value`` is a second copy of the same secret — provenance, not a payload."""
-        ConfigSetting.objects.seed("banned_terms", [self.SECRET_VALUE], code_default=[])
-        row = ConfigSetting.objects.get(key="banned_terms")
-        assert row.seed_value == [self.SECRET_VALUE]
+        ConfigSetting.objects.seed("banned_term_registry", self._secret_registry(), code_default={})
+        row = ConfigSetting.objects.get(key="banned_term_registry")
+        assert row.seed_value == self._secret_registry()
         response = self._change_form(row)
         assert response.status_code == 200
         assert self.SECRET_VALUE.encode() not in response.content
@@ -96,12 +99,12 @@ class TestConfigSettingAdminSecrecy(django.test.TestCase):
 
     def test_a_blank_value_leaves_a_stored_secret_untouched(self) -> None:
         """The write-only input's contract: submitting nothing keeps what is stored."""
-        row = ConfigSetting.objects.set_value("banned_terms", [self.SECRET_VALUE])
+        row = ConfigSetting.objects.set_value("banned_term_registry", self._secret_registry())
         url = reverse("admin:core_configsetting_change", args=[row.pk])
         response = self.client.post(url, {"scope": row.scope, "key": row.key, "value": ""})
         assert response.status_code == 302, dict(response.context["adminform"].form.errors)
         row.refresh_from_db()
-        assert row.value == [self.SECRET_VALUE]
+        assert row.value == self._secret_registry()
 
 
 class TestConfigSettingAdminWritesThroughSetValue(django.test.TestCase):
@@ -181,8 +184,25 @@ class TestConfigSettingAdminSaves(django.test.TestCase):
         row.refresh_from_db()
         assert row.value == []
 
+    def test_add_form_refuses_an_unknown_setting_key(self) -> None:
+        response = self.client.post(
+            reverse("admin:core_configsetting_add"),
+            {"scope": "", "key": "unregistered_setting", "value": "1"},
+        )
+        assert response.status_code == 200
+        assert "unknown config key" in str(response.context["adminform"].form.errors)
+        assert not ConfigSetting.objects.filter(key="unregistered_setting").exists()
+
+    def test_add_form_accepts_a_known_pass_key_setting(self) -> None:
+        response = self.client.post(
+            reverse("admin:core_configsetting_add"),
+            {"scope": "", "key": "github_token_pass_key", "value": '"team/github/token"'},
+        )
+        assert response.status_code == 302, self._change_form_errors(response)
+        assert ConfigSetting.objects.get(scope="", key="github_token_pass_key").value == "team/github/token"
+
     def test_change_form_saves_an_empty_dict_value(self) -> None:
-        row = ConfigSetting.objects.set_value("agent_skill_models", {"coder": "opus"})
+        row = ConfigSetting.objects.set_value("agent_skill_models", {"coder": [{"floor": "opus"}]})
         response = self._post_change_form(row, "{}")
         assert response.status_code == 302, self._change_form_errors(response)
         row.refresh_from_db()
@@ -198,8 +218,8 @@ class TestConfigSettingAdminSaves(django.test.TestCase):
         """
         rows = [
             (ConfigSetting.objects.set_value("statusline_chain", ["branch"]), "[]", []),
-            (ConfigSetting.objects.set_value("banned_terms_allowlist", ["acme"]), "[]", []),
-            (ConfigSetting.objects.set_value("agent_skill_models", {"coder": "opus"}), "{}", {}),
+            (ConfigSetting.objects.set_value("disk_cache_allowlist", ["acme"]), "[]", []),
+            (ConfigSetting.objects.set_value("agent_skill_models", {"coder": [{"floor": "opus"}]}), "{}", {}),
         ]
         for row, submitted, expected in rows:
             response = self._post_change_form(row, submitted)

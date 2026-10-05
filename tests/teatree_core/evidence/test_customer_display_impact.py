@@ -9,9 +9,15 @@ the rules did not anticipate. Only a set whose every path is explicitly
 non-impacting resolves to ``False``.
 """
 
-from teatree.core.evidence.customer_display_impact import classify_paths
+from teatree.core.evidence.customer_display_impact import classify_paths, is_non_impacting_path
 
 _NON_IMPACTING = ("*/test_*.py", "*/tests/*", "test_*.py", "*/migrations/*.py", "*.md", "tooling/*")
+
+
+def test_customer_display_impact_helpers_are_public_downstream_api() -> None:
+    assert is_non_impacting_path("app/tests/test_views.py", _NON_IMPACTING)
+    assert classify_paths(["app/tests/test_views.py"], _NON_IMPACTING) is False
+    assert classify_paths(["app/views.py"], _NON_IMPACTING) is True
 
 
 class TestImpactingPaths:

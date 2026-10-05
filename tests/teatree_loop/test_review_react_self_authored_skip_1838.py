@@ -35,6 +35,7 @@ from teatree.loop.scanners.review_request_merge_react import (
     react_merge_on_post,
 )
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
 
@@ -92,6 +93,7 @@ class _AuthoredHost:
 
 
 def _seed(*, reacted: bool) -> ReviewRequestPost:
+    allow_slack_channels(_CHANNEL)
     return ReviewRequestPost.objects.create(
         mr_url=_MR_URL,
         overlay="",

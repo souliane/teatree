@@ -1,15 +1,15 @@
 """Tests for scripts/lib/skill_loader.py.
 
-Skill suggestion is cwd/overlay-context only — framework skills detected from
-the prompt's cwd plus advisory supplementary skills. There is no free-text
-scan of the prompt; the lifecycle skill loads explicitly via slash command /
-phase / requires-chain elsewhere.
+Skill suggestion is cwd/overlay-context only — framework skills detected from the
+session's cwd. There is no free-text scan of any prompt; the lifecycle skill loads
+explicitly via slash command / phase / requires-chain elsewhere.
 """
 
 from __future__ import annotations  # noqa: TID251 — test for standalone script
 
 import json
 import sys
+from importlib import import_module
 from pathlib import Path
 from unittest import mock
 
@@ -20,8 +20,9 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from lib import skill_loader as skill_loader_mod  # noqa: E402
-from lib.skill_loader import build_requires_index, read_supplementary_skills, suggest_skills  # noqa: E402
+skill_loader_mod = import_module("lib.skill_loader")
+build_requires_index = skill_loader_mod.build_requires_index
+suggest_skills = skill_loader_mod.suggest_skills
 
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
@@ -98,22 +99,6 @@ class TestMetadataCacheInvalidation:
         assert result["skill_index"] == [{"skill": "test"}]
 
 
-class TestSupplementarySkills:
-    def test_reads_config(self, tmp_path):
-        config = tmp_path / "skills.yml"
-        config.write_text("ac-django: '.'\nac-ruff: '\\b(ruff)\\b'\n")
-        assert read_supplementary_skills(str(config), "hello") == ["ac-django"]
-        assert read_supplementary_skills(str(config), "adopt ruff") == ["ac-django", "ac-ruff"]
-
-    def test_missing_config(self):
-        assert read_supplementary_skills("/nonexistent", "hello") == []
-
-    def test_comments_and_blanks(self, tmp_path):
-        config = tmp_path / "skills.yml"
-        config.write_text("# comment\n\nac-django: '.'\n")
-        assert read_supplementary_skills(str(config), "hello") == ["ac-django"]
-
-
 class TestSuggestSkills:
     """cwd-based framework detection, no prompt scan."""
 
@@ -121,10 +106,8 @@ class TestSuggestSkills:
         (tmp_path / "manage.py").write_text("# django project\n", encoding="utf-8")
         result = suggest_skills(
             {
-                "prompt": "anything at all",
                 "cwd": str(tmp_path),
                 "loaded_skills": [],
-                "supplementary_config": "",
             }
         )
         assert "ac-django" in result["suggestions"]
@@ -133,10 +116,8 @@ class TestSuggestSkills:
         (tmp_path / "manage.py").write_text("# django project\n", encoding="utf-8")
         result = suggest_skills(
             {
-                "prompt": "anything",
                 "cwd": str(tmp_path),
                 "loaded_skills": ["ac-django"],
-                "supplementary_config": "",
             }
         )
         assert "ac-django" not in result["suggestions"]
@@ -144,24 +125,8 @@ class TestSuggestSkills:
     def test_non_python_cwd_surfaces_nothing(self, tmp_path):
         result = suggest_skills(
             {
-                "prompt": "hello",
                 "cwd": str(tmp_path),
                 "loaded_skills": [],
-                "supplementary_config": "",
             }
         )
         assert result["suggestions"] == []
-
-    def test_supplementary_is_advisory(self, tmp_path):
-        config = tmp_path / "skills.yml"
-        config.write_text("ac-ruff: '\\bruff\\b'\n")
-        result = suggest_skills(
-            {
-                "prompt": "run ruff check",
-                "cwd": str(tmp_path),
-                "loaded_skills": [],
-                "supplementary_config": str(config),
-            }
-        )
-        assert "ac-ruff" in result["suggestions"]
-        assert "ac-ruff" in result["advisory"]

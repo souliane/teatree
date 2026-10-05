@@ -309,7 +309,7 @@ def _probe_answer_pipeline() -> list[RoundtripFinding]:
             RoundtripFinding(
                 Level.FAIL,
                 f"the `{_ANSWER_LOOP}` answer loop is masked (paused / disabled / preset-forced-off) — queued "
-                f"messages are never answered. Enable it: `t3 loop enable {_ANSWER_LOOP}` and clear any override "
+                f"messages are never answered. Enable it: `t3 loop resume {_ANSWER_LOOP}` and clear any override "
                 f"(`t3 loop override {_ANSWER_LOOP} clear`).",
             )
         )

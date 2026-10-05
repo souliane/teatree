@@ -1,7 +1,6 @@
 """Tests for the containerized-``t3`` workflow pure logic (#3232).
 
-The launcher script, its install policy, the checkout it names, and the retirement
-of the superseded alias block are shared by ``t3 setup`` (the installer) and
+The launcher script, its install policy, and the checkout it names are shared by ``t3 setup`` (the installer) and
 ``t3 doctor`` (the verifier), so they are covered here in one place.
 
 The install policy is the load-bearing half: ``t3`` is the operator's only entry
@@ -18,35 +17,17 @@ from unittest.mock import patch
 
 from teatree.docker import workflow
 from teatree.docker.workflow import (
-    ALIAS_MARKER_BEGIN,
-    ALIAS_MARKER_END,
     LAUNCHER_MARKER,
-    AliasRemoval,
     LauncherInstall,
     install_launcher,
-    is_managed_launcher,
     is_running_in_container,
     launcher_bin_dir,
     launcher_path,
     launcher_wrapper_target,
     read_managed_launcher,
-    remove_alias_block,
     wrapper_path,
 )
 from teatree.docker.workflow import _render_launcher_script as render_launcher_script
-
-_USER_RC = """# the operator's own profile
-greet() {
-    echo hello
-}
-
-"""
-_USER_RC_TAIL = """export EDITOR=emacs
-farewell() {
-    echo bye
-}
-"""
-_MANAGED_ALIAS_BLOCK = f'{ALIAS_MARKER_BEGIN}\nalias t3="/somewhere/deploy/t3"\n{ALIAS_MARKER_END}\n'
 
 
 def _checkout(root: Path, name: str) -> Path:
@@ -70,56 +51,6 @@ class TestIsRunningInContainer:
 
     def test_false_on_a_plain_host(self, tmp_path: Path) -> None:
         assert is_running_in_container({}, dockerenv=tmp_path / "absent") is False
-
-
-class TestRemoveAliasBlock:
-    """Only the fenced block goes; the operator's own rc content is untouched."""
-
-    def _rc_with_block(self, tmp_path: Path) -> Path:
-        rc = tmp_path / ".zshrc"
-        rc.write_text(_USER_RC + _MANAGED_ALIAS_BLOCK + _USER_RC_TAIL, encoding="utf-8")
-        return rc
-
-    def test_surrounding_user_content_is_byte_identical_afterwards(self, tmp_path: Path) -> None:
-        rc = self._rc_with_block(tmp_path)
-        assert remove_alias_block(rc) is AliasRemoval.REMOVED
-        assert rc.read_text(encoding="utf-8") == _USER_RC + _USER_RC_TAIL
-
-    def test_rerun_reports_absent_and_changes_nothing(self, tmp_path: Path) -> None:
-        rc = self._rc_with_block(tmp_path)
-        remove_alias_block(rc)
-        after_first = rc.read_bytes()
-        assert remove_alias_block(rc) is AliasRemoval.ABSENT
-        assert rc.read_bytes() == after_first
-
-    def test_an_rc_without_the_markers_is_left_alone(self, tmp_path: Path) -> None:
-        rc = tmp_path / ".bashrc"
-        rc.write_text(_USER_RC, encoding="utf-8")
-        assert remove_alias_block(rc) is AliasRemoval.ABSENT
-        assert rc.read_text(encoding="utf-8") == _USER_RC
-
-    def test_a_missing_rc_is_never_created(self, tmp_path: Path) -> None:
-        rc = tmp_path / ".zshrc"
-        assert remove_alias_block(rc) is AliasRemoval.ABSENT
-        assert not rc.exists()
-
-    def test_writes_through_a_symlinked_rc_rather_than_replacing_it(self, tmp_path: Path) -> None:
-        # A dotfiles-repo `~/.zshrc` is a symlink; replacing the link would detach
-        # the operator's rc from the repo that manages it.
-        real = tmp_path / "dotfiles" / "zshrc"
-        real.parent.mkdir()
-        real.write_text(_USER_RC + _MANAGED_ALIAS_BLOCK + _USER_RC_TAIL, encoding="utf-8")
-        link = tmp_path / ".zshrc"
-        link.symlink_to(real)
-
-        assert remove_alias_block(link) is AliasRemoval.REMOVED
-        assert link.is_symlink()
-        assert real.read_text(encoding="utf-8") == _USER_RC + _USER_RC_TAIL
-
-    def test_an_unreadable_rc_degrades_rather_than_raising(self, tmp_path: Path) -> None:
-        rc = tmp_path / ".bashrc"
-        rc.write_bytes(b"\xff\xfe not utf-8")
-        assert remove_alias_block(rc) is AliasRemoval.UNWRITABLE
 
 
 class TestLauncherPath:
@@ -186,7 +117,7 @@ class TestInstallLauncher:
 
         assert install_launcher(target, _checkout(tmp_path, "clone")) is LauncherInstall.UPDATED
         assert not target.is_symlink()
-        assert is_managed_launcher(target)
+        assert read_managed_launcher(target)
         assert uv_script.is_file()
 
     def test_refuses_an_unmanaged_regular_file(self, tmp_path: Path) -> None:

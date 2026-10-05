@@ -18,6 +18,7 @@ from teatree.core.gates.fix_dod_gate import FixRecordDodError
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.types import FIX_RECORD_FIELDS, fix_record_missing_fields
 from tests.factories import waive_rubric
+from tests.teatree_core.conftest import record_confirmed_merge_for_test, record_executed_repro_for_test
 
 _COMPLETE_RECORD = {
     "root_cause": "the recorder never wrote extra['fix_record']; only test factories did",
@@ -30,6 +31,8 @@ _COMPLETE_RECORD = {
 
 def _coding_task(*, kind: Ticket.Kind = Ticket.Kind.FIX) -> Task:
     ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.WORK_STARTED, kind=kind)
+    if kind == Ticket.Kind.FIX:
+        record_executed_repro_for_test(ticket)
     session = Session.objects.create(ticket=ticket, agent_id="coding")
     task = Task.objects.create(ticket=ticket, session=session, phase="coding")
     task.claim(claimed_by="loop-slot")
@@ -43,6 +46,7 @@ def _coding_envelope(**extra: object) -> dict[str, object]:
 def _at_retrospected(ticket: Ticket) -> Ticket:
     Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETRO_RECORDED)
     ticket.refresh_from_db()
+    record_confirmed_merge_for_test(ticket)
     return ticket
 
 

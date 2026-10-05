@@ -6,7 +6,13 @@ import typer
 from typer.testing import CliRunner
 
 from teatree.cli.fast_push import fast_push
-from teatree.core.push.fast_push import EMPTY_DELTA_PR_SKIP, LEAK_GATES, FastPushOutcome, LeakFinding
+from teatree.core.push.fast_push import (
+    EMPTY_DELTA_PR_SKIP,
+    LEAK_GATES,
+    UNAPPROVABLE_AUTHOR_PR_REFUSAL,
+    FastPushOutcome,
+    LeakFinding,
+)
 
 runner = CliRunner()
 
@@ -74,3 +80,17 @@ class TestFastPushCommand:
 
         assert result.exit_code == 0
         assert "PR skipped: branch 'feature' carries no changes over origin/main" in result.output
+
+    def test_a_refused_author_prints_its_reason_and_exits_1_though_the_push_landed(self) -> None:
+        """A branch left with no MR is an unfinished delivery, so the command cannot report success."""
+        outcome = _success()
+        outcome.pr_url = ""
+        outcome.pr_action = UNAPPROVABLE_AUTHOR_PR_REFUSAL
+        outcome.pr_skip_reason = "git@gitlab.com:org/group/factory.git would be authored by the owner"
+
+        with patch("teatree.cli.fast_push.FastPusher") as pusher:
+            pusher.return_value.run.return_value = outcome
+            result = runner.invoke(_app, [])
+
+        assert result.exit_code == 1
+        assert "PR REFUSED (the push landed): git@gitlab.com:org/group/factory.git would be authored" in result.output

@@ -19,7 +19,7 @@ from typing import Any
 from django.db import DatabaseError, IntegrityError, transaction
 
 from teatree.core.models import OutboundClaim
-from teatree.core.session_identity import current_session_id as _resolve_agent_session_id
+from teatree.core.session_identity import current_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ def record_claim(
     value wins over the env-var fallback.
     """
     kind_value = OutboundClaim.Kind(kind) if not isinstance(kind, OutboundClaim.Kind) else kind
-    session_id = agent_session_id or _resolve_agent_session_id()
+    session_id = agent_session_id or current_session_id()
     final_extra: dict[str, Any] = dict(extra or {})
     final_extra.setdefault("overlay", _active_overlay_name())
     try:
@@ -88,4 +88,4 @@ def record_claim(
     return claim
 
 
-__all__ = ["_resolve_agent_session_id", "record_claim"]
+__all__ = ["record_claim"]

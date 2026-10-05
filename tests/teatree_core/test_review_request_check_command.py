@@ -31,6 +31,13 @@ class _NonDraftHost:
         _ = (slug, pr_id)
         return DraftState.NOT_DRAFT
 
+    def current_user(self) -> str:
+        return "fixture-owner"
+
+    def list_my_prs(self, *, author: str) -> list[dict[str, object]]:
+        assert author == "fixture-owner"
+        return [{"web_url": _MR_URL, "title": "Ready fixture MR", "head_pipeline": {"status": "success"}}]
+
 
 @pytest.fixture(autouse=True)
 def _forge_answers_non_draft() -> Iterator[None]:
@@ -42,6 +49,8 @@ def _forge_answers_non_draft() -> Iterator[None]:
     """
     with (
         patch(_FORGE, return_value=_NonDraftHost()),
+        patch("teatree.core.backend_factory.code_host_from_overlay", return_value=_NonDraftHost()),
+        patch("teatree.core.gates.review_request_batch_gate.code_host_from_overlay", return_value=_NonDraftHost()),
         patch(
             "teatree.core.management.commands.review_request_check._owner_authorship",
             return_value=True,

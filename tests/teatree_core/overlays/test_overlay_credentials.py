@@ -7,7 +7,7 @@ from django.test import TestCase
 from teatree.config.credential_pass_key import PassKeySource
 from teatree.core.models import ConfigSetting
 from teatree.core.overlay import OverlayConfig
-from teatree.core.overlays.overlay_credentials import known_credentials, known_pass_key_credential, overlay_pass_key
+from teatree.core.overlays.overlay_credentials import known_pass_key_credential, overlay_pass_key
 
 
 def _declaring(credential: str, entry: str, *, scope: str = "") -> types.SimpleNamespace:
@@ -18,15 +18,6 @@ def _declaring(credential: str, entry: str, *, scope: str = "") -> types.SimpleN
 
 
 class TestKnownCredentials(TestCase):
-    def test_core_credentials_and_every_declared_one_are_known(self) -> None:
-        declaring = {"acme": _declaring("sharepoint_secret", "store/sp")}
-
-        with patch("teatree.core.overlays.overlay_credentials.get_all_overlays", return_value=declaring):
-            known = known_credentials()
-
-        assert {"notion_token", "gitlab_token", "figma_token", "sharepoint_secret"} <= known
-        assert "notoin_token" not in known
-
     def test_only_a_known_credential_names_a_pass_key_setting(self) -> None:
         declaring = {"acme": _declaring("sharepoint_secret", "store/sp")}
 

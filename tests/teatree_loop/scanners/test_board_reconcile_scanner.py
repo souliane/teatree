@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.backend_protocols import PrOpenState
+from teatree.core.backend_protocols import PrMergeState, PrOpenState
 from teatree.core.models import Ticket
 from teatree.loop.domain_jobs import _run_job
 from teatree.loop.job_identity import _ScannerJob
@@ -30,7 +30,13 @@ def _merged_forge(url: str = _URL) -> Iterator[None]:
     def _probe(pr_url: str) -> PrOpenState:
         return PrOpenState.MERGED if pr_url == url else PrOpenState.UNKNOWN
 
-    with patch.object(board_reconcile, "pr_open_state", _probe):
+    with (
+        patch.object(board_reconcile, "pr_open_state", _probe),
+        patch(
+            "teatree.core.merge.ci_rollup.CodeHostQuery.pr_merge_state",
+            return_value=PrMergeState(state="MERGED", merge_commit_oid="a" * 40),
+        ),
+    ):
         yield
 
 

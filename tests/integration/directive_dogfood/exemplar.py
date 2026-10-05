@@ -15,12 +15,12 @@ from django.core.management import call_command
 from teatree.core.factory.factory_signal_queries import SignalReading, SignalStatus
 from teatree.core.factory.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
-from teatree.core.models import ConfigSetting, CriticVerdict, DeferredQuestion, DirectiveDispatch, Ticket
+from teatree.core.models import DeferredQuestion, DirectiveDispatch
 from teatree.core.models.directive import Directive
 from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.directive_loop.tick import DirectiveTickResult, TickSeams, run_tick
 from teatree.loops.directive_loop.verify import VerifySeams
-from teatree.loops.outer_loop.guards import MIN_CRITIC_SAMPLE, GuardSeams
+from teatree.loops.shared.guards import GuardSeams
 
 #: The canonical north-star sentence. The customer overlay it would ship for is
 #: carried by :data:`SCOPE`, never baked into the public repo as a brand string.
@@ -69,32 +69,6 @@ EXEMPLAR_ENVELOPE: dict = {
 }
 
 
-def enable_directive_loop_in_test_db() -> None:
-    """Turn the loop's two flag guards ON — as ``ConfigSetting`` rows in the TEST DB only.
-
-    Global-scope rows, so ``get_effective_settings(SCOPE)`` (the loop's named-overlay
-    resolution, which skips the env tier) reads them. Destroyed with the test DB;
-    the production store is never touched.
-    """
-    ConfigSetting.objects.set_value("directive_loop_enabled", value=True)
-    ConfigSetting.objects.set_value("factory_score_enabled", value=True)
-
-
-def seed_critic_liveness() -> None:
-    """Write ``MIN_CRITIC_SAMPLE`` real ``CriticVerdict`` rows so G2 sees a live critic.
-
-    The real ``probe_critic_liveness`` counts every ``CriticVerdict`` row, so the
-    dogfood exercises G2 for real (no ``critic_probe`` seam) rather than faking it.
-    """
-    # A non-forge scheme so `repo_namespaced_key` is blank — the seed ticket never
-    # collides with the directive umbrella's synthetic interpret/impl tickets.
-    ticket = Ticket.objects.create(issue_url="dogfood-smoke://critic-liveness-seed")
-    for index in range(MIN_CRITIC_SAMPLE):
-        CriticVerdict.objects.create(
-            ticket=ticket, transition="plan", head_sha=f"{index:040d}", grader_identity="critic-seed", items=[]
-        )
-
-
 def _healthy_report() -> FactorySignalsReport:
     """A trusted signals report (no instrumentation gap) so G3 passes for real inputs."""
     row = SignalRow(
@@ -116,8 +90,8 @@ def _healthy_report() -> FactorySignalsReport:
 def dogfood_guard_seams() -> GuardSeams:
     """The two justified guard seams: G3 (healthy signals) + G4 (budget allow).
 
-    G1/G1b resolve from the real ``ConfigSetting`` rows and G2 from the seeded real
-    ``CriticVerdict`` rows; only the host-wide G3/G4 stay injected.
+    G1/G1b and G2 resolve from the real ``ConfigSetting`` rows; only the
+    host-wide G3/G4 stay injected.
     """
     return GuardSeams(signal_report=_healthy_report(), budget=BudgetVerdict.allow())
 
@@ -130,8 +104,7 @@ def tick(
 ) -> DirectiveTickResult:
     """Advance the oldest active directive ONE step through the real pipeline.
 
-    ``settings=None`` so the guard chain resolves ``directive_loop_enabled`` /
-    ``factory_score_enabled`` for real from the test-DB ``ConfigSetting`` rows.
+    ``settings=None`` uses the real resolved settings and guard chain.
     """
     seams = TickSeams(guards=dogfood_guard_seams(), verify_seams=verify_seams, merged_probe=merged_probe)
     return run_tick(overlay=SCOPE, now=now, settings=None, seams=seams)

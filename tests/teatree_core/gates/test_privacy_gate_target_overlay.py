@@ -24,6 +24,7 @@ from teatree.core.gates import privacy_gate
 from teatree.core.gates.privacy_gate import scan_outbound_text
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.core.overlays.repo_ownership import owning_overlay_for_repo
+from tests._send_gate import TEST_TERM_REGISTRY_JSON
 from tests.teatree_core.gates._two_overlay_registry import register_a_sibling_overlay
 
 SYNTHETIC_TERM = "ZZTESTCODENAME"
@@ -64,6 +65,7 @@ class _AmbiguousRegistry(TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("T3_OVERLAY_NAME", None)
+        os.environ["TEATREE_TERM_REGISTRY"] = TEST_TERM_REGISTRY_JSON
 
         tmp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(tmp_dir.cleanup)

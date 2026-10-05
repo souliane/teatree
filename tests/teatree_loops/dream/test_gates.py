@@ -631,7 +631,7 @@ class TestPersistProbeResults(TestCase):
         ]
         persist_probe_results(probes, after, scope="acme")
 
-        assert DreamQaProbe.objects.current_corpus("acme").count() == 2
+        assert DreamQaProbe.objects.filter(scope="acme").count() == 2
         q1 = DreamQaProbe.objects.get(question="q1")
         q2 = DreamQaProbe.objects.get(question="q2")
         assert q1.pass_count == 1
@@ -665,8 +665,8 @@ class TestPersistProbeResults(TestCase):
         persist_probe_results(probes, after, scope="/home/a/.claude/memory")
         persist_probe_results(probes, after, scope="/home/b/.claude/memory")
         assert DreamQaProbe.objects.count() == 2
-        assert DreamQaProbe.objects.current_corpus("/home/a/.claude/memory").count() == 1
-        assert DreamQaProbe.objects.current_corpus("/home/b/.claude/memory").count() == 1
+        assert DreamQaProbe.objects.filter(scope="/home/a/.claude/memory").count() == 1
+        assert DreamQaProbe.objects.filter(scope="/home/b/.claude/memory").count() == 1
 
 
 class TestRunAcceptancePass(TestCase):
@@ -680,7 +680,7 @@ class TestRunAcceptancePass(TestCase):
         report = run_acceptance_pass(before, after, overlay="acme", archived=[], schema_before=0, schema_after=2)
         assert report.passed
         # The formerly-dead model is now populated.
-        assert DreamQaProbe.objects.current_corpus("acme").count() == 2
+        assert DreamQaProbe.objects.filter(scope="acme").count() == 2
 
     def test_delete_only_pass_fails_the_retention_gate(self) -> None:
         before = _snapshot({"a.md": "name: a\nfact ONE\n"}, index="- fact ONE\n")

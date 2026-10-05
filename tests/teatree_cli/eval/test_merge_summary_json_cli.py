@@ -50,7 +50,7 @@ class TestMergeSummaryJson:
         result = CliRunner().invoke(app, ["eval", "merge-summary-json", str(shard_dir), *_META])
         assert result.exit_code == 0, result.output
         merged = json.loads(result.output)
-        assert merged["totals"] == {"total": 3, "passed": 2, "failed": 1, "skipped": 0}
+        assert merged["totals"] == {"total": 3, "passed": 2, "failed": 1, "skipped": 0, "incomplete": 0}
         assert {scenario["name"] for scenario in merged["scenarios"]} == {"zeta", "alpha", "beta"}
 
     def test_injected_sha_and_timestamp_are_written(self, tmp_path: Path) -> None:

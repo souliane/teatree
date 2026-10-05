@@ -2,10 +2,20 @@
 
 import datetime as dt
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+
+from teatree.utils.throttled_log import warn_throttled
+
+RETENTION_DAYS = 7
+DEFAULT_WINDOW = dt.timedelta(minutes=30)
+READ_LIMIT_BYTES = 32 * 1024 * 1024
+logger = logging.getLogger(__name__)
+_DAMAGED = frozenset({"otel_malformed", "otel_truncated"})
+_DAMAGE_WARNING_SECONDS = RETENTION_DAYS * 24 * 60 * 60
 
 
 class RowValidator(Protocol):
@@ -52,34 +62,63 @@ def _tail(path: Path, limit: int) -> _TailRead:
     return _TailRead(lines, complete=True)
 
 
+def _prefer_nonmissing_reason(current: str | None, incoming: str | None) -> str | None:
+    """A sparse day must never hide a damaged day in a multi-day read."""
+    if incoming is None:
+        return current
+    return incoming if current is None or current == "otel_missing" else current
+
+
 def read_recent_observations(
     *,
     directory: Path,
     prefix: str,
     validator: RowValidator,
     period: ReadPeriod,
-    tail_limit: int,
+    read_limit: int,
 ) -> ObservationRead:
     now = period.now
     window = period.window
+    if window <= dt.timedelta(0):
+        return ObservationRead([], complete=False, reason="otel_invalid_window")
+    if window > dt.timedelta(days=RETENTION_DAYS):
+        return ObservationRead([], complete=False, reason="otel_window_exceeds_retention")
     cutoff = int((now - window).timestamp())
     current = int(now.timestamp())
-    days = ((now - window).date(), now.date())
+    first_day = (now - window).date()
+    day_count = (now.date() - first_day).days + 1
+    per_day_limit = min(read_limit // 2, read_limit // day_count)
+    if per_day_limit <= 0:
+        return ObservationRead([], complete=False, reason="otel_bounded")
+    days = (first_day + dt.timedelta(days=offset) for offset in range(day_count))
     rows: list[dict] = []
     reason: str | None = None
-    for day in dict.fromkeys(days):
-        tail = _tail(directory / f"{prefix}-{day.isoformat()}.jsonl", tail_limit)
-        reason = reason or tail.reason
+    for day in days:
+        tail = _tail(directory / f"{prefix}-{day.isoformat()}.jsonl", per_day_limit)
+        day_reason = tail.reason
+        reason = _prefer_nonmissing_reason(reason, tail.reason)
         for line in tail.lines:
             try:
                 row = json.loads(line)
             except (ValueError, UnicodeDecodeError, RecursionError):
-                reason = reason or "otel_malformed"
+                day_reason = "otel_malformed"
+                reason = _prefer_nonmissing_reason(reason, "otel_malformed")
                 continue
             if isinstance(row, dict) and isinstance(row.get("epoch"), int) and row["epoch"] < cutoff:
                 continue
             if validator(row, cutoff=cutoff, current=current):
                 rows.append(row)
             else:
-                reason = reason or "otel_malformed"
+                day_reason = "otel_malformed"
+                reason = _prefer_nonmissing_reason(reason, "otel_malformed")
+        if day_reason in _DAMAGED:
+            warn_throttled(
+                logger,
+                f"otel-damaged:{prefix}:{day}:{day_reason}",
+                "OTel %s %s: damaged lines skipped, valid rows kept (%s)",
+                prefix,
+                day,
+                day_reason,
+                window_seconds=_DAMAGE_WARNING_SECONDS,
+            )
     return ObservationRead(rows, reason is None, reason)

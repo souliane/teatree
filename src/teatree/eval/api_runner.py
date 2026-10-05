@@ -48,6 +48,7 @@ from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
 from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 
 from teatree.agents import permission_modes
+from teatree.agents.claude_cli_spawn import with_account_skills_off
 from teatree.agents.compaction_guard import with_compaction_off
 from teatree.agents.model_tiering import DEFAULT_TIER, TIER_MODELS
 from teatree.eval.api_errors import (
@@ -127,7 +128,7 @@ EMPTY_SETTINGS = '{"hooks":{}}'
 #: :func:`_skill_catalog_fixture_plugin`); every scenario that declares none
 #: never loads it, so the isolation guarantee (no personal/project context bias)
 #: is unchanged for the existing catalog. It carries no ``hooks.json`` of its
-#: own, so loading it cannot resurrect the ``UserPromptSubmit`` skill-suggestion
+#: own, so loading it cannot resurrect a skill-suggestion
 #: hook the ``settings=EMPTY_SETTINGS`` isolation already suppresses — the exact
 #: hook these scenarios' prompts say "did not fire" to force a genuine self-load.
 _SKILL_CATALOG_FIXTURE_RELATIVE_PATH = ("evals", "fixtures", "skill_catalog")
@@ -318,7 +319,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     if config.skills:
         plugins.append(_skill_catalog_fixture_plugin())
         plugins.extend(config.skill_catalog_plugins)
-    return with_compaction_off(
+    options = with_compaction_off(
         ClaudeAgentOptions(
             setting_sources=[],
             system_prompt=spill_system_prompt(config.system_prompt, config.cwd),
@@ -342,6 +343,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
             include_hook_events=config.production_hooks,
         )
     )
+    return with_account_skills_off(options)
 
 
 def resolve_agent_path(agent_path: str, spec_dir: Path | None = None) -> Path:

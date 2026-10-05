@@ -2,10 +2,8 @@
 
 One row per ``notify_user(...)`` call, keyed by ``idempotency_key`` so a
 retried turn (same session+turn) does not double-DM. The unique-key
-collapse is the same shape as ``DailyDigestMessage``: at-least-once with
-happy-path dedup, not exactly-once. Separate model from
-``DailyDigestMessage`` because a bot→user notification has no notion of
-a daily thread or a per-day root opener — it's a direct DM the agent
+collapse provides at-least-once delivery with happy-path dedup, not
+exactly-once. A bot→user notification is a direct DM the agent
 issues *to its own operator* outside the active CLI session.
 
 Out of scope: posts made *on the user's behalf* to colleagues/customers

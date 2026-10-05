@@ -20,10 +20,10 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
-from teatree.core.models import MergeClear, Rubric, RubricCriterion, Ticket
+from teatree.core.models import MergeClear, PullRequest, Rubric, RubricCriterion, Ticket
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.rubric import PHASE_CRITERIA
-from tests.teatree_core.conftest import seed_merge_safe_verdict
+from tests.teatree_core.conftest import record_merge_prerequisites_for_test, seed_merge_safe_verdict
 from tests.teatree_core.test_merge_execution import _GhStub
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -44,6 +44,8 @@ _CITATION = "unit: tests/teatree_core/test_rubric_gate_merge_precondition.py"
 
 
 def _clear(ticket: Ticket | None) -> MergeClear:
+    if ticket is not None:
+        record_merge_prerequisites_for_test(ticket, _SHA)
     return MergeClear.objects.create(
         ticket=ticket,
         pr_id=2241,
@@ -174,10 +176,27 @@ class TestRubricGateMergePrecondition(TestCase):
         assert ticket.state == Ticket.State.REVIEW_REQUESTED
         assert clear.consumed_at is None
 
-    def test_a_ticketless_clear_has_no_rubric_subject_and_merges(self) -> None:
-        # The rubric is FK'd to the ticket, so a CLEAR no ticket owns has nothing to
-        # grade and no ticket a bypass could be recorded on — outside the gate's subject.
+    def test_a_ticketless_clear_uses_its_pr_owner_for_the_rubric_gate(self) -> None:
+        # A CLEAR can be ticketless, but the PR ledger still identifies the ticket
+        # whose rubric must pass before merge.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEW_REQUESTED)
+        record_merge_prerequisites_for_test(ticket, _SHA)
+        PullRequest.objects.create(
+            ticket=ticket,
+            overlay=ticket.overlay,
+            url="https://github.com/souliane/teatree/pull/2241",
+            repo="souliane/teatree",
+            iid="2241",
+        )
         clear = _clear(None)
+        with pytest.raises(MergePreconditionError, match="no rubric"):
+            _merge(clear)
+        clear.refresh_from_db()
+        assert clear.consumed_at is None
+
+        _bypass(ticket)
         _merge(clear)
         clear.refresh_from_db()
+        ticket.refresh_from_db()
         assert clear.consumed_at is not None
+        assert ticket.state == Ticket.State.MERGED

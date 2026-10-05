@@ -15,6 +15,7 @@ from pathlib import Path
 import typer
 from claude_agent_sdk.types import EffortLevel
 
+from teatree.cli.eval.app_helpers import RunReportPaths
 from teatree.cli.eval.run_modes import (
     DEFAULT_COST_REGRESSION_TOLERANCE,
     CostBoundsGate,
@@ -27,6 +28,7 @@ from teatree.cli.eval.run_modes import (
 )
 from teatree.eval.api_errors import NEVER_RETRY_ERRORS
 from teatree.eval.api_runner import MAX_BUDGET_USD
+from teatree.eval.artifact_redaction import write_artifact
 from teatree.eval.backends import ApiRunnerParams, EvalRunner, make_runner
 from teatree.eval.harness_failure import measured_nothing
 from teatree.eval.matrix import MatrixRow, render_matrix_html, render_matrix_json, render_matrix_text
@@ -34,11 +36,8 @@ from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.model_variant import ModelVariantError, parse_model_variants
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
-from teatree.eval.pass_at_k_html import render_pass_at_k_html
 from teatree.eval.presets import Preset, PresetError, resolve_preset, resolve_preset_model
 from teatree.eval.report import ScenarioResult, evaluate
-from teatree.eval.summary_json import write_summary_json
-from teatree.eval.summary_markdown import render_summary_markdown
 from teatree.eval.surface import is_advisory
 
 #: The column name ``--presets`` recognises for "no preset" — each scenario's
@@ -53,26 +52,6 @@ DEFAULT_PRESET_COLUMN_NAME = "default"
 #: ``MAX_MATRIX_CELL_RETRIES + 1`` attempts total before the cell is recorded
 #: ERRORED so the rest of the comparison table is still produced.
 MAX_MATRIX_CELL_RETRIES = 2
-
-
-def _write_pass_at_k_artifacts(
-    results: list[PassAtKResult],
-    *,
-    transcript_html: Path | None,
-    summary_md: Path | None,
-    summary_json: Path | None,
-) -> None:
-    """Drop the per-trial transcript + sanitized dashboards BEFORE any guard/gate exits.
-
-    Each is written from THIS run's in-memory results so a red lane still drops the
-    diagnostic transcript AND the publish-safe summary/JSON the workflow uploads.
-    """
-    if transcript_html is not None:
-        transcript_html.write_text(render_pass_at_k_html(results), encoding="utf-8")
-    if summary_md is not None:
-        summary_md.write_text(render_summary_markdown(results), encoding="utf-8")
-    if summary_json is not None:
-        write_summary_json(results, summary_json)
 
 
 def _emit_progress(line: str) -> None:
@@ -194,7 +173,9 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
                             "passes": r.passes,
                             "pass_rate": r.pass_rate,
                             "skipped": r.skipped,
-                            "ok": r.ok,
+                            "ok": r.verdict == "pass",
+                            "verdict": r.verdict,
+                            "coverage_incomplete": r.coverage_incomplete,
                         }
                         for r in results
                     ],
@@ -204,17 +185,16 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
         )
     else:
         for r in results:
-            if r.skipped:
+            if r.verdict == "skip":
                 typer.echo(f"SKIP {r.spec_name}: all {r.trials} trials skipped")
                 continue
-            status = "PASS" if r.ok else "FAIL"
+            status = r.verdict.upper()
             typer.echo(f"{status} {r.spec_name} ({r.passes}/{r.trials} trials, require={r.require})")
-    _write_pass_at_k_artifacts(
-        results, transcript_html=transcript_html, summary_md=summary_md, summary_json=summary_json
-    )
-    RunGuards.hooks_registered(results)
+    RunReportPaths(transcript_html, summary_md, summary_json).write_pass_at_k(results)
     executed = sum(1 for r in results if not r.skipped)
-    RunGuards.executed(executed=executed, collected=len(specs), required=require_executed)
+    cap_exhausted = getattr(runner, "budget_exhausted", False) or any(r.coverage_incomplete for r in results)
+    RunGuards.hooks_registered(results)
+    RunGuards.executed(executed=executed, collected=len(specs), required=require_executed and not cap_exhausted)
     # Both vacuous-green shapes, because the lane runs on either fresh backend: the
     # $0-cost one sees only `api`, and every unmetered fresh lane's equivalent signal
     # is an empty trajectory. Running one alone leaves whichever backend it is blind
@@ -242,13 +222,16 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     # contract teatree owns — reported, never gating (#3855).
     advisory = {spec.name for spec in effective_specs if is_advisory(spec)}
     failed = (
-        any(not r.ok and r.spec_name not in advisory for r in results)
+        any(r.verdict == "fail" and r.spec_name not in advisory for r in results)
         or regressed
         or cost_regressed
         or cost_bounds_failed
     )
     if failed and model_override is None:
         sys.exit(1)
+    if cap_exhausted and model_override is None:
+        typer.echo(f"coverage incomplete: suite budget exhausted after {executed}/{len(specs)} scenarios", err=True)
+        raise typer.Exit(code=75)
     return failed
 
 
@@ -316,7 +299,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     # The benchmark HTML artifact, written BEFORE any guard/gate can exit so a red
     # benchmark still drops the dashboard the weekly workflow uploads/publishes.
     if html_out is not None:
-        html_out.write_text(render_matrix_html(rows, model_list, specs), encoding="utf-8")
+        write_artifact(html_out, render_matrix_html(rows, model_list, specs))
     RunGuards.hooks_registered(rows)
     RunGuards.executed(
         executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=require_executed

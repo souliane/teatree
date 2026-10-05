@@ -1,7 +1,7 @@
 """Followup sweep surfaces the user's OWN open authored MRs in merge conflict.
 
 The sweep already fetches the author's open MRs to upsert tickets, but never
-read each MR's ``has_conflicts`` / ``merge_status`` — so conflicted MRs (e.g.
+read each MR's ``has_conflicts`` / ``detailed_merge_status`` — so conflicted MRs (e.g.
 ones that re-conflict as master advances) sat invisibly. These tests pin that
 ``sync_followup`` now collects conflicted authored MRs into
 ``SyncResult.conflicted_mrs`` and that the ``followup sync`` command surfaces
@@ -31,7 +31,7 @@ _CONFLICTED_MR = {
     "iid": 7649,
     "project_id": 123,
     "has_conflicts": True,
-    "merge_status": "cannot_be_merged",
+    "detailed_merge_status": "conflict",
 }
 
 _CLEAN_MR = {
@@ -43,7 +43,7 @@ _CLEAN_MR = {
     "iid": 7700,
     "project_id": 123,
     "has_conflicts": False,
-    "merge_status": "can_be_merged",
+    "detailed_merge_status": "mergeable",
 }
 
 

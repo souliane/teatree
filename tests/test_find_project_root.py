@@ -4,8 +4,11 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import teatree.project
 from teatree import find_project_root
+from teatree.paths import GENERATION_MARKER
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -92,3 +95,52 @@ class TestFindProjectRoot:
         pkg_file.touch()
         with patch.object(teatree.project, "__file__", str(pkg_file)):
             assert find_project_root() == main_clone
+
+
+def _baked_tree(root: Path, *, core_subdir: str, marker: str = "c" * 40) -> Path:
+    core = root / core_subdir if core_subdir else root
+    (core / "src" / "teatree").mkdir(parents=True)
+    (core / "pyproject.toml").write_text("[project]\n")
+    (root / "pyproject.toml").write_text("[project]\n")
+    (root / GENERATION_MARKER).write_text(f"{marker}\n")
+    return core / "src" / "teatree" / "project.py"
+
+
+class TestABakedGenerationIsItsOwnProjectRoot:
+    def test_a_core_only_generation_resolves_to_its_baked_tree(self, tmp_path: Path) -> None:
+        pkg_file = _baked_tree(tmp_path / "baked", core_subdir="")
+
+        with patch.object(teatree.project, "__file__", str(pkg_file)):
+            assert find_project_root() == tmp_path / "baked"
+
+    def test_a_fork_generation_resolves_to_the_archived_fork_root(self, tmp_path: Path) -> None:
+        pkg_file = _baked_tree(tmp_path / "baked", core_subdir="vendor/teatree")
+
+        with patch.object(teatree.project, "__file__", str(pkg_file)):
+            assert find_project_root() == tmp_path / "baked"
+
+    def test_a_marker_that_names_no_commit_is_not_a_generation(self, tmp_path: Path) -> None:
+        pkg_file = _baked_tree(tmp_path / "baked", core_subdir="", marker="main")
+
+        with patch.object(teatree.project, "__file__", str(pkg_file)):
+            assert find_project_root() is None
+
+
+class TestTheMarkerMustNameTheRunningGeneration:
+    def test_a_marker_matching_the_running_generation_is_honoured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pkg_file = _baked_tree(tmp_path / "baked", core_subdir="")
+        monkeypatch.setenv("TEATREE_GENERATION", "c" * 40)
+
+        with patch.object(teatree.project, "__file__", str(pkg_file)):
+            assert find_project_root() == tmp_path / "baked"
+
+    def test_a_marker_naming_another_generation_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pkg_file = _baked_tree(tmp_path / "baked", core_subdir="")
+        monkeypatch.setenv("TEATREE_GENERATION", "d" * 40)
+
+        with patch.object(teatree.project, "__file__", str(pkg_file)):
+            assert find_project_root() is None

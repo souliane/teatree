@@ -63,6 +63,14 @@ class ActionResult:
     auto_fix_executed: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class OwnerAlertDelivery:
+    """Delivery outcome at the domain boundary; a pull is not a sent DM."""
+
+    sent: bool
+    pulled: bool = False
+
+
 def _ceiling_index(report: DetectorReport) -> int:
     """Resolve ``max_rung`` (declared by the detector) to an index in ``_LADDER_ORDER``."""
     ceiling = report.max_rung
@@ -141,19 +149,22 @@ def _slack_rung_outcome(
     report: DetectorReport,
     existing: SelfImproveFiring | None,
     messaging: "MessagingBackend | None",
-    owner_alert: Callable[[DetectorReport, SelfImproveFiring | None], bool] | None,
+    owner_alert: Callable[[DetectorReport, SelfImproveFiring | None], OwnerAlertDelivery | bool] | None,
 ) -> tuple[str, bool, bool]:
     """Return (actual rung, rate-capped, record firing); never claim a failed DM."""
     required = report.payload.get("requires_delivery") is True
     if _slack_capped(recent_slack_firings_within(SLACK_RATE_CAP_SECONDS)) and not required:
         return ActionRung.STATUSLINE, True, True
-    delivered = (
+    outcome = (
         _post_to_backend(report, messaging)
         if messaging is not None
         else owner_alert(report, existing)
         if owner_alert is not None
         else False
     )
+    if isinstance(outcome, OwnerAlertDelivery) and outcome.pulled:
+        return ActionRung.STATUSLINE, False, True
+    delivered = outcome.sent if isinstance(outcome, OwnerAlertDelivery) else outcome
     if delivered:
         return ActionRung.SLACK, False, True
     return ActionRung.STATUSLINE, False, not required
@@ -230,7 +241,7 @@ def run_action_ladder(
     *,
     overlay_name: str | None = None,
     messaging: "MessagingBackend | None" = None,
-    owner_alert: Callable[[DetectorReport, SelfImproveFiring | None], bool] | None = None,
+    owner_alert: Callable[[DetectorReport, SelfImproveFiring | None], OwnerAlertDelivery | bool] | None = None,
     auto_fix_callable: Callable[[DetectorReport], None] | None = None,
 ) -> ActionResult | None:
     """Advance the ladder for one detector report, bounded by its ceiling.

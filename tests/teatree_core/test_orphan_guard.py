@@ -9,7 +9,7 @@ from teatree.core.forge_pr_probe import PrProbe
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree.branch_classification import BranchCommit, SubjectPrefilterResult
-from teatree.utils.run import CommandFailedError
+from teatree.utils.run import CommandFailedError, CompletedProcess
 from tests._git_repo import make_git_repo, run_git
 from tests.teatree_core.cleanup._shared import _run_git
 
@@ -19,6 +19,11 @@ _patch_tree_match = patch("teatree.core.gates.orphan_guard._branch_tree_matches_
 # `find_open_pr` wrapper leaves the real one shelling out to `gh`/`glab` under test.
 _patch_open_pr = patch("teatree.core.gates.orphan_guard.find_open_pr_for_branch")
 _patch_git = patch("teatree.core.gates.orphan_guard.git")
+_patch_remote_read = patch("teatree.core.gates.orphan_guard.run_with_status")
+
+
+def _remote_listing(stdout: str) -> CompletedProcess[str]:
+    return CompletedProcess(args=["git", "ls-remote"], returncode=0, stdout=stdout, stderr="")
 
 
 def _classification(ahead: list[BranchCommit] | None = None) -> SubjectPrefilterResult:
@@ -79,6 +84,7 @@ class TestClassifyBranch(TestCase):
         assert report.open_pr_url == "https://github.com/org/repo/pull/42"
         assert not report.is_orphan
 
+    @_patch_remote_read
     @_patch_git
     @_patch_open_pr
     @_patch_tree_match
@@ -89,16 +95,18 @@ class TestClassifyBranch(TestCase):
         mock_tree_match: MagicMock,
         mock_open_pr: MagicMock,
         mock_git: MagicMock,
+        mock_remote_read: MagicMock,
     ) -> None:
         mock_classify.return_value = _classification([_commit(), _commit("def", "feat: y")])
         mock_tree_match.return_value = False
         mock_open_pr.return_value = PrProbe.none()
-        mock_git.run.return_value = "abc123\trefs/heads/feature"
+        mock_remote_read.return_value = _remote_listing("abc123\trefs/heads/feature")
         report = classify_branch("/repo", "feature")
         assert report.status is BranchStatus.PUSHED_ORPHAN
         assert report.ahead_count == 2
         assert report.is_orphan
 
+    @_patch_remote_read
     @_patch_git
     @_patch_open_pr
     @_patch_tree_match
@@ -109,15 +117,17 @@ class TestClassifyBranch(TestCase):
         mock_tree_match: MagicMock,
         mock_open_pr: MagicMock,
         mock_git: MagicMock,
+        mock_remote_read: MagicMock,
     ) -> None:
         mock_classify.return_value = _classification([_commit()])
         mock_tree_match.return_value = False
         mock_open_pr.return_value = PrProbe.none()
-        mock_git.run.return_value = ""
+        mock_remote_read.return_value = _remote_listing("")
         report = classify_branch("/repo", "feature")
         assert report.status is BranchStatus.UNPUSHED_ORPHAN
         assert report.is_orphan
 
+    @_patch_remote_read
     @_patch_git
     @_patch_open_pr
     @_patch_tree_match
@@ -128,11 +138,12 @@ class TestClassifyBranch(TestCase):
         mock_tree_match: MagicMock,
         mock_open_pr: MagicMock,
         mock_git: MagicMock,
+        mock_remote_read: MagicMock,
     ) -> None:
         mock_classify.return_value = _classification([_commit()])
         mock_tree_match.return_value = False
         mock_open_pr.return_value = PrProbe.none()
-        mock_git.run.return_value = "abc123\trefs/heads/feature"
+        mock_remote_read.return_value = _remote_listing("abc123\trefs/heads/feature")
 
         report = classify_branch("/repo", "feature")
 

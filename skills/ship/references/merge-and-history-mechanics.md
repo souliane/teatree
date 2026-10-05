@@ -22,6 +22,8 @@ Before touching the PR branch to "prepare" it for a merge, reason through what a
 
 ## Git history rewriting
 
+**A public-repo privacy refusal is judged per commit, never on the tip.** The `refuse-public-push-with-leak` pre-push gate scans every commit the remote does not have yet — each one's own patch and message — so a fix-up commit that deletes or annotates the flagged line does not clear it; the refusal labels such a finding `(earlier than the pushed tip)`. Cut a fresh branch from the remote's tip and re-create the unpushed commits on it with generic placeholders (one combined commit is fine): that fast-forwards the remote, so nothing pushed or reviewed is rewritten. A deliberate fake value (a test-fixture email) carries the inline `privacy-scan:allow <reason>` marker in the commit that introduces it.
+
 When rewriting commit messages, use `filter-branch --msg-filter` (matches by full hash). Do NOT use `git rebase -i` with `GIT_SEQUENCE_EDITOR="sed"` — the short hash may differ from the one-line log, causing a silent no-op.
 
 **Post-rewrite verification (Non-Negotiable):** After ANY rebase or filter-branch, verify the hash changed. Same hash = no-op.

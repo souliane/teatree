@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hooks.scripts import hook_budget
+from teatree.agents.codex_app_server_options import container_is_the_sandbox
 from teatree.agents.codex_shared_app_server import reset_shared_codex_app_servers
 from teatree.agents.live_mailbox import reset_shared_brokers
 from teatree.agents.skill_routing import clear_route_availability_cache
@@ -24,6 +26,9 @@ from teatree.core.factory import external_outcomes
 from teatree.core.management.commands._e2e_specs_checkout import release_process_locks
 from teatree.core.models.types import reset_stripped_key_warnings
 from teatree.core.worktree.branch_classification import reset_forge_probe_cache, reset_single_branch_cache
+from teatree.eval.artifact_redaction import CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV
+from teatree.eval.cost_observation import suite_budget_from_env
+from teatree.llm.credentials import Credential
 from teatree.loop.scanners.my_prs_ci import reset_ci_memo
 from teatree.quality.pytest_resource_contract import bounded_auto_workers, whole_tree_refusal
 from teatree.utils import ram_scope
@@ -31,8 +36,11 @@ from teatree.utils.disposable_checkout import DISPOSABLE_ROOTS_ENV
 from teatree.utils.host_pressure import reset_missing_warning_memo
 from teatree.utils.ram_probe import available_cpu_count
 from teatree.utils.work_tree import reset_cwd_cache
-from tests._db_template import build_or_reuse_template, restore_from_template
+from tests import _session_resource_guard
+from tests._db_template import MIGRATED_TEMPLATE_KEY, build_or_reuse_template, restore_from_template
+from tests._hook_clock import HookClock
 from tests._machine_probe import pinned_load_and_cores, pinned_ram_headroom
+from tests._send_gate import TEST_TERM_REGISTRY_JSON
 from tests._speak_thread_sentinel import SpeakThreadSentinel
 from tests._thread_db_sentinel import ThreadDbHandleSentinel
 
@@ -49,6 +57,8 @@ os.environ["T3_OVERLAY_NAME"] = "t3-teatree"
 # reports a broken scanner and blocks clean content. 45s clears every contended scan
 # measured here, and stays under the 60s per-test `timeout` so a hang still fails loud.
 os.environ["T3_BANNED_TERMS_SCAN_TIMEOUT_S"] = "45"
+# Synthetic /host-proc tables model a Linux host; the refusal tests unset or change it themselves.
+os.environ["TEATREE_HOST_OS"] = "Linux"
 
 # Guard against import-time side effects in script modules that call _init.init()
 # at module import. Route HOME/T3_WORKSPACE_DIR to a disposable temp sandbox.
@@ -89,6 +99,12 @@ def _strip_git_hook_env() -> None:
 
 
 _strip_git_hook_env()
+
+
+@pytest.fixture
+def configured_banned_term_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give outbound tests the classed registry a configured installation has."""
+    monkeypatch.setenv("TEATREE_TERM_REGISTRY", TEST_TERM_REGISTRY_JSON)
 
 
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
@@ -246,11 +262,21 @@ def _reset_declaration_caches() -> Iterator[None]:
     reset_ci_memo()
     reset_forge_probe_cache()
     note_healthy_read.cache_clear()
+    container_is_the_sandbox.cache_clear()
     yield
     reset_single_branch_cache()
     reset_ci_memo()
     reset_forge_probe_cache()
     note_healthy_read.cache_clear()
+    container_is_the_sandbox.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_suite_budget() -> Iterator[None]:
+    """Give every test a fresh suite budget, so one test's spend never exhausts another's cap."""
+    suite_budget_from_env.cache_clear()
+    yield
+    suite_budget_from_env.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -266,6 +292,25 @@ def _pin_machine_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(ram_scope, "read_ram_headroom", pinned_ram_headroom)
     monkeypatch.setattr(machine_load, "read_load_and_cores", pinned_load_and_cores)
+
+
+@pytest.fixture
+def hook_clock(monkeypatch: pytest.MonkeyPatch) -> HookClock:
+    """The hook budget on a fake clock that starts at 0 and moves only when the test moves it."""
+    clock = HookClock()
+    monkeypatch.setattr(hook_budget, "time", clock)
+    monkeypatch.setattr(hook_budget, "_STARTED_AT", 0.0)
+    return clock
+
+
+@pytest.fixture(autouse=True)
+def _fresh_hook_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test's hook budget afresh, as a new hook process would.
+
+    ``hook_budget`` measures the hook timeout from its import: the process start in a real
+    hook, but minutes stale in a long-lived xdist worker, where a late test found it spent.
+    """
+    monkeypatch.setattr(hook_budget, "_STARTED_AT", time.monotonic())
 
 
 @pytest.fixture(autouse=True)
@@ -402,6 +447,45 @@ def _reset_slack_dm_recorders() -> Iterator[None]:
     reset_dm_recorders()
     yield
     reset_dm_recorders()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_credential_values() -> Iterator[None]:
+    """Scope every resolved or exported credential to the test that produced it.
+
+    The eval artifact redactor reads the named credential env vars and the process-wide
+    registry of resolved values, redacting each at any length. ``Credential.export``
+    writes ``os.environ`` directly, so without this a short fake such as ``"sub"`` left
+    behind by one test would silently rewrite a later test's report.
+    """
+    names = (*CREDENTIAL_ENV_VARS, OAUTH_POOL_ENV)
+    saved = {name: os.environ.get(name) for name in names}
+    Credential.forget_resolved()
+    yield
+    Credential.forget_resolved()
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+@pytest.fixture(autouse=True)
+def _reset_malformed_private_warnings() -> Iterator[None]:
+    from teatree.hooks._private_repo_entries import reset_malformed_private_warnings  # noqa: PLC0415
+
+    reset_malformed_private_warnings()
+    yield
+    reset_malformed_private_warnings()
+
+
+@pytest.fixture(autouse=True)
+def _reset_ssh_alias_cache() -> Iterator[None]:
+    from teatree.hooks._ssh_alias import reset_ssh_alias_cache  # noqa: PLC0415
+
+    reset_ssh_alias_cache()
+    yield
+    reset_ssh_alias_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -609,7 +693,7 @@ def _no_live_aux_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Arm the two cross-test thread sentinels for the whole suite.
+    """Arm the cross-test thread sentinels and session resource guard.
 
     Always on, both for the same reason: each catches a failure that lands on a
     random bystander in a random shard, so a sentinel that has to be switched on
@@ -619,6 +703,7 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     config.pluginmanager.register(ThreadDbHandleSentinel(), "thread-db-handle-sentinel")
     config.pluginmanager.register(SpeakThreadSentinel(), "speak-thread-sentinel")
+    config.pluginmanager.register(_session_resource_guard, "session-resource-guard")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -657,7 +742,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     to its dataclass default. A test that needs a cold-read value sets ``T3_CONFIG_DB``
     at a temp sqlite it seeds with a ``teatree_config_setting`` row. The update-check
     cache is redirected (below) at a hermetic per-test "up to date" verdict so the
-    ``[update] …`` banner (``check_updates`` fails OPEN to ``True`` with no config DB)
+    ``[update] …`` banner (update checks run with no config DB)
     can never prepend non-JSON to a CLI's captured output.
     """
     home = tmp_path / "home"
@@ -677,8 +762,8 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     # Redirect the update-check cache at a hermetic per-test dir holding a fresh
     # "up to date" verdict (empty message) so ``run_update_check`` short-circuits on the
-    # cache before its network/subprocess ``gh`` call. ``check_updates`` fails OPEN to
-    # ``True`` here (DB-home, no config DB), so without this a leaked subprocess mock in
+    # cache before its network/subprocess ``gh`` call. Update checks always run here
+    # (DB-home, no config DB), so without this a leaked subprocess mock in
     # the same xdist worker turns the ``gh`` result into a bogus ``[update] …`` banner
     # that prepends non-JSON to a CLI's captured output. The cache file is ``*.json`` (not
     # ``db.sqlite3``), so it never trips ``test_paths``' stale-DB scan. Update-check tests
@@ -801,8 +886,16 @@ def django_db_setup(
         target = connections[alias]
         target.ensure_connection()
         restore_from_template(template_path, target.connection)
+    request.config.stash[MIGRATED_TEMPLATE_KEY] = template_path
 
     yield
 
     with django_db_blocker.unblock():
         connections.close_all()
+
+
+@pytest.fixture(scope="session")
+def migrated_db_template(request: pytest.FixtureRequest) -> Path | None:
+    """The from-zero migrate ``django_db_setup`` restored ``default`` from, or ``None`` when it built none."""
+    request.getfixturevalue("django_db_setup")
+    return request.config.stash.get(MIGRATED_TEMPLATE_KEY, None)

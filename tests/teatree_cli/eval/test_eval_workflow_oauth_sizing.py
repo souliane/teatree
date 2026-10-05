@@ -1,31 +1,18 @@
 """The CI eval workflows default to subscription OAuth and are RIGHT-SIZED (#2707 reversal).
 
-These fitness tests parse the workflow YAML and pin the cost-urgent reversal: the
-GitHub behavioral-eval workflow defaults to the subscription OAuth credential and
-sizes the OAuth lane so a full fan-out cannot throttle the plan's usage window (a
-SINGLE effort tier, a smaller trial count), while keeping the metered key
-selectable via the knob. The GitLab lane stays explicitly metered — it bills a real
-key — while carrying NO `--gate-cost-bounds`, because its `anthropic_api` backend
-reports no per-scenario cost for that gate to check. They go RED if the default
-regresses to metered-exclusive, if the OAuth lane's fan-out is un-sized, or if the
-unsatisfiable cost gate is re-attached to an unmetered lane.
+These fitness tests parse the GitHub workflow YAML and pin the subscription OAuth
+default and a bounded fan-out: one effort tier and a smaller trial count.
 """
-# test-path: cross-cutting — a CI-workflow fitness test that parses the pipeline YAML and
-# imports the eval backend vocabulary, because "which lane carries which gate" is one
-# decision spanning both; it mirrors neither src/teatree/cli/ nor src/teatree/eval/ alone.
+# test-path: cross-cutting — CI workflow fitness tests parse the workflow YAML.
 
 from pathlib import Path
 from typing import Any, cast
 
 import yaml
 
-from teatree.eval.backends import ANTHROPIC_API_BACKEND
-from tests._ci_config import gitlab_ci_path
-
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
 _GH_EVAL_PR = _REPO_ROOT / ".github" / "workflows" / "eval-pr.yml"
-_GITLAB_CI = gitlab_ci_path()
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -124,37 +111,3 @@ class TestGitHubPrEvalRidesSubscriptionOAuth:
             env.update(cast("dict[str, str]", step.get("env", {})))
         assert env.get("EVAL_CREDENTIAL") == "subscription_oauth"
         assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
-
-
-class TestGitLabEvalLaneStaysMeteredWithoutTheUnsatisfiableCostGate:
-    """The lane bills a real key, and asks it for no cost verdict the backend cannot give."""
-
-    def _eval_suite_script(self) -> str:
-        return "\n".join(cast("list[str]", _load(_GITLAB_CI)[".eval-suite"]["script"]))
-
-    def test_gitlab_explicitly_selects_the_metered_key(self) -> None:
-        # An unset knob resolves to subscription OAuth, which no runner holds — the miss
-        # surfaces as an opaque auth error mid-suite rather than at the credential gate.
-        assert _load(_GITLAB_CI)["variables"]["T3_AGENT_HARNESS_PROVIDER"] == "api_key"
-
-    def test_the_lane_carries_no_cost_gate_its_backend_cannot_satisfy(self) -> None:
-        # `anthropic_api` drives PydanticAiRunner, which reports no cost_usd, so every
-        # ceiling reads MISSING and an empty set reads VACUOUS — red either way, and
-        # calibrating a bound makes it worse. `t3 eval run` now exits 2 on the pairing.
-        script = self._eval_suite_script()
-        assert f"--backend {ANTHROPIC_API_BACKEND}" in script
-        assert "--gate-cost-bounds" not in script, (
-            f"--gate-cost-bounds is unsatisfiable on --backend {ANTHROPIC_API_BACKEND}: it reports no "
-            "cost, so the gate can only ever go MISSING/VACUOUS red. Move it to a cost-recording "
-            "backend, never back onto this lane."
-        )
-
-    def test_no_lane_smuggles_the_cost_gate_back_in_through_its_args(self) -> None:
-        # Every eval job extends `.eval-suite` and inherits its `anthropic_api` backend,
-        # so a per-lane LANE_ARGS carrying the flag is the same unsatisfiable pairing.
-        config = _load(_GITLAB_CI)
-        for name, job in config.items():
-            variables = job.get("variables", {}) if isinstance(job, dict) else {}
-            assert "--gate-cost-bounds" not in str(variables.get("LANE_ARGS", "")), (
-                f"{name} smuggles the unsatisfiable cost gate in through LANE_ARGS."
-            )

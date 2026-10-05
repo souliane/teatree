@@ -14,12 +14,11 @@ runs without an LLM or a live forge.
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 from django.test import TestCase
 
-from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
+from teatree.core.models.ticket import Ticket
 from teatree.loops.dream import batch_promote as bp_module
 from teatree.loops.dream.automation_ask import (
     AUTOMATION_CATALOG,
@@ -37,13 +36,6 @@ from teatree.loops.dream.engine import DistilledCluster
 from teatree.loops.dream.replay import ConsolidationExtract, WeightedSnippet
 
 UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
-
-
-def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
-    host = MagicMock(spec=CodeHostBackend)
-    host.get_issue.return_value = {"body": body}
-    host.update_issue.return_value = {"number": 2663}
-    return host
 
 
 def _ask_snippet(name: str, body: str) -> WeightedSnippet:
@@ -159,15 +151,13 @@ class PromoteAutomatableAsksTestCase(TestCase):
             max_member_weight=100,
             verified_citation="please set up a hotfix lane",
         )
-        host = _fake_host()
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
         batch = PromotionBatch()
         promote_automatable_asks([_cluster()], self._grounded_extract(), umbrella_url=UMBRELLA, batch=batch)
-        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+        bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch)
 
-        ticket = Ticket.objects.exclude(extra__dream_gap_batch__isnull=True).get()
-        manifest = ticket.extra["dream_gap_batch"]
-        assert manifest[0]["cluster_key"] == "ask-1"
+        umbrella.refresh_from_db()
+        assert umbrella.extra["dream_gap_pending"][0]["cluster_key"] == "ask-1"
 
     def test_dry_run_queues_nothing(self) -> None:
         batch = PromotionBatch()
@@ -231,9 +221,15 @@ class RunAutomationAsksPhaseTestCase(TestCase):
         batch = PromotionBatch()
         summary = run_automation_asks_phase(extract, umbrella_url=UMBRELLA, dry_run=False, batch=batch)
         assert "1" in summary
-        host = _fake_host()
-        bp_module.promote_batch(host, umbrella_url=UMBRELLA, batch=batch)
-        host.update_issue.assert_called_once()
+        umbrella = Ticket.objects.create(issue_url=UMBRELLA)
+        assert bp_module.promote_batch(umbrella_url=UMBRELLA, batch=batch).queued is True
+        umbrella.refresh_from_db()
+        assert len(umbrella.extra["dream_gap_pending"]) == 1
+        repeat = PromotionBatch()
+        run_automation_asks_phase(extract, umbrella_url=UMBRELLA, dry_run=False, batch=repeat)
+        assert bp_module.promote_batch(umbrella_url=UMBRELLA, batch=repeat).queued is False
+        umbrella.refresh_from_db()
+        assert len(umbrella.extra["dream_gap_pending"]) == 1
 
     def test_a_neutral_row_is_not_promoted(self) -> None:
         ConsolidatedMemory.objects.create(

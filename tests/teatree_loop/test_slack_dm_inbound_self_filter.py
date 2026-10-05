@@ -5,8 +5,7 @@ DM the bot's IM channel surfaces. The Socket Mode receiver only filters
 ``subtype=bot_message`` — but Slack delivers the bot's own outbound posts
 as regular ``message`` events whose ``user`` matches the bot's user id and
 whose ``bot_id`` matches the bot's bot id. Without a self-filter at the
-scanner the bot's outbound DMs are persisted, the UserPromptSubmit hook
-injects them as "user replies", and the reactive Slack-answer cycle spawns
+scanner the bot's outbound DMs are persisted and the reactive Slack-answer cycle spawns
 ``t3:answerer`` sub-agents that try to answer the bot's own message.
 
 A second, distinct case (#1941): an automated on-behalf post sent with
@@ -14,9 +13,8 @@ the HUMAN's own Slack token carries the human's own ``user`` id — not the
 bot's — so the #1346 identity filter above never catches it. See
 ``TestOnBehalfFilter`` below.
 
-Both filters apply at the lowest common helper so BOTH downstream
-consumers — the UserPromptSubmit ``handle_inject_pending_chat`` and the
-reactive ``run_slack_answer_cycle`` — inherit them. Filtering at
+Both filters apply at the lowest common helper so the downstream consumer,
+the reactive ``run_slack_answer_cycle``, inherits them. Filtering at
 ``SlackDmInboundScanner.scan()`` (the write side) achieves that: rows that
 fail either filter never reach the DB.
 

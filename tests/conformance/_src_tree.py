@@ -16,6 +16,7 @@ real defect, not something to skip past silently.
 """
 
 import ast
+from collections.abc import Iterator
 from functools import cache
 from pathlib import Path
 
@@ -23,12 +24,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO_ROOT / "src" / "teatree"
 
 
+def iter_parsed_modules(root: Path) -> Iterator[tuple[Path, ast.Module]]:
+    """Every ``*.py`` under *root* as ``(path, parsed AST)``, one at a time and never retained."""
+    for path in sorted(root.rglob("*.py")):
+        yield path, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
 @cache
 def parsed_modules(root: Path) -> tuple[tuple[Path, ast.Module], ...]:
     """Every ``*.py`` under *root* as ``(path, parsed AST)``, parsed once per process."""
-    return tuple(
-        (path, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))) for path in sorted(root.rglob("*.py"))
-    )
+    return tuple(iter_parsed_modules(root))
 
 
 def src_modules() -> tuple[tuple[Path, ast.Module], ...]:

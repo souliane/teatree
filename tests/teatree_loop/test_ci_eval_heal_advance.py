@@ -1,11 +1,4 @@
-"""Observe-only CI-eval heal advancer (#3201 PR-3a).
-
-The loop that drives the ``CiEvalHealSession`` FSM without ever writing a fix. The
-load-bearing property, asserted red-first here, is the anti-cheat invariant: a
-genuinely-failing eval is NEVER marked green — a red (or an infra failure, or an
-unconfirmable result) always terminates at ``HALTED`` and escalates, and ``GREEN``
-is reachable only from a CI ``success``.
-"""
+"""CI eval heal advancer: confirmed reds fix within budget and never self-green."""
 
 import json
 from collections.abc import Sequence
@@ -14,7 +7,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import CiEvalHealSession, ConfigSetting, DeferredQuestion, Loop, Mode, ModeOverride
+from teatree.core.models import CiEvalHealSession, DeferredQuestion, Loop, Mode, ModeOverride
 from teatree.loop.ci_eval_heal_advance import (
     AdvanceOutcome,
     _escalate_via_deferred_question,
@@ -133,6 +126,8 @@ class TestAntiCheatNeverGreensARed(TestCase):
 
     def test_ci_failure_with_reds_halts_and_escalates_never_green(self) -> None:
         session = _awaiting(head_sha="a" * 40)
+        session.fix_attempts = session.max_fix_attempts
+        session.save(update_fields=["fix_attempts"])
         client = _FakeClient(runs=[_completed("failure")], artifact=_artifact(reds=["rules_under_load"]))
         escalated: list[int] = []
         advance_session(session, client=client, escalate=lambda s: escalated.append(s.pk))
@@ -149,6 +144,8 @@ class TestAntiCheatNeverGreensARed(TestCase):
         session = _awaiting()
         session.receive_result(red_scenarios=["budget_turns"])
         session.save()
+        session.fix_attempts = session.max_fix_attempts
+        session.save(update_fields=["fix_attempts"])
         advance_session(session, client=_FakeClient(), escalate=_noop)
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.HALTED
@@ -219,6 +216,8 @@ class TestAdvanceOpenSessions(TestCase):
 class TestEscalationDefault(TestCase):
     def test_halt_records_deferred_question_once(self) -> None:
         session = _awaiting(head_sha="a" * 40)
+        session.fix_attempts = session.max_fix_attempts
+        session.save(update_fields=["fix_attempts"])
         client = _FakeClient(runs=[_completed("failure")], artifact=_artifact(reds=["rules_under_load"]))
         # Use the real default escalation (no escalate= override).
         advance_session(session, client=client, escalate=_escalate_via_deferred_question)
@@ -266,46 +265,50 @@ class _FakeFixer:
         self.discarded.append(proposal)
 
 
-def _quiet_posture() -> None:
-    """Govern with a real preset that masks the loop OFF.
+def _govern(*, admits: bool) -> None:
+    """Seed the ci_eval_heal row and pin a preset that admits or masks it.
 
-    Without one, resolution fails open and admits every loop — so every disarmed case
-    below would pass whatever the fixer gate did.
+    Without a pinned preset, resolution fails open and admits every loop, so the
+    masked-off case would pass whatever the fix-turn gate did.
     """
     Loop.objects.update_or_create(
         name="ci_eval_heal",
         defaults={"delay_seconds": 300, "script": "src/teatree/loops/ci_eval_heal/loop.py"},
     )
-    Mode.objects.update_or_create(name="quiet", defaults={"entries": {"ci_eval_heal": False}})
+    Mode.objects.update_or_create(name="quiet", defaults={"entries": {"ci_eval_heal": admits}})
     ModeOverride.objects.set_override("quiet", reason="test posture")
-
-
-def _arm_autofix() -> None:
-    """Turn on BOTH switches — the DARK flag AND the loop's own run verdict."""
-    _quiet_posture()
-    ConfigSetting.objects.set_value("ci_eval_heal_autofix_enabled", value=True)
-    Mode.objects.filter(name="quiet").update(entries={"ci_eval_heal": True})
 
 
 def _red_run() -> "_FakeClient":
     return _FakeClient(runs=[_completed("failure")], artifact=_artifact(reds=["rules_under_load"]))
 
 
-class TestFixerDisarmedIsObserveOnly(TestCase):
-    def test_red_halts_and_never_dispatches_when_disarmed(self) -> None:
-        _quiet_posture()
+class TestPresetGatesTheFixTurn(TestCase):
+    def test_manual_override_disarms_an_otherwise_admitted_fixer(self) -> None:
+        _govern(admits=True)
+        Loop.objects.set_manual_override("ci_eval_heal", runs=False, reason="operator paused repairs")
+        session = _awaiting(head_sha="a" * 40)
+        fixer = _FakeFixer()
+
+        advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
+
+        session.refresh_from_db()
+        assert session.state == CiEvalHealSession.State.HALTED
+        assert fixer.proposed == 0
+        assert "does not admit ci_eval_heal" in session.halt_reason
+
+    def test_a_preset_masking_the_loop_halts_the_red_and_never_proposes(self) -> None:
+        _govern(admits=False)
         session = _awaiting(head_sha="a" * 40)
         fixer = _FakeFixer()
         advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
         session.refresh_from_db()
         assert session.state == CiEvalHealSession.State.HALTED
-        assert session.state != CiEvalHealSession.State.GREEN
         assert fixer.proposed == 0
-        assert "observe-only" in session.halt_reason
+        assert "does not admit ci_eval_heal" in session.halt_reason
 
-    def test_flag_on_but_loop_masked_off_stays_observe_only(self) -> None:
-        _quiet_posture()
-        ConfigSetting.objects.set_value("ci_eval_heal_autofix_enabled", value=True)  # only ONE switch
+    def test_a_missing_loop_row_halts_the_red_and_never_proposes(self) -> None:
+        Loop.objects.filter(name="ci_eval_heal").delete()
         session = _awaiting(head_sha="a" * 40)
         fixer = _FakeFixer()
         advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
@@ -316,7 +319,7 @@ class TestFixerDisarmedIsObserveOnly(TestCase):
 
 class TestArmedFixerDispatch(TestCase):
     def test_behavioral_red_dispatches_a_bounded_fix_and_retriggers(self) -> None:
-        _arm_autofix()
+        _govern(admits=True)
         session = _awaiting(head_sha="a" * 40)
         client = _red_run()
         fixer = _FakeFixer(changed_paths=("src/teatree/skills/t3-rules/SKILL.md",), head_sha="f" * 40)
@@ -338,7 +341,7 @@ class TestArmedFixerDispatch(TestCase):
         }
 
     def test_no_change_proposal_halts_never_green(self) -> None:
-        _arm_autofix()
+        _govern(admits=True)
         session = _awaiting(head_sha="a" * 40)
         fixer = _FakeFixer(changed_paths=())
         escalated: list[int] = []
@@ -354,7 +357,7 @@ class TestArmedFixerDispatch(TestCase):
     def test_a_stopped_turns_recovery_pointer_reaches_the_escalation(self) -> None:
         # A turn stopped mid-flight can leave a valid fix behind. The session still halts
         # without retrying, but a human must be told where that work survives.
-        _arm_autofix()
+        _govern(admits=True)
         session = _awaiting(head_sha="a" * 40)
         ref = f"{SALVAGE_REF_PREFIX}c0ffee"
         fixer = _FakeFixer(raise_on_propose=RuntimeError(f"stopped turn; work preserved at {ref}"))
@@ -370,7 +373,7 @@ class TestArmedFixerDispatch(TestCase):
         assert escalated == [session.pk]
 
     def test_dispatch_failure_halts_never_stuck_in_fixing(self) -> None:
-        _arm_autofix()
+        _govern(admits=True)
         session = _awaiting(head_sha="a" * 40)
         fixer = _FakeFixer(raise_on_propose=RuntimeError("spawn boom"))
         advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
@@ -383,7 +386,7 @@ class TestArmedFixerDispatch(TestCase):
         # state ``halt`` accepts — so recording before the push landed left an un-haltable
         # session whose only exit was re-triggering the eval on the UNFIXED branch until
         # the budget burned out.
-        _arm_autofix()
+        _govern(admits=True)
         session = _awaiting(head_sha="a" * 40)
         fixer = _FakeFixer(raise_on_publish=RuntimeError("git push rejected"))
         escalated: list[int] = []
@@ -402,7 +405,7 @@ class TestAntiCheatRejectsTestEdit(TestCase):
     """The load-bearing PR-3b guardrail — a fixer that edits the TEST is rejected, never pushed."""
 
     def test_scenario_edit_is_rejected_discarded_and_halts_never_green(self) -> None:
-        _arm_autofix()
+        _govern(admits=True)
         session = _awaiting(head_sha="a" * 40)
         fixer = _FakeFixer(changed_paths=("evals/scenarios/rules_under_load.yaml",))
         escalated: list[int] = []
@@ -418,7 +421,7 @@ class TestAntiCheatRejectsTestEdit(TestCase):
         assert escalated == [session.pk]
 
     def test_red_matcher_edit_is_rejected(self) -> None:
-        _arm_autofix()
+        _govern(admits=True)
         session = _awaiting(head_sha="a" * 40)
         fixer = _FakeFixer(changed_paths=("src/teatree/eval/matchers.py", "src/teatree/skills/foo.md"))
         advance_session(session, client=_red_run(), escalate=_noop, fixer=fixer)
@@ -430,7 +433,7 @@ class TestAntiCheatRejectsTestEdit(TestCase):
 
 class TestFixBudgetIsBounded(TestCase):
     def test_exhausted_budget_halts_without_dispatch(self) -> None:
-        _arm_autofix()
+        _govern(admits=True)
         session = _awaiting(head_sha="a" * 40)
         session.max_fix_attempts = 2
         session.fix_attempts = 2
@@ -487,7 +490,7 @@ class TestAdvancementOwnership(TestCase):
         assert "superseded" in outcome.note
 
     def test_rival_advancer_does_not_publish_a_second_fix(self) -> None:
-        _arm_autofix()
+        _govern(admits=True)
         session = _triaging(reds=["rules_under_load"])
         rival = CiEvalHealSession.objects.get(pk=session.pk)
         fixer = _FakeFixer()
@@ -511,7 +514,7 @@ class TestAdvancementOwnership(TestCase):
     def test_rival_advancer_does_not_reopen_a_session_the_fix_branch_returned_to_awaiting(self) -> None:
         # The fix branch ends back on AWAITING_CI, so a state-equality claim would let the
         # rival through; only a generation check sees that the row moved under it.
-        _arm_autofix()
+        _govern(admits=True)
         session = _awaiting(head_sha="a" * 40)
         rival = CiEvalHealSession.objects.get(pk=session.pk)
 
@@ -570,25 +573,21 @@ class TestDispatchFailureIsNeverASilentWait(TestCase):
 
 
 class TestRedNeverSelfCertifiesGreen(TestCase):
-    """Sweep: under every arming/budget/cheat combination, a red never reaches GREEN."""
+    """Sweep: under every preset/budget/cheat combination, a red never reaches GREEN."""
 
     def test_a_red_is_never_green_across_the_fixer_matrix(self) -> None:
-        # (arm?, changed_paths) → each must terminate NOT-GREEN while a red is present.
         cases: list[tuple[bool, tuple[str, ...]]] = [
-            (False, ("src/teatree/skills/foo.md",)),  # disarmed observe-only
-            (True, ()),  # armed but un-fixable
-            (True, ("evals/scenarios/x.yaml",)),  # armed but cheating
+            (False, ("src/teatree/skills/foo.md",)),
+            (True, ()),
+            (True, ("evals/scenarios/x.yaml",)),
         ]
         for arm, paths in cases:
-            if arm:
-                _arm_autofix()
+            _govern(admits=arm)
             session = _awaiting(head_sha="a" * 40)
             advance_session(session, client=_red_run(), escalate=_noop, fixer=_FakeFixer(changed_paths=paths))
             session.refresh_from_db()
             assert session.state != CiEvalHealSession.State.GREEN, (arm, paths)
             assert session.state == CiEvalHealSession.State.HALTED, (arm, paths)
-            ConfigSetting.objects.clear("ci_eval_heal_autofix_enabled")
-            Loop.objects.filter(name="ci_eval_heal").delete()
 
 
 def _awaiting(*, head_sha: str = "a" * 40) -> CiEvalHealSession:

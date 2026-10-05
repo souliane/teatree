@@ -525,6 +525,21 @@ class RuntimeCloneResolutionTest(TestCase):
         assert out == ""
 
 
+class RuntimeCloneInAnImageGenerationTest(TestCase):
+    def test_an_image_generation_has_no_runtime_clone_to_drift(self) -> None:
+        with TemporaryDirectory() as tmp:
+            checkout = Path(tmp)
+            (checkout / ".git").mkdir()
+            env = {"TEATREE_GENERATION": "7" * 40, "TEATREE_DEPLOY_CHECKOUT": str(checkout)}
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                mock.patch("teatree.utils.git.current_branch", side_effect=AssertionError("no git in an image")),
+            ):
+                ok, out = _echoes(self_heal._check_runtime_clone_on_default_branch)
+        assert ok is True
+        assert out == ""
+
+
 class RunAllAndJsonTest(TestCase):
     def test_run_self_heal_checks_false_when_one_fails(self) -> None:
         with mock.patch(f"{_MOD}._check_stale_loop_timer", return_value=False), redirect_stdout(io.StringIO()):

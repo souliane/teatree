@@ -318,6 +318,9 @@ class TestDispatchedTaskReachesTerminalState:
         # ``review record`` CLI stamps ``reviewed_sha`` on the ticket, which
         # ``mark_reviewed_externally`` persists into ``last_review_state``.
         ticket.merge_extra(set_keys={"reviewed_sha": HEAD})
+        from tests.teatree_core.conftest import record_review_context_for_test  # noqa: PLC0415
+
+        record_review_context_for_test(ticket)
 
         task.complete()
 

@@ -11,7 +11,6 @@ from teatree.loops.dream.transcript_extract import (
     looks_like_learning,
     looks_like_user_ask,
     looks_like_user_correction,
-    user_ask_lines,
 )
 
 
@@ -175,26 +174,6 @@ class LooksLikeLearningTestCase(TestCase):
 
     def test_neutral_filler_prose_is_not_flagged(self) -> None:
         assert not looks_like_learning('{"type":"user","text":"a neutral request with no cue at all here"}')
-
-
-class UserAskLinesTestCase(TestCase):
-    """The sibling of :func:`high_signal_lines` that keeps only user-ask turns."""
-
-    def test_keeps_imperative_ask(self) -> None:
-        raw = '{"type":"assistant","text":"noise"}\n{"type":"user","text":"please open the PR for me"}'
-        assert "please open the PR for me" in user_ask_lines(raw)
-
-    def test_keeps_operational_ask(self) -> None:
-        raw = '{"type":"assistant","text":"noise"}\n{"type":"user","text":"hotfix needs to ship asap"}'
-        assert "hotfix needs to ship asap" in user_ask_lines(raw)
-
-    def test_drops_neutral_and_assistant_chatter(self) -> None:
-        raw = "\n".join(f'{{"type":"assistant","text":"can you do row {i}"}}' for i in range(20))
-        assert user_ask_lines(raw) == ""
-
-    def test_drops_neutral_user_statement(self) -> None:
-        raw = '{"type":"user","text":"the build finished and the row count is fine"}'
-        assert user_ask_lines(raw) == ""
 
 
 class HighSignalLinesTestCase(TestCase):

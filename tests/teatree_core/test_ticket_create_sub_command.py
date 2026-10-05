@@ -3,14 +3,17 @@
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.backends import loader as loader_mod
 from teatree.core import overlay_loader as overlay_loader_mod
+from tests._send_gate import allow_forge_repos
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
+pytestmark = pytest.mark.usefixtures("configured_banned_term_registry")
 _PARENT_URL = "https://gitlab.com/org/repo/-/work_items/8545"
 _CHILD = {"iid": 8546, "web_url": "https://gitlab.com/org/repo/-/work_items/8546"}
 
@@ -18,6 +21,7 @@ _CHILD = {"iid": 8546, "web_url": "https://gitlab.com/org/repo/-/work_items/8546
 class TicketCreateSubCommandTest(TestCase):
     def setUp(self) -> None:
         super().setUp()
+        allow_forge_repos("org/repo")
         # `create-sub` now routes the child title/body/labels through the scanned
         # forge-write seam; pin the leak-gate visibility probe to PRIVATE (clean
         # pass, no gh/glab subprocess) so these mechanics tests stay deterministic.
@@ -79,6 +83,10 @@ class TicketCreateSubCommandTest(TestCase):
 
 
 class TicketCreateSubDescriptionFileTest(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos("org/repo")
+
     def test_reads_description_from_file(self) -> None:
         import tempfile  # noqa: PLC0415
         from pathlib import Path  # noqa: PLC0415
@@ -112,6 +120,10 @@ class TicketCreateSubDescriptionFileTest(TestCase):
 
 
 class TicketCreateSubErrorTest(TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        allow_forge_repos("org/repo")
+
     def test_refuses_when_required_options_blank(self) -> None:
         result = cast(
             "dict[str, object]",

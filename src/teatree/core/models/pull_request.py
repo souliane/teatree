@@ -1,11 +1,13 @@
 import logging
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urlsplit
 
 from django.db import models
 from django.utils import timezone
 from django_fsm import FSMField, transition
 
 from teatree.url_classify import repo_and_iid
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -46,6 +48,28 @@ class PullRequestQuerySet(models.QuerySet):
             return row.ticket
         return self._ticket_carrying_pr(slug=slug, pr_id=pr_id, pr_url=pr_url)
 
+    def recorded_pr_url(self, *, slug: str, pr_id: int, host_kind: str) -> str:
+        """Return the recorded URL for this PR, preserving its actual forge host.
+
+        Two forges can carry the same path and number, so the host is part of what a record says:
+        the records answer only when they all sit on one host, and records on two hosts name none
+        rather than the first one found.
+        """
+        recorded = [str(url) for url in self.for_pr(slug=slug, pr_id=pr_id).values_list("url", flat=True)]
+        if not recorded:
+            tickets = self._tickets_with_extra().only("extra")
+            recorded = [url for ticket in tickets.iterator() for url in self._recorded_pr_urls(ticket.extra)]
+        candidates = [
+            url
+            for url in recorded
+            if (ref := pr_ref_from_url(url)) is not None
+            and ref.slug.casefold() == slug.casefold()
+            and ref.pr_id == pr_id
+            and ref.host_kind == host_kind
+        ]
+        hosts = {(urlsplit(url).hostname or "").lower() for url in candidates}
+        return candidates[0] if len(hosts) == 1 else ""
+
     @staticmethod
     def _names_pr(key: str, *, slug: str, pr_id: int, pr_url: str) -> bool:
         """True iff the recorded url *key* is this PR.
@@ -58,6 +82,12 @@ class PullRequestQuerySet(models.QuerySet):
             return True
         ref = repo_and_iid(key)
         return ref is not None and ref[0].casefold() == slug.casefold() and ref[1] == pr_id
+
+    @staticmethod
+    def _tickets_with_extra() -> "models.QuerySet[Ticket]":
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: sibling model, imported at call time
+
+        return Ticket.objects.exclude(extra={})
 
     @staticmethod
     def _recorded_pr_urls(extra: "JSONObject | None") -> list[str]:
@@ -84,9 +114,7 @@ class PullRequestQuerySet(models.QuerySet):
 
     @classmethod
     def _ticket_carrying_pr(cls, *, slug: str, pr_id: int, pr_url: str) -> "Ticket | None":
-        from teatree.core.models.ticket import Ticket  # noqa: PLC0415 — deferred: sibling model, imported at call time
-
-        for ticket in Ticket.objects.exclude(extra={}).only("issue_url", "extra", "id"):
+        for ticket in cls._tickets_with_extra().only("issue_url", "extra", "id"):
             urls = cls._recorded_pr_urls(ticket.extra)
             if any(cls._names_pr(url, slug=slug, pr_id=pr_id, pr_url=pr_url) for url in urls):
                 return ticket

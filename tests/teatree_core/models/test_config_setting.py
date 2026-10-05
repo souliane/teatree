@@ -36,17 +36,17 @@ class TestScopeLabel:
 class TestConfigSettingStore(TestCase):
     def test_get_effective_absent_key_is_none(self) -> None:
         # Empty table -> fall-through sentinel, never an exception.
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is None
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is None
 
     def test_set_value_then_get_effective_returns_it(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is True
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is True
 
     def test_set_value_is_an_upsert_on_unique_key(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=False)
-        assert ConfigSetting.objects.filter(key="adaptive_intake_concurrency_enabled").count() == 1
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is False
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=False)
+        assert ConfigSetting.objects.filter(key="admit_colleague_prs_to_board").count() == 1
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is False
 
     def test_value_round_trips_non_bool_json(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_label", "ready-to-implement")
@@ -59,17 +59,17 @@ class TestConfigSettingStore(TestCase):
         assert ConfigSetting.objects.get_effective("excluded_skills") == ["a", "b"]
 
     def test_clear_removes_the_row(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
-        removed = ConfigSetting.objects.clear("adaptive_intake_concurrency_enabled")
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
+        removed = ConfigSetting.objects.clear("admit_colleague_prs_to_board")
         assert removed is True
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is None
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is None
 
     def test_clear_absent_key_returns_false(self) -> None:
         assert ConfigSetting.objects.clear("never_set") is False
 
     def test_str_is_informative(self) -> None:
-        row = ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
-        assert "adaptive_intake_concurrency_enabled" in str(row)
+        row = ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
+        assert "admit_colleague_prs_to_board" in str(row)
 
 
 class TestConfigSettingEmptyValuesRoundTrip(TestCase):
@@ -98,12 +98,12 @@ class TestConfigSettingScope(TestCase):
     """
 
     def test_global_and_overlay_rows_for_same_key_coexist(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=False)
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True, scope="my-overlay")
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=False)
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True, scope="my-overlay")
         # Two distinct rows for one key — the composite (scope, key) uniqueness.
-        assert ConfigSetting.objects.filter(key="adaptive_intake_concurrency_enabled").count() == 2
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is False
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled", scope="my-overlay") is True
+        assert ConfigSetting.objects.filter(key="admit_colleague_prs_to_board").count() == 2
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is False
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board", scope="my-overlay") is True
 
     def test_set_value_is_per_scope_upsert(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 1, scope="ov")
@@ -115,25 +115,25 @@ class TestConfigSettingScope(TestCase):
         # An overlay read never silently borrows the global row — absence in the
         # overlay scope is the None fall-through sentinel; the resolver, not the
         # manager, layers global-then-overlay.
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled", scope="other") is None
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board", scope="other") is None
 
     def test_clear_is_scope_isolated(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=False)
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True, scope="ov")
-        assert ConfigSetting.objects.clear("adaptive_intake_concurrency_enabled", scope="ov") is True
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=False)
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True, scope="ov")
+        assert ConfigSetting.objects.clear("admit_colleague_prs_to_board", scope="ov") is True
         # The global row survives an overlay-scoped clear.
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is False
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled", scope="ov") is None
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is False
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board", scope="ov") is None
 
     def test_overrides_for_scope_returns_only_that_scope(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
         ConfigSetting.objects.set_value("issue_implementer_label", "ready", scope="ov")
-        assert ConfigSetting.objects.overrides_for_scope("") == {"adaptive_intake_concurrency_enabled": True}
+        assert ConfigSetting.objects.overrides_for_scope("") == {"admit_colleague_prs_to_board": True}
         assert ConfigSetting.objects.overrides_for_scope("ov") == {"issue_implementer_label": "ready"}
 
     def test_str_names_overlay_scope(self) -> None:
-        row = ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True, scope="my-overlay")
+        row = ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True, scope="my-overlay")
         assert "my-overlay" in str(row)
 
 
@@ -279,11 +279,6 @@ class TestConfigSettingCrossKeyConsistency(TestCase):
             ConfigSetting.objects.set_value("agent_harness_provider", "openai_compatible")
         assert ConfigSetting.objects.get_effective("agent_harness_provider") is None
 
-    def test_retired_orca_router_byok_under_default_harness_is_rejected(self) -> None:
-        # The exact production trigger from #3688.
-        with pytest.raises(ValidationError):
-            ConfigSetting.objects.set_value("agent_harness_provider", "orca_router_byok")
-
     def test_provider_valid_under_default_harness_is_accepted(self) -> None:
         ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
         assert ConfigSetting.objects.get_effective("agent_harness_provider") == "subscription_oauth"
@@ -311,8 +306,8 @@ class TestConfigSettingCrossKeyConsistency(TestCase):
         assert ConfigSetting.objects.get_effective("agent_harness_provider", scope="acme") == "openai_compatible"
 
     def test_unrelated_key_write_is_never_touched(self) -> None:
-        ConfigSetting.objects.set_value("adaptive_intake_concurrency_enabled", value=True)
-        assert ConfigSetting.objects.get_effective("adaptive_intake_concurrency_enabled") is True
+        ConfigSetting.objects.set_value("admit_colleague_prs_to_board", value=True)
+        assert ConfigSetting.objects.get_effective("admit_colleague_prs_to_board") is True
 
 
 class TestGovernedWritesAreTheOwnersAct(TestCase):

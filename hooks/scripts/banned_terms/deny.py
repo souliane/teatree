@@ -23,8 +23,8 @@ public surface until a ``git push``, and the #703 pre-push gate
 commit MESSAGES via ``git log --format='%B'``) hard-blocks any banned term before
 it reaches a public remote. Case A (#1415): before this arm a plain
 ``git commit -m "…<term>…"`` in the user's OWN repo — neither in ``private_repos``
-nor probe-resolvable — hard-blocked, forcing a clumsy ``ALLOW_BANNED_TERM=1``,
-while the same commit with an UNREADABLE body already downgraded. The asymmetry is
+nor probe-resolvable — hard-blocked, while the same commit with an UNREADABLE
+body already downgraded. The asymmetry is
 closed by matching (4) to the unreadable-body path.
 
 Arms (1) to (3) condition their downgrade on a PROVABLY-internal landing repo or a
@@ -45,7 +45,7 @@ so the widening never relaxes a public post. The #2597 false positive (a status
 comment to the overlay's OWN private tracker) is resolved the SOUND way instead: a
 private/unknown tracker is NOT affirmatively public, so
 ``gate_skips_for_visibility`` skips the WHOLE gate for it; declaring it in
-``[teatree] private_repos`` / ``internal_publish_namespaces`` makes the skip
+``[teatree] private_repos`` makes the skip
 reliable offline, and the #1657 NOTE below points the operator at that config when
 an in-hook probe cannot prove visibility.
 

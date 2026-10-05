@@ -7,8 +7,7 @@ that governs the whole USER-in-the-loop approval surface for an overlay. Under
 (``require_human_approval_to_answer``) takes its autonomous value in
 ``get_effective_settings`` and ``mode`` is pinned to ``auto``, UNLESS the user
 pinned an explicit per-gate override (explicit always wins — autonomy never
-silently overrides an opinion). ``notify`` additionally derives
-``notify_on_behalf = True``; ``full`` and ``babysit`` keep it ``False``.
+silently overrides an opinion).
 
 Two gates are deliberately NOT in that set, for the same reason: how far the agent
 carries work on its own is a separate concern from surrendering a distinct human
@@ -183,16 +182,6 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         assert get_effective_settings().mode is Mode.AUTO
 
-    def test_full_keeps_notify_on_behalf_false(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-        assert get_effective_settings().notify_on_behalf is False
-
-    def test_babysit_keeps_notify_on_behalf_false(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "babysit", scope="careful")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "careful")
-        assert get_effective_settings().notify_on_behalf is False
-
 
 class TestAutonomyNotifyTier(_AutonomyDbBase):
     def test_notify_flips_the_same_gate_as_full(self) -> None:
@@ -213,11 +202,6 @@ class TestAutonomyNotifyTier(_AutonomyDbBase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         assert owner_voice_forbidden() is True
 
-    def test_notify_derives_notify_on_behalf_true(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
-        assert get_effective_settings().notify_on_behalf is True
-
     def test_notify_leaves_safety_floor_untouched(self) -> None:
         # ``autoload`` / ``orchestrator_bash_gate_enabled`` survive the notify collapse.
         ConfigSetting.objects.set_value("autoload", value=True, scope="")
@@ -233,61 +217,9 @@ class TestAutonomyNotifyTier(_AutonomyDbBase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "t3-teatree")
         teatree = get_effective_settings()
         assert teatree.autonomy is Autonomy.FULL
-        assert teatree.notify_on_behalf is False
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "t3-client")
         client = get_effective_settings()
         assert client.autonomy is Autonomy.NOTIFY
-        assert client.notify_on_behalf is True
-
-
-class TestAutonomyReviewRequestPostDisabled(_AutonomyDbBase):
-    """The resolved ``review_request_post_disabled`` bool is set per autonomy tier.
-
-    The parallel side flag ``agent_review_request_disabled`` is deleted; the
-    collapse now drives review-request blocking off the tier (Option A — a
-    per-overlay explicit pin still escapes):
-
-    * ``notify`` → True  (collaborative/customer surface: BLOCK review-request),
-    * ``full``   → False (solo tooling surface: PROCEED),
-    * ``babysit``→ default False (review-request follows the active posture).
-    """
-
-    def test_notify_resolves_review_request_post_disabled_true(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
-        assert get_effective_settings().review_request_post_disabled is True
-
-    def test_full_resolves_review_request_post_disabled_false(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-        assert get_effective_settings().review_request_post_disabled is False
-
-    def test_babysit_keeps_review_request_post_disabled_default_false(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "babysit", scope="careful")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "careful")
-        assert get_effective_settings().review_request_post_disabled is False
-
-    def test_explicit_pin_wins_over_full_tier(self) -> None:
-        # Option A: an explicit per-overlay pin of the resolved field beats the
-        # ``full`` tier's PROCEED default.
-        ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
-        ConfigSetting.objects.set_value("review_request_post_disabled", value=True, scope="trusted")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
-        assert get_effective_settings().review_request_post_disabled is True
-
-    def test_explicit_pin_wins_over_notify_tier(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
-        ConfigSetting.objects.set_value("review_request_post_disabled", value=False, scope="client")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
-        assert get_effective_settings().review_request_post_disabled is False
-
-    def test_notify_does_not_leak_disabled_to_full_overlay(self) -> None:
-        ConfigSetting.objects.set_value("autonomy", "notify", scope="t3-client")
-        ConfigSetting.objects.set_value("autonomy", "full", scope="t3-teatree")
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "t3-teatree")
-        assert get_effective_settings().review_request_post_disabled is False
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "t3-client")
-        assert get_effective_settings().review_request_post_disabled is True
 
 
 class TestAutonomyOverPinFix(_AutonomyDbBase):

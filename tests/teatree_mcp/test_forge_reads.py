@@ -16,7 +16,7 @@ from django.test import TestCase
 from teatree.backends.types import Service
 from teatree.core.backend_protocols import ApprovalState, DraftState, PrMergeState, PrOpenState
 from teatree.core.overlay import OverlayConfig, OverlayConnectors
-from teatree.mcp import build_server
+from teatree.mcp.server import build_server
 from tests.teatree_mcp._call_tool_result import structured as _structured
 
 

@@ -21,13 +21,14 @@ from pathlib import Path
 import pytest
 
 import teatree
-from teatree.config.setting_registries import READER_LESS_SETTINGS
+from teatree.config.known_settings import ALL_KNOWN_CONFIG_SETTINGS
 from teatree.config.settings import UserSettings
 from teatree.quality.setting_readership import DECLARATION_MODULES, UnreadableRootError, read_sites, unread_settings
 
 _PACKAGE_ROOT = Path(teatree.__file__).parent
 #: The package and the hook tree, which is outside it and is the ONLY reader of some keys.
 _ROOTS = (_PACKAGE_ROOT, _PACKAGE_ROOT.parents[1] / "hooks")
+_ALL_KNOWN_ROOTS = (*_ROOTS, _PACKAGE_ROOT.parents[1] / "scripts")
 
 
 def _declared_keys() -> tuple[str, ...]:
@@ -36,11 +37,7 @@ def _declared_keys() -> tuple[str, ...]:
 
 class TestEverySettingHasAReader:
     def test_no_declared_setting_is_unread(self) -> None:
-        unread = tuple(
-            k
-            for k in unread_settings(_ROOTS, _declared_keys(), package_root=_PACKAGE_ROOT)
-            if k not in READER_LESS_SETTINGS
-        )
+        unread = unread_settings(_ROOTS, _declared_keys(), package_root=_PACKAGE_ROOT)
 
         assert unread == (), (
             "these settings are declared and nothing reads them — each is a surface with no "
@@ -48,23 +45,21 @@ class TestEverySettingHasAReader:
             "never a key to leave sitting:\n" + "\n".join(f"  {key}" for key in unread)
         )
 
-    def test_every_excused_key_is_genuinely_unread(self) -> None:
-        """The allowlist is not a resting place: an excused key that gains a reader leaves it.
-
-        Without this, `READER_LESS_SETTINGS` could quietly grow to cover keys that DO have
-        owners, and the assertion above would pass over a surface nobody checked.
-        """
-        unread = set(unread_settings(_ROOTS, _declared_keys(), package_root=_PACKAGE_ROOT))
-        declared = {k for k in READER_LESS_SETTINGS if k in set(_declared_keys())}
-
-        assert declared <= unread, sorted(declared - unread)
-
     def test_the_surface_it_accounts_for_is_the_whole_declared_one(self) -> None:
         keys = _declared_keys()
         sites = read_sites(_ROOTS, keys, package_root=_PACKAGE_ROOT)
 
         assert set(sites) == set(keys), "the walk must answer for EVERY declared key, not a subset"
         assert len(keys) > 100, "a shrunken key set would make the assertion above trivially true"
+
+    def test_no_known_core_setting_lacks_a_non_test_reader(self) -> None:
+        unread = unread_settings(_ALL_KNOWN_ROOTS, ALL_KNOWN_CONFIG_SETTINGS, package_root=_PACKAGE_ROOT)
+        assert unread == (), f"known core settings without a non-test reader: {unread}"
+
+    def test_a_planted_known_core_key_is_reported(self) -> None:
+        planted = "a_planted_core_setting_with_no_reader"
+        unread = unread_settings(_ALL_KNOWN_ROOTS, [*ALL_KNOWN_CONFIG_SETTINGS, planted], package_root=_PACKAGE_ROOT)
+        assert unread == (planted,)
 
 
 class TestTheWalkCanActuallyFail:
@@ -79,7 +74,7 @@ class TestTheWalkCanActuallyFail:
         # a walk that reported everything unread would satisfy the first alone.
         assert planted in unread
         assert "agent_harness" not in unread
-        assert set(unread) - {planted} <= READER_LESS_SETTINGS
+        assert unread == (planted,)
 
     def test_prose_naming_a_key_is_not_a_read(self) -> None:
         """Three of the six keys a narrower walk called unread are named only in docstrings.

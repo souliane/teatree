@@ -23,9 +23,9 @@ safety properties onto every task it queues:
 
 Other invariants mirror the family:
 
-* **Single trigger.** The ``backlog_sweep`` ``Loop`` row's own daily cadence,
-    and nothing else. A fixed-rate platform behaviour, not coupled to
-    delivery velocity.
+* **Two triggers.** The ``backlog_sweep`` ``Loop`` row's own daily cadence,
+    and a dream pass that left gaps on the umbrella host's pending ledger
+    (:meth:`BacklogSweepScanner.scan_dream_gaps`); an empty ledger triggers nothing.
 * **Overlay anchor is injected, not baked.** A core scanner that does not
     know any overlay's name; the wiring layer resolves the active core
     overlay via :func:`teatree.config.discover_active_overlay` and passes
@@ -41,6 +41,10 @@ from dataclasses import dataclass
 from django.utils import timezone
 
 from teatree.core.modelkit.phases import BACKLOG_SWEEP_PHASE
+from teatree.core.models.consolidated_memory import ConsolidatedMemory
+from teatree.core.models.dream_gap_ledger import pending_entries, umbrella_ticket
+from teatree.core.models.types import DreamGapEntry
+from teatree.dream_constants import DREAM_BATCH_MANIFEST_HEADER
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.phase_cadence import PhaseCadence
 
@@ -56,6 +60,35 @@ _GROUP_DIRECTIVE = (
     "member's body into the host with `t3 <overlay> ticket fold`, re-read the host and "
     "prove it landed with `t3 <overlay> ticket fold-check`, and only then retire the "
     "standalone row"
+)
+
+
+#: What a sweep does with the gaps a dream pass left pending; every command named here must resolve.
+DREAM_GAP_DIRECTIVE = (
+    "Group them like tickets — fold each into the best EXISTING open host (oldest / most-discussed covering "
+    "its scope, never a new row) with `t3 <overlay> ticket attach-gaps <host-ticket-id> --sweep-run-id <run> "
+    '--manifest \'<json list of gap keys or {"gap_key": ..., "theme": ...} objects>\'`; a gap no host fits goes '
+    "to the umbrella ticket itself. Pending:"
+)
+
+
+def _gap_detail_lines(row: ConsolidatedMemory | None) -> list[str]:
+    if row is None:
+        return []
+    fields = (("Rule", row.rule), ("Evidence", row.verified_citation), ("Fix in", row.durable_destination))
+    return [f"    {label}: {' '.join(value.split())}" for label, value in fields if value.strip()]
+
+
+#: The Rule-4 half of #162: the sweep's changed-ticket count must be MEASURED. A number the
+#: sweeping agent types into its envelope cannot distinguish a clean backlog from a skipped
+#: sweep, so the run row is the measurement and the envelope only names it — enforced by
+#: :mod:`teatree.agents.ticket_sweep_recorder`, stated here so the dispatched sweep opens the
+#: run BEFORE it starts writing rather than discovering the requirement at completion.
+_RUN_EVIDENCE_DIRECTIVE = (
+    "MEASURED RUN: open the sweep run FIRST with `t3 <overlay> ticket sweep-begin --source loop`, "
+    "pass `--sweep-run-id` to every mutation, close it with `ticket sweep-finish` even when nothing "
+    'changed, and end the result envelope with `"ticket_sweep": {"run_id": "<the id>"}` — a '
+    "backlog_sweep task that names no finished run is refused (#162 Rule 4)"
 )
 
 
@@ -88,6 +121,7 @@ class BacklogSweepScanner:
     overlay_name: str
     skill: str = "sweeping-tickets"
     require_approval: bool = True
+    dream_umbrella_url: str = ""
     name: str = "backlog_sweep"
 
     def scan(self) -> list[ScanSignal]:
@@ -98,11 +132,25 @@ class BacklogSweepScanner:
         trigger = cadence.evaluate_trigger(now=timezone.now(), last_run_at=cadence.last_run_at())
         if trigger is None:
             return []
+        return self._queue(cadence, trigger, self._pending_dream_gaps())
 
+    def scan_dream_gaps(self) -> list[ScanSignal]:
+        """Queue a sweep for the gaps a dream pass left pending; an empty ledger queues nothing."""
+        cadence = PhaseCadence(self.overlay_name, phase=BACKLOG_SWEEP_PHASE)
+        pending = self._pending_dream_gaps()
+        if not pending or cadence.in_flight_exists():
+            return []
+        return self._queue(cadence, "dream-gaps", pending)
+
+    def _pending_dream_gaps(self) -> list[DreamGapEntry]:
+        umbrella = umbrella_ticket(self.dream_umbrella_url) if self.dream_umbrella_url else None
+        return pending_entries(umbrella) if umbrella is not None else []
+
+    def _queue(self, cadence: PhaseCadence, trigger: str, pending: list[DreamGapEntry]) -> list[ScanSignal]:
         task = cadence.queue_task(
             placeholder_issue_url=f"backlog-sweep://{self.overlay_name}",
             agent_id=f"backlog-sweep-{self.overlay_name}",
-            execution_reason=self._execution_reason(trigger),
+            execution_reason=self._execution_reason(trigger) + self._dream_gap_section(pending),
             log_label="BacklogSweepScanner",
         )
         if task is None:
@@ -125,8 +173,9 @@ class BacklogSweepScanner:
     def _execution_reason(self, trigger: str) -> str:
         """Build the dispatcher directive: the group-first posture, plus the ask-gate.
 
-        :data:`_GROUP_DIRECTIVE` is unconditional — the sweep's default path
-        groups and performs zero real closures whatever the ask-gate says.
+        :data:`_GROUP_DIRECTIVE` and :data:`_RUN_EVIDENCE_DIRECTIVE` are both
+        unconditional — the sweep's default path groups, performs zero real
+        closures, and is measured, whatever the ask-gate says.
         When ``require_approval`` is on (the default), the directive
         additionally requires each fold proposal to be surfaced for user
         approval, and routes every standalone retirement through the gated
@@ -134,7 +183,10 @@ class BacklogSweepScanner:
         (:mod:`teatree.core.gates.bulk_close_gate`) applies to the autonomous
         path exactly as it does to a manual CLI one.
         """
-        base = f"Periodic backlog-sweep triage ({trigger}) via skill: {self.skill} | {_GROUP_DIRECTIVE}"
+        base = (
+            f"Periodic backlog-sweep triage ({trigger}) via skill: {self.skill} "
+            f"| {_GROUP_DIRECTIVE} | {_RUN_EVIDENCE_DIRECTIVE}"
+        )
         if self.require_approval:
             return (
                 f"{base} | ASK-GATE: do NOT mass-close issues unattended — record each fold "
@@ -146,8 +198,25 @@ class BacklogSweepScanner:
             )
         return base
 
+    def _dream_gap_section(self, pending: list[DreamGapEntry]) -> str:
+        """Name every gap a dream pass left pending, and the one verb that folds them into a host."""
+        if not pending:
+            return ""
+        rows = ConsolidatedMemory.objects.filter(cluster_key__in={entry.get("cluster_key") for entry in pending})
+        by_cluster = {row.cluster_key: row for row in rows}
+        lines = []
+        for entry in pending:
+            lines.append(f"- {entry.get('gap_key', '')}: {entry.get('title', '')}")
+            lines.extend(_gap_detail_lines(by_cluster.get(entry.get("cluster_key", ""))))
+        detail_lines = "\n".join(lines)
+        return (
+            f" | DREAM GAPS: {len(pending)} gap(s) wait on {self.dream_umbrella_url}. "
+            f"{DREAM_GAP_DIRECTIVE}\n{DREAM_BATCH_MANIFEST_HEADER}\n{detail_lines}"
+        )
+
 
 __all__ = [
     "BACKLOG_SWEEP_PHASE",
+    "DREAM_GAP_DIRECTIVE",
     "BacklogSweepScanner",
 ]

@@ -35,7 +35,7 @@ the authority that nothing was posted (#1103). The decision-only
 takes NO claim at all, so it can never leave an orphan that wedges a later
 real post.
 
-Fail safe. The httpx read is bounded (hard timeout + bounded pages). On
+Fail safe. The httpx read is bounded (hard timeout + a wall-clock walk budget). On
 timeout / HTTP error / API not-ok the guard SUPPRESSES with
 ``reason="read_failed_failsafe"`` — biasing to *not* posting a possible
 duplicate. The obligation stays open for a later tick (no row is
@@ -73,14 +73,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_READ_TIMEOUT = 8.0
-# How many times the live read pages ``conversations.history``. Five reaches back over
-# the recency window on the busiest channel measured, so an old MANUAL user post is
-# still seen and the request is not duplicated.
-_MAX_PAGES = 5
 # How far back the live channel read looks when deciding POST vs SUPPRESS: a posted
 # ``ReviewRequestPost`` row is not trusted on its own beyond it, so live Slack rather
 # than the row's age decides.
-_RECENCY_WINDOW = dt.timedelta(days=30)
+REVIEW_CHANNEL_LOOKBACK = dt.timedelta(days=30)
 
 # A durable claim is the concurrent check→post race backstop only. An
 # unposted claim older than this window is a stale orphan (e.g. the
@@ -165,10 +161,9 @@ def _reconcile(mr_url: str, permalink: str, overlay: str, *, match_ts: str) -> N
 
 @dataclass(frozen=True, slots=True)
 class GuardOptions:
-    recency_window: dt.timedelta = _RECENCY_WINDOW
+    recency_window: dt.timedelta = REVIEW_CHANNEL_LOOKBACK
     read_timeout: float = _DEFAULT_READ_TIMEOUT
     now: dt.datetime | None = None
-    max_pages: int = _MAX_PAGES
 
 
 def _read_matches(
@@ -191,7 +186,6 @@ def _read_matches(
         channel_id=target.channel_id,
         channel_name=target.channel_name,
         pr_urls=sorted(canonicals),
-        max_pages=opts.max_pages,
         oldest_ts=f"{oldest.timestamp():.6f}",
         timeout=opts.read_timeout,
     )
@@ -563,39 +557,6 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "", overlay_n
     if not token:
         return None
     return GuardTarget(channel_id=channel_id, channel_name=channel_name, token=token)
-
-
-def resolve_guard_targets() -> list[GuardTarget]:
-    """Resolve every review-broadcast channel + post-token for the active overlay (#1295 cap A).
-
-    Iterates :meth:`OverlayConfig.get_review_broadcast_channels` so a
-    Slack-Connect channel uses the per-channel ``xoxp`` from the bot
-    backend and a plain channel uses the sync token. Returns an empty
-    list when no channels resolve to a usable target — callers fall back
-    to the legacy single-channel behaviour.
-    """
-    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415 — deferred: Django import at call time
-
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415 — deferred: call-time import
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred: call-time import, kept lazy
-
-    try:
-        overlay = get_overlay()
-    except ImproperlyConfigured:
-        return []
-    channels = overlay.config.get_review_broadcast_channels()
-    if not channels:
-        return []
-    messaging = messaging_from_overlay()
-    targets: list[GuardTarget] = []
-    for channel_name, channel_id in channels:
-        if not channel_id:
-            continue
-        token = _channel_token(messaging, channel_id, overlay)
-        if not token:
-            continue
-        targets.append(GuardTarget(channel_id=channel_id, channel_name=channel_name, token=token))
-    return targets
 
 
 def _channel_token(messaging: "MessagingBackend | None", channel_id: str, overlay: "OverlayBase") -> str:

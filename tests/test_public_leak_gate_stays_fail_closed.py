@@ -50,7 +50,10 @@ def fail_open_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
     config_db = tmp_path / "config.sqlite3"
-    _seed_config_db(config_db, {"danger_gate_fail_open": True, "banned_terms": ["acmecorp"]})
+    _seed_config_db(
+        config_db,
+        {"danger_gate_fail_open": True, "banned_term_registry": {"leak": ["acmecorp"], "prose_collider": ["acmecorp"]}},
+    )
     monkeypatch.setenv("T3_CONFIG_DB", str(config_db))
     return tmp_path
 

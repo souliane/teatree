@@ -120,7 +120,7 @@ def runs_full_suite(command_text: str, roots: tuple[str, ...]) -> bool:
 
     True for a bare ``pytest`` (no positional path) or one whose positional path
     normalises to a *roots* entry (``tests``, ``tests/``, ``./tests/``, quoted); a
-    genuinely-scoped sub-path (``tests/quality``, ``tests/foo.py::T``) returns False.
+    A scoped path (``tests/quality``, ``tests/foo.py::T``) returns False.  # skill-symbol-ref: illustrative selector
     """
     for argv in pytest_argvs(command_text):
         positionals = positional_args(argv)

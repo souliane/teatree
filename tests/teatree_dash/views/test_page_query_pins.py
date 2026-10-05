@@ -88,7 +88,8 @@ PAGE_QUERY_PINS: dict[str, int] = {
 # #4085 added the enqueue-button row: ONE bounded read of the ticket's unstarted tasks,
 # O(1) in the population. A re-pin because the drawer reads a new datum, not an N+1 —
 # the two-population assertion below is what tells those apart.
-TICKET_DRAWER_QUERIES = 12
+# code_direct's legality now reads the recorded plan decision: one more bounded EXISTS, O(1).
+TICKET_DRAWER_QUERIES = 13
 TRANSCRIPT_QUERIES = 2
 
 

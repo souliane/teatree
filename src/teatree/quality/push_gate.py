@@ -2,7 +2,7 @@
 
 The push-stage hook must never run the whole local suite (``#112/#21/#38``). This
 module turns a diff into a :class:`PushGatePlan` — either whole-tree FULL (the
-default branch: flag OFF, or any FULL trigger) or SCOPED to the changed files —
+    default branch on a FULL trigger) or SCOPED to the changed files —
 and :func:`run_push_gate` executes the two engines behind it:
 
 *   Engine A — the ``--doctest-modules`` sweep, scoped to the changed
@@ -32,7 +32,6 @@ from teatree.utils.run import run_allowed_to_fail
 # byte-identical to the pre-#122 hook's ``--doctest-modules src/teatree``.
 WHOLE_TREE_DOCTEST = Path("src/teatree")
 
-_FLAG_OFF_REASON = "incremental_push_gate is OFF — whole-tree doctest + whole-tree ast-grep (the pre-#122 behaviour)"
 
 # pytest's EXIT_NOTESTSCOLLECTED. A doctest target with no ``>>>`` example collects
 # nothing and pytest exits 5 — teatree is near-zero-comments, so most modules have
@@ -61,7 +60,6 @@ class PushGatePlan:
     reason: str
     doctest_targets: tuple[Path, ...]
     astgrep_scope: tuple[Path, ...] | None
-    enabled: bool
 
     def report(self) -> str:
         if self.is_full:
@@ -96,40 +94,30 @@ class PushGateResult:
     exit_code: int
 
 
-def _full_plan(reason: str, *, enabled: bool) -> PushGatePlan:
+def _full_plan(reason: str) -> PushGatePlan:
     return PushGatePlan(
         is_full=True,
         reason=reason,
         doctest_targets=(WHOLE_TREE_DOCTEST,),
         astgrep_scope=None,
-        enabled=enabled,
     )
 
 
-def plan_push_gate(changed: ChangedSet, *, enabled: bool) -> PushGatePlan:
-    """Decide the push-gate plan for *changed* under the ``incremental_push_gate`` flag.
-
-    ``enabled=False`` ⇒ whole-tree FULL regardless of the diff (zero push-behaviour
-    change on merge). ``enabled=True`` ⇒ scoped when the diff is provably local,
-    FULL on any :func:`teatree.quality.changed_set.classify` trigger (the default
-    branch). Pure over its arguments — the flag and diff are the only inputs.
-    """
-    if not enabled:
-        return _full_plan(_FLAG_OFF_REASON, enabled=False)
+def plan_push_gate(changed: ChangedSet) -> PushGatePlan:
+    """Scope a provably local diff and run FULL on every classifier trigger."""
     trigger = classify(changed)
     if trigger.full:
-        return _full_plan(trigger.reason, enabled=True)
+        return _full_plan(trigger.reason)
     scope = tuple(sorted(set(trigger.scoped_src) | set(trigger.scoped_tests)))
     return PushGatePlan(
         is_full=False,
         reason=trigger.reason,
         doctest_targets=trigger.scoped_src,
         astgrep_scope=scope,
-        enabled=True,
     )
 
 
-def resolve_plan(base_ref: str, *, enabled: bool, cwd: Path | None = None) -> PushGatePlan:
+def resolve_plan(base_ref: str, *, cwd: Path | None = None) -> PushGatePlan:
     """Gather the changed set and plan it, forcing FULL when the diff can't be computed.
 
     A dirty/shallow merge-base (``ChangedSetError``) is R7: a gate that cannot
@@ -138,8 +126,8 @@ def resolve_plan(base_ref: str, *, enabled: bool, cwd: Path | None = None) -> Pu
     try:
         changed = changed_paths(base_ref=base_ref, cwd=cwd)
     except ChangedSetError as exc:
-        return _full_plan(f"could not compute the changed set ({exc}) — FULL (fail-safe)", enabled=enabled)
-    return plan_push_gate(changed, enabled=enabled)
+        return _full_plan(f"could not compute the changed set ({exc}) — FULL (fail-safe)")
+    return plan_push_gate(changed)
 
 
 def pytest_prefix(repo_root: Path) -> list[str]:

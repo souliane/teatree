@@ -235,7 +235,9 @@ class TestWiredAndExercised:
             "handle_block_ai_signature must be in the live PreToolUse handler chain — an unwired gate is a phantom gate"
         )
 
-    def test_pretooluse_chain_routes_gh_pr_create_through_the_gate(self, real_matcher, capsys):
+    def test_pretooluse_chain_routes_gh_pr_create_through_the_gate(
+        self, real_matcher, capsys, configured_banned_term_registry: None
+    ):
         # Dispatch a gh pr create with a banned trailer through the WHOLE
         # PreToolUse chain exactly as main() does, and assert it is denied by
         # this gate — proving the gate actually fires on a routed tool call, not

@@ -19,7 +19,6 @@ from their real per-session state files.
 
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -29,24 +28,6 @@ import pytest
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 
 
-def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
-    """Seed the DB-home ``teatree_config_setting`` store the breaker's kill-switch resolves."""
-    conn = sqlite3.connect(str(path))
-    try:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
-            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
-        )
-        for key, value in rows.items():
-            conn.execute(
-                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
-                (key, json.dumps(value)),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 @pytest.fixture
 def env(tmp_path: Path) -> dict[str, str]:
     """A subprocess env with STATE_DIR, skill search dirs, and HOME on tmp_path.
@@ -54,8 +35,7 @@ def env(tmp_path: Path) -> dict[str, str]:
     Seeds one real, loadable skill (``ac-reviewing-codebase``) so the
     skill-loading gate has a genuine load-first demand to enforce, and points
     ``HOME`` at a clean temp dir (with no ``T3_CONFIG_DB``) so the breaker's
-    DB-home config read resolves to an absent store and sees its default
-    (enabled) unless a test seeds a config DB.
+    DB-home config read resolves to an absent store.
     """
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
@@ -188,6 +168,21 @@ class TestUxGateTripsOpenAtThreshold:
         assert rcs == [2, 2, 0], "first two deny, the third fails open"
         assert _streak(env, "ux2") is None, "the breaker resets the streak after relaxing the UX gate"
 
+    def test_auto_relax_records_override_evidence(self, env: dict[str, str], tmp_path: Path) -> None:
+        registry = tmp_path / "registry"
+        env["T3_LOOP_REGISTRY_DIR"] = str(registry)
+        _seed_pending(env, "ux-evidence", ["ac-reviewing-codebase"])
+
+        rcs = [_run(env, _skill_deny(env, "ux-evidence"))[0] for _ in range(3)]
+
+        rows = [
+            json.loads(line)
+            for path in (registry / "otel").glob("gate-*.jsonl")
+            for line in path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert rcs == [2, 2, 0]
+        assert [row["decision"] for row in rows] == ["deny", "deny", "override"]
+
 
 class TestSafetyGateNeverOpens:
     """A SAFETY gate keeps denying past the threshold; it never auto-relaxes."""
@@ -238,23 +233,6 @@ class TestAllowResetsStreak:
         assert [rc3, rc4] == [2, 2], "denials after the allow restart the count — never reach the threshold"
         _assert_streak_count(env, "reset", 2)
         assert _circuit_broken(env, "reset") == [], "the breaker never tripped"
-
-
-class TestKillSwitchIsPureNoOp:
-    """``deny_circuit_breaker_enabled = false`` makes the breaker a pure pass-through."""
-
-    def test_disabled_breaker_passes_denials_through_unchanged(self, env: dict[str, str]) -> None:
-        db = Path(env["HOME"]) / "db.sqlite3"
-        _seed_config_db(db, {"deny_circuit_breaker_enabled": False})
-        env["T3_CONFIG_DB"] = str(db)
-        for _ in range(5):
-            rc, payload, _ = _run(env, _safety_deny("off"))
-            _assert_denied(rc, payload)
-            assert payload is not None
-            assert "CIRCUIT BREAKER" not in payload["permissionDecisionReason"]
-
-        assert _streak(env, "off") is None, "the breaker writes no streak state when disabled"
-        assert _circuit_broken(env, "off") == [], "the breaker records no signal when disabled"
 
 
 def _no_verify_deny(session_id: str, message: str) -> dict:

@@ -24,6 +24,7 @@ purpose — extracting a shared grader would couple the metered-LLM path to this
 DB-record path.
 """
 
+from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
@@ -143,6 +144,7 @@ class Rubric(models.Model):
             RubricCriterion.objects.bulk_create(
                 [RubricCriterion(rubric=rubric, ordinal=ordinal, text=text) for ordinal, text in enumerate(cleaned)]
             )
+            ticket.merge_extra(set_keys={"rubric_grades_by_head": {}, "rubric_grades_recorded": False})
         return rubric
 
     @classmethod
@@ -275,6 +277,17 @@ class Rubric(models.Model):
         verifier's FAIL does not count".
         """
         criteria = list(self.criteria.all())
+        if head_sha is not None and not waived:
+            selected = self._criteria_at_head(criteria, head_sha)
+            if selected is None:
+                extra = Ticket.objects.get(pk=self.ticket.pk).extra or {}
+                by_head = extra.get("rubric_grades_by_head") or {}
+                if isinstance(by_head, dict) and by_head:
+                    return (
+                        f"rubric grades are stale: none recorded for current head {head_sha[:8]} — {_named(criteria)}"
+                    )
+                return f"rubric has no grades recorded for current head {head_sha[:8]} — {_named(criteria)}"
+            criteria = selected
         if not waived and not criteria:
             return "the rubric has no criteria recorded"
         for rung in _CRITERION_RUNGS:
@@ -286,6 +299,28 @@ class Rubric(models.Model):
         if head_sha is None or waived:
             return ""
         return _stale_reason(criteria, head_sha)
+
+    def _criteria_at_head(self, criteria: "list[RubricCriterion]", head_sha: str) -> "list[RubricCriterion] | None":
+        extra = Ticket.objects.get(pk=self.ticket.pk).extra or {}
+        if not extra.get("rubric_grades_recorded"):
+            return criteria
+        by_head = extra.get("rubric_grades_by_head") or {}
+        grades = by_head.get(head_sha.strip().lower()) if isinstance(by_head, dict) else None
+        if not isinstance(grades, dict):
+            return None
+        selected = []
+        for criterion in criteria:
+            view = copy(criterion)
+            grade = grades.get(str(criterion.pk))
+            if isinstance(grade, dict):
+                view.status = grade.get("status", RubricCriterion.Status.PENDING)
+                view.grader_identity = grade.get("grader_identity", "")
+                view.reviewed_sha = head_sha.strip().lower()
+                view.rationale = grade.get("rationale", "")
+            else:
+                view.status = RubricCriterion.Status.PENDING
+            selected.append(view)
+        return selected
 
     def is_fully_passed_at(self, head_sha: str) -> bool:
         """True iff EVERY criterion is a cited PASS by an independent grader at ``head_sha``."""
@@ -372,12 +407,34 @@ class RubricCriterion(models.Model):
             )
             raise RubricError(msg)
 
-        self.status = graded_status
-        self.grader_identity = grader
-        self.reviewed_sha = reviewed_sha.strip().lower()
-        self.rationale = cited
-        self.graded_at = timezone.now()
-        self.save(update_fields=["status", "grader_identity", "reviewed_sha", "rationale", "graded_at"])
+        ticket = self.rubric.ticket
+        with transaction.atomic():
+            locked = Ticket.objects.select_for_update().get(pk=ticket.pk)
+            by_head = dict((locked.extra or {}).get("rubric_grades_by_head") or {})
+            if not (locked.extra or {}).get("rubric_grades_recorded"):
+                for old in self.rubric.criteria.all():
+                    if old.status in {self.Status.PASS, self.Status.FAIL} and is_commit_sha(old.reviewed_sha):
+                        prior = dict(by_head.get(old.reviewed_sha) or {})
+                        prior[str(old.pk)] = {
+                            "status": str(old.status),
+                            "grader_identity": old.grader_identity,
+                            "rationale": old.rationale,
+                        }
+                        by_head[old.reviewed_sha] = prior
+            self.status = graded_status
+            self.grader_identity = grader
+            self.reviewed_sha = reviewed_sha.strip().lower()
+            self.rationale = cited
+            self.graded_at = timezone.now()
+            self.save(update_fields=["status", "grader_identity", "reviewed_sha", "rationale", "graded_at"])
+            at_head = dict(by_head.get(self.reviewed_sha) or {})
+            at_head[str(self.pk)] = {
+                "status": graded_status.value,
+                "grader_identity": self.grader_identity,
+                "rationale": self.rationale,
+            }
+            by_head[self.reviewed_sha] = at_head
+            ticket.merge_extra(set_keys={"rubric_grades_by_head": by_head, "rubric_grades_recorded": True})
 
     def unverified_reason(self) -> str:
         """Why this criterion is not a cited PASS by an independent grader, or ``""``.
@@ -398,6 +455,16 @@ class RubricCriterion(models.Model):
 
     def is_passing_at(self, head_sha: str) -> bool:
         """True iff this criterion :meth:`is_verified` AND its grade is bound to ``head_sha``."""
+        extra = Ticket.objects.get(pk=self.rubric.ticket.pk).extra or {}
+        if extra.get("rubric_grades_recorded"):
+            by_head = extra.get("rubric_grades_by_head") or {}
+            grade = by_head.get(head_sha.strip().lower(), {}).get(str(self.pk)) if isinstance(by_head, dict) else None
+            return bool(
+                isinstance(grade, dict)
+                and grade.get("status") == self.Status.PASS
+                and str(grade.get("rationale", "")).strip()
+                and is_independent_reviewer_identity(str(grade.get("grader_identity", "")).strip())
+            )
         return self.is_verified() and self.reviewed_sha == head_sha.strip().lower()
 
 

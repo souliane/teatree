@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.cli.setup.clone import find_main_clone
+from teatree.paths import GENERATION_MARKER
 
 GIT_BIN = shutil.which("git") or "git"
 
@@ -24,6 +25,11 @@ def _init_git_repo(path: Path) -> None:
     env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
     subprocess.run([GIT_BIN, "init", "-q", "-b", "main"], cwd=path, check=True)
     subprocess.run([GIT_BIN, "commit", "-q", "--allow-empty", "-m", "init"], cwd=path, check=True, env=env)
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_main_clone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("T3_REPO", raising=False)
 
 
 class TestFindMainClone:
@@ -55,6 +61,21 @@ class TestFindMainClone:
             mock_svc.find_teatree_repo.return_value = repo
             result = find_main_clone()
             assert result == repo
+
+    def test_a_baked_generation_tree_is_the_main_clone_without_a_git_dir(self, tmp_path: Path) -> None:
+        baked = tmp_path / "teatree"
+        baked.mkdir()
+        (baked / GENERATION_MARKER).write_text("c" * 40 + "\n")
+        with patch("teatree.cli.setup.clone.DoctorService") as mock_svc:
+            mock_svc.find_teatree_repo.return_value = baked
+            assert find_main_clone() == baked
+
+    def test_a_tree_with_neither_git_nor_a_generation_marker_is_no_clone(self, tmp_path: Path) -> None:
+        bare = tmp_path / "teatree"
+        bare.mkdir()
+        with patch("teatree.cli.setup.clone.DoctorService") as mock_svc:
+            mock_svc.find_teatree_repo.return_value = bare
+            assert find_main_clone() is None
 
     def test_returns_none_when_git_file_unparseable(self, tmp_path: Path) -> None:
         repo = tmp_path / "teatree"

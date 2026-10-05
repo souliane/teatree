@@ -23,7 +23,8 @@ _SHA = "a" * 40
 _T0 = dt.datetime(2026, 6, 28, 12, 0, 0, tzinfo=dt.UTC)
 
 
-@pytest.mark.timeout(240)
+# CI pytest-core, 54 runs 09-27..30: p50 117 s, 1 timeout at 240 s; 480 s is ~1.45x the 331 s 2-pass peak.
+@pytest.mark.timeout(480)
 class TestReviewVerdictNormalizeMigration(TransactionTestCase):
     def setUp(self) -> None:
         self.addCleanup(self._restore_head)

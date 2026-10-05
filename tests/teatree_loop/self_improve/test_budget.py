@@ -10,11 +10,9 @@ from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.loop.self_improve import budget as budget_module
 from teatree.loop.self_improve.budget import (
     DEFAULT_SPAWN_CAP,
-    DEFAULT_TOKEN_BUDGET_ENV,
     BudgetVerdict,
     precheck_budget,
     recent_self_improve_firings,
-    token_budget_from_env,
 )
 
 
@@ -70,21 +68,6 @@ def test_token_budget_exhausted_blocks() -> None:
 def test_token_budget_none_allows() -> None:
     verdict = precheck_budget(ram_used_percent=10, token_budget_remaining=None)
     assert verdict.ok is True
-
-
-def test_token_budget_from_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(DEFAULT_TOKEN_BUDGET_ENV, raising=False)
-    assert token_budget_from_env() is None
-
-
-def test_token_budget_from_env_valid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(DEFAULT_TOKEN_BUDGET_ENV, "5000")
-    assert token_budget_from_env() == 5000
-
-
-def test_token_budget_from_env_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(DEFAULT_TOKEN_BUDGET_ENV, "not-a-number")
-    assert token_budget_from_env() is None
 
 
 def test_ram_probe_callable_is_consulted() -> None:

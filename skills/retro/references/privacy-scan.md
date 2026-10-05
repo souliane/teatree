@@ -26,7 +26,7 @@ The procedure behind `/t3:retro` § "Privacy Scan". That section carries the sco
 
 ## What to scan for
 
-Run the standard `t3 tool privacy-scan` detectors (emails, `/Users/` and `/home/` paths, private IPs, API keys `glpat-` / `sk-` / `ghp_`, internal hostnames, and `T3_BANNED_TERMS`).
+Run the standard `t3 tool privacy-scan` detectors (emails, `/Users/` and `/home/` paths, private IPs, API keys `glpat-` / `sk-` / `ghp_`, internal hostnames, and the `TEATREE_TERM_REGISTRY` term classes).
 
 In addition, when the session involved remediating a leak, grep the Streisand-effect word list from `rules/SKILL.md` § "Leak Remediation — Silent Scrubs":
 

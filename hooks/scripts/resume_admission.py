@@ -14,10 +14,9 @@ restored set can be read as "dispatched MINUS terminated" rather than as the app
 (:func:`~teatree.core.admission_governor.resume_agent_ceiling`) and returns the shed directive
 the router merges into its one SessionStart write.
 
-Fail-open throughout, and ordered so an idle resume is free: the ledgers (two small file reads)
-are consulted first, and the kill-switch — the only sqlite touch on the path — only once the
-count is already over the ceiling. Any unreadable ledger, absent setting store, or import
-failure yields no advisory: a detection bug must never break SessionStart.
+Fail-open throughout, and cheap on an idle resume: the ledgers are two small file reads.
+Any unreadable ledger or import failure yields no advisory: a detection bug must never
+break SessionStart.
 
 Both ``teatree`` imports go through the shared ``managed_repo.teatree_src_on_path`` bootstrap:
 the hook runs in the user's session shell with no guarantee ``teatree`` is importable (#1314),
@@ -93,19 +92,6 @@ def _shed_directive(restored: int) -> str:
         return resume_shed_directive(restored=restored, machine=read_machine_signal())
 
 
-def _governor_enabled() -> bool:
-    """The ``admission_governor_enabled`` kill-switch, read Django-free.
-
-    The cold reader sees the ``ConfigSetting`` store, which is where the kill-switch lives —
-    it is an explicit operator row by design, never an accidental default. Every cold read
-    fails open to the default, so an absent or locked store leaves the advisory armed.
-    """
-    with _teatree_src_on_path():
-        from teatree.config import cold_reader  # noqa: PLC0415 deferred: cold-hook import
-
-        return cold_reader.bool_setting("admission_governor_enabled", default=True)
-
-
 def resume_admission_advisory(session_id: str, source: str) -> str:
     """The shed directive for an over-ceiling resume, or ``""``.
 
@@ -124,10 +110,7 @@ def resume_admission_advisory(session_id: str, source: str) -> str:
         return ""
     if not directive:
         return ""
-    try:
-        return directive if _governor_enabled() else ""
-    except Exception:  # noqa: BLE001 — same fail-open contract; an unreadable switch stays armed
-        return directive
+    return directive
 
 
 __all__ = [

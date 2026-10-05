@@ -6,8 +6,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from teatree.cli import app
-from teatree.cli.push_gate_tools import _resolve_flag
-from teatree.quality.push_gate import WHOLE_TREE_DOCTEST, PushGatePlan, PushGateResult
+from teatree.quality.push_gate import PushGatePlan, PushGateResult
 
 runner = CliRunner()
 
@@ -16,21 +15,12 @@ _SCOPED = PushGatePlan(
     reason="scoped to the diff — no FULL trigger",
     doctest_targets=(Path("src/teatree/core/session.py"),),
     astgrep_scope=(Path("src/teatree/core/session.py"),),
-    enabled=True,
-)
-_FULL = PushGatePlan(
-    is_full=True,
-    reason="incremental_push_gate is OFF — whole-tree (default-safe)",
-    doctest_targets=(WHOLE_TREE_DOCTEST,),
-    astgrep_scope=None,
-    enabled=False,
 )
 
 
 class TestPlanModes:
     def test_default_prints_human_report(self) -> None:
         with (
-            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
         ):
             result = runner.invoke(app, ["tool", "push-gate"])
@@ -40,7 +30,6 @@ class TestPlanModes:
 
     def test_json_emits_plan(self) -> None:
         with (
-            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--json"])
@@ -50,7 +39,6 @@ class TestPlanModes:
 
     def test_emit_cmd_prints_doctest_command_and_scope(self) -> None:
         with (
-            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--emit-cmd"])
@@ -63,38 +51,18 @@ class TestPlanModes:
 
     def test_emit_cmd_refuses_to_print_a_runnable_command_with_no_targets(self) -> None:
         empty = PushGatePlan(
-            is_full=False, reason="no src module changed", doctest_targets=(), astgrep_scope=(), enabled=True
+            is_full=False,
+            reason="no src module changed",
+            doctest_targets=(),
+            astgrep_scope=(),
         )
         with (
-            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=empty),
         ):
             result = runner.invoke(app, ["tool", "push-gate", "--emit-cmd"])
         assert result.exit_code == 0
         assert "--doctest-modules" not in result.output, "a bare command would fall back to pytest's own testpaths"
         assert "none" in result.output
-
-    def test_flag_off_reports_full(self) -> None:
-        with (
-            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=False),
-            patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_FULL),
-        ):
-            result = runner.invoke(app, ["tool", "push-gate"])
-        assert result.exit_code == 0
-        assert "push-gate: FULL" in result.output
-
-
-class TestResolveFlag:
-    def test_defaults_to_true(self) -> None:
-        # Real resolution under the test Django settings — the flag defaults TRUE
-        # (#122 graduated it DARK → SETTLING once the selection-audit soak came clean).
-        assert _resolve_flag() is True
-
-    def test_fails_safe_to_false_when_bootstrap_raises(self) -> None:
-        # The default is ON, but a bootstrap failure must still resolve to OFF ⇒
-        # whole-tree FULL — the fail-safe is unchanged by the default flip.
-        with patch("teatree.cli.push_gate_tools.ensure_django", side_effect=RuntimeError("boom")):
-            assert _resolve_flag() is False
 
 
 class TestRunMode:
@@ -108,7 +76,6 @@ class TestRunMode:
             exit_code=0,
         )
         with (
-            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=ok),
         ):
@@ -126,7 +93,6 @@ class TestRunMode:
             exit_code=1,
         )
         with (
-            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=bad),
         ):
@@ -144,7 +110,6 @@ class TestRunMode:
             exit_code=137,
         )
         with (
-            patch("teatree.cli.push_gate_tools._resolve_flag", return_value=True),
             patch("teatree.cli.push_gate_tools.resolve_plan", return_value=_SCOPED),
             patch("teatree.cli.push_gate_tools.run_push_gate", return_value=aborted),
         ):

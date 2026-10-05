@@ -19,7 +19,7 @@ strings drift apart is pinned on the runner side, in
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, corrective_instruction, is_envelope_refusal
+from teatree.agents.envelope_refusal import NO_ENVELOPE_ERROR, corrective_instruction
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.transient_requeue import requeue_transient_failed
@@ -134,7 +134,6 @@ class TestNoEnvelopeCorrectiveRetry(TestCase):
     def test_a_genuine_defect_is_still_not_corrective_retried(self) -> None:
         # Control: the classifier must be able to say NO. A real assertion
         # failure is not an envelope refusal and still escalates on the first hit.
-        assert not is_envelope_refusal("AssertionError: expected 3 got 4")
         task = _failed_task(phase="debugging")
         _add_failed_attempt(task, error="AssertionError: expected 3 got 4")
 

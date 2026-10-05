@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING, TypedDict
 
 import typer
 
+from teatree.generation import is_generation_sha
+
 if TYPE_CHECKING:
     from teatree.loop.drain import DrainProgress, DrainReport
     from teatree.loop.worker_lifecycle import StopReport
@@ -291,6 +293,9 @@ def ensure_command(
         raise SystemExit(1)
 
 
+#: Exit code for a drain refused before it touched anything (a malformed or non-live generation).
+_REFUSED_EXIT = 2
+
 #: Exit code for a drain that hit its grace window with work still in flight —
 #: distinct from 0 (drained) and from ensure's 1/2, so deploy.sh can tell the two
 #: apart and proceed knowing a stuck task re-queues via its lease lapse.
@@ -332,6 +337,9 @@ def drain_command(
     *,
     timeout: int = typer.Option(1800, "--timeout", help="Grace seconds to wait for in-flight tasks to finish."),
     poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds between in-flight checks."),
+    generation: str = typer.Option(
+        "", "--generation", help="Drain only this image generation (a 40-hex sha); omit to quiesce the whole worker."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Emit the outcome as JSON."),
 ) -> None:
     """Quiesce the worker and wait for in-flight tasks to finish (drain-then-deploy).
@@ -354,15 +362,37 @@ def drain_command(
     running while admitting no work until you run
     `t3 <overlay> config_setting set worker_quiescing false` or `t3 worker restart`.
     To end the worker rather than merely quiesce it, use `t3 worker stop`.
+
+    `--generation <sha>` drains ONE image generation instead and leaves `worker_quiescing` alone:
+    that generation's registry row goes DRAINING with `--timeout` as its deadline, only the claims
+    it stamped are waited on, and the worker is NOT left quiesced — once the deadline passes with no
+    successor serving or inside its starting lease, that generation's own claim path re-opens it.
     """
     from teatree.utils.django_bootstrap import ensure_django  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
 
     ensure_django()
 
     from teatree.config.resolution import worker_is_quiescing  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
-    from teatree.loop.drain import DrainOutcome, drain_worker  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
+    from teatree.loop.drain import (  # noqa: PLC0415 (deferred: no Django/DB at CLI import)
+        DrainOutcome,
+        DrainPacing,
+        GenerationNotDrainableError,
+        drain_worker,
+    )
 
-    report = drain_worker(timeout=timeout, poll_interval=poll_interval, on_progress=_DrainHeartbeat())
+    if generation and not is_generation_sha(generation):
+        typer.echo(f"refused: --generation takes a full 40-hex commit sha, got {generation!r}", err=True)
+        raise SystemExit(_REFUSED_EXIT)
+    try:
+        report = drain_worker(
+            timeout=timeout,
+            generation=generation,
+            pacing=DrainPacing(poll_interval=poll_interval),
+            on_progress=_DrainHeartbeat(),
+        )
+    except GenerationNotDrainableError as exc:
+        typer.echo(f"refused: {exc}", err=True)
+        raise SystemExit(_REFUSED_EXIT) from exc
     quiescing = worker_is_quiescing()
     if json_output:
         typer.echo(
@@ -372,6 +402,7 @@ def drain_command(
                     "waited_seconds": round(report.waited_seconds, 3),
                     "still_claimed": report.still_claimed,
                     "worker_quiescing": quiescing,
+                    "generation": generation,
                 }
             )
         )

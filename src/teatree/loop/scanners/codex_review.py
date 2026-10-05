@@ -191,7 +191,7 @@ class CodexReviewScanner:
     def _evaluate(self, pr: PrSummary) -> ScanSignal | None:
         if pr.is_draft or pr.checks_unsettled:
             return None
-        variant = _classify_variant(pr.changed_files, slug=pr.slug, author=pr.author)
+        variant = _classify_variant(pr.changed_files, slug=pr.slug, author=pr.author, pr_url=pr.url)
         # The scanner emits UNCONDITIONALLY per open non-draft SETTLED head (#1 blocker):
         # the ``CodexReviewMarker`` idempotency claim moved to persist time
         # (``persistence._handle_codex_review``) so it rides the same transaction
@@ -242,7 +242,7 @@ def head_checks_unsettled(*, slug: str, pr_id: int) -> bool:
     return verdict in UNSETTLED_CHECK_VERDICTS
 
 
-def is_adversarial_review(changed_files: tuple[str, ...], *, slug: str = "", author: str = "") -> bool:
+def is_adversarial_review(changed_files: tuple[str, ...], *, pr_url: str, slug: str = "", author: str = "") -> bool:
     """Whether a self-PR warrants the harder ADVERSARIAL review pass.
 
     True when EITHER the PR is on a PUBLIC repo authored by an untrusted identity
@@ -253,14 +253,14 @@ def is_adversarial_review(changed_files: tuple[str, ...], *, slug: str = "", aut
     conservative — a false positive (an unnecessary adversarial pass) is strictly
     more thorough; a false negative is the real failure mode.
     """
-    if slug and classify_author(slug, author).untrusted:
+    if slug and classify_author(slug, author, pr_url=pr_url).untrusted:
         return True
     return any(marker in path.lower() for path in changed_files for marker in ADVERSARIAL_PATH_MARKERS)
 
 
-def _classify_variant(changed_files: tuple[str, ...], *, slug: str = "", author: str = "") -> str:
+def _classify_variant(changed_files: tuple[str, ...], *, pr_url: str, slug: str = "", author: str = "") -> str:
     """Choose the codex review variant (standard vs adversarial) for a PR."""
-    if is_adversarial_review(changed_files, slug=slug, author=author):
+    if is_adversarial_review(changed_files, slug=slug, author=author, pr_url=pr_url):
         return ADVERSARIAL_REVIEW_VARIANT
     return STANDARD_REVIEW_VARIANT
 

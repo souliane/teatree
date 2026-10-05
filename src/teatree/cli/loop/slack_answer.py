@@ -21,8 +21,7 @@ slack_answer_app = typer.Typer(
         "The inbound-event wake is the primary drain (~1s); this timer is the "
         "fallback safety net on a 5m default cadence, in the same t3-master "
         "session as `t3 loop tick`, on a separate LoopLease so a long "
-        "answer cycle never blocks a fast regular tick. Complementary to "
-        "the inbound prompt-drain, never a double-answer (#1014)."
+        "answer cycle never blocks a fast regular tick (#1014)."
     ),
     no_args_is_help=True,
 )

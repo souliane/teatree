@@ -271,25 +271,6 @@ class TestAllowBloatReachesGateViaCLI:
         assert result.exit_code == 0, result.output
         assert any(c[0] == "post_json" for c in self.stub.calls), "POST must fire with --allow-bloat"
 
-    def test_post_draft_note_allow_bloat_proceeds_via_cli(self) -> None:
-        result = _runner.invoke(
-            app,
-            [
-                "review",
-                "post-draft-note",
-                "org/repo",
-                "7",
-                self._BLOATED,
-                "--file",
-                "x.py",
-                "--line",
-                "10",
-                "--allow-bloat",
-            ],
-        )
-        assert result.exit_code == 0, result.output
-        assert any(c[0] == "post_json" for c in self.stub.calls), "POST must fire with --allow-bloat"
-
 
 class TestGherkinTagsAreNotStakeholders:
     """An ``@tag`` in a code span or from the Gherkin tag vocabulary is not an ``@handle``.

@@ -1,6 +1,6 @@
 from django.db import migrations
 
-from teatree.config.retired_settings import RENAMED_SETTING_KEYS
+RENAMED_SETTING_KEYS = {"headless_max_turns": "agent_max_turns"}
 
 _OLD_KEY = "headless_max_turns"
 
@@ -25,7 +25,7 @@ def _carry_configured_values(apps, schema_editor):
                 seeded_by=row.seeded_by,
                 seed_value=row.seed_value,
             )
-        row.delete()
+        rows.filter(pk=row.pk).delete()
 
 
 def _restore_qualified_key(apps, schema_editor):

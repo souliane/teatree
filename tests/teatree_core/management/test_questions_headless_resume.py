@@ -14,12 +14,15 @@ question with no ``parked_task`` queues none, and re-answering / a pre-existing
 resume child never double-queues.
 """
 
+import io
+
 import pytest
 from django.core.management import call_command
 
 from teatree.agents.session_lineage import resume_session_id
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
+from tests.factories import planned_ticket
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -28,7 +31,7 @@ _RESUME_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 def _parked_task() -> Task:
-    ticket = Ticket.objects.create()
+    ticket = planned_ticket()
     session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
     parked = Task.objects.create(
         ticket=ticket,
@@ -42,7 +45,7 @@ def _parked_task() -> Task:
 def _parked_question(parked: Task) -> DeferredQuestion:
     return DeferredQuestion.record(
         "Which DB host?",
-        session_id=str(parked.session_id),
+        task_session=parked.session,
         parked_task=parked,
     )
 
@@ -94,3 +97,18 @@ class TestAnswerResumesParkedTask:
         call_command("questions", "answer", question.pk, "use postgres-1")
 
         assert list(parked.child_tasks.values_list("pk", flat=True)) == [existing.pk]
+
+
+class TestAnswerSurvivesARefusedResume:
+    def test_the_answer_is_kept_and_the_plan_missing_refusal_is_named(self) -> None:
+        ticket = Ticket.objects.create()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+        question = _parked_question(parked)
+        stderr = io.StringIO()
+
+        call_command("questions", "answer", question.pk, "use postgres-1", stderr=stderr)
+
+        question.refresh_from_db()
+        assert question.answer_text == "use postgres-1"
+        assert not parked.child_tasks.exists()
+        assert "plan_missing" in stderr.getvalue()

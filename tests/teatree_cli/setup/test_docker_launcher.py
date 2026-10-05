@@ -24,7 +24,6 @@ from teatree.cli.setup import docker_launcher
 from teatree.cli.setup.docker_launcher import DockerLauncherInstaller
 from teatree.docker import workflow
 from teatree.docker.workflow import (
-    is_managed_launcher,
     is_running_in_container,
     launcher_wrapper_target,
     read_managed_launcher,
@@ -128,7 +127,7 @@ class TestLauncherInstall:
         messages, _uv = _run_install(repo, home)
 
         launcher = home / ".local" / "bin" / "t3"
-        assert is_managed_launcher(launcher)
+        assert read_managed_launcher(launcher)
         assert os.access(launcher, os.X_OK)
         assert str(wrapper_path(repo)) in launcher.read_text(encoding="utf-8")
         assert any(m.startswith("OK") and "Installed the containerized t3 launcher" in m for m in messages)
@@ -154,7 +153,7 @@ class TestLauncherInstall:
 
         messages, _uv = _run_install(repo, home)
         assert not launcher.is_symlink()
-        assert is_managed_launcher(launcher)
+        assert read_managed_launcher(launcher)
         assert any("Repointed the t3 launcher" in m for m in messages)
 
     def test_repoints_a_relocated_checkout_and_keeps_setup_going(self, tmp_path: Path) -> None:
@@ -291,11 +290,10 @@ class TestContainerWritesTheHostLauncher:
 
 
 class TestWiredIntoSetup:
-    def test_t3_setup_installs_the_launcher_and_retires_the_alias(self) -> None:
+    def test_t3_setup_installs_the_launcher(self) -> None:
         from teatree.cli.setup.command import run  # noqa: PLC0415 — deferred: heavy CLI import at call time
 
         assert "DockerLauncherInstaller" in run.__code__.co_names
-        assert "retire_alias" in run.__code__.co_names
 
 
 class TestHostToolRetirement:
@@ -306,7 +304,7 @@ class TestHostToolRetirement:
 
         assert fake_uv.uninstalled
         assert any("Removed the uv-installed host t3" in m for m in messages)
-        assert is_managed_launcher(home / ".local" / "bin" / "t3")
+        assert read_managed_launcher(home / ".local" / "bin" / "t3")
 
     def test_a_refused_launcher_leaves_the_uv_tool_alone(self, tmp_path: Path) -> None:
         repo, home = tmp_path / "clone", tmp_path / "home"

@@ -1,11 +1,4 @@
-"""CI-eval self-healing mini-loop — advance open heal sessions (#3201 PR-3a).
-
-Default-OFF (``default_enabled=False`` in the seed): the loop does nothing until an
-operator enables its ``Loop`` row AND opens a session (``t3 eval ci-heal open``).
-When enabled, it ticks on the live loop at a ~5m cadence; the scanner
-(:mod:`teatree.loop.scanners.ci_eval_heal`) flags open sessions and the mechanical
-handler advances each one FSM step — observe-only, never a fix (PR-3b).
-"""
+"""CI eval heal mini-loop: poll open sessions and fix confirmed behavioral reds."""
 
 from typing import TYPE_CHECKING
 

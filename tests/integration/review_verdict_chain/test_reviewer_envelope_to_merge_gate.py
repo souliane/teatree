@@ -56,6 +56,16 @@ def _reviewing_task() -> Task:
 def _returned_envelope(*, reviewed_sha: str = _HEAD) -> dict[str, object]:
     return {
         "summary": "Independent cold review of the pull request at its live head.",
+        "review_context": {
+            "work_item": _PR_URL,
+            "documents": ["specs/review-requirements.md"],
+            "analysis": "Compared the diff against the downloaded requirements.",
+        },
+        "anti_vacuity": {
+            "ac_coverage": "Mapped the reviewed change to the work item's acceptance criteria.",
+            "proven_tests": ["tests/integration/review_verdict_chain/test_reviewer_envelope_to_merge_gate.py"],
+            "no_new_tests": False,
+        },
         "review_verdict": {
             "verdict": "merge_safe",
             "reviewed_sha": reviewed_sha,

@@ -5,11 +5,15 @@ pin the answers that a second copy would drift on — the kind rule, the masking
 options being the schema's own admissible set rather than a hand-kept list.
 """
 
+from unittest import mock
+
 from django.test import SimpleTestCase
 
+from teatree.config.feature_flags import FeatureFlag, FlagStage
 from teatree.config.schema import TeatreeSettingsSchema, setting_choices
 from teatree.config.setting_help import setting_help
 from teatree.config.setting_registries import SAFETY_POSTURE_KEYS
+from teatree.config.setting_taxonomy import SettingClass, SettingTaxon
 from teatree.core.config_display import MASKED, NO_SHIPPED_DEFAULT
 from teatree.core.setting_control import SettingControl, annotation_text, setting_kind, value_kind, wire
 
@@ -127,12 +131,26 @@ class TestTheControlNamesEveryGovernanceClass:
         assert SettingControl("issue_implementer_max_concurrent").governance == ()
 
     def test_a_key_holding_several_classes_names_them_all(self) -> None:
-        labels = SettingControl("critic_gate_mode").governance
+        taxon = SettingTaxon(
+            "fixture_gate_enabled",
+            frozenset({SettingClass.GATE, SettingClass.FEATURE_FLAG}),
+            flag=FeatureFlag(
+                field="fixture_gate_enabled", stage=FlagStage.DARK, tracking_issue="#4189", summary="fixture"
+            ),
+        )
+        with mock.patch("teatree.core.setting_control.taxonomy", return_value={taxon.key: taxon}):
+            labels = SettingControl(taxon.key).governance
         assert "gate" in labels
         assert "feature-flag" in labels
 
     def test_a_flag_carries_its_lifecycle_stage(self) -> None:
-        assert any(label.startswith("stage=") for label in SettingControl("outer_loop_enabled").governance)
+        taxon = SettingTaxon(
+            "fixture_flag",
+            frozenset({SettingClass.FEATURE_FLAG}),
+            flag=FeatureFlag(field="fixture_flag", stage=FlagStage.DARK, tracking_issue="#4189", summary="fixture"),
+        )
+        with mock.patch("teatree.core.setting_control.taxonomy", return_value={taxon.key: taxon}):
+            assert "stage=dark" in SettingControl(taxon.key).governance
 
     def test_the_safety_posture_flag_is_derived_from_the_same_answer(self) -> None:
         # One classifier, not a second hand-read of one registry beside it.

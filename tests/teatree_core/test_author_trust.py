@@ -80,7 +80,7 @@ class TestClassifyAuthorPublicRepo(TestCase):
         )
         for slug, author, host_kind in cases:
             with self.subTest(author=author), _public():
-                verdict = author_trust.classify_author(slug, author, host_kind=host_kind)
+                verdict = author_trust.classify_author(slug, author, pr_url=f"https://{host_kind}.com/{slug}/pull/1")
                 assert verdict.trusted is True
                 assert verdict.untrusted is False
                 assert verdict.internal_repo is False
@@ -88,7 +88,7 @@ class TestClassifyAuthorPublicRepo(TestCase):
     def test_untrusted_and_empty_author_are_untrusted(self) -> None:
         for author in ("evilhacker", ""):
             with self.subTest(author=author), _public():
-                verdict = author_trust.classify_author(_PUBLIC, author)
+                verdict = author_trust.classify_author(_PUBLIC, author, pr_url=f"https://github.com/{_PUBLIC}/pull/1")
                 assert verdict.untrusted is True
                 assert verdict.trusted is False
 
@@ -97,7 +97,9 @@ class TestClassifyAuthorPrivateRepo(TestCase):
     def test_any_author_allowed_no_check(self) -> None:
         for author in ("souliane", "evilhacker", ""):
             with self.subTest(author=author), _private():
-                verdict = author_trust.classify_author("souliane/private-repo", author)
+                verdict = author_trust.classify_author(
+                    "souliane/private-repo", author, pr_url="https://github.com/souliane/private-repo/pull/1"
+                )
                 assert verdict.internal_repo is True
                 assert verdict.trusted is True
                 assert verdict.untrusted is False
@@ -118,8 +120,16 @@ class TestEmptyTableConfigFallback(TestCase):
     def test_config_fallback_classifies_public_author(self) -> None:
         with _public(), patch("teatree.config.get_effective_settings") as mock_settings:
             mock_settings.return_value.user_identity_aliases = ["souliane"]
-            assert author_trust.classify_author(_PUBLIC, "souliane").trusted is True
-            assert author_trust.classify_author(_PUBLIC, "evilhacker").untrusted is True
+            assert (
+                author_trust.classify_author(_PUBLIC, "souliane", pr_url=f"https://github.com/{_PUBLIC}/pull/1").trusted
+                is True
+            )
+            assert (
+                author_trust.classify_author(
+                    _PUBLIC, "evilhacker", pr_url=f"https://github.com/{_PUBLIC}/pull/1"
+                ).untrusted
+                is True
+            )
 
     def test_db_rows_take_precedence_over_config(self) -> None:
         _seed_known()
@@ -159,13 +169,19 @@ class TestExtraTrustedUnion(TestCase):
     def test_extra_trusted_defaults_to_empty_so_existing_callers_are_unchanged(self) -> None:
         _seed_known()
         with _public():
-            assert classify_author(_PUBLIC, "trusted-colleague").untrusted is True
+            assert (
+                classify_author(_PUBLIC, "trusted-colleague", pr_url=f"https://github.com/{_PUBLIC}/pull/1").untrusted
+                is True
+            )
 
     def test_extra_trusted_handle_is_trusted(self) -> None:
         _seed_known()
         with _public():
             classification = classify_author(
-                _PUBLIC, "trusted-colleague", extra_trusted=frozenset({"trusted-colleague"})
+                _PUBLIC,
+                "trusted-colleague",
+                extra_trusted=frozenset({"trusted-colleague"}),
+                pr_url=f"https://github.com/{_PUBLIC}/pull/1",
             )
         assert classification.trusted is True
         assert classification.untrusted is False
@@ -174,7 +190,12 @@ class TestExtraTrustedUnion(TestCase):
         """A DB-trusted handle stays trusted when the caller supplies its own extras."""
         _seed_known()
         with _public():
-            assert classify_author(_PUBLIC, "souliane", extra_trusted=frozenset({"trusted-colleague"})).trusted
+            assert classify_author(
+                _PUBLIC,
+                "souliane",
+                extra_trusted=frozenset({"trusted-colleague"}),
+                pr_url=f"https://github.com/{_PUBLIC}/pull/1",
+            ).trusted
 
     def test_extra_trusted_match_is_case_insensitive(self) -> None:
         assert is_trusted_author("Trusted-Colleague", extra_trusted=frozenset({"trusted-colleague"})) is True

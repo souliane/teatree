@@ -35,6 +35,11 @@ class TestPhaseSpecificLinesDispatch(TestCase):
         lines = phase_specific_lines(_task("shipping"), [])
         assert "PHASE: shipping — auto-review gate" in lines
 
+    def test_registered_bughunt_fanout_is_always_rendered(self) -> None:
+        lines = phase_specific_lines(_task("bughunt"), [])
+        assert "PHASE: bughunt" in lines
+        assert any("find-then-verify" in line and "N=3" in line for line in lines)
+
 
 class TestTheReviewerIsToldToGradeTheRubric(TestCase):
     """Nothing else grades the rubric, so an unbriefed reviewer leaves every merge refused.

@@ -20,7 +20,7 @@ gate) accepts the recorded marker as a satisfying signal, so a trivial-marked
 ticket advances WORK_STARTED → PLAN_RECORDED with no ``PlanArtifact`` and no
 ``--human-authorize``. ``execute_provision`` skips ``schedule_planning`` so the
 auto-planner is never scheduled for a trivial-marked AUTHOR ticket. A third
-consumer, ``plan_dispatch_gate.unplanned_dispatch_refusal`` (#4409), accepts it so
+consumer, ``plan_decision.has_plan_decision`` (#4409), accepts it so
 the implementing dispatch itself proceeds — this marker IS the cheap recorded
 escape that gate refuses an unrecorded skip in favour of.
 

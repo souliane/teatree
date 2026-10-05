@@ -16,15 +16,12 @@ non-delivery so the audit scanner re-DMs on drift), then return. Never
 raise, never fail or roll back the post — a colleague comment cannot be
 un-posted.
 
-Gated by the default-ON ``notify_on_post_on_behalf`` UserSettings field.
-When it resolves false the DM is suppressed (the post still happened and
-the caller already published); per-overlay overridable, no env var.
+The receipt runs after every colleague-visible on-behalf post.
 
-Depends only on :mod:`teatree.config` and :mod:`teatree.core.notify` —
-both already legal ``teatree.core`` edges, so no new tach edge.
+Depends only on :mod:`teatree.core.notify`, an already legal
+``teatree.core`` edge, so no new tach edge.
 """
 
-from teatree.config import get_effective_settings
 from teatree.core.modelkit.notify_policy import NotifyAudience
 
 
@@ -53,24 +50,13 @@ def notify_user_on_behalf_post(
     ``[id](id)`` link that both breaks and leaks the internal id.
     ``summary`` is the one-line description of what was posted.
 
-    Suppressed (early return, no DM) only when BOTH the user-facing
-    ``notify_on_post_on_behalf`` toggle (#949) AND the autonomy-derived
-    ``notify_on_behalf`` (the ``notify`` tier's forced DM, #1668) resolve
-    false — the post already happened and the caller already published;
-    this only controls the after-receipt visibility DM. The ``notify``
-    autonomy tier drives ``notify_on_behalf = True``, so its on-behalf
-    actions always DM the user through this one canonical egress regardless
-    of the #949 toggle, without adding a parallel notifier.
+    Every on-behalf publication sends this after-receipt visibility DM.
 
     Never raises into the caller and never fails or rolls back the post:
     ``notify_user`` already wraps every transport failure into a
     NOOP/FAILED ``BotPing`` row (the audit scanner re-DMs on drift), so
     a misconfigured Slack backend cannot break a legitimate publish.
     """
-    settings = get_effective_settings()
-    if not (settings.notify_on_post_on_behalf or settings.notify_on_behalf):
-        return
-
     from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415 — deferred: call-time import, kept lazy
 
     if artifact_url.startswith("http"):

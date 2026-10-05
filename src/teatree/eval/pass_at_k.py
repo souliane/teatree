@@ -77,6 +77,20 @@ class PassAtKResult:
     trial_results: tuple[ScenarioResult, ...] = ()
 
     @property
+    def coverage_incomplete(self) -> bool:
+        return any(result.coverage_incomplete for result in self.trial_results)
+
+    @property
+    def verdict(self) -> str:
+        if not self.ok and any(result.measured_failure for result in self.trial_results):
+            return "fail"
+        if self.coverage_incomplete:
+            return "incomplete"
+        if self.skipped:
+            return "skip"
+        return "pass" if self.ok else "fail"
+
+    @property
     def pass_rate(self) -> float:
         return self.passes / self.trials if self.trials else 0.0
 

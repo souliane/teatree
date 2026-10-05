@@ -54,4 +54,5 @@ def quote_scanner_high_block_message(
         quote_scanner.log_decision(tool_name=tool_name, decision=verdict.decision, result=result, override=False)
         return None
     quote_scanner.log_decision(tool_name=tool_name, decision="deny", result=result, override=False)
-    return messages.format_block_message(result) + verdict.hint
+    slack_mcp = tool_name.startswith("mcp__") and "slack" in tool_name.lower()
+    return messages.format_block_message(result, slack_mcp=slack_mcp) + verdict.hint

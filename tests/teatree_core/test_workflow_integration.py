@@ -12,7 +12,13 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import QualityGateError, Session, Task, Ticket, Worktree
+from tests._git_repo import run_git
 from tests.factories import record_test_plan, waive_rubric
+from tests.teatree_core.conftest import (
+    record_confirmed_merge_for_test,
+    record_maker_review_for_test,
+    record_review_context_for_test,
+)
 
 
 def _plan(ticket: Ticket) -> None:
@@ -86,6 +92,9 @@ class TestTicketLifecycle(TestCase):
         repo_dir = self._tmp_path / "backend"
         _make_repo_with_diff(repo_dir, branch="feat/42")
         Worktree.objects.create(ticket=ticket, repo_path=str(repo_dir), branch="feat/42")
+        head_sha = run_git(repo_dir, "rev-parse", "HEAD")
+        record_review_context_for_test(ticket)
+        record_maker_review_for_test(ticket, head_sha)
 
         session = Session.objects.create(ticket=ticket, agent_id="test-agent")
         session.visit_phase("coding")
@@ -110,6 +119,7 @@ class TestTicketLifecycle(TestCase):
         assert ticket.state == "pr_opened"
 
         ticket.request_review()
+        record_confirmed_merge_for_test(ticket)
         ticket.mark_merged()
         ticket.retrospect()
         waive_rubric(ticket)
@@ -146,7 +156,7 @@ class TestQualityGate(TestCase):
         session = Session.objects.create(ticket=ticket, agent_id="agent")
 
         with pytest.raises(QualityGateError):
-            session.check_gate("reviewing")
+            session.check_gate_across_ticket("reviewing")
 
         session.visit_phase("testing")
-        session.check_gate("reviewing")  # should not raise
+        session.check_gate_across_ticket("reviewing")  # should not raise

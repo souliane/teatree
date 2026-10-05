@@ -49,7 +49,8 @@ _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _LOCK = _REPO_ROOT / "uv.lock"
 _DEPENDABOT = _REPO_ROOT / ".github" / "dependabot.yml"
 
-_PINNED_VERSION = "0.2.160"
+
+_PINNED_VERSION = "0.2.161"
 _PACKAGE = "claude-agent-sdk"
 _SDK_MODULE = "claude_agent_sdk"
 
@@ -66,7 +67,7 @@ _RUNNABLE_UV_TOOL_INSTALL = re.compile(
 
 #: The surfaces that run ``uv tool install`` UNATTENDED — a missing override there is a
 #: build failure, not advice a reader can correct.
-_AUTOMATED_INSTALL_ROOTS = ("deploy", "dev", ".github/workflows", ".gitlab-ci.yml")
+_AUTOMATED_INSTALL_ROOTS = ("deploy", "dev", ".github/workflows")
 
 
 def _sdk_constraint() -> str:

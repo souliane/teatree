@@ -8,8 +8,9 @@ refusal.
 
 FAIL CLOSED, which inverts every sibling gate in this directory: an un-asked
 question resolves to REFUSE, naming the probe that could not answer. There is
-no per-call ``[…-ok: <reason>]`` token — the incident was an agent doing exactly
-what a token would have let it do — so the owner's only escape is the deliberate
+no per-call ``[…-ok: <reason>]`` token. A non-force false positive may be
+released through the shared breaker's ``[fp-confirmed: <reason>]`` grant;
+force and delete refusals cannot. The owner can also use the deliberate
 config flip ``t3 <overlay> gate foreign-push disable``. The pre-push hook
 :mod:`teatree.hooks.foreign_mr_cli` asks a similar question and is fail-OPEN by
 construction; this gate reuses its forge seam and supplies its own tri-state.
@@ -35,8 +36,9 @@ DECISION LADDER, in order, first answer wins:
     every push of it — a plain push of it is therefore ALLOWED here, and a
     destructive one was already refused at rung 0b;
 4. anything unobtainable — REFUSE, naming what went unanswered plus, for EVERY
-    git probe that ran and failed, its own exit code and stderr
-    (:func:`probe_cause`): an argv is the question, git's own words the answer.
+    git or forge probe that ran and failed, its own exit code and stderr or
+    timeouts (:func:`probe_cause`): an argv is the question, the tool's own words
+    the answer.
 
 A FORCE or DELETE this gate refuses — onto a branch that is not ours, onto the
 default branch, or inside material it cannot read — has no escape at all: it
@@ -63,14 +65,14 @@ import json
 import re
 import sys
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import ModuleType
-from typing import Final
-from urllib.parse import quote
+from typing import TYPE_CHECKING, Final
 
 from hooks.scripts.foreign_branch_push_argv import PushSpec
 from hooks.scripts.foreign_branch_push_git import (
     GitProbe,
+    config_value,
     git_probe,
     live_remote_range,
     push_target_policy,
@@ -89,7 +91,11 @@ from hooks.scripts.foreign_branch_push_text import (
     unowned_branch_body,
     unread_refusal,
 )
+from hooks.scripts.hook_budget import remaining_timeout_s
 from hooks.scripts.managed_repo import teatree_src_on_path
+
+if TYPE_CHECKING:
+    from teatree.hooks.foreign_mr_cli import OpenMr
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # registers and a test patching a helper here operate on ONE module object.
@@ -98,6 +104,7 @@ sys.modules.setdefault("hooks.scripts.foreign_branch_push_gate", sys.modules[__n
 
 GATE_SETTING: Final[str] = "foreign_branch_push_gate_enabled"
 GATE_ID: Final[str] = "foreign_branch_push"
+FORCE_DELETE_GATE_ID: Final[str] = "foreign_branch_push_force_delete"
 
 _SUBSTITUTION_RE: Final[re.Pattern[str]] = re.compile(r"[$`]")
 _HEADS_PREFIX: Final[str] = "refs/heads/"
@@ -113,6 +120,10 @@ class _ForgeCtx:
     kind: str
     repo_path: str
     slug: str
+
+    @property
+    def host(self) -> str:
+        return self.forge.host_of_slug(self.slug)
 
 
 def handle_block_foreign_branch_push(data: dict) -> bool:
@@ -139,16 +150,20 @@ def handle_block_foreign_branch_push(data: dict) -> bool:
         return False
     if not _teatree_bool_setting(GATE_SETTING, default=True):
         return False
-    verdict = _refusal_verdict(parsed)
+    verdict = _refusal_verdict(parsed, _ForgeRun())
     if verdict is None:
         return False
     reason, destructive = verdict
     # A force rewrites a colleague's history and a delete removes it outright: both
     # are refused past the shared allowlist + master fail-open switch.
-    return emit_pretooluse_deny(reason, gate_id=GATE_ID) if destructive else _fail_open_or_deny(data, reason)
+    return (
+        emit_pretooluse_deny(reason, gate_id="foreign_branch_push_force_delete")
+        if destructive
+        else _fail_open_or_deny(data, reason, gate_id="foreign_branch_push")
+    )
 
 
-def _refusal_verdict(parsed: ParsedPushes) -> tuple[str, bool] | None:
+def _refusal_verdict(parsed: ParsedPushes, run: "_ForgeRun") -> tuple[str, bool] | None:
     """The refusal to emit and whether it bypasses the shared fail-open chain.
 
     Two SHORT-CIRCUITING passes, destructive items first: the bypass is a property
@@ -156,23 +171,23 @@ def _refusal_verdict(parsed: ParsedPushes) -> tuple[str, bool] | None:
     item is worth its forge round trip — probing them all is how an established
     denial is lost to the hook's own timeout.
     """
-    for found in _refusals(parsed, destructive=True):
+    for found in _refusals(parsed, run, destructive=True):
         return found
-    for found in _refusals(parsed, destructive=False):
+    for found in _refusals(parsed, run, destructive=False):
         return found
     return None
 
 
-def _refusals(parsed: ParsedPushes, *, destructive: bool) -> Iterator[tuple[str, bool]]:
+def _refusals(parsed: ParsedPushes, run: "_ForgeRun", *, destructive: bool) -> Iterator[tuple[str, bool]]:
     for item in parsed.unread:
         if item.force == destructive:
             yield unread_refusal(item.kind, item.leader), destructive
     for spec in parsed.specs:
-        if spec.destructive == destructive and (reason := push_refusal(spec)):
+        if spec.destructive == destructive and (reason := push_refusal(spec, run)):
             yield reason, destructive
 
 
-def push_refusal(spec: PushSpec) -> str | None:
+def push_refusal(spec: PushSpec, run: "_ForgeRun") -> str | None:
     """The refusal text for *spec*, or ``None`` when the push is ours to make."""
     if spec.unpinnable:
         return _refuse(spec, UNPINNED, unobtainable_body(spec.unpinnable))
@@ -184,7 +199,7 @@ def push_refusal(spec: PushSpec) -> str | None:
     if unpinnable:
         return _refuse(spec, UNPINNED, unobtainable_body(unpinnable, failed))
     for branch in branches:
-        if reason := _branch_refusal(spec, branch):
+        if reason := _branch_refusal(spec, branch, run):
             return reason
     return None
 
@@ -193,7 +208,7 @@ def _refuse(spec: PushSpec, branch: str, body: str) -> str:
     return refusal(spec.remote, branch, body, force=spec.force)
 
 
-def _branch_refusal(spec: PushSpec, branch: str) -> str | None:
+def _branch_refusal(spec: PushSpec, branch: str, run: "_ForgeRun") -> str | None:
     """The refusal for one target *branch*, or ``None`` to allow it."""
     remote_ref = remote_branch_oid(spec.work_dir, spec.remote, branch)
     if not remote_ref.ok:
@@ -205,12 +220,12 @@ def _branch_refusal(spec: PushSpec, branch: str) -> str | None:
     # answer "ours" for a rewrite no later rung would catch.
     if spec.destructive and (refusal_text := _default_branch_destructive_refusal(spec, branch)):
         return refusal_text
-    return _ownership_refusal(spec, branch, remote_ref.out)
+    return _ownership_refusal(spec, branch, remote_ref.out, run)
 
 
-def _ownership_refusal(spec: PushSpec, branch: str, branch_oid: str) -> str | None:
+def _ownership_refusal(spec: PushSpec, branch: str, branch_oid: str, run: "_ForgeRun") -> str | None:
     """Rungs 2-4 of the ladder: MR ownership, then live-commit authorship."""
-    verdict, detail, failed = _open_mr_owner(spec, branch)
+    verdict, detail, failed = _open_mr_owner(spec, branch, run)
     if verdict == "ours":
         return None
     if verdict == "foreign":
@@ -309,22 +324,23 @@ def _git(spec: PushSpec, *args: str) -> GitProbe:
     return git_probe(spec.work_dir, *args)
 
 
-def _open_mr_owner(spec: PushSpec, branch: str) -> tuple[str, str, GitProbe | None]:
+def _open_mr_owner(spec: PushSpec, branch: str, run: "_ForgeRun") -> tuple[str, str, GitProbe | None]:
     """``(verdict, detail, failed probe)`` for the open MR/PR on *branch*: ours / foreign / none / unknown."""
     forge_ctx, unobtainable, failed = _forge_context(spec)
     if forge_ctx is None:
         return ("unknown", unobtainable, failed) if unobtainable else ("none", "", None)
-    author, mr_ref, unanswered = _open_mr(forge_ctx.forge, forge_ctx.kind, forge_ctx.repo_path, branch)
-    if unanswered:
-        return "unknown", unanswered, None
-    if not author:
-        return "none", "", None
-    ours = _our_logins(forge_ctx.forge, forge_ctx.kind, forge_ctx.forge.host_of_slug(forge_ctx.slug))
-    if ours is None:
-        return "unknown", f"`{forge_ctx.forge.FORGE_TOOL[forge_ctx.kind]} api user` (who we are on this forge)", None
-    if author.lower() in ours:
-        return "ours", "", None
-    return "foreign", foreign_mr_body(author, mr_ref), None
+    tool = forge_ctx.forge.FORGE_TOOL[forge_ctx.kind]
+    mrs, unreadable = _open_mrs(forge_ctx, branch)
+    declared = forge_ctx.forge.declared_self_identities(forge_ctx.host) if mrs else frozenset()
+    for mr in (mr for mr in mrs if mr.author.lower() not in declared):
+        login, failed = run.login(forge_ctx)
+        if failed:
+            return "unknown", f"`{tool} api user` (who we are on this forge)", failed
+        if mr.author.lower() != login:
+            return "foreign", foreign_mr_body(mr.author, mr.url or mr.number or "(no url)"), None
+    if unreadable:
+        return "unknown", f"`{tool}` listing the open MRs for `{branch}`", unreadable
+    return ("ours", "", None) if mrs else ("none", "", None)
 
 
 def _forge_context(spec: PushSpec) -> tuple["_ForgeCtx | None", str, GitProbe | None]:
@@ -346,61 +362,56 @@ def _forge_context(spec: PushSpec) -> tuple["_ForgeCtx | None", str, GitProbe | 
     if not remote_url.ok or not remote_url.out:
         return None, f"`git remote get-url {spec.remote}`", remote_url
     slug = forge.slug_for_remote_url(remote_url.out)
+    if not slug:
+        return None, "the SSH remote alias could not be resolved; add a HostName for it in ~/.ssh/config", None
     kind, repo_path = forge.forge_and_repo_path(slug)
     if not kind:
         return None, "", None
     return _ForgeCtx(forge=forge, kind=kind, repo_path=repo_path, slug=slug), "", None
 
 
-def _open_mr(forge: ModuleType, kind: str, repo_path: str, branch: str) -> tuple[str, str, str]:
-    """``(author, mr_ref, failed_probe)`` for the open MR/PR whose source is *branch*."""
-    if kind == forge.GITHUB:
-        argv = ["pr", "list", "--repo", repo_path, "--head", branch, "--state", "open"]
-        rows = _forge_rows(forge, kind, [*argv, "--json", "number,author,url", "--limit", "5"])
-        author_key, ref_key = "login", "url"
-    else:
-        project = quote(repo_path, safe="")
-        query = f"projects/{project}/merge_requests?source_branch={quote(branch, safe='')}&state=opened"
-        rows = _forge_rows(forge, kind, ["api", query])
-        author_key, ref_key = "username", "web_url"
-    if rows is None:
-        return "", "", f"`{forge.FORGE_TOOL[kind]}` listing the open MRs for `{branch}`"
-    for row in rows:
-        node = row.get("author")
-        author = node.get(author_key, "") if isinstance(node, dict) else ""
-        if isinstance(author, str) and author.strip():
-            return author.strip(), str(row.get(ref_key) or row.get("number") or "(no url)"), ""
-    return "", "", ""
+@dataclass(slots=True)
+class _ForgeRun:
+    """What one hook run learns from the forge that holds for all of it: who we are, per forge and host."""
+
+    logins: dict[tuple[str, str], tuple[str, GitProbe | None]] = field(default_factory=dict)
+
+    def login(self, ctx: _ForgeCtx) -> tuple[str, GitProbe | None]:
+        """Who we are on *ctx*'s forge, lowercased — asked at most once per forge and host in this run."""
+        key = (ctx.kind, ctx.host)
+        if key not in self.logins:
+            user, failed = _forge_answer(ctx, ["api", "user", *(["--hostname", ctx.host] if ctx.host else [])])
+            login = user.get("login" if ctx.kind == ctx.forge.GITHUB else "username") if isinstance(user, dict) else ""
+            if failed or not isinstance(login, str) or not login.strip():
+                self.logins[key] = ("", failed or _unusable_answer(ctx.forge.PROBE_NO_LOGIN))
+            else:
+                self.logins[key] = (login.strip().lower(), None)
+        return self.logins[key]
 
 
-def _forge_rows(forge: ModuleType, kind: str, argv: list[str]) -> list[dict] | None:
-    """The JSON array a forge CLI returned, or ``None`` when the question went unasked."""
-    stdout = forge.run_forge_tool(forge.FORGE_TOOL[kind], argv).stdout
-    if stdout is None:
-        return None
-    if not stdout.strip():
-        return []
+def _open_mrs(ctx: _ForgeCtx, branch: str) -> "tuple[tuple[OpenMr, ...], GitProbe | None]":
+    """The readable open MRs of this project from *branch*, as the pre-push guard reads them, and why any was not."""
+    argv = ctx.forge.mr_listing_argv(ctx.kind, ctx.repo_path, branch, ctx.host)
+    probe = ctx.forge.run_forge_tool(ctx.forge.FORGE_TOOL[ctx.kind], argv, budget=remaining_timeout_s)
+    if probe.stdout is None:
+        return (), GitProbe(ok=False, out="", err=probe.unresolved)
+    mrs, unusable = ctx.forge.open_mrs_in(ctx.kind, probe.stdout)
+    return mrs, (_unusable_answer(unusable) if unusable else None)
+
+
+def _forge_answer(ctx: _ForgeCtx, argv: list[str]) -> tuple[object, GitProbe | None]:
+    """What the forge CLI answered, parsed — an empty answer is an empty array — or why there is none."""
+    probe = ctx.forge.run_forge_tool(ctx.forge.FORGE_TOOL[ctx.kind], argv, budget=remaining_timeout_s)
+    if probe.stdout is None:
+        return None, GitProbe(ok=False, out="", err=probe.unresolved)
     try:
-        payload = json.loads(stdout)
+        return json.loads(probe.stdout.strip() or "[]"), None
     except ValueError:
-        return None
-    return payload if isinstance(payload, list) else None
+        return None, _unusable_answer(ctx.forge.PROBE_NOT_JSON)
 
 
-def _our_logins(forge: ModuleType, kind: str, host: str) -> frozenset[str] | None:
-    """Every login that counts as us on this forge, or ``None`` when we cannot tell."""
-    stdout = forge.run_forge_tool(forge.FORGE_TOOL[kind], ["api", "user"]).stdout
-    if stdout is None:
-        return None
-    try:
-        user = json.loads(stdout)
-    except ValueError:
-        return None
-    key = "login" if kind == forge.GITHUB else "username"
-    login = user.get(key, "") if isinstance(user, dict) else ""
-    if not isinstance(login, str) or not login.strip():
-        return None
-    return frozenset({login.strip().lower(), *forge.declared_self_identities(host)})
+def _unusable_answer(cause: str) -> GitProbe:
+    return GitProbe(ok=False, out="", code=0, err=cause)
 
 
 def _foreign_commit_refusal(spec: PushSpec, branch: str, branch_oid: str) -> str | None:
@@ -422,19 +433,23 @@ def _foreign_commit_refusal(spec: PushSpec, branch: str, branch_oid: str) -> str
             ),
         )
     authors = {line.strip() for line in log.out.splitlines() if line.strip()}
-    if authors & _our_git_identities(spec):
-        return None
     if not authors:
         return _refuse(spec, branch, unowned_branch_body(spec.remote, branch, live.base_branch))
-    return _refuse(spec, branch, foreign_commits_body(branch, tuple(sorted(authors))))
+    ours, unread, failed = _our_git_identities(spec)
+    if unread:
+        return _refuse(spec, branch, unobtainable_body(unread, failed))
+    return None if authors & ours else _refuse(spec, branch, foreign_commits_body(branch, tuple(sorted(authors))))
 
 
-def _our_git_identities(spec: PushSpec) -> set[str]:
-    return {
-        probe.out
-        for probe in (_git(spec, "config", "user.email"), _git(spec, "config", "user.name"))
-        if probe.ok and probe.out
-    }
+def _our_git_identities(spec: PushSpec) -> tuple[set[str], str, GitProbe | None]:
+    """The email and name we commit as, or which of the two reads did not answer."""
+    ours: set[str] = set()
+    for key in ("user.email", "user.name"):
+        probe = config_value(spec.work_dir, key)
+        if not probe.ok:
+            return set(), f"`git config {key}` (who we commit as)", probe
+        ours.update({probe.out} - {""})
+    return ours, "", None
 
 
 def _forge_seam() -> ModuleType | None:
@@ -442,7 +457,7 @@ def _forge_seam() -> ModuleType | None:
 
     That module already re-exports the whole forge surface this gate needs
     (``slug_for_remote_url``, ``forge_and_repo_path``, ``host_of_slug``,
-    ``FORGE_TOOL``, ``GITHUB``, ``run_forge_tool``, ``declared_self_identities``),
+    ``FORGE_TOOL``, ``GITHUB``, ``PROBE_NO_LOGIN``, ``run_forge_tool``, ``declared_self_identities``),
     so one import carries all of it — and it is the module that already owns the
     "whose MR is this branch's?" question.
     """

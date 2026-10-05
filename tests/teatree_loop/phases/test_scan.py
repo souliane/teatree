@@ -1,15 +1,23 @@
 """Tests for ``teatree.loop.phases.scan`` — the parallel read-then-signal stage."""
 
+import os
 import sqlite3
+import subprocess
+import sys
+import threading
 import time
+from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import NoReturn
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
 from teatree.loop.job_identity import _ScannerJob
-from teatree.loop.phases.scan import scan_phase
+from teatree.loop.phases.scan import _AbandonableScanPool, _run_job_closing_connections, scan_phase
 from teatree.loop.scanners.base import ScanSignal
 
 
@@ -51,6 +59,20 @@ def test_scan_phase_records_scanner_errors_without_raising() -> None:
     assert "scanner blew up" in outcome.errors["boom"]
 
 
+def test_raising_scanner_before_a_healthy_job_does_not_abort_the_tick() -> None:
+    jobs = [
+        _ScannerJob(scanner=_ExplodingScanner(name="first"), overlay="acme"),
+        _ScannerJob(
+            scanner=_FixedScanner(name="second", out=[ScanSignal(kind="my_pr.open", summary="kept")]), overlay="acme"
+        ),
+    ]
+
+    outcome = scan_phase(jobs)
+
+    assert [(signal.summary, signal.payload["overlay"]) for signal in outcome.signals] == [("kept", "acme")]
+    assert outcome.errors == {"first[acme]": "RuntimeError: scanner blew up"}
+
+
 def test_scan_phase_tags_overlay_on_signals() -> None:
     job = _ScannerJob(
         scanner=_FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")]),
@@ -66,18 +88,33 @@ def test_scan_phase_on_empty_jobs_returns_empty_outcome() -> None:
     assert outcome.errors == {}
 
 
+_HUNG_RELEASE = threading.Event()
+_HUNG_THREADS: list[threading.Thread] = []
+
+
+@pytest.fixture(autouse=True)
+def _join_hung_scanners() -> Iterator[None]:
+    _HUNG_RELEASE.clear()
+    _HUNG_THREADS.clear()
+    yield
+    _HUNG_RELEASE.set()
+    for worker in _HUNG_THREADS:
+        worker.join(timeout=5)
+        assert not worker.is_alive(), f"scanner thread {worker.name} did not stop"
+
+
 @dataclass(slots=True)
 class _HungScanner:
     name: str = "hung"
 
     def scan(self) -> list[ScanSignal]:
-        # Sleep far longer than the test timeout; the pool must interrupt it.
-        time.sleep(60)
-        return []  # pragma: no cover — never reached under timeout
+        _HUNG_THREADS.append(threading.current_thread())
+        _HUNG_RELEASE.wait()
+        return []
 
 
 def test_scan_phase_times_out_hung_scanner_and_records_error() -> None:
-    """A hung scanner is interrupted after per_job_timeout and its error is recorded (fix #4)."""
+    """A hung scanner is reported after the deadline and released at teardown."""
     jobs = [
         _ScannerJob(scanner=_HungScanner(), overlay=""),
         _ScannerJob(scanner=_FixedScanner(name="ok", out=[ScanSignal(kind="my_pr.open", summary="x")]), overlay=""),
@@ -103,6 +140,38 @@ def test_timed_out_scanner_error_is_labelled_abandoned() -> None:
     assert "still running" in outcome.errors["hung"].lower()
 
 
+def test_timed_out_scanner_does_not_hold_interpreter_open() -> None:
+    script = """
+import os
+import threading
+import django
+
+os.environ["DJANGO_SETTINGS_MODULE"] = "tests.django_settings"
+django.setup()
+from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.phases.scan import scan_phase
+
+class HeldScanner:
+    name = "held"
+
+    def scan(self):
+        threading.Event().wait()
+
+scan_phase([_ScannerJob(scanner=HeldScanner(), overlay="")], per_job_timeout=0.01)
+print("scan returned", flush=True)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        cwd=Path(__file__).resolve().parents[3],
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "scan returned"
+
+
 def test_scan_phase_bounds_all_jobs_under_one_shared_deadline() -> None:
     """Two hung scanners share ONE absolute deadline — never N x per_job_timeout (fix #7)."""
     jobs = [
@@ -117,6 +186,33 @@ def test_scan_phase_bounds_all_jobs_under_one_shared_deadline() -> None:
     assert "h2" in outcome.errors
     # One shared deadline: well under the ~0.6s a per-job sequential wait would charge.
     assert elapsed < 0.5
+
+
+class _ScanAbortedError(BaseException):
+    pass
+
+
+def _abort(_job: _ScannerJob) -> NoReturn:
+    raise _ScanAbortedError
+
+
+def test_scan_pool_outlives_a_failed_job_and_shutdown_cancels_the_queue_and_refuses_new_jobs() -> None:
+    pool = _AbandonableScanPool(max_workers=1)
+    queued_job = _ScannerJob(scanner=_FixedScanner(name="queued", out=[]), overlay="")
+    failed = pool.submit(_abort, queued_job)
+    hung = pool.submit(_run_job_closing_connections, _ScannerJob(scanner=_HungScanner(), overlay=""))
+    deadline = time.monotonic() + 5
+    while not hung.running() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    queued = pool.submit(_run_job_closing_connections, queued_job)
+
+    pool.shutdown()
+
+    assert isinstance(failed.exception(timeout=0), _ScanAbortedError)
+    assert hung.running()
+    assert queued.cancelled()
+    with pytest.raises(RuntimeError, match="shut down"):
+        pool.submit(_run_job_closing_connections, queued_job)
 
 
 @dataclass(slots=True)
@@ -161,22 +257,39 @@ class TestScanPhaseConnectionHygiene(TestCase):
 
 def test_scan_phase_worker_pool_is_bounded() -> None:
     """Pool size is capped even when many jobs are present."""
-    import os  # noqa: PLC0415
-    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
-    from unittest.mock import patch  # noqa: PLC0415
-
     max_seen: list[int] = []
 
-    def _capped_tpe(*, max_workers: int | None = None, **kwargs: Any) -> ThreadPoolExecutor:
-        max_seen.append(max_workers or 0)
-        return ThreadPoolExecutor(max_workers=max_workers, **kwargs)
+    def _capped_pool(*, max_workers: int) -> _AbandonableScanPool:
+        max_seen.append(max_workers)
+        return _AbandonableScanPool(max_workers=max_workers)
 
     jobs = [_ScannerJob(scanner=_FixedScanner(name=f"s{i}", out=[]), overlay="") for i in range(200)]
     cpu = os.cpu_count() or 4
     expected_cap = min(200, cpu * 4)
 
-    with patch("teatree.loop.phases.scan.ThreadPoolExecutor", side_effect=_capped_tpe):
+    with patch("teatree.loop.phases.scan._AbandonableScanPool", side_effect=_capped_pool):
         scan_phase(jobs)
 
-    assert max_seen, "ThreadPoolExecutor was not called"
+    assert max_seen, "scan pool was not called"
     assert max_seen[0] <= expected_cap
+
+
+_CALLER_MARK: ContextVar[str] = ContextVar("caller_mark", default="")
+
+
+@dataclass(slots=True)
+class _ContextReadingScanner:
+    name: str = "context-reader"
+
+    def scan(self) -> list[ScanSignal]:
+        return [ScanSignal(kind="my_pr.open", summary=_CALLER_MARK.get())]
+
+
+def test_live_scan_does_not_carry_the_callers_context_into_scanners() -> None:
+    token = _CALLER_MARK.set("caller")
+    try:
+        outcome = scan_phase([_ScannerJob(scanner=_ContextReadingScanner(), overlay="")])
+    finally:
+        _CALLER_MARK.reset(token)
+
+    assert [signal.summary for signal in outcome.signals] == [""]

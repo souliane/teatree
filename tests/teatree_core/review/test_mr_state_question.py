@@ -2,8 +2,7 @@
 
 ``ask_mr_state`` is the surface the automation uses when it genuinely cannot
 decide a merge request's state. It is the bot talking to its own operator about
-the operator's own work — a different concern from the posture /
-``notify_on_post_on_behalf``, which govern posts made AS the user TO colleagues.
+the operator's own work — a different concern from posts made AS the user TO colleagues.
 Routing this through the publish gate would silently swallow the question
 whenever the operator has the (default) gate armed, which is exactly when they
 most need to be asked.
@@ -25,11 +24,11 @@ from django.test import TestCase
 
 from teatree.core import notify as notify_module
 from teatree.core.gates.review_request_guard import canonical_mr_url
-from teatree.core.models import ConfigSetting, DeferredQuestion
+from teatree.core.models import DeferredQuestion
 from teatree.core.notify_question_drains import drain_unmirrored_deferred_questions
 from teatree.core.on_behalf_gate_recorded import resolve_posture_verdict
 from teatree.core.review import mr_state_question
-from teatree.core.review.mr_state_question import ask_mr_state, mr_state_marker
+from teatree.core.review.mr_state_question import ask_mr_state, mr_state_marker, observe_owner_question_creation
 from teatree.on_behalf_gate import OnBehalfVerdict
 from tests.teatree_core._on_behalf_gate_helpers import seed_forbidding_posture
 
@@ -152,9 +151,30 @@ class TestPerTickCap(TestCase):
             assert ask_mr_state(mr_url=_OTHER_MR, reason=_REASON) is not None
 
 
+class TestOwnerQuestionObserver(TestCase):
+    def test_a_new_question_notifies_the_observer_with_the_merge_request_url(self) -> None:
+        observed: list[str] = []
+        with observe_owner_question_creation(observed.append):
+            row = ask_mr_state(mr_url=_MR, reason=_REASON)
+
+        assert row is not None
+        assert observed == [_MR]
+
+    def test_a_duplicate_ask_does_not_notify_the_observer_again(self) -> None:
+        """The idempotent-return branch (an already-open row) never reaches the observer call."""
+        observed: list[str] = []
+        with observe_owner_question_creation(observed.append):
+            first = ask_mr_state(mr_url=_MR, reason=_REASON)
+            second = ask_mr_state(mr_url=_MR, reason="still undecidable after a refetch.")
+
+        assert first is not None
+        assert second is not None
+        assert second.pk == first.pk
+        assert observed == [_MR]
+
+
 class TestReachesTheOwnerIndependentOfThePublishGate(TestCase):
-    def test_delivered_while_the_on_behalf_gate_is_armed_and_the_receipt_is_off(self) -> None:
-        ConfigSetting.objects.set_value("notify_on_post_on_behalf", value=False)
+    def test_delivered_while_the_on_behalf_gate_is_armed(self) -> None:
         backend = _owner_dm_backend()
 
         seed_forbidding_posture()

@@ -24,9 +24,15 @@ from django.core.management import call_command
 
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.core import on_behalf_egress
+from teatree.core.models import ConfigSetting
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _allow_expected_channel() -> None:
+    ConfigSetting.objects.set_value("send_proxy_allowlist", ["slack:C_TEAM", "slack:C_GONE"])
 
 
 def _call(*args: str) -> tuple[str, str, int]:

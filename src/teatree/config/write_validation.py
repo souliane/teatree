@@ -1,7 +1,7 @@
 """The one parse→coerce→canonicalize core every config WRITE surface shares.
 
-Four surfaces persist a ``ConfigSetting`` row — ``config_setting set`` / ``seed``
-(the CLI), the dashboard settings editor POST, and the ``config_interchange`` TOML
+Five surfaces persist a ``ConfigSetting`` row — ``config_setting set`` / ``seed``
+(the CLI), the dashboard settings editor POST, the Django admin, and the ``config_interchange`` TOML
 import. Each ran the SAME copy: look up the key's registry parser, coerce the raw
 value, and catch the same ``(ValueError, TypeError, AttributeError)`` tuple a bad
 value raises. This module owns that core once so the surfaces can never drift on
@@ -37,14 +37,17 @@ def validate_config_write(key: str, raw: object) -> ConfigWriteValue:
     ``ValueError`` / ``TypeError`` / ``AttributeError`` — so every write surface
     reports an invalid value identically and leaves its store untouched.
 
-    The caller MUST have already gated *key* into
-    :data:`~teatree.config.known_settings.ALL_KNOWN_CONFIG_SETTINGS`; this coerces
-    a known key's value, it does not decide key-ness or any surface-specific gate. An extra-headers
-    map naming a header off its allowlist is refused here, because its parser only withholds one.
+    Unknown and retired keys are refused here as well, so a direct caller never
+    receives an unhandled ``KeyError``. Surfaces still own their more specific
+    key and permission checks. An extra-headers map naming a header off its
+    allowlist is refused here, because its parser only withholds one.
     """
     if carries_unlisted_header(key, raw):
         raise ConfigWriteError(UNLISTED_HEADER_REFUSAL)
-    parser = ALL_KNOWN_CONFIG_SETTINGS[key]
+    parser = ALL_KNOWN_CONFIG_SETTINGS.get(key)
+    if parser is None:
+        msg = f"unknown config key: {key}"
+        raise ConfigWriteError(msg)
     try:
         return parser(raw)
     except (ValueError, TypeError, AttributeError) as exc:

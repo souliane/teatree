@@ -283,13 +283,13 @@ class NormalizedSpellingTests(SimpleTestCase):
         self.addCleanup(self.link.unlink)
 
     def test_a_symlinked_parent_resolves_to_the_same_spelling_as_the_real_one(self) -> None:
-        assert normalized_spelling(str(self.link / "entry")) == str(self.real / "entry")
+        assert normalized_spelling(str(self.link / "entry")) == str(self.real.resolve() / "entry")
 
     def test_a_leaf_symlink_stays_itself_because_the_sweep_unlinks_it_unfollowed(self) -> None:
         leaf = self.real / "leaf"
         leaf.symlink_to(self.real / "target")
 
-        assert normalized_spelling(str(leaf)) == str(leaf)
+        assert normalized_spelling(str(leaf)) == str(self.real.resolve() / "leaf")
 
     def test_a_kernel_pseudo_target_is_not_a_path_and_is_left_verbatim(self) -> None:
         assert normalized_spelling("socket:[12345]") == "socket:[12345]"

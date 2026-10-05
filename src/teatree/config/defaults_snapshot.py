@@ -19,7 +19,6 @@ SECRET / PERSONAL rows are never emitted (their empty code default stays in the 
 overlay-scope rows and stale/retired keys are reported, never emitted.
 """
 
-import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -50,7 +49,6 @@ WORKFLOW_ENGAGEMENT_KEYS: frozenset[str] = frozenset(
         "autoload",
         "contribute",
         "issue_implementer_label",
-        "mr_triage_enabled",
         "active_loop_schedule",
     }
 )
@@ -101,9 +99,6 @@ _HEADER = """\
 # `[loops.<name>]` — the autonomous loops that ship: `delay_seconds` (tick cadence),
 # optional `daily_at` for a once-per-day loop, `colleague_facing` (a REPORTING axis —
 # a posture holds colleague work off through `egress`, per action, not by masking a loop),
-# `default_enabled` (declarative: it records the local/read-only operational core; no live
-# seed writes it, because a loop's shipped posture is a mode opinion and `Loop.enabled` is
-# the manual override),
 # `description`, and `prompt_body` for the one prompt-backed loop (every other loop runs
 # its own `src/teatree/loops/<name>/loop.py`). Table ORDER is the seed order, pinned
 # against the frozen `0001_initial` copy.
@@ -127,7 +122,7 @@ _HEADER = """\
 # shipped row is the recoverable failure — `t3 setup` puts it back. The one that is not is a
 # row sitting present and INERT: `t3 loops audit` reads the seed tables below as the expected
 # set (the DB cannot answer for a row that is gone) and names every shipped definition that
-# is missing, disabled against its shipped flag, or not ticking. It also names every live
+# is missing, forced off against the present mode, or not ticking. It also names every live
 # mode mask and calendar whose VALUE has diverged from what ships here — reported as a note
 # with both values, never rewritten, because the override may well be deliberate. Deleting a
 # shipped definition needs a typed `stop-<name>` naming what stops.
@@ -331,21 +326,6 @@ def plan_snapshot(
         overlay_scope_rows=tuple(sorted(overlay_scope_rows)),
         dropped_keys=tuple(sorted(set(table) - set(emitted))),
     )
-
-
-def plan_fingerprint(changes: tuple[SnapshotChange, ...]) -> str:
-    """A stable digest of the exact change set, so an approval binds to ONE diff.
-
-    An approval recorded against a rendered diff must not authorize a different diff the
-    box produced later; the command carries this digest on the question and re-derives it
-    before writing.
-    """
-    payload = json.dumps(
-        [[c.key, c.shipped, c.proposed, c.scope] for c in sorted(changes, key=lambda c: c.key)],
-        default=str,
-        sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def change_table(changes: tuple[SnapshotChange, ...]) -> tuple[list[str], list[list[str]]]:

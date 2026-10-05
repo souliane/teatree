@@ -9,6 +9,7 @@ seeded production loops.
 """
 
 import datetime as dt
+import importlib
 from contextlib import ExitStack
 from unittest.mock import patch
 
@@ -99,6 +100,8 @@ class _LoopTableCase(django.test.TestCase):
 
     def setUp(self) -> None:
         super().setUp()
+        # loop_table binds iter_loops at import; a first import under a registry stub keeps the stub.
+        importlib.import_module("teatree.loops.loop_table")
         Loop.objects.all().delete()
 
 
@@ -431,6 +434,35 @@ class TestLoopHealth(_LoopTableCase):
         )
         assert health.ok
         assert "FAIL" not in "\n".join(health.lines())
+
+    def test_a_loop_killed_at_its_deadline_is_named_as_the_blocker(self) -> None:
+        # The 2026-09-26 reading: resource_pressure killed at 300 s 81 times, while status
+        # blamed nothing for the loops stuck waiting behind it.
+        _loop("inbox", cadence=60, ran_ago=dt.timedelta(minutes=7))
+        blocker = _loop("resource_pressure", cadence=60, ran_ago=dt.timedelta(seconds=30))
+        Loop.objects.filter(pk=blocker.pk).update(consecutive_deadline_kills=81)
+        health = self._health(admitted=[], mode=_mode(), registry=(_mini("inbox"), _mini("resource_pressure")))
+
+        rendered = "\n".join(health.lines())
+        assert not health.ok
+        assert "resource_pressure" in rendered
+        assert "300s deadline 81 time(s) in a row" in rendered
+        assert "no control plane explains it" not in rendered
+
+    def test_a_deadlined_loop_fails_status_even_when_nothing_else_is_stale(self) -> None:
+        blocker = _loop("resource_pressure", cadence=60, ran_ago=dt.timedelta(seconds=30))
+        Loop.objects.filter(pk=blocker.pk).update(consecutive_deadline_kills=2)
+        health = self._health(admitted=[], mode=_mode(), registry=(_mini("resource_pressure"),))
+
+        assert not health.ok
+        assert any(line.startswith("FAIL") and "resource_pressure" in line for line in health.lines())
+
+    def test_a_turned_off_loop_is_not_named_for_its_past_kills(self) -> None:
+        blocker = _loop("resource_pressure", cadence=60, ran_ago=dt.timedelta(seconds=30))
+        Loop.objects.filter(pk=blocker.pk).update(consecutive_deadline_kills=2, enabled=False)
+        health = self._health(admitted=[], mode=_mode(), registry=(_mini("resource_pressure"),))
+
+        assert health.ok
 
     def test_the_json_carries_the_fleet_verdict_it_measured(self) -> None:
         names = ("tickets",)

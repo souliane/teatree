@@ -125,13 +125,14 @@ class PendingMigrationsTest(TransactionTestCase):
         require_current_schema()  # must not raise
 
 
-# Every test here calls ``make_stale()`` — a full multi-app migrate plus a
-# reverse-migrate of ``core`` to ``zero`` on a fresh sqlite alias (several
-# seconds single-core). Under maximum ``-n auto --cov --doctest-modules``
+# Every test here calls ``make_stale()`` — a reverse-migrate of ``core`` to
+# ``zero`` on a copy of the migrated template (several seconds single-core),
+# and the heal re-applies the chain. Under maximum ``-n auto --cov --doctest-modules``
 # parallel contention that exceeds the global 60s ``pytest-timeout``, so the
-# genuinely-slow migrations get a scoped 240s bump; the global timeout stays
+# genuinely-slow migrations get a scoped bump; the global timeout stays
 # 60s as the hang-detector for all other tests (#1189).
-@pytest.mark.timeout(240)
+# CI pytest-core, 54 runs 09-27..30: p50 146 s, 32 timeouts at 240 s; 480 s is ~1.45x the 331 s 2-pass peak.
+@pytest.mark.timeout(480)
 class TestSchemaGuardOnPrivateAlias:
     """Read-only / self-heal surfaces exercised against a private alias (#2915).
 
@@ -200,7 +201,7 @@ class TestSchemaGuardOnPrivateAlias:
 # part can be stubbed away, since the migration gap IS the precondition and the aggregate
 # IS the subject. ~9s clears the global 60s ``pytest-timeout`` alone and does not under
 # CI's 12-way shard matrix, where contention has taken it past 60s on four separate PRs.
-# Same scoped bump, same reason, as ``BehindSelfDbSelfHealsTest`` below (#1189); the
+# Scoped bump for the same reason as ``BehindSelfDbSelfHealsTest`` below (#1189); the
 # global 60s stays as the hang-detector everywhere else (#4048).
 @pytest.mark.timeout(240)
 class BehindSelfDbReportingTest(TransactionTestCase):
@@ -232,7 +233,7 @@ class BehindSelfDbReportingTest(TransactionTestCase):
 # Each test drives a real backward ``migrate core zero`` in ``setUp`` and a full
 # forward heal, on the shared ``default`` connection — several seconds
 # single-core that exceeds the global 60s ``pytest-timeout`` under maximum
-# parallel contention. Scoped 240s bump for the genuinely-slow migrations; the
+# parallel contention. Scoped bump for the genuinely-slow migrations; the
 # global 60s stays as the hang-detector everywhere else (#1189).
 def _forge_offline(argv: list[str]) -> tuple[int, str, str]:
     """Every forge read fails — the repo-reconcile probe falls back to its initial slug."""
@@ -255,7 +256,8 @@ def _refusal_text(*args: object, **kwargs: object) -> str:
     return str(cast("dict[str, object]", result).get("error", ""))
 
 
-@pytest.mark.timeout(240)
+# CI pytest-core, 54 runs 09-27..30: p50 148 s, peak 331 s, 13 timeouts at 240 s; 480 s is ~1.45x that peak.
+@pytest.mark.timeout(480)
 class BehindSelfDbSelfHealsTest(TransactionTestCase):
     """The sanctioned commands that cannot move off ``default`` (#2915).
 

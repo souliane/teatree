@@ -67,48 +67,13 @@ def _repos_from_toml() -> dict[str, Path]:
     return repos
 
 
-def _canonical_overlay_names() -> dict[str, str]:
-    """Map raw DB overlays-registry keys to canonical overlay names.
-
-    Generic legacy-alias protection: a registry whose keys still carry a short
-    ``[overlays.<alias>]`` entry (e.g. ``[overlays.<short>]`` for a canonical
-    ``t3-<short>`` entry-point overlay) would otherwise have the freshness
-    segment label as ``<short>=0`` even though the rest of the statusline tags
-    its rows as ``[t3-<short>]``. The bundled overlay no longer needs this
-    remap — it registers under its canonical entry-point name
-    (souliane/teatree#1108) — but the generic mapping stays for arbitrary
-    operator aliases.
-
-    The matching rule lives in ``teatree.config._match_canonical_ep``
-    (souliane/teatree#1138) — a single home shared with config-time discovery.
-    """
-    try:
-        from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415 — deferred: loaded at tick time
-        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred: loaded at tick time
-    except Exception:  # noqa: BLE001 — a config-read failure degrades to no overlays
-        return {}
-    canonical = set(get_all_overlays().keys())
-    overlays_cfg = load_config().raw.get("overlays") or {}
-    mapping: dict[str, str] = {}
-    for raw_key in overlays_cfg:
-        if raw_key in canonical:
-            continue
-        cname = _match_canonical_ep(raw_key, canonical)
-        if cname is not None:
-            mapping[raw_key] = cname
-    return mapping
-
-
 def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
     repos: dict[str, Path] = {}
     t3_repo = os.environ.get("T3_REPO")
     if t3_repo:
         repos["t3"] = Path(t3_repo).expanduser()
     repos.update(_repos_from_toml())
-    aliases = _canonical_overlay_names()
-    return {
-        aliases.get(label, label): info for label, path in repos.items() if (info := _repo_freshness(path)) is not None
-    }
+    return {label: info for label, path in repos.items() if (info := _repo_freshness(path)) is not None}
 
 
 def _registered_overlays() -> list[object]:

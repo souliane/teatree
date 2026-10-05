@@ -128,7 +128,7 @@ PHASE_FAMILY = IdentityFamily(
 )
 
 #: The overlay identity is a stored name that must be canonicalized through
-#: ``resolve_overlay_name`` / ``_canonical_overlay_name`` before it is matched
+#: ``resolve_overlay_name`` before it is matched
 #: against a hard-coded overlay-name literal (the recurrence class behind
 #: #24's wrong-overlay resolution). A ``.overlay`` compared to another stored
 #: name (``ticket.overlay == self.overlay_name``) is a legitimate value match
@@ -136,7 +136,7 @@ PHASE_FAMILY = IdentityFamily(
 OVERLAY_FAMILY = IdentityFamily(
     name="overlay",
     kind=FamilyKind.IDENTITY_ATTR,
-    normalizer_calls=frozenset({"resolve_overlay_name", "_canonical_overlay_name"}),
+    normalizer_calls=frozenset({"resolve_overlay_name"}),
     identity_attrs=frozenset({"overlay"}),
 )
 

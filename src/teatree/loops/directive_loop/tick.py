@@ -1,7 +1,6 @@
 """One directive-loop tick — guard chain, drain intake, then one execution step (north-star PR-7).
 
-:func:`run_tick` is the whole behaviour and structurally mirrors
-:func:`teatree.loops.outer_loop.tick.run_tick`. It ALWAYS runs an unconditional
+:func:`run_tick` is the whole behaviour. It ALWAYS runs an unconditional
 guard chain first; a refusal returns a typed no-op result with zero mutation (the
 TRIPLE-OFF no-op property) and is LOGGED at warning level, so a refused
 tick is never indistinguishable from an idle one (#3643). When the chain allows, each
@@ -62,7 +61,7 @@ from teatree.loops.directive_loop.verify import (
     rollback_and_request_revert,
     verify_and_decide,
 )
-from teatree.loops.outer_loop.guards import GuardSeams
+from teatree.loops.shared.guards import GuardSeams
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +144,7 @@ def run_tick(
     """
     resolved_seams = seams or TickSeams()
     resolved_settings = settings if settings is not None else get_effective_settings(overlay or None)
-    intake_verdict = evaluate_intake_guards(
-        settings=resolved_settings, seams=resolved_seams.guards, overlay=overlay, now=now
-    )
+    intake_verdict = evaluate_intake_guards(seams=resolved_seams.guards, overlay=overlay, now=now)
     if not intake_verdict.ok:
         return _refused(intake_verdict.reason)
 
@@ -233,7 +230,7 @@ def _run_execution_step(
     The execution guard chain is consulted only once a directive is actually in that
     arc, so a tick that merely interprets never logs a spurious execution refusal.
     """
-    verdict = evaluate_execution_guards(settings=settings, seams=seams.guards, overlay=overlay, now=now)
+    verdict = evaluate_execution_guards(seams=seams.guards, overlay=overlay, now=now)
     if not verdict.ok:
         return _refused(verdict.reason, directive_id=directive.pk)
     return _advance_execution(directive, settings, now=now, seams=seams)

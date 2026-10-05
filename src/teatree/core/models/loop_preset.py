@@ -64,7 +64,6 @@ from teatree.core.models.preset_totality import PresetNotTotalError, require_tot
 logger = logging.getLogger(__name__)
 
 # Token-outage auto-engage (#3159 build item 6): default-OFF flag + re-pointable target.
-TOKEN_OUTAGE_AUTO_ENGAGE_SETTING = "token_outage_auto_engage"  # noqa: S105 — a setting key, not a credential
 TOKEN_OUTAGE_PRESET_SETTING = "token_outage_preset_name"  # noqa: S105 — a setting key, not a credential
 DEFAULT_TOKEN_OUTAGE_PRESET = "token-outage"  # noqa: S105 — a preset name, not a credential
 # Marks an override this system engaged automatically (vs. one the user set), so
@@ -201,19 +200,17 @@ class ModeOverrideManager(models.Manager["ModeOverride"]):
     def auto_engage_token_outage(self, *, resets_at: datetime) -> bool:
         """Engage the token-outage preset until *resets_at* when a usage window parks (#3159 item 6).
 
-        A no-op unless the default-off ``token_outage_auto_engage`` flag is on AND the
-        re-pointable target preset (``token_outage_preset_name``, default ``token-outage``)
+        A no-op unless the re-pointable target preset
+        (``token_outage_preset_name``, default ``token-outage``)
         exists. **Never overwrites an existing override** — a user ``--hold`` (or any
         live override) outranks — so it engages only when nothing is currently active.
         The override is marked auto-engaged so the re-arm path clears only its own.
         Returns ``True`` iff it engaged. The outranks-check and the write share one
         ``atomic`` block, so a ``--hold`` set between them is seen rather than purged.
         """
-        if not _token_outage_auto_engage_enabled():
-            return False
         preset_name = token_outage_preset_name()
         if Mode.objects.by_name(preset_name) is None:
-            logger.warning("token_outage_auto_engage on but preset %r is absent — not engaging", preset_name)
+            logger.warning("token-outage preset %r is absent — not engaging", preset_name)
             return False
         with transaction.atomic():
             if self.current() is not None:
@@ -254,10 +251,6 @@ class ModeOverride(models.Model):
     def __str__(self) -> str:
         lift = "" if self.expected_lift_at is None else f" lift by {self.expected_lift_at.isoformat()}"
         return f"loop-preset-override<{self.preset_name}{lift}>"
-
-
-def _token_outage_auto_engage_enabled() -> bool:
-    return bool(ConfigSetting.objects.get_effective(TOKEN_OUTAGE_AUTO_ENGAGE_SETTING))
 
 
 def token_outage_preset_name() -> str:

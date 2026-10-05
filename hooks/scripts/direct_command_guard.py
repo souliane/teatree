@@ -25,8 +25,8 @@ into ``_HANDLERS``, plus :func:`deny_match` (as ``_deny_match``, read by
 the denylist tests) and :data:`BLOCKED_COMMANDS` (as ``_BLOCKED_COMMANDS``, the
 combined denylist the BLUEPRINT / ship skill / merge-execution prose cite). The
 deny routes through the router's shared ``emit_pretooluse_deny`` chokepoint
-(back-imported lazily), so the ``_write_pretooluse_deny`` deny writer and the
-repeated-denial circuit breaker stay in the router. A narrow targeted-command
+(back-imported lazily), which applies the repeated-denial circuit breaker before
+``gate_decision`` writes the deny. A narrow targeted-command
 gate — it denies only specific ``t3``-CLI-bypass commands, never arbitrary Bash —
 so it is on the never-lockout allowlist.
 
@@ -462,8 +462,8 @@ def handle_block_direct_commands(data: dict) -> bool:
 
     Returns True when a deny was emitted (caller should stop the handler chain).
     The deny routes through the router's shared ``emit_pretooluse_deny`` chokepoint
-    (back-imported lazily; the ``_write_pretooluse_deny`` writer + circuit breaker
-    stay in the router).
+    (back-imported lazily; it applies the circuit breaker before ``gate_decision``
+    writes the deny).
     """
     from hooks.scripts.hook_router import emit_pretooluse_deny  # noqa: PLC0415 deferred back-import
 
@@ -475,4 +475,4 @@ def handle_block_direct_commands(data: dict) -> bool:
     reason = deny_match(command)
     if reason is None:
         return False
-    return emit_pretooluse_deny(reason)
+    return emit_pretooluse_deny(reason, gate_id="direct_command")

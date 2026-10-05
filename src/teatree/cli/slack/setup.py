@@ -22,9 +22,7 @@ browser OAuth-consent reinstall click at the app-specific deep link.
 With no recorded app id and no ``--update``, the original create-from-manifest
 walkthrough runs and records the new app id for next time.
 
-Manifest-building and Slack API helpers live in
-:mod:`teatree.cli.slack.manifest`; this module re-exports them so existing
-callers are unaffected.
+Manifest-building and Slack API helpers live in :mod:`teatree.cli.slack.manifest`.
 """
 
 import datetime as dt
@@ -44,14 +42,11 @@ from teatree.cli.slack.config_token import (
     SlackConfigTokenStoreUnwritableError,
 )
 from teatree.cli.slack.manifest import (
-    _BOT_ONLY_SCOPES,
     _CONFIG_REFRESH_REF,
     _CONFIG_TOKEN_REF,
     _USER_SCOPES,
     SlackManifest,
     SlackManifestError,
-    _slack_app_api,
-    _user_scopes_carry_no_bot_only_scope,
     app_install_url,
     app_manifest_editor_url,
     build_manifest,
@@ -65,30 +60,6 @@ from teatree.cli.slack.token_store import SlackTokenWriteError, app_token_slot, 
 from teatree.config import discover_overlays
 from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
-
-# Re-exported so existing ``from teatree.cli.slack.setup import …`` callers
-# keep working without touching their imports.
-__all__ = [
-    "_BOT_ONLY_SCOPES",
-    "_CONFIG_REFRESH_REF",
-    "_CONFIG_TOKEN_REF",
-    "_USER_SCOPES",
-    "SlackManifest",
-    "SlackManifestError",
-    "_export_with_rotation",
-    "_slack_app_api",
-    "_user_scopes_carry_no_bot_only_scope",
-    "app_install_url",
-    "app_manifest_editor_url",
-    "build_manifest",
-    "export_manifest",
-    "manifest_install_url",
-    "manifests_equivalent",
-    "rotate_config_token",
-    "slack_bot_setup",
-    "update_manifest",
-    "write_overlay_settings",
-]
 
 _APP_ID_RE = re.compile(r"^A[A-Z0-9]{6,}$")
 _BOT_TOKEN_RE = re.compile(r"^xoxb-[A-Za-z0-9-]+$")

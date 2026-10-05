@@ -14,7 +14,7 @@ questions at all.
 resolves exactly the bound row.
 - the reply's ``loop_replied_at`` is claimed with kind ``question_reply``
 so the reactive Slack-answer cycle does NOT spawn an answerer — but
-``answered_at`` is left untouched (#1063 turn-end gate stays decoupled).
+``answered_at`` (the agent personally replied) is left untouched.
 - a ✅ reaction goes out through :class:`OnBehalfSlackEgress` (the reply is
 in the user's own DM, so the self-DM short-circuit posts it ungated),
 verify-by-readback before the claim is kept — a react/readback failure
@@ -46,9 +46,8 @@ class AskUserQuestionReplyScanner:
 
     *overlay* tags which queue to drain (``""`` drains every overlay's
     queue for the v1 single-overlay path). The scanner produces no
-    statusline signal — the applied answer surfaces via the
-    ``handle_inject_pending_questions`` UserPromptSubmit drain, not the
-    statusline — so :meth:`scan` returns an empty signal list.
+    statusline signal — the answer is read on demand with
+    ``t3 <overlay> questions list --all`` — so :meth:`scan` returns an empty signal list.
     """
 
     backend: MessagingBackend

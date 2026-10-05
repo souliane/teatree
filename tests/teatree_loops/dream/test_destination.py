@@ -8,6 +8,7 @@ memory.
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -82,10 +83,10 @@ class TestCaseAndWhitespaceTolerance:
         assert points_at_core_fix("blueprint.md", root=core_tree) is True
 
     def test_a_case_only_ambiguity_is_refused_rather_than_guessed(self, core_tree: Path) -> None:
-        (core_tree / "Docs").mkdir()
-        (core_tree / "docs").mkdir()
-
-        verdict = classify_destination("DOCS/guide.md", root=core_tree)
+        # Case-insensitive filesystems cannot hold both spellings, so supply the
+        # two directory entries the classifier would see on a case-sensitive host.
+        with patch.object(destination, "_case_insensitive_matches", return_value=["Docs", "docs"]):
+            verdict = classify_destination("DOCS/guide.md", root=core_tree)
 
         assert verdict.in_core_tree is False
         assert "ambiguous" in verdict.reason

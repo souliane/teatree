@@ -60,7 +60,7 @@ def _check_intake_budget_deadlock() -> bool:
             # The LIVE limit, never the static setting: the resource loop may have moved
             # it (#3992), and a doctor reading a different number than the gate is the
             # second opinion this whole surface exists to prevent.
-            limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent, overlay=overlay)
+            limit = resolve_intake_concurrency(settings.issue_implementer_max_concurrent)
             budget = read_intake_budget(overlay, limit, static_limit=settings.issue_implementer_max_concurrent)
             if budget.deadlocked:
                 jammed.append(budget)
@@ -123,7 +123,7 @@ def _check_box_occupancy() -> bool:
     except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
         typer.echo(f"WARN  Box-occupancy check crashed: {exc.__class__.__name__}: {exc}")
         return True
-    cores = max(1, machine.cores)
+    cores = machine.load_scope_cores
     watermark = BRAKE_LOAD_PER_CORE * cores
     reading = (
         f"factory agents in flight: {agents}; box load {machine.load1:.1f} on {cores} core(s) "
@@ -209,7 +209,7 @@ def _check_starved_intake_candidates() -> bool:
         try:
             settings = get_effective_settings(overlay)
             static = settings.issue_implementer_max_concurrent
-            limit = resolve_intake_concurrency(static, overlay=overlay)
+            limit = resolve_intake_concurrency(static)
             budget = read_intake_budget(overlay, limit, static_limit=static)
             typer.echo(
                 f"WARN  {overlay} intake: effective concurrency {limit} "

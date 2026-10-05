@@ -55,7 +55,7 @@ class TestCommittedRecipeConformance:
     def test_committed_recipe_names_exactly_the_registry_ids(self) -> None:
         # The checked-in file cannot drift from the SIGNALS registry.
         recipe = load_recipe()
-        assert recipe.provider_ids == _REGISTRY_IDS
+        assert set(recipe.signals) == _REGISTRY_IDS
 
     def test_recipe_sha_is_stable_and_matches_loaded(self) -> None:
         assert recipe_sha() == recipe_sha()

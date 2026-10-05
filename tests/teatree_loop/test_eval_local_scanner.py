@@ -30,7 +30,7 @@ TEST_OVERLAY_NAME = "t3-teatree"
 def _scanner(
     *,
     overlay_name: str = TEST_OVERLAY_NAME,
-    skill: str = "eval",
+    skill: str = "running-evals",
 ) -> EvalLocalScanner:
     return EvalLocalScanner(overlay_name=overlay_name, skill=skill)
 
@@ -51,7 +51,7 @@ class EvalLocalScannerTests(TestCase):
         signal = signals[0]
         assert signal.kind == "eval_local.queued"
         assert signal.payload["overlay"] == TEST_OVERLAY_NAME
-        assert signal.payload["skill"] == "eval"
+        assert signal.payload["skill"] == "running-evals"
         assert signal.payload["phase"] == EVAL_LOCAL_PHASE
         assert signal.payload["trigger"] == "bootstrap"
 
@@ -150,7 +150,7 @@ class EvalLocalWiringTests(TestCase):
         ):
             scanner = _eval_local_scanner()
         assert scanner is not None
-        assert scanner.skill == "eval"
+        assert scanner.skill == "running-evals"
 
     def test_tuned_core_config_propagates_to_scanner_kwargs(self) -> None:
         from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415

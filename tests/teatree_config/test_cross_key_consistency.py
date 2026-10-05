@@ -27,14 +27,6 @@ class TestHarnessProviderPair:
     def test_api_key_under_pydantic_ai_is_rejected(self) -> None:
         assert check_harness_provider_pair("pydantic_ai", "api_key") is not None
 
-    def test_retired_orca_router_byok_alias_under_claude_sdk_is_rejected(self) -> None:
-        # The production trigger: the retired 'orca_router_byok' value aliases
-        # forward to openai_compatible, which is valid only under pydantic_ai.
-        assert check_harness_provider_pair("claude_sdk", "orca_router_byok") is not None
-
-    def test_retired_orca_router_byok_alias_under_pydantic_ai_passes(self) -> None:
-        assert check_harness_provider_pair("pydantic_ai", "orca_router_byok") is None
-
     def test_absent_or_blank_provider_always_passes(self) -> None:
         assert check_harness_provider_pair("claude_sdk", None) is None
         assert check_harness_provider_pair("pydantic_ai", "") is None

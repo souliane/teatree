@@ -21,15 +21,7 @@ from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_bu
 from teatree.core.models import DeferredQuestion, DirectiveDispatch, FactoryScoreSnapshot, PullRequest, Ticket
 from teatree.core.models.directive import Directive, DirectiveError
 from teatree.loops.directive_loop.interpret import build_interpreter_contract
-from tests.integration.directive_dogfood.exemplar import (
-    EXEMPLAR_ENVELOPE,
-    PROOF_CASE_TEXT,
-    SCOPE,
-    SETTING_KEY,
-    enable_directive_loop_in_test_db,
-    seed_critic_liveness,
-    tick,
-)
+from tests.integration.directive_dogfood.exemplar import EXEMPLAR_ENVELOPE, PROOF_CASE_TEXT, SCOPE, SETTING_KEY, tick
 
 #: The global ``timeout = 60`` budget is sized for a test that does not shell out.
 #: This one spawns a NESTED pytest (stage 8's real ``run_acceptance_tests``): ~40s with
@@ -41,10 +33,6 @@ PROOF_CASE_TIMEOUT_SECONDS = 600
 
 
 class TestProofCaseFulfilled(TestCase):
-    def setUp(self) -> None:
-        enable_directive_loop_in_test_db()
-        seed_critic_liveness()
-
     @pytest.mark.timeout(PROOF_CASE_TIMEOUT_SECONDS)
     def test_captured_to_fulfilled_end_to_end(self) -> None:
         # Stage 1 — capture via the real CLI surface, verbatim.

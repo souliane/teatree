@@ -125,7 +125,7 @@ class CodeHostQuery:
     def pr_draft_state(self) -> DraftState:
         """Tri-state draft flag — §17.4.3 step 4.
 
-        GitLab reads ``draft``/``work_in_progress`` and GitHub ``isDraft`` inside
+        GitLab reads ``draft`` and GitHub ``isDraft`` inside
         the backend. ``UNKNOWN`` when the forge did not answer; the step-4 gate
         holds the merge on it, like every other indeterminate keystone input.
         """

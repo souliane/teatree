@@ -34,7 +34,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.config import ALL_KNOWN_CONFIG_SETTINGS
-from teatree.config.retired_settings import REMOVED_SETTING_KEYS, RENAMED_SETTING_KEYS
 from teatree.config.stored_row_health import INTERNAL_STATE_KEYS
 
 _SRC_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree"
@@ -297,12 +296,7 @@ class TestEveryConfigSettingKeyIsClassified:
 
     @staticmethod
     def _classified() -> set[str]:
-        return (
-            set(ALL_KNOWN_CONFIG_SETTINGS)
-            | set(REMOVED_SETTING_KEYS)
-            | set(RENAMED_SETTING_KEYS)
-            | {entry.key for entry in INTERNAL_STATE_KEYS}
-        )
+        return set(ALL_KNOWN_CONFIG_SETTINGS) | {entry.key for entry in INTERNAL_STATE_KEYS}
 
     def test_no_key_src_stores_falls_through_every_bucket(self) -> None:
         classified = self._classified()

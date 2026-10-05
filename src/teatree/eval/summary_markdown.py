@@ -53,11 +53,12 @@ def _verdict_cell(row: _SummaryRow) -> str:
     return f"{row.verdict} (cap)" if row.cap_truncated else row.verdict
 
 
-def _summary_counts_for_rows(rows: Sequence[_SummaryRow]) -> tuple[int, int, int]:
+def _summary_counts_for_rows(rows: Sequence[_SummaryRow]) -> tuple[int, int, int, int]:
     passed = sum(1 for r in rows if r.verdict == "pass")
     failed = sum(1 for r in rows if r.verdict == "fail")
     skipped = sum(1 for r in rows if r.verdict == "skip")
-    return passed, failed, skipped
+    incomplete = sum(1 for r in rows if r.verdict == "incomplete")
+    return passed, failed, skipped, incomplete
 
 
 def _row_from_scenario(result: ScenarioResult) -> _SummaryRow:
@@ -72,7 +73,7 @@ def _row_from_scenario(result: ScenarioResult) -> _SummaryRow:
 
 
 def _row_from_pass_at_k(result: "PassAtKResult") -> _SummaryRow:
-    verdict = "skip" if result.skipped else ("pass" if result.ok else "fail")
+    verdict = result.verdict
     reds = [t for t in result.trial_results if not t.passed]
     return _SummaryRow(
         scenario=result.spec_name,
@@ -139,13 +140,14 @@ def render_summary_markdown(results: Sequence[ScenarioResult] | Sequence["PassAt
     rows = [
         _row_from_scenario(item) if isinstance(item, ScenarioResult) else _row_from_pass_at_k(item) for item in results
     ]
-    passed, failed, skipped = _summary_counts_for_rows(rows)
+    passed, failed, skipped, incomplete = _summary_counts_for_rows(rows)
     total_cost_usd = sum(item.run.cost_usd if isinstance(item, ScenarioResult) else item.cost_usd for item in results)
     model = _model_of(results)
     unknown = _unknown_cost_runs(results)
     cost_note = f" (+{unknown} run(s) cost unknown)" if unknown else ""
     header = (
-        f"**{passed} passed**, **{failed} failed**, **{skipped} skipped** (of {len(rows)}) "
+        f"**{passed} passed**, **{failed} failed**, **{skipped} skipped**, "
+        f"**{incomplete} incomplete** (of {len(rows)}) "
         f"· model `{model}` · cost ${total_cost_usd:.4f}{cost_note}"
     )
     table = [

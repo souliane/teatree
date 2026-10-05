@@ -12,6 +12,7 @@ from teatree.core.models.task_enqueue import (
     enqueue_phase_task_once,
 )
 from teatree.core.models.ticket import Ticket
+from tests.factories import record_test_plan
 
 
 class EnqueuePhaseTaskTestCase(TestCase):
@@ -44,6 +45,7 @@ class EnqueuePhaseTaskTestCase(TestCase):
     def test_the_plain_seam_does_not_refuse_a_duplicate(self) -> None:
         # The CLI path must stay byte-identical: the loop's phase handoff enqueues
         # freely, so only the dashboard's ``_once`` sibling carries the guard.
+        record_test_plan(self.ticket)
         enqueue_phase_task(ticket=self.ticket, phase="coding", reason="first")
         enqueue_phase_task(ticket=self.ticket, phase="coding", reason="second")
         assert Task.objects.filter(ticket=self.ticket, phase="coding").count() == 2

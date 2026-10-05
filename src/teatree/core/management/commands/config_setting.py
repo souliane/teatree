@@ -43,7 +43,6 @@ from teatree.config import (
 )
 from teatree.config.credential_pass_key import validate_pass_key_entry
 from teatree.config.feature_flags import render_flags_audit
-from teatree.config.retired_settings import retirement_notice
 from teatree.config.setting_groups import group_outline
 from teatree.config.setting_taxonomy import governance_trailer
 from teatree.config.stored_row_health import stored_row_note
@@ -90,7 +89,7 @@ def _decider_suffix(key: str, overlay: str) -> str:
 
 
 def _stored_row_suffix(key: str) -> str:
-    """A leading-space ``[retired …]`` / ``[internal state …]`` trailer, or ``""``.
+    """A leading-space ``[unknown …]`` / ``[internal state …]`` trailer, or ``""``.
 
     So a stored row no live setting declaration owns can never be read as a live
     control — the harm in souliane/teatree#3862.
@@ -101,14 +100,8 @@ def _stored_row_suffix(key: str) -> str:
 
 class Command(TyperCommand):
     def _refuse_unknown_key(self, key: str) -> NoReturn:
-        """Refuse *key*, rendering its retirement record when one is on file (#4094).
-
-        The registry is the single source, so this surface, the resolver's loud
-        warning and the ``list`` marker cannot come to describe a retirement
-        differently. A retired key stays unwritable — the record is the answer, not
-        an admission that would resolve nowhere.
-        """
-        self.stderr.write(f"  refusing: {retirement_notice(key) or f'{key!r} is not a known config setting'}")
+        """Refuse a key with no live config setting declaration."""
+        self.stderr.write(f"  refusing: {key!r} is not a known config setting")
         raise SystemExit(2)
 
     def _write_pass_key_resolution(self, key: str, credential: str, overlay: str) -> None:
@@ -255,7 +248,7 @@ class Command(TyperCommand):
         Rows are grouped by the SAME nested hierarchy the dashboard and the TOML export
         render, indented one level per depth, so the three surfaces read alike. A row no
         declaration owns still prints, under the leftovers heading — carrying a trailer
-        naming it retired, internal state, or unknown, so it cannot be mistaken for a
+        naming it internal state or unknown, so it cannot be mistaken for a
         live control.
         """
         rows = list(ConfigSetting.objects.all())
@@ -432,9 +425,7 @@ class Command(TyperCommand):
         ] = "",
         dry_run: Annotated[
             bool,
-            typer.Option(
-                "--dry-run", help="Classify every row (folded / written / skipped / rejected); write nothing."
-            ),
+            typer.Option("--dry-run", help="Classify every row (written / skipped / rejected); write nothing."),
         ] = False,
         restore_private: Annotated[
             bool,
@@ -446,8 +437,8 @@ class Command(TyperCommand):
     ) -> None:
         """Load a ``config_setting export`` TOML dump into the store — the inverse of ``export``.
 
-        Retired aliases fold onto their live key; unknown keys and secret/personal-identifier
-        rows are REJECTED and the WHOLE import is refused (nothing written) so one bad key never
+        Unknown keys and secret/personal-identifier rows are REJECTED and the WHOLE
+        import is refused (nothing written) so one bad key never
         leaves a partial store; every value is validated through the same registry parser the
         resolver applies on read. A value equal to the shipped default writes NO row (so a dump of
         ``defaults.toml`` imports to zero rows), and a value the store already holds is reported
@@ -476,8 +467,6 @@ class Command(TyperCommand):
             raise SystemExit(2) from exc
         if restore_private and not result.private_backup:
             self.stderr.write("  --restore-private ignored: this file is not an --include-private personal backup.")
-        for old, new in result.folded:
-            self.stdout.write(f"  folded retired alias {old} -> {new}")
         for row in result.rejected:
             self.stderr.write(f"  rejected {row.key}  [{scope_label(row.scope)}]  ({row.reason})")
         if result.rejected:

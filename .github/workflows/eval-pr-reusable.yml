@@ -191,10 +191,15 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The agent under test runs in this job: leave no token on disk for it to read.
+          persist-credentials: false
       - name: Check out and symlink the teatree host (overlay callers only)
         if: inputs.teatree-repo != ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # The agent under test runs in this job: leave no token on disk for it to read.
+          persist-credentials: false
           repository: ${{ inputs.teatree-repo }}
           ref: ${{ inputs.teatree-ref }}
           path: teatree-upstream
@@ -223,7 +228,7 @@ jobs:
       # generation but never trail it; guarded by tests/test_claude_cli_pin.py (souliane/teatree#3748).
       - name: Install and assert the Claude CLI
         run: |
-          npm install -g @anthropic-ai/claude-code@2.1.283
+          npm install -g @anthropic-ai/claude-code@2.1.284
           claude --version
       # The runner is neither the container that mounts the control-DB volume
       # nor the operator's host, so it must declare its own sandbox: without
@@ -277,13 +282,18 @@ jobs:
           # `eval-weekly-reusable.yml` carry, on the third lane that spends real credit.
           # The output was STREAMED but never STORED: nothing wrote the run to a file, so
           # nothing could be uploaded and anything lost to the 80min SIGTERM kill was gone.
-          # It is now teed to a durable $RUNNER_TEMP log (uploaded below, and the ONLY
-          # artifact that exists before the first scenario finishes rendering), and on a
-          # non-zero exit the tail is re-printed into the job log — the first diagnosis
-          # needs no download. Printing INSIDE the retried command is what makes EACH
-          # attempt visible; `tee -a` keeps both attempts in the one uploaded log.
-          # `set -o pipefail` stops `tee` masking the eval's exit code and the block ends
-          # in `exit "$rc"`: this adds visibility, it never swallows the failure.
+          # It is now teed — through `python -m teatree.eval.artifact_redaction tee`,
+          # which redacts every credential value from each line — to a durable
+          # $RUNNER_TEMP log (uploaded below, and the ONLY artifact that exists before the
+          # first scenario finishes rendering), and on a non-zero exit the tail is
+          # re-printed into the job log through the same filter — the first diagnosis
+          # needs no download. The filter runs from the installed package, never a
+          # `scripts/` path: this workflow runs in its caller's checkout, and an overlay's
+          # has no `scripts/eval/`. Printing INSIDE the retried command is what makes
+          # EACH attempt visible; the filter appends, so both attempts stay in the one
+          # uploaded log. `set -o pipefail` stops the filter masking the eval's
+          # exit code (and turns a filter crash red), and the block ends in `exit "$rc"`:
+          # this adds visibility, it never swallows the failure.
           # `-eu` are dropped so the flag set is byte-identical to the other two lanes':
           # the loop captures every scenario's code in `rc` and re-raises it, so aborting
           # on the first non-zero would only discard the remaining scenarios' output
@@ -294,7 +304,8 @@ jobs:
             TAIL_LINES=400
             LOG="$RUNNER_TEMP/eval-run-pr.log"
             SUMMARY="$RUNNER_TEMP/eval-summary.md"
-            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) =====" >> "$LOG"
+            echo "===== attempt started $(date -u +%Y-%m-%dT%H:%M:%SZ) =====" \
+              | uv run python -m teatree.eval.artifact_redaction tee "$LOG"
             : > "$SUMMARY"
             rc=0
             ran=0
@@ -309,7 +320,8 @@ jobs:
                 --escalate-on-fail --escalate-trials 3 \
                 --require-executed --docker \
                 --transcript-html "$RUNNER_TEMP/eval-transcripts-$name.html" \
-                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 | tee -a "$LOG" || rc=$?
+                --summary-md "$RUNNER_TEMP/eval-summary-$name.md" 2>&1 \
+                | uv run python -m teatree.eval.artifact_redaction tee "$LOG" || rc=$?
               if [ -f "$RUNNER_TEMP/eval-summary-$name.md" ]; then
                 cat "$RUNNER_TEMP/eval-summary-$name.md" >> "$SUMMARY"
               fi
@@ -324,23 +336,42 @@ jobs:
               exit 0
             fi
             echo "::group::the PR eval FAILED (exit $rc) — last $TAIL_LINES captured lines"
-            tail -n "$TAIL_LINES" "$LOG" || echo "nothing captured at $LOG"
+            tail -n "$TAIL_LINES" "$LOG" | uv run python -m teatree.eval.artifact_redaction tee || echo "nothing captured at $LOG"
             echo "::endgroup::"
             if [ -s "$SUMMARY" ]; then
-              cat "$SUMMARY"
+              cat "$SUMMARY" | uv run python -m teatree.eval.artifact_redaction tee
             else
               echo "No summary at $SUMMARY: the run died before rendering one, so the tail above is the whole diagnosis."
             fi
             exit "$rc"
       # Append the sanitized summary to the PR's step summary (the in-container run
       # could not write $GITHUB_STEP_SUMMARY directly). The summary is the
-      # publish-safe dashboard; the transcript stays private.
+      # publish-safe dashboard; the transcript stays private. It runs before the
+      # in-place redaction pass, so it goes through the redacting filter with every
+      # credential this job holds.
       - name: Publish the sanitized summary to the PR step summary
         if: always()
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
         run: |
+          set -o pipefail
           if [ -f "$RUNNER_TEMP/eval-summary.md" ]; then
-            cat "$RUNNER_TEMP/eval-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/eval-summary.md" | uv run python -m teatree.eval.artifact_redaction tee >> "$GITHUB_STEP_SUMMARY"
           fi
+      # Defense in depth: one last in-place redaction pass over exactly the files
+      # the two uploads below publish, holding every credential this job holds, so
+      # a file that reached them without the redacting writer still leaves redacted.
+      # It deletes any file it cannot prove clean on disk and then fails, and each
+      # upload below runs only when it succeeded (`steps.redact.outcome`).
+      - name: Redact the uploaded files in place
+        id: redact
+        if: always()
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.anthropic-api-key }}
+        run: >-
+          uv run python -m teatree.eval.artifact_redaction in-place
+          "$RUNNER_TEMP/eval-transcripts-*.html"
+          "$RUNNER_TEMP/eval-run-pr.log"
       # Upload the PRIVATE per-trial transcript (reasoning + tool calls) as an
       # artifact a maintainer reads to diagnose a red PR eval. `if: always()` so a
       # red run still publishes it. The path is a GLOB: the loop renders ONE report
@@ -348,23 +379,26 @@ jobs:
       # this used to publish was never written by anything — `if-no-files-found:
       # warn` then made every run, red or green, upload nothing at all.
       - name: Upload the per-trial transcript report (private)
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-pr-transcripts
           path: ${{ runner.temp }}/eval-transcripts-*.html
           if-no-files-found: warn
-      # The RAW teed stdout/stderr of every attempt. Unlike the transcript and the
+          retention-days: 7
+      # The redacted, teed stdout/stderr of every attempt. Unlike the transcript and the
       # summary (both rendered as each scenario completes), this exists from the first
-      # byte, so it is the only artifact that survives a run killed mid-scenario. It is
-      # UNSANITIZED, so it is private-only and never collected by a publish job.
+      # byte, so it is the only artifact that survives a run killed mid-scenario. Beyond
+      # the credential redaction it is UNSANITIZED, so it is private-only and never
+      # collected by a publish job.
       - name: Upload the raw run log (private)
-        if: always()
+        if: always() && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: eval-run-log-pr
           path: ${{ runner.temp }}/eval-run-pr.log
           if-no-files-found: warn
+          retention-days: 7
 
   # EVAL-GATE: the single always-reporting merge gate an overlay caller pins as a
   # required status check. A conditionally-skipped job (the `eval` job skips when no

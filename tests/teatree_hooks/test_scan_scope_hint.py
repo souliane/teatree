@@ -12,6 +12,9 @@ half: the hint is silent wherever the gate is right to block, so nothing here ca
 be mistaken for a carve-out.
 """
 
+import json
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -28,7 +31,15 @@ def private_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A checkout whose ``origin`` is in a namespace declared internal offline."""
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "config.sqlite3"))
-    monkeypatch.setenv("T3_INTERNAL_PUBLISH_NAMESPACES", _PRIVATE_NS)
+    with closing(sqlite3.connect(tmp_path / "config.sqlite3")) as conn, conn:
+        conn.execute(
+            "CREATE TABLE teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
+            (json.dumps([f"gitlab.com/{_PRIVATE_NS}"]),),
+        )
     clone = tmp_path / "clone"
     (clone / ".git").mkdir(parents=True)
     (clone / ".git" / "config").write_text(

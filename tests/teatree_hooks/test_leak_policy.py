@@ -109,18 +109,20 @@ class TestClassOfTerm:
         monkeypatch.setenv("TEATREE_TERM_REGISTRY", json.dumps(registry))
 
     def test_a_registered_term_resolves_to_its_class(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._registry_env(monkeypatch, {"leak": ["acme"], "tone": ["blunt"], "allow": ["widget"]})
+        self._registry_env(
+            monkeypatch, {"leak": ["acme"], "prose_collider": [], "tone": ["blunt"], "allow": ["widget"]}
+        )
         assert banned_term_registry.class_of_term("acme") == banned_term_registry.LEAK
         assert banned_term_registry.class_of_term("Blunt") == banned_term_registry.TONE
         assert banned_term_registry.class_of_term("widget") == banned_term_registry.ALLOW
 
     def test_the_widest_class_wins_a_term_listed_twice(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._registry_env(monkeypatch, {"leak": ["acme"], "tone": ["acme"]})
+        self._registry_env(monkeypatch, {"leak": ["acme"], "prose_collider": [], "tone": ["acme"]})
         assert banned_term_registry.class_of_term("acme") == banned_term_registry.LEAK
 
     def test_an_unclassifiable_term_lands_in_a_blocking_class(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Never :data:`ALLOW` — an unknown term must not be able to silence the gate."""
-        self._registry_env(monkeypatch, {"leak": ["acme"]})
+        self._registry_env(monkeypatch, {"leak": ["acme"], "prose_collider": []})
         resolved = banned_term_registry.class_of_term("never-registered")
         assert leak_policy.decide(resolved, Visibility.PUBLIC, Surface.DIFF) is Verdict.BLOCK
 

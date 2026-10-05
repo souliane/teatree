@@ -1,0 +1,154 @@
+# Image-generation override: run an immutable `teatree-factory:<sha>` image's baked tree
+# instead of a host checkout. Only the roller (deploy/roll.sh -> `t3 deploy roll`) and a
+# generation's own watchdog add it, always on top of docker-compose.yml read out of the SAME
+# image; docker-compose.yml alone stays the source-mounted stack deploy.sh runs.
+#
+# Every runtime role drops the build, the checkout entrypoint, the source mount and the
+# teatree_uv volume, and takes TEATREE_CLONE_DIR from the image ENV. Compose can only drop a
+# list entry by replacing the whole list, so the volumes below are docker-compose.yml's
+# x-teatree-common volumes minus those two mounts —
+# tests/test_deploy_generation_image.py fails the moment the two lists drift apart.
+# Needs docker compose >= 2.24.4 for `!reset` / `!override`.
+
+x-generation-entrypoint: &generation-entrypoint !override
+  - /usr/local/bin/entrypoint.sh
+
+x-generation-env-file: &generation-env-file !override
+  # Absolute, so it resolves the same from the host and from a container that reads this
+  # topology out of its image (the roller, the watchdog).
+  - path: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}/deploy/teatree.env  # privacy-scan:allow — the box's public, documented deploy home
+    required: false
+
+x-generation-volumes: &generation-volumes !override
+  - teatree_control_db:/var/lib/teatree/control-db
+  - /proc:/host-proc:ro
+  - teatree_clones:/home/teatree/workspace
+  - type: bind
+    source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
+    target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
+  - type: bind
+    source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/teatree
+    target: /home/teatree/.local/share/teatree
+  - type: bind
+    source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/teatree-worktrees
+    target: /home/teatree/.local/share/teatree-worktrees
+  - type: bind
+    source: ${TEATREE_HOST_HOME:-/home/teatree}/workspace/t3-workspaces
+    target: /home/teatree/workspace/t3-workspaces
+  - type: bind
+    source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
+    target: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/uv/python  # privacy-scan:allow — the box's public, documented deploy home
+  - type: bind
+    source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/bin  # privacy-scan:allow — the box's public, documented deploy home
+    target: /var/lib/teatree/host-bin
+  - type: bind
+    source: ${TEATREE_HOST_HOME:-/home/teatree}/.password-store
+    target: /home/teatree/.password-store
+  - type: bind
+    source: ${TEATREE_HOST_HOME:-/home/teatree}/.gnupg
+    target: /home/teatree/.gnupg
+  - teatree_claude_home:/home/teatree/.claude
+  - teatree_codex_home:/home/teatree/.codex
+  - teatree_agents_home:/home/teatree/.agents
+  - ${TEATREE_TRANSCRIPT_SOURCE:-teatree_claude_projects}:/home/teatree/.claude/projects
+  - type: tmpfs
+    target: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}
+    tmpfs:
+      size: 16m
+      mode: 0o1777
+  - /var/run/docker.sock:/var/run/docker.sock
+  - type: bind
+    source: ${TEATREE_HOST_TMP:-/tmp}
+    target: /host-tmp
+  - type: bind
+    source: /proc
+    target: /host-proc
+    read_only: true
+
+x-generation-role: &generation-role
+  image: ${TEATREE_IMAGE:-teatree-headless:latest}
+  pull_policy: never
+  entrypoint: *generation-entrypoint
+  env_file: *generation-env-file
+  volumes: *generation-volumes
+
+services:
+  teatree-init:
+    <<: *generation-role
+    build: !reset null
+    environment:
+      TEATREE_CLONE_DIR: !reset null
+  teatree-worker:
+    <<: *generation-role
+    build: !reset null
+    environment:
+      TEATREE_CLONE_DIR: !reset null
+  teatree-admin:
+    <<: *generation-role
+    build: !reset null
+    environment:
+      TEATREE_CLONE_DIR: !reset null
+      TEATREE_ADMIN_PORT: ${TEATREE_ADMIN_PORT:-8000}
+  teatree-slack-listener:
+    <<: *generation-role
+    build: !reset null
+    environment:
+      TEATREE_CLONE_DIR: !reset null
+  teatree-watchdog:
+    image: ${TEATREE_IMAGE:-teatree-headless:latest}
+    pull_policy: never
+    build: !reset null
+    entrypoint: *generation-entrypoint
+    environment:
+      # The entrypoint execs the watchdog baked under the image's own TEATREE_CLONE_DIR.
+      TEATREE_CLONE_DIR: !reset null
+      TEATREE_WATCHDOG_PROJECT: ${TEATREE_COMPOSE_PROJECT:-teatree}
+      TEATREE_WATCHDOG_DEPLOY_LOCK: ${TEATREE_WATCHDOG_DEPLOY_LOCK:-/host-tmp/teatree-deploy.lock}
+      TEATREE_ADMIN_PORT: ${TEATREE_ADMIN_PORT:-8000}
+      TEATREE_HOST_TMP: ${TEATREE_HOST_TMP:-/tmp}
+
+  # The one-shot roller deploy/roll.sh runs FROM THE NEW generation's image
+  # (`t3 deploy roll --to <sha>`). It drains, replaces and verifies the stack over the
+  # docker socket, reading each generation's topology out of that generation's image;
+  # it reaches the control DB to drive the generation registry, and can read the deploy
+  # checkout (env_file, compose project directory) but never write it. Only a roll
+  # starts it.
+  teatree-roller:
+    image: ${TEATREE_IMAGE:-teatree-headless:latest}
+    pull_policy: never
+    profiles: [roll]
+    entrypoint:
+      - t3
+    env_file: *generation-env-file
+    environment:
+      TEATREE_HOST_OS: ${TEATREE_HOST_OS:-}
+      TEATREE_GNUPG_RUNTIME_DIR: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}
+      GNUPGHOME: ${TEATREE_GNUPG_RUNTIME_DIR:-/home/teatree/.gnupg-run}/gnupg
+      T3_CONTROL_DB_DIR: /var/lib/teatree/control-db
+      TMPDIR: ${TEATREE_DISK_TMPDIR:-/var/tmp}
+      TEATREE_DEPLOY_CHECKOUT: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
+      TEATREE_HOST_HOME: ${TEATREE_HOST_HOME:-/home/teatree}
+    group_add:
+      - "${TEATREE_DOCKER_SOCKET_GID:-0}"
+    volumes:
+      - teatree_control_db:/var/lib/teatree/control-db
+      - type: bind
+        source: ${TEATREE_HOST_HOME:-/home/teatree}/.local/share/teatree
+        target: /home/teatree/.local/share/teatree
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
+        target: ${TEATREE_DEPLOY_CHECKOUT:-/home/teatree/teatree-deploy}  # privacy-scan:allow — the box's public, documented deploy home
+        read_only: true
+      # The deploy record roll.sh keeps, which `t3 deploy roll` refuses to run without.
+      - type: bind
+        source: ${TEATREE_HOST_TMP:-/tmp}
+        target: /host-tmp
+        read_only: true
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    init: true

@@ -771,25 +771,15 @@ class MeasurementUnavailableTests(TestCase):
 
 
 class CleanupPayloadTests(_ScannerHarness):
-    """The cleanup signal carries the allow-lists + destructive flags for the handler."""
-
-    def test_payload_defaults_destructive_flags_off(self) -> None:
-        signals = self._scan_with(disk_gb=5.0, ram_gb=100.0)
-        disk_sig = next(s for s in signals if s.kind == "resource.cleanup_needed")
-        assert disk_sig.payload["allow_destructive_disk"] is False
-        assert disk_sig.payload["allow_destructive_ram"] is False
+    """The cleanup signal carries the safe cache allowlist for the handler."""
 
     def test_payload_carries_configured_allowlist(self) -> None:
         scanner = ResourcePressureScanner(
             disk_cache_allowlist=("~/.cache/pre-commit",),
-            allow_destructive_disk=True,
-            ram_kill_allowlist=("Brave.*Renderer",),
         )
         signals = self._scan_with(disk_gb=5.0, ram_gb=100.0, scanner=scanner)
         disk_sig = next(s for s in signals if s.kind == "resource.cleanup_needed")
         assert disk_sig.payload["disk_cache_allowlist"] == ["~/.cache/pre-commit"]
-        assert disk_sig.payload["allow_destructive_disk"] is True
-        assert disk_sig.payload["ram_kill_allowlist"] == ["Brave.*Renderer"]
 
     def test_the_payload_does_not_carry_the_artifact_retention_window(self) -> None:
         """The sweep moved off this ladder (#4244), so this signal no longer configures it.

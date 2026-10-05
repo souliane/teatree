@@ -105,7 +105,7 @@ Load the `/t3-<overlay>` playbook for any overlay-repo task before touching code
 
 ## No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)
 
-Anything published under the user's identity must never carry an AI signature — no `Co-Authored-By` agent trailer, no "Generated with" or "Sent using Claude" footer — unless `agent_signature` is true. Full text: `skills/rules/references/on-behalf-posting.md`.
+Anything published under the user's identity must never carry an AI signature — no `Co-Authored-By` agent trailer, no "Generated with" or "Sent using Claude" footer. Full text: `skills/rules/references/on-behalf-posting.md`.
 
 ## Ask Before Posting on the User's Behalf (Non-Negotiable)
 
@@ -145,7 +145,7 @@ Commits to a public repo must use a GitHub noreply author and committer email; r
 
 ## Sub-Agent Limitations
 
-Sub-agents lose loaded skills: every raw Agent-tool brief must embed `t3 <overlay> skill-preamble --skills t3:rules,<skills>`. A blocked sub-agent returns a structured block, never a workaround; a killed run's empty report proves nothing — reconcile first. Briefs follow the target repo's conventions, anchor assertions (`t3 <overlay> gate brief-anchor disable`), and bound `PYTEST_XDIST_AUTO_NUM_WORKERS`. Full text: `skills/rules/references/sub-agents.md`.
+Sub-agents lose loaded skills: every raw Agent-tool brief must embed `t3 <overlay> skill-preamble --skills t3:rules,<skills>`. A blocked sub-agent returns a structured block, never a workaround; a killed run's empty report proves nothing — reconcile first. Briefs follow the target repo's conventions, anchor assertions or license the sub-agent to overrule them, and bound `PYTEST_XDIST_AUTO_NUM_WORKERS`. Full text: `skills/rules/references/sub-agents.md`.
 
 ## Read Before Overwriting a Tracked Config/Dotfile (Non-Negotiable)
 

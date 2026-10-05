@@ -10,10 +10,10 @@ a potential malicious actor; the author must be a trusted identity to be
 auto-mergeable. On a PRIVATE / internal repo the user controls access, so there
 is NO author check — any author is allowed.
 
-Resolution. Visibility uses :func:`slug_is_allowlisted_private` (offline,
-recommended) first, then the day-cached ``gh``/``glab`` probe via
-:func:`slug_is_private`; an UNRESOLVABLE visibility is treated as PUBLIC (the
-safe direction here: require trust). The trust set is DB :class:`TrustedIdentity`
+Resolution. Visibility uses the shared host-qualified private-repo rule: a
+reachable PUBLIC forge answer wins, and a matching declaration stands when
+the probe cannot answer. An UNRESOLVABLE visibility requires trust. The trust
+set is DB :class:`TrustedIdentity`
 rows first; an EMPTY table or a pre-migration database error falls back to the
 configured ``user_identity_aliases`` so the migration window never regresses.
 
@@ -24,6 +24,7 @@ caller (the keystone, the sweep) refuses the auto-merge.
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from urllib.parse import urlsplit
 
 from django.apps import apps
 from django.db import OperationalError, ProgrammingError
@@ -138,34 +139,34 @@ def is_trusted_author(author: str, *, extra_trusted: frozenset[str] = frozenset(
     return bool(cleaned) and cleaned in (trusted_handles() | extra_trusted)
 
 
-def repo_is_internal(slug: str, *, host_kind: str = "github") -> bool:
+def repo_is_internal(slug: str, *, pr_url: str) -> bool:
     """True iff *slug* resolves to a PRIVATE / internal repo (no author check).
 
-    Offline allowlist first, then the day-cached live probe. An UNRESOLVABLE
+    A reachable PUBLIC probe overrides the host-qualified declaration. An UNRESOLVABLE
     visibility resolves to PUBLIC (returns False) — the safe direction for the
     author gate: an unknown repo requires trust.
 
-    The merge keystone passes a bare ``owner/repo`` slug plus the ``host_kind``
-    transport switch; :func:`probe_visibility` instead infers the forge from a
-    host-prefixed slug. A GitLab slug is therefore host-prefixed here so the
-    probe routes to ``glab`` rather than mis-routing to ``gh``.
+    A bare slug is qualified only with the host of the PR URL. Without a URL,
+    visibility remains unknown and the author gate requires trust.
     """
-    from teatree.hooks._repo_visibility import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
-        slug_is_allowlisted_private,
-        slug_is_private,
+    from teatree.hooks import (  # noqa: PLC0415 — deferred: call-time import, kept lazy
+        _private_repo_entries,
+        _repo_visibility,
     )
 
-    probe_slug = _host_prefixed_slug(slug, host_kind=host_kind)
-    if slug_is_allowlisted_private(probe_slug, None):
-        return True
-    return slug_is_private(probe_slug)
+    probe_slug = _host_prefixed_slug(slug, pr_url=pr_url)
+    return _private_repo_entries.private_repo_visibility(
+        probe_slug,
+        ops=_repo_visibility,
+    ) in {"PRIVATE", "INTERNAL"}
 
 
-def _host_prefixed_slug(slug: str, *, host_kind: str) -> str:
-    """Prefix a bare ``group/repo`` GitLab slug with a ``gitlab`` host so the probe routes to ``glab``."""
+def _host_prefixed_slug(slug: str, *, pr_url: str = "") -> str:
+    """Prefix a bare repo path with the real forge host before visibility lookup."""
     first_segment_has_host = "/" in slug and "." in slug.split("/", 1)[0]
-    if host_kind == "gitlab" and not first_segment_has_host:
-        return f"gitlab/{slug}"
+    if not first_segment_has_host and pr_url:
+        host = urlsplit(pr_url).hostname
+        return f"{host.lower()}/{slug}" if host else slug
     return slug
 
 
@@ -173,7 +174,7 @@ def classify_author(
     slug: str,
     author: str,
     *,
-    host_kind: str = "github",
+    pr_url: str,
     extra_trusted: frozenset[str] = frozenset(),
 ) -> AuthorClassification:
     """Classify *author* on *slug* — the one decision the four scanners share.
@@ -190,7 +191,7 @@ def classify_author(
     autonomous factory) must conjoin :func:`is_trusted_author`; ``trusted=True`` alone
     means "cleared for this repo", not "named in the trust set".
     """
-    if repo_is_internal(slug, host_kind=host_kind):
+    if repo_is_internal(slug, pr_url=pr_url):
         return AuthorClassification(trusted=True, untrusted=False, internal_repo=True)
     if is_trusted_author(author, extra_trusted=extra_trusted):
         return AuthorClassification(trusted=True, untrusted=False, internal_repo=False)
@@ -202,7 +203,7 @@ def classify_pr_provenance(
     author: str,
     *,
     same_repo: bool | None,
-    host_kind: str = "github",
+    pr_url: str,
     extra_trusted: frozenset[str] = frozenset(),
 ) -> AuthorClassification:
     """Classify a merge by the PR head branch's PROVENANCE — the two merge gates' seam.
@@ -227,7 +228,7 @@ def classify_pr_provenance(
     if same_repo is False:
         return AuthorClassification(trusted=False, untrusted=True, internal_repo=False)
     # same_repo True or None: still require internal-repo OR a trusted author.
-    return classify_author(slug, author, host_kind=host_kind, extra_trusted=extra_trusted)
+    return classify_author(slug, author, pr_url=pr_url, extra_trusted=extra_trusted)
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,7 +241,7 @@ class AuthorSubject:
 
     slug: str
     author: str
-    host_kind: str = "github"
+    pr_url: str
     same_repo: bool | None = None
 
 
@@ -269,15 +270,15 @@ def decide_author_trust(
     """
     if gate is AutonomyGate.INTAKE:
         classification = classify_author(
-            subject.slug, subject.author, host_kind=subject.host_kind, extra_trusted=extra_trusted
+            subject.slug, subject.author, pr_url=subject.pr_url, extra_trusted=extra_trusted
         )
         trusted = classification.trusted and is_trusted_author(subject.author, extra_trusted=extra_trusted)
     else:
         trusted = classify_pr_provenance(
-            subject.slug,
+            _host_prefixed_slug(subject.slug, pr_url=subject.pr_url),
             subject.author,
             same_repo=subject.same_repo,
-            host_kind=subject.host_kind,
+            pr_url=subject.pr_url,
             extra_trusted=extra_trusted,
         ).trusted
     return TrustVerdict.AUTONOMOUS if trusted else TrustVerdict.HUMAN_REVIEW

@@ -19,7 +19,8 @@ _ISSUE_URL = "https://github.com/example/repo/issues/466"
 _NO_NUMBER_URL = "https://example.com/no-number"
 
 
-@pytest.mark.timeout(240)
+# CI pytest-core, 54 runs 09-27..30: p50 133 s, 2 timeouts at 240 s; 480 s is ~1.45x the 331 s 2-pass peak.
+@pytest.mark.timeout(480)
 class TestIssueNumberBackfill(TransactionTestCase):
     def setUp(self) -> None:
         self.addCleanup(self._restore_head)

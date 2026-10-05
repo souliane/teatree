@@ -14,6 +14,7 @@ from django.test import TestCase
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests._send_gate import allow_slack_channels
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
 MR = "https://gitlab.example.com/team/proj/-/merge_requests/777"
@@ -77,6 +78,7 @@ class FakeMessaging:
 
 class WhiteCheckMarkSweepTests(TestCase):
     def test_post_merge_sweep_replicates_check_to_sibling_broadcasts(self) -> None:
+        allow_slack_channels(*CHANNELS)
         # Seed: channels B and C already have ALL_MERGED rows for the
         # same MR (broadcast that was previously scanned and flipped).
         ts = "1779990010.000001"

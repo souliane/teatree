@@ -14,14 +14,17 @@ phase-independent, so it covers every such phase. An ordinary needs-input reason
 a genuine owner question and keeps the default ``OWNER_QUESTION`` audience.
 """
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import DeferredQuestion, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.errors import NoPlanArtifactError
 from teatree.core.models.task_handoff import (
     RESUME_ANSWER_PREFIX,
     RESUME_CONTINUATION_CLAUSE,
     dispatch_reason,
     record_deferred_question,
+    schedule_resume,
 )
 
 
@@ -153,3 +156,20 @@ class TestARowStampedBeforeTheClauseMovedOutOfStorage(TestCase):
 
         assert RESUME_CONTINUATION_CLAUSE not in reason
         assert "postgres-1" in reason
+
+
+class TestResumeNeedsAPlan(TestCase):
+    def test_resuming_an_implementing_task_on_an_unplanned_ticket_is_refused(self) -> None:
+        ticket = Ticket.objects.create()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="coding")
+
+        with pytest.raises(NoPlanArtifactError, match="plan_missing"):
+            schedule_resume(parked, answer="use postgres-1")
+
+        assert not parked.child_tasks.exists()
+
+    def test_a_non_implementing_parked_task_still_resumes(self) -> None:
+        ticket = Ticket.objects.create()
+        parked = Task.objects.create(ticket=ticket, session=Session.objects.create(ticket=ticket), phase="planning")
+
+        assert schedule_resume(parked, answer="scope it to X").phase == "planning"

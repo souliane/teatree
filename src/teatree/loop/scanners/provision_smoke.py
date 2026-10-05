@@ -42,7 +42,7 @@ class ProvisionSmokeScanner:
     """
 
     overlay_name: str
-    skill: str = "dogfood-smoke"
+    skill: str
     name: str = "provision_smoke"
 
     def scan(self) -> list[ScanSignal]:

@@ -14,7 +14,6 @@ tests/cli_doctor/test_introspection_helpers.py
 tests/cli_doctor/test_make_editable.py
 tests/cli_doctor/test_overlay_skills.py
 tests/cli_doctor/test_pure_functions.py
-tests/cli_doctor/test_repair_symlinks.py
 tests/cli_doctor/test_repo_discovery.py
 tests/cli_doctor/test_show_info.py
 tests/cli_setup/test_account_switch_recover.py
@@ -74,7 +73,6 @@ tests/teatree_cli/test_review_approval_pagination.py
 tests/teatree_cli/test_review_live_approval_phrase.py
 tests/teatree_cli/test_review_post_impl_non_diffnote.py
 tests/teatree_core/management/test_questions_command_atomicity.py
-tests/teatree_core/management/test_worker_command.py
 tests/teatree_core/management_commands/test_dogfood.py
 tests/teatree_core/management_commands/test_notify_post_speaks.py
 tests/teatree_core/management_commands/test_review_record_triggers_sweep.py
@@ -83,7 +81,6 @@ tests/teatree_core/pr_command/test_post_test_plan_and_sweep.py
 tests/teatree_core/sync/test_discover_filter_1321.py
 tests/teatree_core/sync/test_followup_discover_mrs.py
 tests/teatree_core/test_deferred_question_mirror.py
-tests/teatree_core/test_deferred_question_model.py
 tests/teatree_core/test_live_post_approval_canonical_scope.py
 tests/teatree_core/test_on_behalf_approval.py
 tests/teatree_core/test_on_behalf_target_canonicalization.py
@@ -96,12 +93,10 @@ tests/teatree_core/test_standup_command.py
 tests/teatree_core/test_url_slug_pr_ref.py
 tests/teatree_core/test_workspace_group_wiring.py
 tests/teatree_core/test_worktree_verify_runner.py
-tests/teatree_hooks/test_ups_fastpath.py
 tests/teatree_loop/slack_answer/test_loop_slack_answer_command.py
 tests/teatree_loop/test_active_tickets.py
 tests/teatree_loop/test_architectural_review_scanner.py
 tests/teatree_loop/test_askuserquestion_reply_scanner.py
-tests/teatree_loop/test_backlog_sweep_scanner.py
 tests/teatree_loop/test_bug_fixes.py
 tests/teatree_loop/test_codex_review_scanner.py
 tests/teatree_loop/test_disposition_identity_groups.py
@@ -123,7 +118,6 @@ tests/teatree_loop/test_reviewer_prs_skip_conditions_1321.py
 tests/teatree_loop/test_scanner_url_prefix_gate.py
 tests/teatree_loop/test_scanners.py
 tests/teatree_loop/test_scanning_news_scanner.py
-tests/teatree_loop/test_self_update_scanner.py
 tests/teatree_loop/test_slack_broadcasts_classify.py
 tests/teatree_loop/test_slack_broadcasts_multichannel.py
 tests/teatree_loop/test_slack_broadcasts_scanner.py
@@ -167,7 +161,6 @@ tests/test_public_leak_gate_stays_fail_closed.py
 tests/test_secrets.py
 tests/test_skill_deps.py
 tests/test_slack_setup.py
-tests/test_slack_voice_classifier_config.py
 tests/test_transcript_replay_conformance.py
 tests/test_visual_qa.py
 tests/utils/test_db.py

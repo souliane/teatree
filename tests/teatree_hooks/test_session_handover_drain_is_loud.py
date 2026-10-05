@@ -62,7 +62,7 @@ class TestHandoverDrainFailureIsLoud:
         monkeypatch.setattr(pickup, "bootstrap_teatree_django", lambda: False)
 
         with caplog.at_level(logging.WARNING, logger="teatree.hook_router"):
-            pickup.claim_session_handover("the-fresh-session")
+            pickup.claim_session_handover("the-fresh-session", router.StartClaims())
 
         assert "SKIPPED" in caplog.text
         assert "the-fresh-session" in caplog.text
@@ -77,7 +77,7 @@ class TestHandoverDrainFailureIsLoud:
             mock.patch("teatree.core.handover.claim_handovers", side_effect=RuntimeError("db is locked")),
             caplog.at_level(logging.WARNING, logger="teatree.hook_router"),
         ):
-            result = pickup.claim_session_handover("the-fresh-session")
+            result = pickup.claim_session_handover("the-fresh-session", router.StartClaims())
 
         assert result is None, "the hook still fails open — the session is never blocked"
         assert "FAILED" in caplog.text

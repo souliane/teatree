@@ -8,8 +8,10 @@ forge host is a stand-in object recording the calls it received.
 import json
 import sqlite3
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
+from django.test import TestCase
 
 from teatree.core.review.review_findings import (
     ClassifiedFinding,
@@ -21,26 +23,53 @@ from teatree.core.review.review_findings import (
     build_issue_title,
     file_class_c_issue,
     find_bare_references,
-    find_existing_issue,
+    fingerprint_marker,
     neutralize_bare_references,
     parse_findings,
     process_review_findings,
 )
 from teatree.hooks import banned_terms_scanner
+from tests._send_gate import allow_forge_repos
 
 _CONTEXT = FilingContext(repo="o/r", pr_url="https://github.com/o/r/pull/1")
 
 
+_SELF = "souliane"
+
+
+@pytest.fixture
+def allow_review_filing_repo() -> None:
+    allow_forge_repos("o/r")
+
+
+def _open_issue(url: str, body: str, *, author: str = _SELF) -> dict[str, object]:
+    return {"html_url": url, "title": "t", "body": body, "state": "open", "user": {"login": author}}
+
+
 class _FakeHost:
-    """Minimal CodeHostBackend stand-in recording create/search calls."""
+    """Minimal CodeHostBackend stand-in: the reads and writes the hygiene facade makes."""
 
     def __init__(self, *, existing: list[dict[str, object]] | None = None) -> None:
         self.created: list[dict[str, object]] = []
-        self._existing = existing or []
+        self.updated: list[tuple[str, str]] = []
+        self.issues: dict[str, dict[str, object]] = {str(issue["html_url"]): dict(issue) for issue in (existing or [])}
 
-    def search_open_issues(self, *, repo: str, query: str) -> list[dict[str, object]]:
-        self.last_search = (repo, query)
-        return self._existing
+    def current_user(self) -> str:
+        return _SELF
+
+    def list_repo_open_issues(self, *, repo: str) -> list[dict[str, object]]:
+        return [dict(issue) for issue in self.issues.values() if issue.get("state") == "open"]
+
+    def get_issue(self, issue_url: str) -> dict[str, object]:
+        return dict(self.issues.get(issue_url, {"error": f"not found: {issue_url}"}))
+
+    def repo_for_issue_url(self, issue_url: str) -> str:
+        return "o/r"
+
+    def update_issue(self, *, issue_url: str, body: str) -> dict[str, object]:
+        self.updated.append((issue_url, body))
+        self.issues.setdefault(issue_url, {})["body"] = body
+        return {"html_url": issue_url}
 
     def create_issue(
         self,
@@ -53,7 +82,9 @@ class _FakeHost:
         number = len(self.created) + 100
         record = {"repo": repo, "title": title, "body": body, "labels": labels}
         self.created.append(record)
-        return {"html_url": f"https://github.com/{repo}/issues/{number}", "number": number}
+        url = f"https://github.com/{repo}/issues/{number}"
+        self.issues[url] = _open_issue(url, body)
+        return {"html_url": url, "number": number}
 
 
 def _finding(body: str = "Use a context manager here.", *, path: str = "src/a.py", line: int = 12) -> ReviewFinding:
@@ -127,7 +158,8 @@ class TestFindingsStore:
         assert once.fingerprint not in store.recurring_fingerprints(min_occurrences=2)
 
 
-class TestFiler:
+@pytest.mark.usefixtures("allow_review_filing_repo", "configured_banned_term_registry")
+class TestFiler(TestCase):
     def test_files_when_no_existing_issue(self) -> None:
         host = _FakeHost()
         filed = file_class_c_issue(
@@ -142,12 +174,7 @@ class TestFiler:
 
     def test_dedups_against_existing_marker(self) -> None:
         finding = _finding()
-        existing = [
-            {
-                "html_url": "https://github.com/o/r/issues/9",
-                "body": f"<!-- retro-finding-fingerprint: {finding.fingerprint} -->",
-            }
-        ]
+        existing = [_open_issue("https://github.com/o/r/issues/9", fingerprint_marker(finding.fingerprint))]
         host = _FakeHost(existing=existing)
         filed = file_class_c_issue(
             host,
@@ -159,9 +186,32 @@ class TestFiler:
         assert filed.url == "https://github.com/o/r/issues/9"
         assert host.created == []
 
-    def test_find_existing_ignores_non_matching_marker(self) -> None:
-        host = _FakeHost(existing=[{"html_url": "https://x/9", "body": "unrelated"}])
-        assert find_existing_issue(host, repo="o/r", fingerprint="deadbeef") == ""
+    def test_a_marked_ticket_gains_this_recurrence(self) -> None:
+        # #162 Rule 1: a fitting ticket is EXTENDED, where the search-index dedupe
+        # used to drop the re-file on the floor and record nothing.
+        finding = _finding()
+        existing = [_open_issue("https://github.com/o/r/issues/9", fingerprint_marker(finding.fingerprint))]
+        host = _FakeHost(existing=existing)
+        file_class_c_issue(host, finding=finding, enforcement="Add a gate.", context=_CONTEXT)
+        assert [url for url, _ in host.updated] == ["https://github.com/o/r/issues/9"]
+
+    def test_an_unmarked_ticket_is_not_reused_and_is_recorded_as_rejected(self) -> None:
+        host = _FakeHost(existing=[_open_issue("https://github.com/o/r/issues/9", "unrelated")])
+        filed = file_class_c_issue(host, finding=_finding(), enforcement="Add a gate.", context=_CONTEXT)
+        assert not filed.already_filed
+        assert len(host.created) == 1
+        assert "https://github.com/o/r/issues/9" in str(host.created[0]["body"])
+
+    def test_a_marked_ticket_someone_else_filed_is_neither_edited_nor_duplicated(self) -> None:
+        finding = _finding()
+        theirs = _open_issue(
+            "https://github.com/o/r/issues/9", fingerprint_marker(finding.fingerprint), author="a.colleague"
+        )
+        host = _FakeHost(existing=[theirs])
+        filed = file_class_c_issue(host, finding=finding, enforcement="Add a gate.", context=_CONTEXT)
+        assert filed.withheld
+        assert host.created == []
+        assert host.updated == []
 
     def test_auto_filed_issue_carries_needs_triage(self) -> None:
         host = _FakeHost()
@@ -175,10 +225,16 @@ class TestFiler:
         assert host.created[0]["labels"] == ["enforcement-gap"]
 
 
-class TestProcessReviewFindings:
-    def test_files_only_class_c_and_counts(self, tmp_path: Path) -> None:
+@pytest.mark.usefixtures("allow_review_filing_repo", "configured_banned_term_registry")
+class TestProcessReviewFindings(TestCase):
+    def setUp(self) -> None:
+        temporary_dir = TemporaryDirectory()
+        self.addCleanup(temporary_dir.cleanup)
+        self.tmp_path = Path(temporary_dir.name)
+
+    def test_files_only_class_c_and_counts(self) -> None:
         host = _FakeHost()
-        store = FindingsStore(data_dir=tmp_path)
+        store = FindingsStore(data_dir=self.tmp_path)
         a = ClassifiedFinding(_finding(body="already enforced", line=1), FindingClass.A)
         b = ClassifiedFinding(_finding(body="one off thing", line=2), FindingClass.B)
         c = ClassifiedFinding(_finding(body="recurring gap", line=3), FindingClass.C)
@@ -194,10 +250,10 @@ class TestProcessReviewFindings:
         assert len(host.created) == 1
         assert host.created[0]["labels"] == ["enforcement-gap", "needs-triage"]
 
-    def test_rerun_does_not_refile(self, tmp_path: Path) -> None:
+    def test_rerun_does_not_refile(self) -> None:
         finding = _finding(body="recurring gap")
         first = _FakeHost()
-        store = FindingsStore(data_dir=tmp_path)
+        store = FindingsStore(data_dir=self.tmp_path)
         process_review_findings(
             first,
             classified=[ClassifiedFinding(finding, FindingClass.C)],
@@ -205,9 +261,9 @@ class TestProcessReviewFindings:
             store=store,
             context=_CONTEXT,
         )
-        filed_body = first.created[0]["body"]
-        # Second run: the host now reports the already-filed issue via search.
-        second = _FakeHost(existing=[{"html_url": "https://github.com/o/r/issues/100", "body": filed_body}])
+        filed_body = str(first.created[0]["body"])
+        # Second run: the host now reports the already-filed issue in the open backlog.
+        second = _FakeHost(existing=[_open_issue("https://github.com/o/r/issues/100", filed_body)])
         summary = process_review_findings(
             second,
             classified=[ClassifiedFinding(finding, FindingClass.C)],
@@ -221,7 +277,7 @@ class TestProcessReviewFindings:
 
 @pytest.fixture
 def banned_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A DB-home config banning a sample tenant name (legacy file tier removed)."""
+    """A DB-home registry banning a sample tenant name."""
     db = tmp_path / "config.sqlite3"
     conn = sqlite3.connect(str(db))
     try:
@@ -230,8 +286,8 @@ def banned_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
         )
         conn.execute(
-            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
-            (json.dumps(["acmecorp"]),),
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_term_registry', ?)",
+            (json.dumps({"leak": ["acmecorp"], "prose_collider": ["acmecorp"]}),),
         )
         conn.commit()
     finally:
@@ -254,9 +310,11 @@ class TestNeutralizeBareReferences:
         assert neutralize_bare_references(text) == text
 
 
-class TestLeakClosure:
+@pytest.mark.usefixtures("allow_review_filing_repo")
+class TestLeakClosure(TestCase):
     """The untrusted finding body must never leak bare refs or banned terms."""
 
+    @pytest.mark.usefixtures("configured_banned_term_registry")
     def test_filed_body_has_no_bare_references(self) -> None:
         finding = _finding(body="Same as #1234 / !99 / ts 1716900000.123456 — see the thread")
         host = _FakeHost()
@@ -297,16 +355,13 @@ class TestLeakClosure:
 class TestFilingRefusesWhateverTheStoreCannotVouchFor:
     """Filing an issue IS a publishing path, so its no-term-list disposition is the gate's.
 
-    The three cases are one decision seen from a real caller: absence is an answer and files;
-    a deployment that declares it MUST scrub refuses on that same absence; and a store that
-    ERRORED refuses with no flag set at all.
+    Both an absent registry and an unreadable store refuse the publish.
     """
 
     @pytest.fixture(autouse=True)
     def _no_ambient_terms(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
         monkeypatch.delenv("TEATREE_TERM_REGISTRY", raising=False)
-        monkeypatch.delenv("T3_BANNED_TERMS_REQUIRED", raising=False)
 
     def _file(self) -> tuple[_FakeHost, object]:
         host = _FakeHost()
@@ -315,21 +370,14 @@ class TestFilingRefusesWhateverTheStoreCannotVouchFor:
         )
         return host, filed
 
-    def test_an_absent_store_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_absent_store_refuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
-        host, filed = self._file()
-        assert not filed.withheld
-        assert len(host.created) == 1
-
-    def test_the_required_flag_refuses_that_same_absence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
-        monkeypatch.setenv("T3_BANNED_TERMS_REQUIRED", "1")
         host, filed = self._file()
         assert filed.withheld
-        assert banned_terms_scanner.TERMS_REQUIRED_UNSET_MARKER in filed.withheld_reason
+        assert banned_terms_scanner.TERMS_UNSET_MARKER in filed.withheld_reason
         assert host.created == []
 
-    def test_an_errored_store_refuses_with_no_flag_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_errored_store_refuses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         corrupt = tmp_path / "corrupt.sqlite3"
         corrupt.write_bytes(b"this is not a sqlite database")
         monkeypatch.setenv("T3_CONFIG_DB", str(corrupt))

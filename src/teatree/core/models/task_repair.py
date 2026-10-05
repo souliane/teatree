@@ -124,7 +124,6 @@ def _escalate_reoffers(task: Task, *, phase: str, reoffers: int) -> None:
     """
     ticket = task.ticket
     where = ticket.issue_url or f"ticket {ticket.pk}"
-    session_id: int | None = task.session_id  # ty: ignore[unresolved-attribute]
     question = (
         f"Re-offer budget on {where} (phase {phase!r}): task {task.pk} has been reclaimed and "
         f"re-offered {reoffers} time(s) without ever terminalizing, so re-offering is paused. "
@@ -133,7 +132,7 @@ def _escalate_reoffers(task: Task, *, phase: str, reoffers: int) -> None:
     )
     DeferredQuestion.record(
         question,
-        session_id=str(session_id or ""),
+        task_session=task.session,
         dedupe_marker=f"reoffer-budget:{ticket.pk}:{phase}",
         audience=DeferredQuestion.Audience.INTERNAL,
     )
@@ -148,7 +147,6 @@ def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
     """
     ticket = task.ticket
     where = ticket.issue_url or f"ticket {ticket.pk}"
-    session_id: int | None = task.session_id  # ty: ignore[unresolved-attribute]
     question = (
         f"Repair-loop stall on {where} (phase {phase!r}): the last two attempts failed "
         f"identically after {iterations} iteration(s). Re-queueing is paused so it does not "
@@ -158,7 +156,7 @@ def _escalate_stall(task: Task, *, phase: str, iterations: int) -> None:
     # ticket-phase collapse to a single queued question rather than one per tick.
     DeferredQuestion.record(
         question,
-        session_id=str(session_id or ""),
+        task_session=task.session,
         dedupe_marker=f"repair-stall:{ticket.pk}:{phase}",
         audience=DeferredQuestion.Audience.INTERNAL,
     )
@@ -175,7 +173,6 @@ def _escalate_cap(task: Task, *, phase: str, iterations: int) -> None:
     """
     ticket = task.ticket
     where = ticket.issue_url or f"ticket {ticket.pk}"
-    session_id: int | None = task.session_id  # ty: ignore[unresolved-attribute]
     question = (
         f"Repair-loop cap on {where} (phase {phase!r}): the phase hit its iteration cap "
         f"after {iterations} attempt(s) without completing. Re-queueing is paused so it does "
@@ -183,7 +180,7 @@ def _escalate_cap(task: Task, *, phase: str, iterations: int) -> None:
     )
     DeferredQuestion.record(
         question,
-        session_id=str(session_id or ""),
+        task_session=task.session,
         dedupe_marker=f"repair-cap:{ticket.pk}:{phase}",
         audience=DeferredQuestion.Audience.INTERNAL,
     )

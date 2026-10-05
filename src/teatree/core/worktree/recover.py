@@ -211,9 +211,7 @@ def _classify_orphans(report: RecoverReport) -> None:
             ticket_url=ticket_urls.get((branch_report.repo, branch_report.branch), ""),
             open_pr_url=branch_report.open_pr_url,
         )
-        # find_orphans_in_workspace only yields the three orphan statuses, so the
-        # final bucket is the open-PR case (no SYNCED leaks through).
-        if branch_report.status == BranchStatus.UNPUSHED_ORPHAN:
+        if branch_report.status in {BranchStatus.UNPUSHED_ORPHAN, BranchStatus.REMOTE_UNKNOWN}:
             report.data_loss_risk.append(item)
         elif branch_report.status == BranchStatus.PUSHED_ORPHAN:
             report.committed_unpushed.append(item)

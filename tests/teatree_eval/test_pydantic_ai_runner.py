@@ -585,14 +585,16 @@ class TestEffortIsGatedOnTheModelsCapability:
         return settings
 
     def test_the_cheap_haiku_tier_is_sent_no_effort(self) -> None:
-        assert "anthropic_effort" not in self._recorded_settings(TIER_MODELS["cheap"], effort="high")
+        # Cheap now defaults to Sonnet; probe Haiku directly to keep this capability guard honest.
+        assert TIER_MODELS["cheap"] == "claude-sonnet-5-5"
+        assert "anthropic_effort" not in self._recorded_settings("claude-haiku-4-5", effort="high")
 
     def test_a_reasoning_tier_still_carries_the_lane_effort(self) -> None:
         settings = self._recorded_settings(TIER_MODELS["balanced"], effort="high")
         assert settings.get("anthropic_effort") == "high"
 
     def test_the_output_ceiling_rides_even_with_the_effort_dropped(self) -> None:
-        settings = self._recorded_settings(TIER_MODELS["cheap"], effort="high")
+        settings = self._recorded_settings("claude-haiku-4-5", effort="high")
         assert settings.get("max_tokens") == PYDANTIC_AI_MAX_TOKENS_DEFAULT
 
 

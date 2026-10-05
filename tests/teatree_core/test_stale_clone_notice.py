@@ -27,7 +27,6 @@ pytestmark = pytest.mark.django_db
 def _no_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force the no-backend path so the notice records a durable NOOP audit row."""
     monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: None)
-    monkeypatch.setattr("teatree.core.notify._feature_enabled", lambda: True)
 
 
 def _skip(

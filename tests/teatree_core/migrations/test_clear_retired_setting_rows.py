@@ -1,7 +1,6 @@
 """The ``0095`` data migration clears the stored rows under two removed keys.
 
-A row under a removed key resolves to nothing and makes every resolution print a loud
-stderr line, so a settled removal wants its rows gone. Anti-vacuous: dropping the
+A row under a removed key resolves to nothing. Anti-vacuous: dropping the
 ``RunPython`` leaves the rows in place and the first test goes RED, and the last test
 proves the cleanup is keyed on the literal list rather than sweeping every row.
 """
@@ -17,7 +16,7 @@ _AFTER = ("core", "0095_clear_retired_setting_rows")
 
 
 @pytest.mark.timeout(240)
-class TestClearRetiredSettingRows(TransactionTestCase):
+class TestClearOldSettingRows(TransactionTestCase):
     def setUp(self) -> None:
         self.addCleanup(self._restore_head)
 

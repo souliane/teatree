@@ -32,7 +32,7 @@ from teatree.core.merge.authorization import assert_review_verdict_gate
 from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha
 from teatree.core.models import MergeAudit, MergeClear, ReviewVerdict, Ticket
 from tests._forge_stub import changed_files_stdout
-from tests.teatree_core.conftest import seed_merge_safe_verdict
+from tests.teatree_core.conftest import record_owned_pr_for_test, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -72,7 +72,7 @@ def _cross_repo_probe(joined: str, *, head: str) -> tuple[int, str, str] | None:
     return None
 
 
-def _cross_repo_clear() -> MergeClear:
+def _cross_repo_clear(*, owned_repo: str = _OVERLAY_REPO) -> MergeClear:
     """A CLEAR shaped like CLEAR 22 from the #1335 incident.
 
     No ``ticket`` (reusing the §872 ``ticketless_clear_falls_through`` path
@@ -80,6 +80,7 @@ def _cross_repo_clear() -> MergeClear:
     ``pr_id`` whose number happens to exist as an unrelated PR in the
     running clone's ``origin``.
     """
+    record_owned_pr_for_test(slug=owned_repo, pr_id=159, head_sha=_RIGHT_SHA)
     return MergeClear.objects.create(
         ticket=None,
         pr_id=159,
@@ -315,7 +316,7 @@ class TestCrossRepoCandidateProbe(TestCase):
         common case the resolved repo IS the right repo and the merge
         proceeds with no extra ``gh`` calls.
         """
-        clear = _cross_repo_clear()
+        clear = _cross_repo_clear(owned_repo=_CLONE_ORIGIN)
         # The clone origin is the resolved merge target here — seed the verdict there.
         seed_merge_safe_verdict(slug=_CLONE_ORIGIN, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []

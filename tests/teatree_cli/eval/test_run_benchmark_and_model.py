@@ -107,6 +107,15 @@ class TestBenchmark:
         # Sanity: exactly the three TIER_MODELS values, no concrete literal here.
         assert expected == set(TIER_MODELS.values())
 
+    def test_a_model_shared_by_two_tiers_runs_once_per_scenario(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        with patch.dict(TIER_MODELS, {"cheap": TIER_MODELS["balanced"]}):
+            out = _invoke(["--benchmark", "--no-persist"], specs)
+        assert out.exit_code == 0, out.output
+        assert sorted(_StubRunner.seen_models) == sorted(
+            [TIER_MODELS["balanced"], TIER_MODELS["frontier"]] * len(specs)
+        )
+
     def test_writes_html_dashboard(self, tmp_path: Path) -> None:
         specs = [_spec("alpha")]
         html_out = tmp_path / "matrix.html"

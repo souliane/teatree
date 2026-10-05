@@ -13,8 +13,8 @@ four graders (``matchers``/``triage``/``judge``/``matcher_vacuity``) admitted
 grading module by omission, so a fixer could widen the verdict itself and pass the
 gate. A prefix cannot drift away from a surface it does not enumerate;
 ``EVAL_HARNESS_ALLOWED_PATHS`` carries the exceptions, and
-``tests/teatree_core/gates/test_eval_heal_anticheat_gate.py`` refuses an entry
-that sits on the computed grading call graph (:mod:`teatree.quality.eval_grading_surface`).
+``tests/teatree_core/gates/test_eval_heal_anticheat_gate.py`` checks them against
+the live eval package tree.
 
 The gate is a pure structural decision over the set of changed paths (from ``git
 diff --name-only``), so it is deterministic and testable with no git/network. It

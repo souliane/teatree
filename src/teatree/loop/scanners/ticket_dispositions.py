@@ -118,29 +118,17 @@ class TicketDispositionScanner:
     with a non-empty ``issue_url``. Emits a ``ticket.disposition_candidate``
     signal per detected drift; ``issue_closed`` auto-ignores, the rest ask.
 
-    ``user_identity_aliases`` lists usernames/handles that all map to the
-    operating human (e.g. a GitHub login, a GitLab username, an internal
-    handle). When a reassignment moves the issue between two such aliases —
-    both ``old_owner`` and every member of ``new_owners`` fall inside the
-    set — the scanner drops the ``unassigned`` signal entirely: it's
-    plumbing, not an actionable handoff. Reassigns crossing the alias
-    boundary (alias → colleague, colleague → alias, or alias → mixed) still
-    render normally.
-
-    ``identity_alias_groups`` is the multi-human shape (#1015): each inner
+    ``identity_alias_groups`` groups each human's aliases. Each inner
     tuple is one human's aliases. Suppression fires when SOME group
     contains ``old_owner`` AND every ``new_owner`` — i.e. one human swapped
     between their own handles. Reassigns that cross group boundaries
-    (human A → human B) still surface. Groups take precedence over
-    ``user_identity_aliases``; when no groups are set, the flat list is
-    treated as one implicit group, preserving the pre-#1015 contract.
+    (human A → human B) still surface.
     """
 
     host: CodeHostBackend
     overlay: OverlayBase | None = None
     ready_labels: tuple[str, ...] = field(default_factory=tuple)
     overlay_name: str = ""
-    user_identity_aliases: tuple[str, ...] = field(default_factory=tuple)
     identity_alias_groups: tuple[tuple[str, ...], ...] = field(default_factory=tuple)
     name: str = "ticket_dispositions"
 
@@ -208,7 +196,7 @@ class TicketDispositionScanner:
         ``reassigned``. Other reasons need no extra fields.
 
         The ``unassigned`` branch is suppressed when both sides of the
-        reassignment fall within ``user_identity_aliases`` — a self-handoff
+        reassignment fall within one identity group — a self-handoff
         between the operator's own identities is plumbing, not an
         actionable signal.
         """
@@ -229,21 +217,12 @@ class TicketDispositionScanner:
     def _is_self_handoff(self, old_owner: str, new_owners: tuple[str, ...]) -> bool:
         """True when *old_owner* and every *new_owners* entry are aliases of one human.
 
-        Two configuration shapes feed this check. ``identity_alias_groups``
-        (#1015) is the multi-human shape: each inner tuple is one human's
+        ``identity_alias_groups`` (#1015) has one tuple per human's
         aliases, and the reassignment is a self-handoff iff SOME group
         contains both ``old_owner`` and every ``new_owners`` entry —
         cross-group transitions (human A → human B) are kept.
-        ``user_identity_aliases`` (legacy flat list) is treated as one
-        implicit group when no explicit groups are configured.
-
-        Empty defaults preserve the pre-#975 behaviour: every reassign renders.
+        With no groups, every reassignment renders.
         """
         groups: tuple[frozenset[str], ...]
-        if self.identity_alias_groups:
-            groups = tuple(frozenset(g) for g in self.identity_alias_groups if g)
-        elif self.user_identity_aliases:
-            groups = (frozenset(self.user_identity_aliases),)
-        else:
-            return False
+        groups = tuple(frozenset(g) for g in self.identity_alias_groups if g)
         return any(old_owner in group and all(owner in group for owner in new_owners) for group in groups)

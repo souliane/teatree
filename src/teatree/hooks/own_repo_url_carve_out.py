@@ -12,8 +12,8 @@ the org/namespace token inside it trips the banned-terms scan.
 The carve-out is DERIVED, never hardcoded: a URL is "own-repo" only when its
 host+namespace slug matches one of the active overlay's configured
 ``[teatree] private_repos`` entries (the same allowlist the commit / pure-post
-carve-out already consults), via the host-qualification-symmetric
-``slug_namespace_matches``. A foreign URL, a URL under no configured namespace,
+carve-out already consults), via the host-qualified
+``private_repo_entry_matches``. A foreign URL, a URL under no configured namespace,
 and a bare term occurrence OUTSIDE any own-repo URL all keep the hard block.
 
 Forge-URL slug parsing routes through :func:`teatree.utils.url_slug.slug_from_issue_or_pr_url`
@@ -30,7 +30,8 @@ from pathlib import Path
 from typing import Final
 from urllib.parse import urlparse
 
-from teatree.hooks._repo_visibility import _private_repo_allowlist, slug_namespace_matches
+from teatree.hooks._private_repo_entries import _private_repo_allowlist, private_repo_entry_matches
+from teatree.hooks._repo_visibility import slug_for_remote_url, slug_visibility
 from teatree.hooks.term_match import matched_term
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
@@ -53,7 +54,9 @@ def _url_is_own_repo(url: str, allowlist: list[str]) -> bool:
         return False
     host = (parsed.hostname or "").lower()
     qualified = f"{host}/{slug}".lower()
-    return any(slug_namespace_matches(entry, qualified) for entry in allowlist)
+    return slug_visibility(qualified) != "PUBLIC" and any(
+        private_repo_entry_matches(entry, qualified, normalize=slug_for_remote_url) for entry in allowlist
+    )
 
 
 def _blank_own_repo_urls(text: str, allowlist: list[str]) -> str:
@@ -71,7 +74,7 @@ def term_only_inside_own_repo_urls(payload: str, term: str, *, config_path: Path
     """Return True iff every occurrence of ``term`` in ``payload`` sits inside an own-repo URL.
 
     An own-repo URL is a forge work-item URL whose host+namespace slug matches a
-    ``[teatree] private_repos`` allowlist entry (host-qualification-symmetric).
+    ``[teatree] private_repos`` allowlist entry on the same host.
     The term must be PRESENT in the payload (the matcher fires on the raw text)
     and ABSENT once every own-repo URL is blanked — only then is the term
     confined to addresses of the overlay's own repos and the gate may downgrade

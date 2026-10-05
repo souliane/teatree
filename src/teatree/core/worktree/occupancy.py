@@ -84,13 +84,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-def _gate_enabled() -> bool:
-    """Whether the occupancy gate refuses a second requester (the never-lockout kill switch)."""
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred: keeps this leaf import-light
-
-    return bool(get_effective_settings().worktree_occupancy_gate_enabled)
-
-
 def _release_if_finished_task(worktree: Worktree) -> None:
     """Self-heal: release *worktree* if its holder is a finished ``Task`` whose owner is gone (#4867, #4872).
 
@@ -113,7 +106,6 @@ def occupy_ticket_checkout(
     holder: str,
     holder_session: str = "",
     lease_seconds: int | None = None,
-    enabled: bool | None = None,
 ) -> Iterator[str]:
     """Hold *ticket*'s dispatch checkout for the duration of the block.
 
@@ -123,13 +115,11 @@ def occupy_ticket_checkout(
 
     Yields ``""`` and claims nothing when the ticket has no materialised checkout:
     there is no shared resource yet, so there is nothing to contend on and a
-    pre-provision dispatch behaves exactly as it does today. Same when the gate is
-    switched off — the kill switch hands the path out ungated rather than
-    pretending the claim succeeded.
+    pre-provision dispatch behaves exactly as it does today.
     """
     path = dispatch_worktree_path(ticket)
     worktree = _worktree_at(ticket, path) if path else None
-    if worktree is None or not (_gate_enabled() if enabled is None else enabled):
+    if worktree is None:
         yield path
         return
 
@@ -156,11 +146,8 @@ def renew_ticket_checkout(
     still writing to, not leave it advertised as free. A rival holding the
     checkout is the loss the caller has to abort on.
 
-    Renews nothing when the ticket has no materialised checkout or when the gate
-    is off: the heartbeat must never mint a claim the dispatch itself did not take.
+    Renews nothing when the ticket has no materialised checkout.
     """
-    if not _gate_enabled():
-        return
     path = dispatch_worktree_path(ticket)
     worktree = _worktree_at(ticket, path) if path else None
     if worktree is None:
@@ -181,8 +168,6 @@ def refuse_if_ticket_checkout_occupied(ticket: "Ticket") -> None:
     it changes nothing: the whole effect is telling the second requester who is
     already in the tree instead of pointing them into it.
     """
-    if not _gate_enabled():
-        return
     path = dispatch_worktree_path(ticket)
     worktree = _worktree_at(ticket, path) if path else None
     if worktree is None:

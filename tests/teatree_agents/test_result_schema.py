@@ -16,11 +16,9 @@ from teatree.agents.result_schema import (
     PROSE_SUMMARY_ACCEPTED_PHASES,
     RESULT_JSON_SCHEMA,
     AgentResult,
-    DirectiveCandidateEnvelope,
     JSONSchema,
     ProseSummaryPolicy,
     SingleTestResult,
-    candidate_carries_payload,
     check_evidence,
     required_evidence_for_phase,
 )
@@ -209,47 +207,6 @@ class TestDirectiveInterpretationEvidenceGate:
         assert check_evidence(result, "directive_interpreting") == ""
 
 
-class TestCandidateCarriesPayload:
-    """#116: the gate/recorder no-drift predicate matches exactly what the recorder persists."""
-
-    def test_a_directive_with_a_constraint_carries_payload(self) -> None:
-        envelope: DirectiveCandidateEnvelope = {"is_directive": True, "normalized_constraint": "at most 1 open PR"}
-        assert candidate_carries_payload(envelope) is True
-
-    def test_a_non_directive_verdict_carries_nothing(self) -> None:
-        assert candidate_carries_payload({"is_directive": False, "normalized_constraint": "x"}) is False
-
-    def test_a_constraintless_directive_carries_nothing(self) -> None:
-        assert candidate_carries_payload({"is_directive": True, "normalized_constraint": "  "}) is False
-
-    def test_a_non_dict_carries_nothing(self) -> None:
-        assert candidate_carries_payload("not-a-dict") is False
-
-
-class TestDirectiveCandidateEvidenceGate:
-    """#116 context firewall: the reader phase must hand back a persistable candidate."""
-
-    def test_directive_reading_requires_the_candidate_envelope(self) -> None:
-        assert required_evidence_for_phase("directive_reading") == ("directive_candidate",)
-
-    def test_a_summary_only_reader_run_is_refused(self) -> None:
-        assert check_evidence({"summary": "read it"}, "directive_reading")
-
-    def test_a_non_directive_verdict_persists_nothing_and_is_refused(self) -> None:
-        # An is_directive=False verdict mints no row — the gate refuses it rather than
-        # completing over zero recorded work (#9 gate/recorder no-drift).
-        result = {"directive_candidate": {"is_directive": False, "normalized_constraint": "x"}}
-        assert check_evidence(result, "directive_reading")
-
-    def test_a_constraintless_directive_is_refused(self) -> None:
-        result = {"directive_candidate": {"is_directive": True, "normalized_constraint": "  "}}
-        assert check_evidence(result, "directive_reading")
-
-    def test_a_real_candidate_satisfies_the_gate(self) -> None:
-        result = {"directive_candidate": {"is_directive": True, "normalized_constraint": "at most 1 open PR"}}
-        assert check_evidence(result, "directive_reading") == ""
-
-
 class TestProseSummaryAllowed:
     """Which phases may complete on prose when the agent returned no envelope at all."""
 
@@ -269,6 +226,10 @@ class TestProseSummaryAllowed:
             "codex_adversarial_reviewing",
             "answering",
             "scanning_news",
+            # #162 Rule 4: the sweep's count must be a persisted run, so the phase
+            # moved from ungated to gated — still refused, now at the recorder with
+            # a corrective retry rather than at the runner.
+            "backlog_sweep",
         ],
     )
     def test_an_evidence_gated_phase_defers_to_its_own_gate(self, phase: str) -> None:
@@ -285,7 +246,6 @@ class TestProseSummaryAllowed:
             "e2e_reviewing",
             "requesting_review",
             "architectural_review",
-            "backlog_sweep",
             "dogfood_smoke",
             "eval_local",
             "some_free_form_phase",

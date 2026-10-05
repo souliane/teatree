@@ -10,10 +10,8 @@ carries work, and a tier that made it for the operator would remove a control
 with no signal: ``require_human_approval_to_merge`` for review before merge
 (#3630), and ``Mode.egress`` for speaking to a colleague under the
 owner's own identity (#3895). Each is its own named opt-in, read unchanged by
-every tier. The tier DOES drive review-request blocking (#2579): ``notify``
-resolves ``review_request_post_disabled = True`` (a collaborative/customer
-surface never auto-requests review), while ``full`` resolves it ``False`` (a
-solo tooling surface auto-requests). The collapse and its precedence rules live
+every tier. Review-request posting follows the on-behalf posture. The collapse
+and its precedence rules live
 in :func:`teatree.config._apply_autonomy`; this command is the first-class CLI
 surface that persists the knob so a user raises an overlay's tier without
 hand-editing config.

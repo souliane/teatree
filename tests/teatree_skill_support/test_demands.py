@@ -1,6 +1,17 @@
+import dataclasses
+from pathlib import Path
 from types import SimpleNamespace
 
-from teatree.skill_support.demands import SkillDemand, enumerate_skill_demands, skill_demand_names
+import pytest
+
+from teatree.config.cold_defaults import flatten_settings_table, shipped_defaults_table
+from teatree.config.settings import UserSettings
+from teatree.core.overlay import OverlayConfig
+from teatree.loop.scanners.eval_local import EvalLocalScanner
+from teatree.loop.scanners.provision_smoke import ProvisionSmokeScanner
+from teatree.skill_support.demands import LOOP_SKILL_FIELDS, SkillDemand, enumerate_skill_demands, skill_demand_names
+
+SHIPPED_SKILLS = Path(__file__).resolve().parents[2] / "skills"
 
 
 def test_every_dispatching_overlay_and_runtime_field_is_enumerated() -> None:
@@ -50,3 +61,25 @@ def test_demand_names_are_normalized_deduped_and_sorted() -> None:
     )
 
     assert skill_demand_names(demands) == ("backend-review", "qa")
+
+
+@pytest.mark.parametrize("field", LOOP_SKILL_FIELDS)
+def test_every_loop_skill_default_names_a_shipped_skill(field: str) -> None:
+    # Setup refuses a headless box whose demanded skills are not loadable, so a
+    # default naming no shipped skill blocks every deploy.
+    defaults = {
+        "UserSettings": getattr(UserSettings(), field),
+        "OverlayConfig": OverlayConfig.model_fields[field].default,
+        "defaults.toml": flatten_settings_table(shipped_defaults_table())[field],
+    }
+
+    missing = {source: name for source, name in defaults.items() if not (SHIPPED_SKILLS / name / "SKILL.md").is_file()}
+
+    assert not missing, f"{field} defaults name no shipped skill: {missing}"
+
+
+@pytest.mark.parametrize("scanner", [EvalLocalScanner, ProvisionSmokeScanner])
+def test_loop_scanners_take_their_skill_from_the_setting_not_a_literal_of_their_own(scanner: type) -> None:
+    skill = next(f for f in dataclasses.fields(scanner) if f.name == "skill")
+
+    assert skill.default is dataclasses.MISSING

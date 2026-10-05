@@ -32,6 +32,8 @@ Read 3 and 4 together, and mind *who acts*:
 
 So a gate is never the answer to "how do we make the agent do X". It is the net under X, sized for the times the instruction did not land. Prose that restates what a mechanism already makes impossible is duplication; prose that shapes agent behaviour is the cheapest control there is.
 
+What a gate may refuse at all is settled once, in `hooks/CLAUDE.md` § "Default-allow": developing teatree is allowed by default, four enumerated dangerous classes are not, and a gate that refuses ordinary development work is a defect to fix rather than a rule to obey.
+
 ## Repo Change Safety
 
 - Never create a new plan file, memory file, journal file, or repo-instruction file in this repository without the user's explicit approval first.
@@ -44,7 +46,7 @@ Amplifies CLAUDE.md "No stale references". When a change retires or renames a fu
 
 ### Reused-ticket attestation: the gate-pass is NOT the guarantee (Non-Negotiable)
 
-`t3 teatree workspace ticket <url>` is idempotent on `issue_url` (one ticket per issue) and does **not** clear the ticket's aggregated phase ledger — `Ticket.aggregate_phase_records()` unions `visited_phases` across ALL the ticket's sessions. A prior workstream's `testing/reviewing` therefore aggregates into the next workstream's view of the ledger; the structural guard is the `Ticket.reopen()` FSM transition (#1286), which retires every session's `visited_phases`/`phase_visits`/`repos_modified`/`repos_tested` so the next workstream re-earns its attestations from scratch. `reopen()` is the FSM-internal workstream-boundary call; the sanctioned `lifecycle clear-ledger --confirm` CLI is the operator-driven equivalent when a reuse path bypasses `reopen()` (e.g. an in-state reuse off PR_OPENED without an explicit reopen). Even with the ledger-retire, the coordinator integrity guarantee for multi-workstream / reused-ticket work stays the same defense-in-depth chain: **(a) coordinator-orchestrated independent cold review of THIS workstream's exact diff by a freshly-spawned reviewer sub-agent that has not seen the implementation (the spawn boundary is the independence, not a stored identity), (b) coordinator verification, (c) explicit per-workstream coordinator CLEAR to the review-loop** — recorded as the durable attestation receipt. Never chain attest→pr-create→merge on a pre-review gate-pass; STOP-for-review at pr-create and let the coordinator orchestrate review→CLEAR.
+`t3 teatree workspace ticket <url>` is idempotent on `issue_url` (one ticket per issue) and does **not** clear the ticket's aggregated phase ledger — `Ticket.aggregate_phase_records()` unions `visited_phases` across ALL the ticket's sessions. A prior workstream's `testing/reviewing` therefore aggregates into the next workstream's view of the ledger; the structural guard is the `Ticket.reopen()` FSM transition (#1286), which retires every session's `visited_phases` and `phase_visits` so the next workstream re-earns its attestations from scratch. `reopen()` is the FSM-internal workstream-boundary call; the sanctioned `lifecycle clear-ledger --confirm` CLI is the operator-driven equivalent when a reuse path bypasses `reopen()` (e.g. an in-state reuse off PR_OPENED without an explicit reopen). Even with the ledger-retire, the coordinator integrity guarantee for multi-workstream / reused-ticket work stays the same defense-in-depth chain: **(a) coordinator-orchestrated independent cold review of THIS workstream's exact diff by a freshly-spawned reviewer sub-agent that has not seen the implementation (the spawn boundary is the independence, not a stored identity), (b) coordinator verification, (c) explicit per-workstream coordinator CLEAR to the review-loop** — recorded as the durable attestation receipt. Never chain attest→pr-create→merge on a pre-review gate-pass; STOP-for-review at pr-create and let the coordinator orchestrate review→CLEAR.
 
 ### GitHub access is HTTPS + `gh` credential helper, never SSH (Non-Negotiable)
 
@@ -68,7 +70,8 @@ Two checks assert it: `tests/conformance/test_github_access_is_https.py` scans t
 ## Issue Creation (Non-Negotiable)
 
 - **Never create issues without explicit user approval.** Always ask first — present the title and a summary, let the user decide.
-- **Search the open backlog first, and reuse a host issue where one fits.** `gh issue list` returns 30 rows by default, so a first-page read reports "nothing open matches this" while the host sits at position 40 — pass `--limit 200`. Extending beats filing a near-duplicate: append the new evidence and acceptance criteria to the existing issue's body or as a comment, so the host carries the whole ask. A cross-link from a second issue is not reuse.
+- **Search the open backlog first, and reuse a host issue where one fits.** `gh issue list` returns 30 rows by default, so a first-page read reports "nothing open matches this" while the host sits at position 40 — pass `--limit 200`. Extending beats filing a near-duplicate: append the new evidence and acceptance criteria to the existing issue's **body**, so the host carries the whole ask. A cross-link from a second issue is not reuse.
+- **The description is the specification; a comment is not.** A lane reads the issue body and nothing else, so a requirement, change request, scope change or decision posted as a comment is silently never executed. Record one with `t3 <overlay> ticket comment <url> --purpose requirement|change_request|scope_change|decision` (or the `<forge>_issue_note` MCP tool) — it appends a dated section to the description. Only `--purpose status|evidence` stays a comment, and a ticket sweep refuses even those. Both surfaces refuse a ticket the owner or the factory bot did not file: external people's tickets stay theirs.
 - **One issue per root cause, not per finding.** Findings that a single PR would close belong in one issue. The exception is scope, not similarity: a genuinely unrelated defect in another subsystem still gets its own issue — this rule bounds duplication, never the backlog's coverage.
 - **Teatree is a public repository.** Only generic, project-agnostic issues belong here. Never mention downstream project names, tenant names, customer names, internal architecture, feature flags, or any proprietary information.
 - **Overlay-specific issues go on the overlay repository.** If an issue involves both core teatree and an overlay, create it on the overlay repo and reference the core component — not the other way around.
@@ -163,7 +166,7 @@ records.
 ### Session — Quality gate tracker (FK → Ticket)
 
 - Tracks visited phases across tasks within a conversation (not FSM-driven)
-- **Fields:** overlay, ticket (FK), visited_phases (JSONField), phase_visits (JSONField), started_at, ended_at, agent_id, repos_modified, repos_tested
+- **Fields:** overlay, ticket (FK), visited_phases (JSONField), phase_visits (JSONField), started_at, ended_at, agent_id
 - Quality gates enforce ordering: reviewing requires testing, shipping requires reviewing
 - **Terminal point:** `ended_at` is written by `Session.close()`, driven from the `_close_session_on_terminal_task` `post_save` receiver — a Task reaching COMPLETED/FAILED closes its session once no sibling task on it is still active. `SessionQuerySet.live()` bounds the open-session liveness signal by `session_stale_after_hours` so a crashed agent cannot pin its ticket busy forever
 
@@ -263,7 +266,7 @@ Concretely:
 - **Overlay** answers "which GitLab project is this overlay's CI?" (returns a string) — that's overlay-shaped.
 - **Backend** answers "fetch the title of this issue" or "list my open MRs" (calls the GitLab API) — that's backend-shaped, and a protocol method like `CodeHostBackend.get_issue` or `CodeHostBackend.list_my_prs` already exists.
 
-When adding a new overlay method, ask: would two overlays end up implementing this against the same API? If yes, write it once on the backend protocol and have overlays consume it. The periodic holistic review (`ac-reviewing-codebase` § 1) enforces this rule during audits, via the catalog entry `plugin-wraps-platform-api`.
+When adding a new overlay method, ask: would two overlays end up implementing this against the same API? If yes, write it once on the backend protocol and have overlays consume it. The periodic holistic review (`architectural-review` § 1) enforces this rule during audits, via the catalog entry `plugin-wraps-platform-api`.
 
 ### Sync ABC (`teatree.types`)
 
@@ -297,7 +300,7 @@ so the driver never special-cases the transport.
 - Collects the typed messages the session yields and validates the result envelope against `result_schema.py`
 - If the result carries `needs_user_input: true`, reroutes the task to the user-input queue
 - Stores the parsed result in `TaskAttempt.result`
-- **Session resume:** when a `parent_task` chain carries a previous `agent_session_id`, the harness opens the session with the SDK-native `resume=` option (`pydantic_ai` rehydrates the equivalent message history from `src/teatree/agents/pydantic_ai_resume.py`).
+- **Session resume:** `Task.session_continuation` decides which conversation a dispatch continues — `parent` (a `needs_user_input` answer), `self` (a row reopened in place) or `fresh` (everything else, including same-phase children). `claude_sdk` passes that conversation's session id as the SDK-native `resume=` option; `pydantic_ai` rehydrates its message history from `src/teatree/agents/pydantic_ai_resume.py`, where every finished run keeps its thread until nothing will continue it.
 
 ### Skill Loading
 
@@ -313,8 +316,8 @@ The persistent UI surface is a multi-line statusline rendered by `t3 loop tick`.
 
 ```bash
 t3 --help                           # CLI help
-t3 acme agent                       # Launch Claude Code with overlay context
-t3 agent                            # Launch Claude Code (teatree-self development)
+t3 acme agent                       # Launch the configured agent with overlay context
+t3 agent                            # Launch the configured agent (teatree-self development)
 ```
 
 ### Testing
@@ -397,7 +400,7 @@ After modifying skills: `t3 tool verify-gates` (commit, push-stage and manual CI
 teatree resolves ALL required state from its own stores; an assistant's memory is never a source of truth for the factory (BLUEPRINT §17.1 invariant 14, [#3277](https://github.com/souliane/teatree/issues/3277)).
 
 - Every piece of state teatree needs to *function* — config, gate enablement, publishing/merge doctrine, factory settings, loop state, trusted identities, credential routing — resolves from teatree's OWN stores: the DB-home `ConfigSetting` / `LoopState` tables (`teatree.config.cold_reader` / `cold_db`, or the ORM), `pass`, repo config. Never from `MEMORY.md`, `~/.claude/**/memory`, or a per-project memory file — those are per-assistant, per-machine, and not portable, so a memory dependency would make the factory behave differently on another machine / agent / fresh session.
-- The only teatree paths that read the memory dir treat it as *product data teatree maintains or surfaces* (the `teatree.loops.dream` consolidation pass, the cold-tier recall injector's *advisory* context), each degrading to a no-op when the dir is absent. A memory-reading feature must NEVER gate a decision or resolve a required state value — even the recall injector's own `memory_recall_enabled` toggle reads from the DB, not from memory.
+- The only teatree paths that read the memory dir treat it as *product data teatree maintains or surfaces* (the `teatree.loops.dream` consolidation pass), degrading to a no-op when the dir is absent. A memory-reading feature must NEVER gate a decision or resolve a required state value.
 - The invariant is pinned by `tests/test_no_agent_memory_dependency.py` (identical runtime state with the memory dir absent vs. populated with contradicting bait). When adding any state resolver, read from teatree's own stores; do not introduce a new read of the assistant memory dir on a functional path.
 
 ## Things That Catch People
@@ -411,3 +414,44 @@ teatree resolves ALL required state from its own stores; an assistant's memory i
 - The headless lane is an in-process session behind the `Harness` seam; whether a `claude` CLI child is spawned underneath is the backend's own `HarnessCapabilities.spawns_cli_child`. Interactive tasks exec the `claude` CLI directly in the operator's terminal.
 - E2E tests use a separate settings module (`e2e.settings`) with file-based SQLite.
 - **Submodule shadowing in `cli/__init__.py`.** When `cli/__init__.py` re-exports a name from a same-named submodule (`from teatree.cli.agent import agent`), the imported function overwrites the `cli.agent` submodule attribute on the parent package. Tests that do `import teatree.cli.agent as cli_agent_mod` then receive the function, not the module — `patch.object(cli_agent_mod, "os", ...)` fails with `does not have the attribute 'os'`. Use `import teatree.cli.agent as _agent` in `__init__.py` and reference attributes (`_agent.agent`) instead. The aliasing form does not bind to the parent package, so the submodule attribute survives intact.
+
+### Local stacks: stop, down, and teardown are three different things
+
+Three tiers, never interchangeable — each keeps strictly less than the one above it.
+
+| Tier | What survives | Who fires it |
+|---|---|---|
+| `docker compose stop` | the containers, and every volume attached to them | a human, or a repo's own test harness |
+| `Worktree.stop_services` | the database, the checkout and `extra` — a later `start_services` is a fast resume, not a re-provision | the idle-stack reaper and the `max_concurrent_local_stacks` gate, automatically |
+| `t3 <overlay> worktree teardown` | nothing — a `--volumes` compose down (`src/teatree/core/cleanup/cleanup.py:582`), the database dropped, `git worktree remove`, branch delete, then the row itself | you, explicitly |
+
+Tier 2 has **no CLI leaf**: the `worktree` group's leaves run `provision`, `start`, `verify`, `ready`, `teardown`, and on through `status`, `diagnose` and the occupancy verbs — there is no `stop` between `start` and `teardown`, and none anywhere in the group (`src/teatree/cli/django_groups.py:82-93`), because `stop_services` is fired only by `teatree.loop.scanners.idle_stack_reaper` and `teatree.core.gates.local_stack_gate`. An agent that wants the reversible tier, finds no command for it, and settles for `teardown` has just dropped a database and removed a checkout.
+
+Tier 2 stops the `<checkout>-test` sibling beside the worktree too — with `stop`, never `down`, because that sibling's test database is an anonymous volume a `down` would take with the containers (`_quiet_test_sibling`, `src/teatree/core/worktree/worktree_tasks.py:222-234`). Its failure never changes the demotion's verdict.
+
+`down` is not one behaviour either. It removes containers and networks but **not** anonymous volumes, so its cost depends on where the stack keeps its data. A stack whose database lives on a server teatree provisioned survives it. A stack whose database is an anonymous volume — the shape you get when a service declares no volume and its image carries a `VOLUME` line — loses it: the volume is left dangling with nothing attached, and the next run rebuilds the database from empty. On a repo with a large migration history that is a long, silent tax. Establish which shape you are looking at before typing `down`.
+
+**A running container is never a compose-project reap candidate.** Both compose-project reaping flavours — the `clean-all` deep clean and the automatic stale sweep — share one seam, `teatree.docker.reap._reapable_candidates` (`src/teatree/docker/reap.py:404-430`), whose last line is `sorted(mine - running)`. `_LIVE_CONTAINER_STATES` is `running`, `restarting`, `paused` (`reap.py:79`), and a project holding one such container is skipped whatever its age — a container that never stopped carries a days-old `StartedAt` and the docker zero `FinishedAt`, so an age test alone would read a live stack as abandoned. The consequence for a test harness that leaves its database and cache containers up after every run is that its stack is never reapable and accumulates until somebody stops it by hand. A docker that cannot answer reaps nothing: `running_compose_projects` returns `None` rather than an empty set, and the seam bails on it (`reap.py:244-253`, `:419-422`).
+
+**Three routes admit a project, and only one of them proves itself.** They are one boolean at `reap.py:426-428`.
+
+1. **The name proves itself.** `is_worktree_compose_project` matches `-wt<digits>$` (`reap.py:75`, `:256-272`) — the `<repo_path>-wt<ticket pk>` scheme teatree mints for its own stacks. Being a name test rather than a label test, it also covers stacks provisioned before the gate existed, which an ownership label could not.
+2. **A registered row vouches for it.** Every OTHER name in the caller's `OwnedStacks.project_names` — the `<checkout-dir>-test` sibling a repo's own harness brings up beside the worktree — is a name compose derived from a directory BASENAME, so any two directories called the same thing share the project and the name proves nothing. It is admitted only once EVERY container's `working_dir` label is a checkout the caller owns (`_admitted_by_path`, `:316-330`).
+3. **Path evidence, with no row at all.** `_is_orphaned_test_stack` (`:380-401`) reaches the case the other two structurally cannot: both derive ownership from a live `Worktree` row, and the defining property of a leaked stack is that its row is gone. **Four** proofs, each of which alone refuses the deploy stack: the `-test` suffix compose mints for a test sibling; every container having run from ONE checkout lying under a root teatree provisions into; the project being the name THAT directory mints, so a project merely passing through an owned checkout cannot borrow its ownership; and every entry of the `config_files` label being the repo's own `docker-compose.test.yml`. The single-`working_dir` requirement (`:393`) is one half of the second proof, not a fifth one — on its own it disqualifies nothing.
+
+Route 3's roots come from `scanned_worktree_roots(canonical_worktree_root())` (`src/teatree/core/management/commands/_workspace/docker.py:69`) — configuration and registry rather than rows: the canonical worktree root, the caller's resolved workspace dir, and the PARENT directory of every registered worktree's checkout (`src/teatree/core/worktree/worktree_roots.py:113-129`). Registering one worktree in a directory therefore makes that whole directory a root, which is how a leaked `-test` stack from an unregistered sibling checkout inside it becomes reclaimable.
+
+What is still invisible is narrower than "anything without a row", and the shape to get right is that route 3's single-`working_dir` requirement is NOT the general rule. Route 2 is an independent `or` branch testing **foreignness, not count**: `_admitted_by_path` admits on `working_dirs - checkout_paths` being EMPTY, so a basename-collided `-test` stack spanning two checkouts the registry BOTH owns is admitted and reaped. A count of two is not protection. What is genuinely out of reach: a stack one of whose `working_dir`s belongs to no owned checkout (that foreign path withholds the whole project under route 2, and its plurality defeats route 3), one running from a checkout under no scanned root whose project no row names, and anything at all with a container still up. A container carrying no compose-project label, from a hand-run `docker run`, is not even enumerated: every `docker ps` here filters on `label=com.docker.compose.project`.
+
+The **idle-stack reaper is the deliberate exception**, and conflating it with the above is the mistake to avoid: it exists precisely to stop a stack whose containers ARE running. It does not reap the compose project — it demotes the `Worktree` row through `stop_services`, reversibly — and it proves QUIET rather than stopped, over nine keep-reasons applied cheapest-first (`preserve_reason`, `src/teatree/core/gates/idle_stack.py:284-308`): five structural (`:199-211` — not in a running state, never started, used inside the idle window, a live session or active task on the ticket, the process's own worktree), three active-delivery (`:214-222` — an external-delivery lease, a recent E2E run, an explicit pin), and last, because it shells out, a docker probe asking the containers themselves whether they emitted anything in the window (`:267-281`). That probe is the only guard that can see an out-of-band driver — a Playwright run, a browser or a `curl` writes no row any control-plane guard can read — and the only one whose "cannot tell" answer is honest rather than inferred. `UNKNOWN` KEEPS: a stack the reaper cannot prove idle is not idle.
+
+### Every `t3` invocation is a Django boot
+
+An overlay-scoped or management command does not run in the CLI's own process. `teatree.cli.overlay.managepy` (`src/teatree/cli/overlay.py:125-137`) spawns a fresh subprocess either way: its primary branch runs the PROJECT's own `manage.py`, when the project has one and its env is drivable (`:132-134`), and `python -m teatree` with `DJANGO_SETTINGS_MODULE` set is the fallback (`:136-137`). Both are full Django boots, so each call pays a full Django startup — the CLI carries 112 bare `ensure_django()` call sites under `src/teatree/cli/`. On a deployed box `deploy/t3` wraps that again, `exec`ing into the already-running `teatree-worker` (`deploy/t3:23` makes it the default service; the exec itself is `:1127`) and falling back to a one-off `run --rm` worker when the stack is down (`:1183`).
+
+The floor is seconds, not milliseconds. Re-measured 2026-09-07 on one box: `t3 --help`, the cheapest call there is, took 4.04 s, 4.33 s and 4.82 s over three consecutive runs; two earlier sessions on the same box spanned 3.3 s to 5.9 s. It moves with host load, so carry the magnitude and not the number.
+
+That makes `t3` the right tool for anything needing teatree's state and an expensive one for anything else. Two consequences:
+
+- **Do not poll `t3 --help` to discover a command.** Use the MCP `command_search(query)` read instead: it returns each matching leaf's full path, its help summary, and whether it emits `--json`, and its own registration says to reach for it FIRST when unsure which command exists.
+- **A `t3` call on a fixed cadence pays that boot on every tick.** Under a `cpus` cap the polling itself can consume the allowance. Weigh the boot before putting one inside a loop.

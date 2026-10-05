@@ -21,8 +21,6 @@ type NotionItem = dict[str, Any]
 class NotionLike(Protocol):
     def list_unrouted(self) -> list[NotionItem]: ...  # pragma: no branch
 
-    def trigger_webhook(self, item: NotionItem) -> None: ...  # pragma: no branch
-
 
 @dataclass(slots=True)
 class NotionViewScanner:

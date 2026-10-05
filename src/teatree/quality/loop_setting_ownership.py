@@ -16,7 +16,7 @@ The derivation is a fixpoint over the loop layer's own name graph:
 
 Attribution stops at the loop layer (``teatree.loop`` + ``teatree.loops``). Beyond it the
 fixpoint walks into shared gates a single loop happens to be the only caller of, and
-claims them; ``send_proxy_mode`` reached the ``dream`` loop that way. Code outside the
+claims them; the shared send proxy reached the ``dream`` loop that way. Code outside the
 layer exists for its own concern, not for the loop that calls it.
 
 A key is loop-owned when EVERY read of it resolves to one loop. ``config/`` is excluded

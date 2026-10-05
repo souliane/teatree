@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 from teatree.agents.runner_budget import TicketBudget
 from teatree.core.gates.closed_issue_dispatch_gate import closed_issue_dispatch_refusal
-from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.gates.review_recordability_gate import unrecordable_review_refusal
+from teatree.core.models.plan_decision import plan_missing_refusal
 
 if TYPE_CHECKING:
     from teatree.core.models import Task
@@ -23,7 +23,7 @@ def pre_harness_refusal(task: "Task", *, phase: str) -> str | None:
     local DB, while the closed-issue check costs a forge round trip, so it runs only once
     the free refusals have passed.
     """
-    plan_refusal = unplanned_dispatch_refusal(task.ticket, phase=phase)
+    plan_refusal = plan_missing_refusal(task.ticket, phase=phase)
     if plan_refusal is not None:
         return plan_refusal
     unrecordable = unrecordable_review_refusal(task, phase=phase)

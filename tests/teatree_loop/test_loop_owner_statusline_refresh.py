@@ -51,7 +51,7 @@ def _isolated_env(td: str) -> dict[str, str]:
 
 
 def _clear_session_env() -> None:
-    for key in ("CLAUDE_SESSION_ID", "T3_LOOP_SESSION_ID", "T3_LOOP_SESSION_PID"):
+    for key in ("CLAUDE_CODE_SESSION_ID", "T3_LOOP_SESSION_ID", "T3_LOOP_SESSION_PID"):
         os.environ.pop(key, None)
 
 
@@ -65,7 +65,7 @@ class TestTakeOverRefreshesStatusline(TestCase):
 
             # 2. The NEW session renders the statusline while the OLD session
             #    still owns it → the foreign-hijack RED line is written.
-            os.environ["CLAUDE_SESSION_ID"] = _NEW_SESSION
+            os.environ["CLAUDE_CODE_SESSION_ID"] = _NEW_SESSION
             rerender_statusline()
             pre = default_path().read_text(encoding="utf-8")
             assert _RED_MARKER in pre  # anti-vacuity: the RED line really is present pre-take-over
@@ -89,7 +89,7 @@ class TestTakeOverRefreshesStatusline(TestCase):
         with tempfile.TemporaryDirectory() as td, mock.patch.dict(os.environ, _isolated_env(td)):
             _clear_session_env()
             LoopLease.objects.claim_ownership("t3-master", session_id=_OLD_SESSION, owner_pid=os.getpid())
-            os.environ["CLAUDE_SESSION_ID"] = _NEW_SESSION
+            os.environ["CLAUDE_CODE_SESSION_ID"] = _NEW_SESSION
 
             rerender_statusline()
 

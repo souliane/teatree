@@ -12,11 +12,9 @@ mirroring the fingerprint markers the Pass-2/compliance filers already embed.
 Scheduling the fix used to happen HERE too, one gap at a time
 (:func:`~teatree.core.models.ticket.Ticket.schedule_coding` per gap) — one gap, one
 ticket, one PR. #4776 deleted that fan-out: every promoting phase now COLLECTS its
-gaps into one :class:`~teatree.loops.dream.batch_promote.PromotionBatch` and
-:mod:`teatree.loops.dream.batch_promote` mints AT MOST ONE ticket per pass, reusing
-the checkbox primitives below. This module stays the durable ledger + the
-:func:`reconcile_merged_gaps` drain for gap-fix tickets scheduled under the OLD
-per-gap scheme, so a ticket already in flight when this shipped keeps draining.
+gaps into one :class:`~teatree.loops.dream.batch_promote.PromotionBatch`, which
+queues them for the backlog sweep and mints no ticket. This module stays the
+durable umbrella checkbox ledger.
 
 The forge writes go through a passed-in
 :class:`~teatree.core.backend_protocols.CodeHostBackend`, so the whole flow is
@@ -31,12 +29,15 @@ from dataclasses import dataclass
 
 from django.utils import timezone
 
+from teatree.backends.loader import get_code_host_for_url
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.ticket import Ticket
+from teatree.core.overlay_loader import get_all_overlays, infer_overlay_for_url
 from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
 from teatree.core.send_proxy import OutboundBlockedError, forge_from_url, route_forge_write
 from teatree.hooks import banned_terms_scanner
+from teatree.utils.url_slug import project_slug_from_ref
 
 logger = logging.getLogger(__name__)
 
@@ -45,19 +46,8 @@ logger = logging.getLogger(__name__)
 _GAP_MARKER_PREFIX = "dream-gap"
 _BATCH_MARKER_PREFIX = "dream-batch"
 
-#: The ticket-``extra`` keys that link an in-flight gap-fix Ticket back to its gap
-#: identity, the memory to retire on merge, and the umbrella to check.
-_GAP_KEY = "dream_gap_key"
-_CLUSTER_KEY = "dream_memory_cluster_key"
 _UMBRELLA_KEY = "dream_umbrella_url"
-#: Stamped on a gap-fix Ticket's ``extra`` once its merge has been reconciled (checkbox
-#: checked + memory retired), so :func:`reconcile_merged_gaps` skips it on every later
-#: pass instead of re-reading the forge for the same merged gap forever (F6.9).
 _RECONCILED_KEY = "dream_gap_reconciled_at"
-#: Set on a DUPLICATE gap ticket whose substance was folded into a host ticket: the
-#: host's pk. The member is retired IGNORED and never reaches MERGED itself, so its
-#: merge signal is the host's (#2663).
-_FOLDED_INTO_KEY = "dream_gap_folded_into"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,11 +64,12 @@ class GapSpec:
     gap_key: str
     title: str
     cluster_key: str
+    detail: str = ""
 
 
 def is_promotion_anchor(url: str) -> bool:
     """Whether a TICKETED row's url is a promotion-time placeholder rather than a merged PR."""
-    return any(f"#{prefix}=" in url for prefix in (_GAP_MARKER_PREFIX, _BATCH_MARKER_PREFIX))
+    return f"#{_BATCH_MARKER_PREFIX}=" in url
 
 
 def _marker(gap_key: str) -> str:
@@ -127,7 +118,7 @@ def _scrubbed_update(host: CodeHostBackend, *, umbrella_url: str, body: str) -> 
     try:
         clean = route_forge_write(
             forge=forge_from_url(umbrella_url),
-            repo=umbrella_url,
+            repo=project_slug_from_ref(umbrella_url),
             text=body,
             action="dream_umbrella_update",
             target=umbrella_url,
@@ -138,10 +129,35 @@ def _scrubbed_update(host: CodeHostBackend, *, umbrella_url: str, body: str) -> 
     return True
 
 
+def code_host_for(issue_url: str) -> CodeHostBackend | None:
+    """The forge client for *issue_url*, on the owning overlay's credentials first."""
+    owner = infer_overlay_for_url(issue_url)
+    overlays = sorted(get_all_overlays().items(), key=lambda item: item[0] != owner)
+    return next(
+        (host for _name, overlay in overlays if (host := get_code_host_for_url(overlay, issue_url)) is not None),
+        None,
+    )
+
+
 def _read_body(host: CodeHostBackend, umbrella_url: str) -> str | None:
-    """Re-read the umbrella body; ``None`` on an unreadable forge state (never raises)."""
+    """Re-read the umbrella body; ``None`` on an unreadable or foreign umbrella (never raises).
+
+    The read goes through the #162 Rule 5 guard rather than a bare ``get_issue``, so
+    the body every upsert is computed from is the body we were AUTHORISED on — one
+    fetch for both facts. An umbrella the owner / factory bot did not file is not
+    ours to rewrite, and reads as unreadable here: the pass leaves it untouched,
+    exactly as it does for a forge hiccup.
+    """
+    from teatree.core.self_forge_identities import (  # noqa: PLC0415 — deferred: ORM-adjacent import
+        ExternalIssueRefusedError,
+        require_self_authored_issue,
+    )
+
     try:
-        raw = host.get_issue(umbrella_url)
+        raw = require_self_authored_issue(host=host, issue_url=umbrella_url)
+    except ExternalIssueRefusedError:
+        logger.warning("umbrella %s was filed by someone else — leaving it untouched", umbrella_url)
+        return None
     except Exception:  # noqa: BLE001 — a forge hiccup must not crash the dream pass; keep, don't write.
         return None
     body = raw.get("body") or raw.get("description")
@@ -248,20 +264,6 @@ def _withholding_reason(safe_title: str) -> str:
     return ""
 
 
-def _in_flight_gap_tickets() -> list[Ticket]:
-    """Every not-yet-reconciled Ticket scheduled to fix a dream gap (carrying the gap-key marker).
-
-    Excludes tickets already stamped :data:`_RECONCILED_KEY`: once a merged gap has been
-    reconciled (checkbox checked, memory retired) there is nothing left to do, so it is
-    dropped from the scan rather than re-read from the forge every pass forever (F6.9).
-    """
-    return list(
-        Ticket.objects.exclude(extra__dream_gap_key__isnull=True)
-        .exclude(extra__dream_gap_key="")
-        .filter(extra__dream_gap_reconciled_at__isnull=True)
-    )
-
-
 def _merge_evidence_url(ticket: Ticket) -> str:
     """The merged PR backing this MERGED gap-fix ticket, else the ticket's own url."""
     from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415 — deferred: ORM/app-registry
@@ -270,65 +272,11 @@ def _merge_evidence_url(ticket: Ticket) -> str:
     return pr.url if pr is not None else ticket.issue_url
 
 
-def _merge_bearing_ticket(ticket: Ticket) -> Ticket | None:
-    """The ticket whose MERGED state settles *ticket*'s gap — itself, or its fold host.
-
-    A duplicate gap is retired by folding it into the host that carries the one real fix,
-    which leaves the member IGNORED: it never reaches MERGED, so reading its own state
-    left its umbrella box open forever after the host's PR landed (#2663). ``None`` when
-    the pointer names no ticket, which reconciles nothing rather than raising.
-    """
-    host_pk = (ticket.extra or {}).get(_FOLDED_INTO_KEY)
-    if not host_pk:
-        return ticket
-    return Ticket.objects.filter(pk=host_pk).first()
-
-
-def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[Ticket]:
-    """Check the umbrella checkbox + retire the memory for every MERGED gap-fix Ticket.
-
-    For each in-flight gap whose fix Ticket reached MERGED, CHECK its umbrella
-    checkbox and stamp the linked ``ConsolidatedMemory``'s ``ticket_url`` to the
-    merged PR, then retire the prose through the EXISTING
-    :func:`~teatree.loops.dream.promote_memory.retire_resolved_memories` — driven off
-    the Ticket's authoritative MERGED state (an injected ``is_resolved`` predicate),
-    NOT a fragile forge re-read of a ``/pull/<n>`` URL the issue endpoint does not
-    serve. A BINDING memory is never retired; a gap whose fix has not merged is left
-    alone. Returns the gap-fix tickets reconciled this pass.
-
-    A gap whose umbrella box could NOT be confirmed checked — an unreadable body, a
-    missing line, a refused write — is left unstamped and retried next pass. The stamp
-    is permanent (it removes the ticket from every future scan), so stamping on an
-    unconfirmed forge write would leave the umbrella showing an open box for a merged
-    fix, with nothing left to ever re-check it.
-    """
-    from teatree.loops.dream.promote_memory import retire_resolved_memories  # noqa: PLC0415 — tick-time import
-
-    reconciled: list[Ticket] = []
-    merged_memory_urls: set[str] = set()
-    for ticket in _in_flight_gap_tickets():
-        merge_bearer = _merge_bearing_ticket(ticket)
-        if merge_bearer is None or merge_bearer.state != Ticket.State.MERGED:
-            continue
-        gap_key = str((ticket.extra or {}).get(_GAP_KEY) or "")
-        cluster_key = str((ticket.extra or {}).get(_CLUSTER_KEY) or "")
-        merged_url = _merge_evidence_url(merge_bearer)
-        if not _ensure_gap_checked(host, umbrella_url=umbrella_url, gap_key=gap_key).is_checked:
-            logger.warning("dream reconcile: could not check umbrella box for gap %r — retrying next pass", gap_key)
-            continue
-        if _stamp_memory_merged(cluster_key, merged_url=merged_url):
-            merged_memory_urls.add(merged_url)
-        _stamp_ticket_reconciled(ticket)
-        reconciled.append(ticket)
-    retire_resolved_memories(host, is_resolved=lambda row: row.ticket_url in merged_memory_urls)
-    return reconciled
-
-
 def _stamp_ticket_reconciled(ticket: Ticket) -> None:
     """Mark a gap-fix Ticket reconciled so later passes skip it (F6.9).
 
     Records :data:`_RECONCILED_KEY` in the ticket's ``extra``; the next
-    :func:`_in_flight_gap_tickets` scan excludes it, so a merged gap is reconciled once,
+    the batch scan excludes it, so a merged gap is reconciled once,
     not re-read from the forge on every pass forever. Idempotent — an already-stamped
     ticket is left untouched.
 
@@ -381,10 +329,10 @@ def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:
 __all__ = [
     "GapSpec",
     "check_gap_checkbox",
+    "code_host_for",
     "gap_present",
     "gap_title",
     "is_promotion_anchor",
-    "reconcile_merged_gaps",
     "render_checkbox_line",
     "upsert_gap_checkbox",
 ]

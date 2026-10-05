@@ -103,8 +103,8 @@ def foreign_issue_worktrees(
 def _issue_dir_root(worktree_path: Path, workspace_dir: Path) -> Path | None:
     """Return the ``<N>-<slug>`` directory directly under ``workspace_dir`` that contains ``worktree_path``.
 
-    A worktree's path is ``$T3_WORKSPACE_DIR/<N>-<slug>/<repo>`` (multi-repo) or
-    ``$T3_WORKSPACE_DIR/<N>-<slug>`` itself. Walk up to the first ancestor whose
+    A worktree's path is ``<workspace_dir>/<N>-<slug>/<repo>`` (multi-repo) or
+    ``<workspace_dir>/<N>-<slug>`` itself. Walk up to the first ancestor whose
     parent is ``workspace_dir`` — that ancestor is the issue directory. Returns
     ``None`` when ``worktree_path`` is not under ``workspace_dir`` at all.
     """

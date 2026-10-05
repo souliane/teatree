@@ -20,15 +20,15 @@ no planning to do. Evidence of a refused implementing dispatch is what separates
 stranded ticket from a placeholder, so that evidence is the predicate.
 
 Lives in ``teatree.loop`` (orchestration): it composes a ``core`` FSM method with a
-``core.gates`` predicate over a housekeeping sweep, exactly as its sibling does.
+``core.models`` predicate over a housekeeping sweep, exactly as its sibling does.
 """
 
 import logging
 
-from teatree.core.gates.plan_dispatch_gate import unplanned_dispatch_refusal
 from teatree.core.managers_task_claim import redispatch_window
 from teatree.core.modelkit.task_failure_taxonomy import FailureKind
 from teatree.core.models import Task, Ticket
+from teatree.core.models.plan_decision import has_plan_decision
 
 logger = logging.getLogger(__name__)
 
@@ -70,4 +70,4 @@ def _stranded_candidates() -> list[Ticket]:
         .exclude(tasks__status__in=Task.Status.active())
         .distinct()
     )
-    return [t for t in stranded if unplanned_dispatch_refusal(t, phase="coding") is not None]
+    return [t for t in stranded if not has_plan_decision(t)]

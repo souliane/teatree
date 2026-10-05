@@ -16,8 +16,9 @@ This module is the predicate that closes it. It is deliberately three-valued:
 fine". A two-valued predicate would have to pick one, and the safe pick collapses
 into the ambiguous-empty trap: a caller asking "may I claim?" would read a probe
 failure as a green light precisely when it cannot tell. Both non-``CURRENT``
-states therefore refuse admission (fail closed), and the never-lockout escape is
-the ``schema_readiness_gate_enabled`` kill switch rather than a softer verdict.
+states therefore refuse admission (fail closed). The default-on
+``schema_readiness_gate_enabled`` switch lets an operator recover from a false
+``BEHIND`` or ``UNKNOWN`` reading without editing code.
 
 The verdict is memoised per alias for :data:`READINESS_TTL_SECONDS` because the
 claim chokepoint reads it: walking the migration graph on every claim would trade
@@ -79,12 +80,14 @@ class SchemaReadiness:
             return (
                 f"the control DB is {len(self.pending)} migration(s) BEHIND this code "
                 f"({_summarise(self.pending)}) — the running process would execute against a "
-                f"schema it does not have. Apply them: `t3 <overlay> db migrate`."
+                f"schema it does not have. Apply them: `t3 <overlay> db migrate`. If this "
+                "reading is false, run `t3 <overlay> config_setting set "
+                "schema_readiness_gate_enabled false`."
             )
         return (
             f"the control DB schema could not be verified against this code ({self.detail}) — "
-            f"refusing rather than assuming it is current. Resolve it, or disable the gate with "
-            f"`t3 <overlay> config_setting set schema_readiness_gate_enabled false`."
+            "refusing rather than assuming it is current. Resolve the probe failure, or run "
+            "`t3 <overlay> config_setting set schema_readiness_gate_enabled false`."
         )
 
 
@@ -146,10 +149,10 @@ def invalidate_schema_readiness(alias: str | None = None) -> None:
 
 
 def schema_readiness_gate_enabled() -> bool:
-    """The kill switch, failing CLOSED when the config store cannot be read."""
+    """Read the default-on escape outside the readiness memo so a flip takes effect at once."""
     try:
         return bool(get_effective_settings().schema_readiness_gate_enabled)
-    except Exception:  # noqa: BLE001 — an unreadable switch must not silently open the gate
+    except Exception:  # noqa: BLE001 — unreadable config must not silently open admission
         logger.warning("schema-readiness kill switch unreadable — keeping the gate enabled")
         return True
 
@@ -157,9 +160,8 @@ def schema_readiness_gate_enabled() -> bool:
 def schema_admission_block_reason(alias: str = DEFAULT_DB_ALIAS) -> str:
     """Why work must not be admitted against *alias* right now, or ``""`` to admit.
 
-    The claim chokepoint's face of :func:`cached_schema_readiness`. Reads the kill
-    switch OUTSIDE the memo so flipping it takes effect on the next claim rather
-    than after the TTL.
+    The claim chokepoint's face of :func:`cached_schema_readiness`. Read the
+    switch outside the memo so an operator's rescue does not wait for the TTL.
     """
     if not schema_readiness_gate_enabled():
         return ""

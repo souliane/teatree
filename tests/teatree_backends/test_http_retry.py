@@ -152,7 +152,7 @@ def _fake_client(responses: list[httpx.Response | BaseException]) -> MagicMock:
     client = MagicMock()
     client.__enter__ = MagicMock(return_value=client)
     client.__exit__ = MagicMock(return_value=False)
-    for verb in ("get", "post", "patch"):
+    for verb in ("get", "post", "patch", "request"):
         getattr(client, verb).side_effect = lambda *_a, _c=calls, **_k: _raise_or_return(_c)
     return client
 
@@ -210,7 +210,8 @@ class TestBackendsNowRetry:
             patch.object(client._write_guard, "check"),
             pytest.raises(httpx.HTTPStatusError),
         ):
-            client.update_page_status("pg", property_name="Status", value="Done")
+            client.update_page("pg", {"properties": {"Status": {"status": {"name": "Done"}}}})
 
-        assert fake.patch.call_count == 1
+        assert fake.request.call_count == 1
+        assert fake.request.call_args.args[0] == "PATCH"
         assert sleeps == []

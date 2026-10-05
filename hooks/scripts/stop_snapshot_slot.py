@@ -13,7 +13,7 @@ shared recovery-snapshot implementation:
 
 Both bootstrap Django lazily (only when there is work to do) and swallow every
 error: a snapshot must never block a Stop or a compaction (#845 / #970
-invariant). :func:`open_prs_for_repo`, :func:`git_state_for_repo` and
+invariant). :func:`open_prs_for_repo` (over :func:`read_open_prs`), :func:`git_state_for_repo` and
 :func:`render_git_state_section` are the PreCompact durable snapshot's section
 readers — extracted here from ``hook_router`` so the dispatcher shrinks; the
 router re-exports them unchanged.
@@ -45,6 +45,15 @@ def open_prs_for_repo(repo_path: Path) -> list[dict]:
     Best-effort: a missing ``gh``, no auth, no network, or a non-GitHub
     remote returns ``[]``. Never raises.
     """
+    return read_open_prs(repo_path) or []
+
+
+def read_open_prs(repo_path: Path) -> list[dict] | None:
+    """Open PRs authored by the current user for *repo_path*, or ``None`` when ``gh`` could not answer.
+
+    ``[]`` is an answer (not a checkout, or no open PR); a missing ``gh``, no auth, no
+    network, a non-GitHub remote or an unreadable reply is ``None``. Never raises.
+    """
     if not (repo_path / ".git").exists():
         return []
     try:
@@ -68,12 +77,12 @@ def open_prs_for_repo(repo_path: Path) -> list[dict]:
             stderr=subprocess.DEVNULL,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
+        return None
     try:
         data = json.loads(out)
     except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
+        return None
+    return data if isinstance(data, list) else None
 
 
 def git_state_for_repo(repo_path: Path) -> dict[str, str] | None:
@@ -160,19 +169,6 @@ def _claim_slot(marker: Path) -> None:
         pass
 
 
-def _slot_enabled() -> bool:
-    """Kill-switch — ``[teatree] stop_snapshotter_enabled = false`` disables it.
-
-    Fails OPEN to enabled (always-on infra) on a missing/broken config.
-    """
-    try:
-        from hooks.scripts.teatree_settings import teatree_bool_setting  # noqa: PLC0415 deferred cold-hook import
-
-        return teatree_bool_setting("stop_snapshotter_enabled", default=True)
-    except Exception:  # noqa: BLE001 — a config read must never wedge the slot
-        return True
-
-
 def _run_prepare_stop(session_id: str, data: dict) -> None:
     """Bootstrap Django and refresh the recovery artifacts — best-effort, silent."""
     try:
@@ -200,8 +196,6 @@ def handle_stop_snapshot_slot(data: dict) -> None:
     not retry every turn) and refreshes the recovery artifacts. Returns
     ``None`` always — pure infra, never a Stop-block verdict.
     """
-    if not _slot_enabled():
-        return
     session_id = data.get("session_id", "")
     marker = _slot_marker(session_id)
     if not _slot_due(marker, now=time.time()):

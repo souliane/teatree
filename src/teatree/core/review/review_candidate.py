@@ -21,12 +21,15 @@ shapes, plus the heterogeneous ``approvers`` list (strings or
 """
 
 import logging
-from collections.abc import Iterable
-from typing import cast
-from urllib.parse import urlparse
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Protocol, cast
 
-from teatree.config import cold_reader
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.self_forge_identities import declared_identities_for_url
 from teatree.types import RawAPIDict
 
 _MERGED_STATES = ("merged",)
@@ -34,7 +37,34 @@ _CLOSED_STATES = ("closed",)
 
 logger = logging.getLogger(__name__)
 
-_SELF_FORGE_IDENTITIES_SETTING = "self_forge_identities"
+
+class AuthorshipVerdict(StrEnum):
+    SELF = "self"
+    FOREIGN = "foreign"
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorshipAssessment:
+    target: str
+    author: str
+    verdict: AuthorshipVerdict
+
+
+class AuthorshipObserver(Protocol):
+    def __call__(self, assessment: AuthorshipAssessment) -> None: ...
+
+
+_AUTHORSHIP_OBSERVER: ContextVar[AuthorshipObserver | None] = ContextVar("authorship_observer", default=None)
+
+
+@contextmanager
+def observe_authorship(observer: AuthorshipObserver) -> Iterator[None]:
+    token = _AUTHORSHIP_OBSERVER.set(observer)
+    try:
+        yield
+    finally:
+        _AUTHORSHIP_OBSERVER.reset(token)
 
 
 def _self_identity_set(current_user: str, self_identities: Iterable[str]) -> set[str]:
@@ -80,17 +110,7 @@ def author_is_self(author: str, *, current_user: str, self_identities: Iterable[
 
 def _resolve_self_identities(mr_url: str, identities: Iterable[str]) -> set[str]:
     """Resolve owner aliases plus configured bot identities for *mr_url*'s host."""
-    resolved = {identity for identity in identities if identity}
-    try:
-        forge_host = (urlparse(mr_url).hostname or "").casefold()
-    except ValueError:
-        return resolved
-    if not forge_host:
-        return resolved
-    configured = cold_reader.mapping_setting(_SELF_FORGE_IDENTITIES_SETTING).get(forge_host)
-    if isinstance(configured, list):
-        resolved.update(identity.strip() for identity in configured if isinstance(identity, str) and identity.strip())
-    return resolved
+    return {identity for identity in identities if identity} | set(declared_identities_for_url(mr_url))
 
 
 def _is_self_authored(
@@ -100,16 +120,30 @@ def _is_self_authored(
 ) -> bool | None:
     """Return proved owner, proved colleague, or unresolved authorship for *mr_url*."""
     if host is None:
-        return None
+        return _observed_authorship(mr_url, "", AuthorshipVerdict.UNREADABLE)
     try:
         author = host.get_pr_author(pr_url=mr_url)
     except Exception as exc:  # noqa: BLE001 — an unreadable author is the explicit unresolved verdict.
         logger.warning("review authorship: author lookup failed for %s: %s", mr_url, exc)
-        return None
+        return _observed_authorship(mr_url, "", AuthorshipVerdict.UNREADABLE)
     if not author:
-        return None
+        return _observed_authorship(mr_url, "", AuthorshipVerdict.UNREADABLE)
     self_identities = _resolve_self_identities(mr_url, identities)
-    return author_is_self(author, current_user="", self_identities=self_identities)
+    verdict = (
+        AuthorshipVerdict.SELF
+        if author_is_self(author, current_user="", self_identities=self_identities)
+        else AuthorshipVerdict.FOREIGN
+    )
+    return _observed_authorship(mr_url, author, verdict)
+
+
+def _observed_authorship(target: str, author: str, verdict: AuthorshipVerdict) -> bool | None:
+    observer = _AUTHORSHIP_OBSERVER.get()
+    if observer is not None:
+        observer(AuthorshipAssessment(target=target, author=author, verdict=verdict))
+    if verdict is AuthorshipVerdict.UNREADABLE:
+        return None
+    return verdict is AuthorshipVerdict.SELF
 
 
 def is_self_authored(
@@ -240,26 +274,3 @@ def should_review_candidate_reasons(
     if broadcast is not None and broadcast_claimed_by_other(broadcast, self_ids=identities):
         reasons.append("broadcast_reacted_by_other")
     return reasons
-
-
-def should_review_candidate(
-    mr: RawAPIDict,
-    *,
-    current_user: str,
-    self_identities: Iterable[str] = (),
-    broadcast: RawAPIDict | None = None,
-) -> bool:
-    """Apply the 4 skip-conditions; True iff the MR is a review candidate.
-
-    See module docstring for the canonical list. ``self_identities`` is the
-    user's full identity set (see :func:`should_review_candidate_reasons`).
-    ``broadcast`` is the originating Slack-broadcast message dict
-    (``reactions`` list); pass ``None`` when no broadcast applies (e.g. the
-    GitLab/GitHub discover path).
-    """
-    return not should_review_candidate_reasons(
-        mr,
-        current_user=current_user,
-        self_identities=self_identities,
-        broadcast=broadcast,
-    )
